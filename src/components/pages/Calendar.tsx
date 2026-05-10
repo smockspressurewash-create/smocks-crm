@@ -4,7 +4,14 @@ import { Glass } from '../ui/Glass';
 import { fmt, today, daysSince } from '../../lib/utils';
 import { twilioSend } from '../../lib/messaging';
 
-export function CalendarPage({ jobs = [], setJobs, customers = [], toast, settings = {} }: any) {
+export function CalendarPage({ 
+  jobs = [], 
+  setJobs, 
+  customers = [], 
+  toast, 
+  settings = {},
+  updateJob
+}: any) {
   const [view, setView] = useState("month");
   const [off, setOff] = useState(0);
   const [dragId, setDragId] = useState<any>(null);
@@ -30,7 +37,9 @@ export function CalendarPage({ jobs = [], setJobs, customers = [], toast, settin
     if (!dragId) return;
     const job = jobs.find((j: any) => j.id === dragId);
     const oldDate = job?.scheduledDate;
-    setJobs(jobs.map((j: any) => j.id === dragId ? { ...j, scheduledDate: targetKey } : j));
+    
+    await updateJob(dragId, { scheduledDate: targetKey });
+    
     if (toast) toast("Rescheduled to " + targetKey);
     setDragId(null);
 
@@ -50,8 +59,8 @@ export function CalendarPage({ jobs = [], setJobs, customers = [], toast, settin
     }
   };
 
-  const unschedule = (jid: string) => {
-    setJobs(jobs.map((j: any) => j.id === jid ? { ...j, scheduledDate: "" } : j));
+  const unschedule = async (jid: string) => {
+    await updateJob(jid, { scheduledDate: "" });
     if (toast) toast("Moved to unscheduled");
   };
 

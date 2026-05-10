@@ -10,7 +10,7 @@ import { Badge } from '../ui/Badge';
 import { usePersistent } from '../../hooks/usePersistent';
 import { uid, today, fmt, daysSince } from '../../lib/utils';
 import { twilioSend } from '../../lib/messaging';
-import { campaignTemplates } from '../../lib/constants';
+import { campaignTemplates } from '../../lib/seed';
 
 export function CampaignsPage({ campaigns = [], setCampaigns, customers = [], estimates = [], jobs = [], settings = {}, inboxThreads = [], setInboxThreads, toast }: any) {
   const [savedSegments, setSavedSegments] = usePersistent("smocks.savedSegments", []);

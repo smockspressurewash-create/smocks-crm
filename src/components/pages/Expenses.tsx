@@ -12,7 +12,13 @@ import { TimeframeSelector } from '../ui/TimeframeSelector';
 import { usePersistent } from '../../hooks/usePersistent';
 import { uid, today, fmt, daysSince, filterByTimeframe, TIMEFRAMES } from '../../lib/utils';
 
-export function ExpensesPage({ expenses = [], setExpenses }: any) {
+export function ExpensesPage({ 
+  expenses = [], 
+  setExpenses,
+  addExpense,
+  updateExpense,
+  removeExpense
+}: any) {
   const [modal, setModal] = useState({ open: false, data: null });
   const [filterCat, setFilterCat] = useState("all");
   const [timeframe, setTimeframe] = useState("30d");
@@ -36,13 +42,20 @@ export function ExpensesPage({ expenses = [], setExpenses }: any) {
 
   const openAdd = () => { setF({ date: today(), category: "Supplies", description: "", amount: "", vendor: "", isCash: false, taxDeductible: true, receiptDataUrl: null }); setModal({ open: true, data: null }); };
   const openEdit = (exp: any) => { setF({ ...exp }); setModal({ open: true, data: exp }); };
-  const save = () => {
+  
+  const save = async () => {
     if (!f.description.trim() || !f.amount) return;
-    if (f.id) setExpenses((prev: any[]) => prev.map(e => e.id === f.id ? { ...f } : e));
-    else setExpenses((prev: any[]) => [{ ...f, id: uid() }, ...prev]);
+    if (f.id) {
+      await updateExpense(f.id, f);
+    } else {
+      await addExpense({ ...f, id: undefined });
+    }
     setModal({ open: false, data: null });
   };
-  const del = (id: string) => { setExpenses((prev: any[]) => prev.filter(e => e.id !== id)); };
+
+  const del = async (id: string) => { 
+    await removeExpense(id);
+  };
 
   const tfLabel = TIMEFRAMES.find(t => t.key === timeframe)?.label || "All";
 
@@ -86,7 +99,7 @@ export function ExpensesPage({ expenses = [], setExpenses }: any) {
                     <div className="text-xs text-white/50 mt-0.5">{e.date} {e.vendor && `· ${e.vendor}`}</div>
                   </div>
                   <div className="text-red-400 font-bold">{fmt(Number(e.amount))}</div>
-                  <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition ml-2">
+                  <div className="flex gap-1 opacity-Group group-hover:opacity-100 transition ml-2">
                     <button onClick={() => openEdit(e)} className="p-1.5 rounded hover:bg-white/10 text-white/50"><Edit size={11} /></button>
                     <button onClick={() => del(e.id)} className="p-1.5 rounded hover:bg-red-900/30 text-white/50 hover:text-red-400"><Trash2 size={11} /></button>
                   </div>

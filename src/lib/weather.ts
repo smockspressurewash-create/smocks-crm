@@ -1,5 +1,17 @@
 import { today } from './utils';
-import { seedWeather } from './seed';
+
+export const seedWeather = {
+  current: { temp: 68, condition: "partly_cloudy", rainChance: 20, wind: 8, humidity: 55 },
+  forecast: [
+    { day: "Tomorrow", temp: 72, rainChance: 10, wind: 6, lowTemp: 52 },
+    { day: "Thu", temp: 64, rainChance: 85, wind: 12, lowTemp: 48 },
+    { day: "Fri", temp: 70, rainChance: 30, wind: 8, lowTemp: 50 },
+    { day: "Sat", temp: 82, rainChance: 5, wind: 4, lowTemp: 62 },
+    { day: "Sun", temp: 88, rainChance: 0, wind: 18, lowTemp: 68 },
+    { day: "Mon", temp: 38, rainChance: 15, wind: 10, lowTemp: 28 },
+    { day: "Tue", temp: 66, rainChance: 10, wind: 5, lowTemp: 48 }
+  ]
+};
 
 export const fetchRealWeather = async (owmKey: string, lat = 39.9626, lon = -76.7277) => {
   if (!owmKey) return null;

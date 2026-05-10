@@ -1,5 +1,7 @@
-// ===== ALL SEED DATA =====
 import { daysFromNow, today } from './utils';
+import { seedWeather as sw } from './weather';
+
+export const seedWeather = sw;
 
 export const seedCustomers = [
   { id: "c1", firstName: "Mike", lastName: "Harrison", email: "mike.h@gmail.com", phone: "(717) 555-0142", address: "412 Oak Ridge Ln, York PA", totalSpent: 2450, createdAt: "2025-08-12", notes: "Prefers morning appointments.", gateCode: "1234", hasDog: true, dogName: "Rex", sensitivePlants: "Hydrangeas by front porch" },
@@ -60,18 +62,7 @@ export const seedRevenue = [
   { month: "Feb", revenue: 9200 }, { month: "Mar", revenue: 11400 }, { month: "Apr", revenue: 13800 }
 ];
 
-export const seedWeather = {
-  current: { temp: 68, condition: "partly_cloudy", rainChance: 20, wind: 8, humidity: 55 },
-  forecast: [
-    { day: "Tomorrow", temp: 72, rainChance: 10, wind: 6, lowTemp: 52 },
-    { day: "Thu", temp: 64, rainChance: 85, wind: 12, lowTemp: 48 },
-    { day: "Fri", temp: 70, rainChance: 30, wind: 8, lowTemp: 50 },
-    { day: "Sat", temp: 82, rainChance: 5, wind: 4, lowTemp: 62 },
-    { day: "Sun", temp: 88, rainChance: 0, wind: 18, lowTemp: 68 },
-    { day: "Mon", temp: 38, rainChance: 15, wind: 10, lowTemp: 28 },
-    { day: "Tue", temp: 66, rainChance: 10, wind: 5, lowTemp: 48 }
-  ]
-};
+// seedWeather removed here, moved to weather.ts
 
 export const seedLeadSrc = [
   { source: "Google Ads", value: 32, color: "#e11d48" },

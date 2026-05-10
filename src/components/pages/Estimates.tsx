@@ -11,7 +11,23 @@ import { Modal } from '../ui/Modal';
 import { uid, today, fmt, daysSince, daysFromNow } from '../../lib/utils';
 import { twilioSend, sendEmail } from '../../lib/messaging';
 
-export function EstimatesPage({ estimates = [], setEstimates, customers = [], services = [], settings = {}, toast, onPortal = () => { }, setJobs = () => { }, onNav = () => { }, setTimeline = () => { }, estimateTemplates = [], setEstimateTemplates = () => { } }: any) {
+export function EstimatesPage({ 
+  estimates = [], 
+  setEstimates, 
+  customers = [], 
+  services = [], 
+  settings = {}, 
+  toast, 
+  onPortal = () => { }, 
+  setJobs = () => { }, 
+  onNav = () => { }, 
+  setTimeline = () => { }, 
+  estimateTemplates = [], 
+  setEstimateTemplates = () => { },
+  addEstimate,
+  updateEstimate,
+  removeEstimate
+}: any) {
   const [builderOpen, setBuilderOpen] = useState(false);
   const [viewing, setViewing] = useState<any>(null);
   const [filter, setFilter] = useState("all");
@@ -22,9 +38,9 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
 
   const toggleSel = (id: string) => setSelected(s => s.includes(id) ? s.filter(x => x !== id) : [...s, id]);
 
-  const duplicate = (e: any) => {
-    const copy = { ...e, id: uid(), createdAt: today(), validUntil: daysFromNow(30), status: "pending", viewed: false, viewedAt: null };
-    setEstimates([copy, ...estimates]);
+  const duplicate = async (e: any) => {
+    const copy = { ...e, id: undefined, createdAt: today(), validUntil: daysFromNow(30), status: "pending", viewed: false, viewedAt: null };
+    await addEstimate(copy);
     toast("Estimate duplicated");
   };
 
@@ -36,6 +52,26 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
     return null;
   };
 
+  const deleteSelected = async () => {
+    for (const id of selected) {
+      await removeEstimate(id);
+    }
+    setSelected([]);
+    toast(selected.length + " deleted");
+  };
+
+  const approveEstimate = async (id: string) => {
+    await updateEstimate(id, { status: "approved", signedAt: today() });
+    setViewing(null);
+    toast("Approved!");
+  };
+
+  const saveEstimate = async (est: any) => {
+    await addEstimate(est);
+    setBuilderOpen(false);
+    toast("Estimate created");
+  };
+
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap gap-2 items-center justify-between">
@@ -44,9 +80,7 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
         </div>
         <div className="flex gap-2">
           {selected.length > 0 && (
-            <>
-              <GBtn variant="danger" onClick={() => { setEstimates(estimates.filter((e: any) => !selected.includes(e.id))); setSelected([]); toast(selected.length + " deleted"); }} className="!text-xs">Delete ({selected.length})</GBtn>
-            </>
+            <GBtn variant="danger" onClick={deleteSelected} className="!text-xs">Delete ({selected.length})</GBtn>
           )}
           <GBtn onClick={() => setBuilderOpen(true)}><Plus size={14} className="mr-1.5" />New</GBtn>
         </div>
@@ -63,7 +97,7 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
                   <input type="checkbox" checked={isSel} onChange={() => toggleSel(e.id)} className="mt-1 w-4 h-4 rounded accent-red-600" />
                   <div>
                     <div className="text-xs text-white/50 uppercase tracking-wider flex items-center gap-1.5">
-                      #{e.id.toUpperCase().slice(-6)}
+                      #{String(e.id).toUpperCase().slice(-6)}
                       {e.viewed && <Eye size={10} className="text-green-400" />}
                     </div>
                     <div className="font-semibold mt-1">{cn(e.customerId)}</div>
@@ -72,7 +106,7 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
                 <Badge tone={e.status === "approved" ? "green" : "yellow"}>{e.status}</Badge>
               </div>
               <div className="text-2xl font-bold cursor-pointer" onClick={() => setViewing(e)}>{fmt(e.total)}</div>
-              <div className="text-xs text-white/50 mt-1">{e.lineItems.length} items · {e.createdAt}</div>
+              <div className="text-xs text-white/50 mt-1">{e.lineItems?.length || 0} items · {e.createdAt}</div>
               <div className="flex gap-1 pt-3 mt-3 border-t border-red-900/20">
                 <button onClick={() => setViewing(e)} className="flex-1 p-1.5 rounded-lg hover:bg-white/10 text-white/60 hover:text-white text-[11px] transition flex items-center justify-center gap-1"><Eye size={11} />View</button>
                 <button onClick={() => duplicate(e)} className="p-1.5 rounded-lg hover:bg-white/10 text-white/60 hover:text-white text-[11px] transition"><Copy size={11} /></button>
@@ -82,8 +116,8 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
         })}
       </div>
 
-      {builderOpen && <EstimateBuilder open={builderOpen} onClose={() => setBuilderOpen(false)} customers={customers} services={services} settings={settings} onSave={(est: any) => { setEstimates([...estimates, est]); setBuilderOpen(false); toast("Estimate created"); }} estimateTemplates={estimateTemplates} setEstimateTemplates={setEstimateTemplates} />}
-      {viewing && <EstimatePreview estimate={viewing} customers={customers} onClose={() => setViewing(null)} onApprove={(id: string) => { setEstimates(estimates.map((x: any) => x.id === id ? { ...x, status: "approved", signedAt: today() } : x)); setViewing(null); toast("Approved!"); }} />}
+      {builderOpen && <EstimateBuilder open={builderOpen} onClose={() => setBuilderOpen(false)} customers={customers} services={services} settings={settings} onSave={saveEstimate} estimateTemplates={estimateTemplates} setEstimateTemplates={setEstimateTemplates} />}
+      {viewing && <EstimatePreview estimate={viewing} customers={customers} onClose={() => setViewing(null)} onApprove={approveEstimate} />}
     </div>
   );
 }
@@ -94,7 +128,6 @@ function ChemicalCostCalc({ items = [] }: any) {
 
   const calculate = async () => {
     setLoading(true);
-    // Stub AI calculation
     setTimeout(() => {
       setEstimate({ sqsh: 15, surf: 5, total: 20, notes: "Estimated chemicals for typical soft wash" });
       setLoading(false);
@@ -153,7 +186,7 @@ function EstimateBuilder({ open, onClose, customers = [], services = [], setting
         </div>
         <div className="flex justify-end gap-2">
           <GBtn variant="ghost" onClick={onClose}>Cancel</GBtn>
-          <GBtn onClick={() => onSave({ id: uid(), customerId: cid, lineItems: items, subtotal: sub, tax, total, status: "pending", createdAt: today(), validUntil: vu })}>Create Estimate</GBtn>
+          <GBtn onClick={() => onSave({ customerId: cid, lineItems: items, subtotal: sub, tax, total, status: "pending", createdAt: today(), validUntil: vu })}>Create Estimate</GBtn>
         </div>
       </div>
     </Modal>
@@ -167,7 +200,7 @@ function EstimatePreview({ estimate: e, customers = [], onClose, onApprove }: an
       <div className="bg-white text-black p-8 rounded-xl">
         <div className="flex justify-between border-b-2 border-red-600 pb-4 mb-6">
           <div className="text-xl font-bold">Smock's Pressure Washing</div>
-          <div className="text-right">#{e.id.toUpperCase().slice(-6)}</div>
+          <div className="text-right">#{String(e.id).toUpperCase().slice(-6)}</div>
         </div>
         <div className="mb-6">
           <div className="text-[10px] uppercase text-gray-500 font-bold mb-1">Estimate For</div>
@@ -179,7 +212,7 @@ function EstimatePreview({ estimate: e, customers = [], onClose, onApprove }: an
             <tr><th className="text-left py-2">Description</th><th className="text-right py-2">Total</th></tr>
           </thead>
           <tbody>
-            {e.lineItems.map((li: any) => (
+            {e.lineItems?.map((li: any) => (
               <tr key={li.id} className="border-b border-gray-50">
                 <td className="py-2">{li.description}</td>
                 <td className="text-right py-2">{fmt(li.quantity * li.unitPrice)}</td>

@@ -10,9 +10,20 @@ import { GSel } from '../ui/GSel';
 import { GTxt } from '../ui/GTxt';
 import { Modal } from '../ui/Modal';
 import { uid, today, fmt, daysSince } from '../../lib/utils';
-import { usePersistent } from '../../hooks/usePersistent';
 
-export function CustomersPage({ customers = [], setCustomers, estimates = [], jobs = [], toast, timeline = {}, setTimeline = () => { }, settings = {} }: any) {
+export function CustomersPage({ 
+  customers = [], 
+  setCustomers, 
+  estimates = [], 
+  jobs = [], 
+  toast, 
+  timeline = {}, 
+  setTimeline = () => { }, 
+  settings = {},
+  addCustomer,
+  updateCustomer,
+  removeCustomer
+}: any) {
   const [search, setSearch] = useState("");
   const [modal, setModal] = useState<any>({ open: false, data: null });
   const [detail, setDetail] = useState<any>(null);
@@ -26,14 +37,17 @@ export function CustomersPage({ customers = [], setCustomers, estimates = [], jo
 
   const toggleMerge = (id: string) => setMergePair(prev => prev.includes(id) ? prev.filter(x => x !== id) : prev.length < 2 ? [...prev, id] : prev);
 
-  const doSimpleMerge = () => {
+  const doSimpleMerge = async () => {
     if (mergePair.length !== 2) return;
     const [aId, bId] = mergePair;
     const a = customers.find((c: any) => c.id === aId);
     const b = customers.find((c: any) => c.id === bId);
     if (!a || !b) return;
     const merged = { ...a, ...b, id: a.id, totalSpent: (a.totalSpent || 0) + (b.totalSpent || 0), notes: [a.notes, b.notes].filter(Boolean).join(" | ") };
-    setCustomers(customers.filter((c: any) => c.id !== bId).map((c: any) => c.id === aId ? merged : c));
+    
+    await updateCustomer(aId, merged);
+    await removeCustomer(bId);
+    
     setMergeMode(false);
     setMergePair([]);
     toast("Customers merged ✓");
@@ -41,9 +55,12 @@ export function CustomersPage({ customers = [], setCustomers, estimates = [], jo
 
   const filtered = customers.filter((c: any) => (c.firstName + " " + c.lastName + " " + (c.email || "") + " " + (c.phone || "")).toLowerCase().includes(search.toLowerCase()));
 
-  const save = (d: any) => {
-    if (d.id) setCustomers(customers.map((c: any) => c.id === d.id ? d : c));
-    else setCustomers([...customers, { ...d, id: uid(), totalSpent: 0, createdAt: today() }]);
+  const save = async (d: any) => {
+    if (d.id) {
+      await updateCustomer(d.id, d);
+    } else {
+      await addCustomer({ ...d, totalSpent: 0, createdAt: today() });
+    }
     setModal({ open: false, data: null });
     toast("Customer saved");
   };
@@ -81,13 +98,16 @@ export function CustomersPage({ customers = [], setCustomers, estimates = [], jo
     setMergeModal({ a, b });
   };
 
-  const doMerge = () => {
+  const doMerge = async () => {
     const { a, b } = mergeModal;
     const merged = { ...a };
     Object.entries(mergeChoices).forEach(([field, choice]) => { merged[field] = choice === "a" ? a[field] : b[field]; });
     merged.totalSpent = (a.totalSpent || 0) + (b.totalSpent || 0);
     merged.tags = [...new Set([...(a.tags || []), ...(b.tags || [])])];
-    setCustomers(customers.filter((c: any) => c.id !== b.id).map((c: any) => c.id === a.id ? merged : c));
+    
+    await updateCustomer(a.id, merged);
+    await removeCustomer(b.id);
+
     setDupPairs((prev: any) => prev?.filter((p: any) => !(p.a.id === a.id && p.b.id === b.id)));
     setMergeModal(null);
     toast("Merged: " + merged.firstName + " " + merged.lastName + " ✓");
@@ -111,7 +131,7 @@ export function CustomersPage({ customers = [], setCustomers, estimates = [], jo
     const file = e.target.files?.[0];
     if (!file) return;
     const r = new FileReader();
-    r.onload = () => {
+    r.onload = async () => {
       try {
         const result = r.result as string;
         const lines = result.split(/\r?\n/).filter(Boolean);
@@ -148,7 +168,6 @@ export function CustomersPage({ customers = [], setCustomers, estimates = [], jo
           const raw: any = {};
           cols.forEach((k, i) => raw[k] = vals[i] || "");
           return {
-            id: uid(),
             firstName: getField(raw, "firstName"),
             lastName: getField(raw, "lastName"),
             email: getField(raw, "email"),
@@ -161,7 +180,9 @@ export function CustomersPage({ customers = [], setCustomers, estimates = [], jo
         }).filter(c => c.firstName || c.lastName);
 
         if (imported.length) {
-          setCustomers((prev: any) => [...prev, ...imported]);
+          for (const c of imported) {
+            await addCustomer(c);
+          }
           toast("✅ Imported " + imported.length + " customers");
         }
       } catch (err: any) { toast("Import failed: " + err.message, "error"); }

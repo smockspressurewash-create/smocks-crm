@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { LayoutDashboard, Users, FileText, Receipt, Briefcase, Activity, Calendar, MessageSquare, Send, Award, Star, Workflow, Share2, FileImage, Bot, Globe, Users2, UserCheck, Truck, FlaskConical, BarChart3, TrendingUp, PieChart, Heart, Settings, Bell, Search, X, ChevronLeft, ChevronRight, Lock, CheckCircle, AlertTriangle, AlertCircle, Cloud, LogOut, Navigation } from 'lucide-react';
+import { LayoutDashboard, Users, FileText, Receipt, Briefcase, Activity, Calendar, MessageSquare, Send, Award, Star, Workflow, Share2, FileImage, Bot, Globe, Users2, UserCheck, Truck, FlaskConical, BarChart3, TrendingUp, PieChart, Heart, Settings, Bell, Search, X, ChevronLeft, ChevronRight, Lock, CheckCircle, AlertTriangle, AlertCircle, Cloud, LogOut, Navigation, Loader2 } from 'lucide-react';
 import { usePersistent } from './hooks/usePersistent';
 import { usePersistentRaw } from './hooks/usePersistentRaw';
 import { useGlobalStyles } from './hooks/useGlobalStyles';
@@ -7,6 +7,9 @@ import { PageFade } from './components/ui/PageFade';
 import { SafePage } from './components/ui/SafePage';
 import { GlobalSearch } from './components/ui/GlobalSearch';
 import { Badge } from './components/ui/Badge';
+import { supabase } from './lib/supabase';
+import { useSupabaseQuery } from './hooks/useSupabaseQuery';
+import { useSupabaseMutation } from './hooks/useSupabaseMutation';
 
 // Seed data
 import { seedCustomers, seedEstimates, seedJobs, seedEmployees, seedVehicles, seedExpenses, seedChemicals, seedServices, seedAutomations, seedEmailTemplates, seedSmsTemplates, seedWeather, seedCampaigns, seedSocialPosts, seedReferrals, seedMaintenance, seedTimeline } from './lib/seed';
@@ -36,6 +39,10 @@ import { SocialPage } from './components/pages/Social';
 import { LeadIntakePage } from './components/pages/LeadIntake';
 import { PersonalBudgetPage } from './components/pages/PersonalBudget';
 import { CrewView } from './components/pages/CrewView';
+import { LoginPage } from './components/pages/LoginPage';
+import { SignupPage } from './components/pages/SignupPage';
+import { ForgotPasswordPage } from './components/pages/ForgotPassword';
+import { ResetPassword } from './components/pages/ResetPassword';
 
 // Stubs for remaining pages
 const ReferralsPage = () => <div className="p-8 text-white/40">Referrals Page (Coming Soon)</div>;
@@ -48,6 +55,10 @@ const CustomerPortalLogin = () => null;
 export default function App() {
   useGlobalStyles();
   const [page, setPage] = useState("dashboard");
+  const [authView, setAuthView] = useState<"login" | "signup" | "forgot" | "resetPassword">("login");
+  const [session, setSession] = useState<any>(null);
+  const [userProfile, setUserProfile] = useState<any>(null);
+  const [loadingAuth, setLoadingAuth] = useState(true);
 
   // PIN protection
   const [pinSet] = usePersistentRaw("smocks.pin", "");
@@ -57,12 +68,21 @@ export default function App() {
 
   // States
   const [sidebarCollapsed, setSidebarCollapsed] = usePersistent("smocks.sidebarCollapsed", false);
-  const [customers, setCustomers] = usePersistent("smocks.customers", seedCustomers);
-  const [estimates, setEstimates] = usePersistent("smocks.estimates", seedEstimates);
-  const [jobs, setJobs] = usePersistent("smocks.jobs", seedJobs);
+  
+  // Migrated to Supabase with Hybrid Fallback
+  const { data: customers, setData: setCustomers, loading: loadingCustomers } = useSupabaseQuery<any>('customers', 'smocks.customers');
+  const { data: estimates, setData: setEstimates, loading: loadingEstimates } = useSupabaseQuery<any>('estimates', 'smocks.estimates');
+  const { data: jobs, setData: setJobs, loading: loadingJobs } = useSupabaseQuery<any>('jobs', 'smocks.jobs');
+  const { data: expenses, setData: setExpenses, loading: loadingExpenses } = useSupabaseQuery<any>('expenses', 'smocks.expenses');
+
+  // Mutation hooks
+  const customerMut = useSupabaseMutation('customers', 'smocks.customers', customers, setCustomers, userProfile?.org_id);
+  const estimateMut = useSupabaseMutation('estimates', 'smocks.estimates', estimates, setEstimates, userProfile?.org_id);
+  const jobMut = useSupabaseMutation('jobs', 'smocks.jobs', jobs, setJobs, userProfile?.org_id);
+  const expenseMut = useSupabaseMutation('expenses', 'smocks.expenses', expenses, setExpenses, userProfile?.org_id);
+
   const [employees, setEmployees] = usePersistent("smocks.employees", seedEmployees);
   const [vehicles, setVehicles] = usePersistent("smocks.vehicles", seedVehicles);
-  const [expenses, setExpenses] = usePersistent("smocks.expenses", seedExpenses);
   const [chemicals, setChemicals] = usePersistent("smocks.chemicals", seedChemicals);
   const [services, setServices] = usePersistent("smocks.services", seedServices);
   const [automations, setAutomations] = usePersistent("smocks.automations", seedAutomations);
@@ -99,11 +119,94 @@ export default function App() {
   const [notifOpen, setNotifOpen] = useState(false);
   const [toasts, setToasts] = useState<any[]>([]);
 
+  useEffect(() => {
+    // Check for recovery flow
+    if (window.location.hash.includes('type=recovery') || window.location.search.includes('type=recovery')) {
+      setAuthView('resetPassword');
+    }
+
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setSession(session);
+      if (session) fetchProfile(session.user.id);
+      setLoadingAuth(false);
+    });
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      setSession(session);
+      if (session) fetchProfile(session.user.id);
+      else setUserProfile(null);
+      setLoadingAuth(false);
+    });
+
+    return () => subscription.unsubscribe();
+  }, []);
+
+  // Seeding logic for new users
+  useEffect(() => {
+    if (!loadingCustomers && session && customers.length === 0) {
+      const seedDatabase = async () => {
+        console.log("New organization detected. Seeding data...");
+        // Seed customers
+        for (const c of seedCustomers) {
+          await customerMut.insert({ ...c, id: undefined }); 
+        }
+        // Seed estimates
+        for (const e of seedEstimates) {
+          await estimateMut.insert({ ...e, id: undefined });
+        }
+        // Seed jobs
+        for (const j of seedJobs) {
+          await jobMut.insert({ ...j, id: undefined });
+        }
+        // Seed expenses
+        for (const ex of seedExpenses) {
+          await expenseMut.insert({ ...ex, id: undefined });
+        }
+        toast("Welcome! We've added some demo data to get you started.");
+      };
+      seedDatabase();
+    }
+  }, [loadingCustomers, session, customers.length]);
+
+  const fetchProfile = async (userId: string) => {
+    const { data, error } = await supabase
+      .from('profiles')
+      .select('*')
+      .eq('id', userId)
+      .single();
+    
+    if (!error && data) {
+      setUserProfile(data);
+    }
+  };
+
+  const handleSignOut = async () => {
+    await supabase.auth.signOut();
+  };
+
   const toast = (msg: string, type = "success") => {
     const id = uid();
     setToasts(t => [...t, { id, msg, type }]);
     setTimeout(() => setToasts(t => t.filter(x => x.id !== id)), 2500);
   };
+
+  if (loadingAuth) {
+    return (
+      <div className="h-screen w-full flex items-center justify-center bg-black">
+        <Loader2 className="text-red-500 animate-spin" size={32} />
+      </div>
+    );
+  }
+
+  if (!session) {
+    if (authView === "signup") return <SignupPage onSwitchToLogin={() => setAuthView("login")} />;
+    if (authView === "forgot") return <ForgotPasswordPage onBackToLogin={() => setAuthView("login")} />;
+    if (authView === "resetPassword") return <ResetPassword onSuccess={() => {
+      window.history.replaceState({}, document.title, window.location.pathname);
+      setAuthView("login");
+    }} />;
+    return <LoginPage onSwitchToSignup={() => setAuthView("signup")} onSwitchToForgot={() => setAuthView("forgot")} />;
+  }
 
   if (pinSet && !pinUnlocked) {
     return (
@@ -141,7 +244,7 @@ export default function App() {
     );
   }
 
-  const totalRev = jobs.filter((j: any) => j.status === "completed").reduce((s: any, j: any) => s + j.amount, 0);
+  const totalRev = jobs.filter((j: any) => j.status === "completed").reduce((s: any, j: any) => s + (j.amount || 0), 0);
   const activeJobs = jobs.filter((j: any) => j.status !== "completed" && j.status !== "cancelled").length;
   const pendingEst = estimates.filter((e: any) => e.status === "pending").length;
   const closeRate = estimates.length ? Math.round((estimates.filter((e: any) => e.status === "approved").length / estimates.length) * 100) : 0;
@@ -170,12 +273,12 @@ export default function App() {
       ]
     },
     {
-        label: "Insights",
-        items: [
-          { id: "reports", label: "Reports", icon: BarChart3 },
-          { id: "accountability", label: "Accountability", icon: Activity }
-        ]
-      }
+      label: "Insights",
+      items: [
+        { id: "reports", label: "Reports", icon: BarChart3 },
+        { id: "accountability", label: "Accountability", icon: Activity }
+      ]
+    }
   ];
 
   const titles: any = { dashboard: "Dashboard", customers: "Customers", estimates: "Estimates", invoices: "Invoices", jobs: "Jobs", pipeline: "Pipeline", calendar: "Calendar", inbox: "Inbox", fleet: "Fleet", expenses: "Expenses", chemicals: "Chemicals", reports: "Reports", accountability: "Accountability", automations: "Automations", campaigns: "Campaigns" };
@@ -203,10 +306,28 @@ export default function App() {
               </div>
             ))}
           </nav>
-          <div className="p-4 border-t border-red-900/30">
+          
+          <div className="p-4 border-t border-red-900/30 space-y-2">
+            <div className="flex items-center gap-3 px-3 py-2">
+               <div className="w-8 h-8 rounded-full bg-red-600 flex items-center justify-center font-bold text-xs shrink-0">
+                 {userProfile?.full_name?.split(' ').map((n: any) => n[0]).join('') || '??'}
+               </div>
+               {!sidebarCollapsed && (
+                 <div className="overflow-hidden">
+                   <div className="text-sm font-medium truncate">{userProfile?.full_name || session.user.email}</div>
+                   <div className="text-[10px] text-white/40 truncate capitalize">{userProfile?.role || 'User'}</div>
+                 </div>
+               )}
+            </div>
+            
             <button onClick={() => setSettingsOpen(true)} className="flex items-center gap-3 text-white/50 hover:text-white transition w-full px-3 py-2">
               <Settings size={18} />
               {!sidebarCollapsed && <span className="text-sm">Settings</span>}
+            </button>
+            
+            <button onClick={handleSignOut} className="flex items-center gap-3 text-red-400/70 hover:text-red-400 transition w-full px-3 py-2">
+              <LogOut size={18} />
+              {!sidebarCollapsed && <span className="text-sm">Sign Out</span>}
             </button>
           </div>
         </div>
@@ -226,12 +347,12 @@ export default function App() {
           <PageFade key={page}>
             <SafePage>
               {page === "dashboard" && <Dashboard jobs={jobs} customers={customers} estimates={estimates} automations={automations} stats={{ totalRev, activeJobs, pendingEst, closeRate, doneMonth }} goals={{ revenue: settings.monthlyRevenueGoal, jobCount: settings.monthlyJobsGoal }} vehicles={vehicles} maintenance={maintenance} chemicals={chemicals} settings={settings} setSettings={setSettings} onNav={setPage} toast={toast} weatherData={weatherData} inboxThreads={inboxThreads} />}
-              {page === "customers" && <CustomersPage customers={customers} setCustomers={setCustomers} estimates={estimates} jobs={jobs} toast={toast} timeline={timeline} setTimeline={setTimeline} settings={settings} />}
-              {page === "estimates" && <EstimatesPage estimates={estimates} setEstimates={setEstimates} customers={customers} services={services} settings={settings} toast={toast} estimateTemplates={estimateTemplates} setEstimateTemplates={setEstimateTemplates} setJobs={setJobs} onNav={setPage} />}
-              {page === "invoices" && <InvoicesPage estimates={estimates} setEstimates={setEstimates} customers={customers} settings={settings} toast={toast} />}
-              {page === "jobs" && <JobsPage jobs={jobs} setJobs={setJobs} customers={customers} employees={employees} estimates={estimates} setEstimates={setEstimates} settings={settings} toast={toast} setTimeline={setTimeline} />}
-              {page === "pipeline" && <PipelinePage jobs={jobs} setJobs={setJobs} customers={customers} toast={toast} />}
-              {page === "calendar" && <CalendarPage jobs={jobs} setJobs={setJobs} customers={customers} toast={toast} settings={settings} />}
+              {page === "customers" && <CustomersPage customers={customers} setCustomers={setCustomers} estimates={estimates} jobs={jobs} toast={toast} timeline={timeline} setTimeline={setTimeline} settings={settings} addCustomer={customerMut.insert} updateCustomer={customerMut.update} removeCustomer={customerMut.remove} />}
+              {page === "estimates" && <EstimatesPage estimates={estimates} setEstimates={setEstimates} customers={customers} services={services} settings={settings} toast={toast} estimateTemplates={estimateTemplates} setEstimateTemplates={setEstimateTemplates} setJobs={setJobs} onNav={setPage} addEstimate={estimateMut.insert} updateEstimate={estimateMut.update} removeEstimate={estimateMut.remove} />}
+              {page === "invoices" && <InvoicesPage estimates={estimates} setEstimates={setEstimates} customers={customers} settings={settings} toast={toast} updateEstimate={estimateMut.update} />}
+              {page === "jobs" && <JobsPage jobs={jobs} setJobs={setJobs} customers={customers} employees={employees} estimates={estimates} setEstimates={setEstimates} settings={settings} toast={toast} setTimeline={setTimeline} addJob={jobMut.insert} updateJob={jobMut.update} removeJob={jobMut.remove} />}
+              {page === "pipeline" && <PipelinePage jobs={jobs} setJobs={setJobs} customers={customers} toast={toast} updateJob={jobMut.update} />}
+              {page === "calendar" && <CalendarPage jobs={jobs} setJobs={setJobs} customers={customers} toast={toast} settings={settings} updateJob={jobMut.update} />}
               {page === "inbox" && <InboxPage threads={inboxThreads} setThreads={setInboxThreads} customers={customers} settings={settings} toast={toast} />}
               {page === "campaigns" && <CampaignsPage campaigns={campaigns} setCampaigns={setCampaigns} customers={customers} estimates={estimates} jobs={jobs} settings={settings} inboxThreads={inboxThreads} setInboxThreads={setInboxThreads} toast={toast} />}
               {page === "referrals" && <ReferralsPage />}
@@ -244,7 +365,7 @@ export default function App() {
               {page === "google" && <GoogleWorkspacePage />}
               {page === "employees" && <EmployeesPage employees={employees} setEmployees={setEmployees} jobs={jobs} />}
               {page === "fleet" && <FleetPage vehicles={vehicles} setVehicles={setVehicles} maintenance={maintenance} setMaintenance={setMaintenance} toast={toast} />}
-              {page === "expenses" && <ExpensesPage expenses={expenses} setExpenses={setExpenses} />}
+              {page === "expenses" && <ExpensesPage expenses={expenses} setExpenses={setExpenses} addExpense={expenseMut.insert} updateExpense={expenseMut.update} removeExpense={expenseMut.remove} />}
               {page === "chemicals" && <ChemicalsPage chemicals={chemicals} setChemicals={setChemicals} toast={toast} settings={settings} />}
               {page === "reports" && <ReportsPage jobs={jobs} customers={customers} estimates={estimates} expenses={expenses} employees={employees} chemicals={chemicals} />}
               {page === "analytics" && <AnalyticsPage jobs={jobs} customers={customers} estimates={estimates} expenses={expenses} />}

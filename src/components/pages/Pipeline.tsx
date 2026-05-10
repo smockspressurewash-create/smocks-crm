@@ -10,7 +10,13 @@ import { SwipeableCard } from '../ui/SwipeableCard';
 import { TimeframeSelector } from '../ui/TimeframeSelector';
 import { fmt, today, daysSince, pipelineStages, TIMEFRAMES, priorityLevels } from '../../lib/utils';
 
-export function PipelinePage({ jobs = [], setJobs, customers = [], toast }: any) {
+export function PipelinePage({ 
+  jobs = [], 
+  setJobs, 
+  customers = [], 
+  toast,
+  updateJob
+}: any) {
   const [dragId, setDragId] = useState(null);
   const [lostJob, setLostJob] = useState<any>(null);
   const [lostReason, setLostReason] = useState("Price too high");
@@ -18,18 +24,17 @@ export function PipelinePage({ jobs = [], setJobs, customers = [], toast }: any)
   const [timeframe, setTimeframe] = useState("all");
   const lostReasons = ["Price too high", "Went with competitor", "Changed mind", "No response", "Not qualified", "Other"];
 
-  const moveStg = (jid: string, stg: string) => {
+  const moveStg = async (jid: string, stg: string) => {
     if (stg === "lost") { setLostJob(jid); return; }
-    setJobs(jobs.map((j: any) => j.id === jid ? { ...j, pipelineStage: stg, stageChangedAt: today() } : j));
+    await updateJob(jid, { pipelineStage: stg, stageChangedAt: today() });
   };
 
-  const confirmLost = () => {
-    setJobs(jobs.map((j: any) => j.id === lostJob ? { ...j, pipelineStage: "lost", stageChangedAt: today(), lostReason } : j));
+  const confirmLost = async () => {
+    await updateJob(lostJob, { pipelineStage: "lost", stageChangedAt: today(), lostReason });
     setLostJob(null);
     if (toast) toast("Marked lost: " + lostReason);
   };
 
-  // Apply timeframe filter based on stageChangedAt or scheduledDate
   const tfDays = TIMEFRAMES.find(t => t.key === timeframe)?.days || 99999;
   const cutoff = Date.now() - tfDays * 86400000;
   const inTimeframe = jobs.filter((j: any) => {
@@ -40,7 +45,6 @@ export function PipelinePage({ jobs = [], setJobs, customers = [], toast }: any)
 
   const filtered = priorityFilter === "all" ? inTimeframe : inTimeframe.filter((j: any) => (j.priority || "normal") === priorityFilter);
 
-  // Pipeline health — avg days in each stage within timeframe
   const avgDays = pipelineStages.map(stg => {
     const sj = filtered.filter((j: any) => j.pipelineStage === stg.key);
     if (!sj.length) return { stage: stg.label, avg: 0, count: 0 };
@@ -50,14 +54,12 @@ export function PipelinePage({ jobs = [], setJobs, customers = [], toast }: any)
   const bottleneck = avgDays.reduce((b, s) => s.avg > b.avg ? s : b, { stage: "", avg: 0, count: 0 });
   const tfLabel = TIMEFRAMES.find(t => t.key === timeframe)?.label || "All";
 
-  // Win rate in timeframe
   const closedJobs = filtered.filter((j: any) => j.pipelineStage === "paid" || j.pipelineStage === "completed");
   const lostJobs = filtered.filter((j: any) => j.pipelineStage === "lost");
   const winRate = (closedJobs.length + lostJobs.length) > 0 ? Math.round(closedJobs.length / (closedJobs.length + lostJobs.length) * 100) : null;
 
   return (
     <div className="space-y-4">
-      {/* Controls row */}
       <div className="flex items-center gap-3 flex-wrap justify-between">
         <div className="flex items-center gap-3 flex-wrap">
           <TimeframeSelector value={timeframe} onChange={setTimeframe} options={["7d", "30d", "90d", "6m", "1y", "all"]} />
@@ -70,12 +72,11 @@ export function PipelinePage({ jobs = [], setJobs, customers = [], toast }: any)
         </div>
         <div className="flex items-center gap-3 text-xs text-white/60">
           <span><span className="text-red-400 font-bold">{filtered.length}</span> jobs</span>
-          <span><span className="text-red-400 font-bold">{fmt(filtered.reduce((s: number, j: any) => s + j.amount, 0))}</span> value</span>
+          <span><span className="text-red-400 font-bold">{fmt(filtered.reduce((s: number, j: any) => s + (j.amount || 0), 0))}</span> value</span>
           {winRate !== null && <span><span className="text-green-400 font-bold">{winRate}%</span> win rate</span>}
         </div>
       </div>
 
-      {/* Bottleneck & health bar */}
       {bottleneck.avg >= 5 && (
         <Glass className="p-4 !bg-yellow-950/20 !border-yellow-700/40">
           <div className="flex items-start gap-3 flex-wrap">
@@ -98,7 +99,6 @@ export function PipelinePage({ jobs = [], setJobs, customers = [], toast }: any)
         </Glass>
       )}
 
-      {/* Lead aging report */}
       {(() => {
         const staleThreshold = 14;
         const activeStages = ["lead", "contacted", "estimate_sent"];
@@ -139,7 +139,7 @@ export function PipelinePage({ jobs = [], setJobs, customers = [], toast }: any)
                 </tbody>
               </table>
             </div>
-            <div className="mt-2 text-[9px] text-orange-400/40">Leads aged 30+ days in red · Total at-risk value: {fmt(stale.reduce((s: number, j: any) => s + j.amount, 0))}</div>
+            <div className="mt-2 text-[9px] text-orange-400/40">Leads aged 30+ days in red · Total at-risk value: {fmt(stale.reduce((s: number, j: any) => s + (j.amount || 0), 0))}</div>
           </Glass>
         );
       })()}
@@ -160,7 +160,7 @@ export function PipelinePage({ jobs = [], setJobs, customers = [], toast }: any)
                     <span className={"text-xs px-2 py-0.5 rounded-full font-bold " + stg.color + "/20 " + stg.text}>{sj.length}</span>
                   </div>
                   <div className="flex items-center justify-between mt-1">
-                    <div className="text-xs text-white/60">{fmt(sj.reduce((s: number, j: any) => s + j.amount, 0))}</div>
+                    <div className="text-xs text-white/60">{fmt(sj.reduce((s: number, j: any) => s + (j.amount || 0), 0))}</div>
                     {stgAvg > 0 && <div className="text-[10px] text-white/40">avg {stgAvg}d</div>}
                   </div>
                 </div>

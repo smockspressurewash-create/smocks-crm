@@ -7,7 +7,14 @@ import { GInput } from '../ui/GInput';
 import { Modal } from '../ui/Modal';
 import { fmt, today, daysSince } from '../../lib/utils';
 
-export function InvoicesPage({ estimates = [], setEstimates, customers = [], settings = {}, toast }: any) {
+export function InvoicesPage({ 
+  estimates = [], 
+  setEstimates, 
+  customers = [], 
+  settings = {}, 
+  toast,
+  updateEstimate
+}: any) {
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState("all");
 
@@ -15,14 +22,14 @@ export function InvoicesPage({ estimates = [], setEstimates, customers = [], set
   const filtered = invoices.filter((inv: any) => {
     const c = customers.find((x: any) => x.id === inv.customerId);
     const q = search.toLowerCase();
-    const matchesSearch = (c?.firstName + " " + c?.lastName).toLowerCase().includes(q) || (inv.id || "").toLowerCase().includes(q);
+    const matchesSearch = (c?.firstName + " " + c?.lastName).toLowerCase().includes(q) || String(inv.id || "").toLowerCase().includes(q);
     if (filter === "paid") return matchesSearch && inv.paidAt;
     if (filter === "unpaid") return matchesSearch && !inv.paidAt;
     return matchesSearch;
   });
 
-  const markPaid = (id: string) => {
-    setEstimates(estimates.map((e: any) => e.id === id ? { ...e, paidAt: today() } : e));
+  const markPaid = async (id: string) => {
+    await updateEstimate(id, { paidAt: today() });
     toast("Invoice marked as paid");
   };
 
@@ -63,7 +70,7 @@ export function InvoicesPage({ estimates = [], setEstimates, customers = [], set
                 const c = customers.find((x: any) => x.id === inv.customerId);
                 return (
                   <tr key={inv.id} className="hover:bg-white/5 transition-colors">
-                    <td className="p-3 font-mono text-white/70 uppercase">{inv.id.slice(-6)}</td>
+                    <td className="p-3 font-mono text-white/70 uppercase">{String(inv.id).slice(-6)}</td>
                     <td className="p-3">
                       <div className="font-medium">{c?.firstName} {c?.lastName}</div>
                       <div className="text-[10px] text-white/40">{c?.email}</div>

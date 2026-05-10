@@ -22,7 +22,20 @@ const priorityLevels = [
 ];
 const jobTagOptions = ["Emergency", "Warranty", "Follow-up", "HOA", "Commercial", "VIP"];
 
-export function JobsPage({ jobs = [], setJobs, customers = [], employees = [], estimates = [], setEstimates = () => { }, settings = {}, toast, setTimeline = () => { } }: any) {
+export function JobsPage({ 
+  jobs = [], 
+  setJobs, 
+  customers = [], 
+  employees = [], 
+  estimates = [], 
+  setEstimates = () => { }, 
+  settings = {}, 
+  toast, 
+  setTimeline = () => { },
+  addJob,
+  updateJob,
+  removeJob
+}: any) {
   const [tab, setTab] = useState("scheduled");
   const [search, setSearch] = useState("");
   const [detailId, setDetailId] = useState<string | null>(null);
@@ -36,12 +49,10 @@ export function JobsPage({ jobs = [], setJobs, customers = [], employees = [], e
     return (c?.firstName + " " + c?.lastName).toLowerCase().includes(q) || (j.address || "").toLowerCase().includes(q);
   });
 
-  const move = (jid: string, ns: string) => {
-    setJobs(jobs.map((j: any) => j.id === jid ? { ...j, status: ns } : j));
+  const move = async (jid: string, ns: string) => {
+    await updateJob(jid, { status: ns });
     toast("Job moved to " + ns);
   };
-
-  const updateJob = (jid: string, patch: any) => setJobs(jobs.map((j: any) => j.id === jid ? { ...j, ...patch } : j));
 
   return (
     <div className="space-y-4">
@@ -114,13 +125,13 @@ function JobDetailModal({ jobId, job, onClose, customers, employees, updateJob, 
         <div className="grid grid-cols-2 gap-3">
           <div>
             <label className="text-xs text-white/60 mb-1 block">Priority</label>
-            <GSel value={job.priority || "normal"} onChange={(e: any) => updateJob(jobId, { priority: e.target.value })}>
+            <GSel value={job.priority || "normal"} onChange={async (e: any) => await updateJob(jobId, { priority: e.target.value })}>
               {priorityLevels.map(p => <option key={p.key} value={p.key} className="bg-black">{p.label}</option>)}
             </GSel>
           </div>
           <div>
             <label className="text-xs text-white/60 mb-1 block">Date</label>
-            <GInput type="date" value={job.scheduledDate} onChange={(e: any) => updateJob(jobId, { scheduledDate: e.target.value })} className="[color-scheme:dark]" />
+            <GInput type="date" value={job.scheduledDate} onChange={async (e: any) => await updateJob(jobId, { scheduledDate: e.target.value })} className="[color-scheme:dark]" />
           </div>
         </div>
 
@@ -129,10 +140,10 @@ function JobDetailModal({ jobId, job, onClose, customers, employees, updateJob, 
           <div className="space-y-2 p-3 bg-black/40 rounded-xl border border-white/5">
             {(job.checklist || []).map((ck: any, idx: number) => (
               <div key={idx} className="flex items-center gap-2">
-                <input type="checkbox" checked={ck.done} onChange={() => {
+                <input type="checkbox" checked={ck.done} onChange={async () => {
                   const nck = [...(job.checklist || [])];
                   nck[idx] = { ...nck[idx], done: !nck[idx].done };
-                  updateJob(jobId, { checklist: nck });
+                  await updateJob(jobId, { checklist: nck });
                 }} />
                 <span className={"text-xs " + (ck.done ? "line-through text-white/40" : "")}>{ck.text}</span>
               </div>
@@ -142,7 +153,7 @@ function JobDetailModal({ jobId, job, onClose, customers, employees, updateJob, 
 
         <div>
           <label className="text-xs text-white/60 mb-1 block">Internal Notes</label>
-          <GTxt rows={3} value={job.notes || ""} onChange={(e: any) => updateJob(jobId, { notes: e.target.value })} />
+          <GTxt rows={3} value={job.notes || ""} onChange={async (e: any) => await updateJob(jobId, { notes: e.target.value })} />
         </div>
 
         <div className="flex justify-end gap-2">
