@@ -251,10 +251,10 @@ export default function App() {
   const doneMonth = jobs.filter((j: any) => j.status === "completed").length;
 
   const navGroups = [
-    { items: [{ id: "dashboard", label: "Dashboard", icon: LayoutDashboard }] },
     {
       label: "Business",
       items: [
+        { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
         { id: "customers", label: "Customers", icon: Users },
         { id: "estimates", label: "Estimates", icon: FileText },
         { id: "invoices", label: "Invoices", icon: Receipt },
@@ -265,8 +265,28 @@ export default function App() {
       ]
     },
     {
+      label: "Growth",
+      items: [
+        { id: "campaigns", label: "Campaigns", icon: Send },
+        { id: "referrals", label: "Referrals", icon: Share2 },
+        { id: "reviews", label: "Reviews", icon: Star },
+        { id: "automations", label: "Automations", icon: Workflow },
+        { id: "social", label: "Social", icon: Globe },
+        { id: "intake", label: "Lead Intake", icon: UserCheck }
+      ]
+    },
+    {
+      label: "AI",
+      items: [
+        { id: "alfred", label: "Alfred AI", icon: Bot },
+        { id: "google", label: "Google Workspace", icon: Cloud }
+      ]
+    },
+    {
       label: "Operations",
       items: [
+        { id: "crew", label: "Crew View", icon: Users2 },
+        { id: "employees", label: "Employees", icon: Award },
         { id: "fleet", label: "Fleet", icon: Truck },
         { id: "chemicals", label: "Chemicals", icon: FlaskConical },
         { id: "expenses", label: "Expenses", icon: Receipt }
@@ -276,12 +296,23 @@ export default function App() {
       label: "Insights",
       items: [
         { id: "reports", label: "Reports", icon: BarChart3 },
-        { id: "accountability", label: "Accountability", icon: Activity }
+        { id: "analytics", label: "Analytics", icon: TrendingUp },
+        { id: "budget", label: "Budget & Taxes", icon: PieChart },
+        { id: "personal", label: "Personal Budget", icon: Heart },
+        { id: "accountability", label: "Accountability", icon: CheckCircle }
       ]
     }
   ];
 
-  const titles: any = { dashboard: "Dashboard", customers: "Customers", estimates: "Estimates", invoices: "Invoices", jobs: "Jobs", pipeline: "Pipeline", calendar: "Calendar", inbox: "Inbox", fleet: "Fleet", expenses: "Expenses", chemicals: "Chemicals", reports: "Reports", accountability: "Accountability", automations: "Automations", campaigns: "Campaigns" };
+  const titles: any = { 
+    dashboard: "Dashboard", customers: "Customers", estimates: "Estimates", invoices: "Invoices", 
+    jobs: "Jobs", pipeline: "Pipeline", calendar: "Calendar", inbox: "Inbox",
+    campaigns: "Campaigns", referrals: "Referrals", reviews: "Reviews", automations: "Automations", 
+    social: "Social", intake: "Lead Intake",
+    alfred: "Alfred AI", google: "Google Workspace",
+    crew: "Crew View", employees: "Employees", fleet: "Fleet", chemicals: "Chemicals", expenses: "Expenses",
+    reports: "Reports", analytics: "Analytics", budget: "Budget & Taxes", personal: "Personal Budget", accountability: "Accountability"
+  };
 
   return (
     <div className="h-screen w-full text-white bg-black relative flex overflow-hidden font-sans">
