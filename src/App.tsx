@@ -390,7 +390,7 @@ export default function App() {
               {page === "reviews" && <ReviewsPage />}
               {page === "automations" && <AutomationsPage automations={automations} setAutomations={setAutomations} jobs={jobs} customers={customers} estimates={estimates} settings={settings} toast={toast} />}
               {page === "social" && <SocialPage posts={socialPosts} setPosts={setSocialPosts} toast={toast} />}
-              {page === "intake" && <LeadIntakePage setCustomers={setCustomers} toast={toast} onNav={setPage} />}
+              {page === "intake" && <LeadIntakePage customers={customers} setCustomers={setCustomers} estimates={estimates} setEstimates={setEstimates} services={services} settings={settings} toast={toast} onNav={setPage} />}
               {page === "accountability" && <AccountabilityPage entries={accountability} setEntries={setAccountability} goals={goalsList} setGoals={setGoalsList} wins={wins} setWins={setWins} toast={toast} />}
               {page === "alfred" && <AlfredPage />}
               {page === "google" && <GoogleWorkspacePage />}
@@ -400,8 +400,8 @@ export default function App() {
               {page === "chemicals" && <ChemicalsPage chemicals={chemicals} setChemicals={setChemicals} toast={toast} settings={settings} />}
               {page === "reports" && <ReportsPage jobs={jobs} customers={customers} estimates={estimates} expenses={expenses} employees={employees} chemicals={chemicals} />}
               {page === "analytics" && <AnalyticsPage jobs={jobs} customers={customers} estimates={estimates} expenses={expenses} />}
-              {page === "budget" && <BudgetPage jobs={jobs} estimates={estimates} expenses={expenses} settings={settings} />}
-              {page === "personal" && <PersonalBudgetPage jobs={jobs} settings={settings} />}
+              {page === "budget" && <BudgetPage jobs={jobs} estimates={estimates} expenses={expenses} settings={settings} toast={toast} />}
+              {page === "personal" && <PersonalBudgetPage toast={toast} />}
               {page === "crew" && <CrewView jobs={jobs} setJobs={setJobs} customers={customers} employees={employees} toast={toast} />}
             </SafePage>
           </PageFade>
