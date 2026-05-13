@@ -1,59 +1,136 @@
-// ===== MESSAGING LAYER (Twilio SMS + Email) =====
-import { sendGmailEmail } from './google';
+// @ts-nocheck
+// ─── Types ────────────────────────────────────────────────────────────────────
 
-// SMS via Twilio — proxied through the backend to avoid CORS
-export const twilioSend = async (settings: any, to: string, body: string, channel = "sms") => {
-  const { twilioSid, twilioToken, twilioFrom, twilioWhatsAppFrom, googleBackendUrl } = settings;
-  const fromNum = channel === "whatsapp" ? (twilioWhatsAppFrom || "whatsapp:" + twilioFrom) : twilioFrom;
-  const toNum = channel === "whatsapp" ? (to.startsWith("whatsapp:") ? to : "whatsapp:" + to) : to;
-  if (googleBackendUrl && settings.googleToken) {
-    const res = await fetch(googleBackendUrl.replace(/\/$/, "") + "/api/sms/send", {
+export interface TwilioSettings {
+  twilioSid?: string;
+  twilioToken?: string;
+  twilioPhone?: string;
+  twilioBackendUrl?: string;
+  myPhone?: string;
+}
+
+export interface EmailSettings {
+  resendKey?: string;
+  fromEmail?: string;
+  fromName?: string;
+}
+
+// ─── Twilio SMS / WhatsApp ────────────────────────────────────────────────────
+
+export const twilioSend = async (
+  settings: TwilioSettings,
+  to: string,
+  body: string,
+  channel: "sms" | "whatsapp" = "sms"
+): Promise<void> => {
+  const { twilioSid, twilioToken, twilioPhone, twilioBackendUrl } = settings;
+  if (!twilioSid || !twilioToken || !twilioPhone) {
+    throw new Error("Twilio not configured — add SID, Token, and phone in Settings.");
+  }
+
+  const from = channel === "whatsapp" ? `whatsapp:${twilioPhone}` : twilioPhone;
+  const toNum = channel === "whatsapp" ? `whatsapp:${to}` : to;
+
+  // Try backend proxy first (avoids CORS in browser)
+  if (twilioBackendUrl) {
+    const res = await fetch(`${twilioBackendUrl}/sms`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", "Authorization": "Bearer " + settings.googleToken },
-      body: JSON.stringify({ to: toNum, body, from: fromNum, channel })
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ to: toNum, from, body }),
     });
-    if (!res.ok) throw new Error("SMS failed: " + (await res.text().catch(() => res.status)));
+    if (!res.ok) throw new Error(`SMS proxy error: ${res.status}`);
+    return;
+  }
+
+  // Direct Twilio API (works if CORS is allowed)
+  const formData = new URLSearchParams({ To: toNum, From: from, Body: body });
+  const res = await fetch(
+    `https://api.twilio.com/2010-04-01/Accounts/${twilioSid}/Messages.json`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Basic ${btoa(`${twilioSid}:${twilioToken}`)}`,
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      body: formData.toString(),
+    }
+  );
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({})) as { message?: string };
+    throw new Error(err.message ?? `Twilio error ${res.status}`);
+  }
+};
+
+// ─── Twilio incoming poll ─────────────────────────────────────────────────────
+
+export interface TwilioMessage {
+  sid: string;
+  from: string;
+  body: string;
+  dateSent: string;
+  direction: string;
+}
+
+export const pollTwilioIncoming = async (
+  settings: TwilioSettings,
+  since: string
+): Promise<TwilioMessage[]> => {
+  const { twilioSid, twilioToken, twilioBackendUrl } = settings;
+  if (!twilioSid || !twilioToken) return [];
+
+  if (twilioBackendUrl) {
+    const res = await fetch(`${twilioBackendUrl}/sms/incoming?since=${since}`);
+    if (!res.ok) return [];
     return res.json();
   }
-  if (!twilioSid || !twilioToken || !twilioFrom) throw new Error("Twilio not configured — add SID, Token, From number in Settings");
-  const params = new URLSearchParams({ To: toNum, From: fromNum, Body: body });
-  const res = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${twilioSid}/Messages.json`, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded", "Authorization": "Basic " + btoa(twilioSid + ":" + twilioToken) },
-    body: params
+
+  const url = `https://api.twilio.com/2010-04-01/Accounts/${twilioSid}/Messages.json?DateSent>=${since}&Direction=inbound&PageSize=50`;
+  const res = await fetch(url, {
+    headers: { Authorization: `Basic ${btoa(`${twilioSid}:${twilioToken}`)}` },
   });
-  if (!res.ok) throw new Error("Twilio " + res.status + ": " + (await res.text().catch(() => "")));
-  return res.json();
+  if (!res.ok) return [];
+  const data = await res.json() as { messages?: TwilioMessage[] };
+  return data.messages ?? [];
 };
 
-// Email via Gmail backend or Resend fallback
-export const sendEmail = async (settings: any, { to, subject, body, fromName }: any) => {
-  const { googleBackendUrl, googleToken, googleConnected, googleScopes, resendKey, companyEmail, companyName } = settings;
-  if (googleConnected && googleScopes?.gmail && googleBackendUrl && googleToken) {
-    return sendGmailEmail(googleBackendUrl, googleToken, { to, subject, body });
-  }
-  if (resendKey) {
-    const from = fromName || companyName || "Smock's Pressure Washing";
-    const fromEmail = companyEmail || "noreply@smocks.com";
-    const res = await fetch("https://api.resend.com/emails", {
+// ─── Email via Resend ─────────────────────────────────────────────────────────
+
+export const sendEmail = async (
+  settings: EmailSettings & { resendBackendUrl?: string },
+  to: string,
+  subject: string,
+  html: string
+): Promise<void> => {
+  const { resendKey, fromEmail, fromName, resendBackendUrl } = settings;
+
+  // Via backend proxy
+  if (resendBackendUrl) {
+    const res = await fetch(`${resendBackendUrl}/email`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", "Authorization": "Bearer " + resendKey },
-      body: JSON.stringify({ from: from + " <" + fromEmail + ">", to, subject, text: body })
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ to, subject, html, from: `${fromName ?? "Smock's"} <${fromEmail ?? "noreply@smocks.com"}>` }),
     });
-    if (!res.ok) { const err = await res.json().catch(() => ({})); throw new Error((err as any).message || "Resend failed: " + res.status); }
-    return { sent: true, provider: "resend" };
+    if (!res.ok) throw new Error(`Email proxy error: ${res.status}`);
+    return;
   }
-  throw new Error("No email provider configured — connect Gmail (Settings → Integrations → Google) or add a Resend API key");
-};
 
-// Poll Twilio for incoming messages
-export const pollTwilioIncoming = async (settings: any, sinceTs?: number) => {
-  const { googleBackendUrl, googleToken } = settings;
-  if (googleBackendUrl && googleToken) {
-    try {
-      const res = await fetch(googleBackendUrl.replace(/\/$/, "") + "/api/sms/incoming?since=" + (sinceTs || 0), { headers: { "Authorization": "Bearer " + googleToken } });
-      if (res.ok) return (await res.json()).messages || [];
-    } catch { /* fall through */ }
+  if (!resendKey) throw new Error("Resend API key not configured.");
+
+  const res = await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${resendKey}`,
+    },
+    body: JSON.stringify({
+      from: `${fromName ?? "Smock's Pressure Washing"} <${fromEmail ?? "noreply@smocks.com"}>`,
+      to: [to],
+      subject,
+      html,
+    }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({})) as { message?: string };
+    throw new Error(err.message ?? `Resend error ${res.status}`);
   }
-  return [];
 };

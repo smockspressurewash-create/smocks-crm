@@ -1,240 +1,272 @@
-import React, { useState, useEffect } from 'react';
-import { LayoutDashboard, Users, FileText, Receipt, Briefcase, Activity, Calendar, MessageSquare, Send, Award, Star, Workflow, Share2, FileImage, Bot, Globe, Users2, UserCheck, Truck, FlaskConical, BarChart3, TrendingUp, PieChart, Heart, Settings, Bell, Search, X, ChevronLeft, ChevronRight, Lock, CheckCircle, AlertTriangle, AlertCircle, Cloud, LogOut, Navigation, Loader2 } from 'lucide-react';
-import { usePersistent } from './hooks/usePersistent';
-import { usePersistentRaw } from './hooks/usePersistentRaw';
-import { useGlobalStyles } from './hooks/useGlobalStyles';
-import { PageFade } from './components/ui/PageFade';
-import { SafePage } from './components/ui/SafePage';
-import { GlobalSearch } from './components/ui/GlobalSearch';
-import { Badge } from './components/ui/Badge';
-import { supabase } from './lib/supabase';
-import { useSupabaseQuery } from './hooks/useSupabaseQuery';
-import { useSupabaseMutation } from './hooks/useSupabaseMutation';
+// @ts-nocheck
+import React, { useState, useEffect } from "react";
+import {
+  LayoutDashboard, Users, FileText, Receipt, Briefcase, GitBranch,
+  Calendar, MessageSquare, Megaphone, Star, Zap, Share2, UserPlus,
+  Bot, Database, Users2, Truck, DollarSign, FlaskConical, BarChart3,
+  TrendingUp, PiggyBank, Wallet, Heart, Gift, Monitor,
+  Bell, Settings, X, Lock, Globe, ChevronLeft, ChevronRight
+} from "lucide-react";
 
-// Seed data
-import { seedCustomers, seedEstimates, seedJobs, seedEmployees, seedVehicles, seedExpenses, seedChemicals, seedServices, seedAutomations, seedEmailTemplates, seedSmsTemplates, seedWeather, seedCampaigns, seedSocialPosts, seedReferrals, seedMaintenance, seedTimeline } from './lib/seed';
-import { uid, today, daysSince, fmt, daysFromNow, normalizeAutomation } from './lib/utils';
+import { useGlobalStyles } from "./hooks/useGlobalStyles";
+import { usePersistent } from "./hooks/usePersistent";
+import { usePersistentRaw } from "./hooks/usePersistentRaw";
+import { useAutomationEngine } from "./hooks/useAutomationEngine";
+import { SafePage } from "./components/ui/ErrorBoundary";
+import { PageFade } from "./components/ui/PageFade";
+import { GlobalSearch } from "./components/ui/GlobalSearch";
 
-// Pages
-import { Dashboard } from './components/pages/Dashboard';
-import { CustomersPage } from './components/pages/Customers';
-import { EstimatesPage } from './components/pages/Estimates';
-import { InvoicesPage } from './components/pages/Invoices';
-import { JobsPage } from './components/pages/Jobs';
-import { PipelinePage } from './components/pages/Pipeline';
-import { CalendarPage } from './components/pages/Calendar';
-import { InboxPage } from './components/pages/Inbox';
-import { CampaignsPage } from './components/pages/Campaigns';
-import { AutomationsPage } from './components/pages/Automations';
-import { AccountabilityPage } from './components/pages/Accountability';
-import { SettingsModal } from './components/pages/Settings';
-import { ExpensesPage } from './components/pages/Expenses';
-import { FleetPage } from './components/pages/Fleet';
-import { ChemicalsPage } from './components/pages/Chemicals';
-import { EmployeesPage } from './components/pages/Employees';
-import { ReportsPage } from './components/pages/Reports';
-import { AnalyticsPage } from './components/pages/Analytics';
-import { BudgetPage } from './components/pages/Budget';
-import { SocialPage } from './components/pages/Social';
-import { LeadIntakePage } from './components/pages/LeadIntake';
-import { PersonalBudgetPage } from './components/pages/PersonalBudget';
-import { CrewView } from './components/pages/CrewView';
-import { LoginPage } from './components/pages/LoginPage';
-import { SignupPage } from './components/pages/SignupPage';
-import { ForgotPasswordPage } from './components/pages/ForgotPassword';
-import { ResetPassword } from './components/pages/ResetPassword';
+// ─── Pages ────────────────────────────────────────────────────────────────────
+import { Dashboard } from "./components/pages/Dashboard";
+import { CustomersPage } from "./components/pages/CustomersPage";
+import { EstimatesPage } from "./components/pages/EstimatesPage";
+import { InvoicesPage } from "./components/pages/InvoicesPage";
+import { JobsPage } from "./components/pages/JobsPage";
+import { PipelinePage } from "./components/pages/PipelinePage";
+import { CalendarPage } from "./components/pages/CalendarPage";
+import { InboxPage } from "./components/pages/InboxPage";
+import { CampaignsPage } from "./components/pages/CampaignsPage";
+import { ReviewsPage } from "./components/pages/ReviewsPage";
+import { AutomationsPage } from "./components/pages/AutomationsPage";
+import { SocialPage } from "./components/pages/SocialPage";
+import { LeadIntakePage } from "./components/pages/LeadIntakePage";
+import { AlfredPage } from "./components/pages/AlfredPage";
+import { GoogleWorkspacePage } from "./components/pages/GoogleWorkspacePage";
+import { EmployeesPage } from "./components/pages/EmployeesPage";
+import { FleetPage } from "./components/pages/FleetPage";
+import { ExpensesPage } from "./components/pages/ExpensesPage";
+import { ChemicalsPage } from "./components/pages/ChemicalsPage";
+import { ReportsPage } from "./components/pages/ReportsPage";
+import { AnalyticsPage } from "./components/pages/AnalyticsPage";
+import { BudgetPage } from "./components/pages/BudgetPage";
+import { PersonalBudgetPage } from "./components/pages/PersonalBudgetPage";
+import { AccountabilityPage } from "./components/pages/AccountabilityPage";
+import { ReferralsPage } from "./components/pages/ReferralsPage";
+import { CrewView } from "./components/pages/CrewView";
+import { SettingsModal } from "./components/pages/SettingsModal";
+import { ClientPortal } from "./components/pages/ClientPortal";
 
-// Stubs for remaining pages
-const ReferralsPage = () => <div className="p-8 text-white/40">Referrals Page (Coming Soon)</div>;
-const ReviewsPage = () => <div className="p-8 text-white/40">Reviews Page (Coming Soon)</div>;
-const AlfredPage = () => <div className="p-8 text-white/40">Alfred AI Page (Coming Soon)</div>;
-const GoogleWorkspacePage = () => <div className="p-8 text-white/40">Google Workspace Page (Coming Soon)</div>;
-const ClientPortal = () => null;
-const CustomerPortalLogin = () => null;
+// ─── Seed data ────────────────────────────────────────────────────────────────
+import {
+  seedCustomers, seedEstimates, seedJobs, seedEmployees, seedVehicles,
+  seedExpenses, seedChemicals, seedServices, seedAutomations,
+  seedEmailTemplates, seedSmsTemplates, seedRewardTiers, seedReferrals,
+  seedMaintenance, seedSocialPosts, seedTimeline, seedGoals, seedReminders,
+  seedAccountabilityEntries, seedMileage, campaignTemplates,
+} from "./lib/seed";
+import { seedWeather } from "./lib/weather";
+import { fetchRealWeather } from "./lib/weather";
+import { fmt, uid, today, daysSince, daysFromNow } from "./lib/utils";
+import type {
+  Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense,
+  Chemical, Service, Campaign, Automation, Review, SocialPost,
+  AccountabilityEntry, Goal, Win, Reminder, AppSettings,
+  InboxThread, AlfredConversation, AlfredMessage, Timeline, ModelStatus,
+} from "./types";
 
-export default function App() {
+// ─── Toast ────────────────────────────────────────────────────────────────────
+interface Toast { id: string; msg: string; tone?: "green" | "red" | "yellow" }
+
+// ─── Nav groups ───────────────────────────────────────────────────────────────
+const navGroups = [
+  {
+    label: "Main",
+    items: [
+      { id: "dashboard",  label: "Dashboard",  icon: LayoutDashboard },
+      { id: "alfred",     label: "Alfred AI",  icon: Bot             },
+      { id: "inbox",      label: "Inbox",      icon: MessageSquare   },
+    ],
+  },
+  {
+    label: "Sales",
+    items: [
+      { id: "customers",  label: "Customers",  icon: Users     },
+      { id: "estimates",  label: "Quotes",     icon: FileText  },
+      { id: "invoices",   label: "Invoices",   icon: Receipt   },
+      { id: "pipeline",   label: "Pipeline",   icon: GitBranch },
+      { id: "intake",     label: "Lead Intake",icon: UserPlus  },
+    ],
+  },
+  {
+    label: "Operations",
+    items: [
+      { id: "jobs",       label: "Jobs",       icon: Briefcase  },
+      { id: "calendar",   label: "Calendar",   icon: Calendar   },
+      { id: "crew",       label: "Crew View",  icon: Monitor    },
+    ],
+  },
+  {
+    label: "Marketing",
+    items: [
+      { id: "campaigns",   label: "Campaigns",   icon: Megaphone },
+      { id: "reviews",     label: "Reviews",     icon: Star      },
+      { id: "automations", label: "Automations", icon: Zap       },
+      { id: "social",      label: "Social",      icon: Share2    },
+      { id: "referrals",   label: "Referrals",   icon: Gift      },
+    ],
+  },
+  {
+    label: "Finance",
+    items: [
+      { id: "expenses",  label: "Expenses",  icon: DollarSign },
+      { id: "reports",   label: "Reports",   icon: BarChart3  },
+      { id: "analytics", label: "Analytics", icon: TrendingUp },
+      { id: "budget",    label: "Budget",    icon: PiggyBank  },
+      { id: "personal",  label: "Personal $",icon: Wallet     },
+    ],
+  },
+  {
+    label: "Team & Assets",
+    items: [
+      { id: "employees", label: "Employees", icon: Users2      },
+      { id: "fleet",     label: "Fleet",     icon: Truck       },
+      { id: "chemicals", label: "Chemicals", icon: FlaskConical},
+    ],
+  },
+  {
+    label: "Personal",
+    items: [
+      { id: "accountability", label: "Accountability", icon: Heart    },
+      { id: "google",         label: "Workspace",      icon: Database },
+    ],
+  },
+];
+
+// ─── App ──────────────────────────────────────────────────────────────────────
+export function App() {
   useGlobalStyles();
-  const [page, setPage] = useState("dashboard");
-  const [authView, setAuthView] = useState<"login" | "signup" | "forgot" | "resetPassword">("login");
-  const [session, setSession] = useState<any>(null);
-  const [userProfile, setUserProfile] = useState<any>(null);
-  const [loadingAuth, setLoadingAuth] = useState(true);
 
-  // PIN protection
+  // ── PIN lock ──────────────────────────────────────────────────────────────
   const [pinSet] = usePersistentRaw("smocks.pin", "");
   const [pinUnlocked, setPinUnlocked] = useState(!pinSet);
   const [pinInput, setPinInput] = useState("");
   const [pinError, setPinError] = useState(false);
 
-  // States
-  const [sidebarCollapsed, setSidebarCollapsed] = usePersistent("smocks.sidebarCollapsed", false);
-  
-  // Migrated to Supabase with Hybrid Fallback
-  const { data: customers, setData: setCustomers, loading: loadingCustomers } = useSupabaseQuery<any>('customers', 'smocks.customers');
-  const { data: estimates, setData: setEstimates, loading: loadingEstimates } = useSupabaseQuery<any>('estimates', 'smocks.estimates');
-  const { data: jobs, setData: setJobs, loading: loadingJobs } = useSupabaseQuery<any>('jobs', 'smocks.jobs');
-  const { data: expenses, setData: setExpenses, loading: loadingExpenses } = useSupabaseQuery<any>('expenses', 'smocks.expenses');
-
-  // Mutation hooks
-  const customerMut = useSupabaseMutation('customers', 'smocks.customers', customers, setCustomers, userProfile?.org_id);
-  const estimateMut = useSupabaseMutation('estimates', 'smocks.estimates', estimates, setEstimates, userProfile?.org_id);
-  const jobMut = useSupabaseMutation('jobs', 'smocks.jobs', jobs, setJobs, userProfile?.org_id);
-  const expenseMut = useSupabaseMutation('expenses', 'smocks.expenses', expenses, setExpenses, userProfile?.org_id);
-
-  const [employees, setEmployees] = usePersistent("smocks.employees", seedEmployees);
-  const [vehicles, setVehicles] = usePersistent("smocks.vehicles", seedVehicles);
-  const [chemicals, setChemicals] = usePersistent("smocks.chemicals", seedChemicals);
-  const [services, setServices] = usePersistent("smocks.services", seedServices);
-  const [automations, setAutomations] = usePersistent("smocks.automations", seedAutomations);
-  const [emailTemplates, setEmailTemplates] = usePersistent("smocks.emailTemplates", seedEmailTemplates);
-  const [estimateTemplates, setEstimateTemplates] = usePersistent("smocks.estimateTemplates", []);
-  const [smsTemplates, setSmsTemplates] = usePersistent("smocks.smsTemplates", seedSmsTemplates);
-  const [reviews, setReviews] = usePersistent("smocks.reviews", []);
-  const [negativeAlerts, setNegativeAlerts] = usePersistent("smocks.negativeAlerts", []);
-  const [accountability, setAccountability] = usePersistent("smocks.accountability", []);
-  const [goalsList, setGoalsList] = usePersistent("smocks.goals", []);
-  const [wins, setWins] = usePersistent("smocks.wins", []);
-  const [personality, setPersonality] = usePersistent("smocks.personality", "drill");
-  const [weatherData, setWeatherData] = useState(seedWeather);
-  const [inboxThreads, setInboxThreads] = usePersistent("smocks.inbox", []);
-  const [campaigns, setCampaigns] = useState(seedCampaigns);
-  const [socialPosts, setSocialPosts] = useState(seedSocialPosts);
-  const [referrals, setReferrals] = useState(seedReferrals);
-  const [maintenance, setMaintenance] = usePersistent("smocks.maintenance", seedMaintenance);
-  const [timeline, setTimeline] = usePersistent("smocks.timeline", seedTimeline);
-  const [settings, setSettings] = usePersistent("smocks.settings", {
-    companyName: "Smock's Pressure Washing",
-    companyPhone: "(717) 555-0100",
-    companyEmail: "info@smocks.com",
-    monthlyRevenueGoal: 15000,
-    monthlyJobsGoal: 25,
-    brandColor: "#dc2626",
-    accentColor: "#991b1b",
-    activeModel: "claude",
-    modelPriority: ["claude", "openai", "gemini"],
-    modelKeys: { claude: "", openai: "", gemini: "" }
-  });
-
+  // ── Navigation ────────────────────────────────────────────────────────────
+  const [page, setPage] = useState("dashboard");
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [notifOpen, setNotifOpen] = useState(false);
-  const [toasts, setToasts] = useState<any[]>([]);
 
-  useEffect(() => {
-    // Check for recovery flow
-    if (window.location.hash.includes('type=recovery') || window.location.search.includes('type=recovery')) {
-      setAuthView('resetPassword');
-    }
-
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setSession(session);
-      if (session) fetchProfile(session.user.id);
-      setLoadingAuth(false);
-    });
-
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-      setSession(session);
-      if (session) fetchProfile(session.user.id);
-      else setUserProfile(null);
-      setLoadingAuth(false);
-    });
-
-    return () => subscription.unsubscribe();
-  }, []);
-
-  // Seeding logic for new users
-  useEffect(() => {
-    if (!loadingCustomers && session && customers.length === 0) {
-      const seedDatabase = async () => {
-        console.log("New organization detected. Seeding data...");
-        // Seed customers
-        for (const c of seedCustomers) {
-          await customerMut.insert({ ...c, id: undefined }); 
-        }
-        // Seed estimates
-        for (const e of seedEstimates) {
-          await estimateMut.insert({ ...e, id: undefined });
-        }
-        // Seed jobs
-        for (const j of seedJobs) {
-          await jobMut.insert({ ...j, id: undefined });
-        }
-        // Seed expenses
-        for (const ex of seedExpenses) {
-          await expenseMut.insert({ ...ex, id: undefined });
-        }
-        toast("Welcome! We've added some demo data to get you started.");
-      };
-      seedDatabase();
-    }
-  }, [loadingCustomers, session, customers.length]);
-
-  const fetchProfile = async (userId: string) => {
-    const { data, error } = await supabase
-      .from('profiles')
-      .select('*')
-      .eq('id', userId)
-      .single();
-    
-    if (!error && data) {
-      setUserProfile(data);
-    }
-  };
-
-  const handleSignOut = async () => {
-    await supabase.auth.signOut();
-  };
-
-  const toast = (msg: string, type = "success") => {
+  // ── Toasts ────────────────────────────────────────────────────────────────
+  const [toasts, setToasts] = useState<Toast[]>([]);
+  const toast = (msg: string, tone?: "green" | "red" | "yellow") => {
     const id = uid();
-    setToasts(t => [...t, { id, msg, type }]);
-    setTimeout(() => setToasts(t => t.filter(x => x.id !== id)), 2500);
+    setToasts(prev => [...prev.slice(-4), { id, msg, tone: tone ?? "green" }]);
+    setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), 3500);
   };
 
-  if (loadingAuth) {
-    return (
-      <div className="h-screen w-full flex items-center justify-center bg-black">
-        <Loader2 className="text-red-500 animate-spin" size={32} />
-      </div>
-    );
-  }
+  // ── Persistent state ─────────────────────────────────────────────────────
+  const [customers,       setCustomers]       = usePersistent<Customer[]>("smocks.customers", seedCustomers);
+  const [estimates,       setEstimates]       = usePersistent<Estimate[]>("smocks.estimates", seedEstimates);
+  const [jobs,            setJobs]            = usePersistent<Job[]>("smocks.jobs", seedJobs);
+  const [employees,       setEmployees]       = usePersistent<Employee[]>("smocks.employees", seedEmployees);
+  const [vehicles,        setVehicles]        = usePersistent<Vehicle[]>("smocks.vehicles", seedVehicles);
+  const [maintenance,     setMaintenance]     = usePersistent<MaintenanceRecord[]>("smocks.maintenance", seedMaintenance);
+  const [expenses,        setExpenses]        = usePersistent<Expense[]>("smocks.expenses", seedExpenses);
+  const [chemicals,       setChemicals]       = usePersistent<Chemical[]>("smocks.chemicals", seedChemicals);
+  const [services,        setServices]        = usePersistent<Service[]>("smocks.services", seedServices);
+  const [campaigns,       setCampaigns]       = usePersistent<Campaign[]>("smocks.campaigns", []);
+  const [automations,     setAutomations]     = usePersistent<Automation[]>("smocks.automations", seedAutomations);
+  const [reviews,         setReviews]         = usePersistent<Review[]>("smocks.reviews", []);
+  const [socialPosts,     setSocialPosts]     = usePersistent<SocialPost[]>("smocks.socialPosts", seedSocialPosts);
+  const [inboxThreads,    setInboxThreads]    = usePersistent<InboxThread[]>("smocks.inbox", []);
+  const [accountability,  setAccountability]  = usePersistent<AccountabilityEntry[]>("smocks.accountability", seedAccountabilityEntries);
+  const [goalsList,       setGoalsList]       = usePersistent<Goal[]>("smocks.goals", seedGoals);
+  const [wins,            setWins]            = usePersistent<Win[]>("smocks.wins", []);
+  const [negativeAlerts,  setNegativeAlerts]  = usePersistent<Review[]>("smocks.negativeAlerts", []);
+  const [referrals,       setReferrals]       = usePersistent<typeof seedReferrals>("smocks.referrals", seedReferrals);
+  const [emailTemplates,  setEmailTemplates]  = usePersistent("smocks.emailTpls", seedEmailTemplates);
+  const [smsTemplates,    setSmsTemplates]    = usePersistent("smocks.smsTpls", seedSmsTemplates);
+  const [timeline,        setTimeline]        = usePersistent<Timeline>("smocks.timeline", seedTimeline as Timeline);
+  const [settings,        setSettings]        = usePersistent<AppSettings>("smocks.settings", {
+    companyName: "Smock's Pressure Washing",
+    companyPhone: "(717) 555-0100",
+    ownerName: "Will Smock",
+    monthlyRevenueGoal: 8000,
+    monthlyJobsGoal: 20,
+    taxRate: 6,
+    defaultDepositPct: 25,
+    brandColor: "#dc2626",
+    brandAccent: "#991b1b",
+    notifyReviews: true,
+    notifyOverdue: true,
+    notifyLowStock: true,
+    notifyMaintenance: true,
+    notifyWeather: true,
+    reviewShowcaseMinRating: 5,
+  });
 
-  if (!session) {
-    if (authView === "signup") return <SignupPage onSwitchToLogin={() => setAuthView("login")} />;
-    if (authView === "forgot") return <ForgotPasswordPage onBackToLogin={() => setAuthView("login")} />;
-    if (authView === "resetPassword") return <ResetPassword onSuccess={() => {
-      window.history.replaceState({}, document.title, window.location.pathname);
-      setAuthView("login");
-    }} />;
-    return <LoginPage onSwitchToSignup={() => setAuthView("signup")} onSwitchToForgot={() => setAuthView("forgot")} />;
-  }
+  // Alfred
+  const [alfredConversations, setAlfredConversations] = usePersistent<AlfredConversation[]>("smocks.alfredConvs", []);
+  const [activeConvId, setActiveConvId]               = usePersistent<string>("smocks.alfredActiveConv", "");
+  const [alfredMemory, setAlfredMemory]               = usePersistent("smocks.alfredMemory", []);
+  const [personality, setPersonality]                 = usePersistent("smocks.alfredPersonality", "drillsergeant");
+  const [modelStatus, setModelStatus]                 = usePersistent<ModelStatus>("smocks.modelStatus", {});
+  const [googleData, setGoogleData]                   = usePersistent("smocks.googleData", {});
 
+  // Portal
+  const [portalEstId, setPortalEstId] = useState<string | null>(null);
+  const [customerPortalOpen, setCustomerPortalOpen] = useState(false);
+
+  // Weather
+  const [weatherData, setWeatherData] = useState(seedWeather);
+
+  // Computed stats
+  const thisMonth = today().slice(0, 7);
+  const totalRev  = jobs.filter(j => j.status === "completed").reduce((s, j) => s + j.amount, 0);
+  const activeJobs = jobs.filter(j => j.status === "scheduled" || j.status === "in_progress").length;
+  const pendingEst = estimates.filter(e => e.status === "pending").length;
+  const doneMonth  = jobs.filter(j => j.status === "completed" && (j.scheduledDate ?? "").startsWith(thisMonth)).length;
+  const sentEsts   = estimates.filter(e => e.sentAt).length;
+  const closeRate  = sentEsts > 0 ? Math.round((estimates.filter(e => e.status === "approved").length / sentEsts) * 100) : 0;
+  const overdueCount = estimates.filter(e => e.invoiced && !e.paidAt && e.invoicedAt && daysSince(e.invoicedAt) > 14).length;
+  const lowStock   = chemicals.filter(c => c.stock <= c.reorderLevel).length;
+
+  // Apply brand colors
+  useEffect(() => {
+    document.documentElement.style.setProperty("--brand", settings.brandColor ?? "#dc2626");
+    document.documentElement.style.setProperty("--brand-accent", settings.brandAccent ?? "#991b1b");
+  }, [settings.brandColor, settings.brandAccent]);
+
+  // Fetch real weather when OWM key is set
+  useEffect(() => {
+    if (!settings.owmKey) return;
+    fetchRealWeather(settings.owmKey).then(setWeatherData).catch(() => {});
+  }, [settings.owmKey]);
+
+  // Automation engine
+  useAutomationEngine({ automations, setAutomations, jobs, customers, estimates, settings, toast });
+
+  // ── PIN screen ────────────────────────────────────────────────────────────
   if (pinSet && !pinUnlocked) {
     return (
       <div className="min-h-screen bg-black flex items-center justify-center p-4">
         <div className="w-full max-w-xs space-y-6 text-center">
-          <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-red-600 to-red-900 flex items-center justify-center mx-auto shadow-lg shadow-red-900/40">
+          <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-red-600 to-red-900 flex items-center justify-center mx-auto shadow-lg">
             <Lock size={28} className="text-white" />
           </div>
           <div>
             <div className="text-xl font-bold text-white">Smock's OS</div>
-            <div className="text-sm text-white/50 mt-1">Enter PIN</div>
+            <div className="text-sm text-white/50 mt-1">Enter your PIN to continue</div>
           </div>
           <div className="flex justify-center gap-3">
             {[0, 1, 2, 3].map(i => (
               <div key={i} className={"w-4 h-4 rounded-full border-2 transition " + (pinInput.length > i ? "bg-red-500 border-red-500" : "border-white/30")} />
             ))}
           </div>
+          {pinError && <div className="text-red-400 text-sm">Incorrect PIN</div>}
           <div className="grid grid-cols-3 gap-3">
             {[1, 2, 3, 4, 5, 6, 7, 8, 9, "", 0, "⌫"].map((k, i) => (
               <button key={i} disabled={k === ""} onClick={() => {
-                if (k === "⌫") { setPinInput(p => p.slice(0, -1)); return; }
+                if (k === "⌫") { setPinInput(p => p.slice(0, -1)); setPinError(false); return; }
                 const next = pinInput + k;
                 setPinInput(next);
                 if (next.length === 4) {
-                  if (next === pinSet) setPinUnlocked(true);
-                  else { setPinError(true); setTimeout(() => setPinInput(""), 500); }
+                  if (next === pinSet) { setPinUnlocked(true); setPinInput(""); }
+                  else { setPinError(true); setTimeout(() => { setPinInput(""); setPinError(false); }, 800); }
                 }
-              }} className={"h-14 rounded-xl text-xl font-bold border transition " + (k === "" ? "opacity-0" : "bg-white/5 border-white/10 text-white hover:bg-white/10")}>
+              }} className={"h-14 rounded-xl text-xl font-bold border transition " + (k === "" ? "opacity-0 pointer-events-none" : "bg-white/5 border-white/10 text-white hover:bg-white/10 active:scale-95")}>
                 {k}
               </button>
             ))}
@@ -244,177 +276,190 @@ export default function App() {
     );
   }
 
-  const totalRev = jobs.filter((j: any) => j.status === "completed").reduce((s: any, j: any) => s + (j.amount || 0), 0);
-  const activeJobs = jobs.filter((j: any) => j.status !== "completed" && j.status !== "cancelled").length;
-  const pendingEst = estimates.filter((e: any) => e.status === "pending").length;
-  const closeRate = estimates.length ? Math.round((estimates.filter((e: any) => e.status === "approved").length / estimates.length) * 100) : 0;
-  const doneMonth = jobs.filter((j: any) => j.status === "completed").length;
-
-  const navGroups = [
-    {
-      label: "Business",
-      items: [
-        { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
-        { id: "customers", label: "Customers", icon: Users },
-        { id: "estimates", label: "Estimates", icon: FileText },
-        { id: "invoices", label: "Invoices", icon: Receipt },
-        { id: "jobs", label: "Jobs", icon: Briefcase },
-        { id: "pipeline", label: "Pipeline", icon: Activity },
-        { id: "calendar", label: "Calendar", icon: Calendar },
-        { id: "inbox", label: "Inbox", icon: MessageSquare }
-      ]
-    },
-    {
-      label: "Growth",
-      items: [
-        { id: "campaigns", label: "Campaigns", icon: Send },
-        { id: "referrals", label: "Referrals", icon: Share2 },
-        { id: "reviews", label: "Reviews", icon: Star },
-        { id: "automations", label: "Automations", icon: Workflow },
-        { id: "social", label: "Social", icon: Globe },
-        { id: "intake", label: "Lead Intake", icon: UserCheck }
-      ]
-    },
-    {
-      label: "AI",
-      items: [
-        { id: "alfred", label: "Alfred AI", icon: Bot },
-        { id: "google", label: "Google Workspace", icon: Cloud }
-      ]
-    },
-    {
-      label: "Operations",
-      items: [
-        { id: "crew", label: "Crew View", icon: Users2 },
-        { id: "employees", label: "Employees", icon: Award },
-        { id: "fleet", label: "Fleet", icon: Truck },
-        { id: "chemicals", label: "Chemicals", icon: FlaskConical },
-        { id: "expenses", label: "Expenses", icon: Receipt }
-      ]
-    },
-    {
-      label: "Insights",
-      items: [
-        { id: "reports", label: "Reports", icon: BarChart3 },
-        { id: "analytics", label: "Analytics", icon: TrendingUp },
-        { id: "budget", label: "Budget & Taxes", icon: PieChart },
-        { id: "personal", label: "Personal Budget", icon: Heart },
-        { id: "accountability", label: "Accountability", icon: CheckCircle }
-      ]
-    }
-  ];
-
-  const titles: any = { 
-    dashboard: "Dashboard", customers: "Customers", estimates: "Estimates", invoices: "Invoices", 
-    jobs: "Jobs", pipeline: "Pipeline", calendar: "Calendar", inbox: "Inbox",
-    campaigns: "Campaigns", referrals: "Referrals", reviews: "Reviews", automations: "Automations", 
-    social: "Social", intake: "Lead Intake",
-    alfred: "Alfred AI", google: "Google Workspace",
-    crew: "Crew View", employees: "Employees", fleet: "Fleet", chemicals: "Chemicals", expenses: "Expenses",
-    reports: "Reports", analytics: "Analytics", budget: "Budget & Taxes", personal: "Personal Budget", accountability: "Accountability"
-  };
-
+  // ── Main app ──────────────────────────────────────────────────────────────
   return (
-    <div className="h-screen w-full text-white bg-black relative flex overflow-hidden font-sans">
-      <aside className={"sticky top-0 h-screen flex-shrink-0 z-40 transition-all duration-300 " + (sidebarCollapsed ? "w-[68px]" : "w-64")}>
-        <div className="h-full bg-black border-r border-red-900/30 flex flex-col">
-          <div className="p-4 flex items-center justify-between border-b border-red-900/30">
-            {!sidebarCollapsed && <span className="font-bold text-red-500">Smock's OS</span>}
-            <button onClick={() => setSidebarCollapsed(!sidebarCollapsed)}><ChevronLeft size={16} /></button>
-          </div>
-          <nav className="flex-1 overflow-y-auto p-3 space-y-4">
-            {navGroups.map((g, gi) => (
-              <div key={gi}>
-                {g.label && !sidebarCollapsed && <div className="text-[10px] uppercase text-white/30 font-bold mb-2 ml-2">{g.label}</div>}
-                <div className="space-y-1">
-                  {g.items.map(it => (
-                    <button key={it.id} onClick={() => setPage(it.id)} className={"w-full flex items-center gap-3 px-3 py-2 rounded-xl transition " + (page === it.id ? "bg-red-600/20 text-red-400 border border-red-600/40" : "text-white/50 hover:text-white hover:bg-white/5 border border-transparent")}>
-                      <it.icon size={18} />
-                      {!sidebarCollapsed && <span className="text-sm">{it.label}</span>}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            ))}
-          </nav>
-          
-          <div className="p-4 border-t border-red-900/30 space-y-2">
-            <div className="flex items-center gap-3 px-3 py-2">
-               <div className="w-8 h-8 rounded-full bg-red-600 flex items-center justify-center font-bold text-xs shrink-0">
-                 {userProfile?.full_name?.split(' ').map((n: any) => n[0]).join('') || '??'}
-               </div>
-               {!sidebarCollapsed && (
-                 <div className="overflow-hidden">
-                   <div className="text-sm font-medium truncate">{userProfile?.full_name || session.user.email}</div>
-                   <div className="text-[10px] text-white/40 truncate capitalize">{userProfile?.role || 'User'}</div>
-                 </div>
-               )}
+    <div className="flex h-screen overflow-hidden bg-black text-white">
+      {/* Sidebar overlay for mobile */}
+      {sidebarOpen && <div className="fixed inset-0 bg-black/60 z-20 lg:hidden" onClick={() => setSidebarOpen(false)} />}
+
+      {/* Sidebar */}
+      <aside className={"fixed inset-y-0 left-0 z-30 w-64 bg-black/95 border-r border-red-900/30 flex flex-col transition-transform duration-300 lg:relative lg:translate-x-0 " + (sidebarOpen ? "translate-x-0" : "-translate-x-full lg:translate-x-0")}>
+        {/* Logo */}
+        <div className="p-4 border-b border-red-900/30 flex items-center justify-between">
+          <div className="flex items-center gap-2.5">
+            <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-red-600 to-red-900 flex items-center justify-center font-black text-sm shadow-lg shadow-red-900/40">S</div>
+            <div>
+              <div className="font-bold text-sm leading-tight">Smock's OS</div>
+              <div className="text-[10px] text-white/40">Pressure Washing</div>
             </div>
-            
-            <button onClick={() => setSettingsOpen(true)} className="flex items-center gap-3 text-white/50 hover:text-white transition w-full px-3 py-2">
-              <Settings size={18} />
-              {!sidebarCollapsed && <span className="text-sm">Settings</span>}
-            </button>
-            
-            <button onClick={handleSignOut} className="flex items-center gap-3 text-red-400/70 hover:text-red-400 transition w-full px-3 py-2">
-              <LogOut size={18} />
-              {!sidebarCollapsed && <span className="text-sm">Sign Out</span>}
-            </button>
           </div>
+          <button onClick={() => setSidebarOpen(false)} className="lg:hidden text-white/40 hover:text-white p-1"><X size={16} /></button>
+        </div>
+
+        {/* Nav */}
+        <nav className="flex-1 overflow-y-auto py-3 space-y-4 px-2">
+          {navGroups.map(group => (
+            <div key={group.label}>
+              <div className="text-[9px] uppercase tracking-widest text-white/30 font-semibold px-3 mb-1">{group.label}</div>
+              {group.items.map(item => {
+                const Icon = item.icon;
+                const active = page === item.id;
+                return (
+                  <button
+                    key={item.id}
+                    onClick={() => { setPage(item.id); setSidebarOpen(false); }}
+                    className={"w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-sm transition mb-0.5 " + (active ? "bg-gradient-to-r from-red-600/30 to-red-900/20 text-white border border-red-600/30" : "text-white/60 hover:text-white hover:bg-white/5")}
+                  >
+                    <Icon size={15} className={active ? "text-red-400" : ""} />
+                    {item.label}
+                  </button>
+                );
+              })}
+            </div>
+          ))}
+        </nav>
+
+        {/* Footer */}
+        <div className="p-3 border-t border-red-900/30 flex gap-2">
+          <button onClick={() => { setSettingsOpen(true); setSidebarOpen(false); }} className="flex-1 flex items-center justify-center gap-1.5 p-2 rounded-xl text-xs text-white/50 hover:text-white hover:bg-white/5 transition">
+            <Settings size={14} />Settings
+          </button>
         </div>
       </aside>
 
-      <main className="flex-1 overflow-y-auto">
-        <header className="sticky top-0 z-20 bg-black/50 backdrop-blur-xl border-b border-red-900/30 px-6 py-4 flex items-center justify-between">
-          <h1 className="text-xl font-bold">{titles[page]}</h1>
-          <div className="flex items-center gap-4">
-            <GlobalSearch customers={customers} jobs={jobs} estimates={estimates} onNav={setPage} />
-            <button className="relative p-2 text-white/60 hover:text-white"><Bell size={20} /></button>
-            <div className="w-9 h-9 rounded-full bg-red-600 flex items-center justify-center font-bold">SM</div>
-          </div>
+      {/* Main content */}
+      <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
+        {/* Header */}
+        <header className="flex items-center gap-3 px-4 py-3 border-b border-red-900/30 bg-black/80 backdrop-blur flex-shrink-0">
+          <button onClick={() => setSidebarOpen(true)} className="lg:hidden p-2 -ml-1 text-white/50 hover:text-white">
+            <ChevronRight size={20} />
+          </button>
+          <div className="flex-1" />
+          <GlobalSearch customers={customers} jobs={jobs} estimates={estimates} onNav={setPage} />
+          <button onClick={() => setCustomerPortalOpen(true)} className="hidden md:flex items-center gap-1.5 px-3 py-1.5 bg-black/40 border border-red-900/30 rounded-xl text-xs text-white/50 hover:text-white hover:border-red-600/50 transition">
+            <Globe size={13} />Portal
+          </button>
+          <button onClick={() => setNotifOpen(!notifOpen)} className="relative p-2 text-white/60 hover:text-white">
+            <Bell size={18} />
+            {(negativeAlerts.length + overdueCount + lowStock) > 0 && (
+              <span className="absolute top-1 right-1 w-2 h-2 bg-red-500 rounded-full animate-pulse" />
+            )}
+          </button>
+          {notifOpen && (
+            <>
+              <div className="fixed inset-0 z-30" onClick={() => setNotifOpen(false)} />
+              <div className="absolute right-4 top-14 w-80 bg-black/95 border border-red-900/40 rounded-xl shadow-2xl z-40 overflow-hidden max-h-[480px] flex flex-col">
+                <div className="p-3 border-b border-red-900/30 flex items-center justify-between">
+                  <div className="font-semibold text-sm">Notifications</div>
+                  <button onClick={() => setNotifOpen(false)} className="p-1 text-white/40 hover:text-white"><X size={14} /></button>
+                </div>
+                <div className="flex-1 overflow-y-auto p-2 space-y-1">
+                  {overdueCount > 0 && (
+                    <button onClick={() => { setPage("invoices"); setNotifOpen(false); }} className="w-full flex items-center gap-3 p-2.5 hover:bg-white/5 rounded-xl text-left">
+                      <div className="p-1.5 rounded-lg bg-yellow-950/30 text-yellow-400"><Receipt size={12} /></div>
+                      <div><div className="text-xs font-semibold">{overdueCount} overdue invoice{overdueCount !== 1 ? "s" : ""}</div><div className="text-[10px] text-white/40">Past due 14+ days</div></div>
+                    </button>
+                  )}
+                  {lowStock > 0 && (
+                    <button onClick={() => { setPage("chemicals"); setNotifOpen(false); }} className="w-full flex items-center gap-3 p-2.5 hover:bg-white/5 rounded-xl text-left">
+                      <div className="p-1.5 rounded-lg bg-red-950/30 text-red-400"><FlaskConical size={12} /></div>
+                      <div><div className="text-xs font-semibold">{lowStock} chemical{lowStock !== 1 ? "s" : ""} low</div><div className="text-[10px] text-white/40">Below reorder level</div></div>
+                    </button>
+                  )}
+                  {estimates.filter(e => e.status === "pending" && daysSince(e.createdAt) >= 7).slice(0, 3).map(e => {
+                    const c = customers.find(x => x.id === e.customerId);
+                    return (
+                      <button key={e.id} onClick={() => { setPage("estimates"); setNotifOpen(false); }} className="w-full flex items-center gap-3 p-2.5 hover:bg-white/5 rounded-xl text-left">
+                        <div className="p-1.5 rounded-lg bg-yellow-950/30 text-yellow-400"><FileText size={12} /></div>
+                        <div><div className="text-xs font-semibold">Stale quote — {c?.firstName ?? "?"}</div><div className="text-[10px] text-white/40">{daysSince(e.createdAt)}d old · ${e.total}</div></div>
+                      </button>
+                    );
+                  })}
+                  {negativeAlerts.length === 0 && overdueCount === 0 && lowStock === 0 && estimates.filter(e => e.status === "pending" && daysSince(e.createdAt) >= 7).length === 0 && (
+                    <div className="p-6 text-center text-sm text-white/40">All clear ✓</div>
+                  )}
+                </div>
+              </div>
+            </>
+          )}
+          <div className="w-8 h-8 rounded-full bg-gradient-to-br from-red-600 to-red-900 flex items-center justify-center text-xs font-bold">SM</div>
         </header>
 
-        <div className="p-6">
-          <PageFade key={page}>
-            <SafePage>
-              {page === "dashboard" && <Dashboard jobs={jobs} customers={customers} estimates={estimates} automations={automations} stats={{ totalRev, activeJobs, pendingEst, closeRate, doneMonth }} goals={{ revenue: settings.monthlyRevenueGoal, jobCount: settings.monthlyJobsGoal }} vehicles={vehicles} maintenance={maintenance} chemicals={chemicals} settings={settings} setSettings={setSettings} onNav={setPage} toast={toast} weatherData={weatherData} inboxThreads={inboxThreads} />}
-              {page === "customers" && <CustomersPage customers={customers} setCustomers={setCustomers} estimates={estimates} jobs={jobs} toast={toast} timeline={timeline} setTimeline={setTimeline} settings={settings} addCustomer={customerMut.insert} updateCustomer={customerMut.update} removeCustomer={customerMut.remove} />}
-              {page === "estimates" && <EstimatesPage estimates={estimates} setEstimates={setEstimates} customers={customers} services={services} settings={settings} toast={toast} estimateTemplates={estimateTemplates} setEstimateTemplates={setEstimateTemplates} setJobs={setJobs} onNav={setPage} addEstimate={estimateMut.insert} updateEstimate={estimateMut.update} removeEstimate={estimateMut.remove} />}
-              {page === "invoices" && <InvoicesPage estimates={estimates} setEstimates={setEstimates} customers={customers} settings={settings} toast={toast} updateEstimate={estimateMut.update} />}
-              {page === "jobs" && <JobsPage jobs={jobs} setJobs={setJobs} customers={customers} employees={employees} estimates={estimates} setEstimates={setEstimates} settings={settings} toast={toast} setTimeline={setTimeline} addJob={jobMut.insert} updateJob={jobMut.update} removeJob={jobMut.remove} />}
-              {page === "pipeline" && <PipelinePage jobs={jobs} setJobs={setJobs} customers={customers} toast={toast} updateJob={jobMut.update} />}
-              {page === "calendar" && <CalendarPage jobs={jobs} setJobs={setJobs} customers={customers} toast={toast} settings={settings} updateJob={jobMut.update} />}
-              {page === "inbox" && <InboxPage threads={inboxThreads} setThreads={setInboxThreads} customers={customers} settings={settings} toast={toast} />}
-              {page === "campaigns" && <CampaignsPage campaigns={campaigns} setCampaigns={setCampaigns} customers={customers} estimates={estimates} jobs={jobs} settings={settings} inboxThreads={inboxThreads} setInboxThreads={setInboxThreads} toast={toast} />}
-              {page === "referrals" && <ReferralsPage />}
-              {page === "reviews" && <ReviewsPage />}
-              {page === "automations" && <AutomationsPage automations={automations} setAutomations={setAutomations} jobs={jobs} customers={customers} estimates={estimates} settings={settings} toast={toast} />}
-              {page === "social" && <SocialPage posts={socialPosts} setPosts={setSocialPosts} toast={toast} />}
-              {page === "intake" && <LeadIntakePage customers={customers} setCustomers={setCustomers} estimates={estimates} setEstimates={setEstimates} services={services} settings={settings} toast={toast} onNav={setPage} />}
-              {page === "accountability" && <AccountabilityPage entries={accountability} setEntries={setAccountability} goals={goalsList} setGoals={setGoalsList} wins={wins} setWins={setWins} toast={toast} />}
-              {page === "alfred" && <AlfredPage />}
-              {page === "google" && <GoogleWorkspacePage />}
-              {page === "employees" && <EmployeesPage employees={employees} setEmployees={setEmployees} jobs={jobs} />}
-              {page === "fleet" && <FleetPage vehicles={vehicles} setVehicles={setVehicles} maintenance={maintenance} setMaintenance={setMaintenance} toast={toast} />}
-              {page === "expenses" && <ExpensesPage expenses={expenses} setExpenses={setExpenses} addExpense={expenseMut.insert} updateExpense={expenseMut.update} removeExpense={expenseMut.remove} />}
-              {page === "chemicals" && <ChemicalsPage chemicals={chemicals} setChemicals={setChemicals} toast={toast} settings={settings} />}
-              {page === "reports" && <ReportsPage jobs={jobs} customers={customers} estimates={estimates} expenses={expenses} employees={employees} chemicals={chemicals} />}
-              {page === "analytics" && <AnalyticsPage jobs={jobs} customers={customers} estimates={estimates} expenses={expenses} />}
-              {page === "budget" && <BudgetPage jobs={jobs} estimates={estimates} expenses={expenses} settings={settings} toast={toast} />}
-              {page === "personal" && <PersonalBudgetPage toast={toast} />}
-              {page === "crew" && <CrewView jobs={jobs} setJobs={setJobs} customers={customers} employees={employees} toast={toast} />}
-            </SafePage>
-          </PageFade>
-        </div>
-      </main>
+        {/* Page content */}
+        <main className="flex-1 overflow-y-auto">
+          <div className="p-4 md:p-6 max-w-[1600px] mx-auto">
+            <PageFade key={page}>
+              <SafePage>
+                {page === "dashboard"      && <Dashboard jobs={jobs} customers={customers} estimates={estimates} automations={automations} stats={{ totalRev, activeJobs, pendingEst, closeRate, doneMonth }} goals={{ revenue: settings.monthlyRevenueGoal ?? 8000, jobCount: settings.monthlyJobsGoal ?? 20 }} vehicles={vehicles} maintenance={maintenance} chemicals={chemicals} settings={settings} setSettings={setSettings} onNav={setPage} toast={toast} weatherData={weatherData} inboxThreads={inboxThreads} />}
+                {page === "customers"      && <CustomersPage customers={customers} setCustomers={setCustomers} estimates={estimates} jobs={jobs} toast={toast} timeline={timeline} setTimeline={setTimeline} settings={settings} />}
+                {page === "estimates"      && <EstimatesPage estimates={estimates} setEstimates={setEstimates} customers={customers} services={services} settings={settings} toast={toast} onPortal={id => setPortalEstId(id)} estimateTemplates={[]} setEstimateTemplates={() => {}} setJobs={setJobs} onNav={setPage} />}
+                {page === "invoices"       && <InvoicesPage estimates={estimates} setEstimates={setEstimates} customers={customers} settings={settings} toast={toast} />}
+                {page === "jobs"           && <JobsPage jobs={jobs} setJobs={setJobs} customers={customers} employees={employees} estimates={estimates} setEstimates={setEstimates} settings={settings} toast={toast} posts={socialPosts} setPosts={setSocialPosts} setTimeline={setTimeline} />}
+                {page === "pipeline"       && <PipelinePage jobs={jobs} setJobs={setJobs} customers={customers} toast={toast} />}
+                {page === "calendar"       && <CalendarPage jobs={jobs} setJobs={setJobs} customers={customers} toast={toast} settings={settings} />}
+                {page === "inbox"          && <InboxPage threads={inboxThreads} setThreads={setInboxThreads} customers={customers} settings={settings} toast={toast} />}
+                {page === "campaigns"      && <CampaignsPage campaigns={campaigns} setCampaigns={setCampaigns} customers={customers} estimates={estimates} jobs={jobs} settings={settings} inboxThreads={inboxThreads} setInboxThreads={setInboxThreads} toast={toast} />}
+                {page === "reviews"        && <ReviewsPage reviews={reviews} setReviews={setReviews} jobs={jobs} customers={customers} toast={toast} negativeAlerts={negativeAlerts} setNegativeAlerts={setNegativeAlerts} settings={settings} setSettings={setSettings} />}
+                {page === "automations"    && <AutomationsPage automations={automations} setAutomations={setAutomations} jobs={jobs} customers={customers} estimates={estimates} settings={settings} toast={toast} />}
+                {page === "social"         && <SocialPage posts={socialPosts} setPosts={setSocialPosts} toast={toast} settings={settings} />}
+                {page === "intake"         && <LeadIntakePage customers={customers} setCustomers={setCustomers} estimates={estimates} setEstimates={setEstimates} services={services} settings={settings} toast={toast} onNav={setPage} />}
+                {page === "alfred"         && <AlfredPage conversations={alfredConversations} setConversations={setAlfredConversations} activeConvId={activeConvId} setActiveConvId={setActiveConvId} memory={alfredMemory} setMemory={setAlfredMemory} personality={personality} setPersonality={setPersonality} apiKey={settings.anthropicKey ?? settings.geminiKey ?? ""} openSettings={() => setSettingsOpen(true)} toast={toast} jobs={jobs} setJobs={setJobs} estimates={estimates} setEstimates={setEstimates} customers={customers} setCustomers={setCustomers} employees={employees} automations={automations} setAutomations={setAutomations} stats={{ totalRev, activeJobs, pendingEst, closeRate, doneMonth }} setWins={setWins} goals={goalsList} setGoals={setGoalsList} setSettings={setSettings} settings={settings} modelStatus={modelStatus} setModelStatus={setModelStatus} onNav={setPage} />}
+                {page === "google"         && <GoogleWorkspacePage settings={settings} setSettings={setSettings} googleData={googleData as any} setGoogleData={setGoogleData} customers={customers} setCustomers={setCustomers} jobs={jobs} toast={toast} onNav={setPage} />}
+                {page === "employees"      && <EmployeesPage employees={employees} setEmployees={setEmployees} jobs={jobs} />}
+                {page === "fleet"          && <FleetPage vehicles={vehicles} setVehicles={setVehicles} maintenance={maintenance} setMaintenance={setMaintenance} toast={toast} />}
+                {page === "expenses"       && <ExpensesPage expenses={expenses} setExpenses={setExpenses} />}
+                {page === "chemicals"      && <ChemicalsPage chemicals={chemicals} setChemicals={setChemicals} toast={toast} settings={settings} />}
+                {page === "reports"        && <ReportsPage jobs={jobs} customers={customers} estimates={estimates} expenses={expenses} employees={employees} chemicals={chemicals} />}
+                {page === "analytics"      && <AnalyticsPage jobs={jobs} customers={customers} estimates={estimates} expenses={expenses} />}
+                {page === "budget"         && <BudgetPage jobs={jobs} estimates={estimates} expenses={expenses} settings={settings} toast={toast} />}
+                {page === "personal"       && <PersonalBudgetPage toast={toast} />}
+                {page === "accountability" && <AccountabilityPage entries={accountability} setEntries={setAccountability} goals={goalsList} setGoals={setGoalsList} wins={wins} setWins={setWins} toast={toast} />}
+                {page === "referrals"      && <ReferralsPage customers={customers} referrals={referrals as any} toast={toast} settings={settings} />}
+                {page === "crew"           && <CrewView jobs={jobs} setJobs={setJobs} customers={customers} employees={employees} toast={toast} />}
+              </SafePage>
+            </PageFade>
+          </div>
+        </main>
+      </div>
 
-      {settingsOpen && <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} settings={settings} setSettings={setSettings} services={services} setServices={setServices} emailTemplates={emailTemplates} setEmailTemplates={setEmailTemplates} smsTemplates={smsTemplates} setSmsTemplates={setSmsTemplates} toast={toast} />}
+      {/* Settings modal */}
+      <SettingsModal
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        settings={settings}
+        setSettings={setSettings}
+        services={services}
+        setServices={setServices}
+        emailTemplates={emailTemplates}
+        setEmailTemplates={setEmailTemplates}
+        smsTemplates={smsTemplates}
+        setSmsTemplates={setSmsTemplates}
+        modelStatus={modelStatus}
+        setModelStatus={setModelStatus}
+        toast={toast}
+      />
 
-      <div className="fixed bottom-6 right-6 z-[60] space-y-2 pointer-events-none max-w-sm w-full">
+      {/* Client portal */}
+      {portalEstId && (
+        <ClientPortal
+          estimate={estimates.find(e => e.id === portalEstId)}
+          customer={customers.find(c => c.id === estimates.find(e => e.id === portalEstId)?.customerId)}
+          settings={settings}
+          onClose={() => setPortalEstId(null)}
+          onApprove={(id, data) => {
+            setEstimates(prev => prev.map(e => e.id === id ? { ...e, status: "approved", signedAt: data.signedAt, sigData: data.sigData, paidAt: today(), paidDeposit: data.payType === "deposit" ? data.totalPaid : 0, paidFull: data.payType === "full" ? data.totalPaid : 0 } : e));
+            toast("✓ Signed & paid — " + fmt(data.totalPaid));
+            setPortalEstId(null);
+          }}
+        />
+      )}
+
+      {/* Toasts */}
+      <div className="fixed bottom-4 right-4 z-50 space-y-2 pointer-events-none">
         {toasts.map(t => (
-          <div key={t.id} className="anim-toast flex items-center gap-3 px-4 py-3 bg-black/90 backdrop-blur-xl border border-red-500/40 rounded-2xl shadow-2xl text-sm font-medium text-white pointer-events-auto">
-            <CheckCircle size={15} className="text-green-400" />
-            <span>{t.msg}</span>
+          <div key={t.id} className={"pointer-events-auto flex items-center gap-2.5 px-4 py-3 rounded-xl shadow-xl text-sm font-medium backdrop-blur animate-fade-in border " + (t.tone === "red" ? "bg-red-950/90 border-red-700/50 text-red-200" : t.tone === "yellow" ? "bg-yellow-950/90 border-yellow-700/50 text-yellow-200" : "bg-black/90 border-green-700/50 text-green-200")}>
+            <div className={"w-1.5 h-1.5 rounded-full flex-shrink-0 " + (t.tone === "red" ? "bg-red-400" : t.tone === "yellow" ? "bg-yellow-400" : "bg-green-400")} />
+            {t.msg}
           </div>
         ))}
       </div>

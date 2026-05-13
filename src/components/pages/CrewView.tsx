@@ -1,26 +1,82 @@
 // @ts-nocheck
-import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import * as LucideIcons from 'lucide-react';
-import { uid, today, daysSince, fmt, daysFromNow } from '../../lib/utils';
-import { GBtn } from '../ui/GBtn';
-import { GInput } from '../ui/GInput';
-import { GSel } from '../ui/GSel';
-import { Modal } from '../ui/Modal';
-import { Glass } from '../ui/Glass';
-import { PageFade } from '../ui/PageFade';
-import { VoiceMicButton } from '../ui/VoiceMicButton';
-import { MODELS, callModel, parseRateLimitError } from '../../lib/ai';
-import { twilioSend, sendEmail } from '../../lib/messaging';
-import { sendGmailEmail, createCalendarEvent, uploadToDrive } from '../../lib/google';
-import { personalities } from '../../lib/constants';
-
-// Destructure common icons to avoid rewriting component code
-const { 
-  Bot, Settings, X, Plus, Search, Edit, Trash2, Send, Activity, Users,
-  MessageSquare, Mic, Play, Volume2, Cloud, FileImage, Link, ArrowRight,
-  CheckCircle, AlertCircle, ChevronRight, ChevronLeft, Menu, Zap, Clock, GripVertical, RefreshCw, Copy, Paperclip, Target, Workflow, BarChart2,
-  Lock, Key, Image: ImageIcon, MapPin, Map, Sun, Wind, Umbrella, CheckSquare, Save, XCircle
-} = LucideIcons;
+// auto-extracted from Smock's OS monolith
+import React, { useState, useEffect, useRef, useCallback } from "react";
+import {
+  LayoutDashboard, Users, FileText, Briefcase, Bot, BarChart3,
+  Settings, Bell, Menu, X, Plus, Search, Edit, Trash2, Send,
+  DollarSign, TrendingUp, CheckCircle, Clock, MapPin, Phone, Mail,
+  Calendar, AlertTriangle, Truck, Receipt, FlaskConical, MessageSquare,
+  Sun, Moon, Download, Undo2, Redo2, Volume2, Play, Cloud, Star,
+  Award, Target, Shield, Key, Eye, EyeOff, Save, ChevronRight,
+  ChevronLeft, GripVertical, Tag, Copy, Ban, RefreshCw, Percent,
+  CreditCard, Repeat, XCircle, Activity, Zap, UserCheck, AlertCircle,
+  Clipboard, Heart, Dumbbell, Droplet, Smile, Flame, Wind, Snowflake,
+  Globe, Share2, Trophy, ExternalLink, Workflow, ToggleLeft, ToggleRight,
+  Navigation, TrendingDown, PieChart as PieIcon, Package, Wrench,
+  CheckSquare, Route, Users2, Layers, ArrowRight, BarChart2, Filter,
+  Paperclip, ImageIcon, FileImage, MoreVertical, Mic, Upload, Link, Lock, User
+} from "lucide-react";
+import {
+  BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid,
+  Tooltip, ResponsiveContainer, Area, AreaChart, LineChart, Line,
+  ComposedChart, Legend
+} from "recharts";
+import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE } from "../../lib/utils";
+import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
+import { twilioSend, sendEmail } from "../../lib/messaging";
+import { seedWeather } from "../../lib/weather";
+import { seedCustomers, seedEstimates, seedJobs, seedEmployees, seedVehicles, seedExpenses, seedChemicals, seedServices, seedAutomations, seedEmailTemplates, seedSmsTemplates, seedRewardTiers, seedReferrals, seedMaintenance, campaignTemplates, seedSocialPosts, seedTimeline, seedGoals, seedReminders, seedAccountabilityEntries, seedMileage, seedLeadSrc, STEP_TYPES, AUTOMATION_TEMPLATES } from "../../lib/seed";
+import { callModel, MODELS } from "../../lib/api";
+import { createCalendarEvent, updateCalendarEvent, deleteCalendarEvent, fetchDriveFiles, MOCK_GOOGLE_DATA, fmtSize, fmtDate, fileIcon } from "../../lib/google";
+import { usePersistent } from "../../hooks/usePersistent";
+import { usePersistentRaw } from "../../hooks/usePersistentRaw";
+import { Glass } from "../ui/Glass";
+import { GBtn } from "../ui/GBtn";
+import { GInput } from "../ui/GInput";
+import { GDate } from "../ui/GDate";
+import { GSel } from "../ui/GSel";
+import { GTxt } from "../ui/GTxt";
+import { Modal } from "../ui/Modal";
+import { Badge } from "../ui/Badge";
+import { Stat } from "../ui/Stat";
+import { PBar } from "../ui/PBar";
+import { PageFade } from "../ui/PageFade";
+import { TimeframeSelector } from "../ui/TimeframeSelector";
+import { AddressAutocomplete } from "../ui/AddressAutocomplete";
+import { BeforeAfterSlider } from "../ui/BeforeAfterSlider";
+import { CustomerModal } from "../ui/CustomerModal";
+import { CustomerDetail } from "../ui/CustomerDetail";
+import { CustomerAnalytics } from "../ui/CustomerAnalytics";
+import { EstimateBuilder } from "../ui/EstimateBuilder";
+import { EstimatePreview } from "../ui/EstimatePreview";
+import { JobDetailModal } from "../ui/JobDetailModal";
+import { PipelineScrollContainer } from "../ui/PipelineScrollContainer";
+import { SwipeableCard } from "../ui/SwipeableCard";
+import { ReviewMonitor } from "../ui/ReviewMonitor";
+import { ReviewLandingPage } from "../ui/ReviewLandingPage";
+import { ReviewPreview } from "../ui/ReviewPreview";
+import { VisualWorkflowBuilder } from "../ui/VisualWorkflowBuilder";
+import { AutomationEditor } from "../ui/AutomationEditor";
+import { VoiceMicButton } from "../ui/VoiceMicButton";
+import { DocumentVault } from "../ui/DocumentVault";
+import { ESignatureStep } from "../ui/ESignatureStep";
+import { ChemicalCostCalc } from "../ui/ChemicalCostCalc";
+import { CACCalculator } from "../ui/CACCalculator";
+import { MileageUpdateModal } from "../ui/MileageUpdateModal";
+import { VehicleModal } from "../ui/VehicleModal";
+import { MaintenanceModal } from "../ui/MaintenanceModal";
+import { SocialCalendar } from "../ui/SocialCalendar";
+import { BulkPhotoUpload } from "../ui/BulkPhotoUpload";
+import { ReviewToGraphic } from "../ui/ReviewToGraphic";
+import { ABTestPanel } from "../ui/ABTestPanel";
+import { CampaignScheduler } from "../ui/CampaignScheduler";
+import { PinSettings } from "../ui/PinSettings";
+import { ServiceCatalogSection } from "../ui/ServiceCatalogSection";
+import { TemplateEditor } from "../ui/TemplateEditor";
+import { AIModelsSection } from "../ui/AIModelsSection";
+import { ChemicalModal } from "../ui/ChemicalModal";
+import { WeeklyBusinessReview } from "../ui/WeeklyBusinessReview";
+import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 
 export function CrewView({ jobs = [], setJobs, customers = [], employees = [], toast }) {
   const [empFilter, setEmpFilter] = useState("all");
@@ -213,3 +269,5 @@ export function CrewView({ jobs = [], setJobs, customers = [], employees = [], t
     </div>
   );
 }
+
+// ===== PERSONAL BUDGET PAGE =====

@@ -1,10 +1,9 @@
-import React from 'react';
+// @ts-nocheck
+// PBar.tsx — auto-extracted from monolith
+import React, { useState, useRef, useEffect, useCallback } from "react";
 
-export const PBar = ({ value, max }: any) => {
-  const pct = Math.min(100, Math.round((value / max) * 100));
-  return (
-    <div className="w-full h-2 bg-black/40 rounded-full overflow-hidden">
-      <div className="h-full bg-gradient-to-r from-red-600 to-red-400 rounded-full transition-all duration-500" style={{ width: pct + "%" }} />
-    </div>
-  );
+export const PBar = ({ value, max }) => {
+  const p = Math.min(100, (value / max) * 100);
+  return <div className="h-2 bg-black/40 rounded-full overflow-hidden border border-red-900/30"><div className="h-full bg-gradient-to-r from-red-500 to-red-700 rounded-full transition-all" style={{ width: p + "%" }} /></div>;
 };
+

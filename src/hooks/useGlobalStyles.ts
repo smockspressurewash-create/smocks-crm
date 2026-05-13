@@ -1,47 +1,109 @@
-import { useEffect } from 'react';
+// @ts-nocheck
+import { useEffect } from "react";
 
-// Inject global CSS keyframes and utility classes into document.head
-// Works in Vite and artifact sandbox environments (unlike <style> tags in JSX)
-export const useGlobalStyles = () => {
+const CSS = `
+  * { box-sizing: border-box; }
+
+  :root {
+    --brand: #dc2626;
+    --brand-accent: #991b1b;
+  }
+
+  body {
+    background: #050505;
+    color: white;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    -webkit-tap-highlight-color: transparent;
+    overscroll-behavior: none;
+  }
+
+  /* Custom scrollbar */
+  ::-webkit-scrollbar { width: 4px; height: 4px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: #7f1d1d40; border-radius: 99px; }
+  ::-webkit-scrollbar-thumb:hover { background: #dc262660; }
+
+  /* Glass morphism base */
+  .glass {
+    background: rgba(255,255,255,0.03);
+    border: 1px solid rgba(127,29,29,0.2);
+    backdrop-filter: blur(12px);
+    border-radius: 16px;
+  }
+
+  /* Animations */
+  @keyframes fade-in {
+    from { opacity: 0; transform: translateY(8px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+  @keyframes slide-in-right {
+    from { opacity: 0; transform: translateX(16px); }
+    to   { opacity: 1; transform: translateX(0); }
+  }
+  @keyframes pulse-ring {
+    0%   { box-shadow: 0 0 0 0 rgba(220,38,38,0.4); }
+    70%  { box-shadow: 0 0 0 10px rgba(220,38,38,0); }
+    100% { box-shadow: 0 0 0 0 rgba(220,38,38,0); }
+  }
+  @keyframes shimmer {
+    0%   { background-position: -200% 0; }
+    100% { background-position: 200% 0; }
+  }
+  @keyframes spin {
+    to { transform: rotate(360deg); }
+  }
+
+  .animate-fade-in       { animation: fade-in 0.3s ease both; }
+  .animate-slide-right   { animation: slide-in-right 0.25s ease both; }
+  .animate-pulse-ring    { animation: pulse-ring 2s ease infinite; }
+  .animate-spin          { animation: spin 1s linear infinite; }
+
+  /* Gradient text */
+  .gradient-text {
+    background: linear-gradient(135deg, #dc2626, #f87171);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  /* Touch targets */
+  @media (max-width: 640px) {
+    button, a { min-height: 36px; }
+  }
+
+  /* No outline on mobile tap */
+  button:focus, input:focus, textarea:focus, select:focus {
+    outline: none;
+  }
+  button:focus-visible {
+    outline: 2px solid #dc2626;
+    outline-offset: 2px;
+  }
+
+  /* Line clamp utilities */
+  .line-clamp-2 {
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .line-clamp-3 {
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+`;
+
+let injected = false;
+
+export function useGlobalStyles(): void {
   useEffect(() => {
-    const id = "smocks-styles";
-    if (document.getElementById(id)) return;
-    const el = document.createElement("style");
-    el.id = id;
-    el.textContent = `
-      @keyframes smockFloat { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-8px)} }
-      @keyframes smockPulse { 0%,100%{opacity:.5} 50%{opacity:1} }
-      @keyframes smockSpin { from{transform:rotate(0deg)} to{transform:rotate(360deg)} }
-      @keyframes smockFadeUp { from{opacity:0;transform:translateY(14px)} to{opacity:1;transform:translateY(0)} }
-      @keyframes smockSlideRight { from{opacity:0;transform:translateX(20px)} to{opacity:1;transform:translateX(0)} }
-      @keyframes smockScale { from{opacity:0;transform:scale(0.94)} to{opacity:1;transform:scale(1)} }
-      @keyframes smockShimmer { 0%{background-position:-200% 0} 100%{background-position:200% 0} }
-      @keyframes smockToastIn { from{opacity:0;transform:translateX(110%)} to{opacity:1;transform:translateX(0)} }
-      @keyframes smockGlow { 0%,100%{box-shadow:0 0 0 0 rgba(220,38,38,0)} 50%{box-shadow:0 0 20px 4px rgba(220,38,38,.15)} }
-      .anim-float { animation: smockFloat 5s ease-in-out infinite; }
-      .anim-pulse { animation: smockPulse 2s ease-in-out infinite; }
-      .anim-spin-slow { animation: smockSpin 10s linear infinite; }
-      .anim-fade-up { animation: smockFadeUp .4s cubic-bezier(.16,1,.3,1) both; }
-      .anim-slide-right { animation: smockSlideRight .3s cubic-bezier(.16,1,.3,1) both; }
-      .anim-scale { animation: smockScale .25s cubic-bezier(.34,1.4,.64,1) both; }
-      .anim-toast { animation: smockToastIn .35s cubic-bezier(.16,1,.3,1) both; }
-      .anim-glow { animation: smockGlow 2.5s ease-in-out infinite; }
-      .glass-hover { transition: border-color .2s,box-shadow .2s,transform .15s; }
-      .glass-hover:hover { box-shadow: 0 0 0 1px rgba(220,38,38,.3), 0 8px 32px -8px rgba(0,0,0,.9); border-color: rgba(220,38,38,.4) !important; }
-      .glass-hover:active { transform: scale(.997); }
-      .btn-hover { transition: transform .15s, box-shadow .15s; }
-      .btn-hover:hover { transform: translateY(-1px); box-shadow: 0 4px 20px -4px rgba(220,38,38,.4); }
-      .btn-hover:active { transform: scale(.97); }
-      .shimmer { background: linear-gradient(90deg, transparent, rgba(255,255,255,.06), transparent); background-size: 200%; animation: smockShimmer 2s infinite; }
-      ::-webkit-scrollbar { width: 3px; height: 3px; }
-      ::-webkit-scrollbar-track { background: transparent; }
-      ::-webkit-scrollbar-thumb { background: rgba(220,38,38,.35); border-radius: 2px; }
-      ::-webkit-scrollbar-thumb:hover { background: rgba(220,38,38,.6); }
-      input[type=date]::-webkit-calendar-picker-indicator { filter:invert(1); opacity:.6; }
-      input[type=range] { accent-color: #dc2626; }
-      input[type=checkbox] { accent-color: #dc2626; }
-    `;
-    document.head.appendChild(el);
-    return () => { /* keep it — no cleanup needed */ };
+    if (injected) return;
+    const style = document.createElement("style");
+    style.id = "smocks-global";
+    style.textContent = CSS;
+    document.head.appendChild(style);
+    injected = true;
   }, []);
-};
+}

@@ -1,160 +1,476 @@
-import { daysFromNow, today } from './utils';
-import { seedWeather as sw } from './weather';
+// @ts-nocheck
+import { uid, today, daysFromNow } from "./utils";
+import type {
+  Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord,
+  Expense, Chemical, Service, Campaign, Automation, Review,
+  SocialPost, AccountabilityEntry, Goal, Reminder, RewardTier,
+  Referral, MileageLog,
+} from "../types";
 
-export const seedWeather = sw;
+// ─── Seed customers ───────────────────────────────────────────────────────────
 
-export const seedCustomers = [
-  { id: "c1", firstName: "Mike", lastName: "Harrison", email: "mike.h@gmail.com", phone: "(717) 555-0142", address: "412 Oak Ridge Ln, York PA", totalSpent: 2450, createdAt: "2025-08-12", notes: "Prefers morning appointments.", gateCode: "1234", hasDog: true, dogName: "Rex", sensitivePlants: "Hydrangeas by front porch" },
-  { id: "c2", firstName: "Jennifer", lastName: "Walsh", email: "jwalsh@outlook.com", phone: "(717) 555-0198", address: "88 Maple Ct, Dover PA", totalSpent: 1200, createdAt: "2025-09-03", notes: "", gateCode: "", hasDog: false, dogName: "", sensitivePlants: "" },
-  { id: "c3", firstName: "Dave", lastName: "Kellerman", email: "dkeller@yahoo.com", phone: "(717) 555-0276", address: "1201 Cedar Rd, Weigelstown PA", totalSpent: 3800, createdAt: "2025-07-22", notes: "HOA president.", gateCode: "", hasDog: true, dogName: "Bella", sensitivePlants: "" },
-  { id: "c4", firstName: "Ashley", lastName: "Nguyen", email: "a.nguyen@gmail.com", phone: "(717) 555-0355", address: "67 Pine View Dr, York PA", totalSpent: 875, createdAt: "2026-01-14", notes: "", gateCode: "", hasDog: false, dogName: "", sensitivePlants: "" },
-  { id: "c5", firstName: "Roberto", lastName: "Santana", email: "rsantana@gmail.com", phone: "(717) 555-0411", address: "923 Birch Ave, Spring Grove PA", totalSpent: 4650, createdAt: "2025-06-08", notes: "Commercial. COI on file.", gateCode: "4455", hasDog: false, dogName: "", sensitivePlants: "Rose bushes on east side" }
+export const seedCustomers: Customer[] = [
+  {
+    id: "c1", firstName: "Jennifer", lastName: "Walsh", email: "jennifer.walsh@email.com",
+    phone: "(717) 555-0191", address: "412 Maple St, York, PA 17401",
+    tags: ["Repeat", "VIP"], notes: "Gate code: 1234. Has dog — keep gate closed.", totalSpent: 1247,
+    createdAt: daysFromNow(-180), leadSource: "Google", sqFootage: 2400,
+    gateCode: "1234", hasDog: true, dogName: "Max", customFields: [],
+  },
+  {
+    id: "c2", firstName: "Mike", lastName: "Johnson", email: "mike.j@gmail.com",
+    phone: "(717) 555-0284", address: "728 Oak Ave, York, PA 17403",
+    tags: ["Residential"], notes: "Prefers Saturday morning appointments.", totalSpent: 485,
+    createdAt: daysFromNow(-90), leadSource: "Referral", sqFootage: 1800, customFields: [],
+  },
+  {
+    id: "c3", firstName: "Springfield", lastName: "HOA", email: "hoa.springfield@gmail.com",
+    phone: "(717) 555-0312", address: "100 Community Dr, York, PA 17402",
+    tags: ["HOA", "Commercial"], notes: "Quarterly contract. Contact Tom Reeves.", totalSpent: 3840,
+    createdAt: daysFromNow(-365), leadSource: "Website", sqFootage: 8500, customFields: [],
+  },
+  {
+    id: "c4", firstName: "Sarah", lastName: "Davis", email: "sarah.davis@yahoo.com",
+    phone: "(717) 555-0445", address: "56 Elm Road, Red Lion, PA 17356",
+    tags: ["Seasonal"], notes: "", totalSpent: 299,
+    createdAt: daysFromNow(-60), leadSource: "Facebook", sqFootage: 2100, customFields: [],
+  },
+  {
+    id: "c5", firstName: "Tom", lastName: "Wilson", email: "tom.wilson@gmail.com",
+    phone: "(717) 555-0563", address: "889 Pine St, Dallastown, PA 17313",
+    tags: ["Repeat"], notes: "Loves the soft wash. Wants bi-annual.", totalSpent: 698,
+    createdAt: daysFromNow(-200), leadSource: "Google", sqFootage: 2600, customFields: [],
+  },
 ];
 
-export const seedEstimates = [
-  { id: "e1", customerId: "c1", lineItems: [{ id: "l1", description: "House Soft Wash", quantity: 1, unitPrice: 450 }, { id: "l2", description: "Driveway Pressure Wash", quantity: 1, unitPrice: 250 }], subtotal: 700, discount: 0, depositRequired: 0, tax: 42, total: 742, status: "approved", createdAt: "2026-03-18", validUntil: "2026-04-18", viewed: true, viewedAt: "2026-03-19" },
-  { id: "e2", customerId: "c3", lineItems: [{ id: "l3", description: "Deck Cleaning & Seal Prep", quantity: 1, unitPrice: 650 }], subtotal: 650, discount: 0, depositRequired: 100, tax: 39, total: 689, status: "pending", createdAt: "2026-04-02", validUntil: "2026-04-22", viewed: true, viewedAt: "2026-04-03" },
-  { id: "e3", customerId: "c5", lineItems: [{ id: "l4", description: "Commercial Storefront Wash", quantity: 1, unitPrice: 1200 }, { id: "l5", description: "Sidewalk Degreasing", quantity: 1, unitPrice: 380 }], subtotal: 1580, discount: 50, depositRequired: 500, tax: 91.8, total: 1621.8, status: "pending", createdAt: "2026-04-10", validUntil: "2026-05-10", viewed: false, viewedAt: null }
+// ─── Seed estimates ───────────────────────────────────────────────────────────
+
+export const seedEstimates: Estimate[] = [
+  {
+    id: "e1", customerId: "c1",
+    lineItems: [{ id: "li1", description: "House Soft Wash", quantity: 1, unitPrice: 399 }],
+    subtotal: 399, discount: 0, depositRequired: 100, tax: 23.94, total: 422.94,
+    status: "approved", createdAt: daysFromNow(-14), validUntil: daysFromNow(16),
+    sentAt: daysFromNow(-13), signedAt: daysFromNow(-12), paidAt: daysFromNow(-12),
+    notes: "Thank you for choosing Smock's!", internalNote: "VIP — priority scheduling",
+    viewed: true, invoiced: true, invoicedAt: daysFromNow(-12),
+  },
+  {
+    id: "e2", customerId: "c2",
+    lineItems: [
+      { id: "li2", description: "Driveway Wash", quantity: 1, unitPrice: 175 },
+      { id: "li3", description: "Walkway Wash",  quantity: 1, unitPrice: 85  },
+    ],
+    subtotal: 260, discount: 0, depositRequired: 0, tax: 15.6, total: 275.6,
+    status: "pending", createdAt: daysFromNow(-3), validUntil: daysFromNow(27),
+    sentAt: daysFromNow(-2), viewed: true, viewedAt: daysFromNow(-1),
+  },
+  {
+    id: "e3", customerId: "c3",
+    lineItems: [{ id: "li4", description: "HOA Quarterly Wash — 8 buildings", quantity: 8, unitPrice: 480 }],
+    subtotal: 3840, discount: 384, depositRequired: 1000, tax: 206.64, total: 3662.64,
+    status: "approved", createdAt: daysFromNow(-30), validUntil: daysFromNow(0),
+    sentAt: daysFromNow(-28), signedAt: daysFromNow(-25), paidAt: daysFromNow(-25),
+    invoiced: true, invoicedAt: daysFromNow(-25),
+  },
 ];
 
-export const seedJobs = [
-  { id: "j1", customerId: "c1", scheduledDate: "2026-04-20", status: "scheduled", pipelineStage: "scheduled", address: "412 Oak Ridge Ln, York PA", amount: 742, lat: 39.9626, lng: -76.7277, photos: [], checklist: [{ text: "Confirm water access", done: true }, { text: "Load SH mix", done: false }], isRecurring: false, recurringFreq: "monthly", cancelReason: "", noShow: false, crew: ["emp1"], duration: 3, internalNotes: "Back gate sticks", chemicalsUsed: [{ name: "SH 12.5%", gallons: 2, cost: 12 }], equipment: ["Pressure Washer", "Soft Wash", "Surface Cleaner"], commLog: [{ id: "cl1", type: "text", date: "2026-04-18", note: "Confirmed time" }], priority: "normal", tags: [], loggedHours: 0, clockInAt: null, attachments: [{ id: "at1", name: "HOA_approval.pdf", type: "pdf" }], laborCost: 84, materialCost: 22 },
-  { id: "j2", customerId: "c3", scheduledDate: "2026-04-16", status: "in_progress", pipelineStage: "scheduled", address: "1201 Cedar Rd, Weigelstown PA", amount: 1100, lat: 40.0087, lng: -76.8012, photos: [], checklist: [{ text: "Pre-wet landscaping", done: true }, { text: "Soft wash siding", done: true }, { text: "Rinse thoroughly", done: false }], isRecurring: true, recurringFreq: "quarterly", cancelReason: "", noShow: false, crew: ["emp1", "emp2"], duration: 4, internalNotes: "", chemicalsUsed: [], equipment: ["Pressure Washer", "Soft Wash"], commLog: [], priority: "high", tags: ["VIP", "HOA"], loggedHours: 0, clockInAt: null, attachments: [], laborCost: 200, materialCost: 45 },
-  { id: "j3", customerId: "c2", scheduledDate: "2026-04-10", status: "completed", pipelineStage: "paid", address: "88 Maple Ct, Dover PA", amount: 1200, lat: 40.0034, lng: -76.8521, photos: [], checklist: [{ text: "Complete", done: true }], isRecurring: false, recurringFreq: "monthly", cancelReason: "", noShow: false, crew: ["emp1"], duration: 2.5, internalNotes: "", chemicalsUsed: [], equipment: [], commLog: [], priority: "normal", tags: [], loggedHours: 2.3, clockInAt: null, attachments: [], laborCost: 64, materialCost: 18 },
-  { id: "j4", customerId: "c5", scheduledDate: "2026-04-22", status: "scheduled", pipelineStage: "estimate_sent", address: "923 Birch Ave, Spring Grove PA", amount: 1674.8, lat: 39.8765, lng: -76.8634, photos: [], checklist: [{ text: "Site survey", done: false }], isRecurring: false, recurringFreq: "monthly", cancelReason: "", noShow: false, crew: [], duration: 5, internalNotes: "", chemicalsUsed: [], equipment: [], commLog: [], priority: "urgent", tags: ["Commercial"], loggedHours: 0, clockInAt: null, attachments: [{ id: "at2", name: "COI_2026.pdf", type: "pdf" }, { id: "at3", name: "site_map.jpg", type: "image" }], laborCost: 280, materialCost: 95 },
-  { id: "j5", customerId: "c4", scheduledDate: "2026-03-28", status: "completed", pipelineStage: "completed", address: "67 Pine View Dr, York PA", amount: 875, lat: 39.9421, lng: -76.7315, photos: [], checklist: [{ text: "Complete", done: true }], isRecurring: false, recurringFreq: "monthly", cancelReason: "", noShow: false, crew: [], duration: 2, internalNotes: "", chemicalsUsed: [], equipment: [], commLog: [], priority: "low", tags: ["Warranty"], loggedHours: 1.8, clockInAt: null, attachments: [], laborCost: 50, materialCost: 12 }
+// ─── Seed jobs ────────────────────────────────────────────────────────────────
+
+export const seedJobs: Job[] = [
+  {
+    id: "j1", customerId: "c1", address: "412 Maple St, York, PA 17401",
+    amount: 422.94, status: "scheduled", scheduledDate: daysFromNow(1),
+    scheduledTime: "09:00", duration: 3, estimatedDuration: 3,
+    priority: "high", crew: [], checklist: [
+      { label: "Pre-rinse siding", done: false },
+      { label: "Apply soft wash solution", done: false },
+      { label: "Dwell 10 min", done: false },
+      { label: "Rinse thoroughly", done: false },
+      { label: "Inspect gutters", done: false },
+    ],
+    photos: [], notes: "Gate code 1234. Dog named Max.", internalNotes: "VIP client",
+    commLog: [], chemicalsUsed: [], equipment: [], tags: ["VIP"],
+    isRecurring: false, isCash: false, pipelineStage: "scheduled", createdAt: daysFromNow(-14),
+  },
+  {
+    id: "j2", customerId: "c2", address: "728 Oak Ave, York, PA 17403",
+    amount: 275.6, status: "in_progress", scheduledDate: today(),
+    scheduledTime: "10:00", duration: 2, estimatedDuration: 2,
+    priority: "normal", crew: [], checklist: [
+      { label: "Set up pressure washer", done: true },
+      { label: "Pre-soak driveway", done: true },
+      { label: "Surface clean driveway", done: false },
+      { label: "Rinse and inspect", done: false },
+    ],
+    photos: [], notes: "", internalNotes: "",
+    commLog: [{ id: uid(), type: "sms", note: "Confirmed appointment", date: daysFromNow(-1), direction: "out" }],
+    chemicalsUsed: [{ name: "Degreaser", amount: "2", unit: "gal", cost: 12 }],
+    equipment: ["4GPM Cold Water Pressure Washer", "Surface Cleaner (20\")"],
+    tags: [], isRecurring: false, isCash: false, pipelineStage: "scheduled", createdAt: daysFromNow(-7),
+  },
+  {
+    id: "j3", customerId: "c3", address: "100 Community Dr, York, PA 17402",
+    amount: 3662.64, status: "completed", scheduledDate: daysFromNow(-7),
+    scheduledTime: "08:00", duration: 8, estimatedDuration: 8,
+    priority: "urgent", crew: [], checklist: [],
+    photos: [], notes: "8-building HOA complex", internalNotes: "",
+    commLog: [], chemicalsUsed: [
+      { name: "SH (12.5%)", amount: "15", unit: "gal", cost: 67.5 },
+      { name: "Surfactant", amount: "0.5", unit: "gal", cost: 8 },
+    ],
+    equipment: ["8GPM Hot Water Pressure Washer", "Roof Pump (12V)", "Buffer Tank (65gal)"],
+    tags: ["HOA", "Commercial"], isRecurring: true, recurringFreq: "quarterly",
+    isCash: false, laborCost: 480, materialCost: 75.5,
+    pipelineStage: "completed", createdAt: daysFromNow(-30),
+  },
+  {
+    id: "j4", customerId: "c5", address: "889 Pine St, Dallastown, PA 17313",
+    amount: 349, status: "completed", scheduledDate: daysFromNow(-14),
+    scheduledTime: "13:00", duration: 2.5, estimatedDuration: 2.5,
+    priority: "normal", crew: [], checklist: [],
+    photos: [], notes: "Roof + gutters", internalNotes: "",
+    commLog: [], chemicalsUsed: [{ name: "SH (12.5%)", amount: "5", unit: "gal", cost: 22.5 }],
+    equipment: ["Roof Pump (12V)", "Telescoping Wand (24ft)"],
+    tags: [], isRecurring: false, isCash: true, tip: 40,
+    pipelineStage: "paid", createdAt: daysFromNow(-21),
+  },
 ];
 
-export const seedEmployees = [
-  { id: "emp1", firstName: "Tyler", lastName: "Brooks", role: "Lead Technician", phone: "(717) 555-0501", hourlyRate: 28, status: "active" },
-  { id: "emp2", firstName: "Sam", lastName: "Reyes", role: "Technician", phone: "(717) 555-0502", hourlyRate: 22, status: "active" },
-  { id: "emp3", firstName: "Jordan", lastName: "Pike", role: "Crew Chief", phone: "(717) 555-0503", hourlyRate: 32, status: "active" },
-  { id: "emp4", firstName: "Casey", lastName: "Morgan", role: "Technician", phone: "(717) 555-0504", hourlyRate: 20, status: "inactive" }
+// ─── Seed employees ───────────────────────────────────────────────────────────
+
+export const seedEmployees: Employee[] = [
+  {
+    id: "emp1", firstName: "Will", lastName: "Smock", role: "Owner",
+    status: "active", hourlyRate: 0, phone: "(717) 555-0100",
+    email: "will@smocks.com", startDate: daysFromNow(-730),
+  },
+  {
+    id: "emp2", firstName: "Jake", lastName: "Torres", role: "Lead Technician",
+    status: "active", hourlyRate: 22, phone: "(717) 555-0187",
+    email: "jake.t@gmail.com", startDate: daysFromNow(-365),
+  },
+  {
+    id: "emp3", firstName: "Devon", lastName: "Parks", role: "Technician",
+    status: "active", hourlyRate: 18, phone: "(717) 555-0293",
+    startDate: daysFromNow(-180),
+  },
 ];
 
-export const seedVehicles = [
-  { id: "v1", name: "Red Rig", year: 2022, make: "Ford", model: "F-250", licensePlate: "PA-SMK-01", mileage: 42180, status: "active" },
-  { id: "v2", name: "The Beast", year: 2020, make: "Chevrolet", model: "Silverado 2500", licensePlate: "PA-SMK-02", mileage: 78420, status: "active" }
+// ─── Seed vehicles ────────────────────────────────────────────────────────────
+
+export const seedVehicles: Vehicle[] = [
+  {
+    id: "v1", year: 2021, make: "Ford", model: "F-250",
+    plate: "PA-SMK001", mileage: 48320, lastOilChange: 45100,
+    lastOilChangeDate: daysFromNow(-62), status: "active",
+    notes: "Primary work truck. 8GPM hot unit mounted.",
+  },
+  {
+    id: "v2", year: 2019, make: "Chevrolet", model: "Express 2500",
+    plate: "PA-SMK002", mileage: 72180, lastOilChange: 70000,
+    lastOilChangeDate: daysFromNow(-44), status: "active",
+    notes: "Secondary van. Cold water unit + supplies.",
+  },
 ];
 
-export const seedExpenses = [
-  { id: "ex1", date: "2026-04-12", category: "Fuel", description: "Diesel fill-up Red Rig", amount: 142.50, vendor: "Sheetz" },
-  { id: "ex2", date: "2026-04-10", category: "Chemicals", description: "SH 12.5% 55gal drum", amount: 310, vendor: "Pressure Tek" },
-  { id: "ex3", date: "2026-04-08", category: "Equipment", description: "Surface cleaner", amount: 485, vendor: "Amazon" },
-  { id: "ex4", date: "2026-04-05", category: "Insurance", description: "General liability monthly", amount: 220, vendor: "NEXT" }
+// ─── Seed maintenance ─────────────────────────────────────────────────────────
+
+export const seedMaintenance: MaintenanceRecord[] = [
+  { id: "m1", vehicleId: "v1", type: "Oil Change", date: daysFromNow(-62), mileage: 45100, cost: 89, notes: "Full synthetic" },
+  { id: "m2", vehicleId: "v1", type: "Tire Rotation", date: daysFromNow(-120), mileage: 43200, cost: 45, notes: "" },
+  { id: "m3", vehicleId: "v2", type: "Oil Change", date: daysFromNow(-44), mileage: 70000, cost: 79, notes: "" },
+  { id: "m4", vehicleId: "v2", type: "Brake Pads", date: daysFromNow(-90), mileage: 68500, cost: 320, notes: "Front pads replaced" },
 ];
 
-export const seedChemicals = [
-  { id: "ch1", name: "Sodium Hypochlorite 12.5%", brand: "Pressure Tek", category: "Sanitizer", stock: 35, reorderLevel: 20, unitCost: 5.65 },
-  { id: "ch2", name: "Elemonator", brand: "Pressure Tek", category: "Surfactant", stock: 4, reorderLevel: 6, unitCost: 42 },
-  { id: "ch3", name: "F9 BARC", brand: "F9", category: "Specialty", stock: 2, reorderLevel: 3, unitCost: 52 }
+// ─── Seed expenses ────────────────────────────────────────────────────────────
+
+export const seedExpenses: Expense[] = [
+  { id: "ex1", date: daysFromNow(-2),  description: "SH (12.5%) — 30 gal",   amount: 135, category: "Chemicals",  isBusiness: true, isDeductible: true },
+  { id: "ex2", date: daysFromNow(-3),  description: "Fuel — F-250",           amount: 87,  category: "Fuel",       isBusiness: true, isDeductible: true },
+  { id: "ex3", date: daysFromNow(-7),  description: "Google Ads",             amount: 150, category: "Marketing",  isBusiness: true, isDeductible: true },
+  { id: "ex4", date: daysFromNow(-10), description: "Surfactant — 1 gal",     amount: 24,  category: "Chemicals",  isBusiness: true, isDeductible: true },
+  { id: "ex5", date: daysFromNow(-14), description: "Truck payment — F-250",  amount: 689, category: "Truck Payment", isBusiness: true, isDeductible: true },
+  { id: "ex6", date: daysFromNow(-20), description: "Commercial liability ins", amount: 220, category: "Insurance", isBusiness: true, isDeductible: true },
 ];
 
-export const seedServices = [
-  { id: "s1", name: "House Soft Wash", description: "Low-pressure siding cleaning", price: 450 },
-  { id: "s2", name: "Driveway Pressure Wash", description: "Concrete cleaning", price: 250 },
-  { id: "s3", name: "Deck Cleaning", description: "Wood-safe cleaning", price: 325 },
-  { id: "s4", name: "Roof Soft Wash", description: "Algae/moss treatment", price: 650 }
+// ─── Seed chemicals ───────────────────────────────────────────────────────────
+
+export const seedChemicals: Chemical[] = [
+  { id: "ch1", name: "Sodium Hypochlorite (12.5%)", stock: 30, unit: "gal", unitCost: 4.5, reorderLevel: 10, supplier: "Local Chem Supplier" },
+  { id: "ch2", name: "Elemonator Surfactant",       stock: 2,  unit: "gal", unitCost: 32,  reorderLevel: 1,  supplier: "Pressuretek" },
+  { id: "ch3", name: "Simple Cherry Degreaser",     stock: 1,  unit: "gal", unitCost: 28,  reorderLevel: 1,  supplier: "Pressuretek" },
+  { id: "ch4", name: "F13 (Fertilizer Blend)",      stock: 5,  unit: "gal", unitCost: 18,  reorderLevel: 2,  supplier: "Local Chem" },
+  { id: "ch5", name: "Downstream Injector Tips",    stock: 8,  unit: "ea",  unitCost: 3.5, reorderLevel: 3,  supplier: "Amazon" },
 ];
 
-export const seedRevenue = [
-  { month: "Nov", revenue: 8200 }, { month: "Dec", revenue: 6800 }, { month: "Jan", revenue: 7500 },
-  { month: "Feb", revenue: 9200 }, { month: "Mar", revenue: 11400 }, { month: "Apr", revenue: 13800 }
+// ─── Seed services ────────────────────────────────────────────────────────────
+
+export const seedServices: Service[] = [
+  { id: "s1", name: "House Soft Wash",       basePrice: 349, unit: "job", taxable: true,  active: true, description: "Full exterior soft wash with biodegradable solution" },
+  { id: "s2", name: "Roof Soft Wash",        basePrice: 449, unit: "job", taxable: true,  active: true, description: "Low-pressure roof cleaning, kills algae and moss" },
+  { id: "s3", name: "Driveway Wash",         basePrice: 175, unit: "job", taxable: true,  active: true, description: "Concrete or paver driveway pressure cleaning" },
+  { id: "s4", name: "Deck / Patio Wash",     basePrice: 225, unit: "job", taxable: true,  active: true, description: "Wood or composite deck restoration" },
+  { id: "s5", name: "Gutter Cleaning",       basePrice: 149, unit: "job", taxable: true,  active: true, description: "Clean and flush gutters and downspouts" },
+  { id: "s6", name: "Fence Wash",            basePrice: 149, unit: "job", taxable: true,  active: true, description: "Privacy or picket fence cleaning" },
+  { id: "s7", name: "Commercial Exterior",   basePrice: 799, unit: "job", taxable: true,  active: true, description: "Full commercial building exterior" },
+  { id: "s8", name: "HOA Common Areas",      basePrice: 480, unit: "building", taxable: true, active: true, description: "HOA common area per building pricing" },
 ];
 
-// seedWeather removed here, moved to weather.ts
-
-export const seedLeadSrc = [
-  { source: "Google Ads", value: 32, color: "#e11d48" },
-  { source: "Referral", value: 28, color: "#be123c" },
-  { source: "Facebook", value: 18, color: "#f43f5e" },
-  { source: "Nextdoor", value: 12, color: "#9f1239" },
-  { source: "Website", value: 6, color: "#881337" },
-  { source: "Other", value: 4, color: "#4c0519" }
-];
-
-export const seedAutomations = [
-  { id: "a1", name: "New lead auto-response", trigger: "New inquiry submitted", action: "Send welcome text within 5 min", active: true, lastTriggered: daysFromNow(-1), count: 34 },
-  { id: "a2", name: "Estimate follow-up", trigger: "Estimate sent, 24h no open", action: "Send follow-up email", active: true, lastTriggered: daysFromNow(-2), count: 18 },
-  { id: "a3", name: "Estimate expiring reminder", trigger: "Estimate expires in 3 days", action: "Send reminder text", active: true, lastTriggered: daysFromNow(-5), count: 9 },
-  { id: "a4", name: "Job reminder 24h", trigger: "24h before scheduled job", action: "Send SMS confirmation", active: true, lastTriggered: daysFromNow(-1), count: 41 },
-  { id: "a5", name: "ETA message", trigger: "Crew starts job", action: "Send on-the-way text", active: false, lastTriggered: null, count: 0 },
-  { id: "a6", name: "Post-job review request", trigger: "Job complete plus 2h", action: "Send review request", active: true, lastTriggered: today(), count: 27 },
-  { id: "a7", name: "Payment overdue 3-day", trigger: "Invoice unpaid 3 days", action: "Send polite reminder", active: true, lastTriggered: daysFromNow(-3), count: 6 },
-  { id: "a8", name: "Payment overdue 7-day", trigger: "Invoice unpaid 7 days", action: "Send firm follow-up", active: true, lastTriggered: daysFromNow(-7), count: 3 },
-  { id: "a9", name: "Payment overdue 14-day", trigger: "Invoice unpaid 14 days", action: "Escalate to owner", active: true, lastTriggered: null, count: 1 },
-  { id: "a10", name: "Abandoned estimate nurture", trigger: "Quote unviewed 5 days", action: "Send 5% off incentive email", active: true, lastTriggered: daysFromNow(-4), count: 12 },
-  { id: "a11", name: "Customer anniversary", trigger: "1 year since first service", action: "Send thank-you + 20% off", active: true, lastTriggered: daysFromNow(-10), count: 4 },
-  { id: "a12", name: "Birthday message", trigger: "Customer birthday", action: "Send greeting plus 10% off", active: true, lastTriggered: daysFromNow(-2), count: 8 },
-  { id: "a13", name: "Spring seasonal reminder", trigger: "March 1 annual", action: "Send spring house wash campaign", active: true, lastTriggered: "2026-03-01", count: 142 },
-  { id: "a14", name: "Fall gutter reminder", trigger: "October 1 annual", action: "Send fall gutter campaign", active: true, lastTriggered: "2025-10-01", count: 98 },
-  { id: "a15", name: "Recurring customer re-engage", trigger: "6 months since last wash", action: "Send time-to-wash-again email", active: true, lastTriggered: daysFromNow(-12), count: 23 },
-  { id: "a16", name: "Referral reward earned", trigger: "Referred customer books", action: "Credit referrer + notify", active: true, lastTriggered: daysFromNow(-5), count: 11 }
-];
+// ─── Seed email templates ─────────────────────────────────────────────────────
 
 export const seedEmailTemplates = [
-  { id: "et1", name: "Welcome new lead", subject: "Thanks for reaching out!", body: "Hi {{first_name}},\n\nThanks for the inquiry! We'll follow up within 24 hours with a quote.\n\nSmock's Pressure Washing" },
-  { id: "et2", name: "Estimate follow-up", subject: "Any questions about your quote?", body: "Hi {{first_name}},\n\nJust checking in on the quote we sent. Happy to answer any questions.\n\n-- Smock's" },
-  { id: "et3", name: "Review request", subject: "How did we do?", body: "Hi {{first_name}},\n\nThanks for choosing us! If you have 30 seconds, we'd love a review:\n{{review_link}}\n\n-- Smock's" },
-  { id: "et4", name: "Abandoned estimate nurture", subject: "Still thinking about your quote?", body: "Hi {{first_name}},\n\nHaven't heard back on quote #{{quote_id}}. Any questions? We can also offer 5% off if you book this week.\n\n-- Smock's" },
-  { id: "et5", name: "Birthday message", subject: "Happy Birthday from Smock's!", body: "Hi {{first_name}},\n\nHappy birthday! Enjoy 10% off any service this month — code BDAY10.\n\n-- Smock's" },
-  { id: "et6", name: "Spring seasonal reminder", subject: "Time for your spring wash?", body: "Hi {{first_name}},\n\nSpring's here — pollen, dirt, mildew. Book your house soft wash and save 15%.\n\n-- Smock's" },
-  { id: "et7", name: "Fall gutter reminder", subject: "Fall gutter cleaning season", body: "Hi {{first_name}},\n\nLeaves are falling. Get your gutters cleaned before winter storms hit.\n\n-- Smock's" },
-  { id: "et8", name: "Anniversary thank you", subject: "Happy customer anniversary!", body: "Hi {{first_name}},\n\nIt's been a year since your first service with us. Thanks for trusting Smock's!\n\nEnjoy 20% off your next booking.\n\n-- Smock's" },
-  { id: "et9", name: "Weather reschedule", subject: "Weather update for your service", body: "Hi {{first_name}},\n\nRain is forecast for your scheduled date. Let's reschedule — what day works?\n\n-- Smock's" },
-  { id: "et10", name: "Payment overdue", subject: "Friendly payment reminder", body: "Hi {{first_name}},\n\nYour invoice #{{inv_id}} is past due. Pay here: {{pay_link}}\n\nQuestions? Just reply.\n\n-- Smock's" }
+  {
+    id: "et1", name: "Estimate Ready", subject: "Your Estimate from Smock's Pressure Washing",
+    body: "Hi {{first_name}},\n\nYour estimate is ready. Click below to view, approve, and sign.\n\n{{estimate_link}}\n\nValid for {{valid_days}} days. Questions? Call (717) 555-0100.\n\n— Will @ Smock's",
+  },
+  {
+    id: "et2", name: "Job Confirmation", subject: "✅ Job Confirmed — Smock's Pressure Washing",
+    body: "Hi {{first_name}},\n\nYour service is confirmed for {{date}} at approximately {{time}}.\n\nAddress: {{address}}\n\nWe'll text you when we're on the way. See you then!\n\n— Will @ Smock's",
+  },
+  {
+    id: "et3", name: "Review Request", subject: "Quick favor? Leave us a review 🌟",
+    body: "Hi {{first_name}},\n\nThank you for choosing Smock's! We hope your property is looking great.\n\nWould you mind leaving us a quick Google review? It only takes 60 seconds and means the world to us.\n\n{{review_link}}\n\nThank you! — Will @ Smock's",
+  },
+  {
+    id: "et4", name: "Payment Receipt", subject: "Payment Received — Smock's Pressure Washing",
+    body: "Hi {{first_name}},\n\nWe received your payment of {{amount}}. Thank you!\n\nReceipt: {{receipt_link}}\n\n— Will @ Smock's",
+  },
+  {
+    id: "et5", name: "Birthday Message", subject: "Happy Birthday from Smock's!",
+    body: "Hi {{first_name}},\n\nHappy birthday! Enjoy 10% off any service this month — code BDAY10.\n\n— Smock's",
+  },
 ];
+
+// ─── Seed SMS templates ───────────────────────────────────────────────────────
 
 export const seedSmsTemplates = [
-  { id: "st1", name: "Job reminder", body: "Hi {{first_name}}, reminder that your wash is tomorrow. Reply C to confirm. -- Smock's" },
-  { id: "st2", name: "On the way", body: "Hi {{first_name}}, the crew is on the way! ETA 20 min. -- Smock's" },
-  { id: "st3", name: "Payment reminder", body: "Hi {{first_name}}, friendly reminder your invoice is past due. Pay here: {{pay_link}}" },
-  { id: "st4", name: "Estimate expiring", body: "Hi {{first_name}}, your quote expires in 3 days. Book now to lock in pricing. -- Smock's" },
-  { id: "st5", name: "Weather alert", body: "Hi {{first_name}}, weather looks rough for tomorrow. Can we reschedule? -- Smock's" },
-  { id: "st6", name: "Job complete", body: "Hi {{first_name}}, all done! Review: {{review_link}}. Thanks! -- Smock's" },
-  { id: "st7", name: "Referral reward", body: "Hi {{first_name}}, you earned a $25 credit from a referral! -- Smock's" }
+  { id: "st1", name: "New Lead Response",   body: "Hi {{first_name}}! Thanks for reaching out to Smock's. I'll send your estimate within the hour. Questions? Call/text (717) 555-0100. — Will" },
+  { id: "st2", name: "Job Reminder",        body: "Hi {{first_name}}, reminder: your Smock's service is tomorrow at {{time}}. We'll text when on the way. Reply STOP to unsubscribe." },
+  { id: "st3", name: "On My Way",           body: "Hi {{first_name}}, Will from Smock's — heading your way now! ETA: {{eta}}. Live location: {{location_link}}" },
+  { id: "st4", name: "Job Complete",        body: "Hi {{first_name}}, all done! Your property is looking great 🙌 Thank you for choosing Smock's. — Will" },
+  { id: "st5", name: "Review Request",      body: "Hi {{first_name}}, loved your service today? A quick Google review means the world: {{review_link}} — Will @ Smock's" },
+  { id: "st6", name: "Payment Overdue",     body: "Hi {{first_name}}, just a reminder that your invoice for {{amount}} is past due. Pay here: {{payment_link}} Questions? (717) 555-0100." },
+  { id: "st7", name: "Estimate Follow-Up",  body: "Hi {{first_name}}, just checking in on your estimate for {{amount}}. Any questions? Ready to schedule? — Will @ Smock's" },
+  { id: "st8", name: "Weather Reschedule",  body: "Hi {{first_name}}, due to rain in the forecast we're rescheduling your service. We'll reach out with new options. Sorry for any inconvenience! — Smock's" },
 ];
 
-export const seedRewardTiers = [
-  { refs: 1, reward: "$25 credit", icon: "🥉" },
-  { refs: 3, reward: "$100 credit + free add-on", icon: "🥈" },
-  { refs: 5, reward: "$250 credit + VIP status", icon: "🥇" },
-  { refs: 10, reward: "$500 credit + annual membership", icon: "💎" }
+// ─── Seed automations ─────────────────────────────────────────────────────────
+
+export const seedAutomations: Automation[] = [
+  { id: "a1",  name: "New lead auto-response",    trigger: "New lead form submitted",   action: "Send instant SMS",          active: true,  lastTriggered: daysFromNow(-1), count: 42, steps: [], description: "Texts every new lead within 60 seconds" },
+  { id: "a2",  name: "Estimate follow-up (24h)",  trigger: "Estimate sent, unopened",   action: "Send follow-up SMS",        active: true,  lastTriggered: daysFromNow(-2), count: 18, steps: [] },
+  { id: "a3",  name: "Job reminder (24h)",        trigger: "24h before job",            action: "Send reminder to customer", active: true,  lastTriggered: daysFromNow(-1), count: 67, steps: [] },
+  { id: "a4",  name: "Review request (48h)",      trigger: "Job completed + 48h",       action: "Send review request",       active: true,  lastTriggered: daysFromNow(-2), count: 31, steps: [] },
+  { id: "a5",  name: "Payment overdue (7d)",      trigger: "Invoice overdue 7 days",    action: "Send payment reminder",     active: true,  lastTriggered: daysFromNow(-3), count: 9,  steps: [] },
+  { id: "a6",  name: "Maintenance reminder (90d)", trigger: "90 days since service",    action: "Send maintenance reminder", active: false, lastTriggered: null,            count: 0,  steps: [] },
+  { id: "a7",  name: "Birthday message",          trigger: "Customer birthday",         action: "Send greeting + 10% off",   active: true,  lastTriggered: daysFromNow(-2), count: 8,  steps: [] },
+  { id: "a8",  name: "Seasonal — spring",         trigger: "March 1st annually",        action: "Send spring campaign",      active: true,  lastTriggered: null,            count: 0,  steps: [] },
+  { id: "a9",  name: "Seasonal — fall gutter",    trigger: "October 1st annually",      action: "Send fall gutter campaign", active: true,  lastTriggered: null,            count: 0,  steps: [] },
+  { id: "a10", name: "Abandoned estimate (3d)",   trigger: "Estimate not approved 3d",  action: "3-touch nurture sequence",  active: false, lastTriggered: null,            count: 0,  steps: [] },
+  { id: "a11", name: "Re-engagement (6mo)",       trigger: "No service in 6 months",    action: "Send win-back SMS",         active: false, lastTriggered: null,            count: 0,  steps: [] },
+  { id: "a12", name: "Referral request",          trigger: "Job completed (3rd+)",      action: "Send referral ask",         active: false, lastTriggered: null,            count: 0,  steps: [] },
 ];
 
-export const seedReferrals = {
-  c1: { code: "MIKE-SMK01", count: 2, revenue: 1575 },
-  c2: { code: "JEN-SMK02", count: 1, revenue: 742 },
-  c3: { code: "DAVE-SMK03", count: 3, revenue: 2450 },
-  c4: { code: "ASH-SMK04", count: 0, revenue: 0 },
-  c5: { code: "ROB-SMK05", count: 4, revenue: 3200 }
+// ─── Seed reviews ─────────────────────────────────────────────────────────────
+
+export const seedReviews: Review[] = [
+  { id: "r1", customerId: "c1", customerName: "Jennifer Walsh", rating: 5, text: "Will and his team did an incredible job on our house! The siding looks brand new.", createdAt: daysFromNow(-10), source: "Google", status: "responded", response: "Thank you Jennifer! It was a pleasure working with you." },
+  { id: "r2", customerId: "c5", customerName: "Tom Wilson",    rating: 5, text: "Professional, fast, and great results. Driveway looks amazing.", createdAt: daysFromNow(-14), source: "Google", status: "pending" },
+  { id: "r3", customerId: "c4", customerName: "Sarah Davis",   rating: 3, text: "Good job overall but took longer than expected.", createdAt: daysFromNow(-21), source: "Google", status: "pending" },
+];
+
+// ─── Seed social posts ────────────────────────────────────────────────────────
+
+export const seedSocialPosts: SocialPost[] = [
+  {
+    id: "sp1", platform: "instagram", type: "before_after",
+    caption: "Before → After on this house in York PA 🏠✨ The difference speaks for itself! Free quotes at (717) 555-0100",
+    hashtags: "#pressurewashing #softwash #yorkpa #homeimprovement #beforeandafter",
+    status: "published", publishedAt: daysFromNow(-7), likes: 124, shares: 8, comments: 14, reach: 1840,
+  },
+  {
+    id: "sp2", platform: "facebook", type: "promo",
+    caption: "🌸 Spring Special — 15% off house soft washes booked this month! Limited slots. Call or DM to book.",
+    hashtags: "#spring #pressurewashing #yorkpa",
+    status: "published", publishedAt: daysFromNow(-14), likes: 47, shares: 12, comments: 6, reach: 920,
+  },
+  {
+    id: "sp3", platform: "instagram", type: "before_after",
+    caption: "Driveway transformation in Dallastown! 💪 Years of staining gone in 2 hours.",
+    hashtags: "#driveway #pressurewashing #dallastown #curb appeal",
+    status: "scheduled", scheduledFor: daysFromNow(2), likes: 0, shares: 0, comments: 0, reach: 0,
+  },
+];
+
+// ─── Seed reward tiers ────────────────────────────────────────────────────────
+
+export const seedRewardTiers: RewardTier[] = [
+  { id: "rt1", label: "First Referral",    minReferrals: 1, reward: "$25 off next service",        icon: "🥉" },
+  { id: "rt2", label: "Refer 3 Friends",   minReferrals: 3, reward: "Free driveway wash ($175)",   icon: "🥈" },
+  { id: "rt3", label: "Refer 5 Friends",   minReferrals: 5, reward: "Free house wash ($349)",      icon: "🥇" },
+  { id: "rt4", label: "Referral Champion", minReferrals: 10, reward: "Annual free service + VIP",  icon: "👑" },
+];
+
+// ─── Seed referrals ───────────────────────────────────────────────────────────
+
+export const seedReferrals: Referral[] = [
+  { id: "ref1", referrerId: "c1", referredName: "Bob Andrews",  referredPhone: "(717) 555-0811", status: "completed", reward: 25, createdAt: daysFromNow(-45) },
+  { id: "ref2", referrerId: "c1", referredName: "Lisa Chen",    referredPhone: "(717) 555-0724", status: "booked",    reward: 0,  createdAt: daysFromNow(-12) },
+  { id: "ref3", referrerId: "c5", referredName: "Ray Martinez", referredPhone: "(717) 555-0631", status: "pending",   reward: 0,  createdAt: daysFromNow(-3)  },
+];
+
+// ─── Seed reminders (accountability) ─────────────────────────────────────────
+
+export const seedReminders: Reminder[] = [
+  { id: "rem1", text: "Call Mom",         frequency: "weekly",  emoji: "📞", lastDone: null },
+  { id: "rem2", text: "Review finances",  frequency: "weekly",  emoji: "💰", lastDone: null },
+  { id: "rem3", text: "Team check-in",    frequency: "weekly",  emoji: "👥", lastDone: null },
+];
+
+// ─── Seed goals ───────────────────────────────────────────────────────────────
+
+export const seedGoals: Goal[] = [
+  { id: "g1", category: "business", label: "Monthly Revenue",  target: 8000,  current: 3247, unit: "$",     deadline: daysFromNow(14) },
+  { id: "g2", category: "business", label: "Jobs Completed",   target: 20,    current: 11,   unit: "jobs",  deadline: daysFromNow(14) },
+  { id: "g3", category: "fitness",  label: "Gym Days / Week",  target: 5,     current: 3,    unit: "days",  deadline: daysFromNow(7)  },
+  { id: "g4", category: "fitness",  label: "Steps Per Day",    target: 10000, current: 7200, unit: "steps", deadline: daysFromNow(1)  },
+];
+
+// ─── Seed accountability entries ───────────────────────────────────────────────
+
+export const seedAccountabilityEntries: AccountabilityEntry[] = [
+  { id: "acc1", date: daysFromNow(-1), sleep: 7.5, water: 64, steps: 8420, gymMinutes: 45, meditationMinutes: 10, mood: 4, notes: "Good day overall." },
+  { id: "acc2", date: daysFromNow(-2), sleep: 6,   water: 48, steps: 5100, gymMinutes: 0,  meditationMinutes: 0,  mood: 3, notes: "Tired. Skipped gym." },
+  { id: "acc3", date: daysFromNow(-3), sleep: 8,   water: 80, steps: 9800, gymMinutes: 60, meditationMinutes: 15, mood: 5, notes: "Great day." },
+];
+
+// ─── Seed mileage ─────────────────────────────────────────────────────────────
+
+export const seedMileage: MileageLog[] = [
+  { id: "ml1", date: daysFromNow(-1),  from: "Home", to: "412 Maple St, York",    miles: 4.2, purpose: "Job — Jennifer Walsh",    vehicleId: "v1", deduction: 2.81 },
+  { id: "ml2", date: daysFromNow(-2),  from: "Home", to: "Supply depot",           miles: 12.8, purpose: "Chemical pickup",        vehicleId: "v1", deduction: 8.58 },
+  { id: "ml3", date: daysFromNow(-7),  from: "Home", to: "100 Community Dr, York", miles: 6.1, purpose: "HOA complex — 3 buildings", vehicleId: "v2", deduction: 4.09 },
+];
+
+// ─── Seed lead sources ────────────────────────────────────────────────────────
+
+export const seedLeadSrc = [
+  { source: "Google",    leads: 28, conversions: 18, revenue: 6240, adSpend: 450 },
+  { source: "Referral",  leads: 15, conversions: 13, revenue: 4875, adSpend: 0   },
+  { source: "Facebook",  leads: 12, conversions: 6,  revenue: 1980, adSpend: 200 },
+  { source: "Website",   leads: 8,  conversions: 5,  revenue: 2150, adSpend: 0   },
+  { source: "Nextdoor",  leads: 6,  conversions: 4,  revenue: 1420, adSpend: 0   },
+  { source: "Drive-by",  leads: 4,  conversions: 3,  revenue: 870,  adSpend: 0   },
+];
+
+// ─── Seed timeline ────────────────────────────────────────────────────────────
+
+export const seedTimeline: Record<string, Array<{ id: string; type: string; note: string; date: string }>> = {
+  c1: [
+    { id: uid(), type: "estimate", note: "Estimate created — $422.94", date: daysFromNow(-14) },
+    { id: uid(), type: "sms",      note: "Estimate sent via SMS",       date: daysFromNow(-13) },
+    { id: uid(), type: "job",      note: "Job scheduled — House Soft Wash", date: daysFromNow(-12) },
+    { id: uid(), type: "note",     note: "VIP client — priority scheduling", date: daysFromNow(-12) },
+  ],
+  c3: [
+    { id: uid(), type: "estimate", note: "Estimate created — $3,662.64", date: daysFromNow(-30) },
+    { id: uid(), type: "job",      note: "HOA complex — 8 buildings completed", date: daysFromNow(-7) },
+  ],
 };
 
-export const seedMaintenance = [
-  { id: "m1", vehicleId: "v1", date: "2026-02-15", type: "Oil Change", cost: 85, mileageAt: 41200, notes: "Synthetic blend" },
-  { id: "m2", vehicleId: "v2", date: "2026-04-01", type: "Oil Change", cost: 85, mileageAt: 77900, notes: "" },
-  { id: "m3", vehicleId: "v2", date: "2026-01-20", type: "Brake Service", cost: 420, mileageAt: 74800, notes: "Front pads" }
-];
-
-export const seedCampaigns: any[] = [];
-
-export const seedSocialPosts = [
-  { id: "sp1", platform: "instagram", type: "before_after", caption: "Another house transformed today. DM for a quote. #pressurewashing #softwash #yorkpa", scheduledFor: daysFromNow(1), status: "scheduled" }
-];
-
-export const seedTimeline = {
-  c1: [{ id: "t1", type: "call", date: "2025-08-12", note: "Initial inquiry", author: "Tyler" }, { id: "t2", type: "estimate", date: "2025-08-14", note: "Sent estimate for $742", author: "System" }, { id: "t3", type: "job", date: "2026-03-18", note: "House wash completed", author: "Tyler" }],
-  c3: [{ id: "t4", type: "email", date: "2026-04-01", note: "Follow-up on deck quote", author: "Sam" }, { id: "t5", type: "text", date: "2026-04-14", note: "Confirmed job 4/16", author: "Jordan" }],
-  c5: [{ id: "t6", type: "call", date: "2026-04-09", note: "Storefront quote request", author: "Tyler" }]
-};
+// ─── Campaign templates ───────────────────────────────────────────────────────
 
 export const campaignTemplates = [
-  { id: "ct1", name: "🌸 Spring Special", subject: "Spring special — 15% off", body: "Hi {{first_name}},\n\nSpring's here! Get 15% off any house soft wash booked this month.\n\nYour home will look brand new. Reply to schedule.\n\n— Smock's Pressure Washing\n📞 (717) 555-0100" },
-  { id: "ct2", name: "❄️ Winter Prep", subject: "Protect your roof before winter", body: "Hi {{first_name}},\n\nWinter's coming. Algae and moss hold moisture that can damage your roof.\n\nBook a soft wash now before the freeze. Reply for a free quote.\n\n— Smock's" },
-  { id: "ct3", name: "🤝 Referral Ask", subject: "Know a neighbor who needs us?", body: "Hi {{first_name}},\n\nIf you loved our work, share us with a neighbor! Use code {{referral_code}} — you get $25 off your next service, they get 10% off.\n\nSimply text us their name.\n\n— Smock's" },
-  { id: "ct4", name: "🎄 Holiday Greeting", subject: "Happy Holidays from Smock's!", body: "Hi {{first_name}},\n\nFrom our family to yours — wishing you a wonderful holiday season! 🎄\n\nLook for our New Year special coming in January. Stay warm!\n\n— Will & the Smock's team" },
-  { id: "ct5", name: "🎊 New Year Offer", subject: "New year, fresh home — 20% off", body: "Hi {{first_name}},\n\nHappy New Year! Kick off 2026 with a clean home.\n\n20% off all services booked in January. Limited slots — reply to reserve yours.\n\n— Smock's Pressure Washing" },
-  { id: "ct6", name: "😴 Win-Back (Inactive)", subject: "We miss you, {{first_name}}!", body: "Hi {{first_name}},\n\nIt's been a while since we last served you. Your home might be ready for some attention.\n\nReply \"BOOK\" and we'll get you on the schedule — 10% off as a welcome back.\n\n— Smock's" },
-  { id: "ct7", name: "⭐ Review Request", subject: "How'd we do?", body: "Hi {{first_name}},\n\nThank you for choosing Smock's! We'd love to hear about your experience.\n\nLeave us a quick review: {{review_link}}\n\nIt only takes 30 seconds and means the world to a small business.\n\n— Will @ Smock's" },
-  { id: "ct8", name: "🍂 Fall Cleanup", subject: "Fall roof wash — beat the leaves", body: "Hi {{first_name}},\n\nFall leaves trap moisture that causes moss and algae. A soft wash now prevents costly damage later.\n\nBook a fall roof or gutter clean before slots fill up. Reply to schedule.\n\n— Smock's" }
+  { id: "ct1", name: "Spring Special",   subject: "Spring Cleaning Deal — Smock's", body: "Hi {{first_name}}, spring special — 15% off house soft washes this month. Reply BOOK or call (717) 555-0100. — Smock's" },
+  { id: "ct2", name: "Pre-Winter Roof",  subject: "Protect your roof before winter — Smock's", body: "Hi {{first_name}}, algae and moss freeze and damage shingles. Get a roof soft wash before cold hits. Reply ROOF or call (717) 555-0100. — Smock's" },
+  { id: "ct3", name: "Referral Program", subject: "Refer a friend, get $25 — Smock's", body: "Hi {{first_name}}, refer a friend and get $25 off your next service when they book. Reply REFER or call (717) 555-0100. — Smock's" },
+  { id: "ct4", name: "Holiday Greeting", subject: "Happy Holidays from Smock's!", body: "Hi {{first_name}}, wishing you a wonderful holiday season! Book early for spring — slots fill fast. — Will @ Smock's" },
+  { id: "ct5", name: "New Year Offer",   subject: "New year, clean home — Smock's", body: "Hi {{first_name}}, 10% off any service booked in January. Reply NEWYEAR or call (717) 555-0100. — Smock's" },
+  { id: "ct6", name: "Win-Back",         subject: "We miss you — Smock's", body: "Hi {{first_name}}, it's been a while! Reply BACK for a special returning customer discount. — Will @ Smock's" },
 ];
+
+// ─── Step types ───────────────────────────────────────────────────────────────
+
+export const STEP_TYPES = [
+  { type: "trigger",   label: "Trigger",         icon: "⚡", color: "bg-yellow-900/40 border-yellow-700/40" },
+  { type: "condition", label: "Condition / Wait", icon: "⏱", color: "bg-blue-900/40 border-blue-700/40"    },
+  { type: "action",    label: "Send Message",     icon: "📱", color: "bg-green-900/40 border-green-700/40"  },
+  { type: "webhook",   label: "Webhook",          icon: "🔗", color: "bg-purple-900/40 border-purple-700/40"},
+  { type: "tag",       label: "Add Tag",          icon: "🏷", color: "bg-orange-900/40 border-orange-700/40"},
+];
+
+// ─── Automation templates ─────────────────────────────────────────────────────
+
+export const AUTOMATION_TEMPLATES = [
+  {
+    id: "tpl_new_lead", name: "New Lead Auto-Response",
+    trigger: "New lead received", action: "Send instant SMS",
+    description: "Texts every new lead within 60 seconds.",
+    steps: [
+      { id: uid(), type: "trigger", label: "New lead form submitted", icon: "⚡" },
+      { id: uid(), type: "action",  label: "Send SMS: 'Thanks for reaching out...'", channel: "sms", template: "new_lead" },
+    ],
+  },
+  {
+    id: "tpl_estimate_followup", name: "Estimate Follow-Up (24h)",
+    trigger: "Estimate sent, unopened 24h", action: "Send follow-up SMS",
+    description: "Follows up if estimate not opened after 24 hours.",
+    steps: [
+      { id: uid(), type: "trigger",   label: "Estimate sent",        icon: "⚡" },
+      { id: uid(), type: "condition", label: "Wait 24 hours",        delay: 1440 },
+      { id: uid(), type: "condition", label: "If NOT viewed",        condition: "estimate_not_viewed" },
+      { id: uid(), type: "action",    label: "Send follow-up SMS",   channel: "sms" },
+    ],
+  },
+  {
+    id: "tpl_review_request", name: "Post-Job Review Request",
+    trigger: "Job completed + 48h", action: "Send review request",
+    steps: [
+      { id: uid(), type: "trigger",   label: "Job completed",        icon: "⚡" },
+      { id: uid(), type: "condition", label: "Wait 48 hours",        delay: 2880 },
+      { id: uid(), type: "action",    label: "Send review request",  channel: "sms", template: "review_request" },
+    ],
+  },
+  {
+    id: "tpl_birthday", name: "Birthday Message",
+    trigger: "Customer birthday (annual)", action: "Send greeting + 10% off",
+    steps: [
+      { id: uid(), type: "trigger", label: "Customer birthday", icon: "🎂" },
+      { id: uid(), type: "action",  label: "Send birthday SMS", channel: "sms", template: "birthday" },
+    ],
+  },
+  {
+    id: "tpl_seasonal_spring", name: "Spring House Wash Reminder",
+    trigger: "March 1st annually", action: "Send spring campaign",
+    steps: [
+      { id: uid(), type: "trigger", label: "Date: March 1st",      icon: "🌸" },
+      { id: uid(), type: "action",  label: "Send spring promo SMS", channel: "sms" },
+    ],
+  },
+  {
+    id: "tpl_abandoned_estimate", name: "Abandoned Estimate Nurture",
+    trigger: "Estimate sent, no response 3 days", action: "3-touch nurture sequence",
+    steps: [
+      { id: uid(), type: "trigger",   label: "Estimate sent",           icon: "⚡" },
+      { id: uid(), type: "condition", label: "Wait 3 days",             delay: 4320 },
+      { id: uid(), type: "condition", label: "If not approved",         condition: "estimate_not_approved" },
+      { id: uid(), type: "action",    label: "Day 3: Soft follow-up",   channel: "sms" },
+      { id: uid(), type: "condition", label: "Wait 4 more days",        delay: 5760 },
+      { id: uid(), type: "action",    label: "Day 7: Add urgency",      channel: "sms" },
+    ],
+  },
+];
+
+// ─── Seed revenue chart data ───────────────────────────────────────────────────
+
+export const seedRevenue = Array.from({ length: 6 }, (_, i) => {
+  const d = new Date();
+  d.setMonth(d.getMonth() - (5 - i));
+  return {
+    month: d.toLocaleDateString("en-US", { month: "short" }),
+    revenue: Math.round(3200 + Math.random() * 4800),
+    expenses: Math.round(800 + Math.random() * 1200),
+    jobs: Math.round(8 + Math.random() * 15),
+  };
+});

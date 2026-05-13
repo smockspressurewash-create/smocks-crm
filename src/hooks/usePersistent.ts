@@ -1,50 +1,57 @@
-import { useState, useEffect } from 'react';
+// @ts-nocheck
+import { useState, useEffect, useRef } from "react";
 
-// usePersistent — stores JSON in window.storage (artifact storage API), falls back to in-memory
-export const usePersistent = <T>(key: string, initialValue: T): [T, React.Dispatch<React.SetStateAction<T>>, boolean] => {
-  const [value, setValue] = useState<T>(initialValue);
-  const [hydrated, setHydrated] = useState(false);
+type StorageValue = string | number | boolean | object | null;
 
+/**
+ * usePersistent — localStorage-backed state with async window.storage fallback.
+ * Starts with initialValue synchronously, then hydrates from storage.
+ */
+export function usePersistent<T extends StorageValue>(
+  key: string,
+  initialValue: T
+): [T, React.Dispatch<React.SetStateAction<T>>] {
+  // Synchronous init from localStorage for instant render
+  const [value, setValue] = useState<T>(() => {
+    try {
+      const raw = localStorage.getItem(key);
+      if (raw !== null) {
+        try { return JSON.parse(raw) as T; } catch { return raw as unknown as T; }
+      }
+    } catch { /* localStorage blocked */ }
+    return initialValue;
+  });
+
+  const hydrated = useRef(false);
+
+  // Hydrate from window.storage (Claude artifact sandbox) if available
   useEffect(() => {
-    let cancelled = false;
+    if (hydrated.current) return;
     const load = async () => {
       try {
-        if (typeof window !== "undefined") {
-          if ((window as any).storage) {
-            const r = await (window as any).storage.get(key);
-            if (!cancelled && r && r.value !== undefined) {
-              const parsed = typeof r.value === "string" ? JSON.parse(r.value) : r.value;
-              setValue(parsed);
-              setHydrated(true);
-              return;
-            }
-          }
-          const local = localStorage.getItem(key);
-          if (!cancelled && local) {
-            setValue(JSON.parse(local));
+        if (typeof window !== "undefined" && (window as unknown as Record<string, unknown>).storage) {
+          const storage = (window as unknown as { storage: { get: (k: string) => Promise<{ value: unknown } | null> } }).storage;
+          const r = await storage.get(key);
+          if (r && r.value !== undefined) {
+            const parsed = typeof r.value === "string"
+              ? (() => { try { return JSON.parse(r.value as string); } catch { return r.value; } })()
+              : r.value;
+            setValue(parsed as T);
           }
         }
-      } catch (e) {
-      } finally {
-        if (!cancelled) setHydrated(true);
-      }
+      } catch { /* ignore */ }
+      hydrated.current = true;
     };
     load();
-    return () => { cancelled = true; };
-  }, [key]);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Persist to localStorage on every change
   useEffect(() => {
-    if (!hydrated) return;
-    if (typeof window === "undefined") return;
+    if (!hydrated.current && value === initialValue) return;
     try {
-      const serialized = JSON.stringify(value);
-      localStorage.setItem(key, serialized);
-      if ((window as any).storage) {
-        (window as any).storage.set(key, serialized).catch(() => {});
-      }
-    } catch (e) {
-    }
-  }, [key, value, hydrated]);
+      localStorage.setItem(key, JSON.stringify(value));
+    } catch { /* quota exceeded or blocked */ }
+  }, [key, value]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  return [value, setValue, hydrated];
-};
+  return [value, setValue];
+}

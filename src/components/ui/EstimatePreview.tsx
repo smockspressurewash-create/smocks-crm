@@ -1,12 +1,51 @@
-import React from 'react';
-import { CheckCircle, Receipt, Briefcase, RefreshCw, Clock } from 'lucide-react';
-import { Modal } from './Modal';
-import { GBtn } from './GBtn';
-import { fmt } from '../../lib/utils';
+// @ts-nocheck
+// auto-extracted from Smock's OS monolith
+import React, { useState, useEffect, useRef, useCallback } from "react";
+import {
+  LayoutDashboard, Users, FileText, Briefcase, Bot, BarChart3,
+  Settings, Bell, Menu, X, Plus, Search, Edit, Trash2, Send,
+  DollarSign, TrendingUp, CheckCircle, Clock, MapPin, Phone, Mail,
+  Calendar, AlertTriangle, Truck, Receipt, FlaskConical, MessageSquare,
+  Sun, Moon, Download, Undo2, Redo2, Volume2, Play, Cloud, Star,
+  Award, Target, Shield, Key, Eye, EyeOff, Save, ChevronRight,
+  ChevronLeft, GripVertical, Tag, Copy, Ban, RefreshCw, Percent,
+  CreditCard, Repeat, XCircle, Activity, Zap, UserCheck, AlertCircle,
+  Clipboard, Heart, Dumbbell, Droplet, Smile, Flame, Wind, Snowflake,
+  Globe, Share2, Trophy, ExternalLink, Workflow, ToggleLeft, ToggleRight,
+  Navigation, TrendingDown, PieChart as PieIcon, Package, Wrench,
+  CheckSquare, Route, Users2, Layers, ArrowRight, BarChart2, Filter,
+  Paperclip, ImageIcon, FileImage, MoreVertical, Mic, Upload, Link, Lock, User
+} from "lucide-react";
+import {
+  BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid,
+  Tooltip, ResponsiveContainer, Area, AreaChart, LineChart, Line,
+  ComposedChart, Legend
+} from "recharts";
+import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE } from "../../lib/utils";
+import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
+import { twilioSend, sendEmail } from "../../lib/messaging";
+import { seedWeather } from "../../lib/weather";
+import { seedCustomers, seedEstimates, seedJobs, seedEmployees, seedVehicles, seedExpenses, seedChemicals, seedServices, seedAutomations, seedEmailTemplates, seedSmsTemplates, seedRewardTiers, seedReferrals, seedMaintenance, campaignTemplates, seedSocialPosts, seedTimeline, seedGoals, seedReminders, seedAccountabilityEntries, seedMileage, seedLeadSrc, STEP_TYPES, AUTOMATION_TEMPLATES } from "../../lib/seed";
+import { callModel, MODELS } from "../../lib/api";
+import { createCalendarEvent, updateCalendarEvent, deleteCalendarEvent, fetchDriveFiles, MOCK_GOOGLE_DATA, fmtSize, fmtDate, fileIcon } from "../../lib/google";
+import { usePersistent } from "../../hooks/usePersistent";
+import { usePersistentRaw } from "../../hooks/usePersistentRaw";
+import { Glass } from "./Glass";
+import { GBtn } from "./GBtn";
+import { GInput } from "./GInput";
+import { GDate } from "./GDate";
+import { GSel } from "./GSel";
+import { GTxt } from "./GTxt";
+import { Modal } from "./Modal";
+import { Badge } from "./Badge";
+import { Stat } from "./Stat";
+import { PBar } from "./PBar";
+import { PageFade } from "./PageFade";
+import { TimeframeSelector } from "./TimeframeSelector";
 
-export function EstimatePreview({ estimate: e, customers = [], onClose, onApprove, onConvert, onSchedule, toast }: any) {
+export function EstimatePreview({ estimate: e, customers = [], onClose, onApprove, onConvert }) {
   if (!e) return null;
-  const c = customers.find((x: any) => x.id === e.customerId);
+  const c = customers.find(x => x.id === e.customerId);
 
   return (
     <Modal open={!!e} onClose={onClose} title={"Estimate #" + e.id.toUpperCase()} maxW="max-w-2xl">
@@ -18,7 +57,7 @@ export function EstimatePreview({ estimate: e, customers = [], onClose, onApprov
         <div className="mb-5 text-sm"><div className="text-gray-500 text-xs uppercase tracking-wider mb-1">Bill to</div><div className="font-semibold">{c?.firstName} {c?.lastName}</div><div className="text-gray-600 text-xs">{c?.address}</div></div>
         <table className="w-full text-sm mb-4">
           <thead><tr className="border-b border-gray-300 text-xs uppercase tracking-wider text-gray-500"><th className="text-left py-2">Description</th><th className="text-right py-2">Qty</th><th className="text-right py-2">Unit</th><th className="text-right py-2">Amount</th></tr></thead>
-          <tbody>{(e.lineItems || []).map((li: any) => <tr key={li.id} className="border-b border-gray-100"><td className="py-2">{li.description}</td><td className="text-right py-2">{li.quantity}</td><td className="text-right py-2">{fmt(li.unitPrice)}</td><td className="text-right py-2 font-medium">{fmt(li.quantity * li.unitPrice)}</td></tr>)}</tbody>
+          <tbody>{(e.lineItems || []).map(li => <tr key={li.id} className="border-b border-gray-100"><td className="py-2">{li.description}</td><td className="text-right py-2">{li.quantity}</td><td className="text-right py-2">{fmt(li.unitPrice)}</td><td className="text-right py-2 font-medium">{fmt(li.quantity * li.unitPrice)}</td></tr>)}</tbody>
         </table>
         <div className="ml-auto w-56 text-sm space-y-1">
           <div className="flex justify-between"><span className="text-gray-600">Subtotal</span><span>{fmt(e.subtotal)}</span></div>
@@ -41,8 +80,8 @@ export function EstimatePreview({ estimate: e, customers = [], onClose, onApprov
         {e.status === "approved" && onSchedule && <GBtn variant="ghost" onClick={() => onSchedule(e)} className="flex-1"><Briefcase size={14} className="inline mr-1.5" />Schedule Job</GBtn>}
         {e.invoiced && !e.paidAt && <GBtn variant="ghost" onClick={() => {
           const link = "smocks.com/portal/" + e.id + "?t=" + Date.now();
-          navigator.clipboard?.writeText(link).catch(() => { });
-          if (toast) toast("Payment link copied: " + link);
+          navigator.clipboard?.writeText(link).catch(() => {});
+          toast("Payment link copied: " + link);
         }} className="flex-1 !text-xs !border-yellow-700/40 !text-yellow-300"><RefreshCw size={12} className="inline mr-1" />Regen Pay Link</GBtn>}
         {e.invoiced && e.paidAt && <div className="flex-1 text-center py-2.5 rounded-xl bg-green-950/30 border border-green-700/40 text-green-300 text-sm flex items-center justify-center gap-1.5"><CheckCircle size={14} />Paid {e.paidAt}</div>}
         {e.invoiced && !e.paidAt && <div className="flex-1 text-center py-2.5 rounded-xl bg-yellow-950/30 border border-yellow-700/40 text-yellow-300 text-sm flex items-center justify-center gap-1.5"><Clock size={14} />Invoiced — awaiting payment</div>}
@@ -50,3 +89,6 @@ export function EstimatePreview({ estimate: e, customers = [], onClose, onApprov
     </Modal>
   );
 }
+
+// ===== JOBS =====
+// ===== BEFORE/AFTER SLIDER =====

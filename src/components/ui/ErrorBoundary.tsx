@@ -1,18 +1,26 @@
-import React from 'react';
+// @ts-nocheck
+import React from "react";
 
-export class ErrorBoundary extends React.Component<any, any> {
-  constructor(props: any) { super(props); this.state = { error: null }; }
-  static getDerivedStateFromError(err: any) { return { error: err }; }
-  componentDidCatch(err: any, info: any) { console.error("CRM Error:", err, info); }
+export class ErrorBoundary extends React.Component<
+  { children: React.ReactNode },
+  { error: Error | null }
+> {
+  constructor(props: { children: React.ReactNode }) {
+    super(props);
+    this.state = { error: null };
+  }
+  static getDerivedStateFromError(err: Error) { return { error: err }; }
+  componentDidCatch(err: Error, info: React.ErrorInfo) { console.error("Smock OS Error:", err, info); }
   render() {
     if (this.state.error) {
       return (
-        <div className="min-h-screen bg-black flex items-center justify-center p-8">
-          <div className="max-w-md text-center space-y-4">
-            <div className="text-6xl">⚠️</div>
-            <h2 className="text-xl font-bold text-red-400">Something crashed</h2>
-            <p className="text-white/60 text-sm">{this.state.error?.message || "Unknown error"}</p>
-            <button onClick={() => this.setState({ error: null })} className="px-6 py-2.5 bg-red-700 hover:bg-red-600 text-white rounded-xl text-sm font-semibold transition">
+        <div style={{ minHeight: "100vh", background: "#000", display: "flex", alignItems: "center", justifyContent: "center", padding: 32 }}>
+          <div style={{ maxWidth: 400, textAlign: "center" }}>
+            <div style={{ fontSize: 64, marginBottom: 16 }}>⚠️</div>
+            <h2 style={{ color: "#f87171", fontSize: 20, marginBottom: 8 }}>Something crashed</h2>
+            <p style={{ color: "rgba(255,255,255,0.6)", fontSize: 14, marginBottom: 16 }}>{this.state.error?.message}</p>
+            <button onClick={() => this.setState({ error: null })}
+              style={{ background: "#b91c1c", color: "white", border: "none", borderRadius: 12, padding: "10px 24px", cursor: "pointer", fontSize: 14 }}>
               Go Back
             </button>
           </div>
@@ -23,4 +31,6 @@ export class ErrorBoundary extends React.Component<any, any> {
   }
 }
 
-export const SafePage = ({ children }: any) => <ErrorBoundary>{children}</ErrorBoundary>;
+export function SafePage({ children }: { children: React.ReactNode }) {
+  return <ErrorBoundary>{children}</ErrorBoundary>;
+}

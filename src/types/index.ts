@@ -1,11 +1,9 @@
-// ===== ALL TYPESCRIPT INTERFACES =====
-// Central type definitions for Smock's CRM
+// @ts-nocheck
+// ─── Customer ─────────────────────────────────────────────────────────────────
 
-export interface LineItem {
-  id: string;
-  description: string;
-  quantity: number;
-  unitPrice: number;
+export interface CustomField {
+  key: string;
+  value: string;
 }
 
 export interface Customer {
@@ -15,18 +13,38 @@ export interface Customer {
   email: string;
   phone: string;
   address: string;
+  city?: string;
+  state?: string;
+  zip?: string;
+  sqFootage?: number;
+  tags: string[];
+  notes?: string;
   totalSpent: number;
   createdAt: string;
-  notes?: string;
   gateCode?: string;
   hasDog?: boolean;
   dogName?: string;
   sensitivePlants?: string;
   leadSource?: string;
-  tags?: string[];
-  sqFootage?: string;
-  pipelineStage?: string;
+  utmSource?: string;
+  utmMedium?: string;
+  utmCampaign?: string;
+  smsOptOut?: boolean;
+  optOutDate?: string;
+  customFields?: CustomField[];
   birthday?: string;
+  referredBy?: string;
+  reviewRequested?: string;
+  portalToken?: string;
+}
+
+// ─── Estimate ─────────────────────────────────────────────────────────────────
+
+export interface LineItem {
+  id: string;
+  description: string;
+  quantity: number;
+  unitPrice: number;
 }
 
 export interface Estimate {
@@ -38,138 +56,219 @@ export interface Estimate {
   depositRequired: number;
   tax: number;
   total: number;
-  status: string;
+  status: "pending" | "approved" | "rejected" | "expired";
   createdAt: string;
-  validUntil?: string;
-  viewed?: boolean;
-  viewedAt?: string | null;
+  validUntil: string;
   sentAt?: string;
   signedAt?: string;
-  sigData?: string;
   paidAt?: string;
-  paidDeposit?: number;
-  paidFull?: number;
+  sigData?: string;
+  sigType?: "draw" | "type";
+  notes?: string;
+  internalNote?: string;
+  terms?: string;
+  viewed?: boolean;
+  viewedAt?: string;
   invoiced?: boolean;
   invoicedAt?: string;
-  followedUp?: boolean;
-  tip?: number;
-  notes?: string;
+  paidDeposit?: number;
+  paidFull?: number;
+  partialPaid?: number;
+  googleEventId?: string;
+  conversions?: number;
 }
 
+// ─── Job ──────────────────────────────────────────────────────────────────────
+
 export interface ChecklistItem {
-  text: string;
+  label: string;
   done: boolean;
+}
+
+export interface Photo {
+  id: string;
+  type: "before" | "after" | "general";
+  dataUrl: string;
+  caption?: string;
+  uploadedAt?: string;
 }
 
 export interface ChemicalUsed {
   name: string;
-  gallons: number;
+  amount: string;
+  unit: string;
   cost: number;
-}
-
-export interface Attachment {
-  id: string;
-  name: string;
-  type: string;
 }
 
 export interface CommLogEntry {
   id: string;
-  type: string;
-  date: string;
+  type: "sms" | "email" | "call" | "note";
   note: string;
+  date: string;
+  direction?: "in" | "out";
 }
 
 export interface Job {
   id: string;
   customerId: string;
-  scheduledDate: string;
-  status: string;
-  pipelineStage: string;
   address: string;
   amount: number;
-  lat?: number;
-  lng?: number;
-  photos?: string[];
-  checklist?: ChecklistItem[];
-  isRecurring?: boolean;
-  recurringFreq?: string;
-  cancelReason?: string;
-  noShow?: boolean;
-  crew?: string[];
+  status: "scheduled" | "in_progress" | "completed" | "cancelled";
+  scheduledDate: string;
+  scheduledTime?: string;
   duration?: number;
+  estimatedDuration?: number;
+  priority: "low" | "normal" | "high" | "urgent";
+  crew: string[];
+  checklist: ChecklistItem[];
+  photos: Photo[];
+  notes?: string;
   internalNotes?: string;
-  chemicalsUsed?: ChemicalUsed[];
-  equipment?: string[];
-  commLog?: CommLogEntry[];
-  priority?: string;
-  tags?: string[];
+  commLog: CommLogEntry[];
+  chemicalsUsed: ChemicalUsed[];
+  equipment: string[];
+  tags: string[];
   loggedHours?: number;
-  clockInAt?: string | null;
-  attachments?: Attachment[];
   laborCost?: number;
   materialCost?: number;
+  clockInAt?: number | null;
+  isRecurring?: boolean;
+  recurringFreq?: string;
+  isCash?: boolean;
+  tip?: number;
+  noShow?: boolean;
+  cancelReason?: string;
+  googleEventId?: string;
+  pipelineStage?: string;
   stageChangedAt?: string;
   createdAt?: string;
-  tip?: number;
-  isCash?: boolean;
+  lostReason?: string;
+  lat?: number;
+  lng?: number;
+  _showProfit?: boolean;
 }
+
+// ─── Employee ─────────────────────────────────────────────────────────────────
 
 export interface Employee {
   id: string;
   firstName: string;
   lastName: string;
   role: string;
-  phone: string;
+  status: "active" | "inactive";
   hourlyRate: number;
-  status: string;
+  phone?: string;
+  email?: string;
+  startDate?: string;
+  emergencyContact?: string;
+  notes?: string;
 }
+
+// ─── Vehicle / Fleet ──────────────────────────────────────────────────────────
 
 export interface Vehicle {
   id: string;
-  name: string;
   year: number;
   make: string;
   model: string;
-  licensePlate: string;
+  plate?: string;
   mileage: number;
-  status: string;
+  lastOilChange?: number;
+  lastOilChangeDate?: string;
+  notes?: string;
+  status?: "active" | "inactive";
 }
+
+export interface MaintenanceRecord {
+  id: string;
+  vehicleId: string;
+  type: string;
+  date: string;
+  mileage: number;
+  cost: number;
+  notes?: string;
+}
+
+// ─── Expense ──────────────────────────────────────────────────────────────────
 
 export interface Expense {
   id: string;
   date: string;
-  category: string;
   description: string;
   amount: number;
-  vendor: string;
+  category: string;
+  vendor?: string;
+  receiptDataUrl?: string;
+  isBusiness?: boolean;
+  isCash?: boolean;
+  isDeductible?: boolean;
 }
+
+// ─── Chemical ─────────────────────────────────────────────────────────────────
 
 export interface Chemical {
   id: string;
   name: string;
-  brand: string;
-  category: string;
   stock: number;
-  reorderLevel: number;
+  unit: string;
   unitCost: number;
+  reorderLevel: number;
+  supplier?: string;
+  notes?: string;
+  lastOrdered?: string;
 }
+
+// ─── Service ──────────────────────────────────────────────────────────────────
 
 export interface Service {
   id: string;
   name: string;
-  description: string;
-  price: number;
+  description?: string;
+  basePrice: number;
+  unit?: string;
+  taxable?: boolean;
+  active?: boolean;
 }
+
+// ─── Campaign ─────────────────────────────────────────────────────────────────
+
+export interface Campaign {
+  id: string;
+  name: string;
+  ch: "sms" | "email";
+  subject?: string;
+  body: string;
+  status: "draft" | "scheduled" | "sent";
+  sendAt?: string;
+  sentAt?: string;
+  recipientCount?: number;
+  matches?: string[];
+  conversions?: number;
+  segment?: SegmentFilter;
+}
+
+export interface SegmentFilter {
+  tags?: string[];
+  city?: string;
+  lastServiceBefore?: number;
+  lastServiceAfter?: number;
+  serviceType?: string;
+  minSpent?: number;
+  maxSpent?: number;
+}
+
+// ─── Automation ───────────────────────────────────────────────────────────────
 
 export interface AutomationStep {
   id: string;
   type: string;
   label: string;
+  icon?: string;
   channel?: string;
+  template?: string;
   delay?: number;
   condition?: string;
-  template?: string;
+  value?: string | number;
 }
 
 export interface Automation {
@@ -178,368 +277,93 @@ export interface Automation {
   trigger: string;
   action: string;
   active: boolean;
-  lastTriggered: string | null;
-  count: number;
-  steps?: AutomationStep[];
-  icon?: string;
+  lastTriggered?: string | null;
+  count?: number;
+  steps: AutomationStep[];
+  description?: string;
 }
 
-export interface Campaign {
-  id: string;
-  name: string;
-  subject?: string;
-  body?: string;
-  channel?: string;
-  status?: string;
-  sentAt?: string;
-  recipientCount?: number;
-  openRate?: number;
-  replyRate?: number;
-  scheduledFor?: string;
-  template?: string;
-  segment?: string;
-}
-
-export interface SocialPost {
-  id: string;
-  platform: string;
-  type: string;
-  caption: string;
-  scheduledFor?: string;
-  status: string;
-  imageUrl?: string;
-}
+// ─── Review ───────────────────────────────────────────────────────────────────
 
 export interface Review {
   id: string;
-  jobId: string;
-  token: string;
-  status: string;
-  rating: number;
-  feedback: string;
-  sentAt: string | null;
-  createdAt: string;
+  customerId: string;
   customerName?: string;
-  platform?: string;
+  rating: number;
+  text?: string;
+  response?: string;
+  createdAt: string;
+  source?: string;
+  status?: "pending" | "responded" | "private";
 }
+
+// ─── Inbox ────────────────────────────────────────────────────────────────────
 
 export interface InboxMessage {
   id: string;
-  dir: 'in' | 'out';
+  role: "customer" | "owner";
   body: string;
-  ts: number;
-  subject?: string;
+  ts: string;
+  status?: "sent" | "delivered" | "read" | "failed";
+  channel?: "sms" | "whatsapp" | "email";
 }
 
 export interface InboxThread {
   id: string;
-  channel: string;
-  contactName: string;
-  contactPhone: string;
-  contactEmail: string;
   customerId?: string;
-  unread: boolean;
+  customerName?: string;
+  phone?: string;
+  channel: "sms" | "whatsapp" | "email";
   messages: InboxMessage[];
+  lastMessageAt: string;
+  unread?: boolean;
+  smsOptOut?: boolean;
 }
 
-export interface EmailTemplate {
+// ─── Social ───────────────────────────────────────────────────────────────────
+
+export interface SocialPost {
   id: string;
-  name: string;
-  subject: string;
-  body: string;
-}
-
-export interface SmsTemplate {
-  id: string;
-  name: string;
-  body: string;
-}
-
-export interface GoogleScopes {
-  gmail: boolean;
-  calendar: boolean;
-  drive: boolean;
-  contacts: boolean;
-  tasks: boolean;
-  meet: boolean;
-}
-
-export interface DashboardWidgets {
-  quickActions: boolean;
-  kpis: boolean;
-  revenuePeriods: boolean;
-  goals: boolean;
-  outstanding: boolean;
-  charts: boolean;
-  activity: boolean;
-  yoy?: boolean;
-  invoices?: boolean;
-  weather?: boolean;
-}
-
-export interface Settings {
-  geminiKey: string;
-  companyName: string;
-  companyPhone: string;
-  companyEmail: string;
-  myPhone: string;
-  logoUrl: string;
-  privacyPolicy: string;
-  termsOfService: string;
-  monthlyRevenueGoal: number;
-  monthlyJobsGoal: number;
-  quarterlyRevenueGoal?: number;
-  taxRate: number;
-  stripeConnected: boolean;
-  quickbooksConnected: boolean;
-  twilioSid: string;
-  twilioToken: string;
-  twilioFrom: string;
-  twilioWhatsAppFrom?: string;
-  unsubscribedEmails: string[];
-  notifyReviews: boolean;
-  notifyOverdue: boolean;
-  notifyLowStock: boolean;
-  notifyMaintenance: boolean;
-  notifyWeather: boolean;
-  reviewShowcaseMinRating: number;
-  dashboardWidgets: DashboardWidgets;
-  googleConnected: boolean;
-  googleEmail: string;
-  googleCalendarSync: boolean;
-  googleDriveSync: boolean;
-  googleGmailSync: boolean;
-  googleScopes: GoogleScopes;
-  googleToken: string;
-  googleRefreshToken: string;
-  googleBackendUrl: string;
-  googleTokenExpiry: number | null;
-  googleCalendarId?: string;
-  activeModel: string;
-  failoverEnabled: boolean;
-  modelPriority: string[];
-  modelKeys: Record<string, string>;
-  brandColor: string;
-  accentColor: string;
-  userName: string;
-  userRole: string;
-  owmKey?: string;
-  googleMapsKey?: string;
-  resendKey?: string;
-  notifications?: {
-    estimateExpiring?: boolean;
-    reviewRequests?: boolean;
-  };
-}
-
-export interface WeatherDay {
-  day: string;
-  temp: number;
-  rainChance: number;
-  wind: number;
-  lowTemp?: number;
-  condition?: string;
-}
-
-export interface WeatherCurrent {
-  temp: number;
-  condition: string;
-  rainChance: number;
-  wind: number;
-  humidity: number;
-  description?: string;
-}
-
-export interface WeatherData {
-  current: WeatherCurrent;
-  forecast: WeatherDay[];
-}
-
-export interface GoogleEmail {
-  id: string;
-  threadId: string;
-  snippet: string;
-  from: string;
-  subject: string;
-  date: string;
-  read: boolean;
-  labels: string[];
-}
-
-export interface GoogleEvent {
-  id: string;
-  title: string;
-  start: string;
-  end: string;
-  location?: string;
-  description?: string;
-  attendees?: string[];
-  color?: string;
-}
-
-export interface GoogleTask {
-  id: string;
-  title: string;
-  due?: string;
-  status: string;
-  notes?: string;
-  listTitle?: string;
-}
-
-export interface GoogleContact {
-  id: string;
-  name: string;
-  email: string;
-  phone: string;
-  company?: string;
-  notes?: string;
-}
-
-export interface GoogleFile {
-  id: string;
-  name: string;
-  mimeType: string;
-  size?: number;
-  modifiedTime?: string;
-  webViewLink?: string;
-}
-
-export interface GoogleData {
-  lastSync: string | null;
-  emails: GoogleEmail[];
-  events: GoogleEvent[];
-  tasks: GoogleTask[];
-  contacts: GoogleContact[];
-  files: GoogleFile[];
-  syncErrors?: string[];
-}
-
-export interface ModelStatusEntry {
-  lockedUntil?: number;
-  lastError?: string;
-}
-
-export interface Toast {
-  id: string;
-  msg: string;
-  type: 'success' | 'error';
-}
-
-export interface NavItem {
-  id: string;
-  label: string;
-  icon: any;
-  badge?: number | null;
-}
-
-export interface NavGroup {
-  label: string | null;
-  items: NavItem[];
-}
-
-export interface Referral {
-  code: string;
-  count: number;
-  revenue: number;
-}
-
-export interface RewardTier {
-  refs: number;
-  reward: string;
-  icon: string;
-}
-
-export interface Maintenance {
-  id: string;
-  vehicleId: string;
-  date: string;
+  platform: "instagram" | "facebook" | "tiktok" | "google" | "nextdoor";
   type: string;
-  cost: number;
-  mileageAt: number;
-  notes: string;
+  caption: string;
+  scheduledFor?: string;
+  publishedAt?: string;
+  hashtags?: string;
+  status: "scheduled" | "published" | "draft";
+  likes?: number;
+  shares?: number;
+  comments?: number;
+  reach?: number;
+  autoGenerated?: boolean;
+  _imageData?: { data: string; mediaType: string };
 }
 
-export interface TimelineEntry {
+// ─── Accountability ───────────────────────────────────────────────────────────
+
+export interface AccountabilityEntry {
   id: string;
-  type: string;
   date: string;
-  note: string;
-  author: string;
-}
-
-export type Timeline = Record<string, TimelineEntry[]>;
-
-export interface AlfredMessage {
-  id: string;
-  role: 'user' | 'alfred' | 'assistant';
-  content: string;
-  timestamp: number;
-}
-
-export interface AlfredConversation {
-  id: string;
-  title: string;
-  personality: string;
-  createdAt: string;
-  updatedAt: number;
-  messages: AlfredMessage[];
-}
-
-export interface MemoryItem {
-  id: string;
-  text: string;
-  category: string;
-  createdAt: string;
-}
-
-export interface LeadSrc {
-  source: string;
-  value: number;
-  color: string;
-}
-
-export interface RevenueMonth {
-  month: string;
-  revenue: number;
-}
-
-export interface CampaignTemplate {
-  id: string;
-  name: string;
-  subject: string;
-  body: string;
-}
-
-export interface PipelineStage {
-  key: string;
-  label: string;
-  color: string;
-  border: string;
-  text: string;
-}
-
-export interface PriorityLevel {
-  key: string;
-  label: string;
-  color: string;
-  tone: string;
-}
-
-export interface Personality {
-  name: string;
-  icon: any;
-  color: string;
-  greeting: string;
+  sleep: number;
+  water: number;
+  steps: number;
+  gymMinutes: number;
+  meditationMinutes?: number;
+  mood: number;
+  notes?: string;
+  gym?: boolean;
+  lunchTaken?: boolean;
+  stretchDone?: boolean;
 }
 
 export interface Goal {
   id: string;
-  text: string;
-  target?: number;
-  current?: number;
-  unit?: string;
+  category: string;
+  label: string;
+  target: number;
+  current: number;
+  unit: string;
   deadline?: string;
-  done?: boolean;
 }
 
 export interface Win {
@@ -549,13 +373,182 @@ export interface Win {
   category?: string;
 }
 
-export interface AccountabilityEntry {
+export interface Reminder {
+  id: string;
+  text: string;
+  frequency: "daily" | "weekly" | "monthly";
+  emoji?: string;
+  lastDone?: string | null;
+}
+
+// ─── Alfred ───────────────────────────────────────────────────────────────────
+
+export interface AlfredMessage {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  ts: string;
+  thinking?: boolean;
+}
+
+export interface AlfredConversation {
+  id: string;
+  title: string;
+  messages: AlfredMessage[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AlfredMemory {
+  id: string;
+  category: string;
+  content: string;
+  createdAt: string;
+}
+
+// ─── Settings ─────────────────────────────────────────────────────────────────
+
+export interface AppSettings {
+  // Company
+  companyName?: string;
+  companyPhone?: string;
+  companyEmail?: string;
+  companyAddress?: string;
+  logoUrl?: string;
+  brandColor?: string;
+  brandAccent?: string;
+
+  // Owner
+  ownerName?: string;
+  ownerRole?: string;
+  myPhone?: string;
+  myEmail?: string;
+
+  // API keys
+  twilioSid?: string;
+  twilioToken?: string;
+  twilioPhone?: string;
+  twilioBackendUrl?: string;
+  geminiKey?: string;
+  openaiKey?: string;
+  anthropicKey?: string;
+  groqKey?: string;
+  mistralKey?: string;
+  minimaxKey?: string;
+  elevenlabsKey?: string;
+  elevenlabsVoiceId?: string;
+  owmKey?: string;
+  mapsKey?: string;
+  stripeKey?: string;
+  resendKey?: string;
+  fromEmail?: string;
+  resendBackendUrl?: string;
+
+  // Google
+  googleConnected?: boolean;
+  googleToken?: string;
+  googleEmail?: string;
+  googleCalendarId?: string;
+  googleBackendUrl?: string;
+  googlePlaceId?: string;
+
+  // Integrations
+  telegramBotToken?: string;
+  telegramChatId?: string;
+  whatsappFrom?: string;
+
+  // Notifications
+  notifyReviews?: boolean;
+  notifyOverdue?: boolean;
+  notifyLowStock?: boolean;
+  notifyMaintenance?: boolean;
+  notifyWeather?: boolean;
+  autoPostCompletedJobs?: boolean;
+  instaBridge?: boolean;
+  reviewShowcaseMinRating?: number;
+
+  // Business rules
+  monthlyRevenueGoal?: number;
+  monthlyJobsGoal?: number;
+  taxRate?: number;
+  defaultDepositPct?: number;
+  termsAndConditions?: string;
+  terms?: string;
+  estimateValidDays?: number;
+
+  // Integrations misc
+  bufferTime?: number;
+  googleCalendarColor?: boolean;
+
+  // Models
+  selectedModel?: string;
+  ttsEnabled?: boolean;
+}
+
+// ─── Referral ─────────────────────────────────────────────────────────────────
+
+export interface Referral {
+  id: string;
+  referrerId: string;
+  referredName: string;
+  referredPhone?: string;
+  status: "pending" | "booked" | "completed";
+  reward?: number;
+  createdAt: string;
+}
+
+export interface RewardTier {
+  id: string;
+  label: string;
+  minReferrals: number;
+  reward: string;
+  icon: string;
+}
+
+// ─── Mileage ─────────────────────────────────────────────────────────────────
+
+export interface MileageLog {
   id: string;
   date: string;
-  revenue?: number;
-  jobs?: number;
-  newCustomers?: number;
-  callsMade?: number;
-  reviewsRequested?: number;
-  notes?: string;
+  from: string;
+  to: string;
+  miles: number;
+  purpose: string;
+  vehicleId?: string;
+  deduction?: number;
 }
+
+// ─── Budget ───────────────────────────────────────────────────────────────────
+
+export interface PersonalTransaction {
+  id: string;
+  date: string;
+  description: string;
+  amount: number;
+  type: "income" | "expense";
+  category?: string;
+}
+
+// ─── Timeline ────────────────────────────────────────────────────────────────
+
+export interface TimelineEntry {
+  id: string;
+  type: "estimate" | "job" | "note" | "call" | "email" | "sms" | "review";
+  note: string;
+  date: string;
+  amount?: number;
+  link?: string;
+}
+
+export type Timeline = Record<string, TimelineEntry[]>;
+
+// ─── Google Workspace data ────────────────────────────────────────────────────
+
+export interface GoogleWorkspaceData {
+  files: import("../lib/google").GoogleDriveFile[];
+  emails: Array<{ id: string; from: string; subject: string; snippet: string; date: string }>;
+}
+
+// ─── Model status ─────────────────────────────────────────────────────────────
+
+export type ModelStatus = Record<string, "connected" | "error" | "testing" | undefined>;

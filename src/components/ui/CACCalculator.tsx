@@ -1,16 +1,57 @@
-import React, { useState } from 'react';
-import { TIMEFRAMES, fmt } from '../../lib/utils';
+// @ts-nocheck
+// auto-extracted from Smock's OS monolith
+import React, { useState, useEffect, useRef, useCallback } from "react";
+import {
+  LayoutDashboard, Users, FileText, Briefcase, Bot, BarChart3,
+  Settings, Bell, Menu, X, Plus, Search, Edit, Trash2, Send,
+  DollarSign, TrendingUp, CheckCircle, Clock, MapPin, Phone, Mail,
+  Calendar, AlertTriangle, Truck, Receipt, FlaskConical, MessageSquare,
+  Sun, Moon, Download, Undo2, Redo2, Volume2, Play, Cloud, Star,
+  Award, Target, Shield, Key, Eye, EyeOff, Save, ChevronRight,
+  ChevronLeft, GripVertical, Tag, Copy, Ban, RefreshCw, Percent,
+  CreditCard, Repeat, XCircle, Activity, Zap, UserCheck, AlertCircle,
+  Clipboard, Heart, Dumbbell, Droplet, Smile, Flame, Wind, Snowflake,
+  Globe, Share2, Trophy, ExternalLink, Workflow, ToggleLeft, ToggleRight,
+  Navigation, TrendingDown, PieChart as PieIcon, Package, Wrench,
+  CheckSquare, Route, Users2, Layers, ArrowRight, BarChart2, Filter,
+  Paperclip, ImageIcon, FileImage, MoreVertical, Mic, Upload, Link, Lock, User
+} from "lucide-react";
+import {
+  BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid,
+  Tooltip, ResponsiveContainer, Area, AreaChart, LineChart, Line,
+  ComposedChart, Legend
+} from "recharts";
+import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE } from "../../lib/utils";
+import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
+import { twilioSend, sendEmail } from "../../lib/messaging";
+import { seedWeather } from "../../lib/weather";
+import { seedCustomers, seedEstimates, seedJobs, seedEmployees, seedVehicles, seedExpenses, seedChemicals, seedServices, seedAutomations, seedEmailTemplates, seedSmsTemplates, seedRewardTiers, seedReferrals, seedMaintenance, campaignTemplates, seedSocialPosts, seedTimeline, seedGoals, seedReminders, seedAccountabilityEntries, seedMileage, seedLeadSrc, STEP_TYPES, AUTOMATION_TEMPLATES } from "../../lib/seed";
+import { callModel, MODELS } from "../../lib/api";
+import { createCalendarEvent, updateCalendarEvent, deleteCalendarEvent, fetchDriveFiles, MOCK_GOOGLE_DATA, fmtSize, fmtDate, fileIcon } from "../../lib/google";
+import { usePersistent } from "../../hooks/usePersistent";
+import { usePersistentRaw } from "../../hooks/usePersistentRaw";
+import { Glass } from "./Glass";
+import { GBtn } from "./GBtn";
+import { GInput } from "./GInput";
+import { GDate } from "./GDate";
+import { GSel } from "./GSel";
+import { GTxt } from "./GTxt";
+import { Modal } from "./Modal";
+import { Badge } from "./Badge";
+import { Stat } from "./Stat";
+import { PBar } from "./PBar";
+import { PageFade } from "./PageFade";
+import { TimeframeSelector } from "./TimeframeSelector";
 
-export function CACCalculator({ tfExpenses = [], customers = [], timeframe }: any) {
-  const [manualAdSpend, setManualAdSpend] = useState<any>(0);
-  const expenseAdSpend = (tfExpenses || []).filter((e: any) => (e.category || "").toLowerCase().includes("advert") || (e.category || "").toLowerCase().includes("marketing")).reduce((s: number, e: any) => s + Number(e.amount), 0);
+export function CACCalculator({ tfExpenses = [], customers = [], timeframe }) {
+  const [manualAdSpend, setManualAdSpend] = useState(0);
+  const expenseAdSpend = (tfExpenses || []).filter(e => (e.category || "").toLowerCase().includes("advert") || (e.category || "").toLowerCase().includes("marketing")).reduce((s, e) => s + Number(e.amount), 0);
   const adSpend = expenseAdSpend + Number(manualAdSpend);
-  const newCustomers = (customers || []).filter((c: any) => c.createdAt && new Date(c.createdAt).getTime() >= Date.now() - ((TIMEFRAMES.find(t => t.key === timeframe)?.days || 365) * 86400000)).length;
+  const newCustomers = (customers || []).filter(c => c.createdAt && new Date(c.createdAt).getTime() >= Date.now() - ((TIMEFRAMES.find(t => t.key === timeframe)?.days || 365) * 86400000)).length;
   const cac = newCustomers > 0 ? adSpend / newCustomers : 0;
-  const ltv = customers.length > 0 ? customers.reduce((s: number, c: any) => s + (c.totalSpent || 0), 0) / customers.length : 0;
+  const ltv = customers.length > 0 ? customers.reduce((s, c) => s + (c.totalSpent || 0), 0) / customers.length : 0;
   const ltvCacRatio = cac > 0 ? (ltv / cac).toFixed(1) : null;
   const tfLabel = TIMEFRAMES.find(t => t.key === timeframe)?.label || "All time";
-
   return (
     <div className="space-y-3">
       <div className="flex items-center gap-2 p-3 bg-black/40 border border-red-900/20 rounded-xl">
@@ -46,3 +87,4 @@ export function CACCalculator({ tfExpenses = [], customers = [], timeframe }: an
     </div>
   );
 }
+

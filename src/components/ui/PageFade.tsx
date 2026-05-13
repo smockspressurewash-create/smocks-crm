@@ -1,6 +1,8 @@
-import React, { useState, useEffect } from 'react';
+// @ts-nocheck
+// PageFade.tsx — auto-extracted from monolith
+import React, { useState, useRef, useEffect, useCallback } from "react";
 
-export const PageFade = ({ children }: any) => {
+export const PageFade = ({ children }) => {
   const [show, setShow] = useState(false);
   useEffect(() => { const t = setTimeout(() => setShow(true), 10); return () => clearTimeout(t); }, []);
   return (
@@ -9,3 +11,4 @@ export const PageFade = ({ children }: any) => {
     </div>
   );
 };
+

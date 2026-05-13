@@ -1,16 +1,51 @@
-import React, { useState, useEffect } from 'react';
-import { Plus, X } from 'lucide-react';
-import { Modal } from './Modal';
-import { GInput } from './GInput';
-import { GSel } from './GSel';
-import { GBtn } from './GBtn';
-import { GTxt } from './GTxt';
-import { AddressAutocomplete } from './AddressAutocomplete';
+// @ts-nocheck
+// auto-extracted from Smock's OS monolith
+import React, { useState, useEffect, useRef, useCallback } from "react";
+import {
+  LayoutDashboard, Users, FileText, Briefcase, Bot, BarChart3,
+  Settings, Bell, Menu, X, Plus, Search, Edit, Trash2, Send,
+  DollarSign, TrendingUp, CheckCircle, Clock, MapPin, Phone, Mail,
+  Calendar, AlertTriangle, Truck, Receipt, FlaskConical, MessageSquare,
+  Sun, Moon, Download, Undo2, Redo2, Volume2, Play, Cloud, Star,
+  Award, Target, Shield, Key, Eye, EyeOff, Save, ChevronRight,
+  ChevronLeft, GripVertical, Tag, Copy, Ban, RefreshCw, Percent,
+  CreditCard, Repeat, XCircle, Activity, Zap, UserCheck, AlertCircle,
+  Clipboard, Heart, Dumbbell, Droplet, Smile, Flame, Wind, Snowflake,
+  Globe, Share2, Trophy, ExternalLink, Workflow, ToggleLeft, ToggleRight,
+  Navigation, TrendingDown, PieChart as PieIcon, Package, Wrench,
+  CheckSquare, Route, Users2, Layers, ArrowRight, BarChart2, Filter,
+  Paperclip, ImageIcon, FileImage, MoreVertical, Mic, Upload, Link, Lock, User
+} from "lucide-react";
+import {
+  BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid,
+  Tooltip, ResponsiveContainer, Area, AreaChart, LineChart, Line,
+  ComposedChart, Legend
+} from "recharts";
+import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE } from "../../lib/utils";
+import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
+import { twilioSend, sendEmail } from "../../lib/messaging";
+import { seedWeather } from "../../lib/weather";
+import { seedCustomers, seedEstimates, seedJobs, seedEmployees, seedVehicles, seedExpenses, seedChemicals, seedServices, seedAutomations, seedEmailTemplates, seedSmsTemplates, seedRewardTiers, seedReferrals, seedMaintenance, campaignTemplates, seedSocialPosts, seedTimeline, seedGoals, seedReminders, seedAccountabilityEntries, seedMileage, seedLeadSrc, STEP_TYPES, AUTOMATION_TEMPLATES } from "../../lib/seed";
+import { callModel, MODELS } from "../../lib/api";
+import { createCalendarEvent, updateCalendarEvent, deleteCalendarEvent, fetchDriveFiles, MOCK_GOOGLE_DATA, fmtSize, fmtDate, fileIcon } from "../../lib/google";
+import { usePersistent } from "../../hooks/usePersistent";
+import { usePersistentRaw } from "../../hooks/usePersistentRaw";
+import { Glass } from "./Glass";
+import { GBtn } from "./GBtn";
+import { GInput } from "./GInput";
+import { GDate } from "./GDate";
+import { GSel } from "./GSel";
+import { GTxt } from "./GTxt";
+import { Modal } from "./Modal";
+import { Badge } from "./Badge";
+import { Stat } from "./Stat";
+import { PBar } from "./PBar";
+import { PageFade } from "./PageFade";
+import { TimeframeSelector } from "./TimeframeSelector";
 
-export function CustomerModal({ open, onClose, data, onSave, mapsKey = "" }: any) {
-  const blank = { firstName: "", lastName: "", email: "", phone: "", address: "", notes: "", gateCode: "", hasDog: false, dogName: "", sensitivePlants: "", leadSource: "", tags: [], customFields: [], sqFootage: "", propertyNotes: "" };
-  const [f, setF] = useState<any>(blank);
-  
+export function CustomerModal({ open, onClose, data, onSave, mapsKey = "" }) {
+  const blank = { firstName: "", lastName: "", email: "", phone: "", address: "", notes: "", gateCode: "", hasDog: false, dogName: "", sensitivePlants: "", leadSource: "", tags: [] };
+  const [f, setF] = useState(blank);
   useEffect(() => {
     if (open) setF(data ? { ...blank, ...data } : blank);
   }, [open, data]);
@@ -22,17 +57,17 @@ export function CustomerModal({ open, onClose, data, onSave, mapsKey = "" }: any
     <Modal open={open} onClose={onClose} title={data ? "Edit Customer" : "New Customer"} maxW="max-w-xl">
       <div className="space-y-3">
         <div className="grid grid-cols-2 gap-3">
-          <div><label className="text-xs text-white/60 mb-1 block">First *</label><GInput value={f.firstName} onChange={(e: any) => setF({ ...f, firstName: e.target.value })} /></div>
-          <div><label className="text-xs text-white/60 mb-1 block">Last *</label><GInput value={f.lastName} onChange={(e: any) => setF({ ...f, lastName: e.target.value })} /></div>
+          <div><label className="text-xs text-white/60 mb-1 block">First *</label><GInput value={f.firstName} onChange={e => setF({ ...f, firstName: e.target.value })} /></div>
+          <div><label className="text-xs text-white/60 mb-1 block">Last *</label><GInput value={f.lastName} onChange={e => setF({ ...f, lastName: e.target.value })} /></div>
         </div>
-        <div><label className="text-xs text-white/60 mb-1 block">Email</label><GInput type="email" value={f.email} onChange={(e: any) => setF({ ...f, email: e.target.value })} /></div>
-        <div><label className="text-xs text-white/60 mb-1 block">Phone</label><GInput value={f.phone} onChange={(e: any) => setF({ ...f, phone: e.target.value })} /></div>
-        <div><label className="text-xs text-white/60 mb-1 block">Address</label><AddressAutocomplete value={f.address} onChange={(v: string) => setF({ ...f, address: v })} mapsKey={mapsKey} placeholder="412 Oak Ridge Ln, York PA" /></div>
+        <div><label className="text-xs text-white/60 mb-1 block">Email</label><GInput type="email" value={f.email} onChange={e => setF({ ...f, email: e.target.value })} /></div>
+        <div><label className="text-xs text-white/60 mb-1 block">Phone</label><GInput value={f.phone} onChange={e => setF({ ...f, phone: e.target.value })} /></div>
+        <div><label className="text-xs text-white/60 mb-1 block">Address</label><AddressAutocomplete value={f.address} onChange={v => setF({ ...f, address: v })} mapsKey={mapsKey} placeholder="412 Oak Ridge Ln, York PA" /></div>
 
         <div className="grid grid-cols-2 gap-3">
           <div>
             <label className="text-xs text-white/60 mb-1 block">Lead Source</label>
-            <GSel value={f.leadSource} onChange={(e: any) => setF({ ...f, leadSource: e.target.value })} className="!text-xs">
+            <GSel value={f.leadSource} onChange={e => setF({ ...f, leadSource: e.target.value })} className="!text-xs">
               <option value="" className="bg-black">— Unknown —</option>
               {leadSources.map(s => <option key={s} value={s} className="bg-black">{s}</option>)}
             </GSel>
@@ -40,7 +75,7 @@ export function CustomerModal({ open, onClose, data, onSave, mapsKey = "" }: any
           <div>
             <label className="text-xs text-white/60 mb-1 block">Tags</label>
             <div className="flex gap-1 flex-wrap">
-              {availTags.map(t => <button key={t} type="button" onClick={() => setF({ ...f, tags: (f.tags || []).includes(t) ? f.tags.filter((x: any) => x !== t) : [...(f.tags || []), t] })} className={"text-[9px] px-1.5 py-0.5 rounded-full border transition " + ((f.tags || []).includes(t) ? "bg-red-600/30 border-red-500/50 text-red-200" : "bg-white/5 border-white/10 text-white/50 hover:text-white")}>{t}</button>)}
+              {availTags.map(t => <button key={t} type="button" onClick={() => setF({ ...f, tags: (f.tags || []).includes(t) ? f.tags.filter(x => x !== t) : [...(f.tags || []), t] })} className={"text-[9px] px-1.5 py-0.5 rounded-full border transition " + ((f.tags || []).includes(t) ? "bg-red-600/30 border-red-500/50 text-red-200" : "bg-white/5 border-white/10 text-white/50 hover:text-white")}>{t}</button>)}
             </div>
           </div>
         </div>
@@ -48,35 +83,36 @@ export function CustomerModal({ open, onClose, data, onSave, mapsKey = "" }: any
         <div className="pt-3 border-t border-red-900/20">
           <div className="text-xs text-white/60 uppercase tracking-wider mb-2 flex items-center gap-1">🏠 Property Notes</div>
           <div className="grid grid-cols-2 gap-3">
-            <div><label className="text-xs text-white/60 mb-1 block">Gate Code</label><GInput value={f.gateCode} onChange={(e: any) => setF({ ...f, gateCode: e.target.value })} placeholder="1234" /></div>
-            <div><label className="text-xs text-white/60 mb-1 block">Sq Footage (est.)</label><GInput type="number" value={f.sqFootage || ""} onChange={(e: any) => setF({ ...f, sqFootage: e.target.value })} placeholder="2400" /></div>
+            <div><label className="text-xs text-white/60 mb-1 block">Gate Code</label><GInput value={f.gateCode} onChange={e => setF({ ...f, gateCode: e.target.value })} placeholder="1234" /></div>
+            <div><label className="text-xs text-white/60 mb-1 block">Sq Footage (est.)</label><GInput type="number" value={f.sqFootage || ""} onChange={e => setF({ ...f, sqFootage: e.target.value })} placeholder="2400" /></div>
           </div>
           <div className="grid grid-cols-2 gap-3 mt-3">
             <div>
               <label className="text-xs text-white/60 mb-1 block">Dog on property?</label>
               <div className="flex gap-2">
                 <label className="flex items-center gap-1.5 text-sm"><input type="checkbox" checked={f.hasDog} onChange={e => setF({ ...f, hasDog: e.target.checked })} className="w-4 h-4 accent-red-600" />Yes</label>
-                {f.hasDog && <GInput value={f.dogName} onChange={(e: any) => setF({ ...f, dogName: e.target.value })} placeholder="Dog name" className="!py-1.5 !text-sm flex-1" />}
+                {f.hasDog && <GInput value={f.dogName} onChange={e => setF({ ...f, dogName: e.target.value })} placeholder="Dog name" className="!py-1.5 !text-sm flex-1" />}
               </div>
             </div>
-            <div><label className="text-xs text-white/60 mb-1 block">Sensitive plants</label><GInput value={f.sensitivePlants} onChange={(e: any) => setF({ ...f, sensitivePlants: e.target.value })} placeholder="Hydrangeas front porch..." /></div>
+            <div><label className="text-xs text-white/60 mb-1 block">Sensitive plants</label><GInput value={f.sensitivePlants} onChange={e => setF({ ...f, sensitivePlants: e.target.value })} placeholder="Hydrangeas front porch..." /></div>
           </div>
-          <div className="mt-3"><label className="text-xs text-white/60 mb-1 block">Property notes</label><GTxt rows={2} value={f.propertyNotes || ""} onChange={(e: any) => setF({ ...f, propertyNotes: e.target.value })} placeholder="Parking, access notes, special instructions..." /></div>
+          <div className="mt-3"><label className="text-xs text-white/60 mb-1 block">Property notes</label><GTxt rows={2} value={f.propertyNotes || ""} onChange={e => setF({ ...f, propertyNotes: e.target.value })} placeholder="Parking, access notes, special instructions..." /></div>
         </div>
 
-        <div><label className="text-xs text-white/60 mb-1 block">Notes</label><GTxt rows={2} value={f.notes} onChange={(e: any) => setF({ ...f, notes: e.target.value })} /></div>
+        <div><label className="text-xs text-white/60 mb-1 block">Notes</label><GTxt rows={2} value={f.notes} onChange={e => setF({ ...f, notes: e.target.value })} /></div>
 
+        {/* Custom Fields */}
         {(f.customFields || []).length > 0 && <div className="space-y-2">
           <div className="text-xs text-white/50 uppercase tracking-wider">Custom Fields</div>
-          {(f.customFields || []).map((cf: any, i: number) => (
+          {(f.customFields || []).map((cf, i) => (
             <div key={i} className="flex gap-2 items-center">
-              <GInput value={cf.key} onChange={(e: any) => setF((p: any) => ({ ...p, customFields: p.customFields.map((x: any, j: number) => j === i ? { ...x, key: e.target.value } : x) }))} placeholder="Field name" className="w-36 !text-xs" />
-              <GInput value={cf.value} onChange={(e: any) => setF((p: any) => ({ ...p, customFields: p.customFields.map((x: any, j: number) => j === i ? { ...x, value: e.target.value } : x) }))} placeholder="Value" className="flex-1 !text-xs" />
-              <button onClick={() => setF((p: any) => ({ ...p, customFields: p.customFields.filter((_: any, j: number) => j !== i) }))} className="p-1.5 text-white/40 hover:text-red-400"><X size={12} /></button>
+              <GInput value={cf.key} onChange={e => setF(p => ({ ...p, customFields: p.customFields.map((x, j) => j === i ? { ...x, key: e.target.value } : x) }))} placeholder="Field name" className="w-36 !text-xs" />
+              <GInput value={cf.value} onChange={e => setF(p => ({ ...p, customFields: p.customFields.map((x, j) => j === i ? { ...x, value: e.target.value } : x) }))} placeholder="Value" className="flex-1 !text-xs" />
+              <button onClick={() => setF(p => ({ ...p, customFields: p.customFields.filter((_, j) => j !== i) }))} className="p-1.5 text-white/40 hover:text-red-400"><X size={12} /></button>
             </div>
           ))}
         </div>}
-        <button onClick={() => setF((p: any) => ({ ...p, customFields: [...(p.customFields || []), { key: "", value: "" }] }))} className="text-xs text-white/50 hover:text-white/80 flex items-center gap-1 transition">
+        <button onClick={() => setF(p => ({ ...p, customFields: [...(p.customFields || []), { key: "", value: "" }] }))} className="text-xs text-white/50 hover:text-white/80 flex items-center gap-1 transition">
           <Plus size={12} /> Add custom field
         </button>
 
@@ -88,3 +124,5 @@ export function CustomerModal({ open, onClose, data, onSave, mapsKey = "" }: any
     </Modal>
   );
 }
+
+// ===== DOCUMENT VAULT =====

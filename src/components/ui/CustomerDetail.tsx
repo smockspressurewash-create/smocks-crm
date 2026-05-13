@@ -1,14 +1,49 @@
-import React, { useState, useEffect } from 'react';
-import { Mail, Phone, MapPin, Clipboard, CheckCircle, MessageSquare, FileText, Plus, Briefcase, CreditCard, Receipt } from 'lucide-react';
-import { Modal } from './Modal';
-import { Glass } from './Glass';
-import { Badge } from './Badge';
-import { DocumentVault } from './DocumentVault';
-import { GBtn } from './GBtn';
-import { GInput } from './GInput';
-import { fmt, uid, today } from '../../lib/utils';
+// @ts-nocheck
+// auto-extracted from Smock's OS monolith
+import React, { useState, useEffect, useRef, useCallback } from "react";
+import {
+  LayoutDashboard, Users, FileText, Briefcase, Bot, BarChart3,
+  Settings, Bell, Menu, X, Plus, Search, Edit, Trash2, Send,
+  DollarSign, TrendingUp, CheckCircle, Clock, MapPin, Phone, Mail,
+  Calendar, AlertTriangle, Truck, Receipt, FlaskConical, MessageSquare,
+  Sun, Moon, Download, Undo2, Redo2, Volume2, Play, Cloud, Star,
+  Award, Target, Shield, Key, Eye, EyeOff, Save, ChevronRight,
+  ChevronLeft, GripVertical, Tag, Copy, Ban, RefreshCw, Percent,
+  CreditCard, Repeat, XCircle, Activity, Zap, UserCheck, AlertCircle,
+  Clipboard, Heart, Dumbbell, Droplet, Smile, Flame, Wind, Snowflake,
+  Globe, Share2, Trophy, ExternalLink, Workflow, ToggleLeft, ToggleRight,
+  Navigation, TrendingDown, PieChart as PieIcon, Package, Wrench,
+  CheckSquare, Route, Users2, Layers, ArrowRight, BarChart2, Filter,
+  Paperclip, ImageIcon, FileImage, MoreVertical, Mic, Upload, Link, Lock, User
+} from "lucide-react";
+import {
+  BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid,
+  Tooltip, ResponsiveContainer, Area, AreaChart, LineChart, Line,
+  ComposedChart, Legend
+} from "recharts";
+import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE } from "../../lib/utils";
+import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
+import { twilioSend, sendEmail } from "../../lib/messaging";
+import { seedWeather } from "../../lib/weather";
+import { seedCustomers, seedEstimates, seedJobs, seedEmployees, seedVehicles, seedExpenses, seedChemicals, seedServices, seedAutomations, seedEmailTemplates, seedSmsTemplates, seedRewardTiers, seedReferrals, seedMaintenance, campaignTemplates, seedSocialPosts, seedTimeline, seedGoals, seedReminders, seedAccountabilityEntries, seedMileage, seedLeadSrc, STEP_TYPES, AUTOMATION_TEMPLATES } from "../../lib/seed";
+import { callModel, MODELS } from "../../lib/api";
+import { createCalendarEvent, updateCalendarEvent, deleteCalendarEvent, fetchDriveFiles, MOCK_GOOGLE_DATA, fmtSize, fmtDate, fileIcon } from "../../lib/google";
+import { usePersistent } from "../../hooks/usePersistent";
+import { usePersistentRaw } from "../../hooks/usePersistentRaw";
+import { Glass } from "./Glass";
+import { GBtn } from "./GBtn";
+import { GInput } from "./GInput";
+import { GDate } from "./GDate";
+import { GSel } from "./GSel";
+import { GTxt } from "./GTxt";
+import { Modal } from "./Modal";
+import { Badge } from "./Badge";
+import { Stat } from "./Stat";
+import { PBar } from "./PBar";
+import { PageFade } from "./PageFade";
+import { TimeframeSelector } from "./TimeframeSelector";
 
-export function CustomerDetail({ customer: c, onClose, estimates = [], jobs = [], timeline = {}, setTimeline = () => { }, settings = {}, toast }: any) {
+export function CustomerDetail({ customer: c, onClose, estimates = [], jobs = [], timeline = {}, setTimeline = () => {}, settings = {} }) {
   const [tab, setTab] = useState("info");
   const [note, setNote] = useState("");
   const [noteType, setNoteType] = useState("note");
@@ -16,9 +51,9 @@ export function CustomerDetail({ customer: c, onClose, estimates = [], jobs = []
   useEffect(() => { if (c) { setTab("info"); setNote(""); } }, [c]);
 
   if (!c) return null;
-  const ce = estimates.filter((e: any) => e.customerId === c.id);
-  const cj = jobs.filter((j: any) => j.customerId === c.id);
-  const ct = (timeline[c.id] || []).slice().sort((a: any, b: any) => b.date.localeCompare(a.date));
+  const ce = estimates.filter(e => e.customerId === c.id);
+  const cj = jobs.filter(j => j.customerId === c.id);
+  const ct = (timeline[c.id] || []).slice().sort((a, b) => b.date.localeCompare(a.date));
 
   const addEntry = () => {
     if (!note.trim()) return;
@@ -27,7 +62,7 @@ export function CustomerDetail({ customer: c, onClose, estimates = [], jobs = []
     setNote("");
   };
 
-  const tIcon = (t: string) => ({
+  const tIcon = t => ({
     call: { I: Phone, c: "text-green-400 bg-green-900/30" },
     text: { I: MessageSquare, c: "text-blue-400 bg-blue-900/30" },
     email: { I: Mail, c: "text-purple-400 bg-purple-900/30" },
@@ -72,7 +107,7 @@ export function CustomerDetail({ customer: c, onClose, estimates = [], jobs = []
           {(c.customFields || []).length > 0 && <div className="mt-3 pt-3 border-t border-red-900/30">
             <div className="text-[10px] text-white/40 uppercase tracking-wider mb-2">Custom Fields</div>
             <div className="space-y-1">
-              {c.customFields.map((cf: any, i: number) => cf.key && <div key={i} className="flex justify-between text-xs"><span className="text-white/50">{cf.key}</span><span className="font-medium">{cf.value}</span></div>)}
+              {c.customFields.map((cf, i) => cf.key && <div key={i} className="flex justify-between text-xs"><span className="text-white/50">{cf.key}</span><span className="font-medium">{cf.value}</span></div>)}
             </div>
           </div>}
         </Glass>
@@ -91,7 +126,7 @@ export function CustomerDetail({ customer: c, onClose, estimates = [], jobs = []
             {/* Tags + Lead Source */}
             {((c.tags && c.tags.length > 0) || c.leadSource) && (
               <div className="flex flex-wrap gap-2 items-center">
-                {(c.tags || []).map((t: string) => <Badge key={t} tone={t === "VIP" ? "yellow" : t === "Commercial" ? "blue" : "gray"}>{t}</Badge>)}
+                {(c.tags || []).map(t => <Badge key={t} tone={t === "VIP" ? "yellow" : t === "Commercial" ? "blue" : "gray"}>{t}</Badge>)}
                 {c.leadSource && <span className="text-[10px] px-2 py-1 rounded-full bg-purple-900/30 border border-purple-700/40 text-purple-300">📍 {c.leadSource}</span>}
               </div>
             )}
@@ -108,8 +143,8 @@ export function CustomerDetail({ customer: c, onClose, estimates = [], jobs = []
                     src={"https://maps.googleapis.com/maps/api/staticmap?center=" + encodeURIComponent(c.address) + "&zoom=18&size=600x200&maptype=satellite&markers=color:red|" + encodeURIComponent(c.address) + "&key=" + settings.googleMapsKey}
                     alt="Property satellite view"
                     className="w-full object-cover"
-                    style={{ height: "140px" }}
-                    onError={(e: any) => { e.target.style.display = "none"; }}
+                    style={{height: "140px"}}
+                    onError={e => { e.target.style.display = "none"; }}
                   />
                 </div>
               )}
@@ -130,7 +165,7 @@ export function CustomerDetail({ customer: c, onClose, estimates = [], jobs = []
               {[
                 { label: "Jobs", value: cj.length, icon: "🔨" },
                 { label: "Spent", value: fmt(c.totalSpent || 0), icon: "💰" },
-                { label: "Avg Job", value: cj.length ? fmt(cj.reduce((s: number, j: any) => s + j.amount, 0) / cj.length) : "—", icon: "📊" }
+                { label: "Avg Job", value: cj.length ? fmt(cj.reduce((s,j)=>s+j.amount,0)/cj.length) : "—", icon: "📊" }
               ].map(s => <div key={s.label} className="p-3 bg-black/40 border border-red-900/20 rounded-xl text-center">
                 <div className="text-lg">{s.icon}</div>
                 <div className="font-bold text-sm mt-1">{s.value}</div>
@@ -139,7 +174,7 @@ export function CustomerDetail({ customer: c, onClose, estimates = [], jobs = []
             </div>
             {/* Last job */}
             {cj.length > 0 && (() => {
-              const last = cj.slice().sort((a: any, b: any) => b.scheduledDate.localeCompare(a.scheduledDate))[0];
+              const last = cj.slice().sort((a,b) => b.scheduledDate.localeCompare(a.scheduledDate))[0];
               return <div className="flex items-center gap-3 p-3 bg-black/40 border border-red-900/20 rounded-xl text-xs">
                 <CheckCircle size={14} className="text-green-400 flex-shrink-0" />
                 <div className="flex-1 min-w-0">
@@ -147,7 +182,7 @@ export function CustomerDetail({ customer: c, onClose, estimates = [], jobs = []
                   <div className="text-white/50 truncate">{last.address}</div>
                 </div>
                 <div className="text-red-400 font-bold">{fmt(last.amount)}</div>
-                <Badge tone={last.status === "completed" ? "green" : "yellow"}>{last.status.replace("_", " ")}</Badge>
+                <Badge tone={last.status === "completed" ? "green" : "yellow"}>{last.status.replace("_"," ")}</Badge>
               </div>;
             })()}
             {/* Quick actions */}
@@ -157,17 +192,17 @@ export function CustomerDetail({ customer: c, onClose, estimates = [], jobs = []
               <button onClick={() => window.open("mailto:" + c.email)} className="flex flex-col items-center gap-1 p-3 bg-purple-950/20 border border-purple-700/30 rounded-xl hover:bg-purple-950/40 transition text-xs text-purple-300"><Mail size={16} />Email</button>
             </div>
           </div>}
-          {tab === "estimates" && <div className="space-y-2">{ce.length ? ce.map((e: any) => <div key={e.id} className="flex items-center justify-between p-3 rounded-xl bg-white/5 border border-white/5"><div><div className="text-sm font-medium">#{e.id.toUpperCase()}</div><div className="text-xs text-white/50">{e.createdAt}</div></div><div className="flex items-center gap-3"><Badge tone={e.status === "approved" ? "green" : "yellow"}>{e.status}</Badge><span className="font-semibold text-red-400">{fmt(e.total)}</span></div></div>) : <div className="text-center py-6 text-white/40 text-sm">None</div>}</div>}
-          {tab === "jobs" && <div className="space-y-2">{cj.length ? cj.map((j: any) => <div key={j.id} className="flex items-center justify-between p-3 rounded-xl bg-white/5 border border-white/5"><div className="min-w-0 flex-1"><div className="text-sm font-medium truncate">{j.address}</div><div className="text-xs text-white/50">{j.scheduledDate}</div></div><div className="flex items-center gap-3"><Badge tone={j.status === "completed" ? "green" : "yellow"}>{j.status.replace("_", " ")}</Badge><span className="font-semibold text-red-400">{fmt(j.amount)}</span></div></div>) : <div className="text-center py-6 text-white/40 text-sm">None</div>}</div>}
+          {tab === "estimates" && <div className="space-y-2">{ce.length ? ce.map(e => <div key={e.id} className="flex items-center justify-between p-3 rounded-xl bg-white/5 border border-white/5"><div><div className="text-sm font-medium">#{e.id.toUpperCase()}</div><div className="text-xs text-white/50">{e.createdAt}</div></div><div className="flex items-center gap-3"><Badge tone={e.status === "approved" ? "green" : "yellow"}>{e.status}</Badge><span className="font-semibold text-red-400">{fmt(e.total)}</span></div></div>) : <div className="text-center py-6 text-white/40 text-sm">None</div>}</div>}
+          {tab === "jobs" && <div className="space-y-2">{cj.length ? cj.map(j => <div key={j.id} className="flex items-center justify-between p-3 rounded-xl bg-white/5 border border-white/5"><div className="min-w-0 flex-1"><div className="text-sm font-medium truncate">{j.address}</div><div className="text-xs text-white/50">{j.scheduledDate}</div></div><div className="flex items-center gap-3"><Badge tone={j.status === "completed" ? "green" : "yellow"}>{j.status.replace("_", " ")}</Badge><span className="font-semibold text-red-400">{fmt(j.amount)}</span></div></div>) : <div className="text-center py-6 text-white/40 text-sm">None</div>}</div>}
           {tab === "timeline" && <div className="space-y-3">
             <Glass className="p-3 !bg-black/40">
               <div className="flex gap-2 mb-2 flex-wrap">{["note", "call", "text", "email"].map(t => <button key={t} onClick={() => setNoteType(t)} className={"text-[10px] px-2.5 py-1 rounded-full uppercase tracking-wider border transition capitalize " + (noteType === t ? "bg-red-900/40 text-red-300 border-red-600/40" : "bg-white/5 text-white/50 border-white/10")}>{t}</button>)}</div>
-              <div className="flex gap-2"><GInput placeholder={"Log a " + noteType + "..."} value={note} onChange={(e: any) => setNote(e.target.value)} onKeyDown={(e: any) => e.key === "Enter" && addEntry()} /><GBtn onClick={addEntry} disabled={!note.trim()}><Plus size={14} /></GBtn></div>
+              <div className="flex gap-2"><GInput placeholder={"Log a " + noteType + "..."} value={note} onChange={e => setNote(e.target.value)} onKeyDown={e => e.key === "Enter" && addEntry()} /><GBtn onClick={addEntry} disabled={!note.trim()}><Plus size={14} /></GBtn></div>
             </Glass>
             {ct.length ? <div className="relative pl-4">
               <div className="absolute left-[11px] top-2 bottom-2 w-px bg-red-900/30" />
-              {ct.map((ev: any) => {
-                const { I, c: clr }: any = tIcon(ev.type);
+              {ct.map(ev => {
+                const { I, c: clr } = tIcon(ev.type);
                 return <div key={ev.id} className="relative flex gap-3 pb-4">
                   <div className={"absolute -left-4 w-6 h-6 rounded-full flex items-center justify-center border-2 border-black " + clr}><I size={10} /></div>
                   <div className="ml-4 flex-1 bg-white/5 border border-white/5 rounded-xl p-3">
@@ -183,34 +218,34 @@ export function CustomerDetail({ customer: c, onClose, estimates = [], jobs = []
           {tab === "portal" && <div className="space-y-4">
             <div className="p-3 bg-blue-950/20 border border-blue-700/30 rounded-xl">
               <div className="text-xs text-blue-300 font-semibold mb-1 flex items-center gap-1.5">🌐 Customer Portal Preview</div>
-              <div className="text-[10px] text-white/60">This is what {c.firstName} sees when they log in to their portal. Share link: <span className="text-blue-400 font-mono">smocks.com/portal/{c.id?.slice(0, 8)}</span></div>
+              <div className="text-[10px] text-white/60">This is what {c.firstName} sees when they log in to their portal. Share link: <span className="text-blue-400 font-mono">smocks.com/portal/{c.id?.slice(0,8)}</span></div>
             </div>
             {/* Estimates */}
             <div>
               <div className="text-xs text-white/50 uppercase tracking-wider mb-2 flex items-center gap-1.5"><FileText size={10} />Estimates & Invoices</div>
               {ce.length === 0 ? <div className="text-xs text-white/40 py-3 text-center">No estimates yet</div>
-                : <div className="space-y-2">
-                  {ce.map((e: any) => <div key={e.id} className="flex items-center gap-3 p-3 bg-black/40 border border-red-900/10 rounded-xl">
-                    <div className="flex-1 min-w-0">
-                      <div className="text-sm font-medium">{e.lineItems?.map((i: any) => i.description).filter(Boolean).join(", ").slice(0, 40) || "Quote"}</div>
-                      <div className="text-xs text-white/50">{e.createdAt} · {fmt(e.total)}</div>
-                    </div>
-                    <Badge tone={e.paidAt ? "green" : e.invoiced ? "yellow" : e.status === "approved" ? "blue" : "gray"}>{e.paidAt ? "Paid" : e.invoiced ? "Invoice" : e.status}</Badge>
-                  </div>)}
-                </div>}
+              : <div className="space-y-2">
+                {ce.map(e => <div key={e.id} className="flex items-center gap-3 p-3 bg-black/40 border border-red-900/10 rounded-xl">
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-medium">{e.lineItems?.map(i => i.description).filter(Boolean).join(", ").slice(0, 40) || "Quote"}</div>
+                    <div className="text-xs text-white/50">{e.createdAt} · {fmt(e.total)}</div>
+                  </div>
+                  <Badge tone={e.paidAt ? "green" : e.invoiced ? "yellow" : e.status === "approved" ? "blue" : "gray"}>{e.paidAt ? "Paid" : e.invoiced ? "Invoice" : e.status}</Badge>
+                </div>)}
+              </div>}
             </div>
             {/* Jobs + Photo Gallery */}
             <div>
               <div className="text-xs text-white/50 uppercase tracking-wider mb-2 flex items-center justify-between">
                 <div className="flex items-center gap-1.5"><Briefcase size={10} />Job History & Photo Gallery</div>
-                <span className="text-[10px] text-white/30">{cj.reduce((s: number, j: any) => s + (j.photos?.filter((p: any) => p.dataUrl).length || 0), 0)} photos</span>
+                <span className="text-[10px] text-white/30">{cj.reduce((s,j) => s + (j.photos?.filter(p=>p.dataUrl).length||0), 0)} photos</span>
               </div>
               {/* All photos flat grid */}
-              {cj.some((j: any) => j.photos?.some((p: any) => p.dataUrl)) ? <>
+              {cj.some(j => j.photos?.some(p => p.dataUrl)) ? <>
                 <div className="grid grid-cols-3 gap-1.5 mb-3">
-                  {cj.flatMap((j: any) => (j.photos || []).filter((p: any) => p.dataUrl).map((p: any) => ({
+                  {cj.flatMap(j => (j.photos||[]).filter(p=>p.dataUrl).map((p,i) => ({
                     ...p, jobDate: j.scheduledDate, jobAddr: j.address?.split(",")[0], jobAmt: j.amount
-                  }))).slice(0, 12).map((p: any, i: number) => (
+                  }))).slice(0,12).map((p,i) => (
                     <div key={i} className="relative aspect-square rounded-xl overflow-hidden bg-black/40 group cursor-pointer"
                       onClick={() => window.open(p.dataUrl, "_blank")}>
                       <img src={p.dataUrl} alt={p.type} className="absolute inset-0 w-full h-full object-cover group-hover:scale-105 transition-transform duration-300" />
@@ -222,11 +257,11 @@ export function CustomerDetail({ customer: c, onClose, estimates = [], jobs = []
                 </div>
                 {/* Job list with status */}
                 <div className="space-y-2">
-                  {cj.slice(0, 6).map((j: any) => <div key={j.id} className="flex items-center gap-3 p-2.5 bg-black/40 border border-red-900/10 rounded-xl text-xs">
+                  {cj.slice(0,6).map(j => <div key={j.id} className="flex items-center gap-3 p-2.5 bg-black/40 border border-red-900/10 rounded-xl text-xs">
                     <div className="flex-1"><div className="font-medium">{j.address?.split(",")[0]}</div><div className="text-white/40">{j.scheduledDate} · {fmt(j.amount)}</div></div>
                     <div className="flex items-center gap-1.5">
-                      {j.photos?.filter((p: any) => p.dataUrl).length > 0 && <span className="text-[10px] text-white/40">{j.photos.filter((p: any) => p.dataUrl).length}📸</span>}
-                      <Badge tone={j.status === "completed" ? "green" : j.status === "scheduled" ? "blue" : "gray"}>{j.status}</Badge>
+                      {j.photos?.filter(p=>p.dataUrl).length > 0 && <span className="text-[10px] text-white/40">{j.photos.filter(p=>p.dataUrl).length}📸</span>}
+                      <Badge tone={j.status==="completed"?"green":j.status==="scheduled"?"blue":"gray"}>{j.status}</Badge>
                     </div>
                   </div>)}
                 </div>
@@ -234,17 +269,17 @@ export function CustomerDetail({ customer: c, onClose, estimates = [], jobs = []
             </div>
             {/* Outstanding balance */}
             {(() => {
-              const outstanding = ce.filter((e: any) => e.invoiced && !e.paidAt).reduce((s: number, e: any) => s + e.total, 0);
+              const outstanding = ce.filter(e => e.invoiced && !e.paidAt).reduce((s, e) => s + e.total, 0);
               if (outstanding <= 0) return <div className="p-3 bg-green-950/20 border border-green-700/30 rounded-xl text-xs text-green-300 flex items-center gap-2"><CheckCircle size={12} />No outstanding balance — all paid up ✓</div>;
               return <div className="space-y-2">
                 <div className="p-3 bg-red-950/20 border border-red-700/30 rounded-xl flex items-center justify-between">
-                  <div><div className="text-xs text-red-300 font-semibold">Outstanding Balance</div><div className="text-[10px] text-white/60">{ce.filter((e: any) => e.invoiced && !e.paidAt).length} invoice{ce.filter((e: any) => e.invoiced && !e.paidAt).length !== 1 ? "s" : ""} unpaid</div></div>
+                  <div><div className="text-xs text-red-300 font-semibold">Outstanding Balance</div><div className="text-[10px] text-white/60">{ce.filter(e => e.invoiced && !e.paidAt).length} invoice{ce.filter(e => e.invoiced && !e.paidAt).length !== 1 ? "s" : ""} unpaid</div></div>
                   <div className="text-2xl font-bold text-red-400">{fmt(outstanding)}</div>
                 </div>
                 <button onClick={() => {
                   const link = "smocks.com/portal/" + c.id + "?pay=balance";
-                  navigator.clipboard?.writeText(link).catch(() => { });
-                  if (toast) toast("Pay link copied — send to customer");
+                  navigator.clipboard?.writeText(link).catch(() => {});
+                  toast("Pay link copied — send to customer");
                 }} className="w-full flex items-center justify-center gap-2 py-2.5 bg-red-900/30 border border-red-700/40 text-red-300 rounded-xl hover:bg-red-900/50 transition text-xs font-medium">
                   <CreditCard size={12} />Copy Pay Remaining Balance Link
                 </button>
@@ -254,20 +289,20 @@ export function CustomerDetail({ customer: c, onClose, estimates = [], jobs = []
             {/* Payment History */}
             <div>
               <div className="text-xs text-white/50 uppercase tracking-wider mb-2 flex items-center gap-1.5"><Receipt size={10} />Payment History</div>
-              {ce.filter((e: any) => e.paidAt).length === 0
+              {ce.filter(e => e.paidAt).length === 0
                 ? <div className="text-xs text-white/40 py-3 text-center">No payments recorded yet</div>
                 : <div className="space-y-1.5">
-                  {ce.filter((e: any) => e.paidAt).map((e: any) => (
+                  {ce.filter(e => e.paidAt).map(e => (
                     <div key={e.id} className="flex items-center gap-3 p-2.5 bg-black/40 border border-green-900/20 rounded-xl">
                       <CheckCircle size={12} className="text-green-400 flex-shrink-0" />
                       <div className="flex-1 min-w-0">
-                        <div className="text-xs font-medium">{(e.lineItems || []).map((l: any) => l.description).filter(Boolean).join(", ").slice(0, 40) || "Service"}</div>
+                        <div className="text-xs font-medium">{(e.lineItems || []).map(l => l.description).filter(Boolean).join(", ").slice(0,40) || "Service"}</div>
                         <div className="text-[10px] text-white/40">Paid {e.paidAt} · Invoice #{e.id.slice(-6).toUpperCase()}</div>
                       </div>
                       <div className="text-sm font-bold text-green-400">{fmt(e.total)}</div>
                     </div>
                   ))}
-                  <div className="text-right text-xs text-white/50 pt-1">Total paid: <span className="font-bold text-white">{fmt(ce.filter((e: any) => e.paidAt).reduce((s: number, e: any) => s + e.total, 0))}</span></div>
+                  <div className="text-right text-xs text-white/50 pt-1">Total paid: <span className="font-bold text-white">{fmt(ce.filter(e => e.paidAt).reduce((s,e) => s + e.total, 0))}</span></div>
                 </div>}
             </div>
 
@@ -279,3 +314,5 @@ export function CustomerDetail({ customer: c, onClose, estimates = [], jobs = []
     </Modal>
   );
 }
+
+// ===== ESTIMATES =====

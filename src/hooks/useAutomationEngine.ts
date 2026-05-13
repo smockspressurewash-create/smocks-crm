@@ -1,119 +1,179 @@
-import { useEffect } from 'react';
-import { twilioSend } from '../lib/messaging';
-import { fmt, today, daysFromNow } from '../lib/utils';
+// @ts-nocheck
+import { useEffect, useRef } from "react";
+import type { Automation, Job, Customer, Estimate } from "../types";
+import { today, daysSince } from "../lib/utils";
+import { twilioSend } from "../lib/messaging";
+import type { AppSettings } from "../types";
 
-export const normalizeAutomation = (a: any) => {
-  if (a.isWorkflow && a.steps) return a;
-  return {
-    ...a,
-    isWorkflow: true,
-    steps: [
-      { id: "s1", type: "trigger", label: a.trigger || "Manual trigger" },
-      { id: "s2", type: "action", label: a.action || "Execute action", channel: a.channel || "sms", messageBody: a.messageBody || "" }
-    ]
-  };
+interface AutomationEngineProps {
+  automations: Automation[];
+  setAutomations: React.Dispatch<React.SetStateAction<Automation[]>>;
+  jobs: Job[];
+  customers: Customer[];
+  estimates: Estimate[];
+  settings: AppSettings;
+  toast: (msg: string) => void;
+}
+
+const SMS_TEMPLATES: Record<string, string> = {
+  new_lead:         "Hi {{first_name}}! Thanks for reaching out to Smock's. I'll send your estimate shortly. — Will",
+  estimate_followup: "Hi {{first_name}}, just checking in on your estimate. Any questions? Ready to schedule? — Will @ Smock's",
+  job_reminder:     "Hi {{first_name}}, reminder: your Smock's service is tomorrow. We'll text when on the way. — Smock's",
+  review_request:   "Hi {{first_name}}, how did we do? A quick Google review means a lot: {{review_link}} — Will",
+  payment_overdue:  "Hi {{first_name}}, your invoice is past due. Pay here: {{payment_link}} — Smock's",
+  birthday:         "Hi {{first_name}}! Happy birthday 🎂 Enjoy 10% off your next service — code BDAY10. — Smock's",
 };
 
-export const checkTrigger = (triggerLabel: string, ctx: any) => {
-  if (ctx.type === "manual") return true;
-  const t = triggerLabel.toLowerCase();
-  switch (ctx.type) {
-    case "job_complete": return t.includes("job complete") || t.includes("after job") || t.includes("post-job");
-    case "job_started": return t.includes("job start") || t.includes("crew start");
-    case "job_scheduled": return t.includes("job scheduled");
-    case "estimate_sent": return t.includes("estimate sent") || t.includes("quote sent");
-    case "customer_added": return t.includes("new customer") || t.includes("new inquiry") || t.includes("new lead");
-    case "invoice_unpaid": return t.includes("invoice") || t.includes("unpaid") || t.includes("overdue");
-    case "review_submitted": return t.includes("review") || t.includes("rating");
-    default: return false;
-  }
-};
+const fillTemplate = (template: string, vars: Record<string, string>): string =>
+  template.replace(/\{\{(\w+)\}\}/g, (_, key) => vars[key] ?? `{{${key}}}`);
 
-export const checkCondition = (conditionCheck: string, ctx: any) => {
-  if (!conditionCheck) return true;
-  const { customer, estimate, daysSinceInvoiced, daysSinceLast, rating } = ctx;
-  switch (conditionCheck) {
-    case "estimate_pending": return estimate?.status === "pending";
-    case "estimate_accepted": return estimate?.status === "approved";
-    case "estimate_unsigned": return estimate?.status === "approved" && !estimate?.signature;
-    case "invoice_unpaid": return (daysSinceInvoiced || 0) > 0;
-    case "invoice_paid": return (daysSinceInvoiced || 0) === 0;
-    case "quote_not_viewed": return estimate?.status === "sent" && !estimate?.viewedAt;
-    case "rated_5": return rating === 5;
-    case "rated_low": return rating > 0 && rating <= 3;
-    case "stale_customer": return (daysSinceLast || 0) > 180;
-    case "no_response_24h": return true;
-    case "no_new_job": return true;
-    case "has_dog": return customer?.hasDog;
-    default: return true;
-  }
-};
+export function useAutomationEngine({
+  automations,
+  setAutomations,
+  jobs,
+  customers,
+  estimates,
+  settings,
+  toast,
+}: AutomationEngineProps): void {
+  const lastRunRef = useRef<string>("");
 
-export const runWorkflow = async (workflow: any, ctx: any, toast: any, settings: any) => {
-  if (!workflow.active) return { triggered: false, log: [], reason: "paused" };
+  useEffect(() => {
+    const run = async () => {
+      const nowKey = new Date().toISOString().slice(0, 16); // minute precision
+      if (lastRunRef.current === nowKey) return;
+      lastRunRef.current = nowKey;
 
-  const normalized = normalizeAutomation(workflow);
-  const steps = normalized.steps || [];
-  if (steps.length === 0) return { triggered: false, log: [], reason: "no steps" };
+      const todayStr = today();
+      const hour = new Date().getHours();
 
-  const trigger = steps[0];
-  const triggerLabel = trigger.type === "trigger" ? trigger.label : (workflow.trigger || trigger.label || "");
-  if (!checkTrigger(triggerLabel, ctx)) {
-    return { triggered: false, log: [], reason: "trigger condition not met" };
-  }
+      for (const auto of automations) {
+        if (!auto.active) continue;
+        // Don't run same automation twice in same day
+        if (auto.lastTriggered === todayStr) continue;
 
-  const log: any[] = [];
-  let i = (trigger.type === "trigger") ? 1 : 0;
-  let skipNext = false;
+        let fired = false;
 
-  while (i < steps.length) {
-    const step = steps[i];
-    if (!step) { i++; continue; }
-
-    if (skipNext && step.type === "action") {
-      skipNext = false;
-      i++;
-      continue;
-    }
-
-    if (step.type === "trigger") {
-      log.push({ ts: Date.now(), message: "▶ TRIGGER: " + step.label, status: "ok" });
-    } else if (step.type === "delay") {
-      log.push({ ts: Date.now(), message: "⏳ DELAY: " + step.label + " (scheduled)", status: "ok" });
-    } else if (step.type === "condition") {
-      const pass = checkCondition(step.check, ctx);
-      log.push({ ts: Date.now(), message: (pass ? "✅" : "⛔") + " CONDITION: " + step.label + " → " + (pass ? "PASS" : "FAIL"), status: pass ? "ok" : "skipped" });
-      if (!pass) skipNext = true;
-    } else if (step.type === "action") {
-      const ch = step.channel || "sms";
-      const customer = ctx.customer;
-      const body = (step.messageBody || step.label || "").replace(/{{first_name}}/g, customer?.firstName || "Customer").replace(/{{amount}}/g, fmt(ctx.job?.amount || ctx.estimate?.total || 0)).replace(/{{date}}/g, ctx.job?.scheduledDate || today()).replace(/{{address}}/g, ctx.job?.address || customer?.address || "");
-
-      if (ch === "sms" && customer?.phone && settings?.twilioSid) {
-        try {
-          await twilioSend(settings, customer.phone, body);
-          log.push({ ts: Date.now(), message: "💬 SMS SENT: " + body.slice(0, 50) + "…", status: "sent", channel: "sms" });
-        } catch (e: any) {
-          log.push({ ts: Date.now(), message: "❌ SMS FAILED: " + e.message, status: "error", channel: "sms" });
+        // ── Trigger: job scheduled confirmation ──────────────────────────────
+        if (auto.trigger.toLowerCase().includes("24h before job") && hour >= 7 && hour < 9) {
+          const tomorrowJobs = jobs.filter(j =>
+            j.status === "scheduled" &&
+            j.scheduledDate === new Date(Date.now() + 86400000).toISOString().slice(0, 10)
+          );
+          for (const job of tomorrowJobs) {
+            const c = customers.find(x => x.id === job.customerId);
+            if (!c?.phone || c.smsOptOut) continue;
+            const msg = fillTemplate(SMS_TEMPLATES.job_reminder, {
+              first_name: c.firstName,
+              time: job.scheduledTime || "the scheduled time",
+            });
+            try {
+              await twilioSend(settings, c.phone, msg);
+              toast(`📱 Job reminder sent to ${c.firstName}`);
+              fired = true;
+            } catch { /* continue */ }
+          }
         }
-      } else {
-        log.push({ ts: Date.now(), message: (ch === "email" ? "📧 EMAIL" : "🔔 INTERNAL") + ": " + body.slice(0, 50) + "…", status: "sent", channel: ch });
-      }
-    }
-    i++;
-  }
-  return { triggered: true, log };
-};
 
-export const useAutomationEngine = (
-  automations: any[],
-  setAutomations: any,
-  jobs: any[],
-  customers: any[],
-  estimates: any[],
-  toast: any,
-  settings: any
-) => {
-  // Simple cron-like triggers could be added here
-  return []; // Returning execution log placeholder
-};
+        // ── Trigger: estimate follow-up ─────────────────────────────────────
+        if (auto.trigger.toLowerCase().includes("estimate sent") && hour >= 9 && hour < 11) {
+          const staleEstimates = estimates.filter(e =>
+            e.status === "pending" &&
+            e.sentAt &&
+            daysSince(e.sentAt) >= 1 &&
+            !e.viewed
+          );
+          for (const est of staleEstimates.slice(0, 5)) {
+            const c = customers.find(x => x.id === est.customerId);
+            if (!c?.phone || c.smsOptOut) continue;
+            const msg = fillTemplate(SMS_TEMPLATES.estimate_followup, {
+              first_name: c.firstName,
+              amount: `$${est.total}`,
+            });
+            try {
+              await twilioSend(settings, c.phone, msg);
+              toast(`📱 Estimate follow-up sent to ${c.firstName}`);
+              fired = true;
+            } catch { /* continue */ }
+          }
+        }
+
+        // ── Trigger: review request (48h after completion) ──────────────────
+        if (auto.trigger.toLowerCase().includes("job completed") && hour >= 10 && hour < 12) {
+          const recentJobs = jobs.filter(j =>
+            j.status === "completed" &&
+            j.scheduledDate &&
+            daysSince(j.scheduledDate) === 2
+          );
+          for (const job of recentJobs) {
+            const c = customers.find(x => x.id === job.customerId);
+            if (!c?.phone || c.smsOptOut) continue;
+            // Check throttle
+            if (c.reviewRequested && daysSince(c.reviewRequested) < 90) continue;
+            const msg = fillTemplate(SMS_TEMPLATES.review_request, {
+              first_name: c.firstName,
+              review_link: `https://g.page/r/${settings.googlePlaceId ?? "smocks-pressure-washing"}/review`,
+            });
+            try {
+              await twilioSend(settings, c.phone, msg);
+              toast(`⭐ Review request sent to ${c.firstName}`);
+              fired = true;
+            } catch { /* continue */ }
+          }
+        }
+
+        // ── Trigger: overdue invoice ─────────────────────────────────────────
+        if (auto.trigger.toLowerCase().includes("overdue") && hour >= 9 && hour < 10) {
+          const overdueEsts = estimates.filter(e =>
+            e.invoiced && !e.paidAt &&
+            e.invoicedAt && daysSince(e.invoicedAt) >= 7
+          );
+          for (const est of overdueEsts.slice(0, 5)) {
+            const c = customers.find(x => x.id === est.customerId);
+            if (!c?.phone || c.smsOptOut) continue;
+            const msg = fillTemplate(SMS_TEMPLATES.payment_overdue, {
+              first_name: c.firstName,
+              amount: `$${est.total}`,
+              payment_link: `smocks.com/portal/${est.id}`,
+            });
+            try {
+              await twilioSend(settings, c.phone, msg);
+              toast(`💰 Payment reminder sent to ${c.firstName}`);
+              fired = true;
+            } catch { /* continue */ }
+          }
+        }
+
+        // ── Trigger: birthday ────────────────────────────────────────────────
+        if (auto.trigger.toLowerCase().includes("birthday") && hour >= 8 && hour < 9) {
+          const mmdd = todayStr.slice(5);
+          const birthdayCustomers = customers.filter(c =>
+            c.birthday && c.birthday.slice(5) === mmdd && !c.smsOptOut
+          );
+          for (const c of birthdayCustomers) {
+            const msg = fillTemplate(SMS_TEMPLATES.birthday, { first_name: c.firstName });
+            try {
+              await twilioSend(settings, c.phone, msg);
+              toast(`🎂 Birthday message sent to ${c.firstName}`);
+              fired = true;
+            } catch { /* continue */ }
+          }
+        }
+
+        if (fired) {
+          setAutomations(prev =>
+            prev.map(a => a.id === auto.id
+              ? { ...a, lastTriggered: todayStr, count: (a.count ?? 0) + 1 }
+              : a
+            )
+          );
+        }
+      }
+    };
+
+    // Run immediately then every 15 minutes
+    run();
+    const interval = setInterval(run, 15 * 60 * 1000);
+    return () => clearInterval(interval);
+  }, [automations, jobs, customers, estimates, settings]); // eslint-disable-line
+}

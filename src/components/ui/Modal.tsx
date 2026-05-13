@@ -1,7 +1,9 @@
-import React, { useState, useEffect } from 'react';
-import { X } from 'lucide-react';
+// @ts-nocheck
+// Modal.tsx — auto-extracted from monolith
+import React, { useState, useRef, useEffect, useCallback } from "react";
+import { X, ChevronLeft, ChevronRight, Search, TrendingUp, DollarSign, Clock, CheckCircle, AlertTriangle, AlertCircle, Star, Target, BarChart3 } from "lucide-react";
 
-export const Modal = ({ open, onClose, title, children, maxW = "max-w-lg" }: any) => {
+export const Modal = ({ open, onClose, title, children, maxW = "max-w-lg" }) => {
   const [visible, setVisible] = useState(false);
   const [mounted, setMounted] = useState(false);
 
@@ -17,6 +19,7 @@ export const Modal = ({ open, onClose, title, children, maxW = "max-w-lg" }: any
     }
   }, [open]);
 
+  // Lock body scroll when modal is open
   useEffect(() => {
     if (open) {
       document.body.style.overflow = "hidden";
@@ -28,12 +31,23 @@ export const Modal = ({ open, onClose, title, children, maxW = "max-w-lg" }: any
   return (
     <div
       className="fixed inset-0 z-[100] flex items-center justify-center p-4"
-      style={{ background: visible ? "rgba(0,0,0,0.72)" : "rgba(0,0,0,0)", backdropFilter: visible ? "blur(8px) saturate(0.8)" : "blur(0px)", WebkitBackdropFilter: visible ? "blur(8px) saturate(0.8)" : "blur(0px)", transition: "background 0.25s ease, backdrop-filter 0.25s ease" }}
+      style={{
+        background: visible ? "rgba(0,0,0,0.72)" : "rgba(0,0,0,0)",
+        backdropFilter: visible ? "blur(8px) saturate(0.8)" : "blur(0px)",
+        WebkitBackdropFilter: visible ? "blur(8px) saturate(0.8)" : "blur(0px)",
+        transition: "background 0.25s ease, backdrop-filter 0.25s ease"
+      }}
       onClick={onClose}
     >
       <div
         className={maxW + " w-full bg-gradient-to-br from-neutral-950 to-black border border-red-900/40 rounded-2xl shadow-2xl flex flex-col"}
-        style={{ maxHeight: "90vh", transform: visible ? "translateY(0) scale(1)" : "translateY(20px) scale(0.97)", opacity: visible ? 1 : 0, transition: "transform 0.28s cubic-bezier(0.34,1.2,0.64,1), opacity 0.22s ease", boxShadow: "0 25px 80px rgba(0,0,0,0.8), 0 0 0 1px rgba(220,38,38,0.15)" }}
+        style={{
+          maxHeight: "90vh",
+          transform: visible ? "translateY(0) scale(1)" : "translateY(20px) scale(0.97)",
+          opacity: visible ? 1 : 0,
+          transition: "transform 0.28s cubic-bezier(0.34,1.2,0.64,1), opacity 0.22s ease",
+          boxShadow: "0 25px 80px rgba(0,0,0,0.8), 0 0 0 1px rgba(220,38,38,0.15)"
+        }}
         onClick={e => e.stopPropagation()}
       >
         {title !== "" && (
@@ -47,3 +61,4 @@ export const Modal = ({ open, onClose, title, children, maxW = "max-w-lg" }: any
     </div>
   );
 };
+

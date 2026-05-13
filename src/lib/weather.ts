@@ -1,62 +1,145 @@
-import { today } from './utils';
+// @ts-nocheck
+import { today, daysFromNow } from "./utils";
 
-export const seedWeather = {
-  current: { temp: 68, condition: "partly_cloudy", rainChance: 20, wind: 8, humidity: 55 },
+export interface WeatherDay {
+  day: string;
+  date: string;
+  temp: number;
+  lowTemp: number;
+  rainChance: number;
+  wind: number;
+  humidity: number;
+  condition: string;
+  description: string;
+}
+
+export interface WeatherCurrent {
+  temp: number;
+  lowTemp: number;
+  rainChance: number;
+  wind: number;
+  humidity: number;
+  condition: string;
+  description: string;
+}
+
+export interface WeatherData {
+  current: WeatherCurrent;
+  forecast: WeatherDay[];
+}
+
+// ─── Seed / fallback weather ──────────────────────────────────────────────────
+
+export const seedWeather: WeatherData = {
+  current: {
+    temp: 72,
+    lowTemp: 58,
+    rainChance: 10,
+    wind: 8,
+    humidity: 45,
+    condition: "clear_sky",
+    description: "Clear sky",
+  },
   forecast: [
-    { day: "Tomorrow", temp: 72, rainChance: 10, wind: 6, lowTemp: 52 },
-    { day: "Thu", temp: 64, rainChance: 85, wind: 12, lowTemp: 48 },
-    { day: "Fri", temp: 70, rainChance: 30, wind: 8, lowTemp: 50 },
-    { day: "Sat", temp: 82, rainChance: 5, wind: 4, lowTemp: 62 },
-    { day: "Sun", temp: 88, rainChance: 0, wind: 18, lowTemp: 68 },
-    { day: "Mon", temp: 38, rainChance: 15, wind: 10, lowTemp: 28 },
-    { day: "Tue", temp: 66, rainChance: 10, wind: 5, lowTemp: 48 }
-  ]
+    { day: "Today",    date: today(),           temp: 72, lowTemp: 58, rainChance: 10, wind: 8,  humidity: 45, condition: "clear_sky",       description: "Clear sky"         },
+    { day: "Tomorrow", date: daysFromNow(1),    temp: 68, lowTemp: 54, rainChance: 25, wind: 12, humidity: 55, condition: "partly_cloudy",    description: "Partly cloudy"     },
+    { day: "Wed",      date: daysFromNow(2),    temp: 61, lowTemp: 49, rainChance: 70, wind: 18, humidity: 80, condition: "rain",             description: "Rain likely"       },
+    { day: "Thu",      date: daysFromNow(3),    temp: 55, lowTemp: 42, rainChance: 40, wind: 14, humidity: 65, condition: "overcast_clouds",  description: "Overcast"          },
+    { day: "Fri",      date: daysFromNow(4),    temp: 74, lowTemp: 60, rainChance: 5,  wind: 7,  humidity: 40, condition: "clear_sky",       description: "Sunny"             },
+    { day: "Sat",      date: daysFromNow(5),    temp: 78, lowTemp: 62, rainChance: 5,  wind: 6,  humidity: 38, condition: "clear_sky",       description: "Perfect wash day"  },
+    { day: "Sun",      date: daysFromNow(6),    temp: 65, lowTemp: 51, rainChance: 35, wind: 10, humidity: 60, condition: "few_clouds",      description: "Partly cloudy"     },
+  ],
 };
 
-export const fetchRealWeather = async (owmKey: string, lat = 39.9626, lon = -76.7277) => {
-  if (!owmKey) return null;
-  try {
-    const [cur, fore] = await Promise.all([
-      fetch(`https://api.openweathermap.org/data/2.5/weather?lat=${lat}&lon=${lon}&units=imperial&appid=${owmKey}`).then(r => r.json()),
-      fetch(`https://api.openweathermap.org/data/2.5/forecast?lat=${lat}&lon=${lon}&units=imperial&cnt=5&appid=${owmKey}`).then(r => r.json())
-    ]);
-    if (cur.cod !== 200) return null;
-    const current = {
-      temp: Math.round(cur.main.temp),
-      condition: cur.weather[0].main.toLowerCase().replace(" ", "_"),
-      rainChance: Math.round((cur.pop || 0) * 100),
-      wind: Math.round(cur.wind.speed),
-      humidity: cur.main.humidity,
-      description: cur.weather[0].description
-    };
-    const forecast = (fore.list || []).slice(0, 5).map((f: any) => ({
-      day: new Date(f.dt * 1000).toLocaleDateString("en-US", { weekday: "short" }),
-      temp: Math.round(f.main.temp),
-      lowTemp: Math.round(f.main.temp_min),
-      rainChance: Math.round((f.pop || 0) * 100),
-      wind: Math.round(f.wind.speed),
-      condition: f.weather[0].main
-    }));
-    return { current, forecast };
-  } catch { return null; }
+// ─── Real OpenWeatherMap fetch ────────────────────────────────────────────────
+
+const OWM_CITY = "York,PA,US";
+const OWM_UNITS = "imperial";
+
+interface OWMCurrentResponse {
+  main: { temp: number; temp_min: number; humidity: number };
+  wind: { speed: number };
+  weather: Array<{ main: string; description: string }>;
+  pop?: number;
+}
+
+interface OWMForecastItem {
+  dt: number;
+  dt_txt: string;
+  main: { temp: number; temp_min: number; humidity: number };
+  wind: { speed: number };
+  weather: Array<{ main: string; description: string }>;
+  pop: number;
+}
+
+interface OWMForecastResponse {
+  list: OWMForecastItem[];
+}
+
+const conditionMap: Record<string, string> = {
+  Clear: "clear_sky",
+  Clouds: "few_clouds",
+  Rain: "rain",
+  Drizzle: "rain",
+  Thunderstorm: "thunderstorm",
+  Snow: "snow",
+  Mist: "mist",
+  Fog: "fog",
 };
 
-export const forecastFor = (dateStr: string, weatherOverride?: any) => {
-  if (!dateStr) return null;
-  const diff = Math.round((new Date(dateStr).getTime() - new Date(today()).getTime()) / 86400000);
-  if (diff < 0 || diff > 6) return null;
-  if (diff === 0) return null;
-  const src = weatherOverride || seedWeather;
-  return (src.forecast || [])[diff - 1] || null;
+const dayLabel = (dt: number): string => {
+  const d = new Date(dt * 1000);
+  return d.toLocaleDateString("en-US", { weekday: "short" });
 };
 
-export const weatherRisk = (dateStr: string) => {
-  const f = forecastFor(dateStr);
-  if (!f) return null;
-  if (f.rainChance >= 70) return { level: "high", reason: f.rainChance + "% rain", icon: "🌧️" };
-  if (f.rainChance >= 40) return { level: "med", reason: f.rainChance + "% rain", icon: "🌦️" };
-  if (f.wind >= 15) return { level: "med", reason: f.wind + "mph wind", icon: "💨" };
-  if (f.temp >= 88) return { level: "med", reason: f.temp + "°F", icon: "🥵" };
-  if ((f.lowTemp || f.temp) < 35) return { level: "high", reason: "Freezing risk", icon: "🥶" };
-  return null;
+export const fetchRealWeather = async (apiKey: string): Promise<WeatherData> => {
+  const base = `https://api.openweathermap.org/data/2.5`;
+  const params = `q=${OWM_CITY}&units=${OWM_UNITS}&appid=${apiKey}`;
+
+  const [currentRes, forecastRes] = await Promise.all([
+    fetch(`${base}/weather?${params}`),
+    fetch(`${base}/forecast?${params}&cnt=40`),
+  ]);
+
+  if (!currentRes.ok || !forecastRes.ok) {
+    throw new Error("Weather API error");
+  }
+
+  const currentData = await currentRes.json() as OWMCurrentResponse;
+  const forecastData = await forecastRes.json() as OWMForecastResponse;
+
+  const current: WeatherCurrent = {
+    temp: Math.round(currentData.main.temp),
+    lowTemp: Math.round(currentData.main.temp_min),
+    rainChance: Math.round((currentData.pop ?? 0) * 100),
+    wind: Math.round(currentData.wind.speed),
+    humidity: currentData.main.humidity,
+    condition: conditionMap[currentData.weather[0]?.main] ?? "clear_sky",
+    description: currentData.weather[0]?.description ?? "",
+  };
+
+  // Group forecast by day (take noon reading each day)
+  const dayMap = new Map<string, OWMForecastItem>();
+  forecastData.list.forEach(item => {
+    const date = item.dt_txt.slice(0, 10);
+    const existing = dayMap.get(date);
+    if (!existing || Math.abs(item.dt % 86400 - 43200) < Math.abs(existing.dt % 86400 - 43200)) {
+      dayMap.set(date, item);
+    }
+  });
+
+  const days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+  const forecast: WeatherDay[] = Array.from(dayMap.entries()).slice(0, 7).map(([date, item], i) => ({
+    day: i === 0 ? "Today" : i === 1 ? "Tomorrow" : days[new Date(date + "T12:00:00").getDay()],
+    date,
+    temp: Math.round(item.main.temp),
+    lowTemp: Math.round(item.main.temp_min),
+    rainChance: Math.round(item.pop * 100),
+    wind: Math.round(item.wind.speed),
+    humidity: item.main.humidity,
+    condition: conditionMap[item.weather[0]?.main] ?? "clear_sky",
+    description: item.weather[0]?.description ?? "",
+  }));
+
+  return { current, forecast };
 };
