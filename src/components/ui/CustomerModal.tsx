@@ -1,4 +1,3 @@
-// @ts-nocheck
 // auto-extracted from Smock's OS monolith
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
@@ -42,9 +41,10 @@ import { Stat } from "./Stat";
 import { PBar } from "./PBar";
 import { PageFade } from "./PageFade";
 import { TimeframeSelector } from "./TimeframeSelector";
+import { AddressAutocomplete } from "./AddressAutocomplete";
 
 export function CustomerModal({ open, onClose, data, onSave, mapsKey = "" }) {
-  const blank = { firstName: "", lastName: "", email: "", phone: "", address: "", notes: "", gateCode: "", hasDog: false, dogName: "", sensitivePlants: "", leadSource: "", tags: [] };
+  const blank = { firstName: "", lastName: "", email: "", phone: "", address: "", notes: "", gateCode: "", hasDog: false, dogName: "", sensitivePlants: "", leadSource: "", tags: [], sqFootage: "", propertyNotes: "", customFields: [] };
   const [f, setF] = useState(blank);
   useEffect(() => {
     if (open) setF(data ? { ...blank, ...data } : blank);

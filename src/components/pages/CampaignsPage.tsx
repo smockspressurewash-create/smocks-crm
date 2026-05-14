@@ -1,4 +1,3 @@
-// @ts-nocheck
 // auto-extracted from Smock's OS monolith
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
@@ -78,7 +77,7 @@ import { ChemicalModal } from "../ui/ChemicalModal";
 import { WeeklyBusinessReview } from "../ui/WeeklyBusinessReview";
 import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 
-export function CampaignsPage({ campaigns = [], setCampaigns, customers = [], estimates = [], jobs = [], settings = {}, inboxThreads = [], setInboxThreads, toast }) {
+export function CampaignsPage({ campaigns = [], setCampaigns, customers = [], estimates = [], jobs = [], settings = {} as AppSettings, inboxThreads = [], setInboxThreads, toast }: { campaigns?: any[]; setCampaigns?: any; customers?: any[]; estimates?: any[]; jobs?: any[]; settings?: AppSettings; inboxThreads?: any[]; setInboxThreads?: any; toast?: any }) {
   const [savedSegments, setSavedSegments] = usePersistent("smocks.savedSegments", []);
   const [tab, setTab] = useState("compose");
   const [ch, setCh] = useState("sms");

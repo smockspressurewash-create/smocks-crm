@@ -1,4 +1,3 @@
-// @ts-nocheck
 // ─── Formatting ───────────────────────────────────────────────────────────────
 
 export const fmt = (n: number | undefined | null): string => {
@@ -143,6 +142,9 @@ export interface Personality {
   emoji: string;
   desc: string;
   systemPrompt: string;
+  greeting?: string;
+  icon?: string;
+  color?: string;
 }
 
 export const personalities: Personality[] = [

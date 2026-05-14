@@ -1,4 +1,3 @@
-// @ts-nocheck
 // auto-extracted from Smock's OS monolith
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
@@ -78,7 +77,7 @@ import { ChemicalModal } from "../ui/ChemicalModal";
 import { WeeklyBusinessReview } from "../ui/WeeklyBusinessReview";
 import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 
-export function ChemicalsPage({ chemicals = [], setChemicals, toast = () => {}, settings = {} }) {
+export function ChemicalsPage({ chemicals = [], setChemicals, toast = () => {}, settings = {} as AppSettings }: { chemicals?: any[]; setChemicals?: any; toast?: any; settings?: AppSettings }) {
   const [modal, setModal] = useState({ open: false, data: null });
   const low = chemicals.filter(c => c.stock <= c.reorderLevel);
   const totVal = chemicals.reduce((s, c) => s + c.stock * c.unitCost, 0);

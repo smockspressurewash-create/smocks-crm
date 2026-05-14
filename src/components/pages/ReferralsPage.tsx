@@ -1,4 +1,3 @@
-// @ts-nocheck
 // auto-extracted from Smock's OS monolith
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
@@ -78,7 +77,7 @@ import { ChemicalModal } from "../ui/ChemicalModal";
 import { WeeklyBusinessReview } from "../ui/WeeklyBusinessReview";
 import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 
-export function ReferralsPage({ customers = [], referrals = {}, toast, settings = {} }) {
+export function ReferralsPage({ customers = [], referrals = {}, toast, settings = {} as AppSettings }: { customers?: any[]; referrals?: any; toast?: any; settings?: AppSettings }) {
   const [copied, setCopied] = useState(null);
   const [sending, setSending] = useState(null);
   const [tab, setTab] = useState("customers"); // customers | leaderboard | settings

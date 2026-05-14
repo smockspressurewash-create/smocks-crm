@@ -1,4 +1,3 @@
-// @ts-nocheck
 // auto-extracted from Smock's OS monolith
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
@@ -61,7 +60,7 @@ export function CACCalculator({ tfExpenses = [], customers = [], timeframe }) {
         </div>
         <div className="flex items-center gap-1">
           <span className="text-white/40 text-sm">$</span>
-          <input type="number" min="0" value={manualAdSpend} onChange={e => setManualAdSpend(e.target.value)} placeholder="0" className="w-24 bg-black/60 border border-white/20 rounded-lg px-2 py-1.5 text-sm text-white text-right focus:outline-none focus:border-red-500/50" />
+          <input type="number" min="0" value={manualAdSpend} onChange={e => setManualAdSpend(Number(e.target.value))} placeholder="0" className="w-24 bg-black/60 border border-white/20 rounded-lg px-2 py-1.5 text-sm text-white text-right focus:outline-none focus:border-red-500/50" />
         </div>
       </div>
       <div className="grid grid-cols-2 gap-3 text-center">

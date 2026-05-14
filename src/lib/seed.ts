@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { uid, today, daysFromNow } from "./utils";
 import type {
   Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord,

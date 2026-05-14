@@ -1,4 +1,3 @@
-// @ts-nocheck
 // auto-extracted from Smock's OS monolith
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
@@ -78,7 +77,7 @@ import { ChemicalModal } from "../ui/ChemicalModal";
 import { WeeklyBusinessReview } from "../ui/WeeklyBusinessReview";
 import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 
-export function BudgetPage({ jobs = [], estimates = [], expenses = [], settings = {}, toast }) {
+export function BudgetPage({ jobs = [], estimates = [], expenses = [], settings = {} as AppSettings, toast }: { jobs?: any[]; estimates?: any[]; expenses?: any[]; settings?: AppSettings; toast?: any }) {
   const [timeframe, setTimeframe] = useState("1y");
   const [budgetGoals, setBudgetGoals] = useState(() => {
     try { return JSON.parse(localStorage.getItem("smocks.budgetGoals") || "{}"); } catch { return {}; }
@@ -107,8 +106,8 @@ export function BudgetPage({ jobs = [], estimates = [], expenses = [], settings 
   const deductibleExp = tfExp.filter(e => e.taxDeductible).reduce((s, e) => s + Number(e.amount), 0);
 
   // Mileage from localStorage (same key ExpensesPage uses)
-  const allMileage = (() => { try { const r = localStorage.getItem("smocks.mileage"); return r ? JSON.parse(r) : []; } catch { return []; } })();
-  const tfMileage = filterByTimeframe(allMileage, "date", timeframe);
+  const allMileage: any[] = (() => { try { const r = localStorage.getItem("smocks.mileage"); return r ? JSON.parse(r) : []; } catch { return []; } })();
+  const tfMileage: any[] = filterByTimeframe(allMileage, "date", timeframe);
   const totalMiles = tfMileage.reduce((s, m) => s + Number(m.miles), 0);
   const mileageDeduction = totalMiles * IRS_RATE;
 
@@ -123,13 +122,13 @@ export function BudgetPage({ jobs = [], estimates = [], expenses = [], settings 
   const quarterlyTax = estTax / 4;
 
   // Expense by category for chart
-  const expByCat = {};
+  const expByCat: Record<string, number> = {};
   tfExp.forEach(e => { expByCat[e.category] = (expByCat[e.category] || 0) + Number(e.amount); });
   const expCatArr = Object.entries(expByCat).sort((a, b) => b[1] - a[1]).slice(0, 8);
 
   // Revenue by month
   const monthlyData = (() => {
-    const months = {};
+    const months: Record<string, { month: string; revenue: number; expenses: number; profit: number }> = {};
     const now = new Date();
     for (let i = 11; i >= 0; i--) {
       const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
@@ -263,7 +262,7 @@ export function BudgetPage({ jobs = [], estimates = [], expenses = [], settings 
   };
 
   // Bucket actual expenses by category
-  const actualByCategory = {};
+  const actualByCategory: Record<string, number> = {};
   tfExp.forEach(e => {
     const key = mapToWillCategory(e.category);
     actualByCategory[key] = (actualByCategory[key] || 0) + Number(e.amount);
@@ -280,8 +279,8 @@ export function BudgetPage({ jobs = [], estimates = [], expenses = [], settings 
     commercial: tfJobs.filter(j => (j.notes || "").toLowerCase().includes("commercial")).reduce((s, j) => s + j.amount, 0),
   };
 
-  const totalIncome = Object.values(actualIncome).reduce((s, v) => s + v, 0);
-  const totalExpCats = Object.values(actualByCategory).reduce((s, v) => s + v, 0);
+  const totalIncome = Object.values(actualIncome).reduce((s, v) => s + (v as number), 0);
+  const totalExpCats = Object.values(actualByCategory).reduce((s, v) => s + (v as number), 0);
 
   return (
     <div className="space-y-5">
@@ -442,7 +441,7 @@ export function BudgetPage({ jobs = [], estimates = [], expenses = [], settings 
               <CartesianGrid strokeDasharray="3 3" stroke="#7f1d1d22" />
               <XAxis dataKey="month" stroke="#ffffff50" fontSize={10} />
               <YAxis stroke="#ffffff50" fontSize={10} tickFormatter={v => "$" + (v >= 1000 ? Math.round(v/1000) + "k" : v)} />
-              <Tooltip contentStyle={{ background: "#000", border: "1px solid #991b1b", borderRadius: "8px", fontSize: "11px" }} formatter={v => fmt(v)} />
+              <Tooltip contentStyle={{ background: "#000", border: "1px solid #991b1b", borderRadius: "8px", fontSize: "11px" }} formatter={v => fmt(Number(v))} />
               <Bar dataKey="revenue" fill="#e11d48" radius={[4,4,0,0]} name="Revenue" />
               <Bar dataKey="expenses" fill="#7c3aed" radius={[4,4,0,0]} name="Expenses" />
               <Bar dataKey="profit" fill="#16a34a" radius={[4,4,0,0]} name="Profit" />

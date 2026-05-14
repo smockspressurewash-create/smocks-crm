@@ -1,4 +1,3 @@
-// @ts-nocheck
 // auto-extracted from Smock's OS monolith
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
@@ -110,7 +109,7 @@ export function SocialCalendar({ posts = [], setPosts, toast, platformMeta = {} 
                   "border-white/8 bg-black/25 hover:border-white/20"
                 )}
                 onDragOver={e => { e.preventDefault(); setDragOver(ds); }}
-                onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget)) setDragOver(null); }}
+                onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDragOver(null); }}
                 onDrop={() => handleDrop(ds)}
               >
                 <div className={"text-[10px] font-bold mb-1 " + (isToday ? "text-purple-300" : isPast ? "text-white/20" : "text-white/45")}>

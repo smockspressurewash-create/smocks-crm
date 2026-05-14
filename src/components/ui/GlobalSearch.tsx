@@ -1,4 +1,3 @@
-// @ts-nocheck
 // auto-extracted from Smock's OS monolith
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
@@ -116,7 +115,7 @@ export function GlobalSearch({ customers = [], jobs = [], estimates = [], onNav 
 }
 
 // ===== ERROR BOUNDARY =====
-class ErrorBoundary extends React.Component {
+class ErrorBoundary extends React.Component<{children?: React.ReactNode}, {error: any}> {
   constructor(props) { super(props); this.state = { error: null }; }
   static getDerivedStateFromError(err) { return { error: err }; }
   componentDidCatch(err, info) { console.error("CRM Error:", err, info); }

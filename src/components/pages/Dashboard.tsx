@@ -1,4 +1,3 @@
-// @ts-nocheck
 // auto-extracted from Smock's OS monolith
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
@@ -21,11 +20,11 @@ import {
   Tooltip, ResponsiveContainer, Area, AreaChart, LineChart, Line,
   ComposedChart, Legend
 } from "recharts";
-import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE } from "../../lib/utils";
+import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, forecastFor, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE } from "../../lib/utils";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
 import { twilioSend, sendEmail } from "../../lib/messaging";
 import { seedWeather } from "../../lib/weather";
-import { seedCustomers, seedEstimates, seedJobs, seedEmployees, seedVehicles, seedExpenses, seedChemicals, seedServices, seedAutomations, seedEmailTemplates, seedSmsTemplates, seedRewardTiers, seedReferrals, seedMaintenance, campaignTemplates, seedSocialPosts, seedTimeline, seedGoals, seedReminders, seedAccountabilityEntries, seedMileage, seedLeadSrc, STEP_TYPES, AUTOMATION_TEMPLATES } from "../../lib/seed";
+import { seedCustomers, seedEstimates, seedJobs, seedEmployees, seedVehicles, seedExpenses, seedChemicals, seedServices, seedAutomations, seedEmailTemplates, seedSmsTemplates, seedRewardTiers, seedReferrals, seedMaintenance, campaignTemplates, seedSocialPosts, seedTimeline, seedGoals, seedReminders, seedAccountabilityEntries, seedMileage, seedLeadSrc, STEP_TYPES, AUTOMATION_TEMPLATES, seedRevenue } from "../../lib/seed";
 import { callModel, MODELS } from "../../lib/api";
 import { createCalendarEvent, updateCalendarEvent, deleteCalendarEvent, fetchDriveFiles, MOCK_GOOGLE_DATA, fmtSize, fmtDate, fileIcon } from "../../lib/google";
 import { usePersistent } from "../../hooks/usePersistent";
@@ -78,7 +77,7 @@ import { ChemicalModal } from "../ui/ChemicalModal";
 import { WeeklyBusinessReview } from "../ui/WeeklyBusinessReview";
 import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 
-export function Dashboard({ jobs = [], customers = [], estimates = [], automations = [], stats, goals, vehicles = [], maintenance = [], chemicals = [], settings = {}, setSettings = () => {}, onNav, toast, weatherData = seedWeather, inboxThreads = [] }) {
+export function Dashboard({ jobs = [], customers = [], estimates = [], automations = [], stats, goals, vehicles = [], maintenance = [], chemicals = [], settings = {} as AppSettings, setSettings = () => {}, onNav, toast, weatherData = seedWeather, inboxThreads = [] }: { jobs?: any[]; customers?: any[]; estimates?: any[]; automations?: any[]; stats?: any; goals?: any; vehicles?: any[]; maintenance?: any[]; chemicals?: any[]; settings?: AppSettings; setSettings?: any; onNav?: any; toast?: any; weatherData?: any; inboxThreads?: any[] }) {
   const pipelineVal = jobs.filter(j => j.status !== "completed").reduce((s, j) => s + j.amount, 0);
   const dayOfMonth = new Date().getDate();
   const daysInMonth = new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0).getDate();
@@ -243,7 +242,7 @@ export function Dashboard({ jobs = [], customers = [], estimates = [], automatio
     green: "bg-green-950/20 border-green-700/40 text-green-300"
   }[t] || "bg-white/5 border-white/10 text-white/70");
 
-  const w = settings.dashboardWidgets || { quickActions: true, kpis: true, revenuePeriods: true, goals: true, outstanding: true, charts: true, activity: true };
+  const w: any = settings.dashboardWidgets || { quickActions: true, kpis: true, revenuePeriods: true, goals: true, outstanding: true, charts: true, activity: true };
   const [custOpen, setCustOpen] = useState(false);
   const widgetDefs = [
     { k: "quickActions", l: "Quick Actions" },
@@ -505,7 +504,7 @@ export function Dashboard({ jobs = [], customers = [], estimates = [], automatio
             <div className="space-y-2">
               {upcoming.slice(0, 4).map(j => {
                 const c = customers.find(x => x.id === j.customerId);
-                const risk = forecastFor(j.scheduledDate);
+                const risk = forecastFor(wForecast, j.scheduledDate) as any;
                 return <div key={j.id} className="flex items-center gap-2 py-1.5 border-b border-red-900/10 last:border-0">
                   <div className="flex-1 min-w-0">
                     <div className="text-xs font-medium truncate">{c ? c.firstName + " " + c.lastName : j.address?.split(",")[0]}</div>
@@ -604,7 +603,7 @@ export function Dashboard({ jobs = [], customers = [], estimates = [], automatio
                 <defs><linearGradient id="rdg" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#e11d48" stopOpacity={0.5} /><stop offset="100%" stopColor="#9f1239" stopOpacity={0} /></linearGradient></defs>
                 <XAxis dataKey="month" stroke="#ffffff30" fontSize={9} />
                 <YAxis hide />
-                <Tooltip contentStyle={{ background: "rgba(0,0,0,0.9)", border: "1px solid #9f1239", borderRadius: "6px", fontSize: "10px" }} formatter={v => fmt(v)} />
+                <Tooltip contentStyle={{ background: "rgba(0,0,0,0.9)", border: "1px solid #9f1239", borderRadius: "6px", fontSize: "10px" }} formatter={v => fmt(Number(v))} />
                 <Area type="monotone" dataKey="revenue" stroke="#e11d48" strokeWidth={2} fill="url(#rdg)" dot={false} />
               </AreaChart>
             </ResponsiveContainer>

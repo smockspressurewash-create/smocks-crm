@@ -1,4 +1,3 @@
-// @ts-nocheck
 // auto-extracted from Smock's OS monolith
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
@@ -42,6 +41,7 @@ import { Stat } from "./Stat";
 import { PBar } from "./PBar";
 import { PageFade } from "./PageFade";
 import { TimeframeSelector } from "./TimeframeSelector";
+import { BeforeAfterSlider } from "./BeforeAfterSlider";
 
 export function JobDetailModal({ jobId, job, onClose, customers = [], employees = [], updateJob, toast }) {
   const [commNote, setCommNote] = useState("");
@@ -141,7 +141,7 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
             </GSel>
           </div>
           <div><label className="text-xs text-white/60 mb-1 block">Est. Duration (hrs)</label><GInput type="number" step="0.25" value={job.duration || ""} onChange={e => updateJob(jobId, { duration: e.target.value })} placeholder="e.g. 3.5" /></div>
-          <div><label className="text-xs text-white/60 mb-1 block">Recurring</label><GSel value={job.recurringFreq || "monthly"} onChange={e => updateJob(jobId, { recurringFreq: e.target.value, isRecurring: true })}>{recurringFreqs.map(f => <option key={f} value={f} className="bg-black">{f}</option>)}</GSel></div>
+          <div><label className="text-xs text-white/60 mb-1 block">Recurring</label><GSel value={job.recurringFreq || "monthly"} onChange={e => updateJob(jobId, { recurringFreq: e.target.value, isRecurring: true })}>{recurringFreqs.map(f => <option key={f.key} value={f.key} className="bg-black">{f.label}</option>)}</GSel></div>
         </div>
 
         {/* Time Tracking */}

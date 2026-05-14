@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { today, daysFromNow } from "./utils";
 
 export interface WeatherDay {

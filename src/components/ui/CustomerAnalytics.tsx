@@ -1,4 +1,3 @@
-// @ts-nocheck
 // auto-extracted from Smock's OS monolith
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
@@ -124,7 +123,7 @@ export function CustomerAnalytics({ customers = [], jobs = [], estimates = [] })
             <CartesianGrid strokeDasharray="3 3" stroke="#7f1d1d18" />
             <XAxis dataKey="name" stroke="#ffffff40" fontSize={9} angle={-30} textAnchor="end" interval={0} />
             <YAxis stroke="#ffffff40" fontSize={9} tickFormatter={v => "$" + (v >= 1000 ? Math.round(v/1000) + "k" : v)} width={40} />
-            <Tooltip contentStyle={{ background: "#0a0a0a", border: "1px solid #7f1d1d60", borderRadius: 8, fontSize: 11 }} formatter={v => fmt(v)} />
+            <Tooltip contentStyle={{ background: "#0a0a0a", border: "1px solid #7f1d1d60", borderRadius: 8, fontSize: 11 }} formatter={v => fmt(Number(v))} />
             <Bar dataKey="revenue" fill="#e11d48" radius={[3,3,0,0]} name="Revenue" />
             <Bar dataKey="ltv" fill="#16a34a" radius={[3,3,0,0]} name="Projected LTV" opacity={0.7} />
           </BarChart>
@@ -183,7 +182,7 @@ export function CustomerAnalytics({ customers = [], jobs = [], estimates = [] })
 
       {/* Lead Source ROI */}
       {(() => {
-        const srcMap = {};
+        const srcMap: Record<string, {source: string; customers: number; revenue: number; jobs: number}> = {};
         customers.forEach(c => {
           const src = c.leadSource || "Unknown";
           if (!srcMap[src]) srcMap[src] = { source: src, customers: 0, revenue: 0, jobs: 0 };

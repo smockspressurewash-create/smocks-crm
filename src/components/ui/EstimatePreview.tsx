@@ -1,4 +1,3 @@
-// @ts-nocheck
 // auto-extracted from Smock's OS monolith
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
@@ -43,7 +42,7 @@ import { PBar } from "./PBar";
 import { PageFade } from "./PageFade";
 import { TimeframeSelector } from "./TimeframeSelector";
 
-export function EstimatePreview({ estimate: e, customers = [], onClose, onApprove, onConvert }) {
+export function EstimatePreview({ estimate: e, customers = [], onClose, onApprove, onConvert, onSchedule = null, toast = (..._args: any[]) => {} }) {
   if (!e) return null;
   const c = customers.find(x => x.id === e.customerId);
 

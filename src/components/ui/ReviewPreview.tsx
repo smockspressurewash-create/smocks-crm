@@ -1,4 +1,3 @@
-// @ts-nocheck
 // auto-extracted from Smock's OS monolith
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
@@ -25,7 +24,7 @@ import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES,
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
 import { twilioSend, sendEmail } from "../../lib/messaging";
 import { seedWeather } from "../../lib/weather";
-import { seedCustomers, seedEstimates, seedJobs, seedEmployees, seedVehicles, seedExpenses, seedChemicals, seedServices, seedAutomations, seedEmailTemplates, seedSmsTemplates, seedRewardTiers, seedReferrals, seedMaintenance, campaignTemplates, seedSocialPosts, seedTimeline, seedGoals, seedReminders, seedAccountabilityEntries, seedMileage, seedLeadSrc, STEP_TYPES, AUTOMATION_TEMPLATES } from "../../lib/seed";
+import { seedCustomers, seedEstimates, seedJobs, seedEmployees, seedVehicles, seedExpenses, seedChemicals, seedServices, seedAutomations, seedEmailTemplates, seedSmsTemplates, seedRewardTiers, seedReferrals, seedMaintenance, campaignTemplates, seedSocialPosts, seedTimeline, seedGoals, seedReminders, seedAccountabilityEntries, seedMileage, seedLeadSrc } from "../../lib/seed";
 import { callModel, MODELS } from "../../lib/api";
 import { createCalendarEvent, updateCalendarEvent, deleteCalendarEvent, fetchDriveFiles, MOCK_GOOGLE_DATA, fmtSize, fmtDate, fileIcon } from "../../lib/google";
 import { usePersistent } from "../../hooks/usePersistent";
@@ -43,7 +42,7 @@ import { PBar } from "./PBar";
 import { PageFade } from "./PageFade";
 import { TimeframeSelector } from "./TimeframeSelector";
 
-export function ReviewPreview({ review: r, onClose, customer: c, onUpdate, onSubmit, apiKey, companyName = "Smock's", toast = () => {} }) {
+export function ReviewPreview({ review: r, onClose, customer: c, onUpdate, onSubmit, apiKey, companyName = "Smock's", toast = (..._args: any[]) => {} }) {
   const [lr, setLr] = useState(0);
   const [lf, setLf] = useState("");
   const [aiDraft, setAiDraft] = useState("");
@@ -489,7 +488,7 @@ const runWorkflow = async (workflow, ctx, toast, settings) => {
   if (!workflow.active) return { triggered: false, log: [], reason: "paused" };
 
   const normalized = normalizeAutomation(workflow);
-  const steps = normalized.steps || [];
+  const steps: any[] = normalized.steps || [];
   if (steps.length === 0) return { triggered: false, log: [], reason: "no steps" };
 
   // Check the first trigger step

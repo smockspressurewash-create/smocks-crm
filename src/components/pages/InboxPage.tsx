@@ -1,4 +1,3 @@
-// @ts-nocheck
 // auto-extracted from Smock's OS monolith
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
@@ -78,7 +77,9 @@ import { ChemicalModal } from "../ui/ChemicalModal";
 import { WeeklyBusinessReview } from "../ui/WeeklyBusinessReview";
 import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 
-export function InboxPage({ threads = [], setThreads, customers = [], settings = {}, toast }) {
+const pollTwilioIncoming = async (..._args: any[]) => [];
+
+export function InboxPage({ threads = [], setThreads, customers = [], settings = {} as AppSettings, toast }: { threads?: any[]; setThreads?: any; customers?: any[]; settings?: AppSettings; toast?: any }) {
   const [active, setActive] = useState(threads[0]?.id || null);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
@@ -281,7 +282,7 @@ export function InboxPage({ threads = [], setThreads, customers = [], settings =
           {/* Composer */}
           <div className="border-t border-red-900/30 p-3 bg-black/40">
             <div className="flex items-end gap-2 bg-black/60 border border-red-900/40 rounded-2xl p-2 focus-within:border-red-500/60 transition">
-              <textarea ref={inputRef} rows={1} placeholder={"Message" + (activeThread.channel === "sms" ? " (SMS)" : " (Email)")} value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }} onInput={e => { e.target.style.height = "auto"; e.target.style.height = Math.min(e.target.scrollHeight, 120) + "px"; }} className="flex-1 bg-transparent px-2 py-1 text-sm text-white placeholder-white/30 focus:outline-none resize-none max-h-[120px]" />
+              <textarea ref={inputRef} rows={1} placeholder={"Message" + (activeThread.channel === "sms" ? " (SMS)" : " (Email)")} value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }} onInput={e => { (e.target as HTMLTextAreaElement).style.height = "auto"; (e.target as HTMLTextAreaElement).style.height = Math.min((e.target as HTMLTextAreaElement).scrollHeight, 120) + "px"; }} className="flex-1 bg-transparent px-2 py-1 text-sm text-white placeholder-white/30 focus:outline-none resize-none max-h-[120px]" />
               <button onClick={send} disabled={sending || !input.trim()} className={"p-2 rounded-xl transition " + (sending || !input.trim() ? "bg-white/5 text-white/30" : "bg-gradient-to-br from-red-600 to-red-800 text-white hover:scale-105")}>{sending ? <RefreshCw size={14} className="animate-spin" /> : <Send size={14} />}</button>
             </div>
             {activeThread.channel === "sms" && !twilioReady && <div className="text-[9px] text-yellow-400 mt-1 text-center">Add Twilio credentials in Settings to send real SMS</div>}

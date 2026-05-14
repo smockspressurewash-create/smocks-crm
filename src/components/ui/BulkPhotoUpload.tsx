@@ -1,4 +1,3 @@
-// @ts-nocheck
 // auto-extracted from Smock's OS monolith
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
@@ -52,9 +51,10 @@ export function BulkPhotoUpload({ toast, posts = [], setPosts }) {
   const handleFiles = e => {
     const files = Array.from(e.target.files || []);
     files.forEach(f => {
+      const file = f as File;
       const r = new FileReader();
-      r.onload = ev => setPhotos(prev => [...prev, { id: uid(), name: f.name, dataUrl: ev.target.result, type: f.name.toLowerCase().includes("before") ? "before" : f.name.toLowerCase().includes("after") ? "after" : "photo", caption: "", platform }]);
-      r.readAsDataURL(f);
+      r.onload = ev => setPhotos(prev => [...prev, { id: uid(), name: file.name, dataUrl: ev.target.result, type: file.name.toLowerCase().includes("before") ? "before" : file.name.toLowerCase().includes("after") ? "after" : "photo", caption: "", platform }]);
+      r.readAsDataURL(file);
     });
     e.target.value = "";
     toast(files.length + " photo" + (files.length !== 1 ? "s" : "") + " added");

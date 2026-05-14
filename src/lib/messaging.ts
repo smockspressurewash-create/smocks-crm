@@ -1,4 +1,3 @@
-// @ts-nocheck
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export interface TwilioSettings {
@@ -96,11 +95,24 @@ export const pollTwilioIncoming = async (
 // ─── Email via Resend ─────────────────────────────────────────────────────────
 
 export const sendEmail = async (
-  settings: EmailSettings & { resendBackendUrl?: string },
-  to: string,
-  subject: string,
-  html: string
+  settings: EmailSettings & { resendBackendUrl?: string; googleConnected?: boolean },
+  toOrOpts: string | { to: string; subject: string; body: string; [key: string]: any },
+  subject?: string,
+  html?: string
 ): Promise<void> => {
+  // Support both positional args and object form
+  let to: string;
+  let subj: string;
+  let body: string;
+  if (typeof toOrOpts === "object") {
+    to = toOrOpts.to;
+    subj = toOrOpts.subject;
+    body = toOrOpts.body;
+  } else {
+    to = toOrOpts;
+    subj = subject!;
+    body = html!;
+  }
   const { resendKey, fromEmail, fromName, resendBackendUrl } = settings;
 
   // Via backend proxy
@@ -108,7 +120,7 @@ export const sendEmail = async (
     const res = await fetch(`${resendBackendUrl}/email`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ to, subject, html, from: `${fromName ?? "Smock's"} <${fromEmail ?? "noreply@smocks.com"}>` }),
+      body: JSON.stringify({ to, subject: subj, html: body, from: `${fromName ?? "Smock's"} <${fromEmail ?? "noreply@smocks.com"}>` }),
     });
     if (!res.ok) throw new Error(`Email proxy error: ${res.status}`);
     return;
@@ -125,8 +137,8 @@ export const sendEmail = async (
     body: JSON.stringify({
       from: `${fromName ?? "Smock's Pressure Washing"} <${fromEmail ?? "noreply@smocks.com"}>`,
       to: [to],
-      subject,
-      html,
+      subject: subj,
+      html: body,
     }),
   });
   if (!res.ok) {

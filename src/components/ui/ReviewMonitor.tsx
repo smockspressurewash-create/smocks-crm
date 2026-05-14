@@ -1,4 +1,3 @@
-// @ts-nocheck
 // auto-extracted from Smock's OS monolith
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
@@ -43,7 +42,7 @@ import { PBar } from "./PBar";
 import { PageFade } from "./PageFade";
 import { TimeframeSelector } from "./TimeframeSelector";
 
-export function ReviewMonitor({ settings = {}, toast }) {
+export function ReviewMonitor({ settings = {} as any, toast }) {
   const [newR, setNewR] = useState({ reviewer: "", rating: 5, text: "", date: today(), source: "Google" });
   const [loggedReviews, setLoggedReviews] = usePersistent("smocks.googleReviews", []);
 

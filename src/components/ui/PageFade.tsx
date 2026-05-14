@@ -1,4 +1,3 @@
-// @ts-nocheck
 // PageFade.tsx — auto-extracted from monolith
 import React, { useState, useRef, useEffect, useCallback } from "react";
 

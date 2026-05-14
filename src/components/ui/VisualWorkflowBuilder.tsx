@@ -1,4 +1,3 @@
-// @ts-nocheck
 // auto-extracted from Smock's OS monolith
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
@@ -43,8 +42,10 @@ import { PBar } from "./PBar";
 import { PageFade } from "./PageFade";
 import { TimeframeSelector } from "./TimeframeSelector";
 
+const checkCondition = (check: string, ctx: any) => true;
+
 export function VisualWorkflowBuilder({ open, data, onClose, onSave }) {
-  const [w, setW] = useState({ name: "", category: "other", icon: "📋", description: "", steps: [] });
+  const [w, setW] = useState({ id: "", name: "", category: "other", icon: "📋", description: "", steps: [] });
   const [selectedIdx, setSelectedIdx] = useState(null);
   const [showNodePicker, setShowNodePicker] = useState(null);
   const [testRunning, setTestRunning] = useState(false);

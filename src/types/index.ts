@@ -1,4 +1,3 @@
-// @ts-nocheck
 // ─── Customer ─────────────────────────────────────────────────────────────────
 
 export interface CustomField {
@@ -483,6 +482,33 @@ export interface AppSettings {
   // Models
   selectedModel?: string;
   ttsEnabled?: boolean;
+
+  // Extended/misc
+  googleMapsKey?: string;
+  googleScopes?: Record<string, boolean>;
+  activeModel?: string;
+  modelPriority?: string[];
+  modelKeys?: Record<string, string>;
+  failoverEnabled?: boolean;
+  openAiKey?: string;
+  twilioFrom?: string;
+
+  // Dashboard / business goals
+  dashboardWidgets?: string[];
+  quarterlyRevenueGoal?: number;
+  annualRevenueGoal?: number;
+  weeklyJobsGoal?: number;
+
+  // Misc settings used across pages
+  instagramHandle?: string;
+  facebookHandle?: string;
+  tiktokHandle?: string;
+  reviewLink?: string;
+  portalUrl?: string;
+  minimaxGroupId?: string;
+  googleCalendarSyncEnabled?: boolean;
+  googleContacts?: boolean;
+  [key: string]: any;
 }
 
 // ─── Referral ─────────────────────────────────────────────────────────────────
@@ -503,6 +529,7 @@ export interface RewardTier {
   minReferrals: number;
   reward: string;
   icon: string;
+  refs?: number;
 }
 
 // ─── Mileage ─────────────────────────────────────────────────────────────────

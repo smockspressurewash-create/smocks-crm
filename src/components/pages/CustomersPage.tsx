@@ -1,4 +1,3 @@
-// @ts-nocheck
 // auto-extracted from Smock's OS monolith
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
@@ -78,7 +77,7 @@ import { ChemicalModal } from "../ui/ChemicalModal";
 import { WeeklyBusinessReview } from "../ui/WeeklyBusinessReview";
 import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 
-export function CustomersPage({ customers = [], setCustomers, estimates = [], jobs = [], toast, timeline = {}, setTimeline = () => {}, settings = {} }) {
+export function CustomersPage({ customers = [], setCustomers, estimates = [], jobs = [], toast, timeline = {}, setTimeline = () => {}, settings = {} as AppSettings }: { customers?: any[]; setCustomers?: any; estimates?: any[]; jobs?: any[]; toast?: any; timeline?: any; setTimeline?: any; settings?: AppSettings }) {
   const [search, setSearch] = useState("");
   const [modal, setModal] = useState({ open: false, data: null });
   const [detail, setDetail] = useState(null);
@@ -181,7 +180,7 @@ export function CustomersPage({ customers = [], setCustomers, estimates = [], jo
     const r = new FileReader();
     r.onload = () => {
       try {
-        const lines = r.result.split(/\r?\n/).filter(Boolean);
+        const lines = (r.result as string).split(/\r?\n/).filter(Boolean);
         const [hdr, ...rows] = lines;
         const cols = hdr.split(",").map(h => h.replace(/^"|"$/g, "").trim().toLowerCase());
 

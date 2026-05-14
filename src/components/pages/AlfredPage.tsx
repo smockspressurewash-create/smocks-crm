@@ -1,4 +1,3 @@
-// @ts-nocheck
 // auto-extracted from Smock's OS monolith
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
@@ -26,7 +25,7 @@ import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Exp
 import { twilioSend, sendEmail } from "../../lib/messaging";
 import { seedWeather } from "../../lib/weather";
 import { seedCustomers, seedEstimates, seedJobs, seedEmployees, seedVehicles, seedExpenses, seedChemicals, seedServices, seedAutomations, seedEmailTemplates, seedSmsTemplates, seedRewardTiers, seedReferrals, seedMaintenance, campaignTemplates, seedSocialPosts, seedTimeline, seedGoals, seedReminders, seedAccountabilityEntries, seedMileage, seedLeadSrc, STEP_TYPES, AUTOMATION_TEMPLATES } from "../../lib/seed";
-import { callModel, MODELS } from "../../lib/api";
+import { callModel, MODELS, parseRateLimitError } from "../../lib/api";
 import { createCalendarEvent, updateCalendarEvent, deleteCalendarEvent, fetchDriveFiles, MOCK_GOOGLE_DATA, fmtSize, fmtDate, fileIcon } from "../../lib/google";
 import { usePersistent } from "../../hooks/usePersistent";
 import { usePersistentRaw } from "../../hooks/usePersistentRaw";
@@ -78,7 +77,7 @@ import { ChemicalModal } from "../ui/ChemicalModal";
 import { WeeklyBusinessReview } from "../ui/WeeklyBusinessReview";
 import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 
-export function AlfredPage({ conversations, setConversations, activeConvId, setActiveConvId, memory = [], setMemory, personality, setPersonality, apiKey, openSettings, toast, jobs = [], setJobs, estimates = [], setEstimates, customers = [], setCustomers, employees = [], automations = [], setAutomations = () => {}, stats, setWins, goals = [], setGoals, setSettings, settings = {}, modelStatus = {}, setModelStatus = () => {}, onNav }) {
+export function AlfredPage({ conversations, setConversations, activeConvId, setActiveConvId, memory = [], setMemory, personality, setPersonality, apiKey, openSettings, toast, jobs = [], setJobs, estimates = [], setEstimates, customers = [], setCustomers, employees = [], automations = [], setAutomations = () => {}, stats, setWins, goals = [], setGoals, setSettings, settings = {} as AppSettings, modelStatus = {}, setModelStatus = () => {}, onNav, expenses = [], entries = [] }: { conversations?: any; setConversations?: any; activeConvId?: any; setActiveConvId?: any; memory?: any; setMemory?: any; personality?: any; setPersonality?: any; apiKey?: any; openSettings?: any; toast?: any; jobs?: any; setJobs?: any; estimates?: any; setEstimates?: any; customers?: any; setCustomers?: any; employees?: any; automations?: any; setAutomations?: any; stats?: any; setWins?: any; goals?: any; setGoals?: any; setSettings?: any; settings?: AppSettings; modelStatus?: any; setModelStatus?: any; onNav?: any; expenses?: any[]; entries?: any[] }) {
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -92,7 +91,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
   const [, forceTick] = useState(0);
   // Tick every second when any model is locked out so UI countdowns stay fresh
   useEffect(() => {
-    if (!modelStatus || Object.values(modelStatus).every(s => !s?.lockedUntil || s.lockedUntil < Date.now())) return;
+    if (!modelStatus || Object.values(modelStatus).every((s: any) => !s?.lockedUntil || s.lockedUntil < Date.now())) return;
     const h = setInterval(() => forceTick(t => t + 1), 1000);
     return () => clearInterval(h);
   }, [modelStatus]);
@@ -216,7 +215,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
       personality,
       createdAt: today(),
       updatedAt: Date.now(),
-      messages: [{ id: uid(), role: "alfred", content: personalities[personality].greeting, timestamp: Date.now() }]
+      messages: [{ id: uid(), role: "alfred", content: (personalities as any)[personality]?.greeting || "Hello! How can I help?", timestamp: Date.now() }]
     };
     setConversations([newConv, ...conversations]);
     setActiveConvId(cid);
@@ -254,7 +253,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
 
   const clearChat = () => {
     if (!active) return;
-    replaceMessages([{ id: uid(), role: "alfred", content: personalities[active.personality || personality].greeting, timestamp: Date.now() }]);
+    replaceMessages([{ id: uid(), role: "alfred", content: (personalities as any)[active.personality || personality]?.greeting || "Hello! How can I help?", timestamp: Date.now() }]);
     setMenuOpen(false);
     toast("Chat cleared");
   };
@@ -816,6 +815,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           const token = settings.googleToken;
           if (url && token) {
             try {
+              const sendGmailEmail = async (u: string, t: string, opts: any) => { const r = await fetch(u + "/gmail/send", { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${t}` }, body: JSON.stringify(opts) }); return r.json(); };
               const result = await sendGmailEmail(url, token, { to: inputs.to, subject: inputs.subject, body: inputs.body, cc: inputs.cc });
               toast("Email sent to " + inputs.to + " ✓");
               return { success: true, sent: true, via: "gmail", to: inputs.to, subject: inputs.subject, messageId: result.id || "sent" };
@@ -838,9 +838,9 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           const endDt = new Date(new Date(startDt).getTime() + endMin * 60000).toISOString().slice(0, 19);
           if (url && token) {
             try {
-              const result = await createCalendarEvent(url, token, { title: inputs.title, start: startDt, end: endDt, description: inputs.notes || "", location: inputs.location || "", attendees: inputs.attendees || [] });
+              const calResult = await (createCalendarEvent as any)(url, token, { title: inputs.title, start: startDt, end: endDt, description: inputs.notes || "", location: inputs.location || "", attendees: inputs.attendees || [] });
               toast("Event created in Google Calendar: " + inputs.title);
-              return { success: true, eventId: result.id || uid(), title: inputs.title, start: startDt, end: endDt };
+              return { success: true, eventId: (calResult as any)?.id || uid(), title: inputs.title, start: startDt, end: endDt };
             } catch (e) {
               return { error: "Calendar event failed: " + e.message };
             }
@@ -856,6 +856,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           const token = settings.googleToken;
           if (url && token) {
             try {
+              const uploadToDrive = async (u: string, t: string, opts: any) => { const r = await fetch(u + "/drive/upload", { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${t}` }, body: JSON.stringify(opts) }); return r.json(); };
               const result = await uploadToDrive(url, token, { filename: inputs.filename, content: inputs.content || "", mimeType: inputs.mimeType || "text/plain", folderId: inputs.folder });
               toast("Uploaded to Drive: " + inputs.filename + " ✓");
               return { success: true, fileId: result.id || uid(), filename: inputs.filename, webViewLink: result.webViewLink };
@@ -874,6 +875,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           const token = settings.googleToken;
           if (url && token) {
             try {
+              const createTask = async (u: string, t: string, opts: any) => { const r = await fetch(u + "/tasks", { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${t}` }, body: JSON.stringify(opts) }); return r.json(); };
               const result = await createTask(url, token, { title: inputs.title, notes: inputs.notes, due: inputs.due });
               toast("Task created in Google Tasks: " + inputs.title);
               return { success: true, taskId: result.id, title: inputs.title };
@@ -1020,7 +1022,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
     }
   ];
 
-  const send = async (overrideText) => {
+  const send = async (overrideText?: string) => {
     const text = (overrideText ?? input).trim();
     if (!text || loading) return;
     const userMsg = { id: uid(), role: "user", content: text, timestamp: Date.now() };
@@ -1055,7 +1057,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
         savage: "You are Alfred, a sarcastic but brilliant assistant at Smock's Pressure Washing in York, PA. Roast the user occasionally but always be helpful underneath. Be witty and sharp."
       };
       const activePersonality = active?.personality || personality;
-      const memByCat = memory.reduce((acc, m) => { const k = m.category || "general"; (acc[k] = acc[k] || []).push(m.text); return acc; }, {});
+      const memByCat: Record<string, string[]> = memory.reduce((acc: Record<string, string[]>, m: any) => { const k = m.category || "general"; (acc[k] = acc[k] || []).push(m.text); return acc; }, {});
       const memoryContext = memory.length > 0 ? "\n\nWhat you remember about the user (organized by category):\n" + Object.entries(memByCat).map(([k, list]) => "  [" + k + "]: " + list.join("; ")).join("\n") : "";
       const businessContext = "\n\nCurrent business snapshot:\n- Active jobs: " + stats.activeJobs + "\n- Pending quotes: " + stats.pendingEst + "\n- Revenue MTD: " + fmt(stats.totalRev) + "\n- Close rate: " + stats.closeRate + "%\n- Jobs completed this month: " + stats.doneMonth + "\n- Total customers: " + customers.length;
       const googleStatus = settings.googleConnected
@@ -1076,11 +1078,12 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
       const priority = settings.modelPriority || ["claude", "openai", "gemini", "groq", "mistral", "minimax"];
       const tryOrder = [modelUsed, ...priority.filter(m => m !== modelUsed)];
       const now = Date.now();
+      const MODELS_MAP: any = MODELS;
       const viableModels = tryOrder.filter(mid => {
-        const m = MODELS[mid];
+        const m = MODELS_MAP[mid];
         if (!m) return false;
         if (m.needsKey && !(settings.modelKeys || {})[mid]) return false; // no key
-        const status = modelStatus[mid];
+        const status: any = modelStatus[mid];
         if (status && status.lockedUntil && status.lockedUntil > now) return false; // locked out
         return true;
       });
@@ -1101,8 +1104,8 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           const localTraces = [];
           while (rounds < 5) {
             rounds++;
-            const toolsForModel = MODELS[mid].supportsTools ? toolDefinitions : undefined;
-            const result = await callModel({
+            const toolsForModel = MODELS_MAP[mid]?.supportsTools ? toolDefinitions : undefined;
+            const result = await (callModel as any)({
               modelId: mid,
               apiKey: (settings.modelKeys || {})[mid],
               systemPrompt,
@@ -1132,15 +1135,15 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           break;
         } catch (err) {
           failoverChain.push({ model: mid, error: err.message });
-          const rateLimit = parseRateLimitError(err, mid);
+          const rateLimit = (parseRateLimitError as any)(err, mid);
           if (rateLimit) {
             setModelStatus(s => ({ ...s, [mid]: { lockedUntil: rateLimit.lockedUntil, lastError: err.message, since: Date.now() } }));
-            toast(MODELS[mid].name + " rate-limited" + (settings.failoverEnabled && chain.indexOf(mid) < chain.length - 1 ? " — trying next" : ""), "error");
+            toast((MODELS_MAP[mid]?.name || mid) + " rate-limited" + (settings.failoverEnabled && chain.indexOf(mid) < chain.length - 1 ? " — trying next" : ""), "error");
           } else if (chain.indexOf(mid) === chain.length - 1) {
             // last in chain, and it's not rate limit — bubble up
             throw err;
           } else {
-            toast(MODELS[mid].name + " failed — trying next", "error");
+            toast((MODELS_MAP[mid]?.name || mid) + " failed — trying next", "error");
           }
           // continue to next model
         }
@@ -1148,18 +1151,18 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
 
       if (!success) {
         // Build a clear, actionable error message
-        const lockedModels = Object.entries(modelStatus).filter(([_, s]) => s?.lockedUntil > Date.now());
+        const lockedModels = Object.entries(modelStatus).filter(([_, s]) => (s as any)?.lockedUntil > Date.now());
         const allCorsBlocked = failoverChain.length > 0 && failoverChain.every(f => /failed to fetch|cors|network/i.test(f.error));
 
         let errorMsg;
         if (allCorsBlocked) {
           errorMsg = "All third-party AI providers blocked your browser request (CORS).\n\n💡 Fix: Use Claude (the only built-in model) — it works without a backend.\n\nThe other providers (OpenAI, Gemini, Groq, Mistral, MiniMax) need a backend proxy to work in a browser. Their API keys are stored, but the calls fail at the network layer.";
         } else if (lockedModels.length === priority.length) {
-          const soonest = lockedModels.map(([_, s]) => s.lockedUntil).sort()[0];
+          const soonest = lockedModels.map(([_, s]) => (s as any).lockedUntil).sort()[0];
           const wait = Math.ceil((soonest - Date.now()) / 60000);
           errorMsg = "All models are rate-limited.\n\n⏱ Soonest reset: ~" + wait + " min\n\nYou can wait, or unlock a model manually in Settings → AI Models → Reset now.";
         } else {
-          errorMsg = "Tried " + chain.length + " model(s):\n" + failoverChain.slice(-5).map(f => "• " + (MODELS[f.model]?.name || f.model) + ": " + f.error).join("\n");
+          errorMsg = "Tried " + chain.length + " model(s):\n" + failoverChain.slice(-5).map(f => "• " + (MODELS_MAP[f.model]?.name || f.model) + ": " + f.error).join("\n");
         }
         throw new Error(errorMsg);
       }
@@ -1169,8 +1172,8 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
       let displayText = finalText;
       const footerParts = [];
       if (toolTraces.length > 0) footerParts.push("🛠 " + toolTraces.length + " tool" + (toolTraces.length > 1 ? "s" : "") + ": " + toolTraces.map(t => t.tool).join(", "));
-      if (modelUsed !== (settings.activeModel || "claude")) footerParts.push("⚡ Failed over to " + MODELS[modelUsed].name);
-      else if (MODELS[modelUsed]) footerParts.push("✨ " + MODELS[modelUsed].label);
+      if (modelUsed !== (settings.activeModel || "claude")) footerParts.push("⚡ Failed over to " + (MODELS_MAP[modelUsed]?.name || modelUsed));
+      else if (MODELS_MAP[modelUsed]) footerParts.push("✨ " + MODELS_MAP[modelUsed].label);
       if (footerParts.length > 0) displayText += "\n\n---\n*" + footerParts.join(" · ") + "*";
       appendMessage({ id: uid(), role: "alfred", content: displayText, timestamp: Date.now(), toolTraces, modelUsed, failoverChain });
 
@@ -1238,8 +1241,8 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
     inputRef.current?.focus();
   };
 
-  const cur = personalities[active?.personality || personality];
-  const CurIcon = cur.icon;
+  const cur: any = (personalities as any)[active?.personality || personality] || { name: "Alfred", color: "from-red-600 to-red-900", icon: Bot };
+  const CurIcon = cur.icon || Bot;
 
   const filteredConvs = conversations
     .filter(c => !convSearch.trim() || c.title.toLowerCase().includes(convSearch.toLowerCase()) || c.messages.some(m => m.content.toLowerCase().includes(convSearch.toLowerCase())))
@@ -1286,7 +1289,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
         </div>
 
         <div className="flex-1 overflow-y-auto py-2 px-2">
-          {convGroups.map(([label, group]) => (
+          {convGroups.map(([label, group]: [string, any[]]) => (
             <div key={label} className="mb-3">
               <div className="text-[10px] uppercase tracking-wider text-white/40 px-2 mb-1">{label}</div>
               {group.map(c => {
@@ -1328,10 +1331,10 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           <div className="px-2.5 py-2">
             <div className="text-[10px] uppercase tracking-wider text-white/40 mb-1.5">Personality</div>
             <div className="grid grid-cols-2 gap-1">
-              {Object.entries(personalities).map(([k, p]) => {
+              {Object.entries(personalities as any).map(([k, p]: [string, any]) => {
                 const Icon = p.icon;
                 const a = (active?.personality || personality) === k;
-                return <button key={k} onClick={() => { setPersonality(k); if (active) updateActive({ personality: k }); }} className={"flex items-center gap-1.5 px-2 py-1.5 rounded-lg text-[11px] transition border " + (a ? "bg-gradient-to-r " + p.color + " border-red-500/50" : "bg-white/5 hover:bg-white/10 border-transparent text-white/60")}><Icon size={10} />{p.name}</button>;
+                return <button key={k} onClick={() => { setPersonality(k); if (active) updateActive({ personality: k }); }} className={"flex items-center gap-1.5 px-2 py-1.5 rounded-lg text-[11px] transition border " + (a ? "bg-gradient-to-r " + p.color + " border-red-500/50" : "bg-white/5 hover:bg-white/10 border-transparent text-white/60")}>{Icon && <Icon size={10} />}{p.name}</button>;
               })}
             </div>
           </div>
@@ -1364,9 +1367,9 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           {/* Model switcher */}
           {(() => {
             const activeModel = settings.activeModel || "claude";
-            const activeM = MODELS[activeModel];
-            const activeLocked = modelStatus[activeModel]?.lockedUntil > Date.now();
-            const remaining = activeLocked ? modelStatus[activeModel].lockedUntil - Date.now() : 0;
+            const activeM = (MODELS as any)[activeModel];
+            const activeLocked = (modelStatus[activeModel] as any)?.lockedUntil > Date.now();
+            const remaining = activeLocked ? (modelStatus[activeModel] as any).lockedUntil - Date.now() : 0;
             const fmtShort = ms => {
               const s = Math.floor(ms / 1000);
               if (s < 60) return s + "s";
@@ -1393,11 +1396,11 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
                     </label>
                   </div>
                   <div className="max-h-64 overflow-y-auto py-1">
-                    {Object.values(MODELS).map(m => {
+                    {Object.values(MODELS as any).map((m: any) => {
                       const hasKey = !m.needsKey || !!(settings.modelKeys || {})[m.id];
                       const isActive = activeModel === m.id;
-                      const locked = modelStatus[m.id]?.lockedUntil > Date.now();
-                      const rem = locked ? modelStatus[m.id].lockedUntil - Date.now() : 0;
+                      const locked = (modelStatus[m.id] as any)?.lockedUntil > Date.now();
+                      const rem = locked ? (modelStatus[m.id] as any).lockedUntil - Date.now() : 0;
                       return <button key={m.id} onClick={() => { if (hasKey) { setSettings(s => ({ ...s, activeModel: m.id })); setModelPickerOpen(false); } else { openSettings(); setModelPickerOpen(false); } }} className={"w-full px-3 py-2 flex items-center gap-2 text-xs hover:bg-white/5 border-b border-red-900/20 last:border-b-0 text-left " + (isActive ? "bg-red-950/30" : "")}>
                         <div className={"w-2.5 h-2.5 rounded-full flex-shrink-0 bg-gradient-to-br " + m.color} />
                         <div className="flex-1 min-w-0">
@@ -1511,7 +1514,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
                   e.target.value = "";
                   const r = new FileReader();
                   r.onload = async ev => {
-                    const dataUrl = ev.target.result;
+                    const dataUrl = ev.target!.result as string;
                     const base64 = dataUrl.split(",")[1];
                     const mediaType = file.type || "image/jpeg";
                     // Show preview in chat
@@ -1553,7 +1556,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
                 <Paperclip size={16} />
               </label>
               {/* Whisper voice transcription */}
-              {settings?.openAiKey && <VoiceMicButton onTranscript={text => setInput(prev => prev + (prev ? " " : "") + text)} apiKey={settings.openAiKey} />}
+              {(settings?.openAiKey || settings?.openaiKey) && <VoiceMicButton onTranscript={text => setInput(prev => prev + (prev ? " " : "") + text)} apiKey={settings.openAiKey || settings.openaiKey || ""} />}
               <textarea
                 ref={inputRef}
                 rows={1}
@@ -1561,7 +1564,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
                 value={input}
                 onChange={onInputChange}
                 onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
-                onInput={e => { e.target.style.height = "auto"; e.target.style.height = Math.min(e.target.scrollHeight, 200) + "px"; }}
+                onInput={e => { const t = e.target as HTMLTextAreaElement; t.style.height = "auto"; t.style.height = Math.min(t.scrollHeight, 200) + "px"; }}
                 className="flex-1 bg-transparent px-3 py-2 text-sm text-white placeholder-white/30 focus:outline-none resize-none max-h-[200px]"
               />
               <button onClick={() => send()} disabled={loading || !input.trim()} className={"p-2.5 rounded-xl transition " + (loading || !input.trim() ? "bg-white/5 text-white/30" : "bg-gradient-to-br from-red-600 to-red-800 text-white hover:scale-105")}>

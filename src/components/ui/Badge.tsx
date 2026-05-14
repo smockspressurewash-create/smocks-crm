@@ -1,4 +1,3 @@
-// @ts-nocheck
 // Badge.tsx — auto-extracted from monolith
 import React, { useState, useRef, useEffect, useCallback } from "react";
 import { X, ChevronLeft, ChevronRight, Search, TrendingUp, DollarSign, Clock, CheckCircle, AlertTriangle, AlertCircle, Star, Target, BarChart3 } from "lucide-react";

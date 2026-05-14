@@ -1,4 +1,3 @@
-// @ts-nocheck
 // auto-extracted from Smock's OS monolith
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
@@ -43,7 +42,7 @@ import { PBar } from "./PBar";
 import { PageFade } from "./PageFade";
 import { TimeframeSelector } from "./TimeframeSelector";
 
-export function ReviewLandingPage({ review, customer, settings = {}, onClose, onSubmit }) {
+export function ReviewLandingPage({ review, customer, settings = {} as any, onClose, onSubmit }) {
   const [step, setStep] = useState("rate"); // rate | happy | unhappy | done
   const [rating, setRating] = useState(0);
   const [hoverRating, setHoverRating] = useState(0);

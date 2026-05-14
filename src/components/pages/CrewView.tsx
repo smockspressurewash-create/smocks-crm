@@ -1,4 +1,3 @@
-// @ts-nocheck
 // auto-extracted from Smock's OS monolith
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
@@ -181,8 +180,8 @@ export function CrewView({ jobs = [], setJobs, customers = [], employees = [], t
               </a>
               {c?.phone && <button onClick={async () => {
                 const msg = "Hi " + c.firstName + "! We're on our way to your property. ETA ~15 min. — Smock's";
-                if (window.__settings?.twilioSid) {
-                  try { await twilioSend(window.__settings, c.phone, msg); toast("OTW text sent to " + c.firstName + " ✓"); }
+                if ((window as any).__settings?.twilioSid) {
+                  try { await twilioSend((window as any).__settings, c.phone, msg); toast("OTW text sent to " + c.firstName + " ✓"); }
                   catch { window.location.href = "sms:" + c.phone.replace(/\D/g,"") + "?body=" + encodeURIComponent(msg); }
                 } else { window.location.href = "sms:" + c.phone.replace(/\D/g,"") + "?body=" + encodeURIComponent(msg); }
               }} className="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-xl bg-orange-950/30 border border-orange-700/40 text-orange-300 text-xs font-medium hover:bg-orange-900/40 active:scale-95 transition">

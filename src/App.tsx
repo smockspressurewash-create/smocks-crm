@@ -1,4 +1,3 @@
-// @ts-nocheck
 import React, { useState, useEffect } from "react";
 import {
   LayoutDashboard, Users, FileText, Receipt, Briefcase, GitBranch,

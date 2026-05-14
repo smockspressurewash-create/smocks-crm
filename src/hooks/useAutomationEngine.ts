@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { useEffect, useRef } from "react";
 import type { Automation, Job, Customer, Estimate } from "../types";
 import { today, daysSince } from "../lib/utils";

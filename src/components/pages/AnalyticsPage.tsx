@@ -1,4 +1,3 @@
-// @ts-nocheck
 // auto-extracted from Smock's OS monolith
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
@@ -304,7 +303,7 @@ export function AnalyticsPage({ jobs = [], customers = [], estimates = [], expen
             <CartesianGrid strokeDasharray="3 3" stroke="#7f1d1d18" />
             <XAxis dataKey="label" stroke="#ffffff40" fontSize={9} />
             <YAxis stroke="#ffffff40" fontSize={9} tickFormatter={v => "$" + (v >= 1000 ? Math.round(v/1000) + "k" : v)} width={45} />
-            <Tooltip contentStyle={tooltipStyle} formatter={v => fmt(v)} />
+            <Tooltip contentStyle={tooltipStyle} formatter={v => fmt(Number(v))} />
             <Bar dataKey="revenue" fill="#e11d48" radius={[3,3,0,0]} name="Revenue" />
             <Bar dataKey="expenses" fill="#7c3aed" radius={[3,3,0,0]} name="Expenses" />
             <Line type="monotone" dataKey="profit" stroke="#16a34a" strokeWidth={2.5} dot={false} name="Profit" />
@@ -363,7 +362,7 @@ export function AnalyticsPage({ jobs = [], customers = [], estimates = [], expen
               <CartesianGrid strokeDasharray="3 3" stroke="#7f1d1d18" />
               <XAxis dataKey="label" stroke="#ffffff40" fontSize={9} />
               <YAxis stroke="#ffffff40" fontSize={9} tickFormatter={v => "$"+(v>=1000?Math.round(v/1000)+"k":v)} width={45} />
-              <Tooltip contentStyle={tooltipStyle} formatter={v => [fmt(v), "Avg Job Value"]} />
+              <Tooltip contentStyle={tooltipStyle} formatter={v => [fmt(Number(v)), "Avg Job Value"]} />
               <Line type="monotone" dataKey="avgJobValue" stroke="#f97316" strokeWidth={2.5} dot={{ fill: "#f97316", r: 3 }} name="Avg Job Value" />
               {showComparison && comparison.length > 0 && <Line type="monotone" data={comparison} dataKey="avgJobValue" stroke="#f97316" strokeWidth={1.5} strokeDasharray="4 4" dot={false} />}
             </LineChart>

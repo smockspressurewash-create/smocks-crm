@@ -1,4 +1,3 @@
-// @ts-nocheck
 // auto-extracted from Smock's OS monolith
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
@@ -137,7 +136,7 @@ export function ReportsPage({ jobs = [], customers = [], estimates = [], expense
 
   // Build monthly revenue from real job data
   const buildMonthlyRevenue = () => {
-    const months = {};
+    const months: Record<string, {month: string; revenue: number; jobs: number; expenses: number}> = {};
     const now = new Date();
     // Initialize last 12 months
     for (let i = 11; i >= 0; i--) {
@@ -170,7 +169,7 @@ export function ReportsPage({ jobs = [], customers = [], estimates = [], expense
   }).sort((a, b) => b.revenue - a.revenue);
 
   // Chemical usage from filtered jobs
-  const chemAgg = {};
+  const chemAgg: Record<string, {name: string; gallons: number; cost: number}> = {};
   tfJobs.forEach(j => (j.chemicalsUsed || []).forEach(ch => {
     const k = ch.name || "Unknown";
     if (!chemAgg[k]) chemAgg[k] = { name: k, gallons: 0, cost: 0 };
@@ -283,7 +282,7 @@ export function ReportsPage({ jobs = [], customers = [], estimates = [], expense
               <CartesianGrid strokeDasharray="3 3" stroke="#7f1d1d22" />
               <XAxis dataKey="month" stroke="#ffffff60" fontSize={11} />
               <YAxis stroke="#ffffff60" fontSize={11} tickFormatter={v => "$" + (v >= 1000 ? Math.round(v/1000) + "k" : v)} />
-              <Tooltip contentStyle={{ background: "rgba(0,0,0,0.9)", border: "1px solid #9f1239", borderRadius: "8px" }} formatter={(v, n) => [fmt(v), n === "revenue" ? "Revenue" : "Expenses"]} />
+              <Tooltip contentStyle={{ background: "rgba(0,0,0,0.9)", border: "1px solid #9f1239", borderRadius: "8px" }} formatter={(v, n) => [fmt(Number(v)), n === "revenue" ? "Revenue" : "Expenses"]} />
               <Bar dataKey="revenue" fill="#e11d48" radius={[6,6,0,0]} name="revenue" />
               <Bar dataKey="expenses" fill="#7f1d1d" radius={[6,6,0,0]} name="expenses" />
             </BarChart>
@@ -320,7 +319,7 @@ export function ReportsPage({ jobs = [], customers = [], estimates = [], expense
             <CartesianGrid strokeDasharray="3 3" stroke="#7f1d1d22" />
             <XAxis dataKey="month" stroke="#ffffff60" fontSize={11} />
             <YAxis stroke="#ffffff60" fontSize={11} tickFormatter={v => "$" + (v >= 1000 ? Math.round(v/1000) + "k" : v)} />
-            <Tooltip contentStyle={{ background: "rgba(0,0,0,0.9)", border: "1px solid #9f1239", borderRadius: "8px" }} formatter={v => fmt(v)} />
+            <Tooltip contentStyle={{ background: "rgba(0,0,0,0.9)", border: "1px solid #9f1239", borderRadius: "8px" }} formatter={v => fmt(Number(v))} />
             <Area type="monotone" dataKey="revenue" stroke="#e11d48" strokeWidth={2} fill="url(#sg)" name="Revenue" />
           </AreaChart>
         </ResponsiveContainer>
@@ -364,7 +363,7 @@ export function ReportsPage({ jobs = [], customers = [], estimates = [], expense
               <CartesianGrid strokeDasharray="3 3" stroke="#7f1d1d22" />
               <XAxis dataKey="month" stroke="#ffffff40" fontSize={10} />
               <YAxis stroke="#ffffff40" fontSize={10} tickFormatter={v => "$"+(v>=1000?Math.round(v/1000)+"k":v)} />
-              <Tooltip contentStyle={{ background:"rgba(0,0,0,0.9)", border:"1px solid #9f1239", borderRadius:"8px", fontSize:"11px" }} formatter={v => fmt(v)} />
+              <Tooltip contentStyle={{ background:"rgba(0,0,0,0.9)", border:"1px solid #9f1239", borderRadius:"8px", fontSize:"11px" }} formatter={v => fmt(Number(v))} />
               <Bar dataKey={thisYear} fill="#e11d48" radius={[4,4,0,0]} name={String(thisYear)} />
               <Bar dataKey={lastYear} fill="#7c3aed44" radius={[4,4,0,0]} name={String(lastYear)} />
             </BarChart>
@@ -374,7 +373,7 @@ export function ReportsPage({ jobs = [], customers = [], estimates = [], expense
 
       {/* Close Rate by Lead Source */}
       {(() => {
-        const srcMap = {};
+        const srcMap: Record<string, {source: string; total: number; converted: number}> = {};
         customers.forEach(c => {
           const src = c.leadSource || "Unknown";
           if (!srcMap[src]) srcMap[src] = { source: src, total: 0, converted: 0 };
@@ -481,7 +480,7 @@ export function ReportsPage({ jobs = [], customers = [], estimates = [], expense
 
       {/* Average job value by service type */}
       {(() => {
-        const svcMap = {};
+        const svcMap: Record<string, {name: string; jobs: number; total: number}> = {};
         tfJobs.forEach(j => {
           // Infer service from job amount ranges (real app would use a service field)
           const svc = j.amount >= 600 ? "Roof Soft Wash" : j.amount >= 400 ? "House Soft Wash" : j.amount >= 300 ? "Deck Cleaning" : "Driveway Wash";
@@ -513,7 +512,7 @@ export function ReportsPage({ jobs = [], customers = [], estimates = [], expense
         <h3 className="font-semibold mb-4">Lead Source ROI Report</h3>
         {(() => {
           const srcColors = { Google:"#4285F4", Facebook:"#1877F2", Referral:"#16a34a", Nextdoor:"#11B981", Website:"#e11d48", Instagram:"#E1306C", "Yard Sign":"#f59e0b", Angi:"#ea580c", Thumbtack:"#7c3aed", Direct:"#64748b", Other:"#94a3b8" };
-          const srcMap = {};
+          const srcMap: Record<string, {source: string; count: number; revenue: number}> = {};
           customers.forEach(c => {
             const src = c.leadSource || "Unknown";
             if (!srcMap[src]) srcMap[src] = { source: src, count: 0, revenue: 0 };

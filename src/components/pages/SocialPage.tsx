@@ -1,4 +1,3 @@
-// @ts-nocheck
 // auto-extracted from Smock's OS monolith
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
@@ -78,10 +77,10 @@ import { ChemicalModal } from "../ui/ChemicalModal";
 import { WeeklyBusinessReview } from "../ui/WeeklyBusinessReview";
 import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 
-export function SocialPage({ posts = [], setPosts, toast, settings = {} }) {
+export function SocialPage({ posts = [], setPosts, toast, settings = {} as AppSettings }: { posts?: any[]; setPosts?: any; toast?: any; settings?: AppSettings }) {
   const [modal, setModal] = useState(false);
   const [tab, setTab] = useState("scheduled");
-  const [f, setF] = useState({ platform: "instagram", type: "before_after", caption: "", scheduledFor: daysFromNow(1), hashtags: "#pressurewashing #softwash #yorkpa #homeimprovement #curb appeal" });
+  const [f, setF] = useState({ platform: "instagram", type: "before_after", caption: "", scheduledFor: daysFromNow(1), hashtags: "#pressurewashing #softwash #yorkpa #homeimprovement #curb appeal", _imageData: null as any });
   const [generating, setGenerating] = useState(false);
   const [previewPost, setPreviewPost] = useState(null);
 
@@ -151,7 +150,7 @@ export function SocialPage({ posts = [], setPosts, toast, settings = {} }) {
     if (!f.caption.trim()) return;
     const fullCaption = f.caption + "\n\n" + f.hashtags;
     setPosts([{ id: uid(), ...f, caption: fullCaption, status: "scheduled", likes: 0, shares: 0, comments: 0, reach: 0 }, ...posts]);
-    setF({ platform: "instagram", type: "before_after", caption: "", scheduledFor: daysFromNow(1), hashtags: "#pressurewashing #softwash #yorkpa #homeimprovement #curb appeal" });
+    setF({ platform: "instagram", type: "before_after", caption: "", scheduledFor: daysFromNow(1), hashtags: "#pressurewashing #softwash #yorkpa #homeimprovement #curb appeal", _imageData: null as any });
     setModal(false);
     toast("Post scheduled ✓");
   };

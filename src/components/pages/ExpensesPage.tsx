@@ -1,4 +1,3 @@
-// @ts-nocheck
 // auto-extracted from Smock's OS monolith
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
@@ -84,7 +83,7 @@ export function ExpensesPage({ expenses = [], setExpenses }) {
   const [timeframe, setTimeframe] = useState("30d");
   const [tab, setTab] = useState("expenses"); // expenses | mileage
   const [mileageLog, setMileageLog] = usePersistent("smocks.mileage", []);
-  const [f, setF] = useState({ date: today(), category: "Supplies", description: "", amount: "", vendor: "", isCash: false, taxDeductible: true, receiptDataUrl: null });
+  const [f, setF] = useState({ id: "", date: today(), category: "Supplies", description: "", amount: "", vendor: "", isCash: false, taxDeductible: true, receiptDataUrl: null });
   const [mf, setMf] = useState({ date: today(), from: "Shop - York, PA", to: "", miles: "", purpose: "", roundTrip: false });
   const [mileModal, setMileModal] = useState(false);
 
@@ -100,7 +99,7 @@ export function ExpensesPage({ expenses = [], setExpenses }) {
   const mileDeduction = totMiles * IRS_RATE;
   const deductible = displayed.filter(e => e.taxDeductible).reduce((s, e) => s + Number(e.amount), 0);
 
-  const openAdd = () => { setF({ date: today(), category: "Supplies", description: "", amount: "", vendor: "", isCash: false, taxDeductible: true, receiptDataUrl: null }); setModal({ open: true, data: null }); };
+  const openAdd = () => { setF({ id: "", date: today(), category: "Supplies", description: "", amount: "", vendor: "", isCash: false, taxDeductible: true, receiptDataUrl: null }); setModal({ open: true, data: null }); };
   const openEdit = exp => { setF({ ...exp }); setModal({ open: true, data: exp }); };
   const save = () => {
     if (!f.description.trim() || !f.amount) return;

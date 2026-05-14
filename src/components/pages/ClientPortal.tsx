@@ -1,4 +1,3 @@
-// @ts-nocheck
 // auto-extracted from Smock's OS monolith
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
@@ -78,7 +77,7 @@ import { ChemicalModal } from "../ui/ChemicalModal";
 import { WeeklyBusinessReview } from "../ui/WeeklyBusinessReview";
 import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 
-export function ClientPortal({ estimate: e, customer: c, settings = {}, onClose, onApprove }) {
+export function ClientPortal({ estimate: e, customer: c, settings = {} as AppSettings, onClose, onApprove }: { estimate?: any; customer?: any; settings?: AppSettings; onClose?: any; onApprove?: any }) {
   const [payType, setPayType] = useState("full");
   const [step, setStep] = useState("view"); // view | sign | payment | done
   const [sigData, setSigData] = useState(null);

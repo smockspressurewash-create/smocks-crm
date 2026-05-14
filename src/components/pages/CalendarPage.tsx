@@ -1,4 +1,3 @@
-// @ts-nocheck
 // auto-extracted from Smock's OS monolith
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
@@ -78,7 +77,7 @@ import { ChemicalModal } from "../ui/ChemicalModal";
 import { WeeklyBusinessReview } from "../ui/WeeklyBusinessReview";
 import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 
-export function CalendarPage({ jobs = [], setJobs, customers = [], toast, settings = {} }) {
+export function CalendarPage({ jobs = [], setJobs, customers = [], toast, settings = {} as AppSettings }: { jobs?: any[]; setJobs?: any; customers?: any[]; toast?: any; settings?: AppSettings }) {
   const [view, setView] = useState("month");
   const [off, setOff] = useState(0);
   const [dragId, setDragId] = useState(null);

@@ -1,4 +1,3 @@
-// @ts-nocheck
 // auto-extracted from Smock's OS monolith
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
@@ -44,25 +43,26 @@ import { PageFade } from "./PageFade";
 import { TimeframeSelector } from "./TimeframeSelector";
 
 export function DocumentVault({ customerId }) {
-  const [docs, setDocs] = usePersistent("smocks.docvault." + customerId, []);
+  const [docs, setDocs] = usePersistent("smocks.docvault." + customerId, []) as [any[], any];
   const [uploading, setUploading] = useState(false);
 
   const handleUpload = e => {
     const files = Array.from(e.target.files || []);
     files.forEach(f => {
+      const file = f as File;
       const r = new FileReader();
       r.onload = ev => {
         setDocs(prev => [...prev, {
           id: uid(),
-          name: f.name,
-          type: f.type,
-          size: f.size,
+          name: file.name,
+          type: file.type,
+          size: file.size,
           dataUrl: ev.target.result,
           uploadedAt: today(),
-          category: f.name.toLowerCase().includes("contract") ? "Contract" : f.name.toLowerCase().includes("waiver") ? "Waiver" : f.name.toLowerCase().includes("hoa") ? "HOA" : "Document"
+          category: file.name.toLowerCase().includes("contract") ? "Contract" : file.name.toLowerCase().includes("waiver") ? "Waiver" : file.name.toLowerCase().includes("hoa") ? "HOA" : "Document"
         }]);
       };
-      r.readAsDataURL(f);
+      r.readAsDataURL(file);
     });
     e.target.value = "";
   };

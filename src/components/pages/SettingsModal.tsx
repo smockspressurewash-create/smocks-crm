@@ -1,4 +1,3 @@
-// @ts-nocheck
 // auto-extracted from Smock's OS monolith
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
@@ -78,7 +77,7 @@ import { ChemicalModal } from "../ui/ChemicalModal";
 import { WeeklyBusinessReview } from "../ui/WeeklyBusinessReview";
 import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 
-export function SettingsModal({ open, onClose, settings, setSettings, services, setServices, emailTemplates, setEmailTemplates, smsTemplates, setSmsTemplates, modelStatus = {}, setModelStatus = () => {}, toast }) {
+export function SettingsModal({ open, onClose, settings, setSettings, services, setServices, emailTemplates, setEmailTemplates, smsTemplates, setSmsTemplates, modelStatus = {}, setModelStatus = (() => {}) as any, toast }: { open?: any; onClose?: any; settings?: any; setSettings?: any; services?: any; setServices?: any; emailTemplates?: any; setEmailTemplates?: any; smsTemplates?: any; setSmsTemplates?: any; modelStatus?: any; setModelStatus?: any; toast?: any }) {
   const [f, setF] = useState(settings);
   const [sec, setSec] = useState("api");
   const [showKey, setShowKey] = useState(false);
@@ -444,7 +443,7 @@ export function SettingsModal({ open, onClose, settings, setSettings, services, 
 
                   {/* Mock OAuth button */}
                   <button
-                    onClick={() => setGoogleOAuth({ open: true, step: "account", email: "", selectedScopes: { gmail: true, calendar: true, tasks: true, drive: true, contacts: true, maps: true } })}
+                    onClick={() => setGoogleOAuth({ open: true, step: "account", email: "", selectedScopes: { gmail: true, calendar: true, drive: true, contacts: true, maps: true } as any })}
                     className="w-full flex items-center justify-center gap-3 py-3 bg-white text-gray-700 font-medium rounded-xl hover:bg-gray-50 transition text-sm"
                   >
                     <svg viewBox="0 0 48 48" width="18" height="18"><path fill="#FFC107" d="M43.611 20.083H42V20H24v8h11.303c-1.649 4.657-6.08 8-11.303 8c-6.627 0-12-5.373-12-12s5.373-12 12-12c3.059 0 5.842 1.154 7.961 3.039l5.657-5.657C34.046 6.053 29.268 4 24 4C12.955 4 4 12.955 4 24s8.955 20 20 20s20-8.955 20-20c0-1.341-.138-2.65-.389-3.917z"/><path fill="#FF3D00" d="m6.306 14.691l6.571 4.819C14.655 15.108 18.961 12 24 12c3.059 0 5.842 1.154 7.961 3.039l5.657-5.657C34.046 6.053 29.268 4 24 4C16.318 4 9.656 8.337 6.306 14.691z"/><path fill="#4CAF50" d="M24 44c5.166 0 9.86-1.977 13.409-5.192l-6.19-5.238A11.91 11.91 0 0 1 24 36c-5.202 0-9.619-3.317-11.283-7.946l-6.522 5.025C9.505 39.556 16.227 44 24 44z"/><path fill="#1976D2" d="M43.611 20.083H42V20H24v8h11.303a12.04 12.04 0 0 1-4.087 5.571l.003-.002l6.19 5.238C36.971 39.205 44 34 44 24c0-1.341-.138-2.65-.389-3.917z"/></svg>
@@ -588,8 +587,8 @@ export function SettingsModal({ open, onClose, settings, setSettings, services, 
               <GBtn variant="ghost" onClick={() => {
                 const header = "Date,Description,Amount,Type,Account,Category\n";
                 const rows = [
-                  ...(window._smocksJobs || []).filter(j => j.status === "completed").map(j => `${j.scheduledDate},"Job Revenue - ${j.address?.split(",")[0] || ""}",${j.amount},Income,Business Checking,Service Revenue`),
-                  ...(window._smocksExpenses || []).map(e => `${e.date},"${e.description}",${e.amount},Expense,${e.isCash?"Cash":"Business Checking"},${e.category}`)
+                  ...((window as any)._smocksJobs || []).filter(j => j.status === "completed").map(j => `${j.scheduledDate},"Job Revenue - ${j.address?.split(",")[0] || ""}",${j.amount},Income,Business Checking,Service Revenue`),
+                  ...((window as any)._smocksExpenses || []).map(e => `${e.date},"${e.description}",${e.amount},Expense,${e.isCash?"Cash":"Business Checking"},${e.category}`)
                 ].join("\n");
                 const blob = new Blob([header + rows], { type: "text/csv" });
                 const url = URL.createObjectURL(blob); const a = document.createElement("a");
@@ -603,7 +602,7 @@ export function SettingsModal({ open, onClose, settings, setSettings, services, 
               <div className="text-[10px] text-white/50">All customer contact info for mail merge or backup.</div>
               <GBtn variant="ghost" onClick={() => {
                 const header = "First Name,Last Name,Email,Phone,Address,Lead Source,Tags,Created\n";
-                const rows = (window._smocksCustomers || []).map(c => `"${c.firstName}","${c.lastName}","${c.email||""}","${c.phone||""}","${c.address||""}","${c.leadSource||""}","${(c.tags||[]).join(";")}","${c.createdAt||""}"`).join("\n");
+                const rows = ((window as any)._smocksCustomers || []).map(c => `"${c.firstName}","${c.lastName}","${c.email||""}","${c.phone||""}","${c.address||""}","${c.leadSource||""}","${(c.tags||[]).join(";")}","${c.createdAt||""}"`).join("\n");
                 const blob = new Blob([header + rows], { type: "text/csv" });
                 const url = URL.createObjectURL(blob); const a = document.createElement("a");
                 a.href = url; a.download = "smocks-customers-" + today() + ".csv"; a.click(); URL.revokeObjectURL(url);
@@ -620,9 +619,9 @@ export function SettingsModal({ open, onClose, settings, setSettings, services, 
                   <GBtn variant="ghost" className="!text-xs !py-1 flex-shrink-0 ml-2" onClick={() => {
                     const name = prompt("Enter customer name or email to export:");
                     if (!name) return;
-                    const cust = (window._smocksCustomers || []).find(c => (c.firstName + " " + c.lastName).toLowerCase().includes(name.toLowerCase()) || (c.email || "").toLowerCase().includes(name.toLowerCase()));
+                    const cust = ((window as any)._smocksCustomers || []).find(c => (c.firstName + " " + c.lastName).toLowerCase().includes(name.toLowerCase()) || (c.email || "").toLowerCase().includes(name.toLowerCase()));
                     if (!cust) { toast("Customer not found"); return; }
-                    const data = { customer: cust, estimates: (window._smocksEstimates || []).filter(e => e.customerId === cust.id), jobs: (window._smocksJobs || []).filter(j => j.customerId === cust.id) };
+                    const data = { customer: cust, estimates: ((window as any)._smocksEstimates || []).filter(e => e.customerId === cust.id), jobs: ((window as any)._smocksJobs || []).filter(j => j.customerId === cust.id) };
                     const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
                     const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = "customer-data-" + (cust.firstName || "unknown") + "-" + today() + ".json"; a.click();
                     toast("Customer data exported ✓");
@@ -640,7 +639,7 @@ export function SettingsModal({ open, onClose, settings, setSettings, services, 
                 <div className="flex items-center justify-between p-2.5 bg-black/40 rounded-lg text-xs">
                   <div><div className="font-medium">Opt-out / STOP list export</div><div className="text-white/40 text-[10px]">Export list of customers who have replied STOP to SMS</div></div>
                   <GBtn variant="ghost" className="!text-xs !py-1 flex-shrink-0 ml-2" onClick={() => {
-                    const stopped = (window._smocksCustomers || []).filter(c => c.smsOptOut);
+                    const stopped = ((window as any)._smocksCustomers || []).filter(c => c.smsOptOut);
                     const csv = "Name,Phone,Email,Opt-Out Date\n" + stopped.map(c => `"${c.firstName} ${c.lastName}","${c.phone||""}","${c.email||""}","${c.optOutDate||""}" `).join("\n");
                     const blob = new Blob([csv], { type: "text/csv" });
                     const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = "sms-opt-out-" + today() + ".csv"; a.click();

@@ -1,4 +1,3 @@
-// @ts-nocheck
 // auto-extracted from Smock's OS monolith
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
@@ -78,7 +77,7 @@ import { ChemicalModal } from "../ui/ChemicalModal";
 import { WeeklyBusinessReview } from "../ui/WeeklyBusinessReview";
 import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 
-export function ReviewsPage({ reviews = [], setReviews, jobs = [], customers = [], toast, negativeAlerts = [], setNegativeAlerts, settings = {}, setSettings }) {
+export function ReviewsPage({ reviews = [], setReviews, jobs = [], customers = [], toast, negativeAlerts = [], setNegativeAlerts, settings = {} as AppSettings, setSettings }: { reviews?: any[]; setReviews?: any; jobs?: any[]; customers?: any[]; toast?: any; negativeAlerts?: any[]; setNegativeAlerts?: any; settings?: AppSettings; setSettings?: any }) {
   const [preview, setPreview] = useState(null);
   const [landingReview, setLandingReview] = useState(null);
   const [tab, setTab] = useState("inbox");
@@ -312,7 +311,7 @@ export function ReviewsPage({ reviews = [], setReviews, jobs = [], customers = [
                     <td className="px-5 py-4"><Badge tone={r.status === "completed" ? "green" : r.status === "sent" ? "yellow" : "gray"}>{r.status}</Badge></td>
                     <td className="px-5 py-4 text-right">
                       <div className="flex items-center justify-end gap-1.5">
-                        <button onClick={() => setLandingReview(r)} title="Preview customer landing page" className="p-1.5 rounded-lg hover:bg-blue-900/30 text-white/50 hover:text-blue-400" title="Customer view"><Globe size={12} /></button>
+                        <button onClick={() => setLandingReview(r)} className="p-1.5 rounded-lg hover:bg-blue-900/30 text-white/50 hover:text-blue-400" title="Customer view"><Globe size={12} /></button>
                         <button onClick={() => { const cu2 = cf(r.jobId); if (cu2?.phone) unsubscribe(cu2.phone, "phone"); else if (cu2?.email) unsubscribe(cu2.email, "email"); }} title="Opt out of review requests" className="p-1.5 rounded-lg hover:bg-red-900/30 text-white/50 hover:text-red-400"><Ban size={12} /></button>
                         {r.status === "pending" ? <GBtn onClick={() => sendReq(r.id)} disabled={throttled} className="!text-xs !py-1 !px-2.5"><Send size={10} className="inline mr-1" />{throttled ? "Throttled" : "Send"}</GBtn> : <GBtn variant="ghost" onClick={() => setPreview(r)} className="!text-xs !py-1 !px-2.5"><Eye size={10} className="inline mr-1" />View</GBtn>}
                       </div>

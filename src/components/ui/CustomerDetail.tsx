@@ -1,4 +1,3 @@
-// @ts-nocheck
 // auto-extracted from Smock's OS monolith
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
@@ -42,8 +41,9 @@ import { Stat } from "./Stat";
 import { PBar } from "./PBar";
 import { PageFade } from "./PageFade";
 import { TimeframeSelector } from "./TimeframeSelector";
+import { DocumentVault } from "./DocumentVault";
 
-export function CustomerDetail({ customer: c, onClose, estimates = [], jobs = [], timeline = {}, setTimeline = () => {}, settings = {} }) {
+export function CustomerDetail({ customer: c, onClose, estimates = [], jobs = [], timeline = {}, setTimeline = (..._args: any[]) => {}, settings = {} as any, toast = (..._args: any[]) => {} }) {
   const [tab, setTab] = useState("info");
   const [note, setNote] = useState("");
   const [noteType, setNoteType] = useState("note");
@@ -144,7 +144,7 @@ export function CustomerDetail({ customer: c, onClose, estimates = [], jobs = []
                     alt="Property satellite view"
                     className="w-full object-cover"
                     style={{height: "140px"}}
-                    onError={e => { e.target.style.display = "none"; }}
+                    onError={e => { (e.target as HTMLImageElement).style.display = "none"; }}
                   />
                 </div>
               )}

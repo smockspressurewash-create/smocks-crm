@@ -1,4 +1,3 @@
-// @ts-nocheck
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export interface GoogleSettings {
@@ -50,6 +49,15 @@ export const MOCK_GOOGLE_DATA = {
     { id: "e2", from: "sarah.davis@gmail.com",     subject: "Question about roof soft wash",       snippet: "Do you treat algae? We have a lot of...",   date: "2025-04-15" },
     { id: "e3", from: "hoa.springfield@gmail.com", subject: "HOA Common Area Cleaning Quote",      snippet: "We manage 45 homes and need quarterly...",  date: "2025-04-14" },
     { id: "e4", from: "tom.wilson@yahoo.com",      subject: "Thanks for the great service!",       snippet: "The driveway looks amazing. Will be...",    date: "2025-04-13" },
+  ],
+  tasks: [
+    { id: "t1", title: "Follow up with Johnson estimate", due: "2025-04-18", status: "needsAction", notes: "", listTitle: "Work" },
+    { id: "t2", title: "Order SH for next week", due: "2025-04-17", status: "needsAction", notes: "Need ~30 gal", listTitle: "Work" },
+    { id: "t3", title: "Send invoice to Davis", due: "2025-04-16", status: "completed", notes: "", listTitle: "Work" },
+  ],
+  events: [
+    { id: "ev1", title: "House Wash - Johnson", start: "2025-04-18T09:00", end: "2025-04-18T12:00", location: "412 Oak Ridge Ln", description: "", attendees: [], color: "blue" },
+    { id: "ev2", title: "Roof Soft Wash - Davis", start: "2025-04-19T08:00", end: "2025-04-19T11:00", location: "89 Maple Dr", description: "", attendees: [], color: "green" },
   ],
 };
 

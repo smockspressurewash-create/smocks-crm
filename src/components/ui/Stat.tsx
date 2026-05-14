@@ -1,9 +1,8 @@
-// @ts-nocheck
 // Stat.tsx — auto-extracted from monolith
 import React, { useState, useRef, useEffect, useCallback } from "react";
 import { X, ChevronLeft, ChevronRight, Search, TrendingUp, DollarSign, Clock, CheckCircle, AlertTriangle, AlertCircle, Star, Target, BarChart3 } from "lucide-react";
 
-export const Stat = ({ icon: Icon, label, value, change }) => (
+export const Stat = ({ icon: Icon, label, value, change }: { icon?: any; label?: any; value?: any; change?: any }) => (
   <div className="glass-hover bg-black/40 backdrop-blur-xl border border-red-900/30 rounded-2xl shadow-lg p-5 relative overflow-hidden group cursor-default">
     <div className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity duration-500" style={{ background: "radial-gradient(ellipse at top right, rgba(220,38,38,0.08), transparent 70%)" }} />
     <div className="absolute -right-4 -bottom-4 w-20 h-20 rounded-full bg-red-600/8 group-hover:bg-red-600/15 transition-all duration-700 group-hover:scale-150" />

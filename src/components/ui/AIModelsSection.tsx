@@ -1,4 +1,3 @@
-// @ts-nocheck
 // auto-extracted from Smock's OS monolith
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
@@ -46,10 +45,11 @@ import { TimeframeSelector } from "./TimeframeSelector";
 export function AIModelsSection({ f, setF, modelStatus, setModelStatus, toast }) {
   const [, forceTick] = useState(0);
   const [showKey, setShowKey] = useState({});
+  const ms: Record<string, any> = modelStatus || {};
 
   // Tick every second so countdown timers update live
   useEffect(() => {
-    if (!modelStatus || Object.values(modelStatus).every(s => !s?.lockedUntil || s.lockedUntil < Date.now())) return;
+    if (!modelStatus || Object.values(ms).every((s: any) => !s?.lockedUntil || s.lockedUntil < Date.now())) return;
     const h = setInterval(() => forceTick(t => t + 1), 1000);
     return () => clearInterval(h);
   }, [modelStatus]);
@@ -114,7 +114,7 @@ export function AIModelsSection({ f, setF, modelStatus, setModelStatus, toast })
           {Object.values(MODELS).map(m => {
             const hasKey = !m.needsKey || !!modelKeys[m.id];
             const isActive = activeModel === m.id;
-            const locked = modelStatus[m.id]?.lockedUntil > Date.now();
+            const locked = (ms[m.id] as any)?.lockedUntil > Date.now();
             return <button key={m.id} onClick={() => { if (hasKey) setF({ ...f, activeModel: m.id }); else toast("Add " + m.name + " API key first"); }} className={"p-3 rounded-xl border text-left transition " + (isActive ? "bg-gradient-to-br " + m.color + " border-white/30 text-white" : hasKey ? "bg-black/40 border-red-900/30 hover:border-red-600/50" : "bg-white/5 border-white/10 opacity-50")}>
               <div className="flex items-center justify-between">
                 <div className="text-xs font-semibold">{m.name}</div>
@@ -133,9 +133,9 @@ export function AIModelsSection({ f, setF, modelStatus, setModelStatus, toast })
         <label className="text-xs text-white/60 mb-2 block">Priority order & API keys</label>
         <div className="space-y-2">
           {priority.map((mid, idx) => {
-            const m = MODELS[mid];
+            const m = (MODELS as any)[mid] || MODELS.find((x: any) => x.id === mid);
             if (!m) return null;
-            const status = modelStatus[mid];
+            const status: any = ms[mid];
             const locked = status?.lockedUntil > Date.now();
             const remaining = locked ? status.lockedUntil - Date.now() : 0;
             const hasKey = !m.needsKey || !!modelKeys[mid];

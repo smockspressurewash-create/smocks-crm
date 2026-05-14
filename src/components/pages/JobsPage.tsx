@@ -1,4 +1,3 @@
-// @ts-nocheck
 // auto-extracted from Smock's OS monolith
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
@@ -22,6 +21,7 @@ import {
   ComposedChart, Legend
 } from "recharts";
 import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE } from "../../lib/utils";
+const weatherRisk = (_dateStr: string): {icon: string; level: string; reason: string} | null => null;
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
 import { twilioSend, sendEmail } from "../../lib/messaging";
 import { seedWeather } from "../../lib/weather";
@@ -78,7 +78,7 @@ import { ChemicalModal } from "../ui/ChemicalModal";
 import { WeeklyBusinessReview } from "../ui/WeeklyBusinessReview";
 import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 
-export function JobsPage({ jobs = [], setJobs, customers = [], employees = [], estimates = [], setEstimates = () => {}, settings = {}, toast, posts = [], setPosts = () => {}, setTimeline = () => {} }) {
+export function JobsPage({ jobs = [], setJobs, customers = [], employees = [], estimates = [], setEstimates = () => {}, settings = {} as AppSettings, toast, posts = [], setPosts = () => {}, setTimeline = () => {} }: { jobs?: any[]; setJobs?: any; customers?: any[]; employees?: any[]; estimates?: any[]; setEstimates?: any; settings?: AppSettings; toast?: any; posts?: any[]; setPosts?: any; setTimeline?: any }) {
   const [tab, setTab] = useState("scheduled");
   const [cancelModal, setCancelModal] = useState(null);
   const [cancelReason, setCancelReason] = useState(cancelReasons[0]);

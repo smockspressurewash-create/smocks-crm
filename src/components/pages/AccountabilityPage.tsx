@@ -1,4 +1,3 @@
-// @ts-nocheck
 // auto-extracted from Smock's OS monolith
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
@@ -78,9 +77,9 @@ import { ChemicalModal } from "../ui/ChemicalModal";
 import { WeeklyBusinessReview } from "../ui/WeeklyBusinessReview";
 import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 
-export function AccountabilityPage({ entries = [], setEntries, goals = [], setGoals, wins = [], setWins, toast }) {
+export function AccountabilityPage({ entries = [], setEntries, goals = [], setGoals, wins = [], setWins, toast }: { entries?: any[]; setEntries?: any; goals?: any[]; setGoals?: any; wins?: any[]; setWins?: any; toast?: any }) {
   const [tab, setTab] = useState("today");
-  const [f, setF] = useState({ sleep: 7, water: 0, gymMinutes: 0, meditationMinutes: 0, steps: 0, mood: 3, notes: "" });
+  const [f, setF] = useState<{ sleep: any; water: any; gymMinutes: any; meditationMinutes: any; steps: any; mood: any; notes: string; personalNotes?: string }>({ sleep: 7, water: 0, gymMinutes: 0, meditationMinutes: 0, steps: 0, mood: 3, notes: "" });
   const [gText, setGText] = useState("");
   const [wText, setWText] = useState("");
 
@@ -97,6 +96,20 @@ export function AccountabilityPage({ entries = [], setEntries, goals = [], setGo
     if (todayEntry) setEntries(entries.map(e => e.id === todayEntry.id ? payload : e));
     else setEntries([...entries, payload]);
     toast("Check-in logged");
+  };
+
+  const addGoal = () => {
+    if (!gText.trim()) return;
+    setGoals([...goals, { id: uid(), text: gText.trim(), category: "general", done: false, createdAt: tKey }]);
+    setGText("");
+    toast("Goal added");
+  };
+
+  const addWin = () => {
+    if (!wText.trim()) return;
+    setWins([...wins, { id: uid(), text: wText.trim(), date: tKey, category: "general" }]);
+    setWText("");
+    toast("Win logged! 🏆");
   };
 
   const [reminders, setReminders] = usePersistent("smocks.reminders", [

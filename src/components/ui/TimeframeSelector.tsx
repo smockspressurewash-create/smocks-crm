@@ -1,7 +1,7 @@
-// @ts-nocheck
 // TimeframeSelector.tsx — auto-extracted from monolith
 import React, { useState, useRef, useEffect, useCallback } from "react";
 import { X, ChevronLeft, ChevronRight, Search, TrendingUp, DollarSign, Clock, CheckCircle, AlertTriangle, AlertCircle, Star, Target, BarChart3 } from "lucide-react";
+import { TIMEFRAMES } from "../../lib/utils";
 
 export const TimeframeSelector = ({ value, onChange, options = ["7d","30d","90d","6m","1y","all"], compact = false }) => {
   const show = TIMEFRAMES.filter(t => options.includes(t.key));
@@ -53,8 +53,8 @@ const usePersistent = (key, initialValue) => {
     let cancelled = false;
     const load = async () => {
       try {
-        if (typeof window !== "undefined" && window.storage) {
-          const r = await window.storage.get(key);
+        if (typeof window !== "undefined" && (window as any).storage) {
+          const r = await (window as any).storage.get(key);
           if (!cancelled && r && r.value !== undefined) {
             try {
               const parsed = typeof r.value === "string" ? JSON.parse(r.value) : r.value;
@@ -77,11 +77,11 @@ const usePersistent = (key, initialValue) => {
   // Save on change
   useEffect(() => {
     if (!hydrated) return;
-    if (typeof window === "undefined" || !window.storage) return;
+    if (typeof window === "undefined" || !(window as any).storage) return;
     try {
       const serialized = JSON.stringify(value);
       if (serialized.length < 4_500_000) {
-        window.storage.set(key, serialized).catch(() => {});
+        (window as any).storage.set(key, serialized).catch(() => {});
       }
     } catch (e) {
       // ignore serialization errors

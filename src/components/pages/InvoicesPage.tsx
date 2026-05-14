@@ -1,4 +1,3 @@
-// @ts-nocheck
 // auto-extracted from Smock's OS monolith
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
@@ -78,7 +77,7 @@ import { ChemicalModal } from "../ui/ChemicalModal";
 import { WeeklyBusinessReview } from "../ui/WeeklyBusinessReview";
 import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 
-export function InvoicesPage({ estimates = [], setEstimates, customers = [], settings = {}, toast }) {
+export function InvoicesPage({ estimates = [], setEstimates, customers = [], settings = {} as AppSettings, toast }: { estimates?: any[]; setEstimates?: any; customers?: any[]; settings?: AppSettings; toast?: any }) {
   const [filter, setFilter] = useState("all");
   const [search, setSearch] = useState("");
   const [viewing, setViewing] = useState(null);

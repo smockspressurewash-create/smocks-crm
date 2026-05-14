@@ -1,4 +1,3 @@
-// @ts-nocheck
 // auto-extracted from Smock's OS monolith
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
@@ -42,8 +41,9 @@ import { Stat } from "./Stat";
 import { PBar } from "./PBar";
 import { PageFade } from "./PageFade";
 import { TimeframeSelector } from "./TimeframeSelector";
+import { ChemicalCostCalc } from "./ChemicalCostCalc";
 
-export function EstimateBuilder({ open, onClose, customers = [], services = [], settings = {}, onSave, estimateTemplates = [], setEstimateTemplates = () => {} }) {
+export function EstimateBuilder({ open, onClose, customers = [], services = [], settings = {}, onSave, estimateTemplates = [], setEstimateTemplates = (..._args: any[]) => {} }) {
   const [cid, setCid] = useState("");
   const [items, setItems] = useState([]);
   const [vu, setVu] = useState(daysFromNow(30));
@@ -54,7 +54,7 @@ export function EstimateBuilder({ open, onClose, customers = [], services = [], 
   const [internalNote, setInternalNote] = useState("");
   const [templateName, setTemplateName] = useState("");
   const [savingTemplate, setSavingTemplate] = useState(false);
-  const taxRate = Number(settings?.taxRate || 6);
+  const taxRate = Number((settings as any)?.taxRate || 6);
 
   useEffect(() => {
     if (open) {

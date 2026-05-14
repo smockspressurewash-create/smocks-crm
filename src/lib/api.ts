@@ -1,4 +1,3 @@
-// @ts-nocheck
 // ─── Models ───────────────────────────────────────────────────────────────────
 
 export interface ModelDef {
@@ -8,6 +7,11 @@ export interface ModelDef {
   endpoint: string;
   maxTokens: number;
   contextWindow: number;
+  name?: string;
+  color?: string;
+  needsKey?: string;
+  supportsTools?: boolean;
+  failoverEnabled?: boolean;
 }
 
 export const MODELS: ModelDef[] = [
