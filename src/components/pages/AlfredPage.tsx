@@ -203,9 +203,9 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
     { icon: Route, title: "Optimize my route", prompt: "/route" },
   ];
 
-  const updateActive = patch => setConversations(conversations.map(c => c.id === activeConvId ? { ...c, ...patch, updatedAt: Date.now() } : c));
-  const appendMessage = msg => setConversations(conversations.map(c => c.id === activeConvId ? { ...c, messages: [...c.messages, msg], updatedAt: Date.now() } : c));
-  const replaceMessages = msgs => setConversations(conversations.map(c => c.id === activeConvId ? { ...c, messages: msgs, updatedAt: Date.now() } : c));
+  const updateActive = patch => setConversations(prev => prev.map(c => c.id === activeConvId ? { ...c, ...patch, updatedAt: Date.now() } : c));
+  const appendMessage = msg => setConversations(prev => prev.map(c => c.id === activeConvId ? { ...c, messages: [...c.messages, msg], updatedAt: Date.now() } : c));
+  const replaceMessages = msgs => setConversations(prev => prev.map(c => c.id === activeConvId ? { ...c, messages: msgs, updatedAt: Date.now() } : c));
 
   const newConversation = () => {
     const cid = uid();
@@ -1074,8 +1074,9 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
       let modelUsed = settings.activeModel || "claude";
       const failoverChain = [];
 
-      // Build the ordered list of candidates: try active model first, then priority chain (skipping locked ones and missing keys)
-      const priority = settings.modelPriority || ["claude", "openai", "gemini", "groq", "mistral", "minimax"];
+      // Build the ordered list of candidates: try active model first, then priority chain (skipping missing keys).
+      // Locked (rate-limited) models are excluded from the initial list but will be detected mid-chain.
+      const priority = settings.modelPriority || ["claude", "openai", "gemini", "groq", "mistral"];
       const tryOrder = [modelUsed, ...priority.filter(m => m !== modelUsed)];
       const now = Date.now();
       const MODELS_MAP: any = MODELS;
@@ -1088,10 +1089,25 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
         return true;
       });
       if (viableModels.length === 0) {
-        throw new Error("No models available. Check API keys in Settings → AI Models, or wait for rate limit resets.");
+        const lockedWithKey = tryOrder.filter(mid => {
+          const m = MODELS_MAP[mid];
+          if (!m || (m.needsKey && !(settings.modelKeys || {})[mid])) return false;
+          const status: any = modelStatus[mid];
+          return status?.lockedUntil > now;
+        });
+        if (lockedWithKey.length > 0) {
+          const soonest = lockedWithKey.map(mid => (modelStatus[mid] as any)?.lockedUntil).sort()[0];
+          const wait = Math.ceil((soonest - now) / 60000);
+          const lines = lockedWithKey.map(mid => {
+            const rem = Math.ceil(((modelStatus[mid] as any)?.lockedUntil - now) / 60000);
+            return `• ${MODELS_MAP[mid]?.name || mid}: rate-limited, resets in ~${rem}m`;
+          });
+          throw new Error("All models are rate-limited:\n" + lines.join("\n") + `\n\nSoonest reset: ~${wait} min. You can unlock manually in Settings → AI Models.`);
+        }
+        throw new Error("No AI models available. Go to Settings → AI Models and add at least one API key (Claude, Gemini, OpenAI, Groq, or Mistral).");
       }
-      // Without failover, just use the first viable one (which is activeModel if it's viable)
-      const chain = settings.failoverEnabled ? viableModels : [viableModels[0]];
+      // Always try all viable models in order — failoverEnabled controls whether non-rate-limit errors cascade
+      const chain = viableModels;
 
       let success = false;
       for (const mid of chain) {
@@ -1136,11 +1152,12 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
         } catch (err) {
           failoverChain.push({ model: mid, error: err.message });
           const rateLimit = (parseRateLimitError as any)(err, mid);
+          const isLast = chain.indexOf(mid) === chain.length - 1;
           if (rateLimit) {
             setModelStatus(s => ({ ...s, [mid]: { lockedUntil: rateLimit.lockedUntil, lastError: err.message, since: Date.now() } }));
-            toast((MODELS_MAP[mid]?.name || mid) + " rate-limited" + (settings.failoverEnabled && chain.indexOf(mid) < chain.length - 1 ? " — trying next" : ""), "error");
-          } else if (chain.indexOf(mid) === chain.length - 1) {
-            // last in chain, and it's not rate limit — bubble up
+            toast((MODELS_MAP[mid]?.name || mid) + " rate-limited" + (!isLast ? " — trying next" : ""), "error");
+          } else if (isLast) {
+            // last in chain and not rate-limit — bubble up so outer catch shows a red error bubble
             throw err;
           } else {
             toast((MODELS_MAP[mid]?.name || mid) + " failed — trying next", "error");

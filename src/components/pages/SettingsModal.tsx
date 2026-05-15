@@ -147,30 +147,19 @@ export function SettingsModal({ open, onClose, settings, setSettings, services, 
 
           {sec === "api" && <div className="space-y-4">
             <div>
-              <h4 className="font-semibold text-sm mb-2">AI Assistant</h4>
-              <Glass className="p-4 !bg-gradient-to-br !from-green-950/30 !to-black/60 !border-green-700/40">
+              <h4 className="font-semibold text-sm mb-2 flex items-center gap-2"><Bot size={13} className="text-purple-400" />AI Model Keys</h4>
+              <Glass className="p-4 !bg-gradient-to-br !from-purple-950/20 !to-black/60 !border-purple-700/40">
                 <div className="flex items-start gap-3">
-                  <div className="p-2 rounded-lg bg-green-900/40"><CheckCircle size={16} className="text-green-400" /></div>
+                  <div className="p-2 rounded-lg bg-purple-900/40"><Bot size={16} className="text-purple-400" /></div>
                   <div className="flex-1">
-                    <div className="font-semibold text-sm text-green-300">Claude AI — Connected</div>
-                    <div className="text-[11px] text-white/70 mt-1">Alfred is powered by Anthropic's Claude Sonnet 4. No API key required — it's built in and ready to go.</div>
-                    <div className="flex flex-wrap gap-3 mt-3 text-[10px] text-white/60">
-                      <span>• Chat with personality</span>
-                      <span>• Memory across sessions</span>
-                      <span>• Review response drafts</span>
-                    </div>
+                    <div className="font-semibold text-sm text-purple-300">Manage AI keys in the AI Models tab</div>
+                    <div className="text-[11px] text-white/70 mt-1">Claude, Gemini, GPT-4o, Groq, and Mistral API keys are all configured in one place — the AI Models tab. Add a key there to enable Alfred and automatic failover.</div>
+                    <button onClick={() => setSec("models")} className="mt-3 px-3 py-1.5 bg-purple-900/40 border border-purple-700/40 rounded-lg text-xs text-purple-300 hover:bg-purple-900/60 transition flex items-center gap-1.5">
+                      <Bot size={11} />Go to AI Models →
+                    </button>
                   </div>
                 </div>
               </Glass>
-            </div>
-            <div>
-              <h4 className="font-semibold text-sm mb-2">Optional: Gemini API Key</h4>
-              <div className="text-[11px] text-white/50 mb-2">For future features (image generation, vision analysis). Not required for Alfred.</div>
-              <div className="relative">
-                <GInput type={showKey ? "text" : "password"} value={f.geminiKey} onChange={e => setF({ ...f, geminiKey: e.target.value })} placeholder="AIza... (optional)" className="pr-10" />
-                <button onClick={() => setShowKey(!showKey)} className="absolute right-3 top-1/2 -translate-y-1/2 text-white/50">{showKey ? <EyeOff size={14} /> : <Eye size={14} />}</button>
-              </div>
-              <div className="text-[10px] text-white/40 mt-1">Get one at aistudio.google.com/apikey</div>
             </div>
             <div>
               <h4 className="font-semibold text-sm mb-2 flex items-center gap-2"><Cloud size={13} className="text-blue-400" />OpenWeatherMap API Key</h4>
