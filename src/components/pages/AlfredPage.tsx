@@ -1035,7 +1035,6 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
   ];
 
   const send = async (overrideText?: string) => {
-    console.log("SEND CALLED", (overrideText ?? input).trim(), { loading, convCount: conversations.length, activeId: active?.id ?? activeConvId });
     const text = (overrideText ?? input).trim();
     if (!text || loading) return;
 
@@ -1513,7 +1512,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
                     {!isUser && <div className={"flex-shrink-0 w-8 h-8 rounded-lg flex items-center justify-center bg-gradient-to-br " + (isError ? "from-red-900 to-red-950" : cur.color)}><CurIcon size={13} /></div>}
                     <div className={"flex-1 min-w-0 " + (isUser ? "max-w-[85%] md:max-w-[75%]" : "max-w-full")}>
                       <div className={"px-4 py-2.5 rounded-2xl text-sm whitespace-pre-wrap leading-relaxed inline-block " + (isUser ? "bg-gradient-to-br from-red-600 to-red-800 text-white rounded-br-sm float-right" : isError ? "bg-red-950/60 border border-red-700/50 rounded-bl-sm text-red-200" : "bg-black/50 border border-red-900/30 rounded-bl-sm text-white/90")}>
-                        {m.content}
+                        {isUser ? m.content : String(m.content || "").split("\n").filter(l => l.trim() !== "---").join("\n").replace(/\*\*([^*]+)\*\*/g, "$1").replace(/\*([^*]+)\*/g, "$1").replace(/^#{1,6} /gm, "").trim()}
                       </div>
                       {!isUser && (
                         <div className="flex items-center gap-1 mt-1 opacity-0 hover:opacity-100 transition">
@@ -1628,7 +1627,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
                 placeholder="Message Alfred..."
                 value={input}
                 onChange={onInputChange}
-                onKeyDown={e => { console.log("KEYDOWN", e.key, "shift:", e.shiftKey); if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
+                onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
                 onInput={e => { const t = e.target as HTMLTextAreaElement; t.style.height = "auto"; t.style.height = Math.min(t.scrollHeight, 200) + "px"; }}
                 className="flex-1 bg-transparent px-3 py-2 text-sm text-white placeholder-white/30 focus:outline-none resize-none max-h-[200px]"
               />
