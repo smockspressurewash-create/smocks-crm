@@ -105,7 +105,8 @@ export function SettingsModal({ open, onClose, settings, setSettings, services, 
   return (
     <>
     <Modal open={open} onClose={onClose} title="Settings" maxW="max-w-5xl" noBodyScroll>
-      <div className="flex gap-0 h-full overflow-hidden">
+      <div className="h-full flex flex-col">
+        <div className="flex-1 min-h-0 flex overflow-hidden">
         {/* Sidebar nav */}
         <div className="w-44 flex-shrink-0 border-r border-red-900/30 bg-black/40 rounded-bl-2xl overflow-y-auto py-2">
           {secs.map(s => {
@@ -116,9 +117,9 @@ export function SettingsModal({ open, onClose, settings, setSettings, services, 
           })}
         </div>
         {/* Right panel */}
-        <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
+        <div className="flex-1 flex flex-col min-w-0">
           {/* Scrollable content */}
-          <div className="flex-1 overflow-y-auto p-5 space-y-4">
+          <div className="flex-1 min-h-0 overflow-y-auto p-5 space-y-4">
           {sec === "profile" && <div className="space-y-4">
             <div>
               <h4 className="font-semibold text-sm mb-3 flex items-center gap-2"><User size={14} />My Profile</h4>
@@ -694,6 +695,7 @@ export function SettingsModal({ open, onClose, settings, setSettings, services, 
           </div>
         </div>
       </div>
+    </div>
     </Modal>
 
     {/* Google OAuth simulation modal */}

@@ -277,7 +277,7 @@ export function Dashboard({ jobs = [], customers = [], estimates = [], automatio
   };
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-5">
       {/* Page header */}
       <div className="flex items-center justify-between mb-6">
         <div>
@@ -381,7 +381,7 @@ export function Dashboard({ jobs = [], customers = [], estimates = [], automatio
       </div>
 
       {/* KPI row - 4 across */}
-      {w.kpis && <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+      {w.kpis && <div className="grid grid-cols-2 lg:grid-cols-4 gap-5">
         <Stat icon={DollarSign} label="Total Revenue" value={fmt(stats.totalRev)} change="+12%" />
         <Stat icon={Briefcase} label="Active Jobs" value={stats.activeJobs} change="+3" />
         <Stat icon={Target} label="Close Rate" value={stats.closeRate + "%"} change="+5%" />
@@ -402,21 +402,21 @@ export function Dashboard({ jobs = [], customers = [], estimates = [], automatio
         const monthRev = jobs.filter(j => j.status === "completed" && (j.scheduledDate||"").startsWith(monthStr)).reduce((s,j) => s + j.amount, 0);
         const todayTips = jobs.filter(j => j.status === "completed" && j.scheduledDate === todayStr).reduce((s,j) => s + (Number(j.tip)||0), 0);
         const todayCash = jobs.filter(j => j.status === "completed" && j.scheduledDate === todayStr && j.isCash).reduce((s,j) => s + j.amount, 0);
-        return <div className="grid grid-cols-3 gap-3">
-          <Glass className="p-4">
-            <div className="text-[10px] text-white/40 uppercase tracking-wider mb-1">💰 Today</div>
-            <div className="text-2xl font-black text-green-400">{fmt(todayRev_)}</div>
+        return <div className="grid grid-cols-3 gap-4">
+          <Glass className="p-5">
+            <div className="text-[10px] text-white/50 uppercase tracking-wider font-semibold mb-2">💰 Today</div>
+            <div className="text-3xl font-black text-green-400">{fmt(todayRev_)}</div>
             {todayTips > 0 && <div className="text-[10px] text-yellow-400 mt-0.5">+{fmt(todayTips)} tips</div>}
             {todayCash > 0 && <div className="text-[10px] text-green-300/60 mt-0.5">💵 {fmt(todayCash)} cash</div>}
           </Glass>
-          <Glass className="p-4">
-            <div className="text-[10px] text-white/40 uppercase tracking-wider mb-1">📅 This Week</div>
-            <div className="text-2xl font-black text-blue-400">{fmt(weekRev)}</div>
+          <Glass className="p-5">
+            <div className="text-[10px] text-white/50 uppercase tracking-wider font-semibold mb-2">📅 This Week</div>
+            <div className="text-3xl font-black text-blue-400">{fmt(weekRev)}</div>
             <div className="text-[10px] text-white/40 mt-0.5">{jobs.filter(j => j.status === "completed" && j.scheduledDate >= weekStart).length} jobs</div>
           </Glass>
-          <Glass className="p-4">
-            <div className="text-[10px] text-white/40 uppercase tracking-wider mb-1">🗓️ This Month</div>
-            <div className="text-2xl font-black text-red-400">{fmt(monthRev)}</div>
+          <Glass className="p-5">
+            <div className="text-[10px] text-white/50 uppercase tracking-wider font-semibold mb-2">🗓️ This Month</div>
+            <div className="text-3xl font-black text-red-400">{fmt(monthRev)}</div>
             {goals.revenue > 0 && <div className="text-[10px] text-white/40 mt-0.5">{Math.round(monthRev/goals.revenue*100)}% of goal</div>}
           </Glass>
         </div>;
@@ -516,7 +516,7 @@ export function Dashboard({ jobs = [], customers = [], estimates = [], automatio
         </Glass>;
       })()}
 
-      <div className="grid lg:grid-cols-3 gap-5">
+      <div className="grid lg:grid-cols-3 gap-6">
         {/* Left: goals + upcoming jobs */}
         <div className="space-y-4">
           {/* Goals */}
@@ -562,10 +562,11 @@ export function Dashboard({ jobs = [], customers = [], estimates = [], automatio
               {upcoming.slice(0, 4).map(j => {
                 const c = customers.find(x => x.id === j.customerId);
                 const risk = forecastFor(wForecast, j.scheduledDate) as any;
-                return <div key={j.id} className="flex items-center gap-2 py-1.5 border-b border-red-900/10 last:border-0">
+                return <div key={j.id} className="flex items-center gap-3 py-2.5 border-b border-red-900/10 last:border-0">
+                  <div className="w-1.5 h-1.5 rounded-full bg-red-500 flex-shrink-0 mt-0.5" />
                   <div className="flex-1 min-w-0">
-                    <div className="text-xs font-medium truncate">{c ? c.firstName + " " + c.lastName : j.address?.split(",")[0]}</div>
-                    <div className="text-[10px] text-white/50">{j.scheduledDate} · {fmt(j.amount)}</div>
+                    <div className="text-sm font-medium truncate">{c ? c.firstName + " " + c.lastName : j.address?.split(",")[0]}</div>
+                    <div className="text-[10px] text-white/50 mt-0.5">{j.scheduledDate} · {fmt(j.amount)}</div>
                   </div>
                   {risk && risk.level === "high" && <span className="text-[10px]">{risk.icon}</span>}
                   <Badge tone={j.status === "completed" ? "green" : j.status === "in_progress" ? "yellow" : "gray"}>{j.status.replace("_"," ").replace("scheduled","sched")}</Badge>
@@ -594,10 +595,11 @@ export function Dashboard({ jobs = [], customers = [], estimates = [], automatio
               {pending.map(e => {
                 const c = customers.find(x => x.id === e.customerId);
                 const age = daysSince(e.createdAt);
-                return <div key={e.id} className="flex items-center gap-2 py-1.5 border-b border-red-900/10 last:border-0">
+                return <div key={e.id} className="flex items-center gap-3 py-2.5 border-b border-red-900/10 last:border-0">
+                  <div className={"w-1.5 h-1.5 rounded-full flex-shrink-0 mt-0.5 " + (age >= 7 ? "bg-red-500" : age >= 3 ? "bg-yellow-500" : "bg-green-500")} />
                   <div className="flex-1 min-w-0">
-                    <div className="text-xs font-medium truncate">{c ? c.firstName + " " + c.lastName : "Unknown"}</div>
-                    <div className="text-[10px] text-white/50">{fmt(e.total)} · {age}d old</div>
+                    <div className="text-sm font-medium truncate">{c ? c.firstName + " " + c.lastName : "Unknown"}</div>
+                    <div className="text-[10px] text-white/50 mt-0.5">{fmt(e.total)} · {age}d old</div>
                   </div>
                   <span className={"text-[10px] font-bold " + (age >= 7 ? "text-red-400" : age >= 3 ? "text-yellow-400" : "text-white/60")}>{age >= 7 ? "⚠ Stale" : age >= 3 ? "Follow up" : "New"}</span>
                 </div>;
@@ -618,7 +620,7 @@ export function Dashboard({ jobs = [], customers = [], estimates = [], automatio
             <div className="space-y-1">
               {activity.map((a, i) => {
                 const Icon = a.icon;
-                return <div key={i} className="flex items-center gap-3 py-2 border-b border-white/5 last:border-0 group">
+                return <div key={i} className="flex items-center gap-3 py-3 border-b border-white/5 last:border-0 group">
                   <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-red-900/60 to-black/60 border border-red-900/30 flex items-center justify-center flex-shrink-0 group-hover:border-red-600/50 transition"><Icon size={12} className="text-red-400" /></div>
                   <div className="flex-1 min-w-0">
                     <div className="text-xs text-white/90 truncate">{a.text}</div>
@@ -674,7 +676,7 @@ export function Dashboard({ jobs = [], customers = [], estimates = [], automatio
               <button onClick={() => onNav("analytics")} className="text-[10px] text-red-400 hover:text-red-300 flex items-center gap-1">Full analytics <ChevronRight size={10} /></button>
             </div>
             {hasAnyRevData ? (
-              <ResponsiveContainer width="100%" height={180}>
+              <ResponsiveContainer width="100%" height={260}>
                 <AreaChart data={revenueByMonth} margin={{ top: 8, right: 4, left: -16, bottom: 0 }}>
                   <defs>
                     <linearGradient id="rdg" x1="0" y1="0" x2="0" y2="1">
@@ -690,7 +692,7 @@ export function Dashboard({ jobs = [], customers = [], estimates = [], automatio
                 </AreaChart>
               </ResponsiveContainer>
             ) : (
-              <div className="h-[180px] flex flex-col items-center justify-center text-center">
+              <div className="h-[260px] flex flex-col items-center justify-center text-center">
                 <BarChart2 size={28} className="text-white/10 mb-2" />
                 <div className="text-xs text-white/30">No completed jobs yet</div>
                 <button onClick={() => onNav("jobs")} className="mt-2 text-[11px] text-red-400 hover:text-red-300">Add your first job →</button>
