@@ -2,7 +2,7 @@
 import React, { useState, useRef, useEffect, useCallback } from "react";
 import { X, ChevronLeft, ChevronRight, Search, TrendingUp, DollarSign, Clock, CheckCircle, AlertTriangle, AlertCircle, Star, Target, BarChart3 } from "lucide-react";
 
-export const Modal = ({ open, onClose, title, children, maxW = "max-w-lg" }) => {
+export const Modal = ({ open, onClose, title, children, maxW = "max-w-lg", noBodyScroll = false }) => {
   const [visible, setVisible] = useState(false);
   const [mounted, setMounted] = useState(false);
 
@@ -75,7 +75,7 @@ export const Modal = ({ open, onClose, title, children, maxW = "max-w-lg" }) => 
                 </button>
               </div>
             )}
-            <div className="p-5 overflow-y-auto flex-1 min-h-0">{children}</div>
+            <div className={noBodyScroll ? "flex-1 min-h-0 overflow-hidden" : "p-5 overflow-y-auto flex-1 min-h-0"}>{children}</div>
           </div>
         </div>
       </div>

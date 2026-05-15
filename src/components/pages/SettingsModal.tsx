@@ -104,8 +104,8 @@ export function SettingsModal({ open, onClose, settings, setSettings, services, 
 
   return (
     <>
-    <Modal open={open} onClose={onClose} title="Settings" maxW="max-w-5xl">
-      <div className="flex gap-0 -mx-5 -mb-5" style={{ height: "min(78vh, 700px)" }}>
+    <Modal open={open} onClose={onClose} title="Settings" maxW="max-w-5xl" noBodyScroll>
+      <div className="flex gap-0 h-full">
         {/* Sidebar nav */}
         <div className="w-44 flex-shrink-0 border-r border-red-900/30 bg-black/40 rounded-bl-2xl overflow-y-auto py-2">
           {secs.map(s => {
@@ -118,7 +118,7 @@ export function SettingsModal({ open, onClose, settings, setSettings, services, 
         {/* Right panel */}
         <div className="flex-1 flex flex-col min-w-0">
           {/* Scrollable content */}
-          <div className="flex-1 overflow-y-auto p-5 space-y-4 pb-20">
+          <div className="flex-1 overflow-y-auto p-5 space-y-4">
           {sec === "profile" && <div className="space-y-4">
             <div>
               <h4 className="font-semibold text-sm mb-3 flex items-center gap-2"><User size={14} />My Profile</h4>

@@ -203,9 +203,10 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
     { icon: Route, title: "Optimize my route", prompt: "/route" },
   ];
 
-  const updateActive = patch => setConversations(prev => prev.map(c => c.id === activeConvId ? { ...c, ...patch, updatedAt: Date.now() } : c));
-  const appendMessage = msg => setConversations(prev => prev.map(c => c.id === activeConvId ? { ...c, messages: [...c.messages, msg], updatedAt: Date.now() } : c));
-  const replaceMessages = msgs => setConversations(prev => prev.map(c => c.id === activeConvId ? { ...c, messages: msgs, updatedAt: Date.now() } : c));
+  const activeId = active?.id ?? activeConvId;
+  const updateActive = patch => setConversations(prev => prev.map(c => c.id === activeId ? { ...c, ...patch, updatedAt: Date.now() } : c));
+  const appendMessage = msg => setConversations(prev => prev.map(c => c.id === activeId ? { ...c, messages: [...c.messages, msg], updatedAt: Date.now() } : c));
+  const replaceMessages = msgs => setConversations(prev => prev.map(c => c.id === activeId ? { ...c, messages: msgs, updatedAt: Date.now() } : c));
 
   const newConversation = () => {
     const cid = uid();

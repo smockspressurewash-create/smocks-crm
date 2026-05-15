@@ -3,17 +3,18 @@ import React, { useState, useRef, useEffect, useCallback } from "react";
 import { X, ChevronLeft, ChevronRight, Search, TrendingUp, DollarSign, Clock, CheckCircle, AlertTriangle, AlertCircle, Star, Target, BarChart3 } from "lucide-react";
 
 export const Stat = ({ icon: Icon, label, value, change }: { icon?: any; label?: any; value?: any; change?: any }) => (
-  <div className="glass-hover bg-black/40 backdrop-blur-xl border border-red-900/30 rounded-2xl shadow-lg p-5 relative overflow-hidden group cursor-default">
-    <div className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity duration-500" style={{ background: "radial-gradient(ellipse at top right, rgba(220,38,38,0.08), transparent 70%)" }} />
-    <div className="absolute -right-4 -bottom-4 w-20 h-20 rounded-full bg-red-600/8 group-hover:bg-red-600/15 transition-all duration-700 group-hover:scale-150" />
-    <div className="relative flex items-center justify-between mb-3">
-      <div className="p-2 rounded-lg bg-gradient-to-br from-red-600 to-red-900 shadow-lg transition-all duration-300 group-hover:shadow-red-600/40 group-hover:scale-110">
-        <Icon size={18} className="text-white" />
+  <div className="glass-hover bg-black/40 backdrop-blur-xl border border-red-900/30 rounded-2xl shadow-lg p-6 relative overflow-hidden group cursor-default">
+    <div className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity duration-500" style={{ background: "radial-gradient(ellipse at top right, rgba(220,38,38,0.10), transparent 70%)" }} />
+    <div className="absolute -right-6 -bottom-6 w-28 h-28 rounded-full bg-red-600/6 group-hover:bg-red-600/14 transition-all duration-700 group-hover:scale-150" />
+    <div className="relative flex items-center justify-between mb-4">
+      <div className="p-2.5 rounded-xl bg-gradient-to-br from-red-600 to-red-900 shadow-lg shadow-red-900/40 transition-all duration-300 group-hover:shadow-red-600/50 group-hover:scale-110">
+        <Icon size={20} className="text-white" />
       </div>
-      {change && <span className="text-xs text-red-400 font-medium flex items-center gap-1"><TrendingUp size={12} />{change}</span>}
+      {change && <span className="text-xs text-green-400 font-semibold flex items-center gap-1 bg-green-400/10 px-2 py-0.5 rounded-full border border-green-400/20"><TrendingUp size={11} />{change}</span>}
     </div>
-    <div className="relative text-2xl font-bold text-white tabular-nums">{value}</div>
-    <div className="relative text-xs text-white/50 mt-1">{label}</div>
+    <div className="relative text-3xl font-black text-white tabular-nums tracking-tight">{value}</div>
+    <div className="relative text-xs text-white/50 mt-1.5 font-medium uppercase tracking-wider">{label}</div>
   </div>
 );
+
 

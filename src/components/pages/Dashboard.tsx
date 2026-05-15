@@ -327,7 +327,7 @@ export function Dashboard({ jobs = [], customers = [], estimates = [], automatio
       )}
 
       {/* Top row: quick actions + revenue periods */}
-      <div className="grid grid-cols-2 lg:grid-cols-6 gap-3">
+      <div className="grid grid-cols-2 lg:grid-cols-6 gap-4">
         <button onClick={() => onNav("estimates")} className="btn-hover glass-hover bg-gradient-to-br from-red-600 to-red-900 border border-red-500/50 rounded-2xl p-4 text-left shadow-lg">
           <FileText size={18} className="mb-2" />
           <div className="font-bold text-sm">New Estimate</div>
@@ -348,32 +348,40 @@ export function Dashboard({ jobs = [], customers = [], estimates = [], automatio
             <div className="text-[10px] text-blue-300/70">Open in Maps</div>
           </a>;
         })()}
-        <Glass className="p-4">
-          <div className="text-[10px] text-white/50 uppercase tracking-wider mb-1">📅 Today</div>
-          <div className="text-2xl font-bold text-red-400">{fmt(revToday)}</div>
-          <div className="text-[10px] text-white/40">{todayJobs.length} job{todayJobs.length !== 1 ? "s" : ""} scheduled</div>
+        <Glass className="p-4 flex flex-col justify-between">
+          <div className="text-[10px] text-white/50 uppercase tracking-wider font-semibold">Today</div>
+          <div>
+            <div className="text-2xl font-black text-red-400 mt-2">{fmt(revToday)}</div>
+            <div className="text-[10px] text-white/40 mt-1">{todayJobs.length} job{todayJobs.length !== 1 ? "s" : ""} scheduled</div>
+          </div>
         </Glass>
-        <Glass className="p-4">
-          <div className="text-[10px] text-white/50 uppercase tracking-wider mb-1">📅 This Week</div>
-          <div className="text-2xl font-bold text-red-400">{fmt(revWeek)}</div>
-          <div className="text-[10px] text-white/40">{jobs.filter(j => new Date(j.scheduledDate) >= weekStart && j.status !== "cancelled").length} jobs</div>
+        <Glass className="p-4 flex flex-col justify-between">
+          <div className="text-[10px] text-white/50 uppercase tracking-wider font-semibold">This Week</div>
+          <div>
+            <div className="text-2xl font-black text-red-400 mt-2">{fmt(revWeek)}</div>
+            <div className="text-[10px] text-white/40 mt-1">{jobs.filter(j => new Date(j.scheduledDate) >= weekStart && j.status !== "cancelled").length} jobs</div>
+          </div>
         </Glass>
-        <Glass className="p-4">
-          <div className="text-[10px] text-white/50 uppercase tracking-wider mb-1">📅 This Month</div>
-          <div className="text-2xl font-bold text-red-400">{fmt(revMonth)}</div>
-          <div className="text-[10px] text-white/40">{goals.revenue > 0 ? Math.round(revMonth / goals.revenue * 100) + "% of goal" : fmt(revMonth)}</div>
+        <Glass className="p-4 flex flex-col justify-between">
+          <div className="text-[10px] text-white/50 uppercase tracking-wider font-semibold">This Month</div>
+          <div>
+            <div className="text-2xl font-black text-red-400 mt-2">{fmt(revMonth)}</div>
+            <div className="text-[10px] text-white/40 mt-1">{goals.revenue > 0 ? Math.round(revMonth / goals.revenue * 100) + "% of goal" : "No goal set"}</div>
+          </div>
         </Glass>
-        <Glass className="p-4">
-          <div className="text-[10px] text-white/50 uppercase tracking-wider mb-1">📈 Year-over-Year</div>
-          <div className="text-2xl font-bold text-red-400">{fmt(revThisYear)}</div>
-          <div className={"text-[10px] font-semibold mt-0.5 " + (yoyPct === null ? "text-white/40" : yoyPct >= 0 ? "text-green-400" : "text-red-400")}>
-            {yoyPct === null ? "No prior year data" : (yoyPct >= 0 ? "▲" : "▼") + " " + Math.abs(yoyPct) + "% vs last year"}
+        <Glass className="p-4 flex flex-col justify-between">
+          <div className="text-[10px] text-white/50 uppercase tracking-wider font-semibold">Year to Date</div>
+          <div>
+            <div className="text-2xl font-black text-red-400 mt-2">{fmt(revThisYear)}</div>
+            <div className={"text-[10px] font-semibold mt-1 " + (yoyPct === null ? "text-white/40" : yoyPct >= 0 ? "text-green-400" : "text-red-400")}>
+              {yoyPct === null ? "No prior year data" : (yoyPct >= 0 ? "▲" : "▼") + " " + Math.abs(yoyPct) + "% vs last year"}
+            </div>
           </div>
         </Glass>
       </div>
 
-      {/* KPI row - compact 4 across */}
-      {w.kpis && <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+      {/* KPI row - 4 across */}
+      {w.kpis && <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <Stat icon={DollarSign} label="Total Revenue" value={fmt(stats.totalRev)} change="+12%" />
         <Stat icon={Briefcase} label="Active Jobs" value={stats.activeJobs} change="+3" />
         <Stat icon={Target} label="Close Rate" value={stats.closeRate + "%"} change="+5%" />
@@ -508,7 +516,7 @@ export function Dashboard({ jobs = [], customers = [], estimates = [], automatio
         </Glass>;
       })()}
 
-      <div className="grid lg:grid-cols-3 gap-4">
+      <div className="grid lg:grid-cols-3 gap-5">
         {/* Left: goals + upcoming jobs */}
         <div className="space-y-4">
           {/* Goals */}
@@ -606,14 +614,17 @@ export function Dashboard({ jobs = [], customers = [], estimates = [], automatio
 
           {/* Activity feed */}
           {w.activity && <Glass className="p-4">
-            <div className="font-semibold text-sm flex items-center gap-2 mb-3"><Activity size={13} className="text-red-400" />Recent Activity</div>
-            <div className="space-y-2">
+            <div className="font-semibold text-sm flex items-center gap-2 mb-4"><Activity size={13} className="text-red-400" />Recent Activity</div>
+            <div className="space-y-1">
               {activity.map((a, i) => {
                 const Icon = a.icon;
-                return <div key={i} className="flex items-center gap-2.5 py-1 border-b border-red-900/10 last:border-0">
-                  <div className="w-6 h-6 rounded-lg bg-black/40 flex items-center justify-center flex-shrink-0"><Icon size={11} className="text-red-400" /></div>
-                  <div className="flex-1 min-w-0"><div className="text-xs truncate">{a.text}</div><div className="text-[10px] text-white/40">{a.date}</div></div>
-                  {a.amount && <div className="text-xs font-semibold text-red-400 flex-shrink-0">{fmt(a.amount)}</div>}
+                return <div key={i} className="flex items-center gap-3 py-2 border-b border-white/5 last:border-0 group">
+                  <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-red-900/60 to-black/60 border border-red-900/30 flex items-center justify-center flex-shrink-0 group-hover:border-red-600/50 transition"><Icon size={12} className="text-red-400" /></div>
+                  <div className="flex-1 min-w-0">
+                    <div className="text-xs text-white/90 truncate">{a.text}</div>
+                    <div className="text-[10px] text-white/35 mt-0.5">{a.date}</div>
+                  </div>
+                  {a.amount && <div className="text-xs font-bold text-green-400 flex-shrink-0 bg-green-400/10 px-2 py-0.5 rounded-full">{fmt(a.amount)}</div>}
                 </div>;
               })}
             </div>
@@ -655,23 +666,32 @@ export function Dashboard({ jobs = [], customers = [], estimates = [], automatio
 
           {/* Mini revenue chart */}
           {w.charts && <Glass className="p-4">
-            <div className="flex items-center justify-between mb-3">
-              <div className="font-semibold text-sm flex items-center gap-2"><BarChart2 size={13} className="text-red-400" />Revenue (6mo)</div>
-              <button onClick={() => onNav("analytics")} className="text-[10px] text-red-400 hover:text-red-300">Full analytics →</button>
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <div className="font-semibold text-sm flex items-center gap-2"><BarChart2 size={13} className="text-red-400" />Revenue (6 months)</div>
+                {hasAnyRevData && <div className="text-[10px] text-white/40 mt-0.5">{fmt(revenueByMonth.reduce((s, m) => s + (m.revenue || 0), 0))} total</div>}
+              </div>
+              <button onClick={() => onNav("analytics")} className="text-[10px] text-red-400 hover:text-red-300 flex items-center gap-1">Full analytics <ChevronRight size={10} /></button>
             </div>
             {hasAnyRevData ? (
-              <ResponsiveContainer width="100%" height={120}>
-                <AreaChart data={revenueByMonth} margin={{ top: 4, right: 4, left: 4, bottom: 0 }}>
-                  <defs><linearGradient id="rdg" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#e11d48" stopOpacity={0.5} /><stop offset="100%" stopColor="#9f1239" stopOpacity={0} /></linearGradient></defs>
-                  <XAxis dataKey="month" stroke="#ffffff30" fontSize={9} />
-                  <YAxis hide />
-                  <Tooltip contentStyle={{ background: "rgba(0,0,0,0.9)", border: "1px solid #9f1239", borderRadius: "6px", fontSize: "10px" }} formatter={v => fmt(Number(v))} />
-                  <Area type="monotone" dataKey="revenue" stroke="#e11d48" strokeWidth={2} fill="url(#rdg)" dot={false} />
+              <ResponsiveContainer width="100%" height={180}>
+                <AreaChart data={revenueByMonth} margin={{ top: 8, right: 4, left: -16, bottom: 0 }}>
+                  <defs>
+                    <linearGradient id="rdg" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stopColor="#e11d48" stopOpacity={0.6} />
+                      <stop offset="100%" stopColor="#9f1239" stopOpacity={0} />
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#ffffff08" />
+                  <XAxis dataKey="month" stroke="#ffffff30" fontSize={10} tick={{ fill: "#ffffff60" }} />
+                  <YAxis stroke="#ffffff20" fontSize={9} tick={{ fill: "#ffffff40" }} tickFormatter={v => "$" + (v >= 1000 ? Math.round(v / 1000) + "k" : v)} />
+                  <Tooltip contentStyle={{ background: "rgba(0,0,0,0.95)", border: "1px solid rgba(159,18,57,0.5)", borderRadius: "10px", fontSize: "11px", padding: "8px 12px" }} formatter={v => [fmt(Number(v)), "Revenue"]} labelStyle={{ color: "#ffffff90", marginBottom: "4px" }} />
+                  <Area type="monotone" dataKey="revenue" stroke="#e11d48" strokeWidth={2.5} fill="url(#rdg)" dot={{ fill: "#e11d48", strokeWidth: 0, r: 3 }} activeDot={{ r: 5, fill: "#e11d48" }} />
                 </AreaChart>
               </ResponsiveContainer>
             ) : (
-              <div className="h-[120px] flex flex-col items-center justify-center text-center">
-                <BarChart2 size={24} className="text-white/10 mb-2" />
+              <div className="h-[180px] flex flex-col items-center justify-center text-center">
+                <BarChart2 size={28} className="text-white/10 mb-2" />
                 <div className="text-xs text-white/30">No completed jobs yet</div>
                 <button onClick={() => onNav("jobs")} className="mt-2 text-[11px] text-red-400 hover:text-red-300">Add your first job →</button>
               </div>
