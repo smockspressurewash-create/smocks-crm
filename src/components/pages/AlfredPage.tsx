@@ -162,6 +162,17 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
   const active = conversations.find(c => c.id === activeConvId) || conversations[0];
   const chats = active?.messages || [];
 
+  // Auto-initialize: if no conversations exist, create one so appendMessage always has a target
+  useEffect(() => {
+    if (!conversations || conversations.length === 0) {
+      const cid = uid();
+      const greeting = (personalities as any)[personality]?.greeting || "Hey. What do we need to handle today? Alfred out.";
+      const newConv = { id: cid, title: "New chat", personality, createdAt: today(), updatedAt: Date.now(), messages: [{ id: uid(), role: "alfred", content: greeting, timestamp: Date.now() }] };
+      setConversations([newConv]);
+      setActiveConvId(cid);
+    }
+  }, []); // eslint-disable-line
+
   useEffect(() => { scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" }); }, [chats.length, loading]);
 
   // Slash command suggestions
@@ -1024,8 +1035,23 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
   ];
 
   const send = async (overrideText?: string) => {
+    console.log("SEND CALLED", (overrideText ?? input).trim(), { loading, convCount: conversations.length, activeId: active?.id ?? activeConvId });
     const text = (overrideText ?? input).trim();
     if (!text || loading) return;
+
+    // If no conversation exists yet (edge case on first render), create one now
+    if (!active) {
+      const cid = uid();
+      const greeting = (personalities as any)[personality]?.greeting || "Hey. What do we need to handle today? Alfred out.";
+      const newConv = { id: cid, title: text.slice(0, 42) + (text.length > 42 ? "…" : ""), personality, createdAt: today(), updatedAt: Date.now(), messages: [] };
+      setConversations([newConv]);
+      setActiveConvId(cid);
+      // Can't append to it this render — state not yet committed. Return and let user retry.
+      // In practice the auto-init useEffect handles this; this guard prevents a silent no-op.
+      console.warn("No active conversation on send — auto-created one. Please send again.");
+      return;
+    }
+
     const userMsg = { id: uid(), role: "user", content: text, timestamp: Date.now() };
     appendMessage(userMsg);
 
@@ -1602,7 +1628,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
                 placeholder="Message Alfred..."
                 value={input}
                 onChange={onInputChange}
-                onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
+                onKeyDown={e => { console.log("KEYDOWN", e.key, "shift:", e.shiftKey); if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
                 onInput={e => { const t = e.target as HTMLTextAreaElement; t.style.height = "auto"; t.style.height = Math.min(t.scrollHeight, 200) + "px"; }}
                 className="flex-1 bg-transparent px-3 py-2 text-sm text-white placeholder-white/30 focus:outline-none resize-none max-h-[200px]"
               />
