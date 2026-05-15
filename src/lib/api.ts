@@ -30,7 +30,7 @@ export const MODELS: Record<string, ModelDef> = {
     maxTokens: 4096,
     contextWindow: 200000,
     color: "from-orange-500 to-orange-700",
-    needsKey: false,
+    needsKey: true,
     supportsTools: true,
     keyUrl: "https://console.anthropic.com/",
     apiLabel: "Anthropic API Key",

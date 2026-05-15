@@ -85,10 +85,13 @@ export function JobsPage({ jobs = [], setJobs, customers = [], employees = [], e
   const [detailId, setDetailId] = useState(null);
   const [prioFilter, setPrioFilter] = useState("all");
   const [search, setSearch] = useState("");
+  const [sortBy, setSortBy] = useState("date");
   const [routeOpen, setRouteOpen] = useState(false);
   const [bulkSelected, setBulkSelected] = useState([]);
   const [bulkAction, setBulkAction] = useState(null);
   const [, forceTick] = useState(0);
+  const [newJobOpen, setNewJobOpen] = useState(false);
+  const [newJobForm, setNewJobForm] = useState({ customerId: "", address: "", amount: "", scheduledDate: today(), scheduledTime: "", priority: "normal", notes: "" });
 
   // Live tick for any running clocks
   useEffect(() => {
@@ -133,7 +136,12 @@ export function JobsPage({ jobs = [], setJobs, customers = [], employees = [], e
       const q = search.toLowerCase();
       return (c?.firstName + " " + c?.lastName).toLowerCase().includes(q) || (j.address || "").toLowerCase().includes(q) || (j.tags || []).some(t => t.toLowerCase().includes(q));
     })
-    .sort((a, b) => (prioOrder[a.priority || "normal"] - prioOrder[b.priority || "normal"]) || a.scheduledDate.localeCompare(b.scheduledDate));
+    .sort((a, b) => {
+      if (sortBy === "amount") return b.amount - a.amount;
+      if (sortBy === "priority") return (prioOrder[a.priority || "normal"] - prioOrder[b.priority || "normal"]) || a.scheduledDate.localeCompare(b.scheduledDate);
+      // default: date, then priority
+      return a.scheduledDate.localeCompare(b.scheduledDate) || (prioOrder[a.priority || "normal"] - prioOrder[b.priority || "normal"]);
+    });
 
   const move = (jid, ns) => {
     setJobs(jobs.map(j => j.id === jid ? { ...j, status: ns } : j));
@@ -253,6 +261,74 @@ export function JobsPage({ jobs = [], setJobs, customers = [], employees = [], e
         </div>}
       </Modal>
 
+      {/* New Job Modal */}
+      <Modal open={newJobOpen} onClose={() => setNewJobOpen(false)} title="Schedule New Job" maxW="max-w-lg">
+        <div className="space-y-3">
+          <div>
+            <label className="text-xs text-white/60 mb-1 block">Customer</label>
+            <GSel value={newJobForm.customerId} onChange={e => {
+              const c = customers.find(x => x.id === e.target.value);
+              setNewJobForm(f => ({ ...f, customerId: e.target.value, address: c?.address || f.address }));
+            }}>
+              <option value="" className="bg-black">— Select customer —</option>
+              {customers.map(c => <option key={c.id} value={c.id} className="bg-black">{c.firstName} {c.lastName}</option>)}
+            </GSel>
+          </div>
+          <div>
+            <label className="text-xs text-white/60 mb-1 block">Service address</label>
+            <GInput placeholder="123 Main St, York PA" value={newJobForm.address} onChange={e => setNewJobForm(f => ({ ...f, address: e.target.value }))} />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="text-xs text-white/60 mb-1 block">Date</label>
+              <GDate value={newJobForm.scheduledDate} onChange={e => setNewJobForm(f => ({ ...f, scheduledDate: e.target.value }))} />
+            </div>
+            <div>
+              <label className="text-xs text-white/60 mb-1 block">Time (optional)</label>
+              <GInput type="time" value={newJobForm.scheduledTime} onChange={e => setNewJobForm(f => ({ ...f, scheduledTime: e.target.value }))} />
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="text-xs text-white/60 mb-1 block">Amount ($)</label>
+              <GInput type="number" placeholder="0" value={newJobForm.amount} onChange={e => setNewJobForm(f => ({ ...f, amount: e.target.value }))} />
+            </div>
+            <div>
+              <label className="text-xs text-white/60 mb-1 block">Priority</label>
+              <GSel value={newJobForm.priority} onChange={e => setNewJobForm(f => ({ ...f, priority: e.target.value }))}>
+                {priorityLevels.map(p => <option key={p.key} value={p.key} className="bg-black capitalize">{p.key}</option>)}
+              </GSel>
+            </div>
+          </div>
+          <div>
+            <label className="text-xs text-white/60 mb-1 block">Notes (optional)</label>
+            <GTxt placeholder="Service details, access instructions..." value={newJobForm.notes} onChange={e => setNewJobForm(f => ({ ...f, notes: e.target.value }))} rows={3} />
+          </div>
+          <div className="flex gap-2 justify-end pt-2">
+            <GBtn variant="ghost" onClick={() => setNewJobOpen(false)}>Cancel</GBtn>
+            <GBtn onClick={() => {
+              if (!newJobForm.customerId) { toast("Select a customer", "error"); return; }
+              if (!newJobForm.scheduledDate) { toast("Enter a date", "error"); return; }
+              const job = {
+                id: uid(), customerId: newJobForm.customerId,
+                address: newJobForm.address || customers.find(c => c.id === newJobForm.customerId)?.address || "",
+                amount: parseFloat(newJobForm.amount) || 0,
+                status: "scheduled" as const,
+                scheduledDate: newJobForm.scheduledDate,
+                scheduledTime: newJobForm.scheduledTime,
+                priority: newJobForm.priority as any,
+                notes: newJobForm.notes,
+                crew: [], checklist: [], photos: [], commLog: [], chemicalsUsed: [], equipment: [], tags: [],
+                loggedHours: 0, createdAt: today(),
+              };
+              setJobs(prev => [...prev, job]);
+              setNewJobOpen(false);
+              toast("Job scheduled for " + newJobForm.scheduledDate);
+            }}>Schedule Job</GBtn>
+          </div>
+        </div>
+      </Modal>
+
       {/* Bulk action bar */}
       {bulkSelected.length > 0 && <Glass className="p-3 !bg-purple-950/30 !border-purple-600/40 flex items-center gap-3 flex-wrap">
         <span className="text-sm font-semibold text-purple-300">{bulkSelected.length} selected</span>
@@ -320,13 +396,18 @@ export function JobsPage({ jobs = [], setJobs, customers = [], employees = [], e
       </div>
 
       <div className="flex flex-wrap gap-2 items-center">
-        <div className="relative flex-1 min-w-[200px]">
+        <GBtn onClick={() => { setNewJobForm({ customerId: "", address: "", amount: "", scheduledDate: today(), scheduledTime: "", priority: "normal", notes: "" }); setNewJobOpen(true); }} className="!py-1.5 !text-xs flex-shrink-0"><Plus size={13} className="inline mr-1" />Schedule Job</GBtn>
+        <div className="relative flex-1 min-w-[160px]">
           <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-white/40" />
           <GInput placeholder="Search customer, address, tag..." value={search} onChange={e => setSearch(e.target.value)} className="!pl-9 !py-1.5 !text-xs" />
         </div>
         <div className="flex gap-1 items-center">
           <span className="text-[10px] text-white/40 uppercase tracking-wider mr-1">Priority:</span>
           {["all", ...priorityLevels.map(p => p.key)].map(p => <button key={p} onClick={() => setPrioFilter(p)} className={"px-2.5 py-1 rounded-lg text-[11px] transition border capitalize " + (prioFilter === p ? "bg-red-900/40 border-red-500/50 text-white" : "bg-black/40 border-red-900/30 text-white/60 hover:text-white")}>{p}</button>)}
+        </div>
+        <div className="flex gap-1 items-center">
+          <span className="text-[10px] text-white/40 uppercase tracking-wider mr-1">Sort:</span>
+          {[["date", "Date"], ["priority", "Priority"], ["amount", "Amount"]].map(([k, l]) => <button key={k} onClick={() => setSortBy(k)} className={"px-2.5 py-1 rounded-lg text-[11px] transition border " + (sortBy === k ? "bg-red-900/40 border-red-500/50 text-white" : "bg-black/40 border-red-900/30 text-white/60 hover:text-white")}>{l}</button>)}
         </div>
         <GBtn onClick={() => setRouteOpen(true)} variant="ghost" className="!text-xs !py-1.5"><Navigation size={12} className="inline mr-1.5" />Route ({todayScheduled.length})</GBtn>
         <button onClick={() => { const all = filtered.map(j => j.id); setBulkSelected(bulkSelected.length === all.length ? [] : all); }} className="px-2.5 py-1.5 rounded-lg text-[11px] border border-red-900/30 bg-black/40 text-white/60 hover:text-white flex items-center gap-1">

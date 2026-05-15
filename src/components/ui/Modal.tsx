@@ -18,26 +18,26 @@ export const Modal = ({ open, onClose, title, children, maxW = "max-w-lg" }) => 
     }
   }, [open]);
 
-  // Lock body scroll when modal is open
+  // Lock page scroll when modal is open (overlay handles its own scroll)
   useEffect(() => {
     if (open) {
-      document.body.style.overflow = "hidden";
-      return () => { document.body.style.overflow = ""; };
+      document.documentElement.style.overflow = "hidden";
+      return () => { document.documentElement.style.overflow = ""; };
     }
   }, [open]);
 
   if (!mounted) return null;
   return (
     <div
-      className="fixed inset-0 z-[100] flex items-center justify-center p-4"
+      className="fixed inset-0 z-[200] overflow-y-auto"
       style={{
         background: visible ? "rgba(0,0,0,0.72)" : "rgba(0,0,0,0)",
         backdropFilter: visible ? "blur(8px) saturate(0.8)" : "blur(0px)",
         WebkitBackdropFilter: visible ? "blur(8px) saturate(0.8)" : "blur(0px)",
         transition: "background 0.25s ease, backdrop-filter 0.25s ease"
       }}
-      onClick={onClose}
     >
+      <div className="flex min-h-full items-center justify-center p-4" onClick={onClose}>
       <div
         className={maxW + " w-full bg-gradient-to-br from-neutral-950 to-black border border-red-900/40 rounded-2xl shadow-2xl flex flex-col"}
         style={{
@@ -56,6 +56,7 @@ export const Modal = ({ open, onClose, title, children, maxW = "max-w-lg" }) => 
           </div>
         )}
         <div className="p-5 overflow-y-auto flex-1">{children}</div>
+      </div>
       </div>
     </div>
   );

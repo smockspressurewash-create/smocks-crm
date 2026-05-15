@@ -1493,12 +1493,19 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           )}
         </div>
 
-        {/* No-key warning banner */}
-        {!(settings.modelKeys as any)?.claude && (
+        {/* No-key warning banner — only when no model is usable */}
+        {!(settings.modelPriority || ["claude", "openai", "gemini", "groq", "mistral"]).some(mid => {
+          const m = (MODELS as any)[mid];
+          if (!m) return false;
+          if (m.needsKey && !(settings.modelKeys || {})[mid]) return false;
+          const ms: any = (modelStatus || {})[mid];
+          if (ms?.lockedUntil > Date.now()) return false;
+          return true;
+        }) && (
           <div className="border-t border-yellow-900/30 bg-yellow-950/20 px-4 py-2.5 flex items-center justify-between gap-3 flex-shrink-0">
             <div className="text-xs text-yellow-300 flex items-center gap-2 min-w-0">
               <AlertTriangle size={13} className="flex-shrink-0" />
-              <span className="truncate">Add an Anthropic API key in Settings → AI Models to enable Alfred — slash commands work without one</span>
+              <span className="truncate">No AI model available — add an API key in Settings → AI Models to enable Alfred (slash commands still work)</span>
             </div>
             <button onClick={openSettings} className="flex-shrink-0 text-xs text-yellow-200 bg-yellow-900/40 border border-yellow-700/40 px-3 py-1 rounded-lg hover:bg-yellow-900/60 transition whitespace-nowrap">
               Add key
