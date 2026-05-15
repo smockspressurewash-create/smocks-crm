@@ -1,10 +1,10 @@
-import React, { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import {
   LayoutDashboard, Users, FileText, Receipt, Briefcase, GitBranch,
   Calendar, MessageSquare, Megaphone, Star, Zap, Share2, UserPlus,
   Bot, Database, Users2, Truck, DollarSign, FlaskConical, BarChart3,
   TrendingUp, PiggyBank, Wallet, Heart, Gift, Monitor,
-  Bell, Settings, X, Lock, Globe, ChevronLeft, ChevronRight, Plus
+  Bell, Settings, X, Lock, Globe, ChevronLeft, ChevronRight, Plus, Undo2, Redo2, CheckCircle
 } from "lucide-react";
 
 import { useGlobalStyles } from "./hooks/useGlobalStyles";
@@ -65,6 +65,16 @@ import type {
 
 // ─── Toast ────────────────────────────────────────────────────────────────────
 interface Toast { id: string; msg: string; tone?: "green" | "red" | "yellow" }
+
+// ─── FAB actions ──────────────────────────────────────────────────────────────
+const ALL_FAB_ACTIONS = [
+  { id: "customers", label: "New Customer",  dest: "customers", colorClass: "from-green-600 to-green-900"   },
+  { id: "estimates", label: "New Quote",      dest: "estimates", colorClass: "from-yellow-600 to-yellow-900" },
+  { id: "jobs",      label: "Schedule Job",   dest: "jobs",      colorClass: "from-blue-600 to-blue-900"    },
+  { id: "alfred",    label: "Ask Alfred",     dest: "alfred",    colorClass: "from-purple-600 to-purple-900" },
+  { id: "expenses",  label: "Log Expense",    dest: "expenses",  colorClass: "from-orange-600 to-orange-900" },
+  { id: "intake",    label: "New Lead",       dest: "intake",    colorClass: "from-teal-600 to-teal-900"    },
+] as const;
 
 // ─── Nav groups ───────────────────────────────────────────────────────────────
 const navGroups = [
@@ -142,11 +152,47 @@ export function App() {
   const [pinError, setPinError] = useState(false);
 
   // ── Navigation ────────────────────────────────────────────────────────────
-  const [page, setPage] = useState("dashboard");
+  const [page, setPage] = useState(() => {
+    // Restore page from URL hash on first load
+    const hash = window.location.hash.replace(/^#\/?/, "");
+    const valid = ["dashboard","alfred","inbox","customers","estimates","invoices","pipeline","intake","jobs","calendar","crew","campaigns","reviews","automations","social","referrals","expenses","reports","analytics","budget","personal","accountability","employees","fleet","chemicals","google"];
+    return valid.includes(hash) ? hash : "dashboard";
+  });
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [notifOpen, setNotifOpen] = useState(false);
   const [fabOpen, setFabOpen] = useState(false);
+
+  // Sync URL hash when page changes
+  useEffect(() => {
+    window.location.hash = "/" + page;
+  }, [page]);
+
+  // Listen for browser back/forward
+  useEffect(() => {
+    const valid = ["dashboard","alfred","inbox","customers","estimates","invoices","pipeline","intake","jobs","calendar","crew","campaigns","reviews","automations","social","referrals","expenses","reports","analytics","budget","personal","accountability","employees","fleet","chemicals","google"];
+    const handler = () => {
+      const hash = window.location.hash.replace(/^#\/?/, "");
+      if (valid.includes(hash)) setPage(hash);
+    };
+    window.addEventListener("hashchange", handler);
+    return () => window.removeEventListener("hashchange", handler);
+  }, []);
+
+  // ── Undo stack ────────────────────────────────────────────────────────────
+  const undoStackRef = useRef<Array<{ desc: string; fn: () => void }>>([]);
+  const [undoCount, setUndoCount] = useState(0);
+  const pushUndo = (desc: string, fn: () => void) => {
+    undoStackRef.current = [...undoStackRef.current.slice(-19), { desc, fn }];
+    setUndoCount(undoStackRef.current.length);
+  };
+  const undo = () => {
+    if (!undoStackRef.current.length) return;
+    const last = undoStackRef.current.pop()!;
+    setUndoCount(undoStackRef.current.length);
+    last.fn();
+    toast("Undone: " + last.desc, "yellow");
+  };
 
   // ── Toasts ────────────────────────────────────────────────────────────────
   const [toasts, setToasts] = useState<Toast[]>([]);
@@ -329,15 +375,38 @@ export function App() {
       {/* Main content */}
       <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
         {/* Header */}
-        <header className="flex items-center gap-3 px-4 py-3 border-b border-red-900/30 bg-black/80 backdrop-blur flex-shrink-0">
+        <header className="flex items-center gap-2 px-4 py-3 border-b border-red-900/30 bg-black/80 backdrop-blur flex-shrink-0">
           <button onClick={() => setSidebarOpen(true)} className="lg:hidden p-2 -ml-1 text-white/50 hover:text-white">
             <ChevronRight size={20} />
           </button>
           <div className="flex-1" />
           <GlobalSearch customers={customers} jobs={jobs} estimates={estimates} onNav={setPage} />
-          <button onClick={() => { setPage("estimates"); toast("Open an estimate to share its client portal", "green"); }} className="hidden md:flex items-center gap-1.5 px-3 py-1.5 bg-black/40 border border-red-900/30 rounded-xl text-xs text-white/50 hover:text-white hover:border-red-600/50 transition">
+          {/* Undo */}
+          <button onClick={undo} disabled={undoCount === 0} title="Undo last action" className={"p-2 rounded-lg transition " + (undoCount > 0 ? "text-white/60 hover:text-white hover:bg-white/5" : "text-white/20 cursor-not-allowed")}>
+            <Undo2 size={16} />
+          </button>
+          {/* Redo (visual only — stack not yet wired) */}
+          <button disabled title="Nothing to redo" className="p-2 rounded-lg text-white/20 cursor-not-allowed hidden md:flex">
+            <Redo2 size={16} />
+          </button>
+          {/* Auto-save indicator */}
+          <div className="hidden md:flex items-center gap-1.5 px-2.5 py-1.5 text-xs text-green-400/50 select-none">
+            <CheckCircle size={12} />
+            <span>Saved</span>
+          </div>
+          {/* Portal button — opens latest approved estimate in ClientPortal */}
+          <button
+            onClick={() => {
+              const latest = estimates.find(e => e.status === "approved" || (e as any).invoiced);
+              if (latest) { setPortalEstId(latest.id); }
+              else { setPage("estimates"); toast("Approve an estimate first to access the client portal", "yellow"); }
+            }}
+            className="hidden md:flex items-center gap-1.5 px-3 py-1.5 bg-black/40 border border-red-900/30 rounded-xl text-xs text-white/50 hover:text-white hover:border-red-600/50 transition"
+          >
             <Globe size={13} />Portal
           </button>
+          {/* Notifications */}
+          <div className="relative">
           <button onClick={() => setNotifOpen(!notifOpen)} className="relative p-2 text-white/60 hover:text-white">
             <Bell size={18} />
             {(negativeAlerts.length + overdueCount + lowStock) > 0 && (
@@ -346,8 +415,8 @@ export function App() {
           </button>
           {notifOpen && (
             <>
-              <div className="fixed inset-0 z-30" onClick={() => setNotifOpen(false)} />
-              <div className="absolute right-4 top-14 w-80 bg-black/95 border border-red-900/40 rounded-xl shadow-2xl z-40 overflow-hidden max-h-[480px] flex flex-col">
+              <div className="fixed inset-0 z-[150]" onClick={() => setNotifOpen(false)} />
+              <div className="absolute right-0 top-full mt-1 w-80 bg-black/95 border border-red-900/40 rounded-xl shadow-2xl z-[160] overflow-hidden max-h-[480px] flex flex-col">
                 <div className="p-3 border-b border-red-900/30 flex items-center justify-between">
                   <div className="font-semibold text-sm">Notifications</div>
                   <button onClick={() => setNotifOpen(false)} className="p-1 text-white/40 hover:text-white"><X size={14} /></button>
@@ -381,6 +450,7 @@ export function App() {
               </div>
             </>
           )}
+          </div>{/* end notifications relative wrapper */}
           <div className="w-8 h-8 rounded-full bg-gradient-to-br from-red-600 to-red-900 flex items-center justify-center text-xs font-bold">SM</div>
         </header>
 
@@ -460,24 +530,28 @@ export function App() {
           <div className="fixed bottom-6 right-6 z-50 flex flex-col items-end gap-2.5">
             {fabOpen && (
               <>
-                {([
-                  { label: "New Customer", icon: Users,     dest: "customers", color: "from-green-600 to-green-900"  },
-                  { label: "New Quote",    icon: FileText,  dest: "estimates", color: "from-yellow-600 to-yellow-900" },
-                  { label: "Schedule Job", icon: Briefcase, dest: "jobs",      color: "from-blue-600 to-blue-900"    },
-                  { label: "Ask Alfred",   icon: Bot,       dest: "alfred",    color: "from-purple-600 to-purple-900"},
-                ] as const).map(item => {
-                  const Icon = item.icon;
-                  return (
-                    <button
-                      key={item.dest}
-                      onClick={() => { setPage(item.dest); setFabOpen(false); setSidebarOpen(false); }}
-                      className={"flex items-center gap-2.5 px-4 py-2.5 rounded-2xl bg-gradient-to-r text-white text-sm font-semibold shadow-xl border border-white/10 hover:scale-105 active:scale-95 transition-transform " + item.color}
-                    >
-                      <Icon size={15} />
-                      {item.label}
-                    </button>
-                  );
-                })}
+                {(() => {
+                  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                  const fabIconMap: Record<string, React.ComponentType<any>> = {
+                    customers: Users, estimates: FileText, jobs: Briefcase,
+                    alfred: Bot, expenses: Receipt, intake: UserPlus,
+                  };
+                  const enabledFabIds = ((settings as any).fabActions as string[] | undefined) ?? ["customers","estimates","jobs","alfred"];
+                  const fabActions = ALL_FAB_ACTIONS.filter(a => enabledFabIds.includes(a.id));
+                  return fabActions.map(item => {
+                    const Icon = fabIconMap[item.id] ?? Plus;
+                    return (
+                      <button
+                        key={item.dest}
+                        onClick={() => { setPage(item.dest); setFabOpen(false); setSidebarOpen(false); }}
+                        className={"flex items-center gap-2.5 px-4 py-2.5 rounded-2xl bg-gradient-to-r text-white text-sm font-semibold shadow-xl border border-white/10 hover:scale-105 active:scale-95 transition-transform " + item.colorClass}
+                      >
+                        <Icon size={15} />
+                        {item.label}
+                      </button>
+                    );
+                  });
+                })()}
               </>
             )}
             <button

@@ -133,7 +133,7 @@ export function AIModelsSection({ f, setF, modelStatus, setModelStatus, toast })
         <label className="text-xs text-white/60 mb-2 block">Priority order & API keys</label>
         <div className="space-y-2">
           {priority.map((mid, idx) => {
-            const m = (MODELS as any)[mid] || MODELS.find((x: any) => x.id === mid);
+            const m = (MODELS as any)[mid];
             if (!m) return null;
             const status: any = ms[mid];
             const locked = status?.lockedUntil > Date.now();

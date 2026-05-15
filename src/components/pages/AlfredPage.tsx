@@ -1463,11 +1463,12 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
             <div className="max-w-3xl mx-auto px-4 py-6 space-y-5">
               {chats.map(m => {
                 const isUser = m.role === "user";
+                const isError = !isUser && typeof m.content === "string" && m.content.startsWith("⚠️");
                 return (
                   <div key={m.id} className={"flex gap-3 " + (isUser ? "justify-end" : "justify-start")}>
-                    {!isUser && <div className={"flex-shrink-0 w-8 h-8 rounded-lg flex items-center justify-center bg-gradient-to-br " + cur.color}><CurIcon size={13} /></div>}
+                    {!isUser && <div className={"flex-shrink-0 w-8 h-8 rounded-lg flex items-center justify-center bg-gradient-to-br " + (isError ? "from-red-900 to-red-950" : cur.color)}><CurIcon size={13} /></div>}
                     <div className={"flex-1 min-w-0 " + (isUser ? "max-w-[85%] md:max-w-[75%]" : "max-w-full")}>
-                      <div className={"px-4 py-2.5 rounded-2xl text-sm whitespace-pre-wrap leading-relaxed inline-block " + (isUser ? "bg-gradient-to-br from-red-600 to-red-800 text-white rounded-br-sm float-right" : "bg-black/50 border border-red-900/30 rounded-bl-sm text-white/90")}>
+                      <div className={"px-4 py-2.5 rounded-2xl text-sm whitespace-pre-wrap leading-relaxed inline-block " + (isUser ? "bg-gradient-to-br from-red-600 to-red-800 text-white rounded-br-sm float-right" : isError ? "bg-red-950/60 border border-red-700/50 rounded-bl-sm text-red-200" : "bg-black/50 border border-red-900/30 rounded-bl-sm text-white/90")}>
                         {m.content}
                       </div>
                       {!isUser && (
@@ -1491,6 +1492,19 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
             </div>
           )}
         </div>
+
+        {/* No-key warning banner */}
+        {!(settings.modelKeys as any)?.claude && (
+          <div className="border-t border-yellow-900/30 bg-yellow-950/20 px-4 py-2.5 flex items-center justify-between gap-3 flex-shrink-0">
+            <div className="text-xs text-yellow-300 flex items-center gap-2 min-w-0">
+              <AlertTriangle size={13} className="flex-shrink-0" />
+              <span className="truncate">Add an Anthropic API key in Settings → AI Models to enable Alfred — slash commands work without one</span>
+            </div>
+            <button onClick={openSettings} className="flex-shrink-0 text-xs text-yellow-200 bg-yellow-900/40 border border-yellow-700/40 px-3 py-1 rounded-lg hover:bg-yellow-900/60 transition whitespace-nowrap">
+              Add key
+            </button>
+          </div>
+        )}
 
         {/* Composer */}
         <div className="border-t border-red-900/30 bg-black/40 backdrop-blur p-3 md:p-4">

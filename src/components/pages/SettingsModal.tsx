@@ -530,10 +530,41 @@ export function SettingsModal({ open, onClose, settings, setSettings, services, 
           </div>}
 
           {sec === "notifications" && <div className="space-y-3">
-            <h4 className="font-semibold text-sm">In-App Notifications</h4>
+            <h4 className="font-semibold text-sm">Quick Action FAB</h4>
+            <div className="flex items-center justify-between p-3 bg-black/40 border border-red-900/20 rounded-xl">
+              <div className="flex-1 min-w-0 pr-3"><div className="text-sm font-medium">Enable Quick Action FAB</div><div className="text-[10px] text-white/50">Floating + button at bottom-right of every page</div></div>
+              <button onClick={() => setF({ ...f, fabEnabled: f.fabEnabled === false ? true : false })} className={"transition " + (f.fabEnabled !== false ? "text-red-400" : "text-white/30")}>{f.fabEnabled !== false ? <ToggleRight size={28} /> : <ToggleLeft size={28} />}</button>
+            </div>
+            {f.fabEnabled !== false && (
+              <div className="pl-4 border-l border-red-900/30 space-y-2">
+                <div className="text-[11px] text-white/50">Choose which actions appear:</div>
+                {([
+                  { id: "customers", label: "New Customer" },
+                  { id: "estimates", label: "New Quote" },
+                  { id: "jobs",      label: "Schedule Job" },
+                  { id: "alfred",    label: "Ask Alfred" },
+                  { id: "expenses",  label: "Log Expense" },
+                  { id: "intake",    label: "New Lead" },
+                ] as const).map(action => {
+                  const active = ((f as any).fabActions as string[] | undefined) ?? ["customers","estimates","jobs","alfred"];
+                  const enabled = active.includes(action.id);
+                  return (
+                    <label key={action.id} className="flex items-center gap-2 cursor-pointer hover:text-white/80 text-white/60 transition">
+                      <input type="checkbox" checked={enabled} onChange={() => {
+                        const current = ((f as any).fabActions as string[] | undefined) ?? ["customers","estimates","jobs","alfred"];
+                        const next = enabled ? current.filter(id => id !== action.id) : [...current, action.id];
+                        setF({ ...f, fabActions: next } as any);
+                      }} className="w-3.5 h-3.5 accent-red-500 rounded" />
+                      <span className="text-xs">{action.label}</span>
+                    </label>
+                  );
+                })}
+              </div>
+            )}
+
+            <h4 className="font-semibold text-sm pt-2">In-App Notifications</h4>
             <div className="text-xs text-white/50 mb-2">Which alerts show up on your dashboard.</div>
             {[
-              { k: "fabEnabled",        label: "Quick Action FAB",       desc: "Floating + button for New Customer, Quote, Job, Alfred" },
               { k: "notifyReviews",     label: "Negative review alerts", desc: "Flag reviews under 4 stars" },
               { k: "notifyOverdue",     label: "Overdue invoice reminders", desc: "Ping me on payments past due" },
               { k: "notifyLowStock",    label: "Low chemical stock",      desc: "Alert when stock hits reorder level" },

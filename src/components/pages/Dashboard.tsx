@@ -24,7 +24,7 @@ import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES,
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
 import { twilioSend, sendEmail } from "../../lib/messaging";
 import { seedWeather } from "../../lib/weather";
-import { seedCustomers, seedEstimates, seedJobs, seedEmployees, seedVehicles, seedExpenses, seedChemicals, seedServices, seedAutomations, seedEmailTemplates, seedSmsTemplates, seedRewardTiers, seedReferrals, seedMaintenance, campaignTemplates, seedSocialPosts, seedTimeline, seedGoals, seedReminders, seedAccountabilityEntries, seedMileage, seedLeadSrc, STEP_TYPES, AUTOMATION_TEMPLATES, seedRevenue } from "../../lib/seed";
+
 import { callModel, MODELS } from "../../lib/api";
 import { createCalendarEvent, updateCalendarEvent, deleteCalendarEvent, fetchDriveFiles, MOCK_GOOGLE_DATA, fmtSize, fmtDate, fileIcon } from "../../lib/google";
 import { usePersistent } from "../../hooks/usePersistent";
@@ -109,6 +109,21 @@ export function Dashboard({ jobs = [], customers = [], estimates = [], automatio
   const pending = estimates.filter(e => e.status === "pending").slice(0, 4);
 
   // Recent activity from live state
+  // 6-month revenue from actual completed jobs
+  const revenueByMonth = Array.from({ length: 6 }, (_, i) => {
+    const d = new Date();
+    d.setDate(1);
+    d.setMonth(d.getMonth() - (5 - i));
+    const monthKey = d.toISOString().slice(0, 7); // "2025-05"
+    const monthJobs = completedJobs.filter(j => (j.scheduledDate || "").startsWith(monthKey));
+    return {
+      month: d.toLocaleDateString("en-US", { month: "short" }),
+      revenue: monthJobs.reduce((s, j) => s + j.amount, 0),
+      jobs: monthJobs.length,
+    };
+  });
+  const hasAnyRevData = revenueByMonth.some(r => r.revenue > 0);
+
   // Real activity feed — build from actual CRM data sorted by recency
   const activity = (() => {
     const events = [];
@@ -263,6 +278,40 @@ export function Dashboard({ jobs = [], customers = [], estimates = [], automatio
 
   return (
     <div className="space-y-4">
+      {/* Page header */}
+      <div className="flex items-center justify-between mb-6">
+        <div>
+          <h1 className="text-2xl font-bold">Dashboard</h1>
+          <div className="text-xs text-white/40 mt-0.5">{new Date().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" })}</div>
+        </div>
+        <div className="flex items-center gap-2">
+          <div className="relative">
+            <button
+              onClick={() => setCustOpen(o => !o)}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-black/40 border border-red-900/30 rounded-xl text-xs text-white/50 hover:text-white hover:border-red-600/50 transition"
+              title="Customize widgets"
+            >
+              <Settings size={12} />Widgets
+            </button>
+            {custOpen && (
+              <>
+                <div className="fixed inset-0 z-40" onClick={() => setCustOpen(false)} />
+                <div className="absolute right-0 top-full mt-1 w-52 bg-black/95 border border-red-900/40 rounded-xl shadow-2xl z-50 overflow-hidden p-2 space-y-1">
+                  {widgetDefs.map(wd => (
+                    <button key={wd.k} onClick={() => toggleWidget(wd.k)} className="w-full flex items-center gap-2 px-2 py-1.5 hover:bg-white/5 rounded-lg text-xs text-left">
+                      <div className={"w-3.5 h-3.5 rounded border flex items-center justify-center flex-shrink-0 " + (w[wd.k] !== false ? "bg-red-600 border-red-500" : "border-white/30")}>
+                        {w[wd.k] !== false && <span className="text-[8px]">✓</span>}
+                      </div>
+                      <span className={w[wd.k] !== false ? "text-white/80" : "text-white/40"}>{wd.l}</span>
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      </div>
+
       {/* Smart alerts - compact single row */}
       {alerts.length > 0 && (
         <div className="flex gap-2 flex-wrap">
@@ -514,7 +563,13 @@ export function Dashboard({ jobs = [], customers = [], estimates = [], automatio
                   <Badge tone={j.status === "completed" ? "green" : j.status === "in_progress" ? "yellow" : "gray"}>{j.status.replace("_"," ").replace("scheduled","sched")}</Badge>
                 </div>;
               })}
-              {upcoming.length === 0 && <div className="text-xs text-white/40 text-center py-3">Nothing scheduled this week</div>}
+              {upcoming.length === 0 && (
+                <div className="text-center py-6">
+                  <Calendar size={20} className="mx-auto mb-2 text-white/20" />
+                  <div className="text-xs text-white/40">No upcoming jobs this week</div>
+                  <button onClick={() => onNav("jobs")} className="mt-2 text-xs text-red-400 hover:text-red-300">Schedule a job →</button>
+                </div>
+              )}
             </div>
           </Glass>
         </div>
@@ -539,7 +594,13 @@ export function Dashboard({ jobs = [], customers = [], estimates = [], automatio
                   <span className={"text-[10px] font-bold " + (age >= 7 ? "text-red-400" : age >= 3 ? "text-yellow-400" : "text-white/60")}>{age >= 7 ? "⚠ Stale" : age >= 3 ? "Follow up" : "New"}</span>
                 </div>;
               })}
-              {pending.length === 0 && <div className="text-xs text-white/40 text-center py-3">No pending quotes</div>}
+              {pending.length === 0 && (
+                <div className="text-center py-6">
+                  <FileText size={20} className="mx-auto mb-2 text-white/20" />
+                  <div className="text-xs text-white/40">No pending estimates</div>
+                  <button onClick={() => onNav("estimates")} className="mt-2 text-xs text-red-400 hover:text-red-300">Create an estimate →</button>
+                </div>
+              )}
             </div>
           </Glass>
 
@@ -598,15 +659,23 @@ export function Dashboard({ jobs = [], customers = [], estimates = [], automatio
               <div className="font-semibold text-sm flex items-center gap-2"><BarChart2 size={13} className="text-red-400" />Revenue (6mo)</div>
               <button onClick={() => onNav("analytics")} className="text-[10px] text-red-400 hover:text-red-300">Full analytics →</button>
             </div>
-            <ResponsiveContainer width="100%" height={120}>
-              <AreaChart data={seedRevenue} margin={{ top: 0, right: 0, left: 0, bottom: 0 }}>
-                <defs><linearGradient id="rdg" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#e11d48" stopOpacity={0.5} /><stop offset="100%" stopColor="#9f1239" stopOpacity={0} /></linearGradient></defs>
-                <XAxis dataKey="month" stroke="#ffffff30" fontSize={9} />
-                <YAxis hide />
-                <Tooltip contentStyle={{ background: "rgba(0,0,0,0.9)", border: "1px solid #9f1239", borderRadius: "6px", fontSize: "10px" }} formatter={v => fmt(Number(v))} />
-                <Area type="monotone" dataKey="revenue" stroke="#e11d48" strokeWidth={2} fill="url(#rdg)" dot={false} />
-              </AreaChart>
-            </ResponsiveContainer>
+            {hasAnyRevData ? (
+              <ResponsiveContainer width="100%" height={120}>
+                <AreaChart data={revenueByMonth} margin={{ top: 4, right: 4, left: 4, bottom: 0 }}>
+                  <defs><linearGradient id="rdg" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#e11d48" stopOpacity={0.5} /><stop offset="100%" stopColor="#9f1239" stopOpacity={0} /></linearGradient></defs>
+                  <XAxis dataKey="month" stroke="#ffffff30" fontSize={9} />
+                  <YAxis hide />
+                  <Tooltip contentStyle={{ background: "rgba(0,0,0,0.9)", border: "1px solid #9f1239", borderRadius: "6px", fontSize: "10px" }} formatter={v => fmt(Number(v))} />
+                  <Area type="monotone" dataKey="revenue" stroke="#e11d48" strokeWidth={2} fill="url(#rdg)" dot={false} />
+                </AreaChart>
+              </ResponsiveContainer>
+            ) : (
+              <div className="h-[120px] flex flex-col items-center justify-center text-center">
+                <BarChart2 size={24} className="text-white/10 mb-2" />
+                <div className="text-xs text-white/30">No completed jobs yet</div>
+                <button onClick={() => onNav("jobs")} className="mt-2 text-[11px] text-red-400 hover:text-red-300">Add your first job →</button>
+              </div>
+            )}
           </Glass>}
 
           {/* Automations status */}
