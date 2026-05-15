@@ -533,11 +533,12 @@ export function SettingsModal({ open, onClose, settings, setSettings, services, 
             <h4 className="font-semibold text-sm">In-App Notifications</h4>
             <div className="text-xs text-white/50 mb-2">Which alerts show up on your dashboard.</div>
             {[
-              { k: "notifyReviews", label: "Negative review alerts", desc: "Flag reviews under 4 stars" },
-              { k: "notifyOverdue", label: "Overdue invoice reminders", desc: "Ping me on payments past due" },
-              { k: "notifyLowStock", label: "Low chemical stock", desc: "Alert when stock hits reorder level" },
+              { k: "fabEnabled",        label: "Quick Action FAB",       desc: "Floating + button for New Customer, Quote, Job, Alfred" },
+              { k: "notifyReviews",     label: "Negative review alerts", desc: "Flag reviews under 4 stars" },
+              { k: "notifyOverdue",     label: "Overdue invoice reminders", desc: "Ping me on payments past due" },
+              { k: "notifyLowStock",    label: "Low chemical stock",      desc: "Alert when stock hits reorder level" },
               { k: "notifyMaintenance", label: "Vehicle maintenance due", desc: "Warn at 5k mi / 90 days since oil change" },
-              { k: "notifyWeather", label: "Weather risk alerts", desc: "Flag scheduled jobs on high-rain days" }
+              { k: "notifyWeather",     label: "Weather risk alerts",     desc: "Flag scheduled jobs on high-rain days" }
             ].map(n => <div key={n.k} className="flex items-center justify-between p-3 bg-black/40 border border-red-900/20 rounded-xl">
               <div className="flex-1 min-w-0 pr-3"><div className="text-sm font-medium">{n.label}</div><div className="text-[10px] text-white/50">{n.desc}</div></div>
               <button onClick={() => setF({ ...f, [n.k]: !f[n.k] })} className={"transition " + (f[n.k] ? "text-red-400" : "text-white/30")}>{f[n.k] ? <ToggleRight size={28} /> : <ToggleLeft size={28} />}</button>

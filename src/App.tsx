@@ -4,7 +4,7 @@ import {
   Calendar, MessageSquare, Megaphone, Star, Zap, Share2, UserPlus,
   Bot, Database, Users2, Truck, DollarSign, FlaskConical, BarChart3,
   TrendingUp, PiggyBank, Wallet, Heart, Gift, Monitor,
-  Bell, Settings, X, Lock, Globe, ChevronLeft, ChevronRight
+  Bell, Settings, X, Lock, Globe, ChevronLeft, ChevronRight, Plus
 } from "lucide-react";
 
 import { useGlobalStyles } from "./hooks/useGlobalStyles";
@@ -146,6 +146,7 @@ export function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [notifOpen, setNotifOpen] = useState(false);
+  const [fabOpen, setFabOpen] = useState(false);
 
   // ── Toasts ────────────────────────────────────────────────────────────────
   const [toasts, setToasts] = useState<Toast[]>([]);
@@ -206,7 +207,6 @@ export function App() {
 
   // Portal
   const [portalEstId, setPortalEstId] = useState<string | null>(null);
-  const [customerPortalOpen, setCustomerPortalOpen] = useState(false);
 
   // Weather
   const [weatherData, setWeatherData] = useState(seedWeather);
@@ -335,7 +335,7 @@ export function App() {
           </button>
           <div className="flex-1" />
           <GlobalSearch customers={customers} jobs={jobs} estimates={estimates} onNav={setPage} />
-          <button onClick={() => setCustomerPortalOpen(true)} className="hidden md:flex items-center gap-1.5 px-3 py-1.5 bg-black/40 border border-red-900/30 rounded-xl text-xs text-white/50 hover:text-white hover:border-red-600/50 transition">
+          <button onClick={() => { setPage("estimates"); toast("Open an estimate to share its client portal", "green"); }} className="hidden md:flex items-center gap-1.5 px-3 py-1.5 bg-black/40 border border-red-900/30 rounded-xl text-xs text-white/50 hover:text-white hover:border-red-600/50 transition">
             <Globe size={13} />Portal
           </button>
           <button onClick={() => setNotifOpen(!notifOpen)} className="relative p-2 text-white/60 hover:text-white">
@@ -453,8 +453,47 @@ export function App() {
         />
       )}
 
+      {/* FAB — floating quick-action button */}
+      {settings.fabEnabled !== false && (
+        <>
+          {fabOpen && <div className="fixed inset-0 z-40" onClick={() => setFabOpen(false)} />}
+          <div className="fixed bottom-6 right-6 z-50 flex flex-col items-end gap-2.5">
+            {fabOpen && (
+              <>
+                {([
+                  { label: "New Customer", icon: Users,     dest: "customers", color: "from-green-600 to-green-900"  },
+                  { label: "New Quote",    icon: FileText,  dest: "estimates", color: "from-yellow-600 to-yellow-900" },
+                  { label: "Schedule Job", icon: Briefcase, dest: "jobs",      color: "from-blue-600 to-blue-900"    },
+                  { label: "Ask Alfred",   icon: Bot,       dest: "alfred",    color: "from-purple-600 to-purple-900"},
+                ] as const).map(item => {
+                  const Icon = item.icon;
+                  return (
+                    <button
+                      key={item.dest}
+                      onClick={() => { setPage(item.dest); setFabOpen(false); setSidebarOpen(false); }}
+                      className={"flex items-center gap-2.5 px-4 py-2.5 rounded-2xl bg-gradient-to-r text-white text-sm font-semibold shadow-xl border border-white/10 hover:scale-105 active:scale-95 transition-transform " + item.color}
+                    >
+                      <Icon size={15} />
+                      {item.label}
+                    </button>
+                  );
+                })}
+              </>
+            )}
+            <button
+              onClick={() => setFabOpen(o => !o)}
+              className="w-14 h-14 rounded-full bg-gradient-to-br from-red-500 to-red-800 shadow-2xl shadow-red-900/60 flex items-center justify-center border border-red-400/30 hover:scale-110 active:scale-95"
+              style={{ transition: "transform 0.2s cubic-bezier(0.34,1.2,0.64,1)" }}
+              aria-label="Quick actions"
+            >
+              <Plus size={24} className={"text-white transition-transform duration-200 " + (fabOpen ? "rotate-45" : "")} />
+            </button>
+          </div>
+        </>
+      )}
+
       {/* Toasts */}
-      <div className="fixed bottom-4 right-4 z-50 space-y-2 pointer-events-none">
+      <div className="fixed bottom-4 left-4 z-50 space-y-2 pointer-events-none">
         {toasts.map(t => (
           <div key={t.id} className={"pointer-events-auto flex items-center gap-2.5 px-4 py-3 rounded-xl shadow-xl text-sm font-medium backdrop-blur animate-fade-in border " + (t.tone === "red" ? "bg-red-950/90 border-red-700/50 text-red-200" : t.tone === "yellow" ? "bg-yellow-950/90 border-yellow-700/50 text-yellow-200" : "bg-black/90 border-green-700/50 text-green-200")}>
             <div className={"w-1.5 h-1.5 rounded-full flex-shrink-0 " + (t.tone === "red" ? "bg-red-400" : t.tone === "yellow" ? "bg-yellow-400" : "bg-green-400")} />
