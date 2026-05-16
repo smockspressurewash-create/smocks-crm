@@ -375,7 +375,7 @@ export function App() {
       {/* Main content */}
       <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
         {/* Header */}
-        <header className="flex items-center gap-2 px-4 py-3 border-b border-red-900/30 bg-black/80 backdrop-blur flex-shrink-0">
+        <header className="flex items-center gap-2 px-4 py-3 border-b border-red-900/30 bg-black/80 backdrop-blur flex-shrink-0 relative z-40">
           <button onClick={() => setSidebarOpen(true)} className="lg:hidden p-2 -ml-1 text-white/50 hover:text-white">
             <ChevronRight size={20} />
           </button>

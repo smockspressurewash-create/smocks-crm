@@ -387,6 +387,20 @@ export function JobsPage({ jobs = [], setJobs, customers = [], employees = [], e
         </Glass>;
       })()}
 
+      {/* Page header */}
+      <div className="flex items-center justify-between mb-1">
+        <div>
+          <h1 className="text-2xl font-bold">Jobs</h1>
+          <div className="text-xs text-white/40 mt-0.5">{jobs.filter(j => j.status === "scheduled").length} scheduled · {jobs.filter(j => j.status === "in_progress").length} in progress</div>
+        </div>
+        <button
+          onClick={() => { setNewJobForm({ customerId: "", address: "", amount: "", scheduledDate: today(), scheduledTime: "", priority: "normal", notes: "" }); setNewJobOpen(true); }}
+          className="flex items-center gap-2 px-4 py-2.5 bg-gradient-to-r from-red-600 to-red-800 border border-red-500/50 rounded-2xl text-sm font-semibold text-white shadow-lg shadow-red-900/30 hover:shadow-red-600/40 hover:scale-[1.02] active:scale-95 transition-all"
+        >
+          <Plus size={16} />Schedule Job
+        </button>
+      </div>
+
       <div className="flex gap-2 overflow-x-auto pb-1">
         {Object.entries(tabs).map(([k, l]) => {
           const cnt = jobs.filter(j => j.status === k).length;

@@ -277,7 +277,7 @@ export function Dashboard({ jobs = [], customers = [], estimates = [], automatio
   };
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-6">
       {/* Page header */}
       <div className="flex items-center justify-between mb-6">
         <div>
@@ -351,28 +351,28 @@ export function Dashboard({ jobs = [], customers = [], estimates = [], automatio
         <Glass className="p-4 flex flex-col justify-between">
           <div className="text-[10px] text-white/50 uppercase tracking-wider font-semibold">Today</div>
           <div>
-            <div className="text-2xl font-black text-red-400 mt-2">{fmt(revToday)}</div>
+            <div className="text-3xl font-black text-red-400 mt-2">{fmt(revToday)}</div>
             <div className="text-[10px] text-white/40 mt-1">{todayJobs.length} job{todayJobs.length !== 1 ? "s" : ""} scheduled</div>
           </div>
         </Glass>
         <Glass className="p-4 flex flex-col justify-between">
           <div className="text-[10px] text-white/50 uppercase tracking-wider font-semibold">This Week</div>
           <div>
-            <div className="text-2xl font-black text-red-400 mt-2">{fmt(revWeek)}</div>
+            <div className="text-3xl font-black text-red-400 mt-2">{fmt(revWeek)}</div>
             <div className="text-[10px] text-white/40 mt-1">{jobs.filter(j => new Date(j.scheduledDate) >= weekStart && j.status !== "cancelled").length} jobs</div>
           </div>
         </Glass>
         <Glass className="p-4 flex flex-col justify-between">
           <div className="text-[10px] text-white/50 uppercase tracking-wider font-semibold">This Month</div>
           <div>
-            <div className="text-2xl font-black text-red-400 mt-2">{fmt(revMonth)}</div>
+            <div className="text-3xl font-black text-red-400 mt-2">{fmt(revMonth)}</div>
             <div className="text-[10px] text-white/40 mt-1">{goals.revenue > 0 ? Math.round(revMonth / goals.revenue * 100) + "% of goal" : "No goal set"}</div>
           </div>
         </Glass>
         <Glass className="p-4 flex flex-col justify-between">
           <div className="text-[10px] text-white/50 uppercase tracking-wider font-semibold">Year to Date</div>
           <div>
-            <div className="text-2xl font-black text-red-400 mt-2">{fmt(revThisYear)}</div>
+            <div className="text-3xl font-black text-red-400 mt-2">{fmt(revThisYear)}</div>
             <div className={"text-[10px] font-semibold mt-1 " + (yoyPct === null ? "text-white/40" : yoyPct >= 0 ? "text-green-400" : "text-red-400")}>
               {yoyPct === null ? "No prior year data" : (yoyPct >= 0 ? "▲" : "▼") + " " + Math.abs(yoyPct) + "% vs last year"}
             </div>
@@ -562,11 +562,12 @@ export function Dashboard({ jobs = [], customers = [], estimates = [], automatio
               {upcoming.slice(0, 4).map(j => {
                 const c = customers.find(x => x.id === j.customerId);
                 const risk = forecastFor(wForecast, j.scheduledDate) as any;
-                return <div key={j.id} className="flex items-center gap-3 py-2.5 border-b border-red-900/10 last:border-0">
-                  <div className="w-1.5 h-1.5 rounded-full bg-red-500 flex-shrink-0 mt-0.5" />
+                const isToday = j.scheduledDate === tKey;
+                return <div key={j.id} className={"flex items-center gap-3 py-3 border-b border-red-900/10 last:border-0 rounded-lg px-2 -mx-2 " + (isToday ? "bg-red-950/20" : "")}>
+                  <div className={"w-1 self-stretch rounded-full flex-shrink-0 " + (isToday ? "bg-red-500" : j.priority === "urgent" ? "bg-orange-500" : "bg-red-900/60")} />
                   <div className="flex-1 min-w-0">
-                    <div className="text-sm font-medium truncate">{c ? c.firstName + " " + c.lastName : j.address?.split(",")[0]}</div>
-                    <div className="text-[10px] text-white/50 mt-0.5">{j.scheduledDate} · {fmt(j.amount)}</div>
+                    <div className="text-sm font-semibold truncate">{c ? c.firstName + " " + c.lastName : j.address?.split(",")[0]}</div>
+                    <div className="text-[10px] text-white/50 mt-0.5">{isToday ? "Today" : j.scheduledDate} · {fmt(j.amount)}</div>
                   </div>
                   {risk && risk.level === "high" && <span className="text-[10px]">{risk.icon}</span>}
                   <Badge tone={j.status === "completed" ? "green" : j.status === "in_progress" ? "yellow" : "gray"}>{j.status.replace("_"," ").replace("scheduled","sched")}</Badge>
@@ -595,13 +596,14 @@ export function Dashboard({ jobs = [], customers = [], estimates = [], automatio
               {pending.map(e => {
                 const c = customers.find(x => x.id === e.customerId);
                 const age = daysSince(e.createdAt);
-                return <div key={e.id} className="flex items-center gap-3 py-2.5 border-b border-red-900/10 last:border-0">
-                  <div className={"w-1.5 h-1.5 rounded-full flex-shrink-0 mt-0.5 " + (age >= 7 ? "bg-red-500" : age >= 3 ? "bg-yellow-500" : "bg-green-500")} />
+                const accentColor = age >= 7 ? "bg-red-500" : age >= 3 ? "bg-yellow-500" : "bg-green-500";
+                return <div key={e.id} className="flex items-center gap-3 py-3 border-b border-red-900/10 last:border-0 rounded-lg px-2 -mx-2">
+                  <div className={"w-1 self-stretch rounded-full flex-shrink-0 " + accentColor} />
                   <div className="flex-1 min-w-0">
-                    <div className="text-sm font-medium truncate">{c ? c.firstName + " " + c.lastName : "Unknown"}</div>
+                    <div className="text-sm font-semibold truncate">{c ? c.firstName + " " + c.lastName : "Unknown"}</div>
                     <div className="text-[10px] text-white/50 mt-0.5">{fmt(e.total)} · {age}d old</div>
                   </div>
-                  <span className={"text-[10px] font-bold " + (age >= 7 ? "text-red-400" : age >= 3 ? "text-yellow-400" : "text-white/60")}>{age >= 7 ? "⚠ Stale" : age >= 3 ? "Follow up" : "New"}</span>
+                  <span className={"text-[10px] font-bold px-2 py-0.5 rounded-full " + (age >= 7 ? "text-red-300 bg-red-950/50" : age >= 3 ? "text-yellow-300 bg-yellow-950/40" : "text-green-300 bg-green-950/40")}>{age >= 7 ? "⚠ Stale" : age >= 3 ? "Follow up" : "New"}</span>
                 </div>;
               })}
               {pending.length === 0 && (
@@ -617,11 +619,11 @@ export function Dashboard({ jobs = [], customers = [], estimates = [], automatio
           {/* Activity feed */}
           {w.activity && <Glass className="p-4">
             <div className="font-semibold text-sm flex items-center gap-2 mb-4"><Activity size={13} className="text-red-400" />Recent Activity</div>
-            <div className="space-y-1">
+            <div className="space-y-0.5">
               {activity.map((a, i) => {
                 const Icon = a.icon;
-                return <div key={i} className="flex items-center gap-3 py-3 border-b border-white/5 last:border-0 group">
-                  <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-red-900/60 to-black/60 border border-red-900/30 flex items-center justify-center flex-shrink-0 group-hover:border-red-600/50 transition"><Icon size={12} className="text-red-400" /></div>
+                return <div key={i} className="flex items-center gap-3 py-3.5 border-b border-white/5 last:border-0 group hover:bg-white/3 rounded-lg px-2 -mx-2 transition">
+                  <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-red-900/60 to-black/60 border border-red-900/30 flex items-center justify-center flex-shrink-0 group-hover:border-red-600/50 group-hover:scale-110 transition"><Icon size={14} className="text-red-400" /></div>
                   <div className="flex-1 min-w-0">
                     <div className="text-xs text-white/90 truncate">{a.text}</div>
                     <div className="text-[10px] text-white/35 mt-0.5">{a.date}</div>
@@ -676,7 +678,7 @@ export function Dashboard({ jobs = [], customers = [], estimates = [], automatio
               <button onClick={() => onNav("analytics")} className="text-[10px] text-red-400 hover:text-red-300 flex items-center gap-1">Full analytics <ChevronRight size={10} /></button>
             </div>
             {hasAnyRevData ? (
-              <ResponsiveContainer width="100%" height={260}>
+              <ResponsiveContainer width="100%" height={300}>
                 <AreaChart data={revenueByMonth} margin={{ top: 8, right: 4, left: -16, bottom: 0 }}>
                   <defs>
                     <linearGradient id="rdg" x1="0" y1="0" x2="0" y2="1">
@@ -692,7 +694,7 @@ export function Dashboard({ jobs = [], customers = [], estimates = [], automatio
                 </AreaChart>
               </ResponsiveContainer>
             ) : (
-              <div className="h-[260px] flex flex-col items-center justify-center text-center">
+              <div className="h-[300px] flex flex-col items-center justify-center text-center">
                 <BarChart2 size={28} className="text-white/10 mb-2" />
                 <div className="text-xs text-white/30">No completed jobs yet</div>
                 <button onClick={() => onNav("jobs")} className="mt-2 text-[11px] text-red-400 hover:text-red-300">Add your first job →</button>
