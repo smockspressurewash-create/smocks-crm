@@ -37,12 +37,42 @@ export const Modal = ({ open, onClose, title, children, maxW = "max-w-lg", noBod
   };
 
   const cardStyle = {
-    maxHeight: "85vh",
     transform: visible ? "translateY(0) scale(1)" : "translateY(24px) scale(0.96)",
     opacity: visible ? 1 : 0,
     transition: "transform 0.28s cubic-bezier(0.34,1.2,0.64,1), opacity 0.22s ease",
     boxShadow: "0 32px 96px rgba(0,0,0,0.9), 0 0 0 1px rgba(220,38,38,0.2)",
+    ...(noBodyScroll ? { height: "85vh" } : { maxHeight: "85vh" }),
   };
+
+  if (noBodyScroll) {
+    // For tall modals (e.g. Settings): fixed centering, card has explicit height so
+    // flex-1 children can distribute space properly and overflow-y-auto works.
+    return (
+      <>
+        <div className="fixed inset-0 z-[300]" style={bgStyle} onClick={onClose} />
+        <div className="fixed inset-0 z-[300] flex items-center justify-center p-4 sm:p-6 pointer-events-none">
+          <div
+            className={maxW + " w-full bg-gradient-to-br from-neutral-950 to-black border border-red-900/40 rounded-2xl shadow-2xl flex flex-col pointer-events-auto"}
+            style={cardStyle}
+            onClick={e => e.stopPropagation()}
+          >
+            {title !== "" && (
+              <div className="flex items-center justify-between px-5 py-4 border-b border-red-900/30 flex-shrink-0">
+                <h3 className="text-lg font-semibold text-white">{title}</h3>
+                <button
+                  onClick={onClose}
+                  className="text-white/60 hover:text-white transition-all duration-200 hover:rotate-90 w-8 h-8 flex items-center justify-center rounded-lg hover:bg-white/5"
+                >
+                  <X size={18} />
+                </button>
+              </div>
+            )}
+            <div className="flex-1 min-h-0 overflow-hidden">{children}</div>
+          </div>
+        </div>
+      </>
+    );
+  }
 
   return (
     <>
@@ -75,7 +105,7 @@ export const Modal = ({ open, onClose, title, children, maxW = "max-w-lg", noBod
                 </button>
               </div>
             )}
-            <div className={noBodyScroll ? "flex-1 min-h-0 overflow-hidden" : "p-5 overflow-y-auto flex-1 min-h-0"}>{children}</div>
+            <div className="p-5 overflow-y-auto flex-1 min-h-0">{children}</div>
           </div>
         </div>
       </div>
