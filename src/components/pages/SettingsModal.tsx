@@ -77,11 +77,15 @@ import { ChemicalModal } from "../ui/ChemicalModal";
 import { WeeklyBusinessReview } from "../ui/WeeklyBusinessReview";
 import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 
-export function SettingsModal({ open, onClose, settings, setSettings, services, setServices, emailTemplates, setEmailTemplates, smsTemplates, setSmsTemplates, modelStatus = {}, setModelStatus = (() => {}) as any, toast }: { open?: any; onClose?: any; settings?: any; setSettings?: any; services?: any; setServices?: any; emailTemplates?: any; setEmailTemplates?: any; smsTemplates?: any; setSmsTemplates?: any; modelStatus?: any; setModelStatus?: any; toast?: any }) {
+export function SettingsModal({ open, onClose, settings, setSettings, services, setServices, emailTemplates, setEmailTemplates, smsTemplates, setSmsTemplates, estimateTemplates = [], setEstimateTemplates = (() => {}) as any, modelStatus = {}, setModelStatus = (() => {}) as any, toast }: { open?: any; onClose?: any; settings?: any; setSettings?: any; services?: any; setServices?: any; emailTemplates?: any; setEmailTemplates?: any; smsTemplates?: any; setSmsTemplates?: any; estimateTemplates?: any[]; setEstimateTemplates?: any; modelStatus?: any; setModelStatus?: any; toast?: any }) {
   const [f, setF] = useState(settings);
   const [sec, setSec] = useState("api");
   const [showKey, setShowKey] = useState(false);
   const [googleOAuth, setGoogleOAuth] = useState({ open: false, step: "account", email: "", selectedScopes: { gmail: true, calendar: true, drive: false, contacts: false } });
+  const [tplTab, setTplTab] = useState<"messaging" | "estimates">("messaging");
+  const [editingTpl, setEditingTpl] = useState<any>(null); // null = list view, {} = new, {...} = editing existing
+  const blankTpl = () => ({ id: "", name: "", description: "", lineItems: [{ id: Date.now().toString(), description: "", quantity: 1, unitPrice: 0 }], notes: "", terms: "Payment due upon completion. 3-day cancellation notice requested. Weather reschedules free of charge.", customFields: [] });
+  const blankField = () => ({ id: Date.now().toString() + Math.random(), label: "", type: "text", required: false, customerVisible: true, options: "" });
 
   useEffect(() => { if (open) setF(settings); }, [open, settings]);
 
@@ -326,6 +330,41 @@ export function SettingsModal({ open, onClose, settings, setSettings, services, 
               </div>
               <div className="text-[10px] text-white/30 mt-2">Colors apply to estimate portal, review landing, and lead intake form branding.</div>
             </div>
+
+            {/* Branding preview */}
+            <div>
+              <label className="text-xs text-white/60 mb-2 block">Branding Preview</label>
+              <div className="rounded-xl border border-white/10 overflow-hidden">
+                {/* Header bar */}
+                <div className="flex items-center gap-3 px-4 py-3" style={{ background: f.brandPrimary || "#dc2626" }}>
+                  {f.logoUrl
+                    ? <img src={f.logoUrl} alt="Logo" className="h-8 w-8 object-contain rounded bg-white/10 p-0.5" />
+                    : <div className="h-8 w-8 rounded bg-white/20 flex items-center justify-center text-lg">🏢</div>}
+                  <div className="flex-1">
+                    <div className="text-white font-bold text-sm">{f.companyName || "Your Company"}</div>
+                    <div className="text-white/70 text-[10px]">Estimate Preview</div>
+                  </div>
+                </div>
+                {/* Body */}
+                <div className="p-4 space-y-3" style={{ background: f.brandBg || "#000000" }}>
+                  <div className="text-white text-xs font-semibold">House Soft Wash — 2,200 sq ft</div>
+                  <div className="space-y-1">
+                    {[["House Exterior Soft Wash", "$385.00"], ["Driveway Pressure Wash", "$175.00"]].map(([desc, price]) => (
+                      <div key={desc} className="flex justify-between text-[11px] py-1.5 border-b" style={{ borderColor: (f.brandPrimary || "#dc2626") + "30" }}>
+                        <span className="text-white/70">{desc}</span>
+                        <span className="text-white font-medium">{price}</span>
+                      </div>
+                    ))}
+                    <div className="flex justify-between text-sm font-bold pt-1">
+                      <span className="text-white/50">Total</span>
+                      <span style={{ color: f.brandPrimary || "#dc2626" }}>$560.00</span>
+                    </div>
+                  </div>
+                  <button className="w-full py-2 rounded-lg text-white text-xs font-semibold" style={{ background: f.brandPrimary || "#dc2626" }}>Approve &amp; Sign</button>
+                </div>
+              </div>
+              <div className="text-[10px] text-white/30 mt-1.5">This is how your logo and colors will appear on customer-facing estimates.</div>
+            </div>
           </div>}
 
           {sec === "goals" && <div className="space-y-3">
@@ -336,7 +375,145 @@ export function SettingsModal({ open, onClose, settings, setSettings, services, 
             <div><label className="text-xs text-white/60 mb-1 block">Tax Rate (%)</label><GInput type="number" step="0.01" value={f.taxRate} onChange={e => setF({ ...f, taxRate: e.target.value })} /></div>
           </div>}
 
-          {sec === "templates" && <TemplateEditor emailTemplates={emailTemplates} setEmailTemplates={setEmailTemplates} smsTemplates={smsTemplates} setSmsTemplates={setSmsTemplates} settings={f} setSettings={newF => setF(newF)} />}
+          {sec === "templates" && <div className="space-y-4">
+            {/* Sub-tabs */}
+            <div className="flex gap-1 p-1 bg-black/40 rounded-xl border border-red-900/20">
+              {([["messaging", "Email & SMS"], ["estimates", "Estimate Templates"]] as const).map(([key, label]) => (
+                <button key={key} onClick={() => { setTplTab(key); setEditingTpl(null); }} className={"flex-1 py-1.5 rounded-lg text-xs font-medium transition " + (tplTab === key ? "bg-red-700/40 text-white border border-red-700/50" : "text-white/50 hover:text-white")}>{label}</button>
+              ))}
+            </div>
+
+            {tplTab === "messaging" && <TemplateEditor emailTemplates={emailTemplates} setEmailTemplates={setEmailTemplates} smsTemplates={smsTemplates} setSmsTemplates={setSmsTemplates} settings={f} setSettings={newF => setF(newF)} />}
+
+            {tplTab === "estimates" && <>
+              {editingTpl === null ? (
+                // ── List view ────────────────────────────────────────────────
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <div className="text-sm font-semibold">Estimate Templates</div>
+                      <div className="text-[10px] text-white/40 mt-0.5">Reusable starting points for new estimates — pre-fill line items, notes, terms, and custom questions.</div>
+                    </div>
+                    <GBtn onClick={() => setEditingTpl(blankTpl())} className="!text-xs !py-1.5"><Plus size={12} className="inline mr-1" />New Template</GBtn>
+                  </div>
+                  {estimateTemplates.length === 0 && (
+                    <div className="flex flex-col items-center justify-center py-10 text-center border border-dashed border-red-900/30 rounded-xl">
+                      <FileText size={28} className="text-white/10 mb-2" />
+                      <div className="text-xs text-white/30">No estimate templates yet</div>
+                      <button onClick={() => setEditingTpl(blankTpl())} className="mt-2 text-[11px] text-red-400 hover:text-red-300">Create your first template →</button>
+                    </div>
+                  )}
+                  {estimateTemplates.map((tpl: any) => (
+                    <Glass key={tpl.id} className="p-4">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="flex-1 min-w-0">
+                          <div className="font-semibold text-sm">{tpl.name}</div>
+                          {tpl.description && <div className="text-[11px] text-white/50 mt-0.5 truncate">{tpl.description}</div>}
+                          <div className="flex flex-wrap gap-2 mt-2">
+                            <span className="text-[10px] px-2 py-0.5 bg-black/40 border border-white/10 rounded-full text-white/50">{(tpl.lineItems || []).length} line item{(tpl.lineItems || []).length !== 1 ? "s" : ""}</span>
+                            {(tpl.customFields || []).length > 0 && <span className="text-[10px] px-2 py-0.5 bg-purple-950/30 border border-purple-700/30 rounded-full text-purple-300">{tpl.customFields.length} custom field{tpl.customFields.length !== 1 ? "s" : ""}</span>}
+                            {tpl.terms && <span className="text-[10px] px-2 py-0.5 bg-black/40 border border-white/10 rounded-full text-white/40">Has terms</span>}
+                          </div>
+                        </div>
+                        <div className="flex gap-2 flex-shrink-0">
+                          <button onClick={() => setEditingTpl({ ...tpl })} className="px-3 py-1.5 rounded-lg border border-red-900/30 text-xs text-white/70 hover:text-white hover:bg-red-900/20 transition"><Edit size={11} className="inline mr-1" />Edit</button>
+                          <button onClick={() => { setEstimateTemplates((prev: any[]) => prev.filter((t: any) => t.id !== tpl.id)); toast("Template deleted"); }} className="px-3 py-1.5 rounded-lg border border-red-900/30 text-xs text-red-400/70 hover:text-red-400 hover:bg-red-900/20 transition"><Trash2 size={11} /></button>
+                        </div>
+                      </div>
+                    </Glass>
+                  ))}
+                </div>
+              ) : (
+                // ── Edit / Create form ────────────────────────────────────────
+                <div className="space-y-4">
+                  <div className="flex items-center gap-3">
+                    <button onClick={() => setEditingTpl(null)} className="p-1.5 rounded-lg hover:bg-white/5 text-white/50 hover:text-white transition"><ChevronLeft size={16} /></button>
+                    <div className="font-semibold text-sm">{editingTpl.id ? "Edit Template" : "New Template"}</div>
+                  </div>
+
+                  <div className="grid md:grid-cols-2 gap-3">
+                    <div><label className="text-xs text-white/60 mb-1 block">Template Name *</label><GInput placeholder="e.g. House Wash Package" value={editingTpl.name} onChange={(e: any) => setEditingTpl((t: any) => ({ ...t, name: e.target.value }))} /></div>
+                    <div><label className="text-xs text-white/60 mb-1 block">Description</label><GInput placeholder="Short description (optional)" value={editingTpl.description || ""} onChange={(e: any) => setEditingTpl((t: any) => ({ ...t, description: e.target.value }))} /></div>
+                  </div>
+
+                  {/* Line items */}
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <label className="text-xs text-white/60">Default Line Items</label>
+                      <button onClick={() => setEditingTpl((t: any) => ({ ...t, lineItems: [...(t.lineItems || []), { id: Date.now().toString(), description: "", quantity: 1, unitPrice: 0 }] }))} className="text-xs text-red-400 hover:text-red-300 flex items-center gap-1"><Plus size={12} />Add</button>
+                    </div>
+                    <div className="space-y-2">
+                      {(editingTpl.lineItems || []).map((li: any) => (
+                        <div key={li.id} className="grid grid-cols-12 gap-2 items-center">
+                          <div className="col-span-12 md:col-span-6"><GInput placeholder="Description" value={li.description} onChange={(e: any) => setEditingTpl((t: any) => ({ ...t, lineItems: t.lineItems.map((x: any) => x.id === li.id ? { ...x, description: e.target.value } : x) }))} /></div>
+                          <div className="col-span-4 md:col-span-2"><GInput type="number" placeholder="Qty" value={li.quantity} onChange={(e: any) => setEditingTpl((t: any) => ({ ...t, lineItems: t.lineItems.map((x: any) => x.id === li.id ? { ...x, quantity: e.target.value } : x) }))} /></div>
+                          <div className="col-span-6 md:col-span-3"><GInput type="number" placeholder="Price $" value={li.unitPrice} onChange={(e: any) => setEditingTpl((t: any) => ({ ...t, lineItems: t.lineItems.map((x: any) => x.id === li.id ? { ...x, unitPrice: e.target.value } : x) }))} /></div>
+                          <div className="col-span-2 md:col-span-1 text-right">{(editingTpl.lineItems || []).length > 1 && <button onClick={() => setEditingTpl((t: any) => ({ ...t, lineItems: t.lineItems.filter((x: any) => x.id !== li.id) }))} className="p-1.5 text-red-400 hover:bg-red-900/30 rounded-lg"><Trash2 size={13} /></button>}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="grid md:grid-cols-2 gap-3">
+                    <div><label className="text-xs text-white/60 mb-1 block">Default Notes <span className="text-white/30">(customer-visible)</span></label><GTxt rows={2} value={editingTpl.notes || ""} onChange={(e: any) => setEditingTpl((t: any) => ({ ...t, notes: e.target.value }))} placeholder="e.g. Includes pre-treatment of algae stains" className="!text-xs" /></div>
+                    <div><label className="text-xs text-white/60 mb-1 block">Default Terms & Conditions</label><GTxt rows={2} value={editingTpl.terms || ""} onChange={(e: any) => setEditingTpl((t: any) => ({ ...t, terms: e.target.value }))} className="!text-xs" /></div>
+                  </div>
+
+                  {/* Custom fields */}
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <div>
+                        <label className="text-xs text-white/60">Custom Fields</label>
+                        <div className="text-[10px] text-white/30">Extra questions or data fields added to estimates using this template</div>
+                      </div>
+                      <button onClick={() => setEditingTpl((t: any) => ({ ...t, customFields: [...(t.customFields || []), blankField()] }))} className="text-xs text-purple-400 hover:text-purple-300 flex items-center gap-1"><Plus size={12} />Add Field</button>
+                    </div>
+                    {(editingTpl.customFields || []).length === 0 && <div className="text-[11px] text-white/30 py-2 text-center border border-dashed border-white/10 rounded-xl">No custom fields — click "Add Field" to create one</div>}
+                    <div className="space-y-2">
+                      {(editingTpl.customFields || []).map((cf: any) => (
+                        <Glass key={cf.id} className="p-3 !bg-purple-950/10 !border-purple-700/20">
+                          <div className="grid grid-cols-12 gap-2 items-start">
+                            <div className="col-span-12 md:col-span-4"><GInput placeholder="Field label" value={cf.label} onChange={(e: any) => setEditingTpl((t: any) => ({ ...t, customFields: t.customFields.map((x: any) => x.id === cf.id ? { ...x, label: e.target.value } : x) }))} className="!text-xs" /></div>
+                            <div className="col-span-6 md:col-span-2">
+                              <GSel value={cf.type} onChange={(e: any) => setEditingTpl((t: any) => ({ ...t, customFields: t.customFields.map((x: any) => x.id === cf.id ? { ...x, type: e.target.value } : x) }))} className="!text-xs">
+                                <option value="text" className="bg-black">Text</option>
+                                <option value="number" className="bg-black">Number</option>
+                                <option value="checkbox" className="bg-black">Checkbox</option>
+                                <option value="dropdown" className="bg-black">Dropdown</option>
+                                <option value="date" className="bg-black">Date</option>
+                              </GSel>
+                            </div>
+                            {cf.type === "dropdown" && <div className="col-span-6 md:col-span-3"><GInput placeholder="Options (comma-sep)" value={cf.options || ""} onChange={(e: any) => setEditingTpl((t: any) => ({ ...t, customFields: t.customFields.map((x: any) => x.id === cf.id ? { ...x, options: e.target.value } : x) }))} className="!text-xs" /></div>}
+                            <div className={"col-span-12 md:col-span-" + (cf.type === "dropdown" ? "2" : "5") + " flex flex-wrap gap-3 items-center"}>
+                              <label className="flex items-center gap-1.5 text-[11px] text-white/60 cursor-pointer"><input type="checkbox" checked={cf.required} onChange={(e: any) => setEditingTpl((t: any) => ({ ...t, customFields: t.customFields.map((x: any) => x.id === cf.id ? { ...x, required: e.target.checked } : x) }))} className="accent-red-600 w-3 h-3" />Required</label>
+                              <label className="flex items-center gap-1.5 text-[11px] text-white/60 cursor-pointer"><input type="checkbox" checked={cf.customerVisible} onChange={(e: any) => setEditingTpl((t: any) => ({ ...t, customFields: t.customFields.map((x: any) => x.id === cf.id ? { ...x, customerVisible: e.target.checked } : x) }))} className="accent-purple-600 w-3 h-3" />Customer-visible</label>
+                              <button onClick={() => setEditingTpl((t: any) => ({ ...t, customFields: t.customFields.filter((x: any) => x.id !== cf.id) }))} className="ml-auto p-1 text-red-400/60 hover:text-red-400 hover:bg-red-900/20 rounded transition"><Trash2 size={12} /></button>
+                            </div>
+                          </div>
+                        </Glass>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="flex gap-2 justify-end pt-2 border-t border-red-900/20">
+                    <GBtn variant="ghost" onClick={() => setEditingTpl(null)}>Cancel</GBtn>
+                    <GBtn onClick={() => {
+                      if (!editingTpl.name?.trim()) return;
+                      const tpl = { ...editingTpl, id: editingTpl.id || (Date.now().toString() + Math.random().toString(36).slice(2)) };
+                      setEstimateTemplates((prev: any[]) => {
+                        const exists = prev.find((t: any) => t.id === tpl.id);
+                        return exists ? prev.map((t: any) => t.id === tpl.id ? tpl : t) : [...prev, tpl];
+                      });
+                      setEditingTpl(null);
+                      toast(editingTpl.id ? "Template updated" : "Template saved");
+                    }} disabled={!editingTpl.name?.trim()}>
+                      {editingTpl.id ? "Save Changes" : "Save Template"}
+                    </GBtn>
+                  </div>
+                </div>
+              )}
+            </>}
+          </div>}
 
           {sec === "integrations" && <div className="space-y-4">
             <h4 className="font-semibold text-sm">Integrations</h4>

@@ -222,8 +222,9 @@ export function App() {
   const [wins,            setWins]            = usePersistent<Win[]>("smocks.wins", []);
   const [negativeAlerts,  setNegativeAlerts]  = usePersistent<Review[]>("smocks.negativeAlerts", []);
   const [referrals,       setReferrals]       = usePersistent<typeof seedReferrals>("smocks.referrals", seedReferrals);
-  const [emailTemplates,  setEmailTemplates]  = usePersistent("smocks.emailTpls", seedEmailTemplates);
-  const [smsTemplates,    setSmsTemplates]    = usePersistent("smocks.smsTpls", seedSmsTemplates);
+  const [emailTemplates,    setEmailTemplates]    = usePersistent("smocks.emailTpls", seedEmailTemplates);
+  const [smsTemplates,      setSmsTemplates]      = usePersistent("smocks.smsTpls", seedSmsTemplates);
+  const [estimateTemplates, setEstimateTemplates] = usePersistent<any[]>("smocks.estimateTpls", []);
   const [timeline,        setTimeline]        = usePersistent<Timeline>("smocks.timeline", seedTimeline as Timeline);
   const [settings,        setSettings]        = usePersistent<AppSettings>("smocks.settings", {
     companyName: "Smock's Pressure Washing",
@@ -268,11 +269,13 @@ export function App() {
   const overdueCount = estimates.filter(e => e.invoiced && !e.paidAt && e.invoicedAt && daysSince(e.invoicedAt) > 14).length;
   const lowStock   = chemicals.filter(c => c.stock <= c.reorderLevel).length;
 
-  // Apply brand colors
+  // Apply brand colors as CSS variables (affects glass, gradients, scrollbar, focus ring)
   useEffect(() => {
-    document.documentElement.style.setProperty("--brand", settings.brandColor ?? "#dc2626");
-    document.documentElement.style.setProperty("--brand-accent", settings.brandAccent ?? "#991b1b");
-  }, [settings.brandColor, settings.brandAccent]);
+    const s = settings as any;
+    document.documentElement.style.setProperty("--brand", s.brandPrimary || s.brandColor || "#dc2626");
+    document.documentElement.style.setProperty("--brand-accent", s.brandAccent || "#991b1b");
+    document.documentElement.style.setProperty("--brand-bg", s.brandBg || "#000000");
+  }, [(settings as any).brandPrimary, settings.brandColor, (settings as any).brandAccent, (settings as any).brandBg]);
 
   // Fetch real weather when OWM key is set
   useEffect(() => {
@@ -461,7 +464,7 @@ export function App() {
               <SafePage>
                 {page === "dashboard"      && <Dashboard jobs={jobs} customers={customers} estimates={estimates} automations={automations} stats={{ totalRev, activeJobs, pendingEst, closeRate, doneMonth }} goals={{ revenue: settings.monthlyRevenueGoal ?? 8000, jobCount: settings.monthlyJobsGoal ?? 20 }} vehicles={vehicles} maintenance={maintenance} chemicals={chemicals} settings={settings} setSettings={setSettings} onNav={setPage} toast={toast} weatherData={weatherData} inboxThreads={inboxThreads} />}
                 {page === "customers"      && <CustomersPage customers={customers} setCustomers={setCustomers} estimates={estimates} jobs={jobs} toast={toast} timeline={timeline} setTimeline={setTimeline} settings={settings} />}
-                {page === "estimates"      && <EstimatesPage estimates={estimates} setEstimates={setEstimates} customers={customers} services={services} settings={settings} toast={toast} onPortal={id => setPortalEstId(id)} estimateTemplates={[]} setEstimateTemplates={() => {}} setJobs={setJobs} onNav={setPage} />}
+                {page === "estimates"      && <EstimatesPage estimates={estimates} setEstimates={setEstimates} customers={customers} services={services} settings={settings} toast={toast} onPortal={id => setPortalEstId(id)} estimateTemplates={estimateTemplates} setEstimateTemplates={setEstimateTemplates} setJobs={setJobs} onNav={setPage} />}
                 {page === "invoices"       && <InvoicesPage estimates={estimates} setEstimates={setEstimates} customers={customers} settings={settings} toast={toast} />}
                 {page === "jobs"           && <JobsPage jobs={jobs} setJobs={setJobs} customers={customers} employees={employees} estimates={estimates} setEstimates={setEstimates} settings={settings} toast={toast} posts={socialPosts} setPosts={setSocialPosts} setTimeline={setTimeline} />}
                 {page === "pipeline"       && <PipelinePage jobs={jobs} setJobs={setJobs} customers={customers} toast={toast} />}
@@ -503,6 +506,8 @@ export function App() {
         setEmailTemplates={setEmailTemplates}
         smsTemplates={smsTemplates}
         setSmsTemplates={setSmsTemplates}
+        estimateTemplates={estimateTemplates}
+        setEstimateTemplates={setEstimateTemplates}
         modelStatus={modelStatus}
         setModelStatus={setModelStatus}
         toast={toast}

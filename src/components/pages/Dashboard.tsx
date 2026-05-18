@@ -277,9 +277,9 @@ export function Dashboard({ jobs = [], customers = [], estimates = [], automatio
   };
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       {/* Page header */}
-      <div className="flex items-center justify-between mb-6">
+      <div className="flex items-center justify-between mb-4">
         <div>
           <h1 className="text-2xl font-bold">Dashboard</h1>
           <div className="text-xs text-white/40 mt-0.5">{new Date().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" })}</div>
