@@ -516,9 +516,9 @@ export function Dashboard({ jobs = [], customers = [], estimates = [], automatio
         </Glass>;
       })()}
 
-      <div className="grid lg:grid-cols-3 gap-6">
+      <div className="grid lg:grid-cols-3 gap-6 items-stretch">
         {/* Left: goals + upcoming jobs */}
-        <div className="space-y-4">
+        <div className="flex flex-col gap-4">
           {/* Goals */}
           {w.goals && <Glass className="p-4">
             <div className="flex items-center justify-between mb-3">
@@ -553,7 +553,7 @@ export function Dashboard({ jobs = [], customers = [], estimates = [], automatio
           </Glass>}
 
           {/* Upcoming jobs */}
-          <Glass className="p-4">
+          <Glass className="p-4 flex-1">
             <div className="flex items-center justify-between mb-3">
               <div className="font-semibold text-sm flex items-center gap-2"><Briefcase size={13} className="text-red-400" />Upcoming (7d)</div>
               <button onClick={() => onNav("calendar")} className="text-[10px] text-red-400 hover:text-red-300">Calendar →</button>
@@ -585,7 +585,7 @@ export function Dashboard({ jobs = [], customers = [], estimates = [], automatio
         </div>
 
         {/* Center: pending quotes + activity */}
-        <div className="space-y-4">
+        <div className="flex flex-col gap-4">
           {/* Pending estimates */}
           <Glass className="p-4">
             <div className="flex items-center justify-between mb-3">
@@ -617,7 +617,7 @@ export function Dashboard({ jobs = [], customers = [], estimates = [], automatio
           </Glass>
 
           {/* Activity feed */}
-          {w.activity && <Glass className="p-4">
+          {w.activity && <Glass className="p-4 flex-1">
             <div className="font-semibold text-sm flex items-center gap-2 mb-4"><Activity size={13} className="text-red-400" />Recent Activity</div>
             <div className="space-y-0.5">
               {activity.map((a, i) => {
@@ -635,10 +635,10 @@ export function Dashboard({ jobs = [], customers = [], estimates = [], automatio
           </Glass>}
         </div>
 
-        {/* Right: weather + mini chart */}
-        <div className="space-y-4">
+        {/* Right: weather */}
+        <div className="flex flex-col gap-4">
           {/* Weather */}
-          {w.charts && <Glass className="p-4">
+          {w.charts && <Glass className="p-4 flex-1">
             <div className="flex items-center justify-between mb-3">
               <div className="font-semibold text-sm flex items-center gap-2"><Cloud size={13} className="text-blue-400" />Weather</div>
               {settings.owmKey ? <span className="text-[10px] text-green-400">● Live</span> : <span className="text-[10px] text-white/30">Forecast</span>}

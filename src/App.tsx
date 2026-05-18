@@ -269,13 +269,30 @@ export function App() {
   const overdueCount = estimates.filter(e => e.invoiced && !e.paidAt && e.invoicedAt && daysSince(e.invoicedAt) > 14).length;
   const lowStock   = chemicals.filter(c => c.stock <= c.reorderLevel).length;
 
-  // Apply brand colors as CSS variables (affects glass, gradients, scrollbar, focus ring)
+  // Apply brand colors + font as CSS variables in real time
   useEffect(() => {
     const s = settings as any;
-    document.documentElement.style.setProperty("--brand", s.brandPrimary || s.brandColor || "#dc2626");
-    document.documentElement.style.setProperty("--brand-accent", s.brandAccent || "#991b1b");
-    document.documentElement.style.setProperty("--brand-bg", s.brandBg || "#000000");
-  }, [(settings as any).brandPrimary, settings.brandColor, (settings as any).brandAccent, (settings as any).brandBg]);
+    const root = document.documentElement;
+    root.style.setProperty("--brand",         s.brandPrimary  || s.brandColor || "#dc2626");
+    root.style.setProperty("--brand-accent",  s.brandAccent   || "#991b1b");
+    root.style.setProperty("--brand-bg",      s.brandBg       || "#000000");
+    root.style.setProperty("--brand-surface", s.brandSurface  || "#0a0a0a");
+    root.style.setProperty("--brand-text",    s.brandText     || "#ffffff");
+    const fontMap: Record<string, string> = {
+      serif:   "Georgia, 'Times New Roman', serif",
+      mono:    "'Courier New', Courier, monospace",
+      rounded: "'Trebuchet MS', Tahoma, sans-serif",
+      modern:  "Outfit, 'Nunito', sans-serif",
+      default: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
+    };
+    root.style.setProperty("--brand-font", fontMap[s.brandFont] || fontMap.default);
+    document.body.style.fontFamily = fontMap[s.brandFont] || "";
+  }, [
+    (settings as any).brandPrimary, settings.brandColor,
+    (settings as any).brandAccent, (settings as any).brandBg,
+    (settings as any).brandSurface, (settings as any).brandText,
+    (settings as any).brandFont,
+  ]);
 
   // Fetch real weather when OWM key is set
   useEffect(() => {

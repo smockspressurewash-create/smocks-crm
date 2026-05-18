@@ -54,7 +54,13 @@ export function AIModelsSection({ f, setF, modelStatus, setModelStatus, toast })
     return () => clearInterval(h);
   }, [modelStatus]);
 
-  const priority = f.modelPriority || ["claude", "openai", "gemini", "groq", "mistral", "minimax"];
+  // Always show all 5 models — merge saved order with any missing models
+  const allModelIds = Object.keys(MODELS);
+  const savedPriority: string[] = f.modelPriority || [];
+  const priority = [
+    ...savedPriority.filter((id: string) => MODELS[id]),
+    ...allModelIds.filter(id => !savedPriority.includes(id)),
+  ];
   const modelKeys = f.modelKeys || {};
   const activeModel = f.activeModel || "claude";
 

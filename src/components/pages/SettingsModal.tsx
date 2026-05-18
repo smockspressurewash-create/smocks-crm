@@ -313,57 +313,98 @@ export function SettingsModal({ open, onClose, settings, setSettings, services, 
             <div><label className="text-xs text-white/60 mb-1 block flex items-center gap-1"><Star size={10} />Google Place ID <span className="text-white/30 font-normal">(for review links)</span></label><GInput value={f.googlePlaceId || ""} onChange={e => setF({ ...f, googlePlaceId: e.target.value })} placeholder="ChIJ..." className="!text-xs" /><div className="text-[10px] text-white/30 mt-1">Find at <a href="https://developers.google.com/maps/documentation/places/web-service/place-id" target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:underline">developers.google.com/maps/…/place-id</a></div></div>
             <div>
               <label className="text-xs text-white/60 mb-2 block flex items-center gap-1">🎨 Brand Colors</label>
-              <div className="grid grid-cols-3 gap-3">
+              <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
                 {[
-                  { label: "Primary", key: "brandPrimary", def: "#dc2626" },
-                  { label: "Accent", key: "brandAccent", def: "#991b1b" },
-                  { label: "Background", key: "brandBg", def: "#000000" }
+                  { label: "Primary",    key: "brandPrimary",  def: "#dc2626", hint: "Buttons, links, highlights" },
+                  { label: "Accent",     key: "brandAccent",   def: "#991b1b", hint: "Borders, icons" },
+                  { label: "Background", key: "brandBg",       def: "#000000", hint: "Page background" },
+                  { label: "Surface",    key: "brandSurface",  def: "#0a0a0a", hint: "Card backgrounds" },
+                  { label: "Text",       key: "brandText",     def: "#ffffff", hint: "Main text color" },
                 ].map(c => (
                   <div key={c.key}>
                     <label className="text-[10px] text-white/50 mb-1 block">{c.label}</label>
                     <div className="flex items-center gap-2">
-                      <input type="color" value={f[c.key] || c.def} onChange={e => setF({ ...f, [c.key]: e.target.value })} className="w-10 h-10 rounded-lg border-0 cursor-pointer bg-transparent" />
-                      <input type="text" value={f[c.key] || c.def} onChange={e => setF({ ...f, [c.key]: e.target.value })} className="flex-1 bg-black/40 border border-red-900/30 rounded-lg px-2 py-1.5 text-xs text-white font-mono" />
+                      <input type="color" value={f[c.key] || c.def} onChange={e => setF({ ...f, [c.key]: e.target.value })} className="w-9 h-9 rounded-lg border-0 cursor-pointer bg-transparent flex-shrink-0" />
+                      <div className="flex-1 min-w-0">
+                        <input type="text" value={f[c.key] || c.def} onChange={e => setF({ ...f, [c.key]: e.target.value })} className="w-full bg-black/40 border border-red-900/30 rounded-lg px-2 py-1 text-[11px] text-white font-mono" />
+                        <div className="text-[9px] text-white/30 mt-0.5">{c.hint}</div>
+                      </div>
                     </div>
                   </div>
                 ))}
               </div>
-              <div className="text-[10px] text-white/30 mt-2">Colors apply to estimate portal, review landing, and lead intake form branding.</div>
+              <div className="text-[10px] text-white/30 mt-2">Colors apply to the full app UI, estimate portal, review landing, and lead intake form.</div>
+            </div>
+
+            {/* Font family */}
+            <div>
+              <label className="text-xs text-white/60 mb-2 block flex items-center gap-1">🔤 App Font</label>
+              <GSel value={f.brandFont || "default"} onChange={e => setF({ ...f, brandFont: e.target.value })}>
+                <option value="default" className="bg-black">Default (System UI)</option>
+                <option value="serif" className="bg-black">Serif (Georgia)</option>
+                <option value="mono" className="bg-black">Mono (Courier)</option>
+                <option value="rounded" className="bg-black">Rounded (Trebuchet)</option>
+                <option value="modern" className="bg-black">Modern (Outfit)</option>
+              </GSel>
+              <div className="text-[10px] text-white/30 mt-1">Changes the typeface across the entire app in real time.</div>
             </div>
 
             {/* Branding preview */}
             <div>
-              <label className="text-xs text-white/60 mb-2 block">Branding Preview</label>
-              <div className="rounded-xl border border-white/10 overflow-hidden">
-                {/* Header bar */}
-                <div className="flex items-center gap-3 px-4 py-3" style={{ background: f.brandPrimary || "#dc2626" }}>
-                  {f.logoUrl
-                    ? <img src={f.logoUrl} alt="Logo" className="h-8 w-8 object-contain rounded bg-white/10 p-0.5" />
-                    : <div className="h-8 w-8 rounded bg-white/20 flex items-center justify-center text-lg">🏢</div>}
-                  <div className="flex-1">
-                    <div className="text-white font-bold text-sm">{f.companyName || "Your Company"}</div>
-                    <div className="text-white/70 text-[10px]">Estimate Preview</div>
+              <label className="text-xs text-white/60 mb-2 block">Live Preview — Estimate Page</label>
+              <div className="rounded-xl border overflow-hidden text-sm" style={{ borderColor: (f.brandPrimary || "#dc2626") + "40", fontFamily: { serif: "Georgia, serif", mono: "Courier New, monospace", rounded: "Trebuchet MS, sans-serif", modern: "Outfit, sans-serif", default: "system-ui, sans-serif" }[f.brandFont as string] || "system-ui, sans-serif" }}>
+                {/* Header */}
+                <div className="flex items-center justify-between px-4 py-3" style={{ background: f.brandPrimary || "#dc2626" }}>
+                  <div className="flex items-center gap-3">
+                    {f.logoUrl
+                      ? <img src={f.logoUrl} alt="Logo" className="h-10 w-10 object-contain rounded-lg bg-white/10 p-0.5" />
+                      : <div className="h-10 w-10 rounded-lg bg-white/20 flex items-center justify-center text-xl">🏢</div>}
+                    <div>
+                      <div className="font-bold text-white">{f.companyName || "Your Company"}</div>
+                      <div className="text-[11px] text-white/70">{f.companyPhone || "(717) 555-0100"} · {f.companyEmail || "info@yourcompany.com"}</div>
+                    </div>
+                  </div>
+                  <div className="text-white/80 text-[11px] text-right">
+                    <div className="font-semibold">Estimate #1042</div>
+                    <div>Valid until Jun 15, 2025</div>
                   </div>
                 </div>
                 {/* Body */}
-                <div className="p-4 space-y-3" style={{ background: f.brandBg || "#000000" }}>
-                  <div className="text-white text-xs font-semibold">House Soft Wash — 2,200 sq ft</div>
-                  <div className="space-y-1">
-                    {[["House Exterior Soft Wash", "$385.00"], ["Driveway Pressure Wash", "$175.00"]].map(([desc, price]) => (
-                      <div key={desc} className="flex justify-between text-[11px] py-1.5 border-b" style={{ borderColor: (f.brandPrimary || "#dc2626") + "30" }}>
-                        <span className="text-white/70">{desc}</span>
-                        <span className="text-white font-medium">{price}</span>
+                <div className="p-4 space-y-3" style={{ background: f.brandBg || "#000000", color: f.brandText || "#ffffff" }}>
+                  {/* Customer info */}
+                  <div className="flex justify-between text-[11px]" style={{ color: (f.brandText || "#ffffff") + "90" }}>
+                    <div><div className="font-semibold" style={{ color: f.brandText || "#ffffff" }}>John & Sarah Mitchell</div><div>1847 Oak Creek Drive, York, PA</div></div>
+                    <div className="text-right"><div>2,200 sq ft · 2-story</div><div>Gate code: 4729</div></div>
+                  </div>
+                  {/* Line items */}
+                  <div className="rounded-lg overflow-hidden" style={{ background: (f.brandSurface || "#0a0a0a"), border: "1px solid " + (f.brandPrimary || "#dc2626") + "20" }}>
+                    {[
+                      ["House Exterior Soft Wash", "1", "$385.00"],
+                      ["Driveway Pressure Wash", "1", "$175.00"],
+                      ["Gutter Cleaning & Flush", "1", "$129.00"],
+                    ].map(([desc, qty, price]) => (
+                      <div key={desc} className="flex items-center justify-between px-3 py-2 border-b text-[11px]" style={{ borderColor: (f.brandPrimary || "#dc2626") + "15", color: (f.brandText || "#ffffff") + "b0" }}>
+                        <span className="flex-1">{desc}</span>
+                        <span className="w-6 text-center">{qty}</span>
+                        <span className="w-16 text-right font-medium" style={{ color: f.brandText || "#ffffff" }}>{price}</span>
                       </div>
                     ))}
-                    <div className="flex justify-between text-sm font-bold pt-1">
-                      <span className="text-white/50">Total</span>
-                      <span style={{ color: f.brandPrimary || "#dc2626" }}>$560.00</span>
+                    <div className="px-3 py-2 space-y-1 text-[11px]">
+                      <div className="flex justify-between" style={{ color: (f.brandText || "#ffffff") + "60" }}><span>Subtotal</span><span>$689.00</span></div>
+                      <div className="flex justify-between" style={{ color: (f.brandText || "#ffffff") + "60" }}><span>Tax (6%)</span><span>$41.34</span></div>
+                      <div className="flex justify-between font-bold text-sm pt-1 border-t" style={{ borderColor: (f.brandPrimary || "#dc2626") + "30", color: f.brandPrimary || "#dc2626" }}><span>Total</span><span>$730.34</span></div>
                     </div>
                   </div>
-                  <button className="w-full py-2 rounded-lg text-white text-xs font-semibold" style={{ background: f.brandPrimary || "#dc2626" }}>Approve &amp; Sign</button>
+                  {/* Notes */}
+                  <div className="text-[11px] px-3 py-2 rounded-lg" style={{ background: (f.brandSurface || "#0a0a0a"), color: (f.brandText || "#ffffff") + "80" }}>
+                    📝 <span className="font-medium" style={{ color: (f.brandText || "#ffffff") + "cc" }}>Note:</span> We'll pre-treat the algae stains on the north side. Gate access required — please ensure dogs are secured.
+                  </div>
+                  {/* CTA */}
+                  <button className="w-full py-2.5 rounded-lg text-white font-semibold text-sm" style={{ background: f.brandPrimary || "#dc2626" }}>✍️ Approve &amp; Sign Estimate</button>
+                  <div className="text-center text-[10px]" style={{ color: (f.brandText || "#ffffff") + "40" }}>By approving you agree to the terms &amp; conditions below</div>
                 </div>
               </div>
-              <div className="text-[10px] text-white/30 mt-1.5">This is how your logo and colors will appear on customer-facing estimates.</div>
+              <div className="text-[10px] text-white/30 mt-1.5">Preview updates live as you change colors and fonts above. This is what customers see when you send them an estimate.</div>
             </div>
           </div>}
 
