@@ -28,6 +28,7 @@ import { seedWeather } from "../../lib/weather";
 import { seedCustomers, seedEstimates, seedJobs, seedEmployees, seedVehicles, seedExpenses, seedChemicals, seedServices, seedAutomations, seedEmailTemplates, seedSmsTemplates, seedRewardTiers, seedReferrals, seedMaintenance, campaignTemplates, seedSocialPosts, seedTimeline, seedGoals, seedReminders, seedAccountabilityEntries, seedMileage, seedLeadSrc, STEP_TYPES, AUTOMATION_TEMPLATES } from "../../lib/seed";
 import { callModel, MODELS } from "../../lib/api";
 import { createCalendarEvent, updateCalendarEvent, deleteCalendarEvent, fetchDriveFiles, MOCK_GOOGLE_DATA, fmtSize, fmtDate, fileIcon } from "../../lib/google";
+import { createGCalEvent, deleteGCalEvent as deleteGCalEventDirect } from "../../lib/googleApi";
 import { usePersistent } from "../../hooks/usePersistent";
 import { usePersistentRaw } from "../../hooks/usePersistentRaw";
 import { Glass } from "../ui/Glass";
@@ -185,11 +186,8 @@ export function JobsPage({ jobs = [], setJobs, customers = [], employees = [], e
     setCancelModal(null);
     toast("Job cancelled");
     // Delete Google Calendar event if connected
-    if (j?.googleEventId && settings?.googleConnected && settings?.googleBackendUrl && settings?.googleToken) {
-      fetch(settings.googleBackendUrl + "/calendar/events/" + j.googleEventId, {
-        method: "DELETE",
-        headers: { "Authorization": "Bearer " + settings.googleToken }
-      }).catch(() => {});
+    if (j?.googleEventId && settings?.googleConnected && (settings as any)?.googleToken) {
+      deleteGCalEventDirect((settings as any).googleToken, j.googleEventId).catch(() => {});
     }
   };
   const clockIn = jid => { updateJob(jid, { clockInAt: Date.now() }); toast("Clocked in"); };
@@ -322,6 +320,21 @@ export function JobsPage({ jobs = [], setJobs, customers = [], employees = [], e
                 loggedHours: 0, createdAt: today(),
               };
               setJobs(prev => [...prev, job]);
+              // Create Google Calendar event if Google is connected
+              if (settings?.googleConnected && (settings as any)?.googleToken && job.scheduledDate) {
+                const c = customers.find(x => x.id === job.customerId);
+                const startDt = new Date(job.scheduledDate + "T" + (job.scheduledTime || "09:00") + ":00");
+                const endDt = new Date(startDt.getTime() + 2 * 60 * 60 * 1000);
+                createGCalEvent((settings as any).googleToken, {
+                  title: (c ? c.firstName + " " + c.lastName + " — " : "") + "Pressure Washing",
+                  start: startDt.toISOString(),
+                  end: endDt.toISOString(),
+                  location: job.address || "",
+                  description: job.notes || "",
+                }).then(eventId => {
+                  setJobs(prev => prev.map(j => j.id === job.id ? { ...j, googleEventId: eventId } : j));
+                }).catch(() => {});
+              }
               setNewJobOpen(false);
               toast("Job scheduled for " + newJobForm.scheduledDate);
             }}>Schedule Job</GBtn>

@@ -27,6 +27,7 @@ import { seedWeather } from "../../lib/weather";
 import { seedCustomers, seedEstimates, seedJobs, seedEmployees, seedVehicles, seedExpenses, seedChemicals, seedServices, seedAutomations, seedEmailTemplates, seedSmsTemplates, seedRewardTiers, seedReferrals, seedMaintenance, campaignTemplates, seedSocialPosts, seedTimeline, seedGoals, seedReminders, seedAccountabilityEntries, seedMileage, seedLeadSrc, STEP_TYPES, AUTOMATION_TEMPLATES } from "../../lib/seed";
 import { callModel, MODELS } from "../../lib/api";
 import { createCalendarEvent, updateCalendarEvent, deleteCalendarEvent, fetchDriveFiles, MOCK_GOOGLE_DATA, fmtSize, fmtDate, fileIcon } from "../../lib/google";
+import { fetchGmailMessages, sendGmailMessage, markGmailRead } from "../../lib/googleApi";
 import { usePersistent } from "../../hooks/usePersistent";
 import { usePersistentRaw } from "../../hooks/usePersistentRaw";
 import { Glass } from "../ui/Glass";
@@ -87,10 +88,12 @@ export function InboxPage({ threads = [], setThreads, customers = [], settings =
   const [newModal, setNewModal] = useState(false);
   const [newDraft, setNewDraft] = useState({ channel: "sms", to: "", phone: "", email: "", subject: "", body: "" });
   const [polling, setPolling] = useState(false);
+  const [gmailThreads, setGmailThreads] = useState<any[]>([]);
+  const [gmailLoading, setGmailLoading] = useState(false);
   const msgEndRef = useRef(null);
   const inputRef = useRef(null);
 
-  const activeThread = threads.find(t => t.id === active);
+  const activeThread = threads.find(t => t.id === active) || gmailThreads.find(t => t.id === active);
 
   // Auto-scroll to bottom of messages
   useEffect(() => { msgEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [active, activeThread?.messages.length]);
@@ -141,32 +144,92 @@ export function InboxPage({ threads = [], setThreads, customers = [], settings =
     return () => clearInterval(h);
   }, [settings.twilioSid, settings.googleBackendUrl]);
 
-  const markRead = id => setThreads(threads.map(t => t.id === id ? { ...t, unread: false } : t));
+  // Load Gmail messages when Google is connected
+  useEffect(() => {
+    const token = (settings as any)?.googleToken;
+    if (!settings?.googleConnected || !token) return;
+    setGmailLoading(true);
+    fetchGmailMessages(token)
+      .then(msgs => {
+        const gThreads = msgs.map(m => {
+          const nameMatch = m.from.match(/^(.+?)\s*<(.+?)>$/);
+          const contactName = nameMatch ? nameMatch[1].replace(/"/g, "").trim() : m.from;
+          const contactEmail = nameMatch ? nameMatch[2] : m.from;
+          return {
+            id: "gmail-" + m.id,
+            gmailMessageId: m.id,
+            channel: "email" as const,
+            contactName,
+            contactEmail,
+            contactPhone: "",
+            customerId: null,
+            unread: !m.read,
+            messages: [{
+              id: m.id,
+              dir: "in",
+              body: m.snippet,
+              subject: m.subject,
+              ts: new Date(m.date).getTime() || Date.now(),
+            }],
+          };
+        });
+        setGmailThreads(gThreads);
+      })
+      .catch(() => {})
+      .finally(() => setGmailLoading(false));
+  }, [(settings as any)?.googleToken]);
+
+  const markRead = id => {
+    if (id.startsWith("gmail-")) {
+      const gThread = gmailThreads.find(t => t.id === id);
+      if (gThread?.gmailMessageId && (settings as any)?.googleToken) {
+        markGmailRead((settings as any).googleToken, gThread.gmailMessageId).catch(() => {});
+      }
+      setGmailThreads(prev => prev.map(t => t.id === id ? { ...t, unread: false } : t));
+    } else {
+      setThreads(threads.map(t => t.id === id ? { ...t, unread: false } : t));
+    }
+  };
 
   const send = async () => {
     if (!input.trim() || !activeThread || sending) return;
     const msgText = input.trim();
     const outMsg = { id: uid(), dir: "out", body: msgText, ts: Date.now(), status: "sending" };
+    const isGmail = !!(activeThread as any).gmailMessageId;
     // Optimistic add
-    setThreads(prev => prev.map(t => t.id === active ? { ...t, messages: [...t.messages, outMsg] } : t));
+    if (isGmail) {
+      setGmailThreads(prev => prev.map(t => t.id === active ? { ...t, messages: [...t.messages, outMsg] } : t));
+    } else {
+      setThreads(prev => prev.map(t => t.id === active ? { ...t, messages: [...t.messages, outMsg] } : t));
+    }
     setInput("");
     setSending(true);
+    const updateMsg = (status: string, extra: any = {}) => {
+      if (isGmail) {
+        setGmailThreads(prev => prev.map(t => t.id === active ? { ...t, messages: t.messages.map(m => m.id === outMsg.id ? { ...m, status, ...extra } : m) } : t));
+      } else {
+        setThreads(prev => prev.map(t => t.id === active ? { ...t, messages: t.messages.map(m => m.id === outMsg.id ? { ...m, status, ...extra } : m) } : t));
+      }
+    };
     try {
       if (activeThread.channel === "sms") {
         if (!activeThread.contactPhone) throw new Error("No phone number for this contact");
         await twilioSend(settings, activeThread.contactPhone, msgText);
-        setThreads(prev => prev.map(t => t.id === active ? { ...t, messages: t.messages.map(m => m.id === outMsg.id ? { ...m, status: "sent" } : m) } : t));
+        updateMsg("sent");
         toast("SMS sent ✓");
       } else {
-        // Email reply
         if (!activeThread.contactEmail) throw new Error("No email for this contact");
         const lastSubject = activeThread.messages.find(m => m.subject)?.subject || "";
-        await sendEmail(settings, { to: activeThread.contactEmail, subject: "Re: " + lastSubject, body: msgText });
-        setThreads(prev => prev.map(t => t.id === active ? { ...t, messages: t.messages.map(m => m.id === outMsg.id ? { ...m, status: "sent" } : m) } : t));
+        if (isGmail && (settings as any)?.googleToken) {
+          await sendGmailMessage((settings as any).googleToken, activeThread.contactEmail, "Re: " + lastSubject, msgText);
+        } else {
+          await sendEmail(settings, { to: activeThread.contactEmail, subject: "Re: " + lastSubject, body: msgText });
+        }
+        updateMsg("sent");
         toast("Email sent ✓");
       }
     } catch (err) {
-      setThreads(prev => prev.map(t => t.id === active ? { ...t, messages: t.messages.map(m => m.id === outMsg.id ? { ...m, status: "failed", error: err.message } : m) } : t));
+      updateMsg("failed", { error: err.message });
       toast("Send failed: " + err.message, "error");
     } finally { setSending(false); }
   };
@@ -196,7 +259,8 @@ export function InboxPage({ threads = [], setThreads, customers = [], settings =
     setNewDraft({ channel: "sms", to: "", phone: "", email: "", subject: "", body: "" });
   };
 
-  const filteredThreads = threads.filter(t => !search || t.contactName.toLowerCase().includes(search.toLowerCase()) || t.messages.some(m => m.body.toLowerCase().includes(search.toLowerCase())));
+  const allThreads = [...threads, ...gmailThreads];
+  const filteredThreads = allThreads.filter(t => !search || (t.contactName || "").toLowerCase().includes(search.toLowerCase()) || t.messages.some(m => (m.body || "").toLowerCase().includes(search.toLowerCase())));
   const twilioReady = !!(settings.twilioSid && settings.twilioToken && settings.twilioFrom);
   const emailReady = !!(settings.googleConnected && settings.googleScopes?.gmail);
   const relTime = ts => { const s = Math.floor((Date.now() - ts) / 1000); if (s < 60) return "now"; if (s < 3600) return Math.floor(s/60)+"m"; if (s < 86400) return Math.floor(s/3600)+"h"; return Math.floor(s/86400)+"d"; };
@@ -207,9 +271,9 @@ export function InboxPage({ threads = [], setThreads, customers = [], settings =
       <div className="w-full md:w-80 border-r border-red-900/30 flex flex-col flex-shrink-0" style={{ display: activeThread && window.innerWidth < 768 ? "none" : "flex" }}>
         <div className="p-3 border-b border-red-900/30 space-y-2">
           <div className="flex items-center justify-between">
-            <div className="font-semibold flex items-center gap-2"><MessageSquare size={14} className="text-red-400" />Inbox <span className="text-[10px] text-white/50">{threads.filter(t => t.unread).length > 0 ? threads.filter(t => t.unread).length + " unread" : "all read"}</span></div>
+            <div className="font-semibold flex items-center gap-2"><MessageSquare size={14} className="text-red-400" />Inbox <span className="text-[10px] text-white/50">{allThreads.filter(t => t.unread).length > 0 ? allThreads.filter(t => t.unread).length + " unread" : "all read"}</span></div>
             <div className="flex items-center gap-1.5">
-              {polling && <div className="w-1.5 h-1.5 bg-green-400 rounded-full animate-pulse" title="Polling for messages" />}
+              {(polling || gmailLoading) && <div className="w-1.5 h-1.5 bg-green-400 rounded-full animate-pulse" title="Loading messages" />}
               <button onClick={() => setNewModal(true)} className="p-1.5 rounded-lg bg-red-600 hover:bg-red-500 text-white" title="New message"><Plus size={14} /></button>
             </div>
           </div>

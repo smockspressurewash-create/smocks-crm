@@ -11,6 +11,7 @@ import { useGlobalStyles } from "./hooks/useGlobalStyles";
 import { usePersistent } from "./hooks/usePersistent";
 import { usePersistentRaw } from "./hooks/usePersistentRaw";
 import { useAutomationEngine } from "./hooks/useAutomationEngine";
+import { supabase } from "./lib/supabase";
 import { SafePage } from "./components/ui/ErrorBoundary";
 import { PageFade } from "./components/ui/PageFade";
 import { GlobalSearch } from "./components/ui/GlobalSearch";
@@ -293,6 +294,38 @@ export function App() {
     (settings as any).brandSurface, (settings as any).brandText,
     (settings as any).brandFont,
   ]);
+
+  // ── Supabase Google OAuth token capture ──────────────────────────────────
+  // When user returns from Google OAuth, Supabase fires onAuthStateChange with
+  // provider_token. We store it in settings so the Google Workspace page can use it.
+  useEffect(() => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (session?.provider_token && session.user?.email) {
+        setSettings((prev: any) => ({
+          ...prev,
+          googleConnected: true,
+          googleToken: session.provider_token,
+          googleRefreshToken: session.provider_refresh_token || prev.googleRefreshToken || "",
+          googleEmail: session.user!.email,
+          googleScopes: { gmail: true, calendar: true, drive: true, contacts: true, tasks: true },
+        }));
+      }
+    });
+    // Also check for existing session on mount (e.g. page reload after OAuth)
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      if (session?.provider_token && session.user?.email && !(settings as any).googleToken) {
+        setSettings((prev: any) => ({
+          ...prev,
+          googleConnected: true,
+          googleToken: session.provider_token,
+          googleRefreshToken: session.provider_refresh_token || "",
+          googleEmail: session.user!.email,
+          googleScopes: { gmail: true, calendar: true, drive: true, contacts: true, tasks: true },
+        }));
+      }
+    });
+    return () => subscription.unsubscribe();
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Fetch real weather when OWM key is set
   useEffect(() => {

@@ -27,6 +27,7 @@ import { seedWeather } from "../../lib/weather";
 import { seedCustomers, seedEstimates, seedJobs, seedEmployees, seedVehicles, seedExpenses, seedChemicals, seedServices, seedAutomations, seedEmailTemplates, seedSmsTemplates, seedRewardTiers, seedReferrals, seedMaintenance, campaignTemplates, seedSocialPosts, seedTimeline, seedGoals, seedReminders, seedAccountabilityEntries, seedMileage, seedLeadSrc, STEP_TYPES, AUTOMATION_TEMPLATES } from "../../lib/seed";
 import { callModel, MODELS } from "../../lib/api";
 import { createCalendarEvent, updateCalendarEvent, deleteCalendarEvent, fetchDriveFiles, MOCK_GOOGLE_DATA, fmtSize, fmtDate, fileIcon } from "../../lib/google";
+import { updateGCalEvent as updateGCalEventApi, deleteGCalEvent as deleteGCalEventApi } from "../../lib/googleApi";
 import { usePersistent } from "../../hooks/usePersistent";
 import { usePersistentRaw } from "../../hooks/usePersistentRaw";
 import { Glass } from "../ui/Glass";
@@ -116,18 +117,24 @@ export function CalendarPage({ jobs = [], setJobs, customers = [], toast, settin
         twilioSend(settings, c.phone, msg).catch(() => {});
       }
       // Update Google Calendar event if connected
-      if (job.googleEventId && settings?.googleConnected && settings?.googleBackendUrl && settings?.googleToken) {
-        fetch(settings.googleBackendUrl + "/calendar/events/" + job.googleEventId, {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json", "Authorization": "Bearer " + settings.googleToken },
-          body: JSON.stringify({ start: { date: targetKey }, end: { date: targetKey } })
+      if (job.googleEventId && settings?.googleConnected && (settings as any)?.googleToken) {
+        const timeStr = job.scheduledTime || "09:00";
+        const startDt = new Date(targetKey + "T" + timeStr + ":00");
+        const endDt = new Date(startDt.getTime() + 2 * 60 * 60 * 1000);
+        updateGCalEventApi((settings as any).googleToken, job.googleEventId, {
+          start: startDt.toISOString(),
+          end: endDt.toISOString(),
         }).catch(() => {});
       }
     }
   };
   const unschedule = jid => {
+    const job = jobs.find(j => j.id === jid);
     setJobs(jobs.map(j => j.id === jid ? { ...j, scheduledDate: "" } : j));
     toast("Moved to unscheduled");
+    if (job?.googleEventId && settings?.googleConnected && (settings as any)?.googleToken) {
+      deleteGCalEventApi((settings as any).googleToken, job.googleEventId).catch(() => {});
+    }
   };
 
   // Day revenue totals

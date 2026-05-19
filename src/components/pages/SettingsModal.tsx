@@ -27,6 +27,7 @@ import { seedWeather } from "../../lib/weather";
 import { seedCustomers, seedEstimates, seedJobs, seedEmployees, seedVehicles, seedExpenses, seedChemicals, seedServices, seedAutomations, seedEmailTemplates, seedSmsTemplates, seedRewardTiers, seedReferrals, seedMaintenance, campaignTemplates, seedSocialPosts, seedTimeline, seedGoals, seedReminders, seedAccountabilityEntries, seedMileage, seedLeadSrc, STEP_TYPES, AUTOMATION_TEMPLATES } from "../../lib/seed";
 import { callModel, MODELS } from "../../lib/api";
 import { createCalendarEvent, updateCalendarEvent, deleteCalendarEvent, fetchDriveFiles, MOCK_GOOGLE_DATA, fmtSize, fmtDate, fileIcon } from "../../lib/google";
+import { supabase } from "../../lib/supabase";
 import { usePersistent } from "../../hooks/usePersistent";
 import { usePersistentRaw } from "../../hooks/usePersistentRaw";
 import { Glass } from "../ui/Glass";
@@ -649,24 +650,40 @@ export function SettingsModal({ open, onClose, settings, setSettings, services, 
                     ))}
                   </div>
 
-                  {/* Mock OAuth button */}
+                  {/* Real Supabase OAuth button */}
                   <button
-                    onClick={() => setGoogleOAuth({ open: true, step: "account", email: "", selectedScopes: { gmail: true, calendar: true, drive: true, contacts: true, maps: true } as any })}
+                    onClick={async () => {
+                      try {
+                        const { error } = await supabase.auth.signInWithOAuth({
+                          provider: "google",
+                          options: {
+                            queryParams: { access_type: "offline", prompt: "consent" },
+                            scopes: [
+                              "https://www.googleapis.com/auth/calendar",
+                              "https://www.googleapis.com/auth/gmail.send",
+                              "https://www.googleapis.com/auth/gmail.readonly",
+                              "https://www.googleapis.com/auth/tasks",
+                              "https://www.googleapis.com/auth/drive.file",
+                              "https://www.googleapis.com/auth/contacts.readonly",
+                            ].join(" "),
+                            redirectTo: window.location.origin + window.location.pathname,
+                          },
+                        });
+                        if (error) toast("Google sign-in failed: " + error.message, "red");
+                      } catch (e: any) {
+                        toast("Google sign-in failed: " + e.message, "red");
+                      }
+                    }}
                     className="w-full flex items-center justify-center gap-3 py-3 bg-white text-gray-700 font-medium rounded-xl hover:bg-gray-50 transition text-sm"
                   >
                     <svg viewBox="0 0 48 48" width="18" height="18"><path fill="#FFC107" d="M43.611 20.083H42V20H24v8h11.303c-1.649 4.657-6.08 8-11.303 8c-6.627 0-12-5.373-12-12s5.373-12 12-12c3.059 0 5.842 1.154 7.961 3.039l5.657-5.657C34.046 6.053 29.268 4 24 4C12.955 4 4 12.955 4 24s8.955 20 20 20s20-8.955 20-20c0-1.341-.138-2.65-.389-3.917z"/><path fill="#FF3D00" d="m6.306 14.691l6.571 4.819C14.655 15.108 18.961 12 24 12c3.059 0 5.842 1.154 7.961 3.039l5.657-5.657C34.046 6.053 29.268 4 24 4C16.318 4 9.656 8.337 6.306 14.691z"/><path fill="#4CAF50" d="M24 44c5.166 0 9.86-1.977 13.409-5.192l-6.19-5.238A11.91 11.91 0 0 1 24 36c-5.202 0-9.619-3.317-11.283-7.946l-6.522 5.025C9.505 39.556 16.227 44 24 44z"/><path fill="#1976D2" d="M43.611 20.083H42V20H24v8h11.303a12.04 12.04 0 0 1-4.087 5.571l.003-.002l6.19 5.238C36.971 39.205 44 34 44 24c0-1.341-.138-2.65-.389-3.917z"/></svg>
                     Sign in with Google
                   </button>
 
-                  {/* Production setup instructions */}
                   <div className="p-3 bg-black/60 rounded-xl border border-white/5 text-[10px] text-white/50 space-y-1.5">
-                    <div className="font-semibold text-white/70">Production Setup</div>
-                    <div>1. Go to <a href="https://console.cloud.google.com" target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:underline">console.cloud.google.com</a> → New project</div>
-                    <div>2. Enable: Calendar API, Tasks API, Gmail API, Maps JavaScript API, Drive API, People API</div>
-                    <div>3. Create OAuth 2.0 credentials (Web application type)</div>
-                    <div>4. Add your domain as authorized origin + redirect URI</div>
-                    <div>5. Deploy the Smock's backend to Railway — paste URL above</div>
-                    <div>6. Visit /auth/google on your backend to complete OAuth</div>
+                    <div className="font-semibold text-white/70">Setup Required</div>
+                    <div>In your Supabase project → Authentication → Providers → Google: add your Google OAuth Client ID and Secret. Enable Calendar, Gmail, Tasks, Drive, Contacts scopes.</div>
+                    <div>After connecting, you'll be redirected back and your token is stored automatically.</div>
                   </div>
                 </div>
               )}
@@ -916,90 +933,7 @@ export function SettingsModal({ open, onClose, settings, setSettings, services, 
     </div>
     </Modal>
 
-    {/* Google OAuth simulation modal */}
-    <Modal open={googleOAuth.open} onClose={() => setGoogleOAuth({ ...googleOAuth, open: false })} title="" maxW="max-w-md">
-      <div className="-mx-4 -mt-2">
-        {/* Google-style header */}
-        <div className="px-6 pt-4 pb-5 border-b border-white/10 flex items-center gap-3">
-          <svg viewBox="0 0 48 48" width="24" height="24"><path fill="#FFC107" d="M43.611 20.083H42V20H24v8h11.303c-1.649 4.657-6.08 8-11.303 8c-6.627 0-12-5.373-12-12s5.373-12 12-12c3.059 0 5.842 1.154 7.961 3.039l5.657-5.657C34.046 6.053 29.268 4 24 4C12.955 4 4 12.955 4 24s8.955 20 20 20s20-8.955 20-20c0-1.341-.138-2.65-.389-3.917z"/><path fill="#FF3D00" d="m6.306 14.691l6.571 4.819C14.655 15.108 18.961 12 24 12c3.059 0 5.842 1.154 7.961 3.039l5.657-5.657C34.046 6.053 29.268 4 24 4C16.318 4 9.656 8.337 6.306 14.691z"/><path fill="#4CAF50" d="M24 44c5.166 0 9.86-1.977 13.409-5.192l-6.19-5.238A11.91 11.91 0 0 1 24 36c-5.202 0-9.619-3.317-11.283-7.946l-6.522 5.025C9.505 39.556 16.227 44 24 44z"/><path fill="#1976D2" d="M43.611 20.083H42V20H24v8h11.303a12.04 12.04 0 0 1-4.087 5.571l.003-.002l6.19 5.238C36.971 39.205 44 34 44 24c0-1.341-.138-2.65-.389-3.917z"/></svg>
-          <div>
-            <div className="text-[11px] text-white/60 uppercase tracking-wider">Sign in with Google</div>
-            <div className="text-xs text-white/40">to continue to Smock's CRM</div>
-          </div>
-        </div>
-
-        <div className="px-6 py-6">
-          {googleOAuth.step === "account" && <div className="space-y-4">
-            <div className="text-base font-medium">Choose an account</div>
-            <div className="space-y-2">
-              {["smock.owner@gmail.com", "info@smocks.com"].map(em => (
-                <button key={em} onClick={() => setGoogleOAuth({ ...googleOAuth, email: em, step: "scopes" })} className="w-full flex items-center gap-3 p-3 rounded-xl border border-white/10 hover:border-blue-500/40 hover:bg-blue-950/20 transition">
-                  <div className="w-9 h-9 rounded-full bg-gradient-to-br from-blue-500 to-blue-700 flex items-center justify-center text-sm font-bold">{em[0].toUpperCase()}</div>
-                  <div className="flex-1 text-left">
-                    <div className="text-sm font-medium">{em.split("@")[0]}</div>
-                    <div className="text-[10px] text-white/50">{em}</div>
-                  </div>
-                  <ChevronRight size={14} className="text-white/30" />
-                </button>
-              ))}
-            </div>
-            <button onClick={() => setGoogleOAuth({ ...googleOAuth, step: "custom" })} className="w-full flex items-center gap-3 p-3 rounded-xl border border-dashed border-white/10 hover:border-blue-500/40 transition text-white/70">
-              <div className="w-9 h-9 rounded-full bg-white/5 flex items-center justify-center"><Plus size={14} /></div>
-              <div className="text-sm">Use another account</div>
-            </button>
-            <div className="text-[10px] text-white/40 mt-4 p-3 bg-yellow-950/20 border border-yellow-800/30 rounded-lg">
-              🎭 <strong>Mock OAuth flow</strong> — in production this would be Google's real consent screen. No real data leaves your browser.
-            </div>
-          </div>}
-
-          {googleOAuth.step === "custom" && <div className="space-y-3">
-            <div className="text-base font-medium">Enter email address</div>
-            <GInput autoFocus value={googleOAuth.email} onChange={e => setGoogleOAuth({ ...googleOAuth, email: e.target.value })} placeholder="you@example.com" />
-            <div className="flex gap-2 justify-end">
-              <GBtn variant="ghost" onClick={() => setGoogleOAuth({ ...googleOAuth, step: "account", email: "" })}>Back</GBtn>
-              <GBtn onClick={() => setGoogleOAuth({ ...googleOAuth, step: "scopes" })} disabled={!/^.+@.+\..+/.test(googleOAuth.email)}>Next</GBtn>
-            </div>
-          </div>}
-
-          {googleOAuth.step === "scopes" && <div className="space-y-4">
-            <div>
-              <div className="text-xs text-white/50 mb-2">Signed in as <span className="text-blue-300">{googleOAuth.email}</span></div>
-              <div className="text-base font-medium">Smock's CRM wants to access your Google Account</div>
-            </div>
-            <div className="space-y-2">
-              {[
-                { k: "gmail", label: "Gmail", desc: "Read, send, and manage email", icon: Mail },
-                { k: "calendar", label: "Calendar", desc: "View and edit events on your calendars", icon: Calendar },
-                { k: "drive", label: "Drive", desc: "See, edit, create, and delete your Drive files", icon: Cloud },
-                { k: "contacts", label: "Contacts", desc: "Manage your contacts", icon: Users }
-              ].map(s => {
-                const Icon = s.icon;
-                const on = googleOAuth.selectedScopes[s.k];
-                return <label key={s.k} className="flex items-start gap-3 p-3 bg-black/40 border border-white/10 rounded-xl hover:bg-white/5 cursor-pointer">
-                  <input type="checkbox" checked={on} onChange={() => setGoogleOAuth({ ...googleOAuth, selectedScopes: { ...googleOAuth.selectedScopes, [s.k]: !on } })} className="mt-0.5 w-4 h-4 accent-blue-600" />
-                  <Icon size={14} className={"mt-0.5 " + (on ? "text-blue-400" : "text-white/40")} />
-                  <div className="flex-1 min-w-0">
-                    <div className="text-xs font-semibold">{s.label}</div>
-                    <div className="text-[10px] text-white/50">{s.desc}</div>
-                  </div>
-                </label>;
-              })}
-            </div>
-            <div className="text-[10px] text-white/40 leading-relaxed">By clicking <strong>Allow</strong>, you let Smock's CRM use your info per its Privacy Policy. You can revoke access in your Google Account at any time.</div>
-            <div className="flex gap-2 justify-end">
-              <GBtn variant="ghost" onClick={() => setGoogleOAuth({ ...googleOAuth, open: false })}>Cancel</GBtn>
-              <GBtn onClick={() => {
-                const scopesTrue = googleOAuth.selectedScopes;
-                setF({ ...f, googleConnected: true, googleEmail: googleOAuth.email, googleScopes: scopesTrue });
-                setGoogleOAuth({ ...googleOAuth, open: false });
-                toast("Connected to Google as " + googleOAuth.email);
-              }} disabled={!Object.values(googleOAuth.selectedScopes).some(Boolean)}>Allow</GBtn>
-            </div>
-          </div>}
-        </div>
-      </div>
-    </Modal>
-    </>
+</>
   );
 }
 
