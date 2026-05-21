@@ -300,6 +300,7 @@ export function App() {
   // provider_token. We store it in settings so the Google Workspace page can use it.
   useEffect(() => {
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      console.log("GOOGLE OAUTH SUCCESS — session:", JSON.stringify(session?.provider_token ? { hasToken: true, email: session.user?.email } : { hasToken: false }));
       if (session?.provider_token && session.user?.email) {
         setSettings((prev: any) => ({
           ...prev,
