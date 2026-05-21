@@ -73,7 +73,7 @@ const EmptyState = ({ label, action }: { label: string; action?: () => void }) =
 );
 
 // ─── Connect prompt (shown when not authenticated) ────────────────────────────
-const ConnectPrompt = ({ onNav }: { onNav: (p: string) => void }) => (
+const ConnectPrompt = ({ onConnect, onNav }: { onConnect: () => void; onNav: (p: string) => void }) => (
   <Glass className="p-8 text-center space-y-4 !border-blue-700/30 !bg-blue-950/10">
     <div className="flex justify-center">
       <svg viewBox="0 0 48 48" width="40" height="40"><path fill="#FFC107" d="M43.611 20.083H42V20H24v8h11.303c-1.649 4.657-6.08 8-11.303 8c-6.627 0-12-5.373-12-12s5.373-12 12-12c3.059 0 5.842 1.154 7.961 3.039l5.657-5.657C34.046 6.053 29.268 4 24 4C12.955 4 4 12.955 4 24s8.955 20 20 20s20-8.955 20-20c0-1.341-.138-2.65-.389-3.917z"/><path fill="#FF3D00" d="m6.306 14.691l6.571 4.819C14.655 15.108 18.961 12 24 12c3.059 0 5.842 1.154 7.961 3.039l5.657-5.657C34.046 6.053 29.268 4 24 4C16.318 4 9.656 8.337 6.306 14.691z"/><path fill="#4CAF50" d="M24 44c5.166 0 9.86-1.977 13.409-5.192l-6.19-5.238A11.91 11.91 0 0 1 24 36c-5.202 0-9.619-3.317-11.283-7.946l-6.522 5.025C9.505 39.556 16.227 44 24 44z"/><path fill="#1976D2" d="M43.611 20.083H42V20H24v8h11.303a12.04 12.04 0 0 1-4.087 5.571l.003-.002l6.19 5.238C36.971 39.205 44 34 44 24c0-1.341-.138-2.65-.389-3.917z"/></svg>
@@ -87,9 +87,16 @@ const ConnectPrompt = ({ onNav }: { onNav: (p: string) => void }) => (
         <div key={s} className="p-2 bg-black/40 border border-white/5 rounded-xl">{s}</div>
       ))}
     </div>
-    <GBtn onClick={() => onNav("settings")} className="w-full">
-      Connect in Settings → Integrations →
-    </GBtn>
+    <button
+      onClick={onConnect}
+      className="w-full flex items-center justify-center gap-3 py-3 bg-white text-gray-700 font-medium rounded-xl hover:bg-gray-50 transition text-sm"
+    >
+      <svg viewBox="0 0 48 48" width="18" height="18"><path fill="#FFC107" d="M43.611 20.083H42V20H24v8h11.303c-1.649 4.657-6.08 8-11.303 8c-6.627 0-12-5.373-12-12s5.373-12 12-12c3.059 0 5.842 1.154 7.961 3.039l5.657-5.657C34.046 6.053 29.268 4 24 4C12.955 4 4 12.955 4 24s8.955 20 20 20s20-8.955 20-20c0-1.341-.138-2.65-.389-3.917z"/><path fill="#FF3D00" d="m6.306 14.691l6.571 4.819C14.655 15.108 18.961 12 24 12c3.059 0 5.842 1.154 7.961 3.039l5.657-5.657C34.046 6.053 29.268 4 24 4C16.318 4 9.656 8.337 6.306 14.691z"/><path fill="#4CAF50" d="M24 44c5.166 0 9.86-1.977 13.409-5.192l-6.19-5.238A11.91 11.91 0 0 1 24 36c-5.202 0-9.619-3.317-11.283-7.946l-6.522 5.025C9.505 39.556 16.227 44 24 44z"/><path fill="#1976D2" d="M43.611 20.083H42V20H24v8h11.303a12.04 12.04 0 0 1-4.087 5.571l.003-.002l6.19 5.238C36.971 39.205 44 34 44 24c0-1.341-.138-2.65-.389-3.917z"/></svg>
+      Sign in with Google
+    </button>
+    <button onClick={() => onNav("settings")} className="text-xs text-white/40 hover:text-white/60 transition">
+      Or configure manually in Settings → Integrations →
+    </button>
   </Glass>
 );
 
@@ -296,6 +303,29 @@ export function GoogleWorkspacePage({
     toast?.("Imported: " + c.name + " → Customers", "green");
   };
 
+  const doConnect = async () => {
+    try {
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider: "google",
+        options: {
+          queryParams: { access_type: "offline", prompt: "consent" },
+          scopes: [
+            "https://www.googleapis.com/auth/calendar",
+            "https://www.googleapis.com/auth/gmail.send",
+            "https://www.googleapis.com/auth/gmail.readonly",
+            "https://www.googleapis.com/auth/tasks",
+            "https://www.googleapis.com/auth/drive.file",
+            "https://www.googleapis.com/auth/contacts",
+          ].join(" "),
+          redirectTo: window.location.origin + window.location.pathname,
+        },
+      });
+      if (error) toast?.("Google sign-in failed: " + error.message, "red");
+    } catch (e: any) {
+      toast?.("Google sign-in failed: " + e.message, "red");
+    }
+  };
+
   const doDisconnect = async () => {
     await supabase.auth.signOut();
     setSettings?.((prev: any) => ({ ...prev, googleConnected: false, googleToken: "", googleRefreshToken: "", googleEmail: "", googleScopes: {} }));
@@ -324,7 +354,7 @@ export function GoogleWorkspacePage({
             <div className="text-[11px] text-red-400">Not connected</div>
           </div>
         </div>
-        <ConnectPrompt onNav={onNav || (() => {})} />
+        <ConnectPrompt onConnect={doConnect} onNav={onNav || (() => {})} />
       </div>
     );
   }

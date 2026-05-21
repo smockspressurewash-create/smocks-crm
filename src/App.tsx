@@ -299,7 +299,7 @@ export function App() {
   // When user returns from Google OAuth, Supabase fires onAuthStateChange with
   // provider_token. We store it in settings so the Google Workspace page can use it.
   useEffect(() => {
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
       if (session?.provider_token && session.user?.email) {
         setSettings((prev: any) => ({
           ...prev,
@@ -309,16 +309,20 @@ export function App() {
           googleEmail: session.user!.email,
           googleScopes: { gmail: true, calendar: true, drive: true, contacts: true, tasks: true },
         }));
+        // After OAuth redirect, navigate to Google Workspace so user sees "Connected"
+        if (event === "SIGNED_IN") {
+          setPage("google");
+        }
       }
     });
     // Also check for existing session on mount (e.g. page reload after OAuth)
     supabase.auth.getSession().then(({ data: { session } }) => {
-      if (session?.provider_token && session.user?.email && !(settings as any).googleToken) {
+      if (session?.provider_token && session.user?.email) {
         setSettings((prev: any) => ({
           ...prev,
           googleConnected: true,
           googleToken: session.provider_token,
-          googleRefreshToken: session.provider_refresh_token || "",
+          googleRefreshToken: session.provider_refresh_token || prev.googleRefreshToken || "",
           googleEmail: session.user!.email,
           googleScopes: { gmail: true, calendar: true, drive: true, contacts: true, tasks: true },
         }));
