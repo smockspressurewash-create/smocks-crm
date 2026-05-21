@@ -417,6 +417,51 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
           </div>}
         </Glass>
 
+        {/* Payment & Completion */}
+        <Glass className="p-3 !bg-black/40">
+          <div className="text-xs text-white/60 uppercase tracking-wider mb-3 flex items-center gap-1"><CreditCard size={10} />Payment & Completion</div>
+          <div className="grid grid-cols-2 gap-3 mb-3">
+            <div>
+              <label className="text-[10px] text-white/50 uppercase tracking-wider mb-1 block">Payment Type</label>
+              <GSel value={job.paymentType || ""} onChange={e => updateJob(jobId, { paymentType: e.target.value as any })}>
+                <option value="" className="bg-black">— Select —</option>
+                {["Cash", "Check", "Card", "Zelle", "Venmo", "Invoice"].map(t => <option key={t} value={t} className="bg-black">{t}</option>)}
+              </GSel>
+            </div>
+            <div>
+              <label className="text-[10px] text-white/50 uppercase tracking-wider mb-1 block">Payment Status</label>
+              <GSel value={job.paymentStatus || ""} onChange={e => updateJob(jobId, { paymentStatus: e.target.value as any })}>
+                <option value="" className="bg-black">— Select —</option>
+                {["Pending", "Partial", "Paid"].map(s => <option key={s} value={s} className="bg-black">{s}</option>)}
+              </GSel>
+            </div>
+          </div>
+          <div className="mb-3">
+            <label className="text-[10px] text-white/50 uppercase tracking-wider mb-1 block">Amount Collected ($)</label>
+            <GInput type="number" step="0.01" value={job.amountCollected ?? ""} onChange={e => updateJob(jobId, { amountCollected: Number(e.target.value) })} placeholder="0.00" className="!py-1.5 !text-xs" />
+          </div>
+          <div className="grid grid-cols-2 gap-3 mb-3">
+            <div>
+              <label className="text-[10px] text-white/50 uppercase tracking-wider mb-1 block">Surface Type</label>
+              <GSel value={job.surfaceType || ""} onChange={e => updateJob(jobId, { surfaceType: e.target.value })}>
+                <option value="" className="bg-black">— Select —</option>
+                {["Vinyl Siding", "Brick", "Stucco", "Wood", "Concrete", "Asphalt", "Pavers", "Composite Deck", "Wood Deck", "Metal Roof", "Shingle Roof", "Other"].map(s => <option key={s} value={s} className="bg-black">{s}</option>)}
+              </GSel>
+            </div>
+            <div>
+              <label className="text-[10px] text-white/50 uppercase tracking-wider mb-1 block">Chemical Mix Ratio</label>
+              <GInput value={job.chemMixRatio || ""} onChange={e => updateJob(jobId, { chemMixRatio: e.target.value })} placeholder="e.g. 3% SH, 1% SC" className="!py-1.5 !text-xs" />
+            </div>
+          </div>
+          <label className="flex items-center gap-3 cursor-pointer p-2.5 bg-green-950/20 border border-green-700/30 rounded-xl">
+            <input type="checkbox" checked={!!job.customerAccepted} onChange={e => updateJob(jobId, { customerAccepted: e.target.checked })} className="w-4 h-4 accent-green-500" />
+            <div>
+              <div className="text-sm font-medium text-white/90">✅ Customer Accepts Work Complete</div>
+              <div className="text-[10px] text-white/50 mt-0.5">Customer acknowledges job is done to satisfaction</div>
+            </div>
+          </label>
+        </Glass>
+
         <div className="flex justify-end"><GBtn onClick={onClose}>Done</GBtn></div>
       </div>
     </Modal>

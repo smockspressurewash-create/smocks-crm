@@ -145,6 +145,12 @@ export interface Job {
   lat?: number;
   lng?: number;
   _showProfit?: boolean;
+  paymentType?: "Cash" | "Check" | "Card" | "Zelle" | "Venmo" | "Invoice";
+  paymentStatus?: "Pending" | "Partial" | "Paid";
+  amountCollected?: number;
+  surfaceType?: string;
+  chemMixRatio?: string;
+  customerAccepted?: boolean;
 }
 
 // ─── Employee ─────────────────────────────────────────────────────────────────

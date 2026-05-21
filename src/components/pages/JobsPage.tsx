@@ -28,7 +28,7 @@ import { seedWeather } from "../../lib/weather";
 import { seedCustomers, seedEstimates, seedJobs, seedEmployees, seedVehicles, seedExpenses, seedChemicals, seedServices, seedAutomations, seedEmailTemplates, seedSmsTemplates, seedRewardTiers, seedReferrals, seedMaintenance, campaignTemplates, seedSocialPosts, seedTimeline, seedGoals, seedReminders, seedAccountabilityEntries, seedMileage, seedLeadSrc, STEP_TYPES, AUTOMATION_TEMPLATES } from "../../lib/seed";
 import { callModel, MODELS } from "../../lib/api";
 import { createCalendarEvent, updateCalendarEvent, deleteCalendarEvent, fetchDriveFiles, MOCK_GOOGLE_DATA, fmtSize, fmtDate, fileIcon } from "../../lib/google";
-import { createGCalEvent, deleteGCalEvent as deleteGCalEventDirect } from "../../lib/googleApi";
+import { createGCalEvent, updateGCalEvent, deleteGCalEvent as deleteGCalEventDirect } from "../../lib/googleApi";
 import { usePersistent } from "../../hooks/usePersistent";
 import { usePersistentRaw } from "../../hooks/usePersistentRaw";
 import { Glass } from "../ui/Glass";
@@ -179,7 +179,26 @@ export function JobsPage({ jobs = [], setJobs, customers = [], employees = [], e
     }
   };
   const toggleCk = (jid, idx) => setJobs(jobs.map(j => j.id === jid ? { ...j, checklist: j.checklist.map((c, i) => i === idx ? { ...c, done: !c.done } : c) } : j));
-  const updateJob = (jid, patch) => setJobs(jobs.map(j => j.id === jid ? { ...j, ...patch } : j));
+  const updateJob = (jid, patch) => {
+    const oldJob = jobs.find(j => j.id === jid);
+    setJobs(jobs.map(j => j.id === jid ? { ...j, ...patch } : j));
+    // Sync Google Calendar when date or time changes
+    if (oldJob?.googleEventId && (settings as any)?.googleConnected && (settings as any)?.googleToken) {
+      if (patch.scheduledDate !== undefined || patch.scheduledTime !== undefined) {
+        const newDate = patch.scheduledDate ?? oldJob.scheduledDate;
+        const newTime = patch.scheduledTime ?? oldJob.scheduledTime ?? "09:00";
+        if (newDate) {
+          const startDt = new Date(newDate + "T" + (newTime || "09:00") + ":00");
+          const hrs = Number(patch.duration ?? oldJob.duration) || 2;
+          const endDt = new Date(startDt.getTime() + hrs * 3600000);
+          updateGCalEvent((settings as any).googleToken, oldJob.googleEventId, {
+            start: startDt.toISOString(),
+            end: endDt.toISOString(),
+          }, (settings as any).googleCalendarId || "primary").catch(() => {});
+        }
+      }
+    }
+  };
   const confirmCancel = () => {
     const j = jobs.find(x => x.id === cancelModal);
     setJobs(jobs.map(x => x.id === cancelModal ? { ...x, status: "cancelled", cancelReason } : x));
@@ -492,7 +511,17 @@ export function JobsPage({ jobs = [], setJobs, customers = [], employees = [], e
 
               <div className="mb-3 flex items-center gap-2 flex-wrap text-xs">
                 <span className="text-white/40 uppercase tracking-wider text-[10px]">Crew:</span>
-                {crewNames.length > 0 ? crewNames.map(e => <span key={e.id} className="inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full bg-red-900/30 border border-red-800/40 text-red-300">{e.firstName}</span>) : <span className="text-[10px] text-white/30 italic">None</span>}
+                {crewNames.length > 0 ? crewNames.map(e => (
+                  <span key={e.id} className="inline-flex items-center gap-1.5 text-[10px] px-2 py-0.5 rounded-full bg-red-900/30 border border-red-800/40 text-red-300">
+                    <span className="w-4 h-4 rounded-full bg-gradient-to-br from-red-500 to-red-800 flex items-center justify-center text-[8px] font-bold text-white flex-shrink-0">{e.firstName[0]}{e.lastName?.[0] || ""}</span>
+                    {e.firstName}
+                  </span>
+                )) : <span className="text-[10px] text-white/30 italic">None</span>}
+                {j.paymentStatus && (
+                  <span className={"ml-auto inline-flex items-center gap-1 text-[9px] px-2 py-0.5 rounded-full border font-semibold " + (j.paymentStatus === "Paid" ? "bg-green-950/40 border-green-700/50 text-green-300" : j.paymentStatus === "Partial" ? "bg-yellow-950/40 border-yellow-700/50 text-yellow-300" : "bg-white/5 border-white/10 text-white/50")}>
+                    {j.paymentStatus === "Paid" ? "✓" : j.paymentStatus === "Partial" ? "½" : "○"} {j.paymentStatus}{j.paymentType ? " · " + j.paymentType : ""}
+                  </span>
+                )}
               </div>
 
               <div className="mb-3"><div className="flex items-center justify-between text-xs text-white/60 mb-1.5"><span>Checklist</span><span>{dn}/{j.checklist.length}</span></div><div className="space-y-1.5 max-h-32 overflow-y-auto">{j.checklist.map((ck, idx) => <label key={idx} className="flex items-center gap-2 text-sm cursor-pointer"><input type="checkbox" checked={ck.done} onChange={() => toggleCk(j.id, idx)} className="w-4 h-4 rounded accent-red-600" /><span className={ck.done ? "line-through text-white/40" : "text-white/80"}>{ck.text}</span></label>)}</div></div>
