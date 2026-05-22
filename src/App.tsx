@@ -332,31 +332,11 @@ export function App() {
     };
 
     (async () => {
-      // 1. If this load is an OAuth callback, manually set the session from the hash
-      //    BEFORE the hash-sync effect can overwrite it with #/dashboard.
-      const hashParams = new URLSearchParams(window.location.hash.substring(1));
-      const accessToken = hashParams.get("access_token");
-      const refreshToken = hashParams.get("refresh_token");
-      if (accessToken) {
-        console.log("OAuth callback detected — calling setSession() from hash tokens");
-        await supabase.auth.setSession({
-          access_token: accessToken,
-          refresh_token: refreshToken || "",
-        });
-        // Replace the token-laden hash with the google page so the router is clean
-        window.location.hash = "/google";
-      }
+      const isOAuthCallback = window.location.hash.includes("access_token");
 
-      // 2. Now get the fully resolved session (includes identity data)
-      const { data: { session: initial } } = await supabase.auth.getSession();
-      console.log("INITIAL SESSION resolved — email:", initial?.user?.email,
-        "provider_token present:", !!initial?.provider_token,
-        "identities:", JSON.stringify(initial?.user?.identities),
-        "app_metadata:", JSON.stringify(initial?.user?.app_metadata));
-      applyGoogleIdentity(initial);
-      setAuthLoading(false);
-
-      // 2. Now subscribe — INITIAL_SESSION will fire with the fully resolved session
+      // Subscribe FIRST so we catch the SIGNED_IN event that detectSessionInUrl fires
+      // when it processes the OAuth callback hash. The hash-sync effect is guarded
+      // (returns early if hash contains access_token) so Supabase can read and clear it.
       const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
         console.log("AUTH STATE CHANGE:", event, "session email:", session?.user?.email,
           "provider_token present:", !!session?.provider_token,
@@ -367,8 +347,24 @@ export function App() {
             (session?.user?.identities || []).some((i: any) => i.provider === "google")) {
           setPage("google");
         }
+        // Clear the OAuth loading screen once auth state is known
+        if (event === "SIGNED_IN" || event === "INITIAL_SESSION") {
+          setAuthLoading(false);
+        }
       });
       sub = subscription;
+
+      // For non-OAuth loads: resolve existing session and clear loading immediately
+      const { data: { session: initial } } = await supabase.auth.getSession();
+      console.log("INITIAL SESSION resolved — email:", initial?.user?.email,
+        "provider_token present:", !!initial?.provider_token,
+        "identities:", JSON.stringify(initial?.user?.identities),
+        "app_metadata:", JSON.stringify(initial?.user?.app_metadata));
+      applyGoogleIdentity(initial);
+      if (!isOAuthCallback) {
+        setAuthLoading(false);
+      }
+      // If isOAuthCallback: keep spinner up until SIGNED_IN fires from detectSessionInUrl
     })();
 
     return () => sub?.unsubscribe();
