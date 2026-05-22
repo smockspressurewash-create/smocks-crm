@@ -178,8 +178,9 @@ export function App() {
   const [notifOpen, setNotifOpen] = useState(false);
   const [fabOpen, setFabOpen] = useState(false);
 
-  // Sync URL hash when page changes
+  // Sync URL hash when page changes — skip if the hash is an OAuth callback
   useEffect(() => {
+    if (window.location.hash.includes("access_token")) return;
     window.location.hash = "/" + page;
   }, [page]);
 
@@ -331,7 +332,22 @@ export function App() {
     };
 
     (async () => {
-      // 1. Wait for Supabase to exchange the URL hash token (if any)
+      // 1. If this load is an OAuth callback, manually set the session from the hash
+      //    BEFORE the hash-sync effect can overwrite it with #/dashboard.
+      const hashParams = new URLSearchParams(window.location.hash.substring(1));
+      const accessToken = hashParams.get("access_token");
+      const refreshToken = hashParams.get("refresh_token");
+      if (accessToken) {
+        console.log("OAuth callback detected — calling setSession() from hash tokens");
+        await supabase.auth.setSession({
+          access_token: accessToken,
+          refresh_token: refreshToken || "",
+        });
+        // Replace the token-laden hash with the google page so the router is clean
+        window.location.hash = "/google";
+      }
+
+      // 2. Now get the fully resolved session (includes identity data)
       const { data: { session: initial } } = await supabase.auth.getSession();
       console.log("INITIAL SESSION resolved — email:", initial?.user?.email,
         "provider_token present:", !!initial?.provider_token,
