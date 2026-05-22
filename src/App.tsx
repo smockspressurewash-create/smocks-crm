@@ -159,6 +159,13 @@ export function App() {
   const [pinInput, setPinInput] = useState("");
   const [pinError, setPinError] = useState(false);
 
+  // ── Auth loading guard ────────────────────────────────────────────────────
+  // True while waiting for Supabase to process the OAuth callback URL hash.
+  // Prevents rendering before the session is available (avoids 401 on /auth/v1/user).
+  const [authLoading, setAuthLoading] = useState(
+    () => window.location.hash.includes("access_token")
+  );
+
   // ── Navigation ────────────────────────────────────────────────────────────
   const [page, setPage] = useState(() => {
     // Restore page from URL hash on first load
