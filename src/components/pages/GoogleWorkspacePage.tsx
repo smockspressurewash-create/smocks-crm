@@ -84,25 +84,32 @@ export function GoogleWorkspacePage({
   const googleEmail: string = (settings as any).googleEmail || "";
 
   const doConnect = async () => {
+    const GOOGLE_SCOPES = [
+      "https://www.googleapis.com/auth/calendar",
+      "https://www.googleapis.com/auth/gmail.send",
+      "https://www.googleapis.com/auth/gmail.readonly",
+      "https://www.googleapis.com/auth/tasks",
+      "https://www.googleapis.com/auth/drive.file",
+      "https://www.googleapis.com/auth/contacts",
+    ].join(" ");
+    const opts = {
+      queryParams: { access_type: "offline", prompt: "consent" },
+      scopes: GOOGLE_SCOPES,
+      redirectTo: window.location.origin + window.location.pathname,
+    };
     try {
-      const { error } = await supabase.auth.signInWithOAuth({
-        provider: "google",
-        options: {
-          queryParams: { access_type: "offline", prompt: "consent" },
-          scopes: [
-            "https://www.googleapis.com/auth/calendar",
-            "https://www.googleapis.com/auth/gmail.send",
-            "https://www.googleapis.com/auth/gmail.readonly",
-            "https://www.googleapis.com/auth/tasks",
-            "https://www.googleapis.com/auth/drive.file",
-            "https://www.googleapis.com/auth/contacts",
-          ].join(" "),
-          redirectTo: window.location.origin + window.location.pathname,
-        },
-      });
-      if (error) toast?.("Google sign-in failed: " + error.message, "red");
+      const { data: { user } } = await supabase.auth.getUser();
+      let error: any;
+      if (user) {
+        // Already signed in — link Google as an additional identity
+        ({ error } = await supabase.auth.linkIdentity({ provider: "google", options: opts }));
+      } else {
+        // Not signed in — sign in via Google (new or returning Google-only user)
+        ({ error } = await supabase.auth.signInWithOAuth({ provider: "google", options: opts }));
+      }
+      if (error) toast?.("Google connect failed: " + error.message, "red");
     } catch (e: any) {
-      toast?.("Google sign-in failed: " + e.message, "red");
+      toast?.("Google connect failed: " + e.message, "red");
     }
   };
 

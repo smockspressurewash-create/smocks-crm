@@ -295,43 +295,35 @@ export function App() {
     (settings as any).brandFont,
   ]);
 
-  // ── Supabase Google OAuth session capture ────────────────────────────────
-  // provider_token is not reliably returned by Supabase after OAuth.
-  // Instead, detect a Google identity by checking user.app_metadata or identities.
+  // ── Supabase Google OAuth / identity-link capture ────────────────────────
+  // Works for both: (a) sign in via Google, (b) email/password user who links Google.
+  // We check user.identities[] for a google entry — reliable for both flows.
   useEffect(() => {
-    const isGoogleSession = (session: any) => {
-      if (!session?.user) return false;
-      const meta = session.user.app_metadata || {};
-      if (meta.provider === "google") return true;
-      return (session.user.identities || []).some((i: any) => i.provider === "google");
+    const applyGoogleIdentity = (session: any) => {
+      if (!session?.user) return;
+      const googleId = (session.user.identities || []).find((i: any) => i.provider === "google");
+      if (!googleId) return;
+      const googleEmail = googleId.identity_data?.email || session.user.email || "";
+      setSettings((prev: any) => ({
+        ...prev,
+        googleConnected: true,
+        googleEmail,
+        googleScopes: { gmail: true, calendar: true, drive: true, contacts: true, tasks: true },
+      }));
     };
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
-      console.log("AUTH STATE CHANGE:", event, "isGoogle:", isGoogleSession(session), "email:", session?.user?.email);
-      if (isGoogleSession(session) && session?.user?.email) {
-        setSettings((prev: any) => ({
-          ...prev,
-          googleConnected: true,
-          googleEmail: session.user!.email,
-          googleScopes: { gmail: true, calendar: true, drive: true, contacts: true, tasks: true },
-        }));
-        if (event === "SIGNED_IN") {
-          setPage("google");
-        }
+      console.log("AUTH STATE CHANGE:", event, "email:", session?.user?.email);
+      applyGoogleIdentity(session);
+      // Navigate to Google Workspace so user sees "Connected" immediately
+      if ((event === "SIGNED_IN" || (event as string) === "IDENTITY_LINKED") &&
+          (session?.user?.identities || []).some((i: any) => i.provider === "google")) {
+        setPage("google");
       }
     });
 
-    // Restore connection state on app load if user already has a Google session
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      if (isGoogleSession(session) && session?.user?.email) {
-        setSettings((prev: any) => ({
-          ...prev,
-          googleConnected: true,
-          googleEmail: session.user!.email,
-          googleScopes: { gmail: true, calendar: true, drive: true, contacts: true, tasks: true },
-        }));
-      }
-    });
+    // Restore on app load (page reload after linking)
+    supabase.auth.getSession().then(({ data: { session } }) => applyGoogleIdentity(session));
 
     return () => subscription.unsubscribe();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
