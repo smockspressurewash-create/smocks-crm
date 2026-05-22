@@ -310,9 +310,13 @@ export function App() {
   ]);
 
   // ── Supabase Google OAuth / identity-link capture ────────────────────────
-  // Works for both: (a) sign in via Google, (b) email/password user who links Google.
-  // We check user.identities[] for a google entry — reliable for both flows.
+  // getSession() is awaited FIRST so Supabase fully processes the URL hash
+  // (access_token fragment) before we subscribe to onAuthStateChange.
+  // This prevents the INITIAL_SESSION event from firing with an empty user
+  // when the app loads immediately after an OAuth redirect.
   useEffect(() => {
+    let sub: { unsubscribe: () => void } | null = null;
+
     const applyGoogleIdentity = (session: any) => {
       if (!session?.user) return;
       const googleId = (session.user.identities || []).find((i: any) => i.provider === "google");
@@ -326,20 +330,32 @@ export function App() {
       }));
     };
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
-      console.log("AUTH STATE CHANGE:", event, "session email:", session?.user?.email, "provider_token present:", !!session?.provider_token, "user identities:", JSON.stringify(session?.user?.identities), "app_metadata:", JSON.stringify(session?.user?.app_metadata));
-      applyGoogleIdentity(session);
-      // Navigate to Google Workspace so user sees "Connected" immediately
-      if ((event === "SIGNED_IN" || (event as string) === "IDENTITY_LINKED") &&
-          (session?.user?.identities || []).some((i: any) => i.provider === "google")) {
-        setPage("google");
-      }
-    });
+    (async () => {
+      // 1. Wait for Supabase to exchange the URL hash token (if any)
+      const { data: { session: initial } } = await supabase.auth.getSession();
+      console.log("INITIAL SESSION resolved — email:", initial?.user?.email,
+        "provider_token present:", !!initial?.provider_token,
+        "identities:", JSON.stringify(initial?.user?.identities),
+        "app_metadata:", JSON.stringify(initial?.user?.app_metadata));
+      applyGoogleIdentity(initial);
+      setAuthLoading(false);
 
-    // Restore on app load (page reload after linking)
-    supabase.auth.getSession().then(({ data: { session } }) => applyGoogleIdentity(session));
+      // 2. Now subscribe — INITIAL_SESSION will fire with the fully resolved session
+      const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+        console.log("AUTH STATE CHANGE:", event, "session email:", session?.user?.email,
+          "provider_token present:", !!session?.provider_token,
+          "user identities:", JSON.stringify(session?.user?.identities),
+          "app_metadata:", JSON.stringify(session?.user?.app_metadata));
+        applyGoogleIdentity(session);
+        if ((event === "SIGNED_IN" || (event as string) === "IDENTITY_LINKED") &&
+            (session?.user?.identities || []).some((i: any) => i.provider === "google")) {
+          setPage("google");
+        }
+      });
+      sub = subscription;
+    })();
 
-    return () => subscription.unsubscribe();
+    return () => sub?.unsubscribe();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Fetch real weather when OWM key is set
@@ -350,6 +366,18 @@ export function App() {
 
   // Automation engine
   useAutomationEngine({ automations, setAutomations, jobs, customers, estimates, settings, toast });
+
+  // ── OAuth loading screen ──────────────────────────────────────────────────
+  if (authLoading) {
+    return (
+      <div className="min-h-screen bg-black flex items-center justify-center">
+        <div className="text-center space-y-3">
+          <div className="w-10 h-10 border-2 border-red-600 border-t-transparent rounded-full animate-spin mx-auto" />
+          <div className="text-sm text-white/50">Completing Google sign-in…</div>
+        </div>
+      </div>
+    );
+  }
 
   // ── PIN screen ────────────────────────────────────────────────────────────
   if (pinSet && !pinUnlocked) {
