@@ -153,6 +153,27 @@ export function App() {
     console.log("FULL URL:", window.location.href.substring(0, 200));
   }, []);
 
+  // ── Manual OAuth token exchange ───────────────────────────────────────────
+  // detectSessionInUrl isn't reliably processing the implicit-flow hash, so we
+  // extract the tokens ourselves and call setSession() directly on mount.
+  useEffect(() => {
+    const hash = window.location.hash;
+    if (!hash.includes("access_token")) return;
+    const params = new URLSearchParams(hash.substring(1));
+    const access_token = params.get("access_token");
+    const refresh_token = params.get("refresh_token");
+    if (access_token && refresh_token) {
+      supabase.auth.setSession({ access_token, refresh_token }).then(({ data, error }) => {
+        if (error) {
+          console.error("setSession failed:", error);
+        } else {
+          console.log("setSession succeeded — user:", data.session?.user?.email);
+          window.location.hash = "";
+        }
+      });
+    }
+  }, []);
+
   // ── PIN lock ──────────────────────────────────────────────────────────────
   const [pinSet] = usePersistentRaw("smocks.pin", "");
   const [pinUnlocked, setPinUnlocked] = useState(!pinSet);
