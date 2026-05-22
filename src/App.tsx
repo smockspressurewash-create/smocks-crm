@@ -295,40 +295,44 @@ export function App() {
     (settings as any).brandFont,
   ]);
 
-  // ── Supabase Google OAuth token capture ──────────────────────────────────
-  // When user returns from Google OAuth, Supabase fires onAuthStateChange with
-  // provider_token. We store it in settings so the Google Workspace page can use it.
+  // ── Supabase Google OAuth session capture ────────────────────────────────
+  // provider_token is not reliably returned by Supabase after OAuth.
+  // Instead, detect a Google identity by checking user.app_metadata or identities.
   useEffect(() => {
+    const isGoogleSession = (session: any) => {
+      if (!session?.user) return false;
+      const meta = session.user.app_metadata || {};
+      if (meta.provider === "google") return true;
+      return (session.user.identities || []).some((i: any) => i.provider === "google");
+    };
+
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
-      console.log("GOOGLE OAUTH SUCCESS — session:", JSON.stringify(session?.provider_token ? { hasToken: true, email: session.user?.email } : { hasToken: false }));
-      if (session?.provider_token && session.user?.email) {
+      console.log("AUTH STATE CHANGE:", event, "isGoogle:", isGoogleSession(session), "email:", session?.user?.email);
+      if (isGoogleSession(session) && session?.user?.email) {
         setSettings((prev: any) => ({
           ...prev,
           googleConnected: true,
-          googleToken: session.provider_token,
-          googleRefreshToken: session.provider_refresh_token || prev.googleRefreshToken || "",
           googleEmail: session.user!.email,
           googleScopes: { gmail: true, calendar: true, drive: true, contacts: true, tasks: true },
         }));
-        // After OAuth redirect, navigate to Google Workspace so user sees "Connected"
         if (event === "SIGNED_IN") {
           setPage("google");
         }
       }
     });
-    // Also check for existing session on mount (e.g. page reload after OAuth)
+
+    // Restore connection state on app load if user already has a Google session
     supabase.auth.getSession().then(({ data: { session } }) => {
-      if (session?.provider_token && session.user?.email) {
+      if (isGoogleSession(session) && session?.user?.email) {
         setSettings((prev: any) => ({
           ...prev,
           googleConnected: true,
-          googleToken: session.provider_token,
-          googleRefreshToken: session.provider_refresh_token || prev.googleRefreshToken || "",
           googleEmail: session.user!.email,
           googleScopes: { gmail: true, calendar: true, drive: true, contacts: true, tasks: true },
         }));
       }
     });
+
     return () => subscription.unsubscribe();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
