@@ -159,12 +159,17 @@ export function App() {
   const [pinInput, setPinInput] = useState("");
   const [pinError, setPinError] = useState(false);
 
-  // ── Auth loading guard ────────────────────────────────────────────────────
-  // True while waiting for Supabase to process the OAuth callback URL hash.
-  // Prevents rendering before the session is available (avoids 401 on /auth/v1/user).
-  const [authLoading, setAuthLoading] = useState(
-    () => window.location.hash.includes("access_token")
-  );
+  // ── OAuth processing guard ───────────────────────────────────────────────
+  // Set to true when the page loads with an OAuth callback hash (#access_token=...).
+  // Cleared only after onAuthStateChange fires SIGNED_IN, meaning Supabase has fully
+  // processed the hash. While true, nothing renders so the hash-sync effect cannot
+  // overwrite the token-laden hash before Supabase reads it.
+  const [oauthProcessing, setOauthProcessing] = useState(false);
+  useEffect(() => {
+    if (window.location.hash.includes("access_token")) {
+      setOauthProcessing(true);
+    }
+  }, []);
 
   // ── Navigation ────────────────────────────────────────────────────────────
   const [page, setPage] = useState(() => {
@@ -311,10 +316,6 @@ export function App() {
   ]);
 
   // ── Supabase Google OAuth / identity-link capture ────────────────────────
-  // getSession() is awaited FIRST so Supabase fully processes the URL hash
-  // (access_token fragment) before we subscribe to onAuthStateChange.
-  // This prevents the INITIAL_SESSION event from firing with an empty user
-  // when the app loads immediately after an OAuth redirect.
   useEffect(() => {
     let sub: { unsubscribe: () => void } | null = null;
 
@@ -332,39 +333,45 @@ export function App() {
     };
 
     (async () => {
+      // Capture now — Supabase may clear the hash before getSession() resolves
       const isOAuthCallback = window.location.hash.includes("access_token");
 
-      // Subscribe FIRST so we catch the SIGNED_IN event that detectSessionInUrl fires
-      // when it processes the OAuth callback hash. The hash-sync effect is guarded
-      // (returns early if hash contains access_token) so Supabase can read and clear it.
+      // Subscribe first so we catch SIGNED_IN from detectSessionInUrl processing the hash.
+      // The hash-sync effect is guarded to return early while access_token is in the hash,
+      // so Supabase can read and process the token before the router overwrites it.
       const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
         console.log("AUTH STATE CHANGE:", event, "session email:", session?.user?.email,
           "provider_token present:", !!session?.provider_token,
           "user identities:", JSON.stringify(session?.user?.identities),
           "app_metadata:", JSON.stringify(session?.user?.app_metadata));
         applyGoogleIdentity(session);
-        if ((event === "SIGNED_IN" || (event as string) === "IDENTITY_LINKED") &&
-            (session?.user?.identities || []).some((i: any) => i.provider === "google")) {
-          setPage("google");
+        if (event === "SIGNED_IN" || (event as string) === "IDENTITY_LINKED") {
+          if ((session?.user?.identities || []).some((i: any) => i.provider === "google")) {
+            setPage("google");
+          }
+          // SIGNED_IN means Supabase finished processing the OAuth hash
+          setOauthProcessing(false);
         }
-        // Clear the OAuth loading screen once auth state is known
-        if (event === "SIGNED_IN" || event === "INITIAL_SESSION") {
-          setAuthLoading(false);
+        // Safety net: initialize() may process the token before subscription and fire
+        // INITIAL_SESSION instead of SIGNED_IN — clear the spinner in that case too
+        if (event === "INITIAL_SESSION") {
+          setOauthProcessing(false);
         }
       });
       sub = subscription;
 
-      // For non-OAuth loads: resolve existing session and clear loading immediately
+      // Resolve current session to apply any already-linked Google identity
       const { data: { session: initial } } = await supabase.auth.getSession();
       console.log("INITIAL SESSION resolved — email:", initial?.user?.email,
         "provider_token present:", !!initial?.provider_token,
         "identities:", JSON.stringify(initial?.user?.identities),
         "app_metadata:", JSON.stringify(initial?.user?.app_metadata));
       applyGoogleIdentity(initial);
-      if (!isOAuthCallback) {
-        setAuthLoading(false);
+      // If initialize() already exchanged the token (SIGNED_IN missed), handle navigation here
+      if (isOAuthCallback && (initial?.user?.identities || []).some((i: any) => i.provider === "google")) {
+        setPage("google");
+        setOauthProcessing(false);
       }
-      // If isOAuthCallback: keep spinner up until SIGNED_IN fires from detectSessionInUrl
     })();
 
     return () => sub?.unsubscribe();
@@ -380,7 +387,7 @@ export function App() {
   useAutomationEngine({ automations, setAutomations, jobs, customers, estimates, settings, toast });
 
   // ── OAuth loading screen ──────────────────────────────────────────────────
-  if (authLoading) {
+  if (oauthProcessing) {
     return (
       <div className="min-h-screen bg-black flex items-center justify-center">
         <div className="text-center space-y-3">
