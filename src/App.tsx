@@ -146,6 +146,13 @@ const navGroups = [
 export function App() {
   useGlobalStyles();
 
+  // ── OAuth redirect debug ──────────────────────────────────────────────────
+  useEffect(() => {
+    const hash = window.location.hash;
+    console.log("HASH ON LOAD:", hash.substring(0, 100));
+    console.log("FULL URL:", window.location.href.substring(0, 200));
+  }, []);
+
   // ── PIN lock ──────────────────────────────────────────────────────────────
   const [pinSet] = usePersistentRaw("smocks.pin", "");
   const [pinUnlocked, setPinUnlocked] = useState(!pinSet);
@@ -313,7 +320,7 @@ export function App() {
     };
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
-      console.log("AUTH STATE CHANGE:", event, "email:", session?.user?.email);
+      console.log("AUTH STATE CHANGE:", event, "session email:", session?.user?.email, "provider_token present:", !!session?.provider_token, "user identities:", JSON.stringify(session?.user?.identities), "app_metadata:", JSON.stringify(session?.user?.app_metadata));
       applyGoogleIdentity(session);
       // Navigate to Google Workspace so user sees "Connected" immediately
       if ((event === "SIGNED_IN" || (event as string) === "IDENTITY_LINKED") &&
