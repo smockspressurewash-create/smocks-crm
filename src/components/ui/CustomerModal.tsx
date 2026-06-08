@@ -21,7 +21,7 @@ import {
   ComposedChart, Legend
 } from "recharts";
 import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE } from "../../lib/utils";
-import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
+import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField, CustomerAddress } from "../../types";
 import { twilioSend, sendEmail } from "../../lib/messaging";
 import { seedWeather } from "../../lib/weather";
 import { seedCustomers, seedEstimates, seedJobs, seedEmployees, seedVehicles, seedExpenses, seedChemicals, seedServices, seedAutomations, seedEmailTemplates, seedSmsTemplates, seedRewardTiers, seedReferrals, seedMaintenance, campaignTemplates, seedSocialPosts, seedTimeline, seedGoals, seedReminders, seedAccountabilityEntries, seedMileage, seedLeadSrc, STEP_TYPES, AUTOMATION_TEMPLATES } from "../../lib/seed";
@@ -44,13 +44,28 @@ import { TimeframeSelector } from "./TimeframeSelector";
 import { AddressAutocomplete } from "./AddressAutocomplete";
 
 export function CustomerModal({ open, onClose, data, onSave, mapsKey = "" }) {
-  const blank = { firstName: "", lastName: "", email: "", phone: "", address: "", notes: "", gateCode: "", hasDog: false, dogName: "", sensitivePlants: "", leadSource: "", tags: [], sqFootage: "", propertyNotes: "", customFields: [] };
+  const blank = { firstName: "", lastName: "", email: "", phone: "", address: "", notes: "", gateCode: "", hasDog: false, dogName: "", sensitivePlants: "", leadSource: "", tags: [], sqFootage: "", propertyNotes: "", customFields: [], addresses: [] as CustomerAddress[] };
+  const [addAddr, setAddAddr] = useState(false);
+  const [addrForm, setAddrForm] = useState<CustomerAddress>({ id: "", label: "", street: "", city: "", state: "", zip: "", propertyType: "residential", sqFootage: undefined, notes: "" });
   const [f, setF] = useState(blank);
-  useEffect(() => {
-    if (open) setF(data ? { ...blank, ...data } : blank);
-  }, [open, data]);
+  const [customLeadSrc, setCustomLeadSrc] = useState("");
 
   const leadSources = ["Google", "Facebook", "Referral", "Nextdoor", "Website", "Instagram", "Yard Sign", "Angi", "Thumbtack", "Direct", "Other"];
+
+  useEffect(() => {
+    if (open) {
+      const norm = data ? { ...blank, ...data } : blank;
+      if (data?.leadSource && !leadSources.includes(data.leadSource)) {
+        setF({ ...norm, leadSource: "Other" });
+        setCustomLeadSrc(data.leadSource);
+      } else {
+        setF(norm);
+        setCustomLeadSrc("");
+      }
+      setAddAddr(false);
+      setAddrForm({ id: "", label: "", street: "", city: "", state: "", zip: "", propertyType: "residential", sqFootage: undefined, notes: "" });
+    }
+  }, [open, data]);
   const availTags = ["VIP", "Commercial", "Residential", "HOA", "Repeat", "Seasonal", "Warranty"];
 
   return (
@@ -67,10 +82,13 @@ export function CustomerModal({ open, onClose, data, onSave, mapsKey = "" }) {
         <div className="grid grid-cols-2 gap-3">
           <div>
             <label className="text-xs text-white/60 mb-1 block">Lead Source</label>
-            <GSel value={f.leadSource} onChange={e => setF({ ...f, leadSource: e.target.value })} className="!text-xs">
+            <GSel value={f.leadSource} onChange={e => { setF({ ...f, leadSource: e.target.value }); if (e.target.value !== "Other") setCustomLeadSrc(""); }} className="!text-xs">
               <option value="" className="bg-black">— Unknown —</option>
-              {leadSources.map(s => <option key={s} value={s} className="bg-black">{s}</option>)}
+              {leadSources.map(s => <option key={s} value={s} className="bg-black">{s === "Other" && customLeadSrc ? `Other (${customLeadSrc})` : s}</option>)}
             </GSel>
+            {f.leadSource === "Other" && (
+              <GInput value={customLeadSrc} onChange={e => setCustomLeadSrc(e.target.value)} placeholder="Specify source (e.g. Door hanger, Craigslist…)" className="!text-xs mt-1.5" autoFocus />
+            )}
           </div>
           <div>
             <label className="text-xs text-white/60 mb-1 block">Tags</label>
@@ -99,6 +117,48 @@ export function CustomerModal({ open, onClose, data, onSave, mapsKey = "" }) {
           <div className="mt-3"><label className="text-xs text-white/60 mb-1 block">Property notes</label><GTxt rows={2} value={f.propertyNotes || ""} onChange={e => setF({ ...f, propertyNotes: e.target.value })} placeholder="Parking, access notes, special instructions..." /></div>
         </div>
 
+        {/* Additional Addresses */}
+        <div className="pt-3 border-t border-red-900/20">
+          <div className="flex items-center justify-between mb-2">
+            <div className="text-xs text-white/60 uppercase tracking-wider flex items-center gap-1">📍 Additional Addresses ({(f.addresses || []).length})</div>
+            <button type="button" onClick={() => { setAddAddr(!addAddr); setAddrForm({ id: uid(), label: "", street: "", city: "", state: "", zip: "", propertyType: "residential", sqFootage: undefined, notes: "" }); }} className="text-xs text-red-400 hover:text-red-300 flex items-center gap-1 transition">
+              <Plus size={12} />{addAddr ? "Cancel" : "Add Address"}
+            </button>
+          </div>
+          {(f.addresses || []).map((addr: CustomerAddress) => (
+            <div key={addr.id} className="flex items-start justify-between p-2.5 mb-1.5 bg-black/30 border border-white/10 rounded-xl text-xs">
+              <div className="flex-1 min-w-0">
+                <div className="font-medium text-white/80">{addr.label || addr.street}</div>
+                <div className="text-white/50 truncate">{[addr.city, addr.state, addr.zip].filter(Boolean).join(", ")}</div>
+                {addr.propertyType && <div className="text-white/30 mt-0.5 capitalize">{addr.propertyType}{addr.sqFootage ? ` · ${addr.sqFootage.toLocaleString()} sqft` : ""}</div>}
+              </div>
+              <button type="button" onClick={() => setF(p => ({ ...p, addresses: (p.addresses || []).filter((a: CustomerAddress) => a.id !== addr.id) }))} className="p-1 text-white/30 hover:text-red-400 flex-shrink-0 ml-2"><X size={11} /></button>
+            </div>
+          ))}
+          {addAddr && (
+            <div className="p-3 bg-black/40 border border-white/10 rounded-xl space-y-2">
+              <div className="grid grid-cols-2 gap-2">
+                <div><label className="text-[10px] text-white/50 mb-0.5 block">Label (e.g. "Shop")</label><GInput value={addrForm.label || ""} onChange={e => setAddrForm(p => ({ ...p, label: e.target.value }))} placeholder="Optional label" className="!text-xs" /></div>
+                <div><label className="text-[10px] text-white/50 mb-0.5 block">Property Type</label>
+                  <GSel value={addrForm.propertyType || "residential"} onChange={e => setAddrForm(p => ({ ...p, propertyType: e.target.value as any }))} className="!text-xs">
+                    <option value="residential" className="bg-black">Residential</option>
+                    <option value="commercial" className="bg-black">Commercial</option>
+                  </GSel>
+                </div>
+              </div>
+              <div><label className="text-[10px] text-white/50 mb-0.5 block">Street *</label><AddressAutocomplete value={addrForm.street} onChange={v => setAddrForm(p => ({ ...p, street: v }))} mapsKey={mapsKey} placeholder="456 Pine St" /></div>
+              <div className="grid grid-cols-3 gap-2">
+                <div><label className="text-[10px] text-white/50 mb-0.5 block">City</label><GInput value={addrForm.city || ""} onChange={e => setAddrForm(p => ({ ...p, city: e.target.value }))} className="!text-xs" /></div>
+                <div><label className="text-[10px] text-white/50 mb-0.5 block">State</label><GInput value={addrForm.state || ""} onChange={e => setAddrForm(p => ({ ...p, state: e.target.value }))} className="!text-xs" /></div>
+                <div><label className="text-[10px] text-white/50 mb-0.5 block">Zip</label><GInput value={addrForm.zip || ""} onChange={e => setAddrForm(p => ({ ...p, zip: e.target.value }))} className="!text-xs" /></div>
+              </div>
+              <div><label className="text-[10px] text-white/50 mb-0.5 block">Sq Footage</label><GInput type="number" value={addrForm.sqFootage || ""} onChange={e => setAddrForm(p => ({ ...p, sqFootage: e.target.value ? Number(e.target.value) : undefined }))} placeholder="2400" className="!text-xs" /></div>
+              <div><label className="text-[10px] text-white/50 mb-0.5 block">Notes</label><GInput value={addrForm.notes || ""} onChange={e => setAddrForm(p => ({ ...p, notes: e.target.value }))} placeholder="Gate code, access notes…" className="!text-xs" /></div>
+              <GBtn disabled={!addrForm.street.trim()} onClick={() => { setF(p => ({ ...p, addresses: [...(p.addresses || []), { ...addrForm, id: addrForm.id || uid() }] })); setAddAddr(false); }} className="!text-xs !py-1.5 w-full">Save Address</GBtn>
+            </div>
+          )}
+        </div>
+
         <div><label className="text-xs text-white/60 mb-1 block">Notes</label><GTxt rows={2} value={f.notes} onChange={e => setF({ ...f, notes: e.target.value })} /></div>
 
         {/* Custom Fields */}
@@ -118,7 +178,11 @@ export function CustomerModal({ open, onClose, data, onSave, mapsKey = "" }) {
 
         <div className="flex gap-2 justify-end pt-3">
           <GBtn variant="ghost" onClick={onClose}>Cancel</GBtn>
-          <GBtn onClick={() => { if (!f.firstName || !f.lastName) return; onSave(data ? { ...data, ...f } : f); }}>{data ? "Save" : "Create"}</GBtn>
+          <GBtn onClick={() => {
+            if (!f.firstName || !f.lastName) return;
+            const leadSrc = f.leadSource === "Other" ? (customLeadSrc.trim() || "Other") : f.leadSource;
+            onSave(data ? { ...data, ...f, leadSource: leadSrc } : { ...f, leadSource: leadSrc });
+          }}>{data ? "Save" : "Create"}</GBtn>
         </div>
       </div>
     </Modal>

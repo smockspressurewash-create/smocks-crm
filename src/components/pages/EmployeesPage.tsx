@@ -83,6 +83,8 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [] }) {
   const [payPeriodStart, setPayPeriodStart] = usePersistent("smocks.payPeriodStart", (() => { const d = new Date(); d.setDate(1); return d.toISOString().slice(0,10); })());
   const [payPeriodEnd, setPayPeriodEnd] = usePersistent("smocks.payPeriodEnd", today());
   const [f, setF] = useState({ id: "", firstName: "", lastName: "", role: "Technician", status: "active", hourlyRate: 18, phone: "", email: "", startDate: today(), emergencyContact: "", notes: "" });
+  const [showPortalInfo, setShowPortalInfo] = useState(false);
+  const portalUrl = window.location.origin + window.location.pathname + "#/portal";
 
   useEffect(() => { if (modal.data) setF(modal.data); else setF({ id: "", firstName: "", lastName: "", role: "Technician", status: "active", hourlyRate: 18, phone: "", email: "", startDate: today(), emergencyContact: "", notes: "" }); }, [modal]);
 
@@ -118,8 +120,29 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [] }) {
           </div>
           <div className="text-xs text-white/50">{employees.filter(e => e.status === "active").length} active</div>
         </div>
-        <GBtn onClick={() => setModal({ open: true, data: null })}><Plus size={14} className="inline mr-1.5" />Add Employee</GBtn>
+        <div className="flex gap-2">
+          <button onClick={() => setShowPortalInfo(!showPortalInfo)} className="text-xs px-3 py-1.5 bg-black/40 border border-blue-700/40 text-blue-300 hover:bg-blue-950/30 rounded-xl transition flex items-center gap-1.5">
+            <Globe size={12} />Team Portal
+          </button>
+          <GBtn onClick={() => setModal({ open: true, data: null })}><Plus size={14} className="inline mr-1.5" />Add Employee</GBtn>
+        </div>
       </div>
+
+      {showPortalInfo && (
+        <div className="p-4 rounded-2xl bg-blue-950/20 border border-blue-700/30 space-y-3">
+          <div className="text-sm font-semibold text-blue-300">Team Portal Access</div>
+          <div className="text-xs text-white/60 leading-relaxed">
+            Share this link with your employees. They create their own account with their work email, then see a limited view with only their assigned jobs, checklists, and pay summary.
+          </div>
+          <div className="flex items-center gap-2">
+            <div className="flex-1 px-3 py-2 bg-black/40 border border-white/10 rounded-xl text-xs font-mono text-white/60 truncate">{portalUrl}</div>
+            <button onClick={() => { navigator.clipboard.writeText(portalUrl); }} className="px-3 py-2 bg-blue-900/40 border border-blue-700/40 text-blue-300 text-xs rounded-xl hover:bg-blue-800/40 transition flex items-center gap-1"><Copy size={12} />Copy</button>
+          </div>
+          <div className="text-[11px] text-white/40">
+            <strong className="text-white/60">Important:</strong> After an employee creates their account, make sure their email in this roster matches exactly. The portal matches by email to pull their jobs and pay info.
+          </div>
+        </div>
+      )}
 
       {view === "list" && <div className="grid md:grid-cols-2 gap-4">
         {employees.map(e => (
@@ -131,6 +154,7 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [] }) {
                   <span className="font-semibold">{e.firstName} {e.lastName}</span>
                   <Badge tone={e.status === "active" ? "green" : "gray"}>{e.status}</Badge>
                   <Badge tone="blue">{e.role}</Badge>
+                  {e.email && <Badge tone="gray">Portal Ready</Badge>}
                 </div>
                 <div className="text-xs text-white/60 mt-1 space-y-0.5">
                   {e.phone && <div className="flex items-center gap-1"><Phone size={10} />{e.phone}</div>}

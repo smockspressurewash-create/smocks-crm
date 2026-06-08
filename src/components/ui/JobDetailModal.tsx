@@ -21,12 +21,13 @@ import {
   ComposedChart, Legend
 } from "recharts";
 import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE } from "../../lib/utils";
-import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
+import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField, JobChecklistItem, ChecklistPhoto, JobVideo, JobSignOff } from "../../types";
 import { twilioSend, sendEmail } from "../../lib/messaging";
 import { seedWeather } from "../../lib/weather";
 import { seedCustomers, seedEstimates, seedJobs, seedEmployees, seedVehicles, seedExpenses, seedChemicals, seedServices, seedAutomations, seedEmailTemplates, seedSmsTemplates, seedRewardTiers, seedReferrals, seedMaintenance, campaignTemplates, seedSocialPosts, seedTimeline, seedGoals, seedReminders, seedAccountabilityEntries, seedMileage, seedLeadSrc, STEP_TYPES, AUTOMATION_TEMPLATES } from "../../lib/seed";
 import { callModel, MODELS } from "../../lib/api";
 import { createCalendarEvent, updateCalendarEvent, deleteCalendarEvent, fetchDriveFiles, MOCK_GOOGLE_DATA, fmtSize, fmtDate, fileIcon } from "../../lib/google";
+import { createGCalEvent as createGCalEventApi, updateGCalEvent as updateGCalEventApi } from "../../lib/googleApi";
 import { usePersistent } from "../../hooks/usePersistent";
 import { usePersistentRaw } from "../../hooks/usePersistentRaw";
 import { Glass } from "./Glass";
@@ -43,7 +44,108 @@ import { PageFade } from "./PageFade";
 import { TimeframeSelector } from "./TimeframeSelector";
 import { BeforeAfterSlider } from "./BeforeAfterSlider";
 
-export function JobDetailModal({ jobId, job, onClose, customers = [], employees = [], updateJob, toast }) {
+const PRE_DEFAULTS: JobChecklistItem[] = [
+  { id: "pre1", label: "Take photos of existing damage", done: false },
+  { id: "pre2", label: "Confirm water access", done: false },
+  { id: "pre3", label: "Check weather conditions", done: false },
+  { id: "pre4", label: "Note any pre-existing issues", done: false },
+];
+const DURING_DEFAULTS: JobChecklistItem[] = [
+  { id: "dur1", label: "Apply cleaning solution", done: false },
+  { id: "dur2", label: "Scrub affected areas", done: false },
+  { id: "dur3", label: "Rinse thoroughly", done: false },
+];
+const POST_DEFAULTS: JobChecklistItem[] = [
+  { id: "post1", label: "Customer walkthrough", done: false },
+  { id: "post2", label: "Collect payment", done: false },
+  { id: "post3", label: "Get customer signature", done: false },
+  { id: "post4", label: "Take after photos", done: false },
+];
+
+function ChecklistSection({ title, emoji, items, onUpdate }: {
+  title: string; emoji: string;
+  items: JobChecklistItem[];
+  onUpdate: (items: JobChecklistItem[]) => void;
+}) {
+  const [expanded, setExpanded] = useState<string | null>(null);
+  const done = items.filter(i => i.done).length;
+  const allDone = done === items.length;
+
+  const toggle = (id: string) =>
+    onUpdate(items.map(it => it.id === id ? { ...it, done: !it.done } : it));
+  const updateNotes = (id: string, notes: string) =>
+    onUpdate(items.map(it => it.id === id ? { ...it, notes } : it));
+  const addPhoto = (id: string, dataUrl: string) =>
+    onUpdate(items.map(it => it.id === id ? { ...it, photos: [...(it.photos || []), { id: uid(), dataUrl }] } : it));
+  const removePhoto = (itemId: string, photoId: string) =>
+    onUpdate(items.map(it => it.id === itemId ? { ...it, photos: (it.photos || []).filter(p => p.id !== photoId) } : it));
+
+  return (
+    <Glass className={"p-3 !bg-black/40 " + (allDone ? "!border-green-700/40" : "")}>
+      <div className="flex items-center justify-between mb-2">
+        <div className="text-xs text-white/60 uppercase tracking-wider flex items-center gap-1">
+          <span>{emoji}</span>{title}
+        </div>
+        <div className={"text-xs font-bold " + (allDone ? "text-green-400" : "text-white/40")}>
+          {done}/{items.length} {allDone && "✓"}
+        </div>
+      </div>
+      <div className="space-y-1">
+        {items.map(item => (
+          <div key={item.id} className="rounded-lg overflow-hidden">
+            <div className="flex items-center gap-2 p-2 hover:bg-white/5 rounded-lg">
+              <input type="checkbox" checked={item.done} onChange={() => toggle(item.id)}
+                className="w-4 h-4 accent-green-500 cursor-pointer flex-shrink-0" />
+              <span className={"text-xs flex-1 " + (item.done ? "line-through text-white/30" : "text-white/80")}>
+                {item.label}
+              </span>
+              {(item.photos || []).length > 0 && (
+                <span className="text-[9px] text-blue-400/70">📷{item.photos!.length}</span>
+              )}
+              <button onClick={() => setExpanded(expanded === item.id ? null : item.id)}
+                className="text-white/20 hover:text-white/60 flex-shrink-0 transition">
+                <ChevronRight size={12} className={"transition-transform " + (expanded === item.id ? "rotate-90" : "")} />
+              </button>
+            </div>
+            {expanded === item.id && (
+              <div className="pl-6 pr-2 pb-2 space-y-2">
+                <GTxt rows={1} value={item.notes || ""} onChange={e => updateNotes(item.id, e.target.value)}
+                  placeholder="Add notes..." className="!text-xs" />
+                {(item.photos || []).length > 0 && (
+                  <div className="flex gap-1 flex-wrap">
+                    {(item.photos || []).map(p => (
+                      <div key={p.id} className="relative w-14 h-14 rounded-lg overflow-hidden border border-white/10 group">
+                        <img src={p.dataUrl} alt="" className="w-full h-full object-cover" />
+                        <button onClick={() => removePhoto(item.id, p.id)}
+                          className="absolute top-0.5 right-0.5 bg-black/80 text-white rounded p-0.5 opacity-0 group-hover:opacity-100">
+                          <X size={8} />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <label className="cursor-pointer inline-block">
+                  <input type="file" accept="image/*" capture="environment" className="hidden"
+                    onChange={e => {
+                      const f = e.target.files?.[0]; if (!f) return;
+                      const r = new FileReader();
+                      r.onload = ev => addPhoto(item.id, ev.target!.result as string);
+                      r.readAsDataURL(f); e.target.value = "";
+                    }} />
+                  <div className="inline-flex items-center gap-1 text-[10px] px-2.5 py-1 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-white/50 cursor-pointer transition">
+                    <Plus size={8} />📷 Add Photo
+                  </div>
+                </label>
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    </Glass>
+  );
+}
+
+export function JobDetailModal({ jobId, job, onClose, customers = [], employees = [], updateJob, toast, gToken = "" }: { jobId: any; job: any; onClose: any; customers?: any[]; employees?: any[]; updateJob: any; toast: any; gToken?: string }) {
   const [commNote, setCommNote] = useState("");
   const [commType, setCommType] = useState("note");
   const [chemName, setChemName] = useState("");
@@ -53,6 +155,9 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
   const [attName, setAttName] = useState("");
   const [attType, setAttType] = useState("pdf");
   const [, forceTick] = useState(0);
+  const [showSignOff, setShowSignOff] = useState(false);
+  const [signerName, setSignerName] = useState("");
+  const [gSyncing, setGSyncing] = useState(false);
 
   // Live timer tick while clock is running
   useEffect(() => {
@@ -100,6 +205,29 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
     updateJob(jobId, { clockInAt: null, loggedHours: Math.round(((Number(job.loggedHours) || 0) + rounded) * 100) / 100 });
     toast("+" + rounded + "h logged");
   };
+  const handleGoogleSync = async () => {
+    if (!gToken || !job.scheduledDate) { toast("Add a scheduled date first"); return; }
+    setGSyncing(true);
+    try {
+      const timeStr = job.scheduledTime || "09:00";
+      const startDt = new Date(`${job.scheduledDate}T${timeStr}:00`);
+      const endDt = new Date(startDt.getTime() + (Number(job.duration) || 2) * 3600000);
+      const customer = customers.find((x: any) => x.id === job.customerId);
+      const title = customer ? `${customer.firstName} ${customer.lastName} — Smock's Service` : "Smock's Service";
+      if (job.googleEventId) {
+        await updateGCalEventApi(gToken, job.googleEventId, { title, start: startDt.toISOString(), end: endDt.toISOString(), location: job.address, description: job.notes || "" });
+        toast("Google Calendar event updated ✓");
+      } else {
+        const evId = await createGCalEventApi(gToken, { title, start: startDt.toISOString(), end: endDt.toISOString(), location: job.address, description: job.notes || "" });
+        updateJob(jobId, { googleEventId: evId });
+        toast("Synced to Google Calendar ✓");
+      }
+    } catch {
+      toast("Google sync failed — check connection");
+    }
+    setGSyncing(false);
+  };
+
   const addComm = () => {
     if (!commNote.trim()) return;
     const entry = { id: uid(), type: commType, date: today(), note: commNote.trim() };
@@ -113,6 +241,90 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
     setChemName(""); setChemGal(0); setChemCost(0);
   };
   const removeChem = idx => updateJob(jobId, { chemicalsUsed: (job.chemicalsUsed || []).filter((_, i) => i !== idx) });
+
+  const updateChecklist = (field: "preChecklist" | "duringChecklist" | "postChecklist", items: JobChecklistItem[]) =>
+    updateJob(jobId, { [field]: items });
+
+  const openSignOff = () => {
+    setSignerName(job.signOff?.signerName || "");
+    setShowSignOff(true);
+  };
+
+  const saveSignOff = () => {
+    if (!signerName.trim()) { toast("Please enter customer name"); return; }
+    const ts = new Date().toLocaleString();
+    updateJob(jobId, { signOff: { signerName: signerName.trim(), timestamp: ts } });
+    toast("Sign-off saved");
+    printSignOff(signerName.trim(), ts);
+  };
+
+  const printSignOff = (name: string, ts: string) => {
+    const customer = customers.find(x => x.id === job.customerId);
+    const beforePhoto = (job.photos || []).find(p => p.type === "before" && p.dataUrl);
+    const afterPhoto = (job.photos || []).find(p => p.type === "after" && p.dataUrl);
+    const preItems = job.preChecklist || PRE_DEFAULTS;
+    const postItems = job.postChecklist || POST_DEFAULTS;
+    const preIssues = preItems.filter(i => i.notes).map(i => `<li>${i.label}: ${i.notes}</li>`).join("");
+    const html = `<!DOCTYPE html><html><head><meta charset="utf-8">
+<title>Job Sign-Off</title>
+<style>
+  body { font-family: Arial, sans-serif; max-width: 700px; margin: 40px auto; color: #111; font-size: 14px; }
+  h1 { font-size: 22px; margin-bottom: 4px; }
+  .sub { color: #666; font-size: 12px; margin-bottom: 24px; }
+  .section { margin-bottom: 20px; }
+  .section h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.05em; color: #555; border-bottom: 1px solid #ddd; padding-bottom: 4px; margin-bottom: 10px; }
+  .photos { display: flex; gap: 16px; margin-bottom: 16px; }
+  .photos img { width: 48%; border-radius: 8px; border: 1px solid #ddd; }
+  .photo-label { font-size: 10px; text-align: center; color: #888; margin-top: 4px; }
+  .disclaimer { background: #f9f9f9; border: 1px solid #ddd; border-radius: 6px; padding: 14px; font-size: 12px; color: #444; line-height: 1.6; }
+  .sig-block { margin-top: 24px; border-top: 2px solid #111; padding-top: 16px; }
+  .sig-name { font-size: 20px; font-family: Georgia, serif; margin-bottom: 4px; }
+  .sig-ts { font-size: 11px; color: #888; }
+  .checklist { list-style: none; padding: 0; }
+  .checklist li { padding: 3px 0; font-size: 13px; }
+  .checklist li.done::before { content: "✓ "; color: green; font-weight: bold; }
+  .checklist li.undone::before { content: "○ "; color: #ccc; }
+</style></head><body>
+<h1>Service Completion Sign-Off</h1>
+<div class="sub">Generated ${ts}</div>
+<div class="section">
+  <h2>Customer & Job Details</h2>
+  <p><strong>Customer:</strong> ${customer ? customer.firstName + " " + customer.lastName : "N/A"}</p>
+  <p><strong>Address:</strong> ${job.address || "N/A"}</p>
+  <p><strong>Service Date:</strong> ${job.scheduledDate || "N/A"}</p>
+  <p><strong>Total Amount:</strong> $${(job.amount || 0).toFixed(2)}</p>
+  <p><strong>Payment:</strong> ${job.paymentType || "N/A"} · ${job.paymentStatus || "Pending"}</p>
+</div>
+${(beforePhoto || afterPhoto) ? `<div class="section">
+  <h2>Before &amp; After Photos</h2>
+  <div class="photos">
+    ${beforePhoto ? `<div><img src="${beforePhoto.dataUrl}" alt="Before"/><div class="photo-label">BEFORE</div></div>` : ""}
+    ${afterPhoto ? `<div><img src="${afterPhoto.dataUrl}" alt="After"/><div class="photo-label">AFTER</div></div>` : ""}
+  </div>
+</div>` : ""}
+<div class="section">
+  <h2>Post-Job Checklist</h2>
+  <ul class="checklist">
+    ${postItems.map(i => `<li class="${i.done ? "done" : "undone"}">${i.label}${i.notes ? ` — <em>${i.notes}</em>` : ""}</li>`).join("")}
+  </ul>
+</div>
+${preIssues ? `<div class="section"><h2>Pre-Existing Conditions Noted</h2><ul>${preIssues}</ul></div>` : ""}
+${job.notes ? `<div class="section"><h2>Job Notes</h2><p>${job.notes}</p></div>` : ""}
+<div class="section">
+  <h2>Legal Disclaimer</h2>
+  <div class="disclaimer">
+    I confirm that all services have been completed to my satisfaction. I accept the work as described above and acknowledge that the service provider is not liable for pre-existing conditions documented in the pre-job checklist. By signing below, I authorize payment of the amount stated and release the company from further obligation for this service call.
+  </div>
+</div>
+<div class="sig-block">
+  <div class="sig-name">${name}</div>
+  <div class="sig-ts">Signed: ${ts}</div>
+  <div style="margin-top:12px;font-size:11px;color:#aaa;">Digital signature — customer typed and confirmed their full name</div>
+</div>
+</body></html>`;
+    const w = window.open("", "_blank", "width=800,height=900");
+    if (w) { w.document.write(html); w.document.close(); setTimeout(() => w.print(), 500); }
+  };
 
   const totalChemCost = (job.chemicalsUsed || []).reduce((s, c) => s + Number(c.cost), 0);
   const totalGallons = (job.chemicalsUsed || []).reduce((s, c) => s + Number(c.gallons), 0);
@@ -161,6 +373,22 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
           </div>
         </Glass>
 
+        {/* Google Calendar Sync */}
+        {gToken && (
+          <div className={"flex items-center justify-between p-3 rounded-xl border " + (job.googleEventId ? "bg-green-950/20 border-green-700/40" : "bg-white/5 border-white/10")}>
+            <div className="flex items-center gap-2">
+              <Globe size={14} className={job.googleEventId ? "text-green-400" : "text-white/50"} />
+              <div>
+                <div className="text-xs font-medium">{job.googleEventId ? "Synced to Google Calendar" : "Google Calendar Sync"}</div>
+                {job.googleEventId && <div className="text-[10px] text-green-400/70">Event ID: {job.googleEventId.slice(0, 12)}…</div>}
+              </div>
+            </div>
+            <GBtn onClick={handleGoogleSync} disabled={gSyncing} className={"!text-xs !py-1.5 " + (job.googleEventId ? "!bg-green-900/40 !border-green-700/50 !text-green-300 hover:!bg-green-800/50" : "")}>
+              {gSyncing ? "Syncing…" : job.googleEventId ? "↻ Update" : "☁ Sync"}
+            </GBtn>
+          </div>
+        )}
+
         {/* Tags */}
         <div>
           <label className="text-xs text-white/60 mb-1 block flex items-center gap-1"><Tag size={10} />Tags</label>
@@ -207,6 +435,30 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
           <GTxt rows={2} value={job.internalNotes || ""} onChange={e => updateJob(jobId, { internalNotes: e.target.value })} placeholder="Site details, warnings, tips for next visit..." />
         </div>
 
+        {/* Pre-Job Checklist */}
+        <ChecklistSection
+          title="Pre-Job Checklist"
+          emoji="🔵"
+          items={job.preChecklist?.length ? job.preChecklist : PRE_DEFAULTS}
+          onUpdate={items => updateChecklist("preChecklist", items)}
+        />
+
+        {/* During Job Checklist */}
+        <ChecklistSection
+          title="During Job Checklist"
+          emoji="🟡"
+          items={job.duringChecklist?.length ? job.duringChecklist : DURING_DEFAULTS}
+          onUpdate={items => updateChecklist("duringChecklist", items)}
+        />
+
+        {/* Post-Job Checklist */}
+        <ChecklistSection
+          title="Post-Job Checklist"
+          emoji="🟢"
+          items={job.postChecklist?.length ? job.postChecklist : POST_DEFAULTS}
+          onUpdate={items => updateChecklist("postChecklist", items)}
+        />
+
         {/* Photos (Before / After) */}
         <Glass className="p-3 !bg-black/40">
           <div className="flex items-center justify-between mb-2">
@@ -233,7 +485,7 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
               </div>
             ))}
           </div>}
-          <div className="grid grid-cols-2 gap-2">
+          <div className="grid grid-cols-3 gap-2">
             <label className="cursor-pointer">
               <input type="file" accept="image/*" capture="environment" className="hidden" onChange={e => {
                 const files = Array.from(e.target.files || []);
@@ -266,7 +518,37 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
               }} />
               <div className="flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl bg-green-950/30 hover:bg-green-900/40 border border-green-700/40 text-green-300 text-xs font-medium transition"><Plus size={12} />✨ After</div>
             </label>
+            <label className="cursor-pointer">
+              <input type="file" accept="video/*" capture="environment" className="hidden" onChange={e => {
+                const f = e.target.files?.[0]; if (!f) return;
+                if (f.size > 80 * 1024 * 1024) { toast("Video too large (max ~80MB)"); return; }
+                const r = new FileReader();
+                r.onload = ev => {
+                  const vid: JobVideo = { id: uid(), dataUrl: ev.target!.result as string, caption: today(), addedAt: today() };
+                  updateJob(jobId, { videos: [...(job.videos || []), vid] });
+                };
+                r.readAsDataURL(f);
+                e.target.value = "";
+                toast("Video added");
+              }} />
+              <div className="flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl bg-purple-950/30 hover:bg-purple-900/40 border border-purple-700/40 text-purple-300 text-xs font-medium transition"><Plus size={12} />🎥 Video</div>
+            </label>
           </div>
+          {(job.videos || []).length > 0 && (
+            <div className="mt-2 space-y-2">
+              <div className="text-[10px] text-white/40 uppercase tracking-wider">Videos ({(job.videos || []).length})</div>
+              <div className="grid grid-cols-2 gap-2">
+                {(job.videos || []).map((v, i) => (
+                  <div key={v.id || i} className="relative rounded-lg overflow-hidden bg-black border border-purple-900/30 group">
+                    <video src={v.dataUrl} controls className="w-full max-h-32 object-contain" />
+                    <button onClick={() => updateJob(jobId, { videos: (job.videos || []).filter(x => x.id !== v.id) })}
+                      className="absolute top-1 right-1 p-1 rounded bg-black/70 opacity-0 group-hover:opacity-100 hover:bg-red-900/80 text-white/80"><X size={10} /></button>
+                    {v.caption && <div className="text-[9px] text-white/40 px-1 pb-1">{v.caption}</div>}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
           <div className="text-[10px] text-white/40 mt-1.5">Tip: on mobile, tapping opens the camera directly. Drag the slider on comparison view.</div>
         </Glass>
 
@@ -461,6 +743,86 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
             </div>
           </label>
         </Glass>
+
+        {/* Client Sign-Off */}
+        <Glass className={"p-3 " + (job.signOff ? "!bg-green-950/20 !border-green-700/40" : "!bg-black/40")}>
+          <div className="flex items-center justify-between mb-2">
+            <div className="text-xs text-white/60 uppercase tracking-wider flex items-center gap-1">
+              <CheckSquare size={10} />Client Sign-Off
+            </div>
+            {job.signOff && <div className="text-[10px] text-green-400 font-semibold">✓ Signed</div>}
+          </div>
+          {job.signOff ? (
+            <div className="space-y-1">
+              <div className="text-sm font-medium text-white/90">{job.signOff.signerName}</div>
+              <div className="text-[11px] text-white/40">{job.signOff.timestamp}</div>
+              <div className="flex gap-2 mt-2">
+                <GBtn onClick={() => printSignOff(job.signOff!.signerName, job.signOff!.timestamp)} className="!text-xs !py-1.5">
+                  <Download size={11} className="inline mr-1" />Print / Save PDF
+                </GBtn>
+                <GBtn variant="danger" onClick={() => updateJob(jobId, { signOff: null })} className="!text-xs !py-1.5">
+                  Clear Signature
+                </GBtn>
+              </div>
+            </div>
+          ) : (
+            <div>
+              <div className="text-xs text-white/50 mb-3">
+                Generate a completion document with before/after photos, checklist summary, and customer signature. Opens a printable PDF.
+              </div>
+              <GBtn onClick={openSignOff} className="w-full !justify-center">
+                <CheckSquare size={13} className="inline mr-1.5" />Generate Sign-Off Document
+              </GBtn>
+            </div>
+          )}
+        </Glass>
+
+        {/* Sign-Off Modal */}
+        {showSignOff && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80" onClick={() => setShowSignOff(false)}>
+            <div className="bg-[#0d0d0d] border border-white/10 rounded-2xl p-6 w-full max-w-md shadow-2xl" onClick={e => e.stopPropagation()}>
+              <div className="flex items-center justify-between mb-4">
+                <div className="text-base font-semibold">Client Sign-Off</div>
+                <button onClick={() => setShowSignOff(false)} className="text-white/40 hover:text-white"><X size={16} /></button>
+              </div>
+              <div className="mb-4 p-3 bg-white/5 rounded-xl text-xs text-white/60 leading-relaxed">
+                By signing, the customer confirms all services were completed to their satisfaction and acknowledges pre-existing conditions documented during the pre-job inspection.
+              </div>
+              <div className="mb-2">
+                <label className="text-xs text-white/50 uppercase tracking-wider mb-1.5 block">Services Performed</label>
+                <div className="p-2 bg-white/5 rounded-lg text-xs text-white/70">
+                  {job.notes || "Pressure washing service"} · Total: ${(job.amount || 0).toFixed(2)}
+                </div>
+              </div>
+              <div className="mb-4">
+                <label className="text-xs text-white/50 uppercase tracking-wider mb-1.5 block">
+                  Customer Full Name (Digital Signature) <span className="text-red-400">*</span>
+                </label>
+                <GInput
+                  value={signerName}
+                  onChange={e => setSignerName(e.target.value)}
+                  placeholder="Type full name to sign..."
+                  className="!text-base !font-serif"
+                  onKeyDown={e => { if (e.key === "Enter" && signerName.trim()) saveSignOff(); }}
+                />
+                {signerName && (
+                  <div className="mt-1.5 px-2 py-1 border-b border-white/20 text-lg font-serif text-white/80 italic">
+                    {signerName}
+                  </div>
+                )}
+              </div>
+              <div className="text-[10px] text-white/30 mb-4">
+                Timestamp will be recorded automatically at time of signing.
+              </div>
+              <div className="flex gap-2">
+                <GBtn onClick={() => setShowSignOff(false)} variant="ghost" className="flex-1 !justify-center">Cancel</GBtn>
+                <GBtn onClick={saveSignOff} className="flex-1 !justify-center !bg-green-800 hover:!bg-green-700">
+                  <CheckSquare size={13} className="inline mr-1" />Sign & Save PDF
+                </GBtn>
+              </div>
+            </div>
+          </div>
+        )}
 
         <div className="flex justify-end"><GBtn onClick={onClose}>Done</GBtn></div>
       </div>

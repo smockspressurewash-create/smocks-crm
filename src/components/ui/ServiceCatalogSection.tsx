@@ -43,7 +43,7 @@ import { PageFade } from "./PageFade";
 import { TimeframeSelector } from "./TimeframeSelector";
 
 export function ServiceCatalogSection({ services = [], setServices, toast }) {
-  const [f, setF] = useState({ name: "", description: "", price: "", unit: "flat", category: "Washing", taxable: true });
+  const [f, setF] = useState({ name: "", description: "", customerDescription: "", internalNotes: "", price: "", minPrice: "", maxPrice: "", unit: "flat", category: "Washing", taxable: true });
   const [editId, setEditId] = useState(null);
   const [showForm, setShowForm] = useState(false);
 
@@ -52,25 +52,25 @@ export function ServiceCatalogSection({ services = [], setServices, toast }) {
   const save = () => {
     if (!f.name.trim() || !f.price) return;
     if (editId) {
-      setServices(prev => prev.map(s => s.id === editId ? { ...s, ...f, price: Number(f.price) } : s));
+      setServices(prev => prev.map(s => s.id === editId ? { ...s, ...f, price: Number(f.price), basePrice: Number(f.price), minPrice: f.minPrice ? Number(f.minPrice) : undefined, maxPrice: f.maxPrice ? Number(f.maxPrice) : undefined } : s));
       toast("Service updated");
     } else {
-      setServices(prev => [...prev, { id: uid(), ...f, price: Number(f.price) }]);
+      setServices(prev => [...prev, { id: uid(), ...f, price: Number(f.price), basePrice: Number(f.price), minPrice: f.minPrice ? Number(f.minPrice) : undefined, maxPrice: f.maxPrice ? Number(f.maxPrice) : undefined }]);
       toast("Service added");
     }
-    setF({ name: "", description: "", price: "", unit: "flat", category: "Washing", taxable: true });
+    setF({ name: "", description: "", customerDescription: "", internalNotes: "", price: "", minPrice: "", maxPrice: "", unit: "flat", category: "Washing", taxable: true });
     setEditId(null);
     setShowForm(false);
   };
 
-  const startEdit = s => { setF({ name: s.name, description: s.description || "", price: String(s.price), unit: s.unit || "flat", category: s.category || "Washing", taxable: s.taxable !== false }); setEditId(s.id); setShowForm(true); };
+  const startEdit = s => { setF({ name: s.name, description: s.description || "", customerDescription: s.customerDescription || "", internalNotes: s.internalNotes || "", price: String(s.basePrice || s.price || ""), minPrice: String(s.minPrice || ""), maxPrice: String(s.maxPrice || ""), unit: s.unit || "flat", category: s.category || "Washing", taxable: s.taxable !== false }); setEditId(s.id); setShowForm(true); };
   const del = id => { if (confirm("Remove service?")) setServices(prev => prev.filter(s => s.id !== id)); };
 
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h4 className="font-semibold text-sm">Service Catalog</h4>
-        <GBtn onClick={() => { setF({ name: "", description: "", price: "", unit: "flat", category: "Washing", taxable: true }); setEditId(null); setShowForm(!showForm); }} className="!text-xs !py-1.5"><Plus size={11} className="inline mr-1" />{showForm ? "Cancel" : "Add Service"}</GBtn>
+        <GBtn onClick={() => { setF({ name: "", description: "", customerDescription: "", internalNotes: "", price: "", minPrice: "", maxPrice: "", unit: "flat", category: "Washing", taxable: true }); setEditId(null); setShowForm(!showForm); }} className="!text-xs !py-1.5"><Plus size={11} className="inline mr-1" />{showForm ? "Cancel" : "Add Service"}</GBtn>
       </div>
 
       {showForm && <Glass className="p-4 !bg-black/60">
@@ -80,19 +80,23 @@ export function ServiceCatalogSection({ services = [], setServices, toast }) {
             <div><label className="text-[10px] text-white/50 mb-1 block">Service name *</label><GInput value={f.name} onChange={e => setF({ ...f, name: e.target.value })} placeholder="House Soft Wash" className="!text-xs" /></div>
             <div><label className="text-[10px] text-white/50 mb-1 block">Category</label><GSel value={f.category} onChange={e => setF({ ...f, category: e.target.value })} className="!text-xs">{categories.map(c => <option key={c} value={c} className="bg-black">{c}</option>)}</GSel></div>
           </div>
-          <div><label className="text-[10px] text-white/50 mb-1 block">Description</label><GInput value={f.description} onChange={e => setF({ ...f, description: e.target.value })} placeholder="Low-pressure siding & eave cleaning" className="!text-xs" /></div>
-          <div className="grid grid-cols-2 gap-2">
-            <div><label className="text-[10px] text-white/50 mb-1 block">Default Price ($)</label><GInput type="number" step="5" value={f.price} onChange={e => setF({ ...f, price: e.target.value })} placeholder="450" className="!text-xs" /></div>
-            <div><label className="text-[10px] text-white/50 mb-1 block">Pricing Unit</label><GSel value={f.unit} onChange={e => setF({ ...f, unit: e.target.value })} className="!text-xs">
-              <option value="flat" className="bg-black">Flat rate</option>
-              <option value="sqft" className="bg-black">Per sq ft</option>
-              <option value="linear_ft" className="bg-black">Per linear ft</option>
-              <option value="hour" className="bg-black">Per hour</option>
-            </GSel></div>
+          <div><label className="text-[10px] text-white/50 mb-1 block">Internal description</label><GInput value={f.description} onChange={e => setF({ ...f, description: e.target.value })} placeholder="Low-pressure siding & eave cleaning" className="!text-xs" /></div>
+          <div><label className="text-[10px] text-white/50 mb-1 block flex items-center gap-1"><Eye size={9} />Customer-facing description <span className="text-white/30">(appears on estimates)</span></label><GTxt rows={2} value={f.customerDescription} onChange={e => setF({ ...f, customerDescription: e.target.value })} placeholder="We'll apply a low-pressure soap solution to safely lift dirt, mildew, and algae from your siding without damaging the surface…" className="!text-xs" /></div>
+          <div><label className="text-[10px] text-white/50 mb-1 block flex items-center gap-1"><Lock size={9} className="text-yellow-400" />Internal crew notes <span className="text-white/30">(not shown to customer)</span></label><GTxt rows={2} value={f.internalNotes} onChange={e => setF({ ...f, internalNotes: e.target.value })} placeholder="Use SH at 3% mix, rinse from top down, watch for painted wood trim…" className="!text-xs" /></div>
+          <div className="grid grid-cols-3 gap-2">
+            <div><label className="text-[10px] text-white/50 mb-1 block">Default Price ($) *</label><GInput type="number" step="5" value={f.price} onChange={e => setF({ ...f, price: e.target.value })} placeholder="450" className="!text-xs" /></div>
+            <div><label className="text-[10px] text-white/50 mb-1 block">Min Price ($)</label><GInput type="number" step="5" value={f.minPrice} onChange={e => setF({ ...f, minPrice: e.target.value })} placeholder="300" className="!text-xs" /></div>
+            <div><label className="text-[10px] text-white/50 mb-1 block">Max Price ($)</label><GInput type="number" step="5" value={f.maxPrice} onChange={e => setF({ ...f, maxPrice: e.target.value })} placeholder="700" className="!text-xs" /></div>
           </div>
+          <div><label className="text-[10px] text-white/50 mb-1 block">Pricing Unit</label><GSel value={f.unit} onChange={e => setF({ ...f, unit: e.target.value })} className="!text-xs">
+            <option value="flat" className="bg-black">Flat rate</option>
+            <option value="sqft" className="bg-black">Per sq ft</option>
+            <option value="linear_ft" className="bg-black">Per linear ft</option>
+            <option value="hour" className="bg-black">Per hour</option>
+          </GSel></div>
           <label className="flex items-center gap-2 text-xs cursor-pointer"><input type="checkbox" checked={f.taxable} onChange={e => setF({ ...f, taxable: e.target.checked })} className="w-3.5 h-3.5" />Taxable service</label>
           <div className="flex gap-2 justify-end pt-1">
-            <GBtn variant="ghost" onClick={() => { setShowForm(false); setEditId(null); }} className="!text-xs !py-1.5">Cancel</GBtn>
+            <GBtn variant="ghost" onClick={() => { setShowForm(false); setEditId(null); setF({ name: "", description: "", customerDescription: "", internalNotes: "", price: "", minPrice: "", maxPrice: "", unit: "flat", category: "Washing", taxable: true }); }} className="!text-xs !py-1.5">Cancel</GBtn>
             <GBtn onClick={save} disabled={!f.name.trim() || !f.price} className="!text-xs !py-1.5">Save</GBtn>
           </div>
         </div>
@@ -107,9 +111,12 @@ export function ServiceCatalogSection({ services = [], setServices, toast }) {
                 {s.category && <Badge tone="blue">{s.category}</Badge>}
                 {s.taxable !== false && <span className="text-[9px] text-white/40">taxable</span>}
               </div>
-              {s.description && <div className="text-xs text-white/50 mt-0.5">{s.description}</div>}
+              {s.customerDescription && <div className="text-xs text-blue-300/60 mt-0.5 truncate">📋 {s.customerDescription}</div>}
+              {!s.customerDescription && s.description && <div className="text-xs text-white/50 mt-0.5">{s.description}</div>}
+              {s.internalNotes && <div className="text-xs text-yellow-400/50 mt-0.5 truncate">🔒 {s.internalNotes}</div>}
+              {(s.minPrice || s.maxPrice) && <div className="text-[10px] text-white/30 mt-0.5">Range: {s.minPrice ? fmt(s.minPrice) : "?"} – {s.maxPrice ? fmt(s.maxPrice) : "?"}</div>}
             </div>
-            <div className="text-red-400 font-bold text-sm flex-shrink-0">{fmt(s.price)}{s.unit && s.unit !== "flat" ? "/" + s.unit.replace("_", " ") : ""}</div>
+            <div className="text-red-400 font-bold text-sm flex-shrink-0">{fmt(s.basePrice || s.price)}{s.unit && s.unit !== "flat" ? "/" + s.unit.replace("_", " ") : ""}</div>
             <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition flex-shrink-0">
               <button onClick={() => startEdit(s)} className="p-1.5 rounded hover:bg-white/10 text-white/50"><Edit size={12} /></button>
               <button onClick={() => del(s.id)} className="p-1.5 rounded hover:bg-red-900/30 text-white/50 hover:text-red-400"><Trash2 size={12} /></button>

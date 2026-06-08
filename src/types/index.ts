@@ -5,6 +5,19 @@ export interface CustomField {
   value: string;
 }
 
+export interface CustomerAddress {
+  id: string;
+  label?: string;
+  street: string;
+  city?: string;
+  state?: string;
+  zip?: string;
+  propertyType?: "residential" | "commercial";
+  sqFootage?: number;
+  notes?: string;
+  isPrimary?: boolean;
+}
+
 export interface Customer {
   id: string;
   firstName: string;
@@ -35,6 +48,7 @@ export interface Customer {
   referredBy?: string;
   reviewRequested?: string;
   portalToken?: string;
+  addresses?: CustomerAddress[];
 }
 
 // ─── Estimate ─────────────────────────────────────────────────────────────────
@@ -44,11 +58,26 @@ export interface LineItem {
   description: string;
   quantity: number;
   unitPrice: number;
+  catalogPrice?: number;
+  photo?: string;
+  notes?: string;
+  notesInternal?: boolean;
+  optional?: boolean;
+}
+
+export interface EstimatePackage {
+  id: string;
+  name: string;
+  description?: string;
+  lineItems: LineItem[];
+  subtotal: number;
 }
 
 export interface Estimate {
   id: string;
   customerId: string;
+  estimateType?: "standard" | "options" | "package";
+  packages?: EstimatePackage[];
   lineItems: LineItem[];
   subtotal: number;
   discount: number;
@@ -90,6 +119,32 @@ export interface Photo {
   dataUrl: string;
   caption?: string;
   uploadedAt?: string;
+}
+
+export interface ChecklistPhoto {
+  id: string;
+  dataUrl: string;
+  caption?: string;
+}
+
+export interface JobChecklistItem {
+  id: string;
+  label: string;
+  done: boolean;
+  photos?: ChecklistPhoto[];
+  notes?: string;
+}
+
+export interface JobVideo {
+  id: string;
+  dataUrl: string;
+  caption?: string;
+  addedAt?: string;
+}
+
+export interface JobSignOff {
+  signerName: string;
+  timestamp: string;
 }
 
 export interface ChemicalUsed {
@@ -151,6 +206,17 @@ export interface Job {
   surfaceType?: string;
   chemMixRatio?: string;
   customerAccepted?: boolean;
+  preChecklist?: JobChecklistItem[];
+  duringChecklist?: JobChecklistItem[];
+  postChecklist?: JobChecklistItem[];
+  videos?: JobVideo[];
+  signOff?: JobSignOff;
+  rainGuarantee?: boolean;
+  rainGuaranteeDate?: string | null;
+  weatherOverride?: boolean;
+  sqFootage?: number;
+  sqFtRate?: number;
+  attachments?: { id: string; name: string; type: string }[];
 }
 
 // ─── Employee ─────────────────────────────────────────────────────────────────
@@ -229,7 +295,11 @@ export interface Service {
   id: string;
   name: string;
   description?: string;
+  customerDescription?: string;
+  internalNotes?: string;
   basePrice: number;
+  minPrice?: number;
+  maxPrice?: number;
   unit?: string;
   taxable?: boolean;
   active?: boolean;

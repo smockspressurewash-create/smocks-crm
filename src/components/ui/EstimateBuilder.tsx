@@ -54,6 +54,14 @@ export function EstimateBuilder({ open, onClose, customers = [], services = [], 
   const [internalNote, setInternalNote] = useState("");
   const [templateName, setTemplateName] = useState("");
   const [savingTemplate, setSavingTemplate] = useState(false);
+  const [expandedItems, setExpandedItems] = useState<string[]>([]);
+  const toggleExpand = (id: string) => setExpandedItems(p => p.includes(id) ? p.filter(x => x !== id) : [...p, id]);
+  const [estimateType, setEstimateType] = useState<"standard" | "options" | "package">("standard");
+  const [selectedAddressId, setSelectedAddressId] = useState<string>("primary");
+  const [packages, setPackages] = useState<Array<{ id: string; name: string; description: string; lineItems: any[] }>>([
+    { id: uid(), name: "Basic", description: "", lineItems: [{ id: uid(), description: "", quantity: 1, unitPrice: 0 }] },
+    { id: uid(), name: "Premium", description: "", lineItems: [{ id: uid(), description: "", quantity: 1, unitPrice: 0 }] },
+  ]);
   const taxRate = Number((settings as any)?.taxRate || 6);
 
   useEffect(() => {
@@ -67,6 +75,12 @@ export function EstimateBuilder({ open, onClose, customers = [], services = [], 
       setNotes("");
       setSavingTemplate(false);
       setTemplateName("");
+      setEstimateType("standard");
+      setSelectedAddressId("primary");
+      setPackages([
+        { id: uid(), name: "Basic", description: "", lineItems: [{ id: uid(), description: "", quantity: 1, unitPrice: 0 }] },
+        { id: uid(), name: "Premium", description: "", lineItems: [{ id: uid(), description: "", quantity: 1, unitPrice: 0 }] },
+      ]);
     }
   }, [open, customers]);
 
@@ -75,10 +89,17 @@ export function EstimateBuilder({ open, onClose, customers = [], services = [], 
   const tax = afterDisc * (taxRate / 100);
   const tot = afterDisc + tax;
 
-  const addSvc = sid => {
-    const s = services.find(x => x.id === sid);
+  const addSvc = (sid: string) => {
+    const s = services.find((x: any) => x.id === sid);
     if (!s) return;
-    setItems([...items.filter(i => i.description), { id: uid(), description: s.name, quantity: 1, unitPrice: s.price }]);
+    const price = Number((s as any).basePrice || (s as any).price || 0);
+    const desc = s.name;
+    const custDesc = (s as any).customerDescription || "";
+    const intNotes = (s as any).internalNotes || "";
+    setItems((prev: any[]) => [...prev.filter((i: any) => i.description), { id: uid(), description: desc, quantity: 1, unitPrice: price, catalogPrice: price, notes: custDesc || undefined, notesInternal: false, _serviceInternalNotes: intNotes || undefined }]);
+    if (intNotes && !internalNote.includes(intNotes)) {
+      setInternalNote(prev => prev ? prev + "\n" + intNotes : intNotes);
+    }
   };
 
   const loadTemplate = tpl => {
@@ -98,8 +119,14 @@ export function EstimateBuilder({ open, onClose, customers = [], services = [], 
   };
 
   const submit = () => {
-    if (!cid || items.some(i => !i.description)) return;
-    onSave({ id: uid(), customerId: cid, lineItems: items, subtotal: sub, discount: Number(discount), depositRequired: Number(depositRequired), tax, total: tot, status: "pending", createdAt: today(), validUntil: vu, viewed: false, viewedAt: null, terms, notes, internalNote });
+    if (!cid) return;
+    if (estimateType !== "package" && items.some((i: any) => !i.description)) return;
+    const pkgData = estimateType === "package" ? packages.map(p => ({
+      ...p,
+      subtotal: p.lineItems.reduce((s: number, i: any) => s + Number(i.quantity) * Number(i.unitPrice), 0),
+    })) : undefined;
+    const usedItems = estimateType === "package" ? [] : items;
+    onSave({ id: uid(), customerId: cid, estimateType, lineItems: usedItems, packages: pkgData, subtotal: sub, discount: Number(discount), depositRequired: Number(depositRequired), tax, total: tot, status: "pending", createdAt: today(), validUntil: vu, viewed: false, viewedAt: null, terms, notes, internalNote });
   };
 
   return (
@@ -108,6 +135,35 @@ export function EstimateBuilder({ open, onClose, customers = [], services = [], 
         <div className="grid md:grid-cols-2 gap-3">
           <div><label className="text-xs text-white/60 mb-1 block">Customer</label><GSel value={cid} onChange={e => setCid(e.target.value)}>{customers.map(c => <option key={c.id} value={c.id} className="bg-black">{c.firstName} {c.lastName}</option>)}</GSel></div>
           <div><label className="text-xs text-white/60 mb-1 block">Valid until</label><GDate value={vu} onChange={e => setVu(e.target.value)} /></div>
+        </div>
+
+        {/* Address selector — shown when customer has additional addresses */}
+        {(() => {
+          const cust = customers.find((c: any) => c.id === cid);
+          const addrs = cust?.addresses || [];
+          if (!addrs.length) return null;
+          return (
+            <div>
+              <label className="text-xs text-white/60 mb-1 block flex items-center gap-1"><MapPin size={10} />Service Address</label>
+              <GSel value={selectedAddressId} onChange={e => setSelectedAddressId(e.target.value)} className="!text-xs">
+                <option value="primary" className="bg-black">Primary — {cust?.address}</option>
+                {addrs.map((a: any) => <option key={a.id} value={a.id} className="bg-black">{a.label ? `${a.label} — ` : ""}{a.street}{a.city ? `, ${a.city}` : ""}</option>)}
+              </GSel>
+            </div>
+          );
+        })()}
+
+        {/* Estimate Type selector */}
+        <div>
+          <label className="text-xs text-white/60 mb-1.5 block">Estimate Type</label>
+          <div className="flex gap-1 p-1 bg-black/40 border border-white/10 rounded-xl">
+            {([["standard", "Standard", "Fixed price, accept/decline"], ["options", "Options", "Customer toggles items"], ["package", "Package", "Customer picks a tier"]] as const).map(([v, label, desc]) => (
+              <button key={v} onClick={() => setEstimateType(v)} className={"flex-1 px-2 py-2 rounded-lg text-xs text-center transition " + (estimateType === v ? "bg-gradient-to-r from-red-600 to-red-800 text-white font-medium" : "text-white/50 hover:text-white hover:bg-white/5")}>
+                <div className="font-medium">{label}</div>
+                <div className={"text-[9px] mt-0.5 " + (estimateType === v ? "text-red-200/70" : "text-white/30")}>{desc}</div>
+              </button>
+            ))}
+          </div>
         </div>
 
         {/* Template loader */}
@@ -122,7 +178,14 @@ export function EstimateBuilder({ open, onClose, customers = [], services = [], 
 
         <div className="p-3 bg-black/40 border border-red-900/20 rounded-xl">
           <label className="text-xs text-white/60 mb-1 block">Add from catalog</label>
-          <GSel onChange={e => e.target.value && addSvc(e.target.value)} value=""><option value="" className="bg-black">Select service...</option>{services.map(s => <option key={s.id} value={s.id} className="bg-black">{s.name} — {fmt(s.price)}</option>)}</GSel>
+          <GSel onChange={e => e.target.value && addSvc(e.target.value)} value="">
+            <option value="" className="bg-black">Select service…</option>
+            {(services as any[]).map(s => {
+              const price = s.basePrice || s.price || 0;
+              const range = s.minPrice && s.maxPrice ? ` (${fmt(s.minPrice)}–${fmt(s.maxPrice)})` : "";
+              return <option key={s.id} value={s.id} className="bg-black">{s.name} — {fmt(price)}{range}</option>;
+            })}
+          </GSel>
         </div>
 
         {/* AI Pricing Assistant — sqft-based + AI comparables */}
@@ -169,9 +232,42 @@ export function EstimateBuilder({ open, onClose, customers = [], services = [], 
         {/* Chemical Cost Calculator (AI-powered) */}
         <ChemicalCostCalc items={items} settings={settings} />
 
-        <div>
+        {/* Package builder — shown only for package type */}
+        {estimateType === "package" && (
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <label className="text-xs text-white/60">Packages ({packages.length})</label>
+              {packages.length < 4 && <button onClick={() => setPackages(p => [...p, { id: uid(), name: `Package ${p.length + 1}`, description: "", lineItems: [{ id: uid(), description: "", quantity: 1, unitPrice: 0 }] }])} className="text-xs text-red-400 hover:text-red-300 flex items-center gap-1"><Plus size={12} />Add Package</button>}
+            </div>
+            {packages.map((pkg, pi) => (
+              <Glass key={pkg.id} className="p-3 !bg-black/40">
+                <div className="flex items-center gap-2 mb-2">
+                  <GInput value={pkg.name} onChange={e => setPackages(p => p.map((x, i) => i === pi ? { ...x, name: e.target.value } : x))} placeholder="Package name (e.g. Basic)" className="!text-xs font-medium flex-1" />
+                  {packages.length > 2 && <button onClick={() => setPackages(p => p.filter((_, i) => i !== pi))} className="p-1.5 text-red-400/60 hover:text-red-400"><Trash2 size={12} /></button>}
+                </div>
+                <GInput value={pkg.description} onChange={e => setPackages(p => p.map((x, i) => i === pi ? { ...x, description: e.target.value } : x))} placeholder="What's included…" className="!text-xs mb-2" />
+                <div className="space-y-1.5">
+                  {pkg.lineItems.map((li: any) => (
+                    <div key={li.id} className="grid grid-cols-12 gap-1 items-center">
+                      <div className="col-span-7"><GInput placeholder="Service" value={li.description} onChange={e => setPackages(p => p.map((x, i) => i === pi ? { ...x, lineItems: x.lineItems.map((l: any) => l.id === li.id ? { ...l, description: e.target.value } : l) } : x))} className="!text-xs" /></div>
+                      <div className="col-span-2"><GInput type="number" placeholder="Qty" value={li.quantity} onChange={e => setPackages(p => p.map((x, i) => i === pi ? { ...x, lineItems: x.lineItems.map((l: any) => l.id === li.id ? { ...l, quantity: e.target.value } : l) } : x))} className="!text-xs" /></div>
+                      <div className="col-span-2"><GInput type="number" step="0.01" min="0" placeholder="$" value={li.unitPrice} onChange={e => setPackages(p => p.map((x, i) => i === pi ? { ...x, lineItems: x.lineItems.map((l: any) => l.id === li.id ? { ...l, unitPrice: e.target.value } : l) } : x))} className="!text-xs" /></div>
+                      <div className="col-span-1 text-right">{pkg.lineItems.length > 1 && <button onClick={() => setPackages(p => p.map((x, i) => i === pi ? { ...x, lineItems: x.lineItems.filter((l: any) => l.id !== li.id) } : x))} className="p-1 text-red-400/60 hover:text-red-400"><X size={10} /></button>}</div>
+                    </div>
+                  ))}
+                </div>
+                <div className="flex items-center justify-between mt-2">
+                  <button onClick={() => setPackages(p => p.map((x, i) => i === pi ? { ...x, lineItems: [...x.lineItems, { id: uid(), description: "", quantity: 1, unitPrice: 0 }] } : x))} className="text-[10px] text-red-400/60 hover:text-red-400 flex items-center gap-1"><Plus size={10} />Add line</button>
+                  <div className="text-xs font-bold text-red-400">{fmt(pkg.lineItems.reduce((s: number, l: any) => s + Number(l.quantity) * Number(l.unitPrice), 0))}</div>
+                </div>
+              </Glass>
+            ))}
+          </div>
+        )}
+
+        <div className={estimateType === "package" ? "hidden" : ""}>
           <div className="flex items-center justify-between mb-2">
-            <label className="text-xs text-white/60">Line items</label>
+            <label className="text-xs text-white/60">{estimateType === "options" ? "Line items (customers can toggle optional ones)" : "Line items"}</label>
             <div className="flex items-center gap-2">
               <button onClick={() => setSavingTemplate(!savingTemplate)} className="text-[10px] text-purple-400 hover:text-purple-300 flex items-center gap-1"><Save size={10} />Save as template</button>
               <button onClick={() => setItems([...items, { id: uid(), description: "", quantity: 1, unitPrice: 0 }])} className="text-xs text-red-400 hover:text-red-300 flex items-center gap-1"><Plus size={12} /> Add</button>
@@ -182,15 +278,66 @@ export function EstimateBuilder({ open, onClose, customers = [], services = [], 
             <GBtn onClick={saveAsTemplate} disabled={!templateName.trim()} className="!text-xs !py-1.5 flex-shrink-0">Save</GBtn>
             <button onClick={() => setSavingTemplate(false)} className="text-white/40 hover:text-white"><X size={14} /></button>
           </div>}
-          <div className="space-y-2">
-            {items.map(it => (
-              <div key={it.id} className="grid grid-cols-12 gap-2 items-center">
-                <div className="col-span-12 md:col-span-6"><GInput placeholder="Description" value={it.description} onChange={e => setItems(items.map(i => i.id === it.id ? { ...i, description: e.target.value } : i))} /></div>
-                <div className="col-span-4 md:col-span-2"><GInput type="number" placeholder="Qty" value={it.quantity} onChange={e => setItems(items.map(i => i.id === it.id ? { ...i, quantity: e.target.value } : i))} /></div>
-                <div className="col-span-6 md:col-span-3"><GInput type="number" placeholder="Price" value={it.unitPrice} onChange={e => setItems(items.map(i => i.id === it.id ? { ...i, unitPrice: e.target.value } : i))} /></div>
-                <div className="col-span-2 md:col-span-1 text-right">{items.length > 1 && <button onClick={() => setItems(items.filter(i => i.id !== it.id))} className="p-2 text-red-400 hover:bg-red-900/30 rounded-lg"><Trash2 size={14} /></button>}</div>
-              </div>
-            ))}
+          <div className="space-y-1.5">
+            {(items as any[]).map(it => {
+              const isExpanded = expandedItems.includes(it.id);
+              return (
+                <div key={it.id} className={"rounded-xl border transition " + (isExpanded ? "border-white/15 bg-white/5" : "border-transparent")}>
+                  <div className="grid grid-cols-12 gap-2 items-center p-1">
+                    <div className="col-span-12 md:col-span-6">
+                      <GInput placeholder="Description" value={it.description} onChange={e => setItems((items as any[]).map(i => i.id === it.id ? { ...i, description: e.target.value } : i))} />
+                    </div>
+                    <div className="col-span-4 md:col-span-2">
+                      <GInput type="number" placeholder="Qty" value={it.quantity} onChange={e => setItems((items as any[]).map(i => i.id === it.id ? { ...i, quantity: e.target.value } : i))} />
+                    </div>
+                    <div className="col-span-5 md:col-span-3">
+                      <GInput type="number" step="0.01" min="0" placeholder="Price" value={it.unitPrice} onChange={e => setItems((items as any[]).map(i => i.id === it.id ? { ...i, unitPrice: e.target.value } : i))} />
+                      {it.catalogPrice && Number(it.catalogPrice) !== Number(it.unitPrice) && (
+                        <div className="text-[9px] text-blue-400/60 mt-0.5">Suggested: {fmt(Number(it.catalogPrice))}</div>
+                      )}
+                    </div>
+                    <div className="col-span-3 md:col-span-1 flex items-center justify-end gap-0.5">
+                      {estimateType === "options" && (
+                        <label title="Optional item — customer can toggle" className="flex items-center gap-0.5 cursor-pointer mr-1">
+                          <input type="checkbox" checked={!!it.optional} onChange={e => setItems((items as any[]).map(i => i.id === it.id ? { ...i, optional: e.target.checked } : i))} className="w-3 h-3 accent-blue-500" />
+                          <span className="text-[9px] text-blue-400">opt</span>
+                        </label>
+                      )}
+                      <button onClick={() => toggleExpand(it.id)} title="Notes & photo" className={"p-1.5 rounded-lg transition " + (isExpanded ? "bg-white/10 text-white" : "text-white/30 hover:text-white hover:bg-white/5")}>
+                        <Paperclip size={12} />
+                      </button>
+                      {(items as any[]).length > 1 && <button onClick={() => setItems((items as any[]).filter(i => i.id !== it.id))} className="p-1.5 text-red-400/60 hover:text-red-400 hover:bg-red-900/20 rounded-lg"><Trash2 size={12} /></button>}
+                    </div>
+                  </div>
+                  {isExpanded && (
+                    <div className="px-2 pb-2 space-y-2">
+                      <div className="flex items-start gap-2">
+                        {it.photo && <img src={it.photo} alt="" className="w-12 h-12 rounded-lg object-cover border border-white/10 flex-shrink-0" />}
+                        <label className="cursor-pointer flex-shrink-0">
+                          <input type="file" accept="image/*" capture="environment" className="hidden" onChange={e => {
+                            const f = e.target.files?.[0]; if (!f) return;
+                            const r = new FileReader();
+                            r.onload = ev => setItems((items as any[]).map(i => i.id === it.id ? { ...i, photo: ev.target!.result as string } : i));
+                            r.readAsDataURL(f); e.target.value = "";
+                          }} />
+                          <div className="inline-flex items-center gap-1 text-[10px] px-2.5 py-1 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-white/50 cursor-pointer transition">
+                            <Plus size={8} />{it.photo ? "Change Photo" : "📷 Add Photo"}
+                          </div>
+                        </label>
+                        {it.photo && <button onClick={() => setItems((items as any[]).map(i => i.id === it.id ? { ...i, photo: undefined } : i))} className="text-[10px] text-red-400/60 hover:text-red-400 px-1.5 py-1 rounded border border-red-900/30">Remove</button>}
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <GTxt rows={1} value={it.notes || ""} onChange={e => setItems((items as any[]).map(i => i.id === it.id ? { ...i, notes: e.target.value } : i))} placeholder={it.notesInternal ? "Internal note (crew only)…" : "Notes (visible on estimate)…"} className="!text-xs flex-1" />
+                        <label className="flex items-center gap-1 text-[10px] text-white/50 whitespace-nowrap cursor-pointer flex-shrink-0">
+                          <input type="checkbox" checked={!!it.notesInternal} onChange={e => setItems((items as any[]).map(i => i.id === it.id ? { ...i, notesInternal: e.target.checked } : i))} className="w-3 h-3 accent-yellow-500" />
+                          <Lock size={8} className="text-yellow-400" />Internal
+                        </label>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
           </div>
         </div>
 

@@ -45,6 +45,7 @@ import { ReferralsPage } from "./components/pages/ReferralsPage";
 import { CrewView } from "./components/pages/CrewView";
 import { SettingsModal } from "./components/pages/SettingsModal";
 import { ClientPortal } from "./components/pages/ClientPortal";
+import { EmployeePortal } from "./components/pages/EmployeePortal";
 
 // ─── Seed data ────────────────────────────────────────────────────────────────
 import {
@@ -138,6 +139,7 @@ const navGroups = [
     items: [
       { id: "accountability", label: "Accountability", icon: Heart    },
       { id: "google",         label: "Workspace",      icon: Database },
+      { id: "portal",         label: "Team Portal",    icon: Monitor  },
     ],
   },
 ];
@@ -156,18 +158,24 @@ export function App() {
   // ── Manual OAuth token exchange ───────────────────────────────────────────
   // detectSessionInUrl isn't reliably processing the implicit-flow hash, so we
   // extract the tokens ourselves and call setSession() directly on mount.
+  // provider_token (Google OAuth token) is bridged via sessionStorage so
+  // applyGoogleIdentity (which has setSettings) can persist it.
   useEffect(() => {
     const hash = window.location.hash;
     if (!hash.includes("access_token")) return;
     const params = new URLSearchParams(hash.substring(1));
     const access_token = params.get("access_token");
     const refresh_token = params.get("refresh_token");
+    const provider_token = params.get("provider_token");
+    // Bridge Google token to applyGoogleIdentity via sessionStorage
+    if (provider_token) sessionStorage.setItem("smocks.gpt", provider_token);
     if (access_token && refresh_token) {
       supabase.auth.setSession({ access_token, refresh_token }).then(({ data, error }) => {
         if (error) {
           console.error("setSession failed:", error);
         } else {
-          console.log("setSession succeeded — user:", data.session?.user?.email);
+          console.log("setSession succeeded — user:", data.session?.user?.email,
+            "provider_token in hash:", !!provider_token);
           window.location.hash = "";
         }
       });
@@ -179,6 +187,9 @@ export function App() {
   const [pinUnlocked, setPinUnlocked] = useState(!pinSet);
   const [pinInput, setPinInput] = useState("");
   const [pinError, setPinError] = useState(false);
+
+  // ── Employee portal session (email/password auth, separate from Google OAuth) ──
+  const [empSession, setEmpSession] = useState<any>(null);
 
   // ── OAuth processing guard ───────────────────────────────────────────────
   // Set to true when the page loads with an OAuth callback hash (#access_token=...).
@@ -196,7 +207,7 @@ export function App() {
   const [page, setPage] = useState(() => {
     // Restore page from URL hash on first load
     const hash = window.location.hash.replace(/^#\/?/, "");
-    const valid = ["dashboard","alfred","inbox","customers","estimates","invoices","pipeline","intake","jobs","calendar","crew","campaigns","reviews","automations","social","referrals","expenses","reports","analytics","budget","personal","accountability","employees","fleet","chemicals","google"];
+    const valid = ["dashboard","alfred","inbox","customers","estimates","invoices","pipeline","intake","jobs","calendar","crew","campaigns","reviews","automations","social","referrals","expenses","reports","analytics","budget","personal","accountability","employees","fleet","chemicals","google","portal"];
     return valid.includes(hash) ? hash : "dashboard";
   });
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -212,7 +223,7 @@ export function App() {
 
   // Listen for browser back/forward
   useEffect(() => {
-    const valid = ["dashboard","alfred","inbox","customers","estimates","invoices","pipeline","intake","jobs","calendar","crew","campaigns","reviews","automations","social","referrals","expenses","reports","analytics","budget","personal","accountability","employees","fleet","chemicals","google"];
+    const valid = ["dashboard","alfred","inbox","customers","estimates","invoices","pipeline","intake","jobs","calendar","crew","campaigns","reviews","automations","social","referrals","expenses","reports","analytics","budget","personal","accountability","employees","fleet","chemicals","google","portal"];
     const handler = () => {
       const hash = window.location.hash.replace(/^#\/?/, "");
       if (valid.includes(hash)) setPage(hash);
@@ -345,11 +356,18 @@ export function App() {
       const googleId = (session.user.identities || []).find((i: any) => i.provider === "google");
       if (!googleId) return;
       const googleEmail = googleId.identity_data?.email || session.user.email || "";
+      // Pick up the Google OAuth token bridged from the hash via sessionStorage.
+      // session.provider_token is only populated immediately after setSession with the
+      // original hash; on subsequent loads it is null, so the persisted value is kept.
+      const bridgedToken = sessionStorage.getItem("smocks.gpt") || "";
+      if (bridgedToken) sessionStorage.removeItem("smocks.gpt");
+      const providerToken = bridgedToken || session.provider_token || "";
       setSettings((prev: any) => ({
         ...prev,
         googleConnected: true,
         googleEmail,
         googleScopes: { gmail: true, calendar: true, drive: true, contacts: true, tasks: true },
+        ...(providerToken ? { googleProviderToken: providerToken } : {}),
       }));
     };
 
@@ -365,6 +383,18 @@ export function App() {
           "provider_token present:", !!session?.provider_token,
           "user identities:", JSON.stringify(session?.user?.identities),
           "app_metadata:", JSON.stringify(session?.user?.app_metadata));
+
+        // Detect employee (email/password) sessions vs owner (Google OAuth) sessions
+        const isGoogle = (session?.user?.identities || []).some((i: any) => i.provider === "google");
+        const empRole = session?.user?.user_metadata?.role;
+        const isEmployee = session && !isGoogle && (empRole === "technician" || empRole === "manager");
+
+        if (isEmployee) {
+          setEmpSession(session);
+          setOauthProcessing(false);
+          return;
+        }
+
         applyGoogleIdentity(session);
         if (event === "SIGNED_IN" || (event as string) === "IDENTITY_LINKED") {
           if ((session?.user?.identities || []).some((i: any) => i.provider === "google")) {
@@ -387,11 +417,19 @@ export function App() {
         "provider_token present:", !!initial?.provider_token,
         "identities:", JSON.stringify(initial?.user?.identities),
         "app_metadata:", JSON.stringify(initial?.user?.app_metadata));
-      applyGoogleIdentity(initial);
-      // If initialize() already exchanged the token (SIGNED_IN missed), handle navigation here
-      if (isOAuthCallback && (initial?.user?.identities || []).some((i: any) => i.provider === "google")) {
-        setPage("google");
+      // Check if existing session is an employee session
+      const initIsGoogle = (initial?.user?.identities || []).some((i: any) => i.provider === "google");
+      const initEmpRole = initial?.user?.user_metadata?.role;
+      if (initial && !initIsGoogle && (initEmpRole === "technician" || initEmpRole === "manager")) {
+        setEmpSession(initial);
         setOauthProcessing(false);
+      } else {
+        applyGoogleIdentity(initial);
+        // If initialize() already exchanged the token (SIGNED_IN missed), handle navigation here
+        if (isOAuthCallback && initIsGoogle) {
+          setPage("google");
+          setOauthProcessing(false);
+        }
       }
     })();
 
@@ -454,6 +492,22 @@ export function App() {
           </div>
         </div>
       </div>
+    );
+  }
+
+  // ── Employee portal — takes over when an employee is authenticated ────────
+  if (empSession || page === "portal") {
+    return (
+      <EmployeePortal
+        empSession={empSession}
+        setEmpSession={setEmpSession}
+        jobs={jobs}
+        setJobs={setJobs}
+        employees={employees}
+        customers={customers}
+        settings={settings}
+        toast={toast}
+      />
     );
   }
 
@@ -601,7 +655,7 @@ export function App() {
                 {page === "invoices"       && <InvoicesPage estimates={estimates} setEstimates={setEstimates} customers={customers} settings={settings} toast={toast} />}
                 {page === "jobs"           && <JobsPage jobs={jobs} setJobs={setJobs} customers={customers} employees={employees} estimates={estimates} setEstimates={setEstimates} settings={settings} toast={toast} posts={socialPosts} setPosts={setSocialPosts} setTimeline={setTimeline} />}
                 {page === "pipeline"       && <PipelinePage jobs={jobs} setJobs={setJobs} customers={customers} toast={toast} />}
-                {page === "calendar"       && <CalendarPage jobs={jobs} setJobs={setJobs} customers={customers} toast={toast} settings={settings} />}
+                {page === "calendar"       && <CalendarPage jobs={jobs} setJobs={setJobs} customers={customers} employees={employees} toast={toast} settings={settings} />}
                 {page === "inbox"          && <InboxPage threads={inboxThreads} setThreads={setInboxThreads} customers={customers} settings={settings} toast={toast} />}
                 {page === "campaigns"      && <CampaignsPage campaigns={campaigns} setCampaigns={setCampaigns} customers={customers} estimates={estimates} jobs={jobs} settings={settings} inboxThreads={inboxThreads} setInboxThreads={setInboxThreads} toast={toast} />}
                 {page === "reviews"        && <ReviewsPage reviews={reviews} setReviews={setReviews} jobs={jobs} customers={customers} toast={toast} negativeAlerts={negativeAlerts} setNegativeAlerts={setNegativeAlerts} settings={settings} setSettings={setSettings} />}

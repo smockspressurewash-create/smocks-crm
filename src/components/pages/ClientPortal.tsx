@@ -83,12 +83,42 @@ export function ClientPortal({ estimate: e, customer: c, settings = {} as AppSet
   const [sigData, setSigData] = useState(null);
   const [tip, setTip] = useState(0);
   const [customTip, setCustomTip] = useState("");
+  // Options type — toggleable items
+  const [enabledItems, setEnabledItems] = useState<Record<string, boolean>>({});
+  // Package type — selected package
+  const [selectedPkgId, setSelectedPkgId] = useState<string>("");
   const canvasRef = useRef(null);
   const drawing = useRef(false);
   const lastPos = useRef(null);
 
-  const depositAmt = e ? (e.depositRequired || Math.round(e.total * 0.25)) : 0;
-  const payAmt = payType === "deposit" ? depositAmt : (e?.total || 0);
+  // Initialize options/package state when estimate is available
+  useEffect(() => {
+    if (!e) return;
+    if (e.estimateType === "options") {
+      const init: Record<string, boolean> = {};
+      (e.lineItems || []).forEach((li: any) => { init[li.id] = !li.optional; });
+      setEnabledItems(init);
+    }
+    if (e.estimateType === "package" && e.packages?.length) {
+      setSelectedPkgId(e.packages[0].id);
+    }
+  }, [e?.id]);
+
+  // Compute effective total based on type
+  const effectiveLineItems = e?.estimateType === "options"
+    ? (e.lineItems || []).filter((li: any) => enabledItems[li.id] !== false)
+    : (e.lineItems || []);
+  const effectivePkg = e?.estimateType === "package"
+    ? (e.packages || []).find((p: any) => p.id === selectedPkgId)
+    : null;
+  const effectiveTotal = e?.estimateType === "package"
+    ? (effectivePkg?.subtotal || 0)
+    : e?.estimateType === "options"
+    ? effectiveLineItems.reduce((s: number, li: any) => s + Number(li.quantity) * Number(li.unitPrice), 0)
+    : (e?.total || 0);
+
+  const depositAmt = e ? (e.depositRequired || Math.round(effectiveTotal * 0.25)) : 0;
+  const payAmt = payType === "deposit" ? depositAmt : effectiveTotal;
   const totalWithTip = payAmt + tip;
 
   // Notify Will when estimate is first viewed
@@ -221,25 +251,90 @@ export function ClientPortal({ estimate: e, customer: c, settings = {} as AppSet
                 <div className="text-white/60 text-sm">{c.address}</div>
               </div>
               <div>
-                <div className="text-xs text-white/50 uppercase tracking-wider mb-2">Services</div>
-                <div className="space-y-2">
-                  {e.lineItems.map(li => (
-                    <div key={li.id} className="flex items-center justify-between p-3 bg-black/40 border border-red-900/20 rounded-xl">
-                      <div>
-                        <div className="font-medium text-sm">{li.description}</div>
-                        {li.quantity > 1 && <div className="text-xs text-white/50">× {li.quantity}</div>}
-                      </div>
-                      <div className="font-bold text-red-400">{fmt(li.quantity * li.unitPrice)}</div>
-                    </div>
-                  ))}
+                <div className="text-xs text-white/50 uppercase tracking-wider mb-2">
+                  {e.estimateType === "package" ? "Choose Your Package" : e.estimateType === "options" ? "Services — Select What You Need" : "Services"}
                 </div>
+
+                {/* PACKAGE type — radio buttons per package */}
+                {e.estimateType === "package" && (e.packages || []).map((pkg: any) => (
+                  <div key={pkg.id} onClick={() => setSelectedPkgId(pkg.id)} className={"mb-2 p-3 rounded-xl border-2 cursor-pointer transition " + (selectedPkgId === pkg.id ? "border-red-500 bg-red-950/20" : "border-white/10 bg-black/40 hover:border-white/20")}>
+                    <div className="flex items-center justify-between mb-1">
+                      <div className="flex items-center gap-2">
+                        <div className={"w-4 h-4 rounded-full border-2 flex items-center justify-center flex-shrink-0 " + (selectedPkgId === pkg.id ? "border-red-500" : "border-white/30")}>
+                          {selectedPkgId === pkg.id && <div className="w-2 h-2 rounded-full bg-red-500" />}
+                        </div>
+                        <div className="font-semibold text-sm">{pkg.name}</div>
+                      </div>
+                      <div className="font-bold text-red-400 text-sm">{fmt(pkg.subtotal || 0)}</div>
+                    </div>
+                    {pkg.description && <div className="text-xs text-white/50 ml-6 mb-1">{pkg.description}</div>}
+                    <div className="ml-6 space-y-0.5">
+                      {(pkg.lineItems || []).map((li: any) => <div key={li.id} className="text-xs text-white/60 flex justify-between"><span>· {li.description}</span><span>{fmt(li.quantity * li.unitPrice)}</span></div>)}
+                    </div>
+                  </div>
+                ))}
+
+                {/* OPTIONS type — checkboxes */}
+                {e.estimateType === "options" && (
+                  <div className="space-y-2">
+                    {(e.lineItems || []).map((li: any) => {
+                      const enabled = enabledItems[li.id] !== false;
+                      return (
+                        <div key={li.id} onClick={() => li.optional && setEnabledItems(p => ({ ...p, [li.id]: !enabled }))} className={"p-3 rounded-xl border transition " + (li.optional ? "cursor-pointer " : "") + (enabled ? "bg-black/40 border-red-900/20" : "bg-black/20 border-white/5 opacity-60")}>
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="flex items-start gap-2 flex-1 min-w-0">
+                              {li.optional ? (
+                                <div className={"w-4 h-4 rounded border-2 flex items-center justify-center flex-shrink-0 mt-0.5 " + (enabled ? "border-red-500 bg-red-500" : "border-white/30")}>
+                                  {enabled && <CheckCircle size={10} className="text-white" />}
+                                </div>
+                              ) : <div className="w-4 h-4 mt-0.5 flex-shrink-0" />}
+                              <div className="flex-1 min-w-0">
+                                <div className="font-medium text-sm">{li.description}</div>
+                                {li.optional && <div className="text-[10px] text-blue-400/70 mt-0.5">Optional — tap to toggle</div>}
+                                {li.notes && !li.notesInternal && <div className="text-xs text-white/60 mt-1 italic">{li.notes}</div>}
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-2 flex-shrink-0">
+                              {li.photo && <img src={li.photo} alt="" className="w-10 h-10 rounded-lg object-cover border border-white/10" />}
+                              <div className={"font-bold text-sm " + (enabled ? "text-red-400" : "text-white/30")}>{fmt(li.quantity * li.unitPrice)}</div>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                    <div className="text-xs text-white/40 text-right">Running total: <span className="text-white font-semibold">{fmt(effectiveTotal)}</span></div>
+                  </div>
+                )}
+
+                {/* STANDARD type — original display */}
+                {(!e.estimateType || e.estimateType === "standard") && (
+                  <div className="space-y-2">
+                    {(e.lineItems || []).map((li: any) => (
+                      <div key={li.id} className="p-3 bg-black/40 border border-red-900/20 rounded-xl">
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="flex-1 min-w-0">
+                            <div className="font-medium text-sm">{li.description}</div>
+                            {li.quantity > 1 && <div className="text-xs text-white/50">× {li.quantity}</div>}
+                            {li.notes && !li.notesInternal && <div className="text-xs text-white/60 mt-1 italic">{li.notes}</div>}
+                          </div>
+                          <div className="flex items-center gap-2 flex-shrink-0">
+                            {li.photo && <img src={li.photo} alt="" className="w-10 h-10 rounded-lg object-cover border border-white/10" />}
+                            <div className="font-bold text-red-400">{fmt(li.quantity * li.unitPrice)}</div>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
               <Glass className="p-4 !bg-black/60">
                 <div className="space-y-1 text-sm">
-                  <div className="flex justify-between text-white/70"><span>Subtotal</span><span>{fmt(e.subtotal)}</span></div>
-                  {e.discount > 0 && <div className="flex justify-between text-green-400"><span>Discount</span><span>− {fmt(e.discount)}</span></div>}
-                  <div className="flex justify-between text-white/70"><span>Tax</span><span>{fmt(e.tax)}</span></div>
-                  <div className="flex justify-between font-bold text-base pt-2 border-t border-red-900/30"><span>Total</span><span className="text-red-400 text-xl">{fmt(e.total)}</span></div>
+                  {(!e.estimateType || e.estimateType === "standard") && <>
+                    <div className="flex justify-between text-white/70"><span>Subtotal</span><span>{fmt(e.subtotal)}</span></div>
+                    {e.discount > 0 && <div className="flex justify-between text-green-400"><span>Discount</span><span>− {fmt(e.discount)}</span></div>}
+                    <div className="flex justify-between text-white/70"><span>Tax</span><span>{fmt(e.tax)}</span></div>
+                  </>}
+                  <div className="flex justify-between font-bold text-base pt-2 border-t border-red-900/30"><span>Total</span><span className="text-red-400 text-xl">{fmt(effectiveTotal)}</span></div>
                 </div>
               </Glass>
               {e.notes && <Glass className="p-3 !bg-blue-950/20 !border-blue-700/30"><div className="text-xs text-white/60 mb-1">Notes</div><div className="text-sm">{e.notes}</div></Glass>}
