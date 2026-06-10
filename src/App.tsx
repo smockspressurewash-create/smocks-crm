@@ -208,7 +208,7 @@ export function App() {
   // ── Navigation ────────────────────────────────────────────────────────────
   const [page, setPage] = useState(() => {
     // Restore page from URL hash on first load
-    const hash = window.location.hash.replace(/^#\/?/, "");
+    const hash = window.location.hash.replace(/^#\/?/, "").split("?")[0];
     const valid = ["dashboard","alfred","inbox","customers","estimates","invoices","pipeline","intake","jobs","calendar","crew","campaigns","reviews","automations","social","referrals","expenses","reports","analytics","budget","personal","accountability","employees","fleet","chemicals","google","portal"];
     return valid.includes(hash) ? hash : "dashboard";
   });
@@ -227,7 +227,7 @@ export function App() {
   useEffect(() => {
     const valid = ["dashboard","alfred","inbox","customers","estimates","invoices","pipeline","intake","jobs","calendar","crew","campaigns","reviews","automations","social","referrals","expenses","reports","analytics","budget","personal","accountability","employees","fleet","chemicals","google","portal"];
     const handler = () => {
-      const hash = window.location.hash.replace(/^#\/?/, "");
+      const hash = window.location.hash.replace(/^#\/?/, "").split("?")[0];
       if (valid.includes(hash)) setPage(hash);
     };
     window.addEventListener("hashchange", handler);
@@ -419,6 +419,12 @@ export function App() {
           "user identities:", JSON.stringify(session?.user?.identities),
           "app_metadata:", JSON.stringify(session?.user?.app_metadata));
 
+        if (event === "SIGNED_OUT") {
+          setEmpSession(null);
+          setOauthProcessing(false);
+          return;
+        }
+
         // Detect employee (email/password) sessions vs owner (Google OAuth) sessions
         const isGoogle = (session?.user?.identities || []).some((i: any) => i.provider === "google");
         const empRole = session?.user?.user_metadata?.role;
@@ -542,7 +548,7 @@ export function App() {
         customers={customers}
         settings={settings}
         toast={toast}
-        isOwnerView={!empSession && page === "portal"}
+        isOwnerView={!empSession && page === "portal" && !window.location.hash.includes("invite=")}
         onClose={() => setPage("dashboard")}
       />
     );

@@ -659,6 +659,8 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     if (!match) return;
     const code = match[1];
     setInviteCode(code);
+    // Sign out any existing session so the invite registration form is always shown fresh
+    supabase.auth.signOut().catch(() => {});
     try {
       const invites: any[] = JSON.parse(localStorage.getItem("smocks.invites") || "[]");
       const inv = invites.find(i => i.code === code && !i.used);
@@ -857,7 +859,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
               <span className="text-2xl font-black">S</span>
             </div>
             <div className="text-xl font-bold">{settings.companyName || "Smock's OS"}</div>
-            <div className="text-sm text-white/50 mt-1">Employee Portal</div>
+            <div className="text-sm text-white/50 mt-1">{inviteRecord ? "Create Your Crew Account" : "Employee Portal"}</div>
           </div>
 
           <div className="space-y-3">
