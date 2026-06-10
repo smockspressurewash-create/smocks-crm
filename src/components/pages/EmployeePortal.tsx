@@ -697,8 +697,6 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     if (!match) return;
     const code = match[1];
     setInviteCode(code);
-    // Sign out any existing session so the invite registration form is always shown fresh
-    supabase.auth.signOut().catch(() => {});
 
     const applyInvite = (inv: any) => {
       if (!inv) { setLoginError("Invalid or expired invite link."); return; }
@@ -718,6 +716,16 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     };
 
     const lookup = async () => {
+      // Only sign out if there is no current session — never kick out an employee
+      // who just signed in, even if the URL still contains an invite code.
+      const { data: { session: existingSession } } = await supabase.auth.getSession();
+      if (!existingSession) {
+        supabase.auth.signOut().catch(() => {});
+      } else {
+        // Already signed in — no need to process invite registration
+        return;
+      }
+
       // 1. Try Supabase first — works from any browser/device
       try {
         const { data, error } = await (supabase as any)
