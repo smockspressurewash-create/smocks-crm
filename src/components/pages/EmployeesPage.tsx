@@ -77,6 +77,8 @@ import { ChemicalModal } from "../ui/ChemicalModal";
 import { WeeklyBusinessReview } from "../ui/WeeklyBusinessReview";
 import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 
+interface InviteRecord { code: string; firstName: string; lastName: string; email: string; role: string; hourlyRate: number; createdAt: string; used?: boolean; }
+
 export function EmployeesPage({ employees = [], setEmployees, jobs = [] }) {
   const [modal, setModal] = useState({ open: false, data: null });
   const [view, setView] = useState("list"); // list | hours | payroll
@@ -84,7 +86,26 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [] }) {
   const [payPeriodEnd, setPayPeriodEnd] = usePersistent("smocks.payPeriodEnd", today());
   const [f, setF] = useState({ id: "", firstName: "", lastName: "", role: "Technician", status: "active", hourlyRate: 18, phone: "", email: "", startDate: today(), emergencyContact: "", notes: "" });
   const [showPortalInfo, setShowPortalInfo] = useState(false);
+  const [inviteOpen, setInviteOpen] = useState(false);
+  const [invites, setInvites] = usePersistent<InviteRecord[]>("smocks.invites", []);
+  const [inviteF, setInviteF] = useState({ firstName: "", lastName: "", email: "", role: "Technician", hourlyRate: 18 });
+  const [inviteCreated, setInviteCreated] = useState<InviteRecord | null>(null);
   const portalUrl = window.location.origin + window.location.pathname + "#/portal";
+
+  const generateInvite = () => {
+    if (!inviteF.firstName.trim() || !inviteF.email.trim()) return;
+    const code = Math.random().toString(36).slice(2, 9).toUpperCase();
+    const inv: InviteRecord = { code, ...inviteF, hourlyRate: Number(inviteF.hourlyRate), createdAt: new Date().toISOString().slice(0, 10) };
+    setInvites(prev => [...prev, inv]);
+    // Pre-create employee record so the portal can match immediately
+    const alreadyExists = employees.some(e => e.email.toLowerCase() === inviteF.email.toLowerCase());
+    if (!alreadyExists) {
+      setEmployees((prev: any[]) => [...prev, { id: uid(), firstName: inv.firstName, lastName: inv.lastName, email: inv.email, role: inv.role, hourlyRate: inv.hourlyRate, status: "active", phone: "", startDate: today(), emergencyContact: "", notes: "Invited — account pending" }]);
+    }
+    setInviteCreated(inv);
+  };
+
+  const inviteLink = (code: string) => `${portalUrl}?invite=${code}`;
 
   useEffect(() => { if (modal.data) setF(modal.data); else setF({ id: "", firstName: "", lastName: "", role: "Technician", status: "active", hourlyRate: 18, phone: "", email: "", startDate: today(), emergencyContact: "", notes: "" }); }, [modal]);
 
@@ -123,6 +144,9 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [] }) {
         <div className="flex gap-2">
           <button onClick={() => setShowPortalInfo(!showPortalInfo)} className="text-xs px-3 py-1.5 bg-black/40 border border-blue-700/40 text-blue-300 hover:bg-blue-950/30 rounded-xl transition flex items-center gap-1.5">
             <Globe size={12} />Team Portal
+          </button>
+          <button onClick={() => { setInviteOpen(true); setInviteCreated(null); setInviteF({ firstName: "", lastName: "", email: "", role: "Technician", hourlyRate: 18 }); }} className="text-xs px-3 py-1.5 bg-black/40 border border-green-700/40 text-green-300 hover:bg-green-950/30 rounded-xl transition flex items-center gap-1.5">
+            <UserCheck size={12} />Invite Member
           </button>
           <GBtn onClick={() => setModal({ open: true, data: null })}><Plus size={14} className="inline mr-1.5" />Add Employee</GBtn>
         </div>
@@ -266,6 +290,87 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [] }) {
           <div className="text-[10px] text-white/30 mt-1">Gross · FICA employer match additional 7.65%</div>
         </Glass>
       </div>}
+
+      {/* Active invites */}
+      {invites.filter(i => !i.used).length > 0 && view === "list" && (
+        <Glass className="p-4 !bg-green-950/10 !border-green-700/20">
+          <div className="text-xs font-semibold text-green-300 mb-2 flex items-center gap-1.5"><UserCheck size={12} />Pending Invites</div>
+          <div className="space-y-2">
+            {invites.filter(i => !i.used).map(inv => (
+              <div key={inv.code} className="flex items-center gap-3 py-2 border-b border-white/5 last:border-0">
+                <div className="flex-1 min-w-0">
+                  <div className="text-sm">{inv.firstName} {inv.lastName} <span className="text-white/40">·</span> <span className="text-white/50">{inv.email}</span></div>
+                  <div className="text-[10px] text-white/30 mt-0.5">{inv.role} · {fmt(inv.hourlyRate)}/hr · Sent {inv.createdAt}</div>
+                </div>
+                <button onClick={() => navigator.clipboard.writeText(inviteLink(inv.code))} className="text-xs text-blue-400 hover:text-blue-300 flex items-center gap-1 transition flex-shrink-0">
+                  <Copy size={11} />Copy Link
+                </button>
+                <button onClick={() => setInvites(prev => prev.filter(i => i.code !== inv.code))} className="text-white/30 hover:text-red-400 flex-shrink-0 transition">
+                  <X size={13} />
+                </button>
+              </div>
+            ))}
+          </div>
+        </Glass>
+      )}
+
+      {/* Invite modal */}
+      <Modal open={inviteOpen} onClose={() => { setInviteOpen(false); setInviteCreated(null); }} title="Invite Team Member" maxW="max-w-md">
+        {!inviteCreated ? (
+          <div className="space-y-3">
+            <div className="text-xs text-white/50 leading-relaxed">
+              Fill in the employee's details. An invite link will be generated that pre-creates their account in the roster. Share the link with the employee — they click it to sign up on the team portal.
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <div><label className="text-xs text-white/60 mb-1 block">First name *</label><GInput value={inviteF.firstName} onChange={e => setInviteF(p => ({ ...p, firstName: e.target.value }))} /></div>
+              <div><label className="text-xs text-white/60 mb-1 block">Last name</label><GInput value={inviteF.lastName} onChange={e => setInviteF(p => ({ ...p, lastName: e.target.value }))} /></div>
+            </div>
+            <div><label className="text-xs text-white/60 mb-1 block">Work email *</label><GInput type="email" value={inviteF.email} onChange={e => setInviteF(p => ({ ...p, email: e.target.value }))} placeholder="employee@example.com" /></div>
+            <div className="grid grid-cols-2 gap-2">
+              <div><label className="text-xs text-white/60 mb-1 block">Role</label>
+                <GSel value={inviteF.role} onChange={e => setInviteF(p => ({ ...p, role: e.target.value }))}>
+                  {["Technician","Lead Technician","Helper","Office","Sales"].map(r => <option key={r} value={r} className="bg-black">{r}</option>)}
+                </GSel>
+              </div>
+              <div><label className="text-xs text-white/60 mb-1 block">Hourly Rate ($)</label><GInput type="number" step="0.5" value={inviteF.hourlyRate} onChange={e => setInviteF(p => ({ ...p, hourlyRate: Number(e.target.value) }))} /></div>
+            </div>
+            <div className="flex gap-2 justify-end pt-2">
+              <GBtn variant="ghost" onClick={() => setInviteOpen(false)}>Cancel</GBtn>
+              <GBtn onClick={generateInvite} disabled={!inviteF.firstName.trim() || !inviteF.email.trim()}>Generate Invite Link</GBtn>
+            </div>
+          </div>
+        ) : (
+          <div className="space-y-4">
+            <div className="p-3 rounded-xl bg-green-950/30 border border-green-700/30 flex items-center gap-2">
+              <CheckCircle size={14} className="text-green-400 flex-shrink-0" />
+              <div className="text-sm text-green-300">Invite created for {inviteCreated.firstName} {inviteCreated.lastName}</div>
+            </div>
+            <div>
+              <div className="text-xs text-white/50 mb-1">Share this link with the employee:</div>
+              <div className="flex items-center gap-2">
+                <div className="flex-1 px-3 py-2 bg-black/50 border border-white/10 rounded-xl text-xs font-mono text-white/60 truncate">{inviteLink(inviteCreated.code)}</div>
+                <button onClick={() => navigator.clipboard.writeText(inviteLink(inviteCreated.code))} className="px-3 py-2 bg-blue-900/40 border border-blue-700/40 text-blue-300 text-xs rounded-xl hover:bg-blue-800/40 transition flex items-center gap-1">
+                  <Copy size={11} />Copy
+                </button>
+              </div>
+            </div>
+            <Glass className="p-3 !bg-black/40">
+              <div className="text-[10px] text-white/50 uppercase tracking-wider mb-1.5">Instructions for employee</div>
+              <div className="text-xs text-white/60 space-y-1 leading-relaxed">
+                <div>1. Open the invite link above</div>
+                <div>2. Click "Create Account" and sign up with <strong className="text-white/80">{inviteCreated.email}</strong></div>
+                <div>3. They'll land on the Team Portal with their schedule and pay info</div>
+              </div>
+            </Glass>
+            <div className="text-[10px] text-white/30">
+              Invite code: <span className="font-mono text-white/50">{inviteCreated.code}</span> · Their email must match exactly: <span className="font-mono text-white/50">{inviteCreated.email}</span>
+            </div>
+            <div className="flex justify-end">
+              <GBtn onClick={() => { setInviteOpen(false); setInviteCreated(null); }}>Done</GBtn>
+            </div>
+          </div>
+        )}
+      </Modal>
 
       <Modal open={modal.open} onClose={() => setModal({ open: false, data: null })} title={modal.data ? "Edit Employee" : "Add Employee"} maxW="max-w-lg">
         <div className="space-y-3">

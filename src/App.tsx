@@ -308,6 +308,36 @@ export function App() {
   // Portal
   const [portalEstId, setPortalEstId] = useState<string | null>(null);
 
+  // Company first-run setup
+  const [setupDone, setSetupDone] = usePersistentRaw("smocks.setupDone", "");
+  const [companySetupOpen, setCompanySetupOpen] = useState(false);
+  const [companySetupName, setCompanySetupName] = useState("");
+
+  useEffect(() => {
+    if (settings.googleConnected && !setupDone && !oauthProcessing) {
+      setCompanySetupName((settings as any).companyName || "");
+      setCompanySetupOpen(true);
+    }
+  }, [settings.googleConnected, setupDone, oauthProcessing]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const saveCompanySetup = async () => {
+    const name = companySetupName.trim() || "My Company";
+    setSettings((prev: any) => ({ ...prev, companyName: name }));
+    setSetupDone("1");
+    setCompanySetupOpen(false);
+    // Try Supabase org creation — graceful failure if tables don't exist
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const userId = session?.user?.id;
+      if (userId) {
+        const { data: org } = await (supabase as any).from("organizations").insert({ name }).select("id").single();
+        if (org?.id) {
+          await (supabase as any).from("profiles").upsert({ id: userId, org_id: org.id });
+        }
+      }
+    } catch { /* organizations/profiles tables may not exist yet */ }
+  };
+
   // Weather
   const [weatherData, setWeatherData] = useState(seedWeather);
 
@@ -524,10 +554,12 @@ export function App() {
         {/* Logo */}
         <div className="p-4 border-b border-red-900/30 flex items-center justify-between">
           <div className="flex items-center gap-2.5">
-            <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-red-600 to-red-900 flex items-center justify-center font-black text-sm shadow-lg shadow-red-900/40">S</div>
+            <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-red-600 to-red-900 flex items-center justify-center font-black text-sm shadow-lg shadow-red-900/40">
+              {(settings.companyName || "S")[0].toUpperCase()}
+            </div>
             <div>
-              <div className="font-bold text-sm leading-tight">Smock's OS</div>
-              <div className="text-[10px] text-white/40">Pressure Washing</div>
+              <div className="font-bold text-sm leading-tight">{settings.companyName || "Smock's OS"}</div>
+              <div className="text-[10px] text-white/40">Business CRM</div>
             </div>
           </div>
           <button onClick={() => setSidebarOpen(false)} className="lg:hidden text-white/40 hover:text-white p-1"><X size={16} /></button>
@@ -758,6 +790,43 @@ export function App() {
             </button>
           </div>
         </>
+      )}
+
+      {/* Company first-run setup modal */}
+      {companySetupOpen && (
+        <div className="fixed inset-0 z-[200] bg-black/80 backdrop-blur flex items-center justify-center p-4">
+          <div className="w-full max-w-sm bg-black/95 border border-red-900/40 rounded-2xl p-6 shadow-2xl space-y-4">
+            <div className="text-center">
+              <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-red-600 to-red-900 flex items-center justify-center mx-auto mb-3">
+                <Globe size={24} className="text-white" />
+              </div>
+              <div className="text-lg font-bold">Welcome! Set up your account</div>
+              <div className="text-sm text-white/50 mt-1">What's your company name?</div>
+            </div>
+            <div>
+              <label className="text-xs text-white/50 mb-1.5 block">Company Name</label>
+              <input
+                autoFocus
+                type="text"
+                value={companySetupName}
+                onChange={e => setCompanySetupName(e.target.value)}
+                onKeyDown={e => e.key === "Enter" && saveCompanySetup()}
+                placeholder="e.g. Smock's Pressure Washing"
+                className="w-full bg-white/5 border border-white/20 rounded-xl px-3 py-2.5 text-sm text-white placeholder-white/30 focus:outline-none focus:border-red-500/50"
+              />
+            </div>
+            <button
+              onClick={saveCompanySetup}
+              disabled={!companySetupName.trim()}
+              className="w-full py-2.5 rounded-xl bg-gradient-to-r from-red-600 to-red-800 text-white text-sm font-semibold hover:from-red-500 hover:to-red-700 transition disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              Get Started
+            </button>
+            <button onClick={() => { setSetupDone("1"); setCompanySetupOpen(false); }} className="w-full text-center text-xs text-white/30 hover:text-white/50 transition">
+              Skip for now
+            </button>
+          </div>
+        </div>
       )}
 
       {/* Toasts */}

@@ -3,14 +3,16 @@ import {
   Mail, Calendar, CheckSquare, Users, Cloud, Globe,
   Loader, RefreshCw, Plus, Send, X, AlertCircle,
   ExternalLink, Activity, UserPlus, CheckCircle, Reply,
+  Trash2,
 } from "lucide-react";
 import type { AppSettings } from "../../types";
 import { Glass } from "../ui/Glass";
 import { GBtn } from "../ui/GBtn";
 import { supabase } from "../../lib/supabase";
+import { uid } from "../../lib/utils";
 import {
   fetchGmailMessages, sendGmailMessage, markGmailRead,
-  fetchCalendarEvents, fetchGTasks, createGTask, patchGTask,
+  fetchCalendarEvents, fetchGTasks, createGTask, patchGTask, deleteGTask,
   fetchGContacts, fetchGDriveFiles,
   type GmailMessage, type GCalEvent, type GTask, type GContact, type GDriveFile,
 } from "../../lib/googleApi";
@@ -34,29 +36,66 @@ const Spinner = () => (
   </div>
 );
 
-const ApiError = ({ msg, onRetry }: { msg: string; onRetry?: () => void }) => (
-  <Glass className="p-4 !bg-red-950/20 !border-red-700/30">
-    <div className="flex items-start gap-3">
-      <AlertCircle size={15} className="text-red-400 flex-shrink-0 mt-0.5" />
-      <div className="flex-1 min-w-0">
-        <div className="text-sm text-red-300">{msg}</div>
-        {msg.includes("401") && (
-          <div className="text-xs text-white/50 mt-1">
-            Your Google token has expired. Disconnect Google then reconnect to get a fresh token.
-          </div>
+const ApiError = ({ msg, onRetry, apiName }: { msg: string; onRetry?: () => void; apiName?: string }) => {
+  const is403 = msg.includes("403");
+  const is401 = msg.includes("401");
+
+  const apiLinks: Record<string, string> = {
+    "People API": "https://console.developers.google.com/apis/api/people.googleapis.com",
+    "Drive API": "https://console.developers.google.com/apis/api/drive.googleapis.com",
+    "Calendar API": "https://console.developers.google.com/apis/api/calendar-json.googleapis.com",
+    "Gmail API": "https://console.developers.google.com/apis/api/gmail.googleapis.com",
+    "Tasks API": "https://console.developers.google.com/apis/api/tasks.googleapis.com",
+  };
+
+  return (
+    <Glass className={"p-4 " + (is403 ? "!bg-yellow-950/20 !border-yellow-700/30" : "!bg-red-950/20 !border-red-700/30")}>
+      <div className="flex items-start gap-3">
+        <AlertCircle size={15} className={is403 ? "text-yellow-400 flex-shrink-0 mt-0.5" : "text-red-400 flex-shrink-0 mt-0.5"} />
+        <div className="flex-1 min-w-0">
+          <div className={"text-sm " + (is403 ? "text-yellow-300" : "text-red-300")}>{msg}</div>
+          {is403 && apiName && (
+            <div className="text-xs text-white/60 mt-1.5 space-y-1">
+              <div>{apiName} is not enabled in your Google Cloud project.</div>
+              <a
+                href={apiLinks[apiName]}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1 text-blue-400 hover:text-blue-300 transition"
+              >
+                <ExternalLink size={11} />Enable {apiName} in Google Cloud Console
+              </a>
+              <div className="text-white/40">After enabling, click Retry below.</div>
+            </div>
+          )}
+          {is401 && (
+            <div className="text-xs text-white/50 mt-1">
+              Your Google token has expired. Disconnect Google then reconnect to get a fresh token.
+            </div>
+          )}
+        </div>
+        {onRetry && (
+          <button onClick={onRetry} className="flex items-center gap-1 text-xs text-blue-400 hover:text-blue-300 flex-shrink-0 transition">
+            <RefreshCw size={11} />Retry
+          </button>
         )}
       </div>
-      {onRetry && (
-        <button onClick={onRetry} className="text-white/30 hover:text-white transition flex-shrink-0">
-          <RefreshCw size={12} />
-        </button>
-      )}
-    </div>
-  </Glass>
-);
+    </Glass>
+  );
+};
 
 // ─── Gmail tab ────────────────────────────────────────────────────────────────
-function GmailTab({ token, toast }: { token: string; toast?: any }) {
+function GmailTab({
+  token,
+  toast,
+  customers,
+  setCustomers,
+}: {
+  token: string;
+  toast?: any;
+  customers?: any[];
+  setCustomers?: any;
+}) {
   const [messages, setMessages] = useState<GmailMessage[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -66,6 +105,7 @@ function GmailTab({ token, toast }: { token: string; toast?: any }) {
   const [subject, setSubject] = useState("");
   const [body, setBody] = useState("");
   const [sending, setSending] = useState(false);
+  const [converting, setConverting] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true); setError("");
@@ -95,6 +135,48 @@ function GmailTab({ token, toast }: { token: string; toast?: any }) {
     }
   };
 
+  const convertToLead = (m: GmailMessage) => {
+    setConverting(m.id);
+    try {
+      // Parse name and email from the From header (e.g. "John Doe <john@example.com>")
+      const fromRaw = m.from.trim();
+      const emailMatch = fromRaw.match(/<([^>]+)>/);
+      const email = emailMatch ? emailMatch[1] : (fromRaw.includes("@") ? fromRaw : "");
+      const namePart = emailMatch ? fromRaw.replace(/<[^>]+>/, "").trim().replace(/^"|"$/g, "") : "";
+      const nameParts = namePart.split(" ").filter(Boolean);
+      const firstName = nameParts[0] || "Unknown";
+      const lastName = nameParts.slice(1).join(" ") || "";
+
+      // Check for existing customer by email
+      const existing = email ? (customers || []).find((c: any) => c.email === email) : null;
+
+      if (!existing) {
+        const newCustomer = {
+          id: uid(),
+          firstName,
+          lastName,
+          email,
+          phone: "",
+          address: "",
+          tags: [],
+          totalSpent: 0,
+          notes: `Lead from email: "${m.subject}"`,
+          leadSource: "Email",
+          source: "gmail",
+          createdAt: new Date().toISOString().slice(0, 10),
+        };
+        setCustomers?.((prev: any[]) => [...prev, newCustomer]);
+        toast?.(`Lead created: ${firstName} ${lastName}`, "green");
+      } else {
+        toast?.(`Customer already exists — ${existing.firstName} ${existing.lastName}`, "green");
+      }
+    } catch {
+      toast?.("Failed to create lead", "red");
+    } finally {
+      setConverting(null);
+    }
+  };
+
   const inputCls = "w-full bg-black/40 border border-white/10 rounded-xl px-3 py-2 text-sm text-white placeholder-white/30 focus:outline-none focus:border-blue-500/50";
 
   return (
@@ -113,65 +195,70 @@ function GmailTab({ token, toast }: { token: string; toast?: any }) {
         </button>
       </div>
 
-      {error && <ApiError msg={error} onRetry={load} />}
+      {error && <ApiError msg={error} onRetry={load} apiName="Gmail API" />}
       {loading ? <Spinner /> : messages.length === 0 ? (
         <Glass className="p-8 text-center text-sm text-white/40">Inbox is empty</Glass>
       ) : (
         <div className="space-y-1">
           {messages.map(m => (
-            <button
-              key={m.id}
-              onClick={() => toggle(m)}
-              className={"w-full text-left p-3 rounded-xl border transition " +
-                (expanded === m.id
-                  ? "bg-blue-950/30 border-blue-700/30"
-                  : "bg-black/40 border-white/5 hover:border-white/10")}
-            >
-              <div className="flex items-start gap-3">
-                <div className={"w-2 h-2 rounded-full mt-1.5 flex-shrink-0 " + (m.read ? "bg-white/15" : "bg-blue-400")} />
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-baseline gap-2">
-                    <span className={"text-sm truncate " + (m.read ? "text-white/60" : "text-white font-medium")}>
-                      {m.from.replace(/<[^>]+>/, "").trim() || m.from}
-                    </span>
-                    <span className="text-[11px] text-white/30 flex-shrink-0 ml-auto">{fmtDate(m.date)}</span>
-                  </div>
-                  <div className={"text-xs truncate " + (m.read ? "text-white/40" : "text-white/70")}>{m.subject}</div>
-                  {expanded !== m.id && (
-                    <div className="text-xs text-white/25 truncate">{m.snippet}</div>
-                  )}
-                  {expanded === m.id && (
-                    <div className="mt-2 space-y-2">
-                      <div className="text-xs text-white/60 bg-black/40 rounded-lg p-3 leading-relaxed">
-                        {m.snippet}
-                      </div>
-                      <div className="flex gap-3">
-                        <button
-                          onClick={e => {
-                            e.stopPropagation();
-                            setComposing(true);
-                            setTo(m.from);
-                            setSubject("Re: " + m.subject);
-                          }}
-                          className="text-xs text-blue-400 hover:text-blue-300 flex items-center gap-1 transition"
-                        >
-                          <Reply size={11} />Reply
-                        </button>
-                        <a
-                          href={`https://mail.google.com/mail/#inbox/${m.threadId}`}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          onClick={e => e.stopPropagation()}
-                          className="text-xs text-white/30 hover:text-white flex items-center gap-1 transition"
-                        >
-                          <ExternalLink size={11} />Open in Gmail
-                        </a>
-                      </div>
+            <div key={m.id} className={"w-full text-left p-3 rounded-xl border transition " +
+              (expanded === m.id
+                ? "bg-blue-950/30 border-blue-700/30"
+                : "bg-black/40 border-white/5 hover:border-white/10")}>
+              <button
+                className="w-full text-left"
+                onClick={() => toggle(m)}
+              >
+                <div className="flex items-start gap-3">
+                  <div className={"w-2 h-2 rounded-full mt-1.5 flex-shrink-0 " + (m.read ? "bg-white/15" : "bg-blue-400")} />
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-baseline gap-2">
+                      <span className={"text-sm truncate " + (m.read ? "text-white/60" : "text-white font-medium")}>
+                        {m.from.replace(/<[^>]+>/, "").trim() || m.from}
+                      </span>
+                      <span className="text-[11px] text-white/30 flex-shrink-0 ml-auto">{fmtDate(m.date)}</span>
                     </div>
-                  )}
+                    <div className={"text-xs truncate " + (m.read ? "text-white/40" : "text-white/70")}>{m.subject}</div>
+                    {expanded !== m.id && (
+                      <div className="text-xs text-white/25 truncate">{m.snippet}</div>
+                    )}
+                  </div>
                 </div>
-              </div>
-            </button>
+              </button>
+              {expanded === m.id && (
+                <div className="mt-2 space-y-2 pl-5">
+                  <div className="text-xs text-white/60 bg-black/40 rounded-lg p-3 leading-relaxed">
+                    {m.snippet}
+                  </div>
+                  <div className="flex gap-3 flex-wrap">
+                    <button
+                      onClick={() => { setComposing(true); setTo(m.from); setSubject("Re: " + m.subject); }}
+                      className="text-xs text-blue-400 hover:text-blue-300 flex items-center gap-1 transition"
+                    >
+                      <Reply size={11} />Reply
+                    </button>
+                    <a
+                      href={`https://mail.google.com/mail/#inbox/${m.threadId}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-xs text-white/30 hover:text-white flex items-center gap-1 transition"
+                    >
+                      <ExternalLink size={11} />Open in Gmail
+                    </a>
+                    <button
+                      onClick={() => convertToLead(m)}
+                      disabled={converting === m.id}
+                      className="text-xs text-green-400 hover:text-green-300 flex items-center gap-1 transition disabled:opacity-50"
+                    >
+                      {converting === m.id
+                        ? <Loader size={11} className="animate-spin" />
+                        : <UserPlus size={11} />}
+                      Convert to Lead
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
           ))}
         </div>
       )}
@@ -222,9 +309,14 @@ function GCalTab({ token }: { token: string }) {
 
   const load = useCallback(async () => {
     setLoading(true); setError("");
-    try { setEvents(await fetchCalendarEvents(token)); }
-    catch (e: any) { setError(e.message || "Failed to load calendar"); }
-    finally { setLoading(false); }
+    try {
+      const result = await fetchCalendarEvents(token);
+      console.log("[GoogleCalendar] fetched", result.length, "events");
+      setEvents(result);
+    } catch (e: any) {
+      console.error("[GoogleCalendar] fetch error:", e);
+      setError(e.message || "Failed to load calendar");
+    } finally { setLoading(false); }
   }, [token]);
 
   useEffect(() => { load(); }, [load]);
@@ -245,8 +337,8 @@ function GCalTab({ token }: { token: string }) {
           <ExternalLink size={11} />Open Google Calendar
         </a>
       </div>
-      {error && <ApiError msg={error} onRetry={load} />}
-      {loading ? <Spinner /> : events.length === 0 ? (
+      {error && <ApiError msg={error} onRetry={load} apiName="Calendar API" />}
+      {loading ? <Spinner /> : error ? null : events.length === 0 ? (
         <Glass className="p-8 text-center text-sm text-white/40">No upcoming events in the next 60 days</Glass>
       ) : (
         <div className="space-y-2">
@@ -292,6 +384,7 @@ function GTasksTab({ token, toast }: { token: string; toast?: any }) {
   const [adding, setAdding] = useState(false);
   const [newTitle, setNewTitle] = useState("");
   const [newDue, setNewDue] = useState("");
+  const [deleting, setDeleting] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true); setError("");
@@ -319,6 +412,19 @@ function GTasksTab({ token, toast }: { token: string; toast?: any }) {
       await patchGTask(token, t.listId, t.id, { status: next });
       setTasks(prev => prev.map(x => x.id === t.id ? { ...x, status: next } : x));
     } catch (e: any) { toast?.(e.message, "red"); }
+  };
+
+  const removeTask = async (t: GTask) => {
+    setDeleting(t.id);
+    try {
+      await deleteGTask(token, t.listId, t.id);
+      setTasks(prev => prev.filter(x => x.id !== t.id));
+      toast?.("Task deleted", "green");
+    } catch (e: any) {
+      toast?.(e.message || "Delete failed", "red");
+    } finally {
+      setDeleting(null);
+    }
   };
 
   const pending = tasks.filter(t => t.status === "needsAction");
@@ -368,16 +474,16 @@ function GTasksTab({ token, toast }: { token: string; toast?: any }) {
         </Glass>
       )}
 
-      {error && <ApiError msg={error} onRetry={load} />}
+      {error && <ApiError msg={error} onRetry={load} apiName="Tasks API" />}
       {loading ? <Spinner /> : (
         <div className="space-y-1">
           {pending.map(t => (
-            <button
-              key={t.id} onClick={() => toggle(t)}
-              className="w-full flex items-center gap-3 p-3 bg-black/40 border border-white/5 hover:border-white/10 rounded-xl text-left transition group"
+            <div
+              key={t.id}
+              className="flex items-center gap-3 p-3 bg-black/40 border border-white/5 hover:border-white/10 rounded-xl transition group"
             >
-              <div className="w-4 h-4 rounded-full border-2 border-blue-500/50 group-hover:border-blue-400 flex-shrink-0 transition" />
-              <div className="min-w-0 flex-1">
+              <button onClick={() => toggle(t)} className="w-4 h-4 rounded-full border-2 border-blue-500/50 group-hover:border-blue-400 flex-shrink-0 transition" />
+              <div className="min-w-0 flex-1 text-left" onClick={() => toggle(t)} style={{ cursor: "pointer" }}>
                 <div className="text-sm text-white">{t.title}</div>
                 {t.due && <div className="text-xs text-white/40">{fmtDate(t.due)}</div>}
               </div>
@@ -386,22 +492,37 @@ function GTasksTab({ token, toast }: { token: string; toast?: any }) {
                   {t.listTitle}
                 </span>
               )}
-            </button>
+              <button
+                onClick={() => removeTask(t)}
+                disabled={deleting === t.id}
+                className="opacity-0 group-hover:opacity-100 p-1 text-white/30 hover:text-red-400 flex-shrink-0 transition"
+                title="Delete task"
+              >
+                {deleting === t.id ? <Loader size={11} className="animate-spin" /> : <Trash2 size={11} />}
+              </button>
+            </div>
           ))}
 
           {done.length > 0 && (
             <>
               <div className="text-[10px] text-white/25 uppercase tracking-wider pt-2 pb-1 px-1">Completed</div>
               {done.slice(0, 5).map(t => (
-                <button
-                  key={t.id} onClick={() => toggle(t)}
-                  className="w-full flex items-center gap-3 p-3 bg-black/20 border border-white/5 rounded-xl text-left opacity-40 hover:opacity-60 transition"
+                <div
+                  key={t.id}
+                  className="flex items-center gap-3 p-3 bg-black/20 border border-white/5 rounded-xl opacity-40 hover:opacity-60 transition group"
                 >
-                  <div className="w-4 h-4 rounded-full bg-blue-500/40 border border-blue-500/30 flex items-center justify-center flex-shrink-0">
+                  <button onClick={() => toggle(t)} className="w-4 h-4 rounded-full bg-blue-500/40 border border-blue-500/30 flex items-center justify-center flex-shrink-0">
                     <div className="w-2 h-2 rounded-full bg-blue-400" />
-                  </div>
-                  <div className="text-sm text-white line-through">{t.title}</div>
-                </button>
+                  </button>
+                  <div className="text-sm text-white line-through flex-1 min-w-0">{t.title}</div>
+                  <button
+                    onClick={() => removeTask(t)}
+                    disabled={deleting === t.id}
+                    className="opacity-0 group-hover:opacity-100 p-1 text-white/30 hover:text-red-400 flex-shrink-0 transition"
+                  >
+                    {deleting === t.id ? <Loader size={11} className="animate-spin" /> : <Trash2 size={11} />}
+                  </button>
+                </div>
               ))}
             </>
           )}
@@ -443,15 +564,16 @@ function GContactsTab({
     setCustomers?.((prev: any[]) => [
       ...prev,
       {
-        id: "c_" + Math.random().toString(36).slice(2, 9),
+        id: uid(),
         firstName, lastName,
         email: c.email || "",
         phone: c.phone || "",
         address: "", city: "", state: "", zip: "",
         notes: c.company ? `Company: ${c.company}` : "",
         source: "google_contacts",
-        createdAt: new Date().toISOString().slice(0, 10),
         tags: [],
+        totalSpent: 0,
+        createdAt: new Date().toISOString().slice(0, 10),
       },
     ]);
     setImported(prev => new Set([...prev, c.id]));
@@ -477,7 +599,7 @@ function GContactsTab({
           className="flex-1 bg-black/40 border border-white/10 rounded-xl px-3 py-2 text-sm text-white placeholder-white/30 focus:outline-none focus:border-blue-500/50"
         />
       </div>
-      {error && <ApiError msg={error} onRetry={load} />}
+      {error && <ApiError msg={error} onRetry={load} apiName="People API" />}
       {loading ? <Spinner /> : (
         <div className="space-y-1">
           {filtered.slice(0, 60).map(c => {
@@ -573,9 +695,15 @@ function GDriveTab({ token }: { token: string }) {
           <ExternalLink size={11} />Open Drive
         </a>
       </div>
-      {error && <ApiError msg={error} onRetry={load} />}
+      {error && <ApiError msg={error} onRetry={load} apiName="Drive API" />}
       {loading ? <Spinner /> : files.length === 0 ? (
-        <Glass className="p-8 text-center text-sm text-white/40">No files found</Glass>
+        <Glass className="p-6 text-center space-y-2 !bg-black/40">
+          <div className="text-sm text-white/40">No files found</div>
+          <div className="text-xs text-white/25">
+            Drive shows files shared with or created by this app.{" "}
+            If you see this unexpectedly, ensure the Drive API is enabled and re-authorize Google.
+          </div>
+        </Glass>
       ) : (
         <div className="space-y-1">
           {files.map(f => (
@@ -651,8 +779,8 @@ export function GoogleWorkspacePage({
       "https://www.googleapis.com/auth/gmail.send",
       "https://www.googleapis.com/auth/gmail.readonly",
       "https://www.googleapis.com/auth/tasks",
-      "https://www.googleapis.com/auth/drive.file",
-      "https://www.googleapis.com/auth/contacts",
+      "https://www.googleapis.com/auth/drive.readonly",
+      "https://www.googleapis.com/auth/contacts.readonly",
     ].join(" ");
     const opts = {
       queryParams: { access_type: "offline", prompt: "consent" },
@@ -845,7 +973,7 @@ export function GoogleWorkspacePage({
         </Glass>
       )}
 
-      {tab === "gmail"    && hasToken && <GmailTab    token={token} toast={toast} />}
+      {tab === "gmail"    && hasToken && <GmailTab    token={token} toast={toast} customers={customers} setCustomers={setCustomers} />}
       {tab === "calendar" && hasToken && <GCalTab     token={token} />}
       {tab === "tasks"    && hasToken && <GTasksTab   token={token} toast={toast} />}
       {tab === "contacts" && hasToken && <GContactsTab token={token} customers={customers} setCustomers={setCustomers} toast={toast} />}

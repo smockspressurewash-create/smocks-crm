@@ -3,7 +3,7 @@ import {
   Clock, Briefcase, Calendar, ChevronLeft, CheckSquare, Camera,
   LogOut, MapPin, Phone, User, Play, Square, Plus, X, Eye, DollarSign,
   ChevronRight, Home, List, CheckCircle, AlertCircle, Image, FileText,
-  Video, PenLine, Shield, Navigation
+  Video, PenLine, Shield, Navigation, Database
 } from "lucide-react";
 import { supabase } from "../../lib/supabase";
 import { Glass } from "../ui/Glass";
@@ -632,7 +632,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   settings: AppSettings; toast: (msg: string, tone?: any) => void;
   isOwnerView?: boolean; onClose?: () => void;
 }) {
-  const [tab, setTab] = useState<"today" | "calendar" | "jobs" | "pay">("today");
+  const [tab, setTab] = useState<"today" | "calendar" | "jobs" | "pay" | "google">("today");
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
   const [calMode, setCalMode] = useState<"week" | "month">("week");
   const [calSelectedDate, setCalSelectedDate] = useState(today());
@@ -1369,6 +1369,28 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
               </>
             );
           })()}
+          {/* Google tab — each employee uses their own Google connection */}
+          {tab === "google" && (
+            <div className="space-y-4">
+              <Glass className="p-5 !bg-black/40 text-center">
+                <Database size={32} className="mx-auto mb-3 text-blue-400/60" />
+                <div className="font-semibold text-base mb-1">Google Workspace</div>
+                <div className="text-sm text-white/50 mb-4 leading-relaxed">
+                  Connect <span className="text-white font-medium">your own</span> Google account to access your Gmail, Calendar, Drive, and Tasks — separate from your employer's account.
+                </div>
+                <div className="p-3 rounded-xl bg-yellow-950/30 border border-yellow-700/30 text-xs text-yellow-200/70 text-left mb-4">
+                  Your Google data is always private. Employers cannot see your personal Gmail or Calendar events. Only your assigned CRM jobs appear in the team calendar.
+                </div>
+                <button
+                  onClick={() => toast("Google connection for employee accounts coming soon! Ask your manager for details.", "yellow")}
+                  className="w-full py-2.5 rounded-xl bg-gradient-to-r from-blue-700 to-blue-900 text-white text-sm font-semibold hover:from-blue-600 hover:to-blue-800 transition"
+                >
+                  Connect My Google Account
+                </button>
+              </Glass>
+            </div>
+          )}
+
         </div>
       </main>
 
@@ -1379,6 +1401,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
           { id: "calendar", label: "Calendar", icon: Calendar },
           { id: "jobs", label: "All Jobs", icon: List },
           { id: "pay", label: "My Pay", icon: DollarSign },
+          { id: "google", label: "Google", icon: Database },
         ] as const).map(({ id, label, icon: Icon }) => (
           <button key={id} onClick={() => setTab(id)}
             className={"flex flex-col items-center gap-0.5 px-3 py-1.5 rounded-xl transition " +

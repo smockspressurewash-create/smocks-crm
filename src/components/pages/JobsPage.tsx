@@ -293,7 +293,41 @@ export function JobsPage({ jobs = [], setJobs, customers = [], employees = [], e
           </div>
           <div>
             <label className="text-xs text-white/60 mb-1 block">Service address</label>
-            <GInput placeholder="123 Main St, York PA" value={newJobForm.address} onChange={e => setNewJobForm(f => ({ ...f, address: e.target.value }))} />
+            {(() => {
+              const selCust = customers.find(c => c.id === newJobForm.customerId);
+              const extraAddrs = selCust?.addresses || [];
+              if (extraAddrs.length > 0) {
+                const allAddrs = [
+                  { id: "__primary__", label: "Primary", street: selCust?.address || "" },
+                  ...extraAddrs.map((a: any) => ({ id: a.id, label: a.label || a.street, street: [a.street, a.city, a.state].filter(Boolean).join(", ") })),
+                  { id: "__custom__", label: "Custom address…", street: "" },
+                ];
+                const selectedId = allAddrs.find(a => a.street === newJobForm.address)?.id || "__primary__";
+                return (
+                  <div className="space-y-2">
+                    <GSel
+                      value={selectedId}
+                      onChange={e => {
+                        const picked = allAddrs.find(a => a.id === e.target.value);
+                        if (picked && picked.id !== "__custom__") {
+                          setNewJobForm(f => ({ ...f, address: picked.street }));
+                        }
+                      }}
+                    >
+                      {allAddrs.map(a => (
+                        <option key={a.id} value={a.id} className="bg-black">
+                          {a.label}{a.street ? ` — ${a.street.slice(0, 40)}` : ""}
+                        </option>
+                      ))}
+                    </GSel>
+                    {selectedId === "__custom__" && (
+                      <GInput placeholder="123 Main St, York PA" value={newJobForm.address} onChange={e => setNewJobForm(f => ({ ...f, address: e.target.value }))} />
+                    )}
+                  </div>
+                );
+              }
+              return <GInput placeholder="123 Main St, York PA" value={newJobForm.address} onChange={e => setNewJobForm(f => ({ ...f, address: e.target.value }))} />;
+            })()}
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>

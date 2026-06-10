@@ -240,6 +240,17 @@ export const patchGTask = async (
   );
 };
 
+export const deleteGTask = async (token: string, listId: string, taskId: string): Promise<void> => {
+  const res = await fetch(
+    `https://tasks.googleapis.com/tasks/v1/lists/${listId}/tasks/${taskId}`,
+    { method: "DELETE", headers: { Authorization: `Bearer ${token}` } }
+  );
+  if (!res.ok && res.status !== 204) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`Google API ${res.status}: ${text.slice(0, 200)}`);
+  }
+};
+
 // ─── Contacts ────────────────────────────────────────────────────────────────
 
 export interface GContact {
