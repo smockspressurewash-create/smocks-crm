@@ -78,25 +78,45 @@ import { ChemicalModal } from "../ui/ChemicalModal";
 import { WeeklyBusinessReview } from "../ui/WeeklyBusinessReview";
 import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 
-interface InviteRecord { code: string; firstName: string; lastName: string; email: string; role: string; hourlyRate: number; createdAt: string; used?: boolean; }
+interface InviteRecord { code: string; firstName: string; lastName: string; email: string; role: string; hourlyRate: number; createdAt: string; used?: boolean; permissions?: Record<string, boolean>; }
+
+const PERMISSION_DEFS_EMP = [
+  { key: "can_view_jobs",          label: "View assigned jobs",    desc: "See their schedule" },
+  { key: "can_clock_in",           label: "Clock in / out",        desc: "Track time on jobs" },
+  { key: "can_upload_photos",      label: "Upload photos",         desc: "Before/after photos" },
+  { key: "can_complete_checklist", label: "Complete checklist",    desc: "Check off job items" },
+  { key: "can_get_signoff",        label: "Customer sign-off",     desc: "Collect signature" },
+  { key: "can_view_pay",           label: "View pay info",         desc: "See pay & history" },
+  { key: "can_view_calendar",      label: "View calendar",         desc: "Weekly/monthly view" },
+  { key: "can_add_notes",          label: "Add job notes",         desc: "Leave notes on jobs" },
+] as const;
+
+const DEFAULT_PERMS: Record<string, boolean> = {
+  can_view_jobs: true, can_clock_in: true, can_upload_photos: true,
+  can_complete_checklist: true, can_get_signoff: true,
+  can_view_pay: true, can_view_calendar: true, can_add_notes: true,
+};
 
 export function EmployeesPage({ employees = [], setEmployees, jobs = [], settings = {} as any, toast = (_msg: string, _tone?: string) => {} }: { employees?: any[]; setEmployees: any; jobs?: any[]; settings?: any; toast?: any }) {
   const [modal, setModal] = useState({ open: false, data: null });
   const [view, setView] = useState("list"); // list | hours | payroll
   const [payPeriodStart, setPayPeriodStart] = usePersistent("smocks.payPeriodStart", (() => { const d = new Date(); d.setDate(1); return d.toISOString().slice(0,10); })());
   const [payPeriodEnd, setPayPeriodEnd] = usePersistent("smocks.payPeriodEnd", today());
-  const [f, setF] = useState({ id: "", firstName: "", lastName: "", role: "Technician", status: "active", hourlyRate: 18, phone: "", email: "", startDate: today(), emergencyContact: "", notes: "" });
+  const [f, setF] = useState<any>({ id: "", firstName: "", lastName: "", role: "Technician", status: "active", hourlyRate: 18, phone: "", email: "", startDate: today(), emergencyContact: "", notes: "", permissions: { ...DEFAULT_PERMS } });
   const [showPortalInfo, setShowPortalInfo] = useState(false);
   const [inviteOpen, setInviteOpen] = useState(false);
   const [invites, setInvites] = usePersistent<InviteRecord[]>("smocks.invites", []);
   const [inviteF, setInviteF] = useState({ firstName: "", lastName: "", email: "", role: "Technician", hourlyRate: 18 });
+  const [invitePerms, setInvitePerms] = useState<Record<string, boolean>>({ ...DEFAULT_PERMS });
+  const [showInvitePerms, setShowInvitePerms] = useState(false);
+  const [showEditPerms, setShowEditPerms] = useState(false);
   const [inviteCreated, setInviteCreated] = useState<InviteRecord | null>(null);
   const portalUrl = window.location.origin + window.location.pathname + "#/portal";
 
   const generateInvite = async () => {
     if (!inviteF.firstName.trim() || !inviteF.email.trim()) return;
     const code = (Math.random().toString(36).substring(2, 10) + Date.now().toString(36)).toUpperCase();
-    const inv: InviteRecord = { code, ...inviteF, hourlyRate: Number(inviteF.hourlyRate), createdAt: new Date().toISOString().slice(0, 10) };
+    const inv: InviteRecord = { code, ...inviteF, hourlyRate: Number(inviteF.hourlyRate), createdAt: new Date().toISOString().slice(0, 10), permissions: invitePerms };
     // Save to localStorage (local UI state)
     setInvites(prev => [...prev, inv]);
     // Save to Supabase so the invite works from any browser/device
@@ -114,7 +134,7 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setting
     // Pre-create employee record so the portal can match immediately
     const alreadyExists = employees.some(e => e.email.toLowerCase() === inviteF.email.toLowerCase());
     if (!alreadyExists) {
-      setEmployees((prev: any[]) => [...prev, { id: uid(), firstName: inv.firstName, lastName: inv.lastName, email: inv.email, role: inv.role, hourlyRate: inv.hourlyRate, status: "active", phone: "", startDate: today(), emergencyContact: "", notes: "Invited — account pending" }]);
+      setEmployees((prev: any[]) => [...prev, { id: uid(), firstName: inv.firstName, lastName: inv.lastName, email: inv.email, role: inv.role, hourlyRate: inv.hourlyRate, status: "active", phone: "", startDate: today(), emergencyContact: "", notes: "Invited — account pending", permissions: invitePerms }]);
     }
     setInviteCreated(inv);
     // Send invite email if Resend is configured
@@ -136,7 +156,14 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setting
 
   const inviteLink = (code: string) => `${portalUrl}?invite=${code}`;
 
-  useEffect(() => { if (modal.data) setF(modal.data); else setF({ id: "", firstName: "", lastName: "", role: "Technician", status: "active", hourlyRate: 18, phone: "", email: "", startDate: today(), emergencyContact: "", notes: "" }); }, [modal]);
+  useEffect(() => {
+    if (modal.data) {
+      setF({ ...modal.data, permissions: (modal.data as any).permissions || { ...DEFAULT_PERMS } });
+    } else {
+      setF({ id: "", firstName: "", lastName: "", role: "Technician", status: "active", hourlyRate: 18, phone: "", email: "", startDate: today(), emergencyContact: "", notes: "", permissions: { ...DEFAULT_PERMS } });
+    }
+    setShowEditPerms(false);
+  }, [modal]);
 
   const save = () => {
     if (!f.firstName.trim()) return;
@@ -174,7 +201,7 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setting
           <button onClick={() => setShowPortalInfo(!showPortalInfo)} className="text-xs px-3 py-1.5 bg-black/40 border border-blue-700/40 text-blue-300 hover:bg-blue-950/30 rounded-xl transition flex items-center gap-1.5">
             <Globe size={12} />Team Portal
           </button>
-          <button onClick={() => { setInviteOpen(true); setInviteCreated(null); setInviteF({ firstName: "", lastName: "", email: "", role: "Technician", hourlyRate: 18 }); }} className="text-xs px-3 py-1.5 bg-black/40 border border-green-700/40 text-green-300 hover:bg-green-950/30 rounded-xl transition flex items-center gap-1.5">
+          <button onClick={() => { setInviteOpen(true); setInviteCreated(null); setInviteF({ firstName: "", lastName: "", email: "", role: "Technician", hourlyRate: 18 }); setInvitePerms({ ...DEFAULT_PERMS }); setShowInvitePerms(false); }} className="text-xs px-3 py-1.5 bg-black/40 border border-green-700/40 text-green-300 hover:bg-green-950/30 rounded-xl transition flex items-center gap-1.5">
             <UserCheck size={12} />Invite Member
           </button>
           <GBtn onClick={() => setModal({ open: true, data: null })}><Plus size={14} className="inline mr-1.5" />Add Employee</GBtn>
@@ -363,6 +390,34 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setting
               </div>
               <div><label className="text-xs text-white/60 mb-1 block">Hourly Rate ($)</label><GInput type="number" step="0.5" value={inviteF.hourlyRate} onChange={e => setInviteF(p => ({ ...p, hourlyRate: Number(e.target.value) }))} /></div>
             </div>
+            {/* Permissions editor */}
+            <div className="border border-white/10 rounded-xl overflow-hidden">
+              <button
+                onClick={() => setShowInvitePerms(o => !o)}
+                className="w-full flex items-center justify-between px-3 py-2.5 text-xs font-semibold text-white/60 hover:text-white hover:bg-white/5 transition"
+              >
+                <span className="flex items-center gap-1.5"><Shield size={12} />Permissions</span>
+                <span className="text-[10px] text-white/40">{showInvitePerms ? "▲ collapse" : "▼ expand"}</span>
+              </button>
+              {showInvitePerms && (
+                <div className="px-3 pb-3 space-y-1 border-t border-white/10">
+                  <div className="flex gap-3 pt-2 pb-1">
+                    <button onClick={() => setInvitePerms(Object.fromEntries(PERMISSION_DEFS_EMP.map(d => [d.key, true])))} className="text-[10px] text-blue-400 hover:text-blue-300 transition">Select All</button>
+                    <button onClick={() => setInvitePerms(Object.fromEntries(PERMISSION_DEFS_EMP.map(d => [d.key, false])))} className="text-[10px] text-red-400 hover:text-red-300 transition">Deselect All</button>
+                  </div>
+                  {PERMISSION_DEFS_EMP.map(({ key, label, desc }) => (
+                    <label key={key} className="flex items-center gap-2 cursor-pointer py-1 group">
+                      <input type="checkbox" checked={!!invitePerms[key]} onChange={e => setInvitePerms(p => ({ ...p, [key]: e.target.checked }))}
+                        className="w-3.5 h-3.5 accent-red-600 flex-shrink-0" />
+                      <div>
+                        <div className="text-xs text-white/80 group-hover:text-white transition">{label}</div>
+                        <div className="text-[10px] text-white/40">{desc}</div>
+                      </div>
+                    </label>
+                  ))}
+                </div>
+              )}
+            </div>
             <div className="flex gap-2 justify-end pt-2">
               <GBtn variant="ghost" onClick={() => setInviteOpen(false)}>Cancel</GBtn>
               <GBtn onClick={generateInvite} disabled={!inviteF.firstName.trim() || !inviteF.email.trim()}>Generate Invite Link</GBtn>
@@ -421,6 +476,34 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setting
           </div>
           <div><label className="text-xs text-white/60 mb-1 block">Emergency Contact</label><GInput value={f.emergencyContact} onChange={e => setF({ ...f, emergencyContact: e.target.value })} placeholder="Name — (717) 555-0000" /></div>
           <div><label className="text-xs text-white/60 mb-1 block">Notes</label><GTxt rows={2} value={f.notes} onChange={e => setF({ ...f, notes: e.target.value })} /></div>
+          {/* Permissions editor */}
+          <div className="border border-white/10 rounded-xl overflow-hidden">
+            <button
+              onClick={() => setShowEditPerms(o => !o)}
+              className="w-full flex items-center justify-between px-3 py-2.5 text-xs font-semibold text-white/60 hover:text-white hover:bg-white/5 transition"
+            >
+              <span className="flex items-center gap-1.5"><Shield size={12} />Portal Permissions</span>
+              <span className="text-[10px] text-white/40">{showEditPerms ? "▲ collapse" : "▼ expand"}</span>
+            </button>
+            {showEditPerms && (
+              <div className="px-3 pb-3 space-y-1 border-t border-white/10">
+                <div className="flex gap-3 pt-2 pb-1">
+                  <button onClick={() => setF((p: any) => ({ ...p, permissions: Object.fromEntries(PERMISSION_DEFS_EMP.map(d => [d.key, true])) }))} className="text-[10px] text-blue-400 hover:text-blue-300 transition">Select All</button>
+                  <button onClick={() => setF((p: any) => ({ ...p, permissions: Object.fromEntries(PERMISSION_DEFS_EMP.map(d => [d.key, false])) }))} className="text-[10px] text-red-400 hover:text-red-300 transition">Deselect All</button>
+                </div>
+                {PERMISSION_DEFS_EMP.map(({ key, label, desc }) => (
+                  <label key={key} className="flex items-center gap-2 cursor-pointer py-1 group">
+                    <input type="checkbox" checked={!!(f.permissions || DEFAULT_PERMS)[key]} onChange={e => setF((p: any) => ({ ...p, permissions: { ...(p.permissions || DEFAULT_PERMS), [key]: e.target.checked } }))}
+                      className="w-3.5 h-3.5 accent-red-600 flex-shrink-0" />
+                    <div>
+                      <div className="text-xs text-white/80 group-hover:text-white transition">{label}</div>
+                      <div className="text-[10px] text-white/40">{desc}</div>
+                    </div>
+                  </label>
+                ))}
+              </div>
+            )}
+          </div>
           <div className="flex gap-2 justify-end pt-2">
             <GBtn variant="ghost" onClick={() => setModal({ open: false, data: null })}>Cancel</GBtn>
             <GBtn onClick={save} disabled={!f.firstName.trim()}>Save</GBtn>

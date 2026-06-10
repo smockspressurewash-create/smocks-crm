@@ -192,6 +192,9 @@ export function App() {
 
   // ── Employee portal session (email/password auth, separate from Google OAuth) ──
   const [empSession, setEmpSession] = useState<any>(null);
+  // True once we've checked Supabase for an existing session on first load.
+  // Prevents the CRM flashing briefly before the employee session is restored.
+  const [sessionChecked, setSessionChecked] = useState(false);
 
   // ── OAuth processing guard ───────────────────────────────────────────────
   // Set to true when the page loads with an OAuth callback hash (#access_token=...).
@@ -472,6 +475,8 @@ export function App() {
           setOauthProcessing(false);
         }
       }
+      // Session check complete — safe to render main app or employee portal
+      setSessionChecked(true);
     })();
 
     return () => sub?.unsubscribe();
@@ -494,6 +499,15 @@ export function App() {
           <div className="w-10 h-10 border-2 border-red-600 border-t-transparent rounded-full animate-spin mx-auto" />
           <div className="text-sm text-white/50">Completing Google sign-in…</div>
         </div>
+      </div>
+    );
+  }
+
+  // ── Session loading guard — prevents CRM flashing before employee session restores ──
+  if (!sessionChecked) {
+    return (
+      <div className="min-h-screen bg-black flex items-center justify-center">
+        <div className="w-8 h-8 border-2 border-red-600/50 border-t-transparent rounded-full animate-spin" />
       </div>
     );
   }
@@ -548,7 +562,7 @@ export function App() {
         customers={customers}
         settings={settings}
         toast={toast}
-        isOwnerView={!empSession && page === "portal" && !window.location.hash.includes("invite=")}
+        isOwnerView={!empSession && page === "portal" && !window.location.hash.includes("invite=") && !!settings.googleConnected}
         onClose={() => setPage("dashboard")}
       />
     );

@@ -32,14 +32,32 @@ const POST_DEFAULTS: JobChecklistItem[] = [
   { id: "post4", label: "Take after photos", done: false },
 ];
 
-function PortalChecklistSection({ title, emoji, items, onUpdate, allowPhotos = false }: {
+export const PERMISSION_DEFS = [
+  { key: "can_view_jobs",          label: "View assigned jobs",        desc: "See their job schedule" },
+  { key: "can_clock_in",           label: "Clock in / out",            desc: "Track time on jobs" },
+  { key: "can_upload_photos",      label: "Upload photos",             desc: "Take before/after photos" },
+  { key: "can_complete_checklist", label: "Complete checklist",        desc: "Check off job items" },
+  { key: "can_get_signoff",        label: "Get customer sign-off",     desc: "Collect customer signature" },
+  { key: "can_view_pay",           label: "View pay info",             desc: "See pay rate and history" },
+  { key: "can_view_calendar",      label: "View calendar",             desc: "See weekly/monthly schedule" },
+  { key: "can_add_notes",          label: "Add job notes",             desc: "Leave notes on jobs" },
+] as const;
+
+export const DEFAULT_PERMISSIONS: Record<string, boolean> = {
+  can_view_jobs: true, can_clock_in: true, can_upload_photos: true,
+  can_complete_checklist: true, can_get_signoff: true,
+  can_view_pay: true, can_view_calendar: true, can_add_notes: true,
+};
+
+function PortalChecklistSection({ title, emoji, items, onUpdate, allowPhotos = false, disabled = false }: {
   title: string; emoji: string;
   items: JobChecklistItem[];
   onUpdate: (items: JobChecklistItem[]) => void;
   allowPhotos?: boolean;
+  disabled?: boolean;
 }) {
   const done = items.filter(i => i.done).length;
-  const toggle = (id: string) => onUpdate(items.map(it => it.id === id ? { ...it, done: !it.done } : it));
+  const toggle = (id: string) => { if (!disabled) onUpdate(items.map(it => it.id === id ? { ...it, done: !it.done } : it)); };
   const updateNotes = (id: string, notes: string) => onUpdate(items.map(it => it.id === id ? { ...it, notes } : it));
   const addItemPhoto = (id: string, dataUrl: string) => {
     const photo = { id: uid(), dataUrl };
@@ -59,7 +77,8 @@ function PortalChecklistSection({ title, emoji, items, onUpdate, allowPhotos = f
           <div key={item.id} className="p-2.5 rounded-xl bg-white/5 border border-white/5">
             <div className="flex items-start gap-2">
               <input type="checkbox" checked={item.done} onChange={() => toggle(item.id)}
-                className="mt-0.5 w-4 h-4 accent-green-500 cursor-pointer flex-shrink-0" />
+                disabled={disabled}
+                className={"mt-0.5 w-4 h-4 flex-shrink-0 " + (disabled ? "opacity-50 cursor-not-allowed" : "accent-green-500 cursor-pointer")} />
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2">
                   <div className={"text-sm flex-1 " + (item.done ? "line-through text-white/30" : "text-white/80")}>
@@ -106,11 +125,12 @@ function PortalChecklistSection({ title, emoji, items, onUpdate, allowPhotos = f
   );
 }
 
-function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName = "the company", onComplete }: {
+function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName = "the company", onComplete, perms: permsOverride }: {
   job: Job; customer?: Customer; onBack: () => void;
   onUpdateJob: (patch: Partial<Job>) => void; toast: (msg: string, tone?: any) => void;
-  companyName?: string; onComplete?: () => void;
+  companyName?: string; onComplete?: () => void; perms?: Record<string, boolean>;
 }) {
+  const effPerms = { ...DEFAULT_PERMISSIONS, ...(permsOverride || {}) };
   const [note, setNote] = useState("");
   const [, forceTick] = useState(0);
   const [showSignOff, setShowSignOff] = useState(false);
@@ -334,14 +354,16 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
                 </div>
               )}
             </div>
-            {job.clockInAt ? (
-              <GBtn variant="danger" onClick={clockOut} className="!gap-2">
-                <Square size={14} />Clock Out
-              </GBtn>
-            ) : (
-              <GBtn onClick={clockIn} className="!gap-2">
-                <Play size={14} />Clock In
-              </GBtn>
+            {effPerms.can_clock_in && (
+              job.clockInAt ? (
+                <GBtn variant="danger" onClick={clockOut} className="!gap-2">
+                  <Square size={14} />Clock Out
+                </GBtn>
+              ) : (
+                <GBtn onClick={clockIn} className="!gap-2">
+                  <Play size={14} />Clock In
+                </GBtn>
+              )
             )}
           </div>
         </Glass>
@@ -356,39 +378,41 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
               <BeforeAfterSlider before={beforePhoto.dataUrl} after={afterPhoto.dataUrl} />
             </div>
           )}
-          <div className="grid grid-cols-3 gap-2">
-            <label className="cursor-pointer">
-              <input type="file" accept="image/*" capture="environment" className="hidden"
-                onChange={e => {
-                  const f = e.target.files?.[0]; if (!f) return;
-                  const r = new FileReader();
-                  r.onload = ev => addPhoto("before", ev.target!.result as string);
-                  r.readAsDataURL(f); e.target.value = "";
-                }} />
-              <div className="flex flex-col items-center justify-center gap-1 px-2 py-2.5 rounded-xl bg-blue-950/30 hover:bg-blue-900/40 border border-blue-700/40 text-blue-300 text-xs font-medium transition text-center">
-                <Plus size={13} /><span>📷 Before</span>
-              </div>
-            </label>
-            <label className="cursor-pointer">
-              <input type="file" accept="image/*" capture="environment" className="hidden"
-                onChange={e => {
-                  const f = e.target.files?.[0]; if (!f) return;
-                  const r = new FileReader();
-                  r.onload = ev => addPhoto("after", ev.target!.result as string);
-                  r.readAsDataURL(f); e.target.value = "";
-                }} />
-              <div className="flex flex-col items-center justify-center gap-1 px-2 py-2.5 rounded-xl bg-green-950/30 hover:bg-green-900/40 border border-green-700/40 text-green-300 text-xs font-medium transition text-center">
-                <Plus size={13} /><span>✨ After</span>
-              </div>
-            </label>
-            <label className="cursor-pointer">
-              <input type="file" accept="video/*" capture="environment" className="hidden"
-                onChange={e => { const f = e.target.files?.[0]; if (f) addVideo(f); e.target.value = ""; }} />
-              <div className="flex flex-col items-center justify-center gap-1 px-2 py-2.5 rounded-xl bg-purple-950/30 hover:bg-purple-900/40 border border-purple-700/40 text-purple-300 text-xs font-medium transition text-center">
-                <Video size={13} /><span>Video</span>
-              </div>
-            </label>
-          </div>
+          {effPerms.can_upload_photos && (
+            <div className="grid grid-cols-3 gap-2">
+              <label className="cursor-pointer">
+                <input type="file" accept="image/*" capture="environment" className="hidden"
+                  onChange={e => {
+                    const f = e.target.files?.[0]; if (!f) return;
+                    const r = new FileReader();
+                    r.onload = ev => addPhoto("before", ev.target!.result as string);
+                    r.readAsDataURL(f); e.target.value = "";
+                  }} />
+                <div className="flex flex-col items-center justify-center gap-1 px-2 py-2.5 rounded-xl bg-blue-950/30 hover:bg-blue-900/40 border border-blue-700/40 text-blue-300 text-xs font-medium transition text-center">
+                  <Plus size={13} /><span>📷 Before</span>
+                </div>
+              </label>
+              <label className="cursor-pointer">
+                <input type="file" accept="image/*" capture="environment" className="hidden"
+                  onChange={e => {
+                    const f = e.target.files?.[0]; if (!f) return;
+                    const r = new FileReader();
+                    r.onload = ev => addPhoto("after", ev.target!.result as string);
+                    r.readAsDataURL(f); e.target.value = "";
+                  }} />
+                <div className="flex flex-col items-center justify-center gap-1 px-2 py-2.5 rounded-xl bg-green-950/30 hover:bg-green-900/40 border border-green-700/40 text-green-300 text-xs font-medium transition text-center">
+                  <Plus size={13} /><span>✨ After</span>
+                </div>
+              </label>
+              <label className="cursor-pointer">
+                <input type="file" accept="video/*" capture="environment" className="hidden"
+                  onChange={e => { const f = e.target.files?.[0]; if (f) addVideo(f); e.target.value = ""; }} />
+                <div className="flex flex-col items-center justify-center gap-1 px-2 py-2.5 rounded-xl bg-purple-950/30 hover:bg-purple-900/40 border border-purple-700/40 text-purple-300 text-xs font-medium transition text-center">
+                  <Video size={13} /><span>Video</span>
+                </div>
+              </label>
+            </div>
+          )}
           {(job.photos || []).length > 0 && (
             <div className="mt-2 grid grid-cols-3 gap-1.5">
               {(job.photos || []).map((p, i) => p.dataUrl ? (
@@ -421,16 +445,19 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
             title="Pre-Job" emoji="🔵" allowPhotos
             items={preItems}
             onUpdate={items => onUpdateJob({ preChecklist: items })}
+            disabled={!effPerms.can_complete_checklist}
           />
           <PortalChecklistSection
             title="During Job" emoji="🟡"
             items={durItems}
             onUpdate={items => onUpdateJob({ duringChecklist: items })}
+            disabled={!effPerms.can_complete_checklist}
           />
           <PortalChecklistSection
             title="Post-Job" emoji="🟢"
             items={postItems}
             onUpdate={items => onUpdateJob({ postChecklist: items })}
+            disabled={!effPerms.can_complete_checklist}
           />
         </Glass>
 
@@ -450,13 +477,13 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
               </button>
             )}
           </Glass>
-        ) : allDone ? (
+        ) : effPerms.can_get_signoff && allDone ? (
           <GBtn onClick={() => setShowSignOff(true)} className="w-full !justify-center !py-3 !bg-gradient-to-r !from-green-700 !to-green-900 !border-green-600/50">
             <PenLine size={16} />Get Customer Sign-Off
           </GBtn>
-        ) : (
+        ) : effPerms.can_get_signoff ? (
           <div className="text-center text-xs text-white/30 py-2">Complete all checklist items to get customer sign-off</div>
-        )}
+        ) : null}
 
         {/* Internal notes */}
         {job.internalNotes && (
@@ -466,24 +493,31 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
           </Glass>
         )}
 
-        {/* Add note */}
-        <Glass className="p-4 !bg-black/40">
-          <div className="text-xs text-white/60 uppercase tracking-wider mb-2">Add Note</div>
-          <GTxt rows={2} value={note} onChange={e => setNote(e.target.value)} placeholder="Report an issue, leave a status update..." />
-          <GBtn onClick={addNote} className="mt-2 w-full !justify-center" disabled={!note.trim()}>
-            <Plus size={14} />Add Note
-          </GBtn>
-          {(job.commLog || []).length > 0 && (
-            <div className="mt-3 space-y-1.5 max-h-40 overflow-y-auto">
-              {[...(job.commLog || [])].reverse().slice(0, 5).map(e => (
-                <div key={e.id} className="text-xs p-2 bg-white/5 rounded-lg">
-                  <div className="text-white/80">{e.note}</div>
-                  <div className="text-white/30 mt-0.5">{e.date}</div>
-                </div>
-              ))}
-            </div>
-          )}
-        </Glass>
+        {/* Notes — view existing always, add only if permitted */}
+        {(effPerms.can_add_notes || (job.commLog || []).length > 0) && (
+          <Glass className="p-4 !bg-black/40">
+            {effPerms.can_add_notes && (
+              <>
+                <div className="text-xs text-white/60 uppercase tracking-wider mb-2">Add Note</div>
+                <GTxt rows={2} value={note} onChange={e => setNote(e.target.value)} placeholder="Report an issue, leave a status update..." />
+                <GBtn onClick={addNote} className="mt-2 w-full !justify-center" disabled={!note.trim()}>
+                  <Plus size={14} />Add Note
+                </GBtn>
+              </>
+            )}
+            {(job.commLog || []).length > 0 && (
+              <div className={effPerms.can_add_notes ? "mt-3 space-y-1.5 max-h-40 overflow-y-auto" : "space-y-1.5 max-h-40 overflow-y-auto"}>
+                <div className="text-xs text-white/50 uppercase tracking-wider mb-1">Notes</div>
+                {[...(job.commLog || [])].reverse().slice(0, 5).map(e => (
+                  <div key={e.id} className="text-xs p-2 bg-white/5 rounded-lg">
+                    <div className="text-white/80">{e.note}</div>
+                    <div className="text-white/30 mt-0.5">{e.date}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </Glass>
+        )}
       </div>
     </div>
   );
@@ -715,6 +749,9 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   const myEmployee = empSession
     ? employees.find(e => e.email?.toLowerCase() === empSession.user.email?.toLowerCase()) || null
     : null;
+
+  // Merge owner-set permissions with defaults (all-on for existing employees with no permissions field)
+  const perms: Record<string, boolean> = { ...DEFAULT_PERMISSIONS, ...((myEmployee as any)?.permissions || {}) };
 
   const myJobs = myEmployee
     ? jobs.filter(j => (j.crew || []).includes(myEmployee.id))
@@ -988,6 +1025,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
         toast={toast}
         companyName={settings.companyName || "Smock's Pressure Washing"}
         onComplete={handleJobComplete}
+        perms={perms}
       />
     );
   }
@@ -1070,17 +1108,17 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
             <span className="text-[10px] text-white/40 flex-shrink-0">🚗 ~{driveTimes[job.id]}</span>
           )}
           <div className="flex-1" />
-          {job.clockInAt ? (
-            <>
-              <div className="font-mono text-sm font-bold text-green-400 animate-pulse">{timerDisplay}</div>
-              <button onClick={clockOutCard}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-red-950/50 hover:bg-red-900/60 border border-red-700/40 text-red-300 text-xs font-semibold transition">
-                <Square size={11} />Clock Out
-              </button>
-            </>
-          ) : (
-            <>
-              {job.status === "completed"
+          {perms.can_clock_in ? (
+            job.clockInAt ? (
+              <>
+                <div className="font-mono text-sm font-bold text-green-400 animate-pulse">{timerDisplay}</div>
+                <button onClick={clockOutCard}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-red-950/50 hover:bg-red-900/60 border border-red-700/40 text-red-300 text-xs font-semibold transition">
+                  <Square size={11} />Clock Out
+                </button>
+              </>
+            ) : (
+              job.status === "completed"
                 ? <div className="text-xs text-white/30">Job complete</div>
                 : (
                   <button onClick={clockInCard}
@@ -1088,8 +1126,11 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                     <Play size={11} />Clock In
                   </button>
                 )
-              }
-            </>
+            )
+          ) : (
+            job.status === "completed"
+              ? <div className="text-xs text-white/30">Job complete</div>
+              : <div className="text-xs text-white/30">{job.loggedHours ? `${job.loggedHours}h logged` : ""}</div>
           )}
         </div>
       </div>
@@ -1100,19 +1141,31 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     <div className="min-h-screen bg-black text-white flex flex-col">
       {/* Header */}
       <header className="sticky top-0 z-20 bg-black/95 border-b border-red-900/30 px-4 py-3 flex items-center gap-3 flex-shrink-0">
-        <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-red-600 to-red-900 flex items-center justify-center font-black text-sm flex-shrink-0">
-          {myEmployee.firstName[0]}
+        {/* CrewBoss brand */}
+        <div className="flex items-center gap-2 flex-1 min-w-0">
+          <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-red-600 to-red-900 flex items-center justify-center flex-shrink-0 shadow-lg shadow-red-900/40">
+            <span className="text-[11px] font-black text-white tracking-tight">CB</span>
+          </div>
+          <span className="font-bold text-sm text-white tracking-tight">CrewBoss</span>
         </div>
-        <div className="flex-1 min-w-0">
-          <div className="font-semibold text-sm truncate">{myEmployee.firstName} {myEmployee.lastName}</div>
-          <div className="text-[10px] text-white/40 capitalize">{role} · {myEmployee.role}</div>
+        {/* Employee info + actions */}
+        <div className="flex items-center gap-2.5">
+          {activeClockJob && (
+            <div className="hidden sm:flex items-center gap-1 text-[10px] text-green-400 animate-pulse font-semibold">
+              <span className="w-1.5 h-1.5 rounded-full bg-green-400 inline-block" />On Job
+            </div>
+          )}
+          <div className="text-right hidden xs:block">
+            <div className="text-xs font-semibold text-white/80 leading-tight">{myEmployee.firstName} {myEmployee.lastName}</div>
+            <div className="text-[10px] text-white/40 capitalize leading-tight">{myEmployee.role}</div>
+          </div>
+          <div className="w-8 h-8 rounded-full bg-gradient-to-br from-red-700/60 to-red-900/60 border border-red-700/30 flex items-center justify-center text-xs font-bold flex-shrink-0">
+            {myEmployee.firstName[0]}{myEmployee.lastName[0]}
+          </div>
+          <button onClick={doSignOut} className="p-2 rounded-xl hover:bg-white/10 text-white/40 hover:text-white transition flex-shrink-0" title="Sign out">
+            <LogOut size={16} />
+          </button>
         </div>
-        {activeClockJob && (
-          <div className="text-[10px] text-green-400 animate-pulse font-semibold">● On Job</div>
-        )}
-        <button onClick={doSignOut} className="p-2 rounded-xl hover:bg-white/10 text-white/40 hover:text-white transition">
-          <LogOut size={16} />
-        </button>
       </header>
 
       {/* Content */}
@@ -1132,28 +1185,35 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
 
           {/* Today tab */}
           {tab === "today" && <>
-            {/* Welcome banner */}
-            <Glass className="p-4 !bg-gradient-to-br !from-red-950/40 !to-black/60 !border-red-700/20">
-              <div className="text-base font-bold text-white">Welcome back, {myEmployee.firstName}!</div>
+            {/* Welcome header */}
+            <div className="pb-1">
+              <div className="text-xl font-bold text-white">Welcome, {myEmployee.firstName}!</div>
               <div className="text-sm text-white/50 mt-0.5">
                 {new Date().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" })}
               </div>
-              <div className="grid grid-cols-3 gap-2 mt-3 pt-3 border-t border-white/10">
-                <div className="text-center">
-                  <div className="text-xl font-black text-white">{weekHours.toFixed(1)}<span className="text-xs font-normal text-white/40">h</span></div>
-                  <div className="text-[10px] text-white/40 mt-0.5">This Week</div>
-                </div>
-                <div className="text-center">
-                  <div className="text-xl font-black text-white">{weekJobsDone}</div>
-                  <div className="text-[10px] text-white/40 mt-0.5">Jobs Done</div>
-                </div>
-                <div className="text-center">
+            </div>
+            {/* Stat cards */}
+            <div className="grid grid-cols-3 gap-2">
+              <Glass className="p-3 !bg-white/5 text-center">
+                <div className="text-xl font-black text-white">{weekHours.toFixed(1)}<span className="text-[11px] font-normal text-white/40">h</span></div>
+                <div className="text-[10px] text-white/40 mt-0.5 leading-tight">Hours This<br/>Week</div>
+              </Glass>
+              <Glass className="p-3 !bg-white/5 text-center">
+                <div className="text-xl font-black text-white">{weekJobsDone}</div>
+                <div className="text-[10px] text-white/40 mt-0.5 leading-tight">Jobs<br/>Done</div>
+              </Glass>
+              {perms.can_view_pay ? (
+                <Glass className="p-3 !bg-green-950/20 !border-green-700/30 text-center">
                   <div className="text-xl font-black text-green-400">{fmt(weekPay)}</div>
-                  <div className="text-[10px] text-white/40 mt-0.5">Est. Pay</div>
-                </div>
-              </div>
-              <div className="mt-2 text-[10px] text-white/30 text-center">{fmt(myEmployee.hourlyRate || 0)}/hr</div>
-            </Glass>
+                  <div className="text-[10px] text-white/40 mt-0.5 leading-tight">Est.<br/>Pay</div>
+                </Glass>
+              ) : (
+                <Glass className="p-3 !bg-blue-950/20 !border-blue-700/30 text-center">
+                  <div className="text-xl font-black text-blue-400">{todayJobs.length}</div>
+                  <div className="text-[10px] text-white/40 mt-0.5 leading-tight">Today's<br/>Jobs</div>
+                </Glass>
+              )}
+            </div>
 
             {/* Up Next highlight (only when next job is a future date, not today) */}
             {upNextJob && upNextJob.scheduledDate !== todayStr && (
@@ -1378,23 +1438,38 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
             );
           })()}
 
-          {/* All Jobs tab */}
-          {tab === "jobs" && <>
-            <div className="text-xs text-white/50 uppercase tracking-wider font-semibold mb-3 flex items-center gap-2">
-              <span>All Assigned Jobs</span>
-              <span className="px-2 py-0.5 rounded-full bg-white/10 text-white/60">{myJobs.length}</span>
-            </div>
-            {myJobs.length === 0 ? (
+          {/* All Jobs tab — grouped by date */}
+          {tab === "jobs" && (() => {
+            const jwEnd = (() => { const d = new Date(); d.setDate(d.getDate() + (6 - d.getDay())); return d.toISOString().slice(0, 10); })();
+            const todayGrp   = myJobs.filter(j => j.scheduledDate === todayStr);
+            const weekGrp    = myJobs.filter(j => j.scheduledDate > todayStr && j.scheduledDate <= jwEnd);
+            const upcomingGrp = myJobs.filter(j => j.scheduledDate > jwEnd);
+            const earlierGrp = myJobs.filter(j => j.scheduledDate < todayStr);
+
+            const Group = ({ label, jobs: grpJobs }: { label: string; jobs: typeof myJobs }) => grpJobs.length === 0 ? null : (
+              <div>
+                <div className="text-xs text-white/40 uppercase tracking-widest font-bold mb-2 flex items-center gap-2">
+                  <span>{label}</span>
+                  <span className="px-1.5 py-0.5 rounded-full bg-white/10 text-white/50 font-normal">{grpJobs.length}</span>
+                </div>
+                <div className="space-y-2">{grpJobs.map(j => <JobCard key={j.id} job={j} />)}</div>
+              </div>
+            );
+
+            return myJobs.length === 0 ? (
               <div className="text-center py-10 text-white/30">
                 <Briefcase size={32} className="mx-auto mb-2 opacity-30" />
                 <div>No jobs assigned yet</div>
               </div>
             ) : (
-              <div className="space-y-2">
-                {[...myJobs].sort((a, b) => b.scheduledDate.localeCompare(a.scheduledDate)).map(j => <JobCard key={j.id} job={j} />)}
+              <div className="space-y-5">
+                <Group label="Today" jobs={todayGrp} />
+                <Group label="This Week" jobs={weekGrp.sort((a, b) => a.scheduledDate.localeCompare(b.scheduledDate))} />
+                <Group label="Upcoming" jobs={upcomingGrp.sort((a, b) => a.scheduledDate.localeCompare(b.scheduledDate))} />
+                <Group label="Earlier" jobs={earlierGrp.sort((a, b) => b.scheduledDate.localeCompare(a.scheduledDate))} />
               </div>
-            )}
-          </>}
+            );
+          })()}
 
           {/* Pay tab */}
           {tab === "pay" && (() => {
@@ -1487,16 +1562,16 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
         </div>
       </main>
 
-      {/* Bottom nav */}
+      {/* Bottom nav — filtered by permissions */}
       <nav className="fixed bottom-0 left-0 right-0 bg-black/95 border-t border-red-900/30 flex items-center justify-around px-2 py-2 safe-bottom z-30">
         {([
-          { id: "today", label: "Today", icon: Home },
-          { id: "calendar", label: "Calendar", icon: Calendar },
-          { id: "jobs", label: "All Jobs", icon: List },
-          { id: "pay", label: "My Pay", icon: DollarSign },
-          { id: "google", label: "Google", icon: Database },
-        ] as const).map(({ id, label, icon: Icon }) => (
-          <button key={id} onClick={() => setTab(id)}
+          { id: "today",    label: "Today",    icon: Home,       show: true },
+          { id: "calendar", label: "Calendar", icon: Calendar,   show: perms.can_view_calendar },
+          { id: "jobs",     label: "All Jobs", icon: List,       show: perms.can_view_jobs },
+          { id: "pay",      label: "My Pay",   icon: DollarSign, show: perms.can_view_pay },
+          { id: "google",   label: "Google",   icon: Database,   show: true },
+        ] as const).filter(t => t.show).map(({ id, label, icon: Icon }) => (
+          <button key={id} onClick={() => setTab(id as typeof tab)}
             className={"flex flex-col items-center gap-0.5 px-3 py-1.5 rounded-xl transition " +
               (tab === id ? "text-red-400" : "text-white/40 hover:text-white/70")}>
             <Icon size={20} />
