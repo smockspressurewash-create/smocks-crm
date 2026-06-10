@@ -686,10 +686,14 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   const [inviteCode, setInviteCode] = useState<string | null>(null);
   const [inviteRecord, setInviteRecord] = useState<any>(null);
 
+  // Capture hash synchronously on first render, before App.tsx's hash-sync effect can strip the invite param
+  const capturedHashRef = useRef(window.location.hash);
+
   // Parse invite code from URL hash — e.g. #/portal?invite=ABC123
   useEffect(() => {
-    const hash = window.location.hash;
+    const hash = capturedHashRef.current;
     const match = hash.match(/[?&]invite=([A-Z0-9]+)/i);
+    console.log("INVITE CODE CAPTURED:", match ? match[1] : "(none)", "from hash:", hash);
     if (!match) return;
     const code = match[1];
     setInviteCode(code);

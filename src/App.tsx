@@ -220,9 +220,10 @@ export function App() {
   const [notifOpen, setNotifOpen] = useState(false);
   const [fabOpen, setFabOpen] = useState(false);
 
-  // Sync URL hash when page changes — skip if the hash is an OAuth callback
+  // Sync URL hash when page changes — skip if the hash is an OAuth callback or invite link
   useEffect(() => {
     if (window.location.hash.includes("access_token")) return;
+    if (window.location.hash.includes("invite=")) return;
     window.location.hash = "/" + page;
   }, [page]);
 
