@@ -440,10 +440,14 @@ export function App() {
           return;
         }
 
-        // Detect employee (email/password) sessions vs owner (Google OAuth) sessions
+        // Detect employee (email/password) sessions vs owner (Google OAuth) sessions.
+        // An email/password user with no Google identity is treated as an employee — even
+        // if user_metadata.role is missing (e.g. after password reset). The portal's doLogin
+        // repairs the metadata on next sign-in, but we must not block them here.
         const isGoogle = (session?.user?.identities || []).some((i: any) => i.provider === "google");
         const empRole = session?.user?.user_metadata?.role;
-        const isEmployee = session && !isGoogle && (empRole === "technician" || empRole === "manager");
+        const isEmailPasswordUser = session && !isGoogle;
+        const isEmployee = isEmailPasswordUser && (empRole === "technician" || empRole === "manager" || !empRole);
 
         if (isEmployee) {
           setEmpSession(session);
@@ -473,10 +477,11 @@ export function App() {
         "provider_token present:", !!initial?.provider_token,
         "identities:", JSON.stringify(initial?.user?.identities),
         "app_metadata:", JSON.stringify(initial?.user?.app_metadata));
-      // Check if existing session is an employee session
+      // Check if existing session is an employee session — same logic as onAuthStateChange above:
+      // any email/password (non-Google) user is treated as an employee, regardless of role metadata.
       const initIsGoogle = (initial?.user?.identities || []).some((i: any) => i.provider === "google");
       const initEmpRole = initial?.user?.user_metadata?.role;
-      if (initial && !initIsGoogle && (initEmpRole === "technician" || initEmpRole === "manager")) {
+      if (initial && !initIsGoogle && (initEmpRole === "technician" || initEmpRole === "manager" || !initEmpRole)) {
         setEmpSession(initial);
         setOauthProcessing(false);
       } else {

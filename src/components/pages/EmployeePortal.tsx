@@ -751,7 +751,9 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   }, []);
 
   const myEmployee = empSession
-    ? employees.find(e => e.email?.toLowerCase() === empSession.user.email?.toLowerCase()) || null
+    ? (employees.find(e => (e as any).user_id === empSession.user.id) ||
+       employees.find(e => e.email?.toLowerCase() === empSession.user.email?.toLowerCase()) ||
+       null)
     : null;
 
   // Merge owner-set permissions with defaults (all-on for existing employees with no permissions field)
@@ -869,12 +871,38 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     const { data, error } = await supabase.auth.signInWithPassword({ email: loginEmail, password: loginPwd });
     setLoginLoading(false);
     if (error) { setLoginError(error.message); return; }
-    const role = data.session?.user?.user_metadata?.role;
-    if (!role || role === "owner") {
+
+    const session = data.session!;
+    const metaRole = session.user.user_metadata?.role;
+    const email = session.user.email || "";
+
+    // Primary check: role in user_metadata
+    const hasEmployeeRole = metaRole === "technician" || metaRole === "manager";
+
+    // Fallback: does their email match an employee record in the CRM?
+    const matchedEmployee = employees.find(e => e.email?.toLowerCase() === email.toLowerCase());
+
+    if (!hasEmployeeRole && !matchedEmployee) {
       setLoginError("This portal is for employees only. Owners sign in with Google on the main app.");
       await supabase.auth.signOut(); return;
     }
-    setEmpSession(data.session);
+
+    // If role metadata is missing but they're a known employee, repair it so future
+    // sessions (including after page reload) pass the App.tsx auth-state-change check
+    if (!hasEmployeeRole && matchedEmployee) {
+      const fixedRole = (matchedEmployee as any).role?.toLowerCase().includes("manager") ? "manager" : "technician";
+      supabase.auth.updateUser({ data: { role: fixedRole } }).catch(() => {});
+    }
+
+    // Link the employee record to this Supabase user ID so lookups by user_id work
+    if (matchedEmployee && !(matchedEmployee as any).user_id) {
+      (supabase as any).from("employees")
+        .update({ user_id: session.user.id })
+        .eq("id", matchedEmployee.id)
+        .then(() => {}).catch(() => {});
+    }
+
+    setEmpSession(session);
     toast("Welcome back!");
   };
 
@@ -897,12 +925,15 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     const { data: signInData, error: signInErr } = await supabase.auth.signInWithPassword({ email: loginEmail, password: loginPwd });
     setLoginLoading(false);
     if (!signInErr && signInData.session) {
+      const newUserId = signInData.session.user.id;
+      const newEmail = signInData.session.user.email || "";
+
       // Mark invite as used — Supabase first, then localStorage
       if (inviteCode) {
         try {
           await (supabase as any)
             .from("invites")
-            .update({ used: true, used_at: new Date().toISOString(), used_by: signInData.session.user.id })
+            .update({ used: true, used_at: new Date().toISOString(), used_by: newUserId })
             .eq("code", inviteCode);
         } catch { /* table may not exist */ }
         try {
@@ -912,6 +943,18 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
           ));
         } catch { /* ignore */ }
       }
+
+      // Link employee record to the new Supabase user ID so email-less lookups work.
+      // Try by invite's employee ID first, then fall back to email match.
+      const invEmpId = inviteRecord?.employeeId || inviteRecord?.employee_id;
+      try {
+        if (invEmpId) {
+          await (supabase as any).from("employees").update({ user_id: newUserId }).eq("id", invEmpId);
+        } else if (newEmail) {
+          await (supabase as any).from("employees").update({ user_id: newUserId }).eq("email", newEmail);
+        }
+      } catch { /* employees table may not have user_id column yet */ }
+
       setEmpSession(signInData.session);
       toast("Welcome! Account created ✓");
     } else {
