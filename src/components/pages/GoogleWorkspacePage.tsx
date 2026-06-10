@@ -14,6 +14,7 @@ import {
   fetchGmailMessages, sendGmailMessage, markGmailRead,
   fetchCalendarEvents, fetchGTasks, createGTask, patchGTask, deleteGTask,
   fetchGContacts, fetchGDriveFiles,
+  setGoogleTokenRefresher,
   type GmailMessage, type GCalEvent, type GTask, type GContact, type GDriveFile,
 } from "../../lib/googleApi";
 
@@ -773,28 +774,42 @@ export function GoogleWorkspacePage({
   const token: string = s.googleProviderToken || "";
   const hasToken = !!token;
 
+  // Register a token refresher with the googleApi module so any 401 auto-retries.
+  // Uses Supabase refreshSession which internally re-fetches the provider_token.
+  useEffect(() => {
+    if (!hasToken) { setGoogleTokenRefresher(null); return; }
+    setGoogleTokenRefresher(async () => {
+      const { data, error } = await supabase.auth.refreshSession();
+      const newToken: string = (data.session as any)?.provider_token || "";
+      if (error || !newToken) {
+        throw new Error("Refresh failed");
+      }
+      setSettings?.((prev: any) => ({ ...prev, googleProviderToken: newToken }));
+      return newToken;
+    });
+    return () => setGoogleTokenRefresher(null);
+  }, [hasToken, setSettings]);
+
+  const GOOGLE_SCOPES = [
+    "https://www.googleapis.com/auth/calendar",
+    "https://www.googleapis.com/auth/gmail.send",
+    "https://www.googleapis.com/auth/gmail.readonly",
+    "https://www.googleapis.com/auth/tasks",
+    "https://www.googleapis.com/auth/drive.readonly",
+    "https://www.googleapis.com/auth/contacts.readonly",
+  ].join(" ");
+
+  // Always use signInWithOAuth — avoids "Manual linking is disabled" error that
+  // occurs when the identity is already linked and linkIdentity is called again.
+  // A fresh OAuth flow always returns a new provider_token regardless of prior state.
   const doConnect = async () => {
-    const SCOPES = [
-      "https://www.googleapis.com/auth/calendar",
-      "https://www.googleapis.com/auth/gmail.send",
-      "https://www.googleapis.com/auth/gmail.readonly",
-      "https://www.googleapis.com/auth/tasks",
-      "https://www.googleapis.com/auth/drive.readonly",
-      "https://www.googleapis.com/auth/contacts.readonly",
-    ].join(" ");
     const opts = {
       queryParams: { access_type: "offline", prompt: "consent" },
-      scopes: SCOPES,
+      scopes: GOOGLE_SCOPES,
       redirectTo: window.location.origin + window.location.pathname,
     };
     try {
-      const { data: { user } } = await supabase.auth.getUser();
-      let error: any;
-      if (user) {
-        ({ error } = await supabase.auth.linkIdentity({ provider: "google", options: opts }));
-      } else {
-        ({ error } = await supabase.auth.signInWithOAuth({ provider: "google", options: opts }));
-      }
+      const { error } = await supabase.auth.signInWithOAuth({ provider: "google", options: opts });
       if (error) toast?.("Google connect failed: " + error.message, "red");
     } catch (e: any) {
       toast?.("Google connect failed: " + e.message, "red");
@@ -802,11 +817,17 @@ export function GoogleWorkspacePage({
   };
 
   const doDisconnect = async () => {
+    // Attempt to revoke the token on Google's side
+    if (token) {
+      fetch(`https://oauth2.googleapis.com/revoke?token=${encodeURIComponent(token)}`, { method: "POST" })
+        .catch(() => {});
+    }
     setSettings?.((prev: any) => ({
       ...prev,
       googleConnected: false,
       googleEmail: "",
       googleProviderToken: "",
+      googleRefreshToken: "",
       googleScopes: {},
     }));
     toast?.("Google disconnected", "green");

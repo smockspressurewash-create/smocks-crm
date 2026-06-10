@@ -167,8 +167,10 @@ export function App() {
     const access_token = params.get("access_token");
     const refresh_token = params.get("refresh_token");
     const provider_token = params.get("provider_token");
-    // Bridge Google token to applyGoogleIdentity via sessionStorage
+    const provider_refresh_token = params.get("provider_refresh_token");
+    // Bridge Google tokens to applyGoogleIdentity via sessionStorage
     if (provider_token) sessionStorage.setItem("smocks.gpt", provider_token);
+    if (provider_refresh_token) sessionStorage.setItem("smocks.grt", provider_refresh_token);
     if (access_token && refresh_token) {
       supabase.auth.setSession({ access_token, refresh_token }).then(({ data, error }) => {
         if (error) {
@@ -386,11 +388,13 @@ export function App() {
       const googleId = (session.user.identities || []).find((i: any) => i.provider === "google");
       if (!googleId) return;
       const googleEmail = googleId.identity_data?.email || session.user.email || "";
-      // Pick up the Google OAuth token bridged from the hash via sessionStorage.
+      // Pick up the Google OAuth tokens bridged from the hash via sessionStorage.
       // session.provider_token is only populated immediately after setSession with the
       // original hash; on subsequent loads it is null, so the persisted value is kept.
       const bridgedToken = sessionStorage.getItem("smocks.gpt") || "";
       if (bridgedToken) sessionStorage.removeItem("smocks.gpt");
+      const bridgedRefreshToken = sessionStorage.getItem("smocks.grt") || "";
+      if (bridgedRefreshToken) sessionStorage.removeItem("smocks.grt");
       const providerToken = bridgedToken || session.provider_token || "";
       setSettings((prev: any) => ({
         ...prev,
@@ -398,6 +402,7 @@ export function App() {
         googleEmail,
         googleScopes: { gmail: true, calendar: true, drive: true, contacts: true, tasks: true },
         ...(providerToken ? { googleProviderToken: providerToken } : {}),
+        ...(bridgedRefreshToken ? { googleRefreshToken: bridgedRefreshToken } : {}),
       }));
     };
 
@@ -698,7 +703,7 @@ export function App() {
                 {page === "intake"         && <LeadIntakePage customers={customers} setCustomers={setCustomers} estimates={estimates} setEstimates={setEstimates} services={services} settings={settings} toast={toast} onNav={setPage} />}
                 {page === "alfred"         && <AlfredPage conversations={alfredConversations} setConversations={setAlfredConversations} activeConvId={activeConvId} setActiveConvId={setActiveConvId} memory={alfredMemory} setMemory={setAlfredMemory} personality={personality} setPersonality={setPersonality} apiKey={settings.anthropicKey ?? settings.geminiKey ?? ""} openSettings={() => setSettingsOpen(true)} toast={toast} jobs={jobs} setJobs={setJobs} estimates={estimates} setEstimates={setEstimates} customers={customers} setCustomers={setCustomers} employees={employees} automations={automations} setAutomations={setAutomations} stats={{ totalRev, activeJobs, pendingEst, closeRate, doneMonth }} setWins={setWins} goals={goalsList} setGoals={setGoalsList} setSettings={setSettings} settings={settings} modelStatus={modelStatus} setModelStatus={setModelStatus} onNav={setPage} />}
                 {page === "google"         && <GoogleWorkspacePage settings={settings} setSettings={setSettings} googleData={googleData as any} setGoogleData={setGoogleData} customers={customers} setCustomers={setCustomers} jobs={jobs} toast={toast} onNav={setPage} />}
-                {page === "employees"      && <EmployeesPage employees={employees} setEmployees={setEmployees} jobs={jobs} />}
+                {page === "employees"      && <EmployeesPage employees={employees} setEmployees={setEmployees} jobs={jobs} settings={settings} toast={toast} />}
                 {page === "fleet"          && <FleetPage vehicles={vehicles} setVehicles={setVehicles} maintenance={maintenance} setMaintenance={setMaintenance} toast={toast} />}
                 {page === "expenses"       && <ExpensesPage expenses={expenses} setExpenses={setExpenses} />}
                 {page === "chemicals"      && <ChemicalsPage chemicals={chemicals} setChemicals={setChemicals} toast={toast} settings={settings} />}

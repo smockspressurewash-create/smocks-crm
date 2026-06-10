@@ -79,7 +79,7 @@ import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 
 interface InviteRecord { code: string; firstName: string; lastName: string; email: string; role: string; hourlyRate: number; createdAt: string; used?: boolean; }
 
-export function EmployeesPage({ employees = [], setEmployees, jobs = [] }) {
+export function EmployeesPage({ employees = [], setEmployees, jobs = [], settings = {} as any, toast = (_msg: string, _tone?: string) => {} }: { employees?: any[]; setEmployees: any; jobs?: any[]; settings?: any; toast?: any }) {
   const [modal, setModal] = useState({ open: false, data: null });
   const [view, setView] = useState("list"); // list | hours | payroll
   const [payPeriodStart, setPayPeriodStart] = usePersistent("smocks.payPeriodStart", (() => { const d = new Date(); d.setDate(1); return d.toISOString().slice(0,10); })());
@@ -92,9 +92,9 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [] }) {
   const [inviteCreated, setInviteCreated] = useState<InviteRecord | null>(null);
   const portalUrl = window.location.origin + window.location.pathname + "#/portal";
 
-  const generateInvite = () => {
+  const generateInvite = async () => {
     if (!inviteF.firstName.trim() || !inviteF.email.trim()) return;
-    const code = Math.random().toString(36).slice(2, 9).toUpperCase();
+    const code = (Math.random().toString(36).substring(2, 10) + Date.now().toString(36)).toUpperCase();
     const inv: InviteRecord = { code, ...inviteF, hourlyRate: Number(inviteF.hourlyRate), createdAt: new Date().toISOString().slice(0, 10) };
     setInvites(prev => [...prev, inv]);
     // Pre-create employee record so the portal can match immediately
@@ -103,6 +103,21 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [] }) {
       setEmployees((prev: any[]) => [...prev, { id: uid(), firstName: inv.firstName, lastName: inv.lastName, email: inv.email, role: inv.role, hourlyRate: inv.hourlyRate, status: "active", phone: "", startDate: today(), emergencyContact: "", notes: "Invited — account pending" }]);
     }
     setInviteCreated(inv);
+    // Send invite email if Resend is configured
+    const link = inviteLink(code);
+    const companyName = settings?.companyName || "your company";
+    const ownerName = settings?.ownerName || "Your Manager";
+    try {
+      await sendEmail(settings, {
+        to: inviteF.email,
+        subject: `You've been invited to join ${companyName} on CrewBoss`,
+        body: `<p>Hi ${inviteF.firstName},</p><p>${ownerName} has invited you to join <strong>${companyName}</strong> on CrewBoss. Click the link below to create your employee account and access your schedule, pay, and job details.</p><p><a href="${link}" style="display:inline-block;padding:12px 24px;background:#dc2626;color:#fff;border-radius:8px;text-decoration:none;font-weight:600;">Create Your Account</a></p><p>Or paste this link in your browser:<br/><a href="${link}">${link}</a></p><p style="color:#888;font-size:12px;">This invite was sent by ${companyName} using CrewBoss.</p>`,
+      });
+      toast(`Invite email sent to ${inviteF.email} ✓`, "green");
+    } catch {
+      // Email sending failed (Resend not configured) — link was still created
+      toast(`Invite created! Share the link manually with ${inviteF.firstName}.`, "yellow");
+    }
   };
 
   const inviteLink = (code: string) => `${portalUrl}?invite=${code}`;

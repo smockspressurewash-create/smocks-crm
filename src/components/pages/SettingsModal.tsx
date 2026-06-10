@@ -667,13 +667,7 @@ export function SettingsModal({ open, onClose, settings, setSettings, services, 
                         redirectTo: window.location.origin + window.location.pathname,
                       };
                       try {
-                        const { data: { user } } = await supabase.auth.getUser();
-                        let error: any;
-                        if (user) {
-                          ({ error } = await supabase.auth.linkIdentity({ provider: "google", options: opts }));
-                        } else {
-                          ({ error } = await supabase.auth.signInWithOAuth({ provider: "google", options: opts }));
-                        }
+                        const { error } = await supabase.auth.signInWithOAuth({ provider: "google", options: opts });
                         if (error) toast("Google connect failed: " + error.message, "red");
                       } catch (e: any) {
                         toast("Google connect failed: " + e.message, "red");

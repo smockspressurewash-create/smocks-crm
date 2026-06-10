@@ -649,6 +649,30 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   const [loginMode, setLoginMode] = useState<"login" | "register">("login");
   const [loginError, setLoginError] = useState("");
   const [loginLoading, setLoginLoading] = useState(false);
+  const [inviteCode, setInviteCode] = useState<string | null>(null);
+  const [inviteRecord, setInviteRecord] = useState<any>(null);
+
+  // Parse invite code from URL hash — e.g. #/portal?invite=ABC123
+  useEffect(() => {
+    const hash = window.location.hash;
+    const match = hash.match(/[?&]invite=([A-Z0-9]+)/i);
+    if (!match) return;
+    const code = match[1];
+    setInviteCode(code);
+    try {
+      const invites: any[] = JSON.parse(localStorage.getItem("smocks.invites") || "[]");
+      const inv = invites.find(i => i.code === code && !i.used);
+      if (inv) {
+        setInviteRecord(inv);
+        setLoginEmail(inv.email || "");
+        setLoginFirst(inv.firstName || "");
+        setLoginLast(inv.lastName || "");
+        setLoginMode("register");
+      } else if (code) {
+        setLoginError("Invalid or expired invite link.");
+      }
+    } catch { /* ignore */ }
+  }, []);
 
   const myEmployee = empSession
     ? employees.find(e => e.email?.toLowerCase() === empSession.user.email?.toLowerCase()) || null
@@ -778,16 +802,31 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   const doRegister = async () => {
     if (!loginFirst.trim() || !loginLast.trim()) { setLoginError("Enter your full name"); return; }
     if (loginPwd.length < 6) { setLoginError("Password must be at least 6 characters"); return; }
+    // Validate invite email matches
+    if (inviteCode && inviteRecord && loginEmail.toLowerCase() !== inviteRecord.email.toLowerCase()) {
+      setLoginError(`This invite was sent to ${inviteRecord.email}. Please use that email address.`);
+      return;
+    }
     setLoginLoading(true); setLoginError("");
+    const authRole = inviteRecord?.role?.toLowerCase().includes("manager") ? "manager" : "technician";
     const { error } = await supabase.auth.signUp({
       email: loginEmail, password: loginPwd,
-      options: { data: { role: "technician", firstName: loginFirst, lastName: loginLast } },
+      options: { data: { role: authRole, firstName: loginFirst, lastName: loginLast } },
     });
     if (error) { setLoginLoading(false); setLoginError(error.message); return; }
     // Auto sign-in after registration
     const { data: signInData, error: signInErr } = await supabase.auth.signInWithPassword({ email: loginEmail, password: loginPwd });
     setLoginLoading(false);
     if (!signInErr && signInData.session) {
+      // Mark invite as used in localStorage
+      if (inviteCode) {
+        try {
+          const invites: any[] = JSON.parse(localStorage.getItem("smocks.invites") || "[]");
+          localStorage.setItem("smocks.invites", JSON.stringify(
+            invites.map(i => i.code === inviteCode ? { ...i, used: true } : i)
+          ));
+        } catch { /* ignore */ }
+      }
       setEmpSession(signInData.session);
       toast("Welcome! Account created ✓");
     } else {
@@ -822,6 +861,16 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
           </div>
 
           <div className="space-y-3">
+            {/* Invite banner */}
+            {inviteRecord && (
+              <div className="p-3 rounded-xl bg-green-950/30 border border-green-700/30">
+                <div className="text-xs text-green-300 font-semibold mb-0.5">You've been invited!</div>
+                <div className="text-xs text-white/50">Create your account below to access your schedule and jobs.</div>
+              </div>
+            )}
+            {inviteCode && !inviteRecord && loginError && (
+              <div className="p-3 rounded-xl bg-red-950/30 border border-red-700/30 text-xs text-red-300">{loginError}</div>
+            )}
             {loginMode === "register" && (
               <div className="grid grid-cols-2 gap-2">
                 <div>
@@ -844,7 +893,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
               <GInput type="password" value={loginPwd} onChange={e => setLoginPwd(e.target.value)}
                 placeholder="••••••••" onKeyDown={e => e.key === "Enter" && (loginMode === "login" ? doLogin() : doRegister())} />
             </div>
-            {loginError && (
+            {loginError && !(inviteCode && !inviteRecord) && (
               <div className="p-3 bg-red-950/40 border border-red-700/50 rounded-xl text-sm text-red-300">
                 {loginError}
               </div>

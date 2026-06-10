@@ -2,23 +2,47 @@
 // All Google REST APIs support CORS for browser clients with a valid Bearer token.
 // Token comes from Supabase OAuth (supabase.auth.signInWithOAuth with Google provider).
 
+// Module-level token refresher — set by GoogleWorkspacePage when mounted.
+// When a 401 is received, gFetch calls this to get a fresh access token before retrying.
+let _tokenRefresher: (() => Promise<string>) | null = null;
+
+export const setGoogleTokenRefresher = (fn: (() => Promise<string>) | null): void => {
+  _tokenRefresher = fn;
+};
+
 const gFetch = async (url: string, token: string, opts: RequestInit = {}): Promise<unknown> => {
-  const res = await fetch(url, {
-    ...opts,
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json",
-      ...(opts.headers || {}),
-    },
-  });
-  if (res.status === 204) return null;
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    const err = new Error(`Google API ${res.status}: ${text.slice(0, 200)}`);
-    (err as any).status = res.status;
-    throw err;
+  const doReq = async (tok: string) => {
+    const res = await fetch(url, {
+      ...opts,
+      headers: {
+        Authorization: `Bearer ${tok}`,
+        "Content-Type": "application/json",
+        ...(opts.headers || {}),
+      },
+    });
+    if (res.status === 204) return null;
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      const err = new Error(`Google API ${res.status}: ${text.slice(0, 200)}`);
+      (err as any).status = res.status;
+      throw err;
+    }
+    return res.json();
+  };
+
+  try {
+    return await doReq(token);
+  } catch (e: any) {
+    if (e.status === 401 && _tokenRefresher) {
+      try {
+        const newToken = await _tokenRefresher();
+        return await doReq(newToken);
+      } catch {
+        throw new Error("Google API 401: Token expired and refresh failed. Please disconnect and reconnect Google.");
+      }
+    }
+    throw e;
   }
-  return res.json();
 };
 
 // ─── Gmail ────────────────────────────────────────────────────────────────────
