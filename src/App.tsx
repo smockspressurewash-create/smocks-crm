@@ -46,6 +46,7 @@ import { CrewView } from "./components/pages/CrewView";
 import { SettingsModal } from "./components/pages/SettingsModal";
 import { ClientPortal } from "./components/pages/ClientPortal";
 import { EmployeePortal } from "./components/pages/EmployeePortal";
+import { ResetPassword } from "./components/pages/ResetPassword";
 
 // ─── Seed data ────────────────────────────────────────────────────────────────
 import {
@@ -212,7 +213,7 @@ export function App() {
   const [page, setPage] = useState(() => {
     // Restore page from URL hash on first load
     const hash = window.location.hash.replace(/^#\/?/, "").split("?")[0];
-    const valid = ["dashboard","alfred","inbox","customers","estimates","invoices","pipeline","intake","jobs","calendar","crew","campaigns","reviews","automations","social","referrals","expenses","reports","analytics","budget","personal","accountability","employees","fleet","chemicals","google","portal"];
+    const valid = ["dashboard","alfred","inbox","customers","estimates","invoices","pipeline","intake","jobs","calendar","crew","campaigns","reviews","automations","social","referrals","expenses","reports","analytics","budget","personal","accountability","employees","fleet","chemicals","google","portal","reset-password"];
     return valid.includes(hash) ? hash : "dashboard";
   });
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -220,16 +221,26 @@ export function App() {
   const [notifOpen, setNotifOpen] = useState(false);
   const [fabOpen, setFabOpen] = useState(false);
 
-  // Sync URL hash when page changes — skip if the hash is an OAuth callback or invite link
+  // Sync URL hash when page changes — skip if the hash carries tokens we still need
   useEffect(() => {
     if (window.location.hash.includes("access_token")) return;
     if (window.location.hash.includes("invite=")) return;
+    if (window.location.hash.includes("type=recovery")) return;
     window.location.hash = "/" + page;
   }, [page]);
 
+  // Detect Supabase password-recovery hash and route to reset-password page
+  useEffect(() => {
+    const hash = window.location.hash;
+    const params = new URLSearchParams(hash.startsWith("#") ? hash.slice(1) : hash);
+    if (params.get("type") === "recovery") {
+      setPage("reset-password");
+    }
+  }, []);
+
   // Listen for browser back/forward
   useEffect(() => {
-    const valid = ["dashboard","alfred","inbox","customers","estimates","invoices","pipeline","intake","jobs","calendar","crew","campaigns","reviews","automations","social","referrals","expenses","reports","analytics","budget","personal","accountability","employees","fleet","chemicals","google","portal"];
+    const valid = ["dashboard","alfred","inbox","customers","estimates","invoices","pipeline","intake","jobs","calendar","crew","campaigns","reviews","automations","social","referrals","expenses","reports","analytics","budget","personal","accountability","employees","fleet","chemicals","google","portal","reset-password"];
     const handler = () => {
       const hash = window.location.hash.replace(/^#\/?/, "").split("?")[0];
       if (valid.includes(hash)) setPage(hash);
@@ -549,6 +560,11 @@ export function App() {
         </div>
       </div>
     );
+  }
+
+  // ── Password reset — full-screen, no auth required ───────────────────────
+  if (page === "reset-password") {
+    return <ResetPassword />;
   }
 
   // ── Employee portal — takes over when an employee is authenticated ────────
