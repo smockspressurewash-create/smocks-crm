@@ -2,7 +2,8 @@ import React, { useState, useEffect, useRef } from "react";
 import {
   Clock, Briefcase, Calendar, ChevronLeft, CheckSquare, Camera,
   LogOut, MapPin, Phone, User, Play, Square, Plus, X, Eye, DollarSign,
-  ChevronRight, Home, List, CheckCircle, AlertCircle, Image, FileText
+  ChevronRight, Home, List, CheckCircle, AlertCircle, Image, FileText,
+  Video, PenLine, Shield, Navigation
 } from "lucide-react";
 import { supabase } from "../../lib/supabase";
 import { Glass } from "../ui/Glass";
@@ -31,14 +32,19 @@ const POST_DEFAULTS: JobChecklistItem[] = [
   { id: "post4", label: "Take after photos", done: false },
 ];
 
-function PortalChecklistSection({ title, emoji, items, onUpdate }: {
+function PortalChecklistSection({ title, emoji, items, onUpdate, allowPhotos = false }: {
   title: string; emoji: string;
   items: JobChecklistItem[];
   onUpdate: (items: JobChecklistItem[]) => void;
+  allowPhotos?: boolean;
 }) {
   const done = items.filter(i => i.done).length;
   const toggle = (id: string) => onUpdate(items.map(it => it.id === id ? { ...it, done: !it.done } : it));
   const updateNotes = (id: string, notes: string) => onUpdate(items.map(it => it.id === id ? { ...it, notes } : it));
+  const addItemPhoto = (id: string, dataUrl: string) => {
+    const photo = { id: uid(), dataUrl };
+    onUpdate(items.map(it => it.id === id ? { ...it, photos: [...(it.photos || []), photo] } : it));
+  };
 
   return (
     <div className="mb-4">
@@ -48,25 +54,49 @@ function PortalChecklistSection({ title, emoji, items, onUpdate }: {
           {done}/{items.length}
         </div>
       </div>
-      <div className="space-y-1">
+      <div className="space-y-1.5">
         {items.map(item => (
           <div key={item.id} className="p-2.5 rounded-xl bg-white/5 border border-white/5">
             <div className="flex items-start gap-2">
               <input type="checkbox" checked={item.done} onChange={() => toggle(item.id)}
                 className="mt-0.5 w-4 h-4 accent-green-500 cursor-pointer flex-shrink-0" />
               <div className="flex-1 min-w-0">
-                <div className={"text-sm " + (item.done ? "line-through text-white/30" : "text-white/80")}>
-                  {item.label}
+                <div className="flex items-center gap-2">
+                  <div className={"text-sm flex-1 " + (item.done ? "line-through text-white/30" : "text-white/80")}>
+                    {item.label}
+                  </div>
+                  {allowPhotos && (
+                    <label className="cursor-pointer flex-shrink-0">
+                      <input type="file" accept="image/*" capture="environment" className="hidden"
+                        onChange={e => {
+                          const f = e.target.files?.[0]; if (!f) return;
+                          const r = new FileReader();
+                          r.onload = ev => addItemPhoto(item.id, ev.target!.result as string);
+                          r.readAsDataURL(f); e.target.value = "";
+                        }} />
+                      <div className="p-1 rounded-lg bg-blue-950/40 hover:bg-blue-900/50 text-blue-400/80 hover:text-blue-300 transition">
+                        <Camera size={12} />
+                      </div>
+                    </label>
+                  )}
                 </div>
-                {item.done && (
-                  <input
-                    type="text"
-                    value={item.notes || ""}
-                    onChange={e => updateNotes(item.id, e.target.value)}
-                    placeholder="Add note (optional)..."
-                    className="mt-1 w-full bg-transparent border-0 border-b border-white/10 text-xs text-white/50 placeholder-white/20 focus:outline-none focus:border-white/30 py-0.5"
-                  />
+                {/* Per-item photo thumbnails */}
+                {(item.photos || []).length > 0 && (
+                  <div className="mt-1.5 flex gap-1.5 flex-wrap">
+                    {(item.photos || []).map((p, pi) => (
+                      <div key={p.id || pi} className="w-14 h-14 rounded-lg overflow-hidden flex-shrink-0 border border-white/10">
+                        <img src={p.dataUrl} alt="" className="w-full h-full object-cover" />
+                      </div>
+                    ))}
+                  </div>
                 )}
+                <input
+                  type="text"
+                  value={item.notes || ""}
+                  onChange={e => updateNotes(item.id, e.target.value)}
+                  placeholder="Add note..."
+                  className="mt-1 w-full bg-transparent border-0 border-b border-white/10 text-xs text-white/50 placeholder-white/20 focus:outline-none focus:border-white/30 py-0.5"
+                />
               </div>
             </div>
           </div>
@@ -76,12 +106,15 @@ function PortalChecklistSection({ title, emoji, items, onUpdate }: {
   );
 }
 
-function JobDetailView({ job, customer, onBack, onUpdateJob, toast }: {
+function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName = "the company", onComplete }: {
   job: Job; customer?: Customer; onBack: () => void;
   onUpdateJob: (patch: Partial<Job>) => void; toast: (msg: string, tone?: any) => void;
+  companyName?: string; onComplete?: () => void;
 }) {
   const [note, setNote] = useState("");
   const [, forceTick] = useState(0);
+  const [showSignOff, setShowSignOff] = useState(false);
+  const [signerName, setSignerName] = useState("");
 
   useEffect(() => {
     if (!job.clockInAt) return;
@@ -112,6 +145,32 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast }: {
     toast(type === "before" ? "Before photo added" : "After photo added");
   };
 
+  const addVideo = (file: File) => {
+    const MAX_MB = 50;
+    if (file.size > MAX_MB * 1024 * 1024) {
+      toast(`Video exceeds ${MAX_MB}MB limit — trim to under 30 seconds`, "red");
+      return;
+    }
+    const r = new FileReader();
+    r.onload = ev => {
+      const dataUrl = ev.target!.result as string;
+      // Check duration via a transient video element
+      const vid = document.createElement("video");
+      vid.preload = "metadata";
+      vid.onloadedmetadata = () => {
+        URL.revokeObjectURL(vid.src);
+        if (vid.duration > 30) {
+          toast("Video exceeds 30 seconds — please trim it first", "red");
+          return;
+        }
+        onUpdateJob({ videos: [...(job.videos || []), { id: uid(), dataUrl, caption: "Field video", addedAt: today() }] });
+        toast("Video added ✓");
+      };
+      vid.src = URL.createObjectURL(file);
+    };
+    r.readAsDataURL(file);
+  };
+
   const addNote = () => {
     if (!note.trim()) return;
     const entry = { id: uid(), type: "note" as const, date: today(), note: note.trim() };
@@ -120,8 +179,99 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast }: {
     toast("Note added");
   };
 
+  const saveSignOff = () => {
+    if (!signerName.trim()) return;
+    onUpdateJob({ signOff: { signerName: signerName.trim(), timestamp: new Date().toISOString() }, status: "completed" });
+    toast("Sign-off saved ✓");
+    setShowSignOff(false);
+    if (onComplete) setTimeout(onComplete, 1200);
+  };
+
   const beforePhoto = (job.photos || []).find(p => p.type === "before" && p.dataUrl);
   const afterPhoto = (job.photos || []).find(p => p.type === "after" && p.dataUrl);
+
+  const preItems = job.preChecklist?.length ? job.preChecklist : PRE_DEFAULTS;
+  const durItems = job.duringChecklist?.length ? job.duringChecklist : DURING_DEFAULTS;
+  const postItems = job.postChecklist?.length ? job.postChecklist : POST_DEFAULTS;
+  const allItems = [...preItems, ...durItems, ...postItems];
+  const allDone = allItems.length > 0 && allItems.every(i => i.done);
+
+  // ── Customer sign-off overlay ─────────────────────────────────────────────
+  if (showSignOff) {
+    return (
+      <div className="min-h-screen bg-black text-white flex flex-col">
+        <div className="sticky top-0 z-20 bg-black/95 border-b border-red-900/30 px-4 py-3 flex items-center gap-3">
+          <button onClick={() => setShowSignOff(false)} className="p-2 rounded-xl hover:bg-white/10 text-white/60 -ml-2">
+            <ChevronLeft size={20} />
+          </button>
+          <div className="font-semibold">Customer Sign-Off</div>
+        </div>
+        <div className="flex-1 overflow-y-auto p-4 max-w-lg mx-auto space-y-4">
+          {/* Services summary */}
+          <Glass className="p-4 !bg-black/40">
+            <div className="text-xs text-white/50 uppercase tracking-wider mb-2 font-semibold">Services Completed</div>
+            <div className="text-sm text-white/80">{job.notes || job.address}</div>
+            {job.amount > 0 && (
+              <div className="mt-3 flex items-center justify-between">
+                <span className="text-white/50 text-sm">Total</span>
+                <span className="text-xl font-black text-green-400">{fmt(job.amount)}</span>
+              </div>
+            )}
+          </Glass>
+
+          {/* Before / After photos */}
+          {(beforePhoto || afterPhoto) && (
+            <Glass className="p-4 !bg-black/40">
+              <div className="text-xs text-white/50 uppercase tracking-wider mb-2 font-semibold">Before / After</div>
+              {beforePhoto && afterPhoto ? (
+                <BeforeAfterSlider before={beforePhoto.dataUrl} after={afterPhoto.dataUrl} />
+              ) : (
+                <div className="grid grid-cols-2 gap-2">
+                  {beforePhoto && <div className="rounded-xl overflow-hidden aspect-video"><img src={beforePhoto.dataUrl} alt="Before" className="w-full h-full object-cover" /></div>}
+                  {afterPhoto && <div className="rounded-xl overflow-hidden aspect-video"><img src={afterPhoto.dataUrl} alt="After" className="w-full h-full object-cover" /></div>}
+                </div>
+              )}
+            </Glass>
+          )}
+
+          {/* Legal disclaimer */}
+          <Glass className="p-4 !bg-white/5 !border-white/10">
+            <div className="flex items-start gap-2 mb-3">
+              <Shield size={14} className="text-blue-400 mt-0.5 flex-shrink-0" />
+              <div className="text-xs text-white/60 leading-relaxed">
+                I confirm that all services have been completed to my satisfaction. I accept the work as described above and acknowledge that <span className="text-white font-medium">{companyName}</span> is not liable for pre-existing conditions documented in the pre-job checklist.
+              </div>
+            </div>
+          </Glass>
+
+          {/* Signature input */}
+          <Glass className="p-4 !bg-black/40">
+            <div className="text-xs text-white/50 uppercase tracking-wider mb-2 font-semibold flex items-center gap-1">
+              <PenLine size={11} />Digital Signature — Type your full name
+            </div>
+            <input
+              type="text"
+              value={signerName}
+              onChange={e => setSignerName(e.target.value)}
+              placeholder="Full name..."
+              className="w-full bg-transparent border-b-2 border-red-600/40 focus:border-red-500 text-white text-lg py-2 focus:outline-none placeholder-white/20"
+            />
+            {signerName.trim() && (
+              <div className="mt-3 p-3 bg-white/5 rounded-xl text-center">
+                <div className="text-white/40 text-[10px] uppercase mb-1">Signature Preview</div>
+                <div style={{ fontFamily: "Georgia, serif", fontStyle: "italic" }} className="text-2xl text-white/80">{signerName}</div>
+                <div className="text-[10px] text-white/30 mt-2">{new Date().toLocaleString()}</div>
+              </div>
+            )}
+          </Glass>
+
+          <GBtn onClick={saveSignOff} disabled={!signerName.trim()} className="w-full !justify-center !py-3">
+            <CheckCircle size={16} />Sign & Save
+          </GBtn>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-black text-white pb-24">
@@ -158,11 +308,14 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast }: {
                   </a>
                 )}
               </div>
+              {customer.phone && (
+                <a href={"https://maps.google.com/?q=" + encodeURIComponent(job.address)} target="_blank" rel="noreferrer"
+                  className="p-2 rounded-xl bg-blue-950/30 border border-blue-700/30 text-blue-400">
+                  <MapPin size={14} />
+                </a>
+              )}
             </div>
-            <div className="mt-2 flex items-start gap-1.5 text-xs text-white/50">
-              <MapPin size={11} className="mt-0.5 flex-shrink-0" />{job.address}
-            </div>
-            {customer.gateCode && <div className="mt-1 text-xs text-yellow-400/80">🔐 Gate code: {customer.gateCode}</div>}
+            {customer.gateCode && <div className="mt-2 text-xs text-yellow-400/80">🔐 Gate code: {customer.gateCode}</div>}
             {customer.hasDog && <div className="mt-0.5 text-xs text-orange-400/80">🐕 Dog on property{customer.dogName ? ` — ${customer.dogName}` : ""}</div>}
           </Glass>
         )}
@@ -193,17 +346,17 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast }: {
           </div>
         </Glass>
 
-        {/* Before/After photos */}
+        {/* Photos & Videos */}
         <Glass className="p-4 !bg-black/40">
           <div className="text-xs text-white/60 uppercase tracking-wider mb-3 flex items-center gap-1">
-            <Image size={12} />Before / After Photos
+            <Image size={12} />Photos & Videos
           </div>
           {beforePhoto && afterPhoto && (
             <div className="mb-3">
               <BeforeAfterSlider before={beforePhoto.dataUrl} after={afterPhoto.dataUrl} />
             </div>
           )}
-          <div className="grid grid-cols-2 gap-2">
+          <div className="grid grid-cols-3 gap-2">
             <label className="cursor-pointer">
               <input type="file" accept="image/*" capture="environment" className="hidden"
                 onChange={e => {
@@ -212,8 +365,8 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast }: {
                   r.onload = ev => addPhoto("before", ev.target!.result as string);
                   r.readAsDataURL(f); e.target.value = "";
                 }} />
-              <div className="flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-xl bg-blue-950/30 hover:bg-blue-900/40 border border-blue-700/40 text-blue-300 text-sm font-medium transition text-center">
-                <Plus size={14} />📷 Before
+              <div className="flex flex-col items-center justify-center gap-1 px-2 py-2.5 rounded-xl bg-blue-950/30 hover:bg-blue-900/40 border border-blue-700/40 text-blue-300 text-xs font-medium transition text-center">
+                <Plus size={13} /><span>📷 Before</span>
               </div>
             </label>
             <label className="cursor-pointer">
@@ -224,8 +377,15 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast }: {
                   r.onload = ev => addPhoto("after", ev.target!.result as string);
                   r.readAsDataURL(f); e.target.value = "";
                 }} />
-              <div className="flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-xl bg-green-950/30 hover:bg-green-900/40 border border-green-700/40 text-green-300 text-sm font-medium transition text-center">
-                <Plus size={14} />✨ After
+              <div className="flex flex-col items-center justify-center gap-1 px-2 py-2.5 rounded-xl bg-green-950/30 hover:bg-green-900/40 border border-green-700/40 text-green-300 text-xs font-medium transition text-center">
+                <Plus size={13} /><span>✨ After</span>
+              </div>
+            </label>
+            <label className="cursor-pointer">
+              <input type="file" accept="video/*" capture="environment" className="hidden"
+                onChange={e => { const f = e.target.files?.[0]; if (f) addVideo(f); e.target.value = ""; }} />
+              <div className="flex flex-col items-center justify-center gap-1 px-2 py-2.5 rounded-xl bg-purple-950/30 hover:bg-purple-900/40 border border-purple-700/40 text-purple-300 text-xs font-medium transition text-center">
+                <Video size={13} /><span>Video</span>
               </div>
             </label>
           </div>
@@ -240,6 +400,16 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast }: {
               ) : null)}
             </div>
           )}
+          {(job.videos || []).length > 0 && (
+            <div className="mt-2 space-y-2">
+              {(job.videos || []).map((v, i) => (
+                <div key={v.id || i} className="rounded-xl overflow-hidden bg-black/60">
+                  <video src={v.dataUrl} controls className="w-full rounded-xl" style={{ maxHeight: 200 }} />
+                  {v.addedAt && <div className="text-[10px] text-white/30 px-2 pb-1">{v.addedAt}</div>}
+                </div>
+              ))}
+            </div>
+          )}
         </Glass>
 
         {/* Checklists */}
@@ -248,21 +418,45 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast }: {
             <CheckSquare size={12} />Job Checklists
           </div>
           <PortalChecklistSection
-            title="Pre-Job" emoji="🔵"
-            items={job.preChecklist?.length ? job.preChecklist : PRE_DEFAULTS}
+            title="Pre-Job" emoji="🔵" allowPhotos
+            items={preItems}
             onUpdate={items => onUpdateJob({ preChecklist: items })}
           />
           <PortalChecklistSection
             title="During Job" emoji="🟡"
-            items={job.duringChecklist?.length ? job.duringChecklist : DURING_DEFAULTS}
+            items={durItems}
             onUpdate={items => onUpdateJob({ duringChecklist: items })}
           />
           <PortalChecklistSection
             title="Post-Job" emoji="🟢"
-            items={job.postChecklist?.length ? job.postChecklist : POST_DEFAULTS}
+            items={postItems}
             onUpdate={items => onUpdateJob({ postChecklist: items })}
           />
         </Glass>
+
+        {/* Customer sign-off */}
+        {job.signOff ? (
+          <Glass className="p-4 !bg-green-950/20 !border-green-700/30">
+            <div className="flex items-center gap-2 mb-1">
+              <CheckCircle size={14} className="text-green-400" />
+              <div className="text-xs font-semibold text-green-300">Customer Signed Off</div>
+            </div>
+            <div style={{ fontFamily: "Georgia, serif", fontStyle: "italic" }} className="text-lg text-white/80 mt-1">{job.signOff.signerName}</div>
+            <div className="text-[10px] text-white/30 mt-1">{new Date(job.signOff.timestamp).toLocaleString()}</div>
+            {onComplete && (
+              <button onClick={onComplete}
+                className="mt-3 w-full flex items-center justify-center gap-2 py-2 rounded-xl bg-green-900/30 hover:bg-green-800/40 border border-green-700/30 text-green-300 text-sm font-semibold transition">
+                <ChevronLeft size={14} />Back to Jobs
+              </button>
+            )}
+          </Glass>
+        ) : allDone ? (
+          <GBtn onClick={() => setShowSignOff(true)} className="w-full !justify-center !py-3 !bg-gradient-to-r !from-green-700 !to-green-900 !border-green-600/50">
+            <PenLine size={16} />Get Customer Sign-Off
+          </GBtn>
+        ) : (
+          <div className="text-center text-xs text-white/30 py-2">Complete all checklist items to get customer sign-off</div>
+        )}
 
         {/* Internal notes */}
         {job.internalNotes && (
@@ -295,14 +489,159 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast }: {
   );
 }
 
-export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, employees, customers, settings, toast }: {
+// ── Owner Team Portal ─────────────────────────────────────────────────────────
+function OwnerTeamPortal({ jobs, employees, customers, onClose }: {
+  jobs: Job[]; employees: Employee[]; customers: Customer[]; onClose: () => void;
+}) {
+  const [selectedEmpId, setSelectedEmpId] = useState<string>("all");
+  const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
+  const todayStr = today();
+
+  const viewEmp = selectedEmpId === "all" ? null : employees.find(e => e.id === selectedEmpId);
+  const visibleJobs = selectedEmpId === "all"
+    ? jobs
+    : jobs.filter(j => (j.crew || []).includes(selectedEmpId));
+  const todayJobs = visibleJobs.filter(j => j.scheduledDate === todayStr);
+
+  if (selectedJobId) {
+    const job = jobs.find(j => j.id === selectedJobId);
+    if (!job) { setSelectedJobId(null); return null; }
+    const customer = customers.find(c => c.id === job.customerId);
+    return (
+      <JobDetailView
+        job={job}
+        customer={customer}
+        onBack={() => setSelectedJobId(null)}
+        onUpdateJob={() => {}}
+        toast={() => {}}
+      />
+    );
+  }
+
+  return (
+    <div className="min-h-screen bg-black text-white flex flex-col">
+      <header className="sticky top-0 z-20 bg-black/95 border-b border-red-900/30 px-4 py-3 flex items-center gap-3">
+        <button onClick={onClose} className="p-2 rounded-xl hover:bg-white/10 text-white/60 hover:text-white -ml-2">
+          <ChevronLeft size={20} />
+        </button>
+        <div className="flex-1 font-semibold">Team Portal</div>
+        <select
+          value={selectedEmpId}
+          onChange={e => setSelectedEmpId(e.target.value)}
+          className="bg-black/60 border border-white/20 rounded-lg px-2 py-1.5 text-xs text-white focus:outline-none focus:border-red-500/50"
+        >
+          <option value="all">All Employees</option>
+          {employees.filter(e => e.status === "active").map(e => (
+            <option key={e.id} value={e.id}>{e.firstName} {e.lastName}</option>
+          ))}
+        </select>
+      </header>
+
+      <main className="flex-1 overflow-y-auto p-4 max-w-lg mx-auto space-y-4">
+        {/* Employee cards */}
+        {selectedEmpId === "all" && (
+          <div className="grid grid-cols-2 gap-3">
+            {employees.filter(e => e.status === "active").map(emp => {
+              const empJobs = jobs.filter(j => (j.crew || []).includes(emp.id));
+              const empTodayJobs = empJobs.filter(j => j.scheduledDate === todayStr);
+              const active = empJobs.find(j => j.clockInAt);
+              return (
+                <button key={emp.id} onClick={() => setSelectedEmpId(emp.id)}
+                  className="p-4 rounded-2xl bg-white/5 border border-white/10 hover:border-red-600/30 text-left transition">
+                  <div className="w-10 h-10 rounded-full bg-gradient-to-br from-red-600 to-red-900 flex items-center justify-center font-bold text-sm mb-2">
+                    {emp.firstName[0]}{emp.lastName[0]}
+                  </div>
+                  <div className="font-semibold text-sm">{emp.firstName} {emp.lastName}</div>
+                  <div className="text-[10px] text-white/40 capitalize mt-0.5">{emp.role}</div>
+                  <div className="mt-2 text-xs text-white/50">{empTodayJobs.length} job{empTodayJobs.length !== 1 ? "s" : ""} today</div>
+                  {active && <div className="text-[10px] text-green-400 animate-pulse mt-1">● Clocked in</div>}
+                </button>
+              );
+            })}
+          </div>
+        )}
+
+        {/* Today's jobs for selected employee */}
+        <div>
+          <div className="text-xs text-white/50 uppercase tracking-wider font-semibold mb-3 flex items-center gap-2">
+            <span>{viewEmp ? `${viewEmp.firstName}'s Jobs Today` : "Today's Jobs"}</span>
+            <span className="px-2 py-0.5 rounded-full bg-white/10 text-white/60">{todayJobs.length}</span>
+          </div>
+          {todayJobs.length === 0 ? (
+            <div className="text-center py-8 text-white/30 text-sm">No jobs today</div>
+          ) : (
+            <div className="space-y-2">
+              {todayJobs.map(j => {
+                const c = customers.find(x => x.id === j.customerId);
+                return (
+                  <button key={j.id} onClick={() => setSelectedJobId(j.id)}
+                    className="w-full text-left p-4 rounded-2xl bg-white/5 border border-white/10 hover:bg-white/10 hover:border-red-600/30 transition">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="flex-1 min-w-0">
+                        <div className="font-semibold text-sm truncate">{j.address}</div>
+                        {c && <div className="text-xs text-white/50">{c.firstName} {c.lastName}</div>}
+                      </div>
+                      <div className={"text-[10px] px-2 py-0.5 rounded-full font-bold uppercase " +
+                        (j.status === "completed" ? "bg-green-900/40 text-green-300" :
+                         j.status === "in_progress" ? "bg-yellow-900/40 text-yellow-300" :
+                         "bg-blue-900/40 text-blue-300")}>
+                        {j.status.replace("_", " ")}
+                      </div>
+                    </div>
+                    <div className="text-xs text-white/40 mt-1">{j.scheduledTime || "All day"}</div>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        {/* Upcoming for selected employee */}
+        {viewEmp && (
+          <div>
+            <div className="text-xs text-white/50 uppercase tracking-wider font-semibold mb-3">All Assigned Jobs</div>
+            <div className="space-y-2">
+              {visibleJobs.filter(j => j.scheduledDate > todayStr).slice(0, 10).map(j => {
+                const c = customers.find(x => x.id === j.customerId);
+                return (
+                  <button key={j.id} onClick={() => setSelectedJobId(j.id)}
+                    className="w-full text-left p-3 rounded-xl bg-white/5 border border-white/10 hover:bg-white/10 transition flex items-center gap-3">
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm font-medium truncate">{j.address}</div>
+                      {c && <div className="text-xs text-white/40">{c.firstName} {c.lastName}</div>}
+                    </div>
+                    <div className="text-xs text-white/40 flex-shrink-0">{j.scheduledDate}</div>
+                  </button>
+                );
+              })}
+              {visibleJobs.filter(j => j.scheduledDate > todayStr).length === 0 && (
+                <div className="text-center py-6 text-sm text-white/30">No upcoming jobs</div>
+              )}
+            </div>
+          </div>
+        )}
+      </main>
+    </div>
+  );
+}
+
+export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, employees, customers, settings, toast, isOwnerView = false, onClose = () => {} }: {
   empSession: any; setEmpSession: (s: any) => void;
   jobs: Job[]; setJobs: (fn: (prev: Job[]) => Job[]) => void;
   employees: Employee[]; customers: Customer[];
   settings: AppSettings; toast: (msg: string, tone?: any) => void;
+  isOwnerView?: boolean; onClose?: () => void;
 }) {
-  const [tab, setTab] = useState<"today" | "schedule" | "jobs">("today");
+  const [tab, setTab] = useState<"today" | "calendar" | "jobs" | "pay">("today");
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
+  const [calMode, setCalMode] = useState<"week" | "month">("week");
+  const [calSelectedDate, setCalSelectedDate] = useState(today());
+  const [calWeekOffset, setCalWeekOffset] = useState(0);
+  const [calMonthOffset, setCalMonthOffset] = useState(0);
+  const [driveTimes, setDriveTimes] = useState<Record<string, string>>({});
+  const [completionNotif, setCompletionNotif] = useState<{ message: string; nextJobId?: string } | null>(null);
+  const fetchedDriveIds = useRef(new Set<string>());
+  const userLocationRef = useRef<{ lat: number; lng: number } | null>(null);
   const [loginEmail, setLoginEmail] = useState("");
   const [loginPwd, setLoginPwd] = useState("");
   const [loginFirst, setLoginFirst] = useState("");
@@ -330,6 +669,19 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   })();
   const weekJobs = myJobs.filter(j => j.scheduledDate >= weekStart && j.scheduledDate <= weekEnd);
 
+  const weekHours = weekJobs.reduce((s, j) => s + Number(j.loggedHours || 0), 0);
+  const weekJobsDone = weekJobs.filter(j => j.status === "completed").length;
+  const weekPay = weekHours * (myEmployee?.hourlyRate || 0);
+
+  const upNextJob = [...myJobs]
+    .filter(j => j.scheduledDate >= todayStr && j.status !== "completed")
+    .sort((a, b) => {
+      const da = a.scheduledDate + (a.scheduledTime || "23:59");
+      const db = b.scheduledDate + (b.scheduledTime || "23:59");
+      return da.localeCompare(db);
+    })[0] ?? null;
+  const upNextCustomer = upNextJob ? customers.find(c => c.id === upNextJob.customerId) : null;
+
   const payStart = (() => { const d = new Date(); d.setDate(d.getDate() - 14); return d.toISOString().slice(0, 10); })();
   const periodJobs = myJobs.filter(j => j.status === "completed" && j.scheduledDate >= payStart);
   const periodHours = periodJobs.reduce((s, j) => s + Number(j.loggedHours || j.duration || 0), 0);
@@ -339,6 +691,69 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
 
   const updateJob = (jobId: string, patch: Partial<Job>) => {
     setJobs(prev => prev.map(j => j.id === jobId ? { ...j, ...patch } : j));
+  };
+
+  // Tick every second when any job is clocked in so card timers update live
+  const [, setCardTick] = useState(0);
+  useEffect(() => {
+    if (!activeClockJob) return;
+    const t = setInterval(() => setCardTick(n => n + 1), 1000);
+    return () => clearInterval(t);
+  }, [activeClockJob?.id]);
+
+  // Fetch drive time via Maps JS DistanceMatrixService (loaded by AddressAutocomplete)
+  const fetchDriveTime = (jobId: string, address: string) => {
+    if (fetchedDriveIds.current.has(jobId)) return;
+    fetchedDriveIds.current.add(jobId);
+    const loc = userLocationRef.current;
+    if (!loc || !settings.googleMapsKey) return;
+    const gm = (window as any).google?.maps;
+    if (!gm?.DistanceMatrixService) return;
+    try {
+      const svc = new gm.DistanceMatrixService();
+      svc.getDistanceMatrix(
+        { origins: [loc], destinations: [address], travelMode: gm.TravelMode.DRIVING },
+        (result: any, status: string) => {
+          if (status === "OK") {
+            const dur: string | undefined = result?.rows?.[0]?.elements?.[0]?.duration?.text;
+            if (dur) setDriveTimes(prev => ({ ...prev, [jobId]: dur }));
+          }
+        }
+      );
+    } catch { /* silently fail */ }
+  };
+
+  // Get user location once, then fire drive-time lookups for upcoming jobs
+  useEffect(() => {
+    if (!settings.googleMapsKey) return;
+    navigator.geolocation.getCurrentPosition(pos => {
+      userLocationRef.current = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+      myJobs.filter(j => j.scheduledDate >= todayStr).forEach(j => fetchDriveTime(j.id, j.address));
+    }, () => {});
+  }, []); // run once on mount
+
+  // Navigate back after job completion, show next-job notification
+  const handleJobComplete = () => {
+    const nextJob = [...myJobs]
+      .filter(j => j.id !== selectedJobId && j.scheduledDate >= todayStr && j.status !== "completed")
+      .sort((a, b) => {
+        const da = a.scheduledDate + (a.scheduledTime || "23:59");
+        const db = b.scheduledDate + (b.scheduledTime || "23:59");
+        return da.localeCompare(db);
+      })[0] ?? null;
+    setSelectedJobId(null);
+    setTab("jobs");
+    if (nextJob) {
+      const nc = customers.find(c => c.id === nextJob.customerId);
+      const name = nc ? `${nc.firstName} ${nc.lastName}` : "";
+      setCompletionNotif({
+        message: `Job complete! Next: ${name ? name + " · " : ""}${nextJob.address}`,
+        nextJobId: nextJob.id,
+      });
+      setTimeout(() => setCompletionNotif(null), 6000);
+    } else {
+      toast("✅ All done! No more jobs today.");
+    }
   };
 
   const doSignOut = async () => {
@@ -368,11 +783,30 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
       email: loginEmail, password: loginPwd,
       options: { data: { role: "technician", firstName: loginFirst, lastName: loginLast } },
     });
+    if (error) { setLoginLoading(false); setLoginError(error.message); return; }
+    // Auto sign-in after registration
+    const { data: signInData, error: signInErr } = await supabase.auth.signInWithPassword({ email: loginEmail, password: loginPwd });
     setLoginLoading(false);
-    if (error) { setLoginError(error.message); return; }
-    toast("Account created! You can now sign in.");
-    setLoginMode("login");
+    if (!signInErr && signInData.session) {
+      setEmpSession(signInData.session);
+      toast("Welcome! Account created ✓");
+    } else {
+      toast("Account created! Please sign in.");
+      setLoginMode("login");
+    }
   };
+
+  // ── Owner view — shown when owner clicks "Team Portal" in sidebar ────────
+  if (isOwnerView) {
+    return (
+      <OwnerTeamPortal
+        jobs={jobs}
+        employees={employees}
+        customers={customers}
+        onClose={onClose}
+      />
+    );
+  }
 
   // ── Login screen ──────────────────────────────────────────────────────────
   if (!empSession) {
@@ -459,6 +893,8 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
         onBack={() => setSelectedJobId(null)}
         onUpdateJob={patch => updateJob(selectedJobId, patch)}
         toast={toast}
+        companyName={settings.companyName || "Smock's Pressure Washing"}
+        onComplete={handleJobComplete}
       />
     );
   }
@@ -473,34 +909,97 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     const allItems = [...preItems, ...(job.duringChecklist?.length ? job.duringChecklist : DURING_DEFAULTS), ...postItems];
     const doneCount = allItems.filter(i => i.done).length;
 
+    const clockInCard = (e: React.MouseEvent) => {
+      e.stopPropagation();
+      updateJob(job.id, { clockInAt: Date.now(), status: "in_progress" });
+      toast("Clocked in ✓");
+    };
+    const clockOutCard = (e: React.MouseEvent) => {
+      e.stopPropagation();
+      if (!job.clockInAt) return;
+      const hrs = Math.round((Date.now() - job.clockInAt) / 36000) / 100;
+      updateJob(job.id, { clockInAt: null, loggedHours: Math.round(((Number(job.loggedHours) || 0) + hrs) * 100) / 100 });
+      toast(`+${hrs}h logged`);
+    };
+
+    const elapsedSec = job.clockInAt ? Math.floor((Date.now() - job.clockInAt) / 1000) : 0;
+    const timerDisplay = job.clockInAt
+      ? [Math.floor(elapsedSec / 3600), Math.floor((elapsedSec % 3600) / 60), elapsedSec % 60].map(n => String(n).padStart(2, "0")).join(":")
+      : null;
+
+    const isNextUp = job.id === completionNotif?.nextJobId;
     return (
-      <button onClick={() => setSelectedJobId(job.id)}
-        className="w-full text-left p-4 rounded-2xl bg-white/5 border border-white/10 hover:bg-white/10 hover:border-red-600/30 transition active:scale-98">
-        <div className="flex items-start justify-between gap-2 mb-2">
-          <div className="flex-1 min-w-0">
-            <div className="font-semibold text-sm truncate">{job.address}</div>
-            {customer && <div className="text-xs text-white/50">{customer.firstName} {customer.lastName}</div>}
-          </div>
-          <div className={"text-[10px] px-2 py-0.5 rounded-full font-bold uppercase flex-shrink-0 " +
-            (job.status === "completed" ? "bg-green-900/40 text-green-300" :
-             job.status === "in_progress" ? "bg-yellow-900/40 text-yellow-300" :
-             "bg-blue-900/40 text-blue-300")}>
-            {job.status.replace("_", " ")}
-          </div>
-        </div>
-        <div className="flex items-center gap-3 text-xs text-white/40">
-          <span>{job.scheduledDate}{job.scheduledTime ? " · " + job.scheduledTime : ""}</span>
-          {job.clockInAt && <span className="text-green-400 font-semibold animate-pulse">● Active</span>}
-        </div>
-        {allItems.length > 0 && (
-          <div className="mt-2 flex items-center gap-1.5">
-            <div className="flex-1 h-1.5 rounded-full bg-white/10 overflow-hidden">
-              <div className="h-full bg-green-500 rounded-full" style={{ width: (doneCount / allItems.length * 100) + "%" }} />
-            </div>
-            <span className="text-[10px] text-white/40">{doneCount}/{allItems.length}</span>
+      <div
+        className={"rounded-2xl border transition " + (job.clockInAt ? "bg-green-950/10 border-green-700/30" : isNextUp ? "bg-blue-950/15 border-blue-600/40" : "bg-white/5 border-white/10 hover:bg-white/8 hover:border-red-600/20")}
+      >
+        {isNextUp && (
+          <div className="px-4 pt-2.5 pb-0">
+            <span className="text-[10px] font-bold text-blue-400 uppercase tracking-wide animate-pulse">▶ Up Next</span>
           </div>
         )}
-      </button>
+        {/* Clickable main area */}
+        <button onClick={() => setSelectedJobId(job.id)} className="w-full text-left p-4 pb-3">
+          <div className="flex items-start justify-between gap-2 mb-1.5">
+            <div className="flex-1 min-w-0">
+              <div className="font-semibold text-sm truncate">{job.address}</div>
+              {customer && <div className="text-xs text-white/50">{customer.firstName} {customer.lastName}</div>}
+            </div>
+            <div className={"text-[10px] px-2 py-0.5 rounded-full font-bold uppercase flex-shrink-0 " +
+              (job.status === "completed" ? "bg-green-900/40 text-green-300" :
+               job.status === "in_progress" ? "bg-yellow-900/40 text-yellow-300" :
+               "bg-blue-900/40 text-blue-300")}>
+              {job.status.replace("_", " ")}
+            </div>
+          </div>
+          <div className="text-xs text-white/40">
+            {job.scheduledDate}{job.scheduledTime ? " · " + job.scheduledTime : ""}
+            {job.loggedHours ? <span className="ml-2 text-white/50">{job.loggedHours}h logged</span> : null}
+          </div>
+          {allItems.length > 0 && (
+            <div className="mt-2 flex items-center gap-1.5">
+              <div className="flex-1 h-1.5 rounded-full bg-white/10 overflow-hidden">
+                <div className="h-full bg-green-500 rounded-full" style={{ width: (doneCount / allItems.length * 100) + "%" }} />
+              </div>
+              <span className="text-[10px] text-white/40">{doneCount}/{allItems.length}</span>
+            </div>
+          )}
+        </button>
+        {/* Actions row: Directions + Clock in/out */}
+        <div className="px-4 pb-3 flex items-center gap-2 border-t border-white/5 pt-2.5">
+          <a
+            href={`https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(job.address)}`}
+            target="_blank" rel="noreferrer"
+            onClick={(e: React.MouseEvent) => e.stopPropagation()}
+            className="flex items-center gap-1 text-[10px] text-blue-400/70 hover:text-blue-300 transition flex-shrink-0">
+            <Navigation size={10} />Directions
+          </a>
+          {driveTimes[job.id] && (
+            <span className="text-[10px] text-white/40 flex-shrink-0">🚗 ~{driveTimes[job.id]}</span>
+          )}
+          <div className="flex-1" />
+          {job.clockInAt ? (
+            <>
+              <div className="font-mono text-sm font-bold text-green-400 animate-pulse">{timerDisplay}</div>
+              <button onClick={clockOutCard}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-red-950/50 hover:bg-red-900/60 border border-red-700/40 text-red-300 text-xs font-semibold transition">
+                <Square size={11} />Clock Out
+              </button>
+            </>
+          ) : (
+            <>
+              {job.status === "completed"
+                ? <div className="text-xs text-white/30">Job complete</div>
+                : (
+                  <button onClick={clockInCard}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-green-950/50 hover:bg-green-900/60 border border-green-700/40 text-green-300 text-xs font-semibold transition">
+                    <Play size={11} />Clock In
+                  </button>
+                )
+              }
+            </>
+          )}
+        </div>
+      </div>
     );
   };
 
@@ -525,29 +1024,65 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
 
       {/* Content */}
       <main className="flex-1 overflow-y-auto pb-24">
+        {completionNotif && (
+          <div className="px-4 pt-4 max-w-lg mx-auto">
+            <div className="p-3 rounded-xl bg-green-950/40 border border-green-700/40 flex items-center gap-3">
+              <span className="text-lg flex-shrink-0">✅</span>
+              <div className="flex-1 text-sm text-green-300 min-w-0">{completionNotif.message}</div>
+              <button onClick={() => setCompletionNotif(null)} className="text-white/30 hover:text-white/60 transition flex-shrink-0">
+                <X size={14} />
+              </button>
+            </div>
+          </div>
+        )}
         <div className="p-4 max-w-lg mx-auto space-y-4">
 
           {/* Today tab */}
           {tab === "today" && <>
-            {/* Pay summary */}
-            <Glass className="p-4 !bg-gradient-to-r !from-red-950/30 !to-black/60 !border-red-600/30">
-              <div className="text-xs text-white/50 uppercase tracking-wider mb-3">Pay Period Summary (last 14 days)</div>
-              <div className="grid grid-cols-3 gap-3 text-center">
-                <div>
-                  <div className="text-xl font-black text-white">{periodHours.toFixed(1)}<span className="text-sm font-normal text-white/50">h</span></div>
-                  <div className="text-[10px] text-white/40 mt-0.5">Hours Logged</div>
+            {/* Welcome banner */}
+            <Glass className="p-4 !bg-gradient-to-br !from-red-950/40 !to-black/60 !border-red-700/20">
+              <div className="text-base font-bold text-white">Welcome back, {myEmployee.firstName}!</div>
+              <div className="text-sm text-white/50 mt-0.5">
+                {new Date().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" })}
+              </div>
+              <div className="grid grid-cols-3 gap-2 mt-3 pt-3 border-t border-white/10">
+                <div className="text-center">
+                  <div className="text-xl font-black text-white">{weekHours.toFixed(1)}<span className="text-xs font-normal text-white/40">h</span></div>
+                  <div className="text-[10px] text-white/40 mt-0.5">This Week</div>
                 </div>
-                <div>
-                  <div className="text-xl font-black text-green-400">{fmt(estimatedPay)}</div>
-                  <div className="text-[10px] text-white/40 mt-0.5">Est. Pay</div>
-                </div>
-                <div>
-                  <div className="text-xl font-black text-white">{periodJobs.length}</div>
+                <div className="text-center">
+                  <div className="text-xl font-black text-white">{weekJobsDone}</div>
                   <div className="text-[10px] text-white/40 mt-0.5">Jobs Done</div>
                 </div>
+                <div className="text-center">
+                  <div className="text-xl font-black text-green-400">{fmt(weekPay)}</div>
+                  <div className="text-[10px] text-white/40 mt-0.5">Est. Pay</div>
+                </div>
               </div>
-              <div className="mt-2 text-[10px] text-white/30 text-center">{fmt(myEmployee.hourlyRate)}/hr</div>
+              <div className="mt-2 text-[10px] text-white/30 text-center">{fmt(myEmployee.hourlyRate || 0)}/hr</div>
             </Glass>
+
+            {/* Up Next highlight (only when next job is a future date, not today) */}
+            {upNextJob && upNextJob.scheduledDate !== todayStr && (
+              <div className="relative pt-3">
+                <div className="absolute top-0 left-3 z-10 px-2.5 py-0.5 rounded-full bg-red-600 text-[10px] font-bold text-white uppercase tracking-wide shadow">
+                  Up Next
+                </div>
+                <Glass className="p-4 !bg-blue-950/20 !border-blue-700/30">
+                  <div className="font-semibold text-sm">{upNextJob.address}</div>
+                  {upNextCustomer && <div className="text-xs text-white/50 mt-0.5">{upNextCustomer.firstName} {upNextCustomer.lastName}</div>}
+                  <div className="text-xs text-white/40 mt-1">
+                    {upNextJob.scheduledDate}{upNextJob.scheduledTime ? " · " + upNextJob.scheduledTime : ""}
+                  </div>
+                  <a
+                    href={`https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(upNextJob.address)}`}
+                    target="_blank" rel="noreferrer"
+                    className="inline-flex items-center gap-1 text-xs text-blue-400 hover:text-blue-300 mt-2 transition">
+                    <Navigation size={11} />Get Directions
+                  </a>
+                </Glass>
+              </div>
+            )}
 
             {/* Today's jobs */}
             <div>
@@ -578,31 +1113,177 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
             )}
           </>}
 
-          {/* Schedule tab */}
-          {tab === "schedule" && <>
-            <div className="text-xs text-white/50 uppercase tracking-wider font-semibold mb-3">This Week's Schedule</div>
-            {["Sun","Mon","Tue","Wed","Thu","Fri","Sat"].map((day, i) => {
-              const d = new Date(); d.setDate(d.getDate() - d.getDay() + i);
-              const dateStr = d.toISOString().slice(0, 10);
-              const dayJobs = myJobs.filter(j => j.scheduledDate === dateStr);
-              const isToday = dateStr === todayStr;
-              return (
-                <div key={day} className={"rounded-2xl border " + (isToday ? "border-red-600/40 bg-red-950/10" : "border-white/5 bg-white/3")}>
-                  <div className={"flex items-center justify-between px-4 py-2.5 " + (dayJobs.length ? "border-b border-white/5" : "")}>
-                    <div className={"font-semibold " + (isToday ? "text-red-400" : "text-white/60")}>
-                      {day} {isToday && <span className="text-xs font-normal">(Today)</span>}
-                    </div>
-                    <div className="text-xs text-white/30">{d.toLocaleDateString("en-US", { month: "short", day: "numeric" })}</div>
-                  </div>
-                  {dayJobs.length > 0 && (
-                    <div className="p-3 space-y-2">
-                      {dayJobs.map(j => <JobCard key={j.id} job={j} />)}
-                    </div>
-                  )}
+          {/* Calendar tab */}
+          {tab === "calendar" && (() => {
+            const calWeekDates = Array.from({ length: 7 }, (_, i) => {
+              const d = new Date();
+              d.setDate(d.getDate() - d.getDay() + i + calWeekOffset * 7);
+              return d.toISOString().slice(0, 10);
+            });
+            const calMonthBase = new Date();
+            calMonthBase.setDate(1);
+            calMonthBase.setMonth(calMonthBase.getMonth() + calMonthOffset);
+            const calMonthYear = calMonthBase.getFullYear();
+            const calMonthMonth = calMonthBase.getMonth();
+            const calDaysInMonth = new Date(calMonthYear, calMonthMonth + 1, 0).getDate();
+            const calFirstDay = new Date(calMonthYear, calMonthMonth, 1).getDay();
+            const calMonthLabel = calMonthBase.toLocaleDateString("en-US", { month: "long", year: "numeric" });
+            const calDayJobs = myJobs.filter(j => j.scheduledDate === calSelectedDate);
+
+            return (
+              <>
+                {/* Week / Month toggle */}
+                <div className="flex bg-white/5 rounded-xl p-1 mb-3">
+                  <button onClick={() => setCalMode("week")}
+                    className={`flex-1 py-1.5 text-xs font-semibold rounded-lg transition ${calMode === "week" ? "bg-red-600 text-white" : "text-white/50 hover:text-white"}`}>
+                    Week
+                  </button>
+                  <button onClick={() => setCalMode("month")}
+                    className={`flex-1 py-1.5 text-xs font-semibold rounded-lg transition ${calMode === "month" ? "bg-red-600 text-white" : "text-white/50 hover:text-white"}`}>
+                    Month
+                  </button>
                 </div>
-              );
-            })}
-          </>}
+
+                {calMode === "week" && (
+                  <>
+                    <div className="flex items-center justify-between mb-2">
+                      <button onClick={() => setCalWeekOffset(o => o - 1)} className="p-2 rounded-lg hover:bg-white/10 text-white/50 hover:text-white transition">
+                        <ChevronLeft size={16} />
+                      </button>
+                      <div className="text-xs text-white/60 font-semibold">
+                        {new Date(calWeekDates[0] + "T12:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+                        {" – "}
+                        {new Date(calWeekDates[6] + "T12:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+                      </div>
+                      <button onClick={() => setCalWeekOffset(o => o + 1)} className="p-2 rounded-lg hover:bg-white/10 text-white/50 hover:text-white transition">
+                        <ChevronRight size={16} />
+                      </button>
+                    </div>
+                    {/* 7-day strip */}
+                    <div className="grid grid-cols-7 gap-1 mb-4">
+                      {calWeekDates.map(dateStr => {
+                        const d = new Date(dateStr + "T12:00:00");
+                        const dayJobs = myJobs.filter(j => j.scheduledDate === dateStr);
+                        const isToday = dateStr === todayStr;
+                        const isSelected = dateStr === calSelectedDate;
+                        return (
+                          <button key={dateStr} onClick={() => setCalSelectedDate(dateStr)}
+                            className={`flex flex-col items-center py-2 rounded-xl transition ${isSelected ? "bg-red-600" : isToday ? "bg-red-950/40 border border-red-700/30" : "bg-white/5 hover:bg-white/10"}`}>
+                            <div className={`text-[10px] ${isSelected || isToday ? "text-white/80" : "text-white/40"}`}>
+                              {d.toLocaleDateString("en-US", { weekday: "narrow" })}
+                            </div>
+                            <div className={`text-sm font-bold leading-tight ${isSelected ? "text-white" : isToday ? "text-red-400" : "text-white/70"}`}>
+                              {d.getDate()}
+                            </div>
+                            <div className="w-1.5 h-1.5 mt-0.5">
+                              {dayJobs.length > 0 && <div className={`w-1.5 h-1.5 rounded-full ${isSelected ? "bg-white" : "bg-red-400"}`} />}
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                    {/* Jobs for selected day */}
+                    <div className="text-xs text-white/50 uppercase tracking-wider font-semibold mb-2 flex items-center gap-2">
+                      <span>{new Date(calSelectedDate + "T12:00:00").toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric" })}</span>
+                      {calDayJobs.length > 0 && <span className="px-2 py-0.5 rounded-full bg-white/10 text-white/60">{calDayJobs.length}</span>}
+                    </div>
+                    {calDayJobs.length === 0 ? (
+                      <div className="text-center py-8 text-white/30 text-sm">No jobs scheduled</div>
+                    ) : (
+                      <div className="space-y-2">
+                        {calDayJobs.map(j => {
+                          const c = customers.find(x => x.id === j.customerId);
+                          return (
+                            <button key={j.id} onClick={() => setSelectedJobId(j.id)}
+                              className="w-full text-left p-3 rounded-xl bg-white/5 border border-white/10 hover:bg-white/8 hover:border-red-600/20 transition">
+                              <div className="flex items-start justify-between gap-2">
+                                <div className="flex-1 min-w-0">
+                                  <div className="font-semibold text-sm truncate">{j.address}</div>
+                                  {c && <div className="text-xs text-white/50">{c.firstName} {c.lastName}</div>}
+                                </div>
+                                <div className={`text-[10px] px-2 py-0.5 rounded-full font-bold uppercase flex-shrink-0 ${
+                                  j.status === "completed" ? "bg-green-900/40 text-green-300" :
+                                  j.status === "in_progress" ? "bg-yellow-900/40 text-yellow-300" :
+                                  "bg-blue-900/40 text-blue-300"
+                                }`}>{j.status.replace("_", " ")}</div>
+                              </div>
+                              {j.scheduledTime && <div className="text-xs text-white/40 mt-1">🕐 {j.scheduledTime}</div>}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </>
+                )}
+
+                {calMode === "month" && (
+                  <>
+                    <div className="flex items-center justify-between mb-3">
+                      <button onClick={() => setCalMonthOffset(o => o - 1)} className="p-2 rounded-lg hover:bg-white/10 text-white/50 hover:text-white transition">
+                        <ChevronLeft size={16} />
+                      </button>
+                      <div className="text-sm font-semibold">{calMonthLabel}</div>
+                      <button onClick={() => setCalMonthOffset(o => o + 1)} className="p-2 rounded-lg hover:bg-white/10 text-white/50 hover:text-white transition">
+                        <ChevronRight size={16} />
+                      </button>
+                    </div>
+                    {/* Day-of-week headers */}
+                    <div className="grid grid-cols-7 gap-0.5 mb-1">
+                      {["S","M","T","W","T","F","S"].map((d, i) => (
+                        <div key={i} className="text-center text-[10px] text-white/30 font-semibold py-1">{d}</div>
+                      ))}
+                    </div>
+                    {/* Month grid */}
+                    <div className="grid grid-cols-7 gap-0.5 mb-4">
+                      {Array.from({ length: calFirstDay }, (_, i) => <div key={"e" + i} />)}
+                      {Array.from({ length: calDaysInMonth }, (_, i) => {
+                        const day = i + 1;
+                        const dateStr = `${calMonthYear}-${String(calMonthMonth + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+                        const dayJobs = myJobs.filter(j => j.scheduledDate === dateStr);
+                        const isToday = dateStr === todayStr;
+                        const isSelected = dateStr === calSelectedDate;
+                        return (
+                          <button key={day} onClick={() => setCalSelectedDate(dateStr)}
+                            className={`flex flex-col items-center py-1.5 rounded-lg transition min-h-[44px] ${
+                              isSelected ? "bg-red-600" : isToday ? "bg-red-950/50 border border-red-700/30" : "hover:bg-white/8"
+                            }`}>
+                            <div className={`text-sm font-semibold ${isSelected ? "text-white" : isToday ? "text-red-400" : "text-white/60"}`}>
+                              {day}
+                            </div>
+                            {dayJobs.length > 0 && (
+                              <div className={`w-1.5 h-1.5 rounded-full ${isSelected ? "bg-white" : "bg-red-400"}`} />
+                            )}
+                          </button>
+                        );
+                      })}
+                    </div>
+                    {/* Jobs for selected day */}
+                    <div className="text-xs text-white/50 uppercase tracking-wider font-semibold mb-2 flex items-center gap-2">
+                      <span>{new Date(calSelectedDate + "T12:00:00").toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric" })}</span>
+                      {calDayJobs.length > 0 && <span className="px-2 py-0.5 rounded-full bg-white/10 text-white/60">{calDayJobs.length}</span>}
+                    </div>
+                    {calDayJobs.length === 0 ? (
+                      <div className="text-center py-6 text-white/30 text-sm">No jobs this day</div>
+                    ) : (
+                      <div className="space-y-2">
+                        {calDayJobs.map(j => {
+                          const c = customers.find(x => x.id === j.customerId);
+                          return (
+                            <button key={j.id} onClick={() => setSelectedJobId(j.id)}
+                              className="w-full text-left p-3 rounded-xl bg-white/5 border border-white/10 hover:bg-white/8 transition">
+                              <div className="font-semibold text-sm truncate">{j.address}</div>
+                              {c && <div className="text-xs text-white/50">{c.firstName} {c.lastName}</div>}
+                              {j.scheduledTime && <div className="text-xs text-white/40 mt-0.5">🕐 {j.scheduledTime}</div>}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </>
+                )}
+              </>
+            );
+          })()}
 
           {/* All Jobs tab */}
           {tab === "jobs" && <>
@@ -621,6 +1302,73 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
               </div>
             )}
           </>}
+
+          {/* Pay tab */}
+          {tab === "pay" && (() => {
+            // Build pay period history (14-day periods going back 3 months)
+            const periods: Array<{ label: string; start: string; end: string; hours: number; pay: number; jobs: number }> = [];
+            const now = new Date();
+            for (let i = 0; i < 6; i++) {
+              const end = new Date(now); end.setDate(end.getDate() - i * 14);
+              const start = new Date(end); start.setDate(start.getDate() - 13);
+              const s = start.toISOString().slice(0, 10);
+              const e = end.toISOString().slice(0, 10);
+              const pJobs = myJobs.filter(j => j.scheduledDate >= s && j.scheduledDate <= e);
+              const hrs = pJobs.reduce((acc, j) => acc + Number(j.loggedHours || 0), 0);
+              periods.push({
+                label: i === 0 ? "Current Period" : `${start.toLocaleDateString("en-US", { month: "short", day: "numeric" })} – ${end.toLocaleDateString("en-US", { month: "short", day: "numeric" })}`,
+                start: s, end: e,
+                hours: Math.round(hrs * 10) / 10,
+                pay: Math.round(hrs * (myEmployee?.hourlyRate || 0) * 100) / 100,
+                jobs: pJobs.filter(j => j.status === "completed").length,
+              });
+            }
+            return (
+              <>
+                <Glass className="p-5 !bg-gradient-to-br !from-green-950/30 !to-black/60 !border-green-700/30">
+                  <div className="text-xs text-white/50 uppercase tracking-wider mb-1">Current Pay Rate</div>
+                  <div className="text-3xl font-black text-green-400">{fmt(myEmployee?.hourlyRate || 0)}<span className="text-base font-normal text-white/50">/hr</span></div>
+                  <div className="text-xs text-white/40 mt-1 capitalize">{myEmployee?.role}</div>
+                </Glass>
+
+                <div className="text-xs text-white/50 uppercase tracking-wider font-semibold mb-2">Pay Period History</div>
+                <div className="space-y-2">
+                  {periods.map((p, i) => (
+                    <Glass key={i} className={"p-4 " + (i === 0 ? "!bg-green-950/20 !border-green-700/30" : "!bg-black/40")}>
+                      <div className="flex items-center justify-between mb-2">
+                        <div>
+                          <div className={"text-sm font-semibold " + (i === 0 ? "text-green-300" : "text-white/70")}>{p.label}</div>
+                          {i > 0 && <div className="text-[10px] text-white/30">{p.start} — {p.end}</div>}
+                        </div>
+                        <div className="text-right">
+                          <div className={"text-lg font-black " + (i === 0 ? "text-green-400" : "text-white/70")}>{fmt(p.pay)}</div>
+                          <div className="text-[10px] text-white/40">estimated</div>
+                        </div>
+                      </div>
+                      <div className="flex gap-4 text-xs text-white/50">
+                        <span><span className="font-semibold text-white/70">{p.hours}h</span> logged</span>
+                        <span><span className="font-semibold text-white/70">{p.jobs}</span> completed</span>
+                      </div>
+                      {i === 0 && p.hours > 0 && (
+                        <div className="mt-2">
+                          <div className="flex justify-between text-[10px] text-white/40 mb-1">
+                            <span>Progress</span>
+                            <span>{p.hours}h / 80h typical</span>
+                          </div>
+                          <div className="h-1.5 rounded-full bg-white/10 overflow-hidden">
+                            <div className="h-full bg-green-500 rounded-full" style={{ width: Math.min(100, p.hours / 80 * 100) + "%" }} />
+                          </div>
+                        </div>
+                      )}
+                    </Glass>
+                  ))}
+                </div>
+                <div className="text-[10px] text-white/20 text-center pt-2">
+                  Pay estimates are based on logged hours × hourly rate.<br />Contact your manager for official payroll figures.
+                </div>
+              </>
+            );
+          })()}
         </div>
       </main>
 
@@ -628,11 +1376,12 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
       <nav className="fixed bottom-0 left-0 right-0 bg-black/95 border-t border-red-900/30 flex items-center justify-around px-2 py-2 safe-bottom z-30">
         {([
           { id: "today", label: "Today", icon: Home },
-          { id: "schedule", label: "Schedule", icon: Calendar },
+          { id: "calendar", label: "Calendar", icon: Calendar },
           { id: "jobs", label: "All Jobs", icon: List },
+          { id: "pay", label: "My Pay", icon: DollarSign },
         ] as const).map(({ id, label, icon: Icon }) => (
           <button key={id} onClick={() => setTab(id)}
-            className={"flex flex-col items-center gap-0.5 px-4 py-1.5 rounded-xl transition " +
+            className={"flex flex-col items-center gap-0.5 px-3 py-1.5 rounded-xl transition " +
               (tab === id ? "text-red-400" : "text-white/40 hover:text-white/70")}>
             <Icon size={20} />
             <span className="text-[10px]">{label}</span>

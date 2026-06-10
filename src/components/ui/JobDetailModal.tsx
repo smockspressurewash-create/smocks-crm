@@ -145,7 +145,7 @@ function ChecklistSection({ title, emoji, items, onUpdate }: {
   );
 }
 
-export function JobDetailModal({ jobId, job, onClose, customers = [], employees = [], updateJob, toast, gToken = "" }: { jobId: any; job: any; onClose: any; customers?: any[]; employees?: any[]; updateJob: any; toast: any; gToken?: string }) {
+export function JobDetailModal({ jobId, job, onClose, customers = [], employees = [], updateJob, toast, gToken = "", settings = {} as any }: { jobId: any; job: any; onClose: any; customers?: any[]; employees?: any[]; updateJob: any; toast: any; gToken?: string; settings?: any }) {
   const [commNote, setCommNote] = useState("");
   const [commType, setCommType] = useState("note");
   const [chemName, setChemName] = useState("");
@@ -158,6 +158,7 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
   const [showSignOff, setShowSignOff] = useState(false);
   const [signerName, setSignerName] = useState("");
   const [gSyncing, setGSyncing] = useState(false);
+  const [notifying, setNotifying] = useState(false);
 
   // Live timer tick while clock is running
   useEffect(() => {
@@ -172,6 +173,28 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
   const toggleCrew = eid => {
     const crew = job.crew || [];
     updateJob(jobId, { crew: crew.includes(eid) ? crew.filter(x => x !== eid) : [...crew, eid] });
+  };
+
+  const notifyCrew = async () => {
+    const crewEmps = (job.crew || []).map(id => employees.find(e => e.id === id)).filter(Boolean);
+    const withEmail = crewEmps.filter(e => e.email);
+    if (!withEmail.length) { toast("No crew members have email addresses set", "yellow"); return; }
+    setNotifying(true);
+    const c = customers.find(x => x.id === job.customerId);
+    const jobLink = `${window.location.origin}${window.location.pathname}#/portal`;
+    let sent = 0;
+    for (const emp of withEmail) {
+      try {
+        await sendEmail(settings, {
+          to: emp.email,
+          subject: `Job Assignment — ${job.scheduledDate}`,
+          body: `<p>Hi ${emp.firstName},</p><p>You've been assigned to a job:</p><ul><li><b>Date:</b> ${job.scheduledDate}${job.scheduledTime ? " at " + job.scheduledTime : ""}</li><li><b>Address:</b> ${job.address}</li>${c ? `<li><b>Customer:</b> ${c.firstName} ${c.lastName}</li>` : ""}</ul><p>Open the crew portal to see details: <a href="${jobLink}">${jobLink}</a></p><p>— ${settings.companyName || "Smock's Pressure Washing"}</p>`,
+        });
+        sent++;
+      } catch { /* ignore per-emp errors */ }
+    }
+    setNotifying(false);
+    toast(sent > 0 ? `Notified ${sent} crew member${sent !== 1 ? "s" : ""} ✓` : "Email send failed — check Resend settings", sent > 0 ? "green" : "red");
   };
   const toggleEquip = eq => {
     const list = job.equipment || [];
@@ -409,7 +432,15 @@ ${job.notes ? `<div class="section"><h2>Job Notes</h2><p>${job.notes}</p></div>`
 
         {/* Crew */}
         <div>
-          <label className="text-xs text-white/60 mb-1 block flex items-center gap-1"><Users size={10} />Crew</label>
+          <div className="flex items-center justify-between mb-1">
+            <label className="text-xs text-white/60 flex items-center gap-1"><Users size={10} />Crew</label>
+            {(job.crew || []).length > 0 && (
+              <button onClick={notifyCrew} disabled={notifying}
+                className="text-[10px] flex items-center gap-1 px-2 py-1 rounded-lg bg-blue-950/40 hover:bg-blue-900/50 border border-blue-700/30 text-blue-400 hover:text-blue-300 transition disabled:opacity-50">
+                <Mail size={9} />{notifying ? "Sending…" : "Notify Crew"}
+              </button>
+            )}
+          </div>
           <div className="flex gap-2 flex-wrap">
             {employees.filter(e => e.status === "active").map(e => {
               const sel = (job.crew || []).includes(e.id);

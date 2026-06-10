@@ -146,7 +146,7 @@ export function CustomerModal({ open, onClose, data, onSave, mapsKey = "" }) {
                   </GSel>
                 </div>
               </div>
-              <div><label className="text-[10px] text-white/50 mb-0.5 block">Street *</label><AddressAutocomplete value={addrForm.street} onChange={v => setAddrForm(p => ({ ...p, street: v }))} mapsKey={mapsKey} placeholder="456 Pine St" /></div>
+              <div><label className="text-[10px] text-white/50 mb-0.5 block">Street *</label><AddressAutocomplete value={addrForm.street} onChange={v => setAddrForm(p => ({ ...p, street: v }))} onPlaceSelect={place => setAddrForm(p => ({ ...p, street: place.street, city: place.city, state: place.state, zip: place.zip }))} mapsKey={mapsKey} placeholder="456 Pine St" /></div>
               <div className="grid grid-cols-3 gap-2">
                 <div><label className="text-[10px] text-white/50 mb-0.5 block">City</label><GInput value={addrForm.city || ""} onChange={e => setAddrForm(p => ({ ...p, city: e.target.value }))} className="!text-xs" /></div>
                 <div><label className="text-[10px] text-white/50 mb-0.5 block">State</label><GInput value={addrForm.state || ""} onChange={e => setAddrForm(p => ({ ...p, state: e.target.value }))} className="!text-xs" /></div>

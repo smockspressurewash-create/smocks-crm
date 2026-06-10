@@ -646,7 +646,7 @@ export function JobsPage({ jobs = [], setJobs, customers = [], employees = [], e
         {filtered.length === 0 && <div className="md:col-span-2 text-center py-12 text-white/40">No {tabs[tab].toLowerCase()} jobs</div>}
       </div>
 
-      <JobDetailModal jobId={detailId} job={jobs.find(j => j.id === detailId)} onClose={() => setDetailId(null)} customers={customers} employees={employees} updateJob={updateJob} toast={toast} />
+      <JobDetailModal jobId={detailId} job={jobs.find(j => j.id === detailId)} onClose={() => setDetailId(null)} customers={customers} employees={employees} updateJob={updateJob} toast={toast} settings={settings} />
 
       <Modal open={!!cancelModal} onClose={() => setCancelModal(null)} title="Cancel Job">
         <div className="space-y-3">

@@ -507,6 +507,8 @@ export function App() {
         customers={customers}
         settings={settings}
         toast={toast}
+        isOwnerView={!empSession && page === "portal"}
+        onClose={() => setPage("dashboard")}
       />
     );
   }

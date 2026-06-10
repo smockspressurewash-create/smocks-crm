@@ -1,75 +1,116 @@
-// auto-extracted from Smock's OS monolith
-import React, { useState, useEffect, useRef, useCallback } from "react";
-import {
-  LayoutDashboard, Users, FileText, Briefcase, Bot, BarChart3,
-  Settings, Bell, Menu, X, Plus, Search, Edit, Trash2, Send,
-  DollarSign, TrendingUp, CheckCircle, Clock, MapPin, Phone, Mail,
-  Calendar, AlertTriangle, Truck, Receipt, FlaskConical, MessageSquare,
-  Sun, Moon, Download, Undo2, Redo2, Volume2, Play, Cloud, Star,
-  Award, Target, Shield, Key, Eye, EyeOff, Save, ChevronRight,
-  ChevronLeft, GripVertical, Tag, Copy, Ban, RefreshCw, Percent,
-  CreditCard, Repeat, XCircle, Activity, Zap, UserCheck, AlertCircle,
-  Clipboard, Heart, Dumbbell, Droplet, Smile, Flame, Wind, Snowflake,
-  Globe, Share2, Trophy, ExternalLink, Workflow, ToggleLeft, ToggleRight,
-  Navigation, TrendingDown, PieChart as PieIcon, Package, Wrench,
-  CheckSquare, Route, Users2, Layers, ArrowRight, BarChart2, Filter,
-  Paperclip, ImageIcon, FileImage, MoreVertical, Mic, Upload, Link, Lock, User
-} from "lucide-react";
-import {
-  BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid,
-  Tooltip, ResponsiveContainer, Area, AreaChart, LineChart, Line,
-  ComposedChart, Legend
-} from "recharts";
-import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE } from "../../lib/utils";
-import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
-import { twilioSend, sendEmail } from "../../lib/messaging";
-import { seedWeather } from "../../lib/weather";
-import { seedCustomers, seedEstimates, seedJobs, seedEmployees, seedVehicles, seedExpenses, seedChemicals, seedServices, seedAutomations, seedEmailTemplates, seedSmsTemplates, seedRewardTiers, seedReferrals, seedMaintenance, campaignTemplates, seedSocialPosts, seedTimeline, seedGoals, seedReminders, seedAccountabilityEntries, seedMileage, seedLeadSrc, STEP_TYPES, AUTOMATION_TEMPLATES } from "../../lib/seed";
-import { callModel, MODELS } from "../../lib/api";
-import { createCalendarEvent, updateCalendarEvent, deleteCalendarEvent, fetchDriveFiles, MOCK_GOOGLE_DATA, fmtSize, fmtDate, fileIcon } from "../../lib/google";
-import { usePersistent } from "../../hooks/usePersistent";
-import { usePersistentRaw } from "../../hooks/usePersistentRaw";
-import { Glass } from "./Glass";
-import { GBtn } from "./GBtn";
+import React, { useState, useRef, useEffect, useCallback } from "react";
+import { MapPin } from "lucide-react";
 import { GInput } from "./GInput";
-import { GDate } from "./GDate";
-import { GSel } from "./GSel";
-import { GTxt } from "./GTxt";
-import { Modal } from "./Modal";
-import { Badge } from "./Badge";
-import { Stat } from "./Stat";
-import { PBar } from "./PBar";
-import { PageFade } from "./PageFade";
-import { TimeframeSelector } from "./TimeframeSelector";
 
-export function AddressAutocomplete({ value = "", onChange, placeholder = "Start typing an address...", mapsKey = "", className = "" }) {
-  const [suggestions, setSuggestions] = useState([]);
+// Singleton Google Maps JS loader — loads once per page, queues callbacks
+let _ready = false;
+let _loading = false;
+const _queue: Array<() => void> = [];
+
+function loadMapsScript(key: string): Promise<void> {
+  return new Promise(resolve => {
+    if (_ready) { resolve(); return; }
+    _queue.push(resolve);
+    if (_loading) return;
+    _loading = true;
+    const s = document.createElement("script");
+    s.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(key)}&libraries=places`;
+    s.async = true;
+    s.onload = () => { _ready = true; _queue.forEach(cb => cb()); _queue.length = 0; };
+    s.onerror = () => { _loading = false; _queue.forEach(cb => cb()); _queue.length = 0; };
+    document.head.appendChild(s);
+  });
+}
+
+export interface PlaceResult {
+  street: string;
+  city: string;
+  state: string;
+  zip: string;
+}
+
+// Parse "456 Pine St, York, PA 17401, USA" into components
+function parseDesc(desc: string): PlaceResult {
+  const clean = desc.replace(/, USA$/, "").replace(/, United States$/, "");
+  const parts = clean.split(",").map(p => p.trim());
+  const street = parts[0] || "";
+  const city = parts[1] || "";
+  const stateZip = parts[2] || "";
+  const m = stateZip.match(/^([A-Z]{2})\s*(\d{5}(?:-\d{4})?)?$/);
+  return {
+    street,
+    city,
+    state: m ? m[1] : stateZip,
+    zip: m?.[2] || "",
+  };
+}
+
+export function AddressAutocomplete({
+  value = "",
+  onChange,
+  onPlaceSelect,
+  placeholder = "Start typing an address...",
+  mapsKey = "",
+  className = "",
+}: {
+  value?: string;
+  onChange: (v: string) => void;
+  onPlaceSelect?: (place: PlaceResult) => void;
+  placeholder?: string;
+  mapsKey?: string;
+  className?: string;
+}) {
+  const [suggestions, setSuggestions] = useState<string[]>([]);
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
-  const timer = useRef(null);
+  const svcRef = useRef<any>(null);
+  const timer = useRef<any>(null);
 
-  const search = async (q) => {
+  useEffect(() => {
+    if (!mapsKey) return;
+    loadMapsScript(mapsKey).then(() => {
+      const g = (window as any).google;
+      if (g?.maps?.places?.AutocompleteService) {
+        svcRef.current = new g.maps.places.AutocompleteService();
+      }
+    });
+  }, [mapsKey]);
+
+  const search = useCallback((q: string) => {
     if (!q || q.length < 3) { setSuggestions([]); return; }
-    if (!mapsKey) { /* no key - plain input */ return; }
+    if (!svcRef.current) { setSuggestions([]); return; }
     setLoading(true);
-    try {
-      // Use Places Autocomplete API
-      const res = await fetch(`https://maps.googleapis.com/maps/api/place/autocomplete/json?input=${encodeURIComponent(q)}&components=country:us&types=address&key=${mapsKey}`);
-      const data = await res.json();
-      setSuggestions(data.predictions?.map(p => p.description) || []);
-    } catch {
-      // Fallback: suggest York PA addresses
-      setSuggestions([q + ", York, PA 17401", q + ", York, PA 17402", q + ", Red Lion, PA 17356"].slice(0, 3));
-    }
-    setLoading(false);
-  };
+    svcRef.current.getPlacePredictions(
+      { input: q, componentRestrictions: { country: "us" }, types: ["address"] },
+      (preds: any[] | null, status: string) => {
+        setLoading(false);
+        if (status === "OK" && preds) {
+          setSuggestions(preds.slice(0, 5).map((p: any) => p.description));
+        } else {
+          setSuggestions([]);
+        }
+      }
+    );
+  }, []);
 
-  const handleChange = e => {
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const v = e.target.value;
     onChange(v);
     setOpen(true);
     clearTimeout(timer.current);
     timer.current = setTimeout(() => search(v), 350);
+  };
+
+  const handleSelect = (s: string) => {
+    if (onPlaceSelect) {
+      const place = parseDesc(s);
+      onChange(place.street);
+      onPlaceSelect(place);
+    } else {
+      onChange(s);
+    }
+    setSuggestions([]);
+    setOpen(false);
   };
 
   return (
@@ -83,13 +124,22 @@ export function AddressAutocomplete({ value = "", onChange, placeholder = "Start
           placeholder={placeholder}
           className={className}
         />
-        {loading && <div className="absolute right-3 top-1/2 -translate-y-1/2"><div className="w-3 h-3 border-2 border-red-400 border-t-transparent rounded-full animate-spin" /></div>}
+        {loading && (
+          <div className="absolute right-3 top-1/2 -translate-y-1/2">
+            <div className="w-3 h-3 border-2 border-red-400 border-t-transparent rounded-full animate-spin" />
+          </div>
+        )}
       </div>
       {open && suggestions.length > 0 && (
         <div className="absolute z-50 left-0 right-0 top-full mt-1 bg-black/95 border border-red-900/40 rounded-xl shadow-2xl overflow-hidden">
           {suggestions.map((s, i) => (
-            <button key={i} onMouseDown={() => { onChange(s); setSuggestions([]); setOpen(false); }} className="w-full text-left px-3 py-2.5 text-xs text-white/80 hover:bg-red-900/30 hover:text-white transition flex items-center gap-2 border-b border-red-900/10 last:border-0">
-              <MapPin size={11} className="text-red-400 flex-shrink-0" />{s}
+            <button
+              key={i}
+              onMouseDown={() => handleSelect(s)}
+              className="w-full text-left px-3 py-2.5 text-xs text-white/80 hover:bg-red-900/30 hover:text-white transition flex items-center gap-2 border-b border-red-900/10 last:border-0"
+            >
+              <MapPin size={11} className="text-red-400 flex-shrink-0" />
+              {s}
             </button>
           ))}
         </div>
@@ -97,4 +147,3 @@ export function AddressAutocomplete({ value = "", onChange, placeholder = "Start
     </div>
   );
 }
-
