@@ -23,6 +23,7 @@ import {
 import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE } from "../../lib/utils";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
 import { twilioSend, sendEmail } from "../../lib/messaging";
+import { supabase } from "../../lib/supabase";
 import { seedWeather } from "../../lib/weather";
 import { seedCustomers, seedEstimates, seedJobs, seedEmployees, seedVehicles, seedExpenses, seedChemicals, seedServices, seedAutomations, seedEmailTemplates, seedSmsTemplates, seedRewardTiers, seedReferrals, seedMaintenance, campaignTemplates, seedSocialPosts, seedTimeline, seedGoals, seedReminders, seedAccountabilityEntries, seedMileage, seedLeadSrc, STEP_TYPES, AUTOMATION_TEMPLATES } from "../../lib/seed";
 import { callModel, MODELS } from "../../lib/api";
@@ -96,7 +97,20 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setting
     if (!inviteF.firstName.trim() || !inviteF.email.trim()) return;
     const code = (Math.random().toString(36).substring(2, 10) + Date.now().toString(36)).toUpperCase();
     const inv: InviteRecord = { code, ...inviteF, hourlyRate: Number(inviteF.hourlyRate), createdAt: new Date().toISOString().slice(0, 10) };
+    // Save to localStorage (local UI state)
     setInvites(prev => [...prev, inv]);
+    // Save to Supabase so the invite works from any browser/device
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      await (supabase as any).from("invites").insert({
+        code,
+        employee_name: `${inv.firstName} ${inv.lastName}`,
+        employee_email: inv.email,
+        role: inv.role,
+        hourly_rate: inv.hourlyRate,
+        created_by: user?.id ?? null,
+      });
+    } catch { /* table may not exist yet — invite still works via localStorage in the same browser */ }
     // Pre-create employee record so the portal can match immediately
     const alreadyExists = employees.some(e => e.email.toLowerCase() === inviteF.email.toLowerCase());
     if (!alreadyExists) {

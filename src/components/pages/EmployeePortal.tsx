@@ -661,19 +661,55 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     setInviteCode(code);
     // Sign out any existing session so the invite registration form is always shown fresh
     supabase.auth.signOut().catch(() => {});
-    try {
-      const invites: any[] = JSON.parse(localStorage.getItem("smocks.invites") || "[]");
-      const inv = invites.find(i => i.code === code && !i.used);
-      if (inv) {
-        setInviteRecord(inv);
-        setLoginEmail(inv.email || "");
-        setLoginFirst(inv.firstName || "");
-        setLoginLast(inv.lastName || "");
-        setLoginMode("register");
-      } else if (code) {
-        setLoginError("Invalid or expired invite link.");
+
+    const applyInvite = (inv: any) => {
+      if (!inv) { setLoginError("Invalid or expired invite link."); return; }
+      if (inv.used) { setLoginError("This invite has already been used. Please sign in instead."); return; }
+      // Normalise field names — Supabase uses snake_case, localStorage uses camelCase
+      const firstName = inv.firstName || (inv.employee_name || "").split(" ")[0] || "";
+      const lastName = inv.lastName || (inv.employee_name || "").split(" ").slice(1).join(" ") || "";
+      const email = inv.email || inv.employee_email || "";
+      const role = inv.role || "Technician";
+      const hourlyRate = inv.hourlyRate ?? inv.hourly_rate ?? 0;
+      const normalised = { ...inv, firstName, lastName, email, role, hourlyRate };
+      setInviteRecord(normalised);
+      setLoginEmail(email);
+      setLoginFirst(firstName);
+      setLoginLast(lastName);
+      setLoginMode("register");
+    };
+
+    const lookup = async () => {
+      // 1. Try Supabase first — works from any browser/device
+      try {
+        const { data, error } = await (supabase as any)
+          .from("invites")
+          .select("*")
+          .eq("code", code)
+          .maybeSingle();
+        if (!error) {
+          applyInvite(data);
+          return;
+        }
+        // If the error is NOT "table doesn't exist", surface it
+        if (!(error.message || "").includes("does not exist")) {
+          applyInvite(null);
+          return;
+        }
+        // Table doesn't exist — fall through to localStorage
+      } catch { /* fall through */ }
+
+      // 2. Fallback: localStorage (same browser as owner)
+      try {
+        const stored: any[] = JSON.parse(localStorage.getItem("smocks.invites") || "[]");
+        const inv = stored.find((i: any) => i.code === code);
+        applyInvite(inv ?? null);
+      } catch {
+        applyInvite(null);
       }
-    } catch { /* ignore */ }
+    };
+
+    lookup();
   }, []);
 
   const myEmployee = empSession
@@ -820,12 +856,18 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     const { data: signInData, error: signInErr } = await supabase.auth.signInWithPassword({ email: loginEmail, password: loginPwd });
     setLoginLoading(false);
     if (!signInErr && signInData.session) {
-      // Mark invite as used in localStorage
+      // Mark invite as used — Supabase first, then localStorage
       if (inviteCode) {
         try {
-          const invites: any[] = JSON.parse(localStorage.getItem("smocks.invites") || "[]");
+          await (supabase as any)
+            .from("invites")
+            .update({ used: true, used_at: new Date().toISOString(), used_by: signInData.session.user.id })
+            .eq("code", inviteCode);
+        } catch { /* table may not exist */ }
+        try {
+          const stored: any[] = JSON.parse(localStorage.getItem("smocks.invites") || "[]");
           localStorage.setItem("smocks.invites", JSON.stringify(
-            invites.map(i => i.code === inviteCode ? { ...i, used: true } : i)
+            stored.map(i => i.code === inviteCode ? { ...i, used: true } : i)
           ));
         } catch { /* ignore */ }
       }
