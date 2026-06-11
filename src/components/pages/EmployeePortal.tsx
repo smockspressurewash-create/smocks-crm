@@ -880,21 +880,18 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     const metaRole = session.user.user_metadata?.role;
     const email = session.user.email || "";
 
-    // Primary check: role in user_metadata
-    const hasEmployeeRole = metaRole === "technician" || metaRole === "manager";
+    console.log("doLogin: checking email", email, "against employees:", employees.map(e => e.email));
+    console.log("doLogin: user metadata role:", metaRole);
 
-    // Fallback: does their email match an employee record in the CRM?
+    // Anyone who successfully completes signInWithPassword is an email/password user — treat as employee.
+    // Google OAuth users cannot reach this path. Never sign them out here.
     const matchedEmployee = employees.find(e => e.email?.toLowerCase() === email.toLowerCase());
 
-    if (!hasEmployeeRole && !matchedEmployee) {
-      setLoginError("This portal is for employees only. Owners sign in with Google on the main app.");
-      await supabase.auth.signOut(); return;
-    }
-
-    // If role metadata is missing but they're a known employee, repair it so future
-    // sessions (including after page reload) pass the App.tsx auth-state-change check
-    if (!hasEmployeeRole && matchedEmployee) {
-      const fixedRole = (matchedEmployee as any).role?.toLowerCase().includes("manager") ? "manager" : "technician";
+    // Repair missing role metadata so App.tsx auth-state-change recognises them on reload
+    if (!metaRole) {
+      const fixedRole = matchedEmployee
+        ? ((matchedEmployee as any).role?.toLowerCase().includes("manager") ? "manager" : "technician")
+        : "technician";
       supabase.auth.updateUser({ data: { role: fixedRole } }).catch(() => {});
     }
 
@@ -904,6 +901,20 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
         .update({ user_id: session.user.id })
         .eq("id", matchedEmployee.id)
         .then(() => {}).catch(() => {});
+    }
+
+    // If they arrived via invite and have no employee record yet, create one now
+    if (!matchedEmployee && inviteRecord) {
+      const authRole = inviteRecord.role?.toLowerCase().includes("manager") ? "manager" : "technician";
+      (supabase as any).from("employees").insert({
+        firstName: inviteRecord.firstName || "",
+        lastName: inviteRecord.lastName || "",
+        email: inviteRecord.email || email,
+        role: authRole === "manager" ? "Manager" : "Technician",
+        hourlyRate: inviteRecord.hourlyRate ?? 0,
+        user_id: session.user.id,
+        status: "active",
+      }).then(() => {}).catch(() => {});
     }
 
     setEmpSession(session);
