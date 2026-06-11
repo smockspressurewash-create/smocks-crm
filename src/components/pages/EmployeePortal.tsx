@@ -685,6 +685,9 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   const [loginLoading, setLoginLoading] = useState(false);
   const [inviteCode, setInviteCode] = useState<string | null>(null);
   const [inviteRecord, setInviteRecord] = useState<any>(null);
+  // Locally-resolved employee when the prop array hasn't re-fetched yet (e.g. after invite registration)
+  const [localEmployee, setLocalEmployee] = useState<any>(null);
+  const [retrying, setRetrying] = useState(false);
 
   // Capture hash synchronously on first render, before App.tsx's hash-sync effect can strip the invite param
   const capturedHashRef = useRef(window.location.hash);
@@ -757,8 +760,20 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   const myEmployee = empSession
     ? (employees.find(e => (e as any).user_id === empSession.user.id) ||
        employees.find(e => e.email?.toLowerCase() === empSession.user.email?.toLowerCase()) ||
+       localEmployee ||
        null)
     : null;
+
+  // Log whenever the lookup inputs change so we can see if employees is empty on first render
+  useEffect(() => {
+    if (!empSession) return;
+    const uid = empSession.user.id;
+    const email = empSession.user.email;
+    console.log("myEmployee lookup — employees:", JSON.stringify(employees.map(e => ({ id: (e as any).id, email: e.email, user_id: (e as any).user_id }))));
+    console.log("myEmployee lookup — current email:", email, "current userId:", uid);
+    console.log("myEmployee lookup — localEmployee:", JSON.stringify(localEmployee));
+    console.log("myEmployee lookup — result:", myEmployee ? `found: ${myEmployee.firstName} ${myEmployee.lastName}` : "NOT FOUND");
+  }, [empSession, employees, localEmployee]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Merge owner-set permissions with defaults (all-on for existing employees with no permissions field)
   const perms: Record<string, boolean> = { ...DEFAULT_PERMISSIONS, ...((myEmployee as any)?.permissions || {}) };
@@ -870,6 +885,35 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     setEmpSession(null);
   };
 
+  const doRetryLink = async () => {
+    if (!empSession) return;
+    setRetrying(true);
+    const email = empSession.user.email || "";
+    const userId = empSession.user.id;
+    try {
+      // Try by user_id first, then email
+      let found: any = null;
+      const { data: byId } = await (supabase as any)
+        .from("employees").select("*").eq("user_id", userId).maybeSingle();
+      if (byId) { found = byId; }
+      else {
+        const { data: byEmail } = await (supabase as any)
+          .from("employees").select("*").ilike("email", email).maybeSingle();
+        if (byEmail) {
+          found = byEmail;
+          // Link user_id for next time
+          await (supabase as any).from("employees").update({ user_id: userId }).eq("id", byEmail.id);
+        }
+      }
+      console.log("doRetryLink — found:", JSON.stringify(found));
+      if (found) setLocalEmployee(found);
+      else toast("No employee record found for " + email + ". Ask your manager to add your email.");
+    } catch (e) {
+      console.error("doRetryLink error:", e);
+    }
+    setRetrying(false);
+  };
+
   const doLogin = async () => {
     setLoginLoading(true); setLoginError("");
     const { data, error } = await supabase.auth.signInWithPassword({ email: loginEmail, password: loginPwd });
@@ -906,7 +950,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     // If they arrived via invite and have no employee record yet, create one now
     if (!matchedEmployee && inviteRecord) {
       const authRole = inviteRecord.role?.toLowerCase().includes("manager") ? "manager" : "technician";
-      (supabase as any).from("employees").insert({
+      const newEmp = {
         firstName: inviteRecord.firstName || "",
         lastName: inviteRecord.lastName || "",
         email: inviteRecord.email || email,
@@ -914,7 +958,10 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
         hourlyRate: inviteRecord.hourlyRate ?? 0,
         user_id: session.user.id,
         status: "active",
-      }).then(() => {}).catch(() => {});
+      };
+      (supabase as any).from("employees").insert(newEmp).then(() => {}).catch(() => {});
+      // Set locally so myEmployee resolves immediately without waiting for parent re-fetch
+      setLocalEmployee(newEmp);
     }
 
     setEmpSession(session);
@@ -962,13 +1009,21 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
       // Link employee record to the new Supabase user ID so email-less lookups work.
       // Try by invite's employee ID first, then fall back to email match.
       const invEmpId = inviteRecord?.employeeId || inviteRecord?.employee_id;
+      let linkedEmployee: any = null;
       try {
         if (invEmpId) {
           await (supabase as any).from("employees").update({ user_id: newUserId }).eq("id", invEmpId);
+          const { data } = await (supabase as any).from("employees").select("*").eq("id", invEmpId).maybeSingle();
+          linkedEmployee = data;
         } else if (newEmail) {
           await (supabase as any).from("employees").update({ user_id: newUserId }).eq("email", newEmail);
+          const { data } = await (supabase as any).from("employees").select("*").ilike("email", newEmail).maybeSingle();
+          linkedEmployee = data;
         }
       } catch { /* employees table may not have user_id column yet */ }
+
+      // Provide the employee record immediately so myEmployee resolves without waiting for parent re-fetch
+      if (linkedEmployee) setLocalEmployee(linkedEmployee);
 
       setEmpSession(signInData.session);
       toast("Welcome! Account created ✓");
@@ -1065,10 +1120,18 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
       <div className="min-h-screen bg-black text-white flex flex-col items-center justify-center p-6 text-center">
         <AlertCircle size={40} className="text-yellow-400 mb-4" />
         <div className="text-lg font-bold mb-2">Account Not Linked</div>
-        <div className="text-sm text-white/50 mb-6 max-w-xs">
-          Your account ({empSession.user.email}) isn't linked to an employee record yet. Ask your manager to add your email in the Employees section.
+        <div className="text-sm text-white/50 mb-4 max-w-xs">
+          Your account ({empSession.user.email}) isn't linked to an employee record yet.
+          {" "}If you just registered, tap Retry — it may take a moment to sync.
         </div>
-        <GBtn onClick={doSignOut} variant="ghost"><LogOut size={14} className="inline mr-1.5" />Sign Out</GBtn>
+        <div className="flex flex-col gap-3 w-full max-w-xs">
+          <GBtn onClick={doRetryLink} disabled={retrying} className="w-full justify-center">
+            {retrying ? "Checking…" : "Retry"}
+          </GBtn>
+          <GBtn onClick={doSignOut} variant="ghost" className="w-full justify-center">
+            <LogOut size={14} className="inline mr-1.5" />Sign Out
+          </GBtn>
+        </div>
       </div>
     );
   }
