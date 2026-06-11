@@ -429,6 +429,11 @@ export function App() {
       // The hash-sync effect is guarded to return early while access_token is in the hash,
       // so Supabase can read and process the token before the router overwrites it.
       const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+        console.log("AUTH CHANGE in App.tsx:", event,
+          "page:", page,
+          "provider:", session?.user?.app_metadata?.provider,
+          "email:", session?.user?.email,
+          "identities:", JSON.stringify(session?.user?.identities?.map((i: any) => i.provider)));
         console.log("AUTH STATE CHANGE:", event, "session email:", session?.user?.email,
           "provider_token present:", !!session?.provider_token,
           "user identities:", JSON.stringify(session?.user?.identities),

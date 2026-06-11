@@ -716,15 +716,11 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     };
 
     const lookup = async () => {
-      // Only sign out if there is no current session — never kick out an employee
-      // who just signed in, even if the URL still contains an invite code.
+      // If the user already has a session, skip invite processing — they're registered.
+      // Never call signOut() here: Supabase fires the SIGNED_OUT event asynchronously,
+      // which can race with a SIGNED_IN that follows, killing the just-created session.
       const { data: { session: existingSession } } = await supabase.auth.getSession();
-      if (!existingSession) {
-        supabase.auth.signOut().catch(() => {});
-      } else {
-        // Already signed in — no need to process invite registration
-        return;
-      }
+      if (existingSession) return;
 
       // 1. Try Supabase first — works from any browser/device
       try {
