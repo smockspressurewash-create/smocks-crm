@@ -659,12 +659,13 @@ function OwnerTeamPortal({ jobs, employees, customers, onClose }: {
   );
 }
 
-export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, employees, customers, settings, toast, isOwnerView = false, onClose = () => {} }: {
+export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, employees, customers, settings, toast, isOwnerView = false, onClose = () => {}, refetchEmployees }: {
   empSession: any; setEmpSession: (s: any) => void;
   jobs: Job[]; setJobs: (fn: (prev: Job[]) => Job[]) => void;
   employees: Employee[]; customers: Customer[];
   settings: AppSettings; toast: (msg: string, tone?: any) => void;
   isOwnerView?: boolean; onClose?: () => void;
+  refetchEmployees?: () => Promise<void>;
 }) {
   const [tab, setTab] = useState<"today" | "calendar" | "jobs" | "pay" | "google">("today");
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
@@ -688,6 +689,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   // Locally-resolved employee when the prop array hasn't re-fetched yet (e.g. after invite registration)
   const [localEmployee, setLocalEmployee] = useState<any>(null);
   const [retrying, setRetrying] = useState(false);
+  const autoRetryDoneRef = useRef(false);
 
   // Capture hash synchronously on first render, before App.tsx's hash-sync effect can strip the invite param
   const capturedHashRef = useRef(window.location.hash);
@@ -764,15 +766,39 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
        null)
     : null;
 
-  // Log whenever the lookup inputs change so we can see if employees is empty on first render
+  // Log whenever the lookup inputs change so we can see if employees is empty on first render.
+  // Also auto-retries once against Supabase when myEmployee isn't found in the prop array.
   useEffect(() => {
     if (!empSession) return;
-    const uid = empSession.user.id;
+    const userId = empSession.user.id;
     const email = empSession.user.email;
     console.log("myEmployee lookup — employees:", JSON.stringify(employees.map(e => ({ id: (e as any).id, email: e.email, user_id: (e as any).user_id }))));
-    console.log("myEmployee lookup — current email:", email, "current userId:", uid);
+    console.log("myEmployee lookup — current email:", email, "current userId:", userId);
     console.log("myEmployee lookup — localEmployee:", JSON.stringify(localEmployee));
     console.log("myEmployee lookup — result:", myEmployee ? `found: ${myEmployee.firstName} ${myEmployee.lastName}` : "NOT FOUND");
+
+    if (!myEmployee && !autoRetryDoneRef.current) {
+      autoRetryDoneRef.current = true;
+      const uid2 = empSession.user.id;
+      const email2 = empSession.user.email || "";
+      // Ask parent to re-fetch from Supabase first (updates the employees prop)
+      const doFetch = async () => {
+        await refetchEmployees?.();
+        // Then query directly in case the prop hasn't re-rendered yet
+        try {
+          const { data: byId } = await (supabase as any)
+            .from("employees").select("*").eq("user_id", uid2).maybeSingle();
+          if (byId) { setLocalEmployee(byId); return; }
+          const { data: byEmail } = await (supabase as any)
+            .from("employees").select("*").ilike("email", email2).maybeSingle();
+          if (byEmail) {
+            await (supabase as any).from("employees").update({ user_id: uid2 }).eq("id", byEmail.id);
+            setLocalEmployee({ ...byEmail, user_id: uid2 });
+          }
+        } catch { /* table may not exist */ }
+      };
+      doFetch();
+    }
   }, [empSession, employees, localEmployee]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Merge owner-set permissions with defaults (all-on for existing employees with no permissions field)
@@ -964,6 +990,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
       setLocalEmployee(newEmp);
     }
 
+    refetchEmployees?.();
     setEmpSession(session);
     toast("Welcome back!");
   };
@@ -1025,6 +1052,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
       // Provide the employee record immediately so myEmployee resolves without waiting for parent re-fetch
       if (linkedEmployee) setLocalEmployee(linkedEmployee);
 
+      refetchEmployees?.();
       setEmpSession(signInData.session);
       toast("Welcome! Account created ✓");
     } else {

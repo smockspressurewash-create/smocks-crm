@@ -394,6 +394,16 @@ export function App() {
     (settings as any).brandFont,
   ]);
 
+  // ── Supabase employees sync ───────────────────────────────────────────────
+  const refetchEmployees = async () => {
+    try {
+      const { data, error } = await (supabase as any).from("employees").select("*");
+      if (!error && Array.isArray(data) && data.length > 0) {
+        setEmployees(data as Employee[]);
+      }
+    } catch { /* employees table may not exist yet */ }
+  };
+
   // ── Supabase Google OAuth / identity-link capture ────────────────────────
   useEffect(() => {
     let sub: { unsubscribe: () => void } | null = null;
@@ -499,6 +509,9 @@ export function App() {
       }
       // Session check complete — safe to render main app or employee portal
       setSessionChecked(true);
+
+      // Load employees from Supabase — overwrites seed/localStorage data if the table has rows
+      refetchEmployees();
     })();
 
     return () => sub?.unsubscribe();
@@ -591,6 +604,7 @@ export function App() {
         toast={toast}
         isOwnerView={!empSession && page === "portal" && !window.location.hash.includes("invite=") && !!settings.googleConnected}
         onClose={() => setPage("dashboard")}
+        refetchEmployees={refetchEmployees}
       />
     );
   }
