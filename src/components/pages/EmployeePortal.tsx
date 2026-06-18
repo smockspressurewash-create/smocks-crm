@@ -318,7 +318,7 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
           <Glass className="p-4 !bg-black/40">
             <div className="flex items-center gap-3">
               <div className="w-10 h-10 rounded-full bg-gradient-to-br from-red-600 to-red-900 flex items-center justify-center font-bold flex-shrink-0">
-                {customer.firstName[0]}
+                {customer.firstName?.[0] || "?"}
               </div>
               <div className="flex-1 min-w-0">
                 <div className="font-semibold">{customer.firstName} {customer.lastName}</div>
@@ -583,7 +583,7 @@ function OwnerTeamPortal({ jobs, employees, customers, onClose }: {
                 <button key={emp.id} onClick={() => setSelectedEmpId(emp.id)}
                   className="p-4 rounded-2xl bg-white/5 border border-white/10 hover:border-red-600/30 text-left transition">
                   <div className="w-10 h-10 rounded-full bg-gradient-to-br from-red-600 to-red-900 flex items-center justify-center font-bold text-sm mb-2">
-                    {emp.firstName[0]}{emp.lastName[0]}
+                    {emp.firstName?.[0] || "?"}{emp.lastName?.[0] || ""}
                   </div>
                   <div className="font-semibold text-sm">{emp.firstName} {emp.lastName}</div>
                   <div className="text-[10px] text-white/40 capitalize mt-0.5">{emp.role}</div>
@@ -691,6 +691,18 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   const [retrying, setRetrying] = useState(false);
   const autoRetryDoneRef = useRef(false);
 
+  // Normalize Supabase snake_case columns to the camelCase Employee shape the rest of the code expects
+  const normalizeEmp = (e: any) => !e ? null : ({
+    ...e,
+    id: e.id || "",
+    firstName: e.firstName || e.first_name || "",
+    lastName: e.lastName || e.last_name || "",
+    role: e.role || "Technician",
+    status: e.status || "active",
+    hourlyRate: e.hourlyRate ?? e.hourly_rate ?? 0,
+    email: e.email || "",
+  });
+
   // Capture hash synchronously on first render, before App.tsx's hash-sync effect can strip the invite param
   const capturedHashRef = useRef(window.location.hash);
 
@@ -788,12 +800,12 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
         try {
           const { data: byId } = await (supabase as any)
             .from("employees").select("*").eq("user_id", uid2).maybeSingle();
-          if (byId) { setLocalEmployee(byId); return; }
+          if (byId) { setLocalEmployee(normalizeEmp(byId)); return; }
           const { data: byEmail } = await (supabase as any)
             .from("employees").select("*").ilike("email", email2).maybeSingle();
           if (byEmail) {
             await (supabase as any).from("employees").update({ user_id: uid2 }).eq("id", byEmail.id);
-            setLocalEmployee({ ...byEmail, user_id: uid2 });
+            setLocalEmployee(normalizeEmp({ ...byEmail, user_id: uid2 }));
           }
         } catch { /* table may not exist */ }
       };
@@ -932,7 +944,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
         }
       }
       console.log("doRetryLink — found:", JSON.stringify(found));
-      if (found) setLocalEmployee(found);
+      if (found) setLocalEmployee(normalizeEmp(found));
       else toast("No employee record found for " + email + ". Ask your manager to add your email.");
     } catch (e) {
       console.error("doRetryLink error:", e);
@@ -987,7 +999,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
       };
       (supabase as any).from("employees").insert(newEmp).then(() => {}).catch(() => {});
       // Set locally so myEmployee resolves immediately without waiting for parent re-fetch
-      setLocalEmployee(newEmp);
+      setLocalEmployee(normalizeEmp(newEmp));
     }
 
     refetchEmployees?.();
@@ -1050,7 +1062,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
       } catch { /* employees table may not have user_id column yet */ }
 
       // Provide the employee record immediately so myEmployee resolves without waiting for parent re-fetch
-      if (linkedEmployee) setLocalEmployee(linkedEmployee);
+      if (linkedEmployee) setLocalEmployee(normalizeEmp(linkedEmployee));
 
       refetchEmployees?.();
       setEmpSession(signInData.session);
@@ -1313,7 +1325,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
             <div className="text-[10px] text-white/40 capitalize leading-tight">{myEmployee.role}</div>
           </div>
           <div className="w-8 h-8 rounded-full bg-gradient-to-br from-red-700/60 to-red-900/60 border border-red-700/30 flex items-center justify-center text-xs font-bold flex-shrink-0">
-            {myEmployee.firstName[0]}{myEmployee.lastName[0]}
+            {myEmployee.firstName?.[0] || "?"}{myEmployee.lastName?.[0] || ""}
           </div>
           <button onClick={doSignOut} className="p-2 rounded-xl hover:bg-white/10 text-white/40 hover:text-white transition flex-shrink-0" title="Sign out">
             <LogOut size={16} />

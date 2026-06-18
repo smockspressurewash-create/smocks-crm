@@ -395,11 +395,23 @@ export function App() {
   ]);
 
   // ── Supabase employees sync ───────────────────────────────────────────────
+  // Normalizes snake_case Supabase columns to the camelCase Employee type the app expects.
+  const normalizeEmployee = (e: any): Employee => ({
+    ...e,
+    id: e.id || e.user_id || "",
+    firstName: e.firstName || e.first_name || "",
+    lastName: e.lastName || e.last_name || "",
+    role: e.role || "Technician",
+    status: e.status || "active",
+    hourlyRate: e.hourlyRate ?? e.hourly_rate ?? 0,
+    email: e.email || "",
+  });
+
   const refetchEmployees = async () => {
     try {
       const { data, error } = await (supabase as any).from("employees").select("*");
       if (!error && Array.isArray(data) && data.length > 0) {
-        setEmployees(data as Employee[]);
+        setEmployees(data.map(normalizeEmployee) as Employee[]);
       }
     } catch { /* employees table may not exist yet */ }
   };
@@ -466,6 +478,7 @@ export function App() {
 
         if (isEmployee) {
           setEmpSession(session);
+          setPage("portal");
           setOauthProcessing(false);
           return;
         }
