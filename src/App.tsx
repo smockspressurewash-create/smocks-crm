@@ -511,6 +511,7 @@ export function App() {
       const initEmpRole = initial?.user?.user_metadata?.role;
       if (initial && !initIsGoogle && (initEmpRole === "technician" || initEmpRole === "manager" || !initEmpRole)) {
         setEmpSession(initial);
+        setPage("portal");
         setOauthProcessing(false);
       } else {
         applyGoogleIdentity(initial);

@@ -308,7 +308,7 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
           (job.status === "completed" ? "bg-green-900/40 text-green-300" :
            job.status === "in_progress" ? "bg-yellow-900/40 text-yellow-300" :
            "bg-blue-900/40 text-blue-300")}>
-          {job.status.replace("_", " ")}
+          {(job.status || "").replace("_", " ")}
         </div>
       </div>
 
@@ -619,7 +619,7 @@ function OwnerTeamPortal({ jobs, employees, customers, onClose }: {
                         (j.status === "completed" ? "bg-green-900/40 text-green-300" :
                          j.status === "in_progress" ? "bg-yellow-900/40 text-yellow-300" :
                          "bg-blue-900/40 text-blue-300")}>
-                        {j.status.replace("_", " ")}
+                        {(j.status || "").replace("_", " ")}
                       </div>
                     </div>
                     <div className="text-xs text-white/40 mt-1">{j.scheduledTime || "All day"}</div>
@@ -1244,7 +1244,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
               (job.status === "completed" ? "bg-green-900/40 text-green-300" :
                job.status === "in_progress" ? "bg-yellow-900/40 text-yellow-300" :
                "bg-blue-900/40 text-blue-300")}>
-              {job.status.replace("_", " ")}
+              {(job.status || "").replace("_", " ")}
             </div>
           </div>
           <div className="text-xs text-white/40">
