@@ -669,7 +669,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
 }) {
   const [tab, setTab] = useState<"today" | "calendar" | "jobs" | "pay" | "google">("today");
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
-  const [calMode, setCalMode] = useState<"week" | "month">("week");
+  const [calMode, setCalMode] = useState<"week" | "month">("month");
   const [calSelectedDate, setCalSelectedDate] = useState(today());
   const [calWeekOffset, setCalWeekOffset] = useState(0);
   const [calMonthOffset, setCalMonthOffset] = useState(0);
@@ -1198,6 +1198,17 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   // ── Portal ────────────────────────────────────────────────────────────────
   const role = empSession.user.user_metadata?.role || "technician";
 
+  const toGCalUrl = (job: Job) => {
+    const d = job.scheduledDate.replace(/-/g, "");
+    const next = new Date(job.scheduledDate + "T12:00:00");
+    next.setDate(next.getDate() + 1);
+    const e = next.toISOString().slice(0, 10).replace(/-/g, "");
+    const title = encodeURIComponent(`Pressure Wash: ${job.address}`);
+    const loc = encodeURIComponent(job.address);
+    const notes = encodeURIComponent(job.notes || "");
+    return `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${title}&dates=${d}/${e}&location=${loc}&details=${notes}`;
+  };
+
   const JobCard = ({ job }: { job: Job }) => {
     const customer = customers.find(c => c.id === job.customerId);
     const preItems = job.preChecklist?.length ? job.preChecklist : PRE_DEFAULTS;
@@ -1512,21 +1523,33 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                         {calDayJobs.map(j => {
                           const c = customers.find(x => x.id === j.customerId);
                           return (
-                            <button key={j.id} onClick={() => setSelectedJobId(j.id)}
-                              className="w-full text-left p-3 rounded-xl bg-white/5 border border-white/10 hover:bg-white/8 hover:border-red-600/20 transition">
-                              <div className="flex items-start justify-between gap-2">
-                                <div className="flex-1 min-w-0">
-                                  <div className="font-semibold text-sm truncate">{j.address}</div>
-                                  {c && <div className="text-xs text-white/50">{c.firstName} {c.lastName}</div>}
+                            <div key={j.id} className="rounded-xl bg-white/5 border border-white/10 overflow-hidden">
+                              <button onClick={() => setSelectedJobId(j.id)} className="w-full text-left p-3">
+                                <div className="flex items-start justify-between gap-2">
+                                  <div className="flex-1 min-w-0">
+                                    <div className="font-semibold text-sm truncate">{j.address}</div>
+                                    {c && <div className="text-xs text-white/50">{c.firstName} {c.lastName}</div>}
+                                  </div>
+                                  <div className={`text-[10px] px-2 py-0.5 rounded-full font-bold uppercase flex-shrink-0 ${
+                                    j.status === "completed" ? "bg-green-900/40 text-green-300" :
+                                    j.status === "in_progress" ? "bg-yellow-900/40 text-yellow-300" :
+                                    "bg-blue-900/40 text-blue-300"
+                                  }`}>{(j.status || "").replace("_", " ")}</div>
                                 </div>
-                                <div className={`text-[10px] px-2 py-0.5 rounded-full font-bold uppercase flex-shrink-0 ${
-                                  j.status === "completed" ? "bg-green-900/40 text-green-300" :
-                                  j.status === "in_progress" ? "bg-yellow-900/40 text-yellow-300" :
-                                  "bg-blue-900/40 text-blue-300"
-                                }`}>{j.status.replace("_", " ")}</div>
+                                {j.scheduledTime && <div className="text-xs text-white/40 mt-1">🕐 {j.scheduledTime}</div>}
+                              </button>
+                              <div className="px-3 pb-2 flex items-center gap-3 border-t border-white/5 pt-2">
+                                <a href={`https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(j.address)}`}
+                                  target="_blank" rel="noreferrer"
+                                  className="text-[10px] text-blue-400/70 hover:text-blue-300 flex items-center gap-1 transition">
+                                  <Navigation size={9} />Directions
+                                </a>
+                                <a href={toGCalUrl(j)} target="_blank" rel="noreferrer"
+                                  className="text-[10px] text-green-400/70 hover:text-green-300 flex items-center gap-1 transition">
+                                  <Calendar size={9} />Add to Google Cal
+                                </a>
                               </div>
-                              {j.scheduledTime && <div className="text-xs text-white/40 mt-1">🕐 {j.scheduledTime}</div>}
-                            </button>
+                            </div>
                           );
                         })}
                       </div>
@@ -1587,12 +1610,33 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                         {calDayJobs.map(j => {
                           const c = customers.find(x => x.id === j.customerId);
                           return (
-                            <button key={j.id} onClick={() => setSelectedJobId(j.id)}
-                              className="w-full text-left p-3 rounded-xl bg-white/5 border border-white/10 hover:bg-white/8 transition">
-                              <div className="font-semibold text-sm truncate">{j.address}</div>
-                              {c && <div className="text-xs text-white/50">{c.firstName} {c.lastName}</div>}
-                              {j.scheduledTime && <div className="text-xs text-white/40 mt-0.5">🕐 {j.scheduledTime}</div>}
-                            </button>
+                            <div key={j.id} className="rounded-xl bg-white/5 border border-white/10 overflow-hidden">
+                              <button onClick={() => setSelectedJobId(j.id)} className="w-full text-left p-3">
+                                <div className="flex items-start justify-between gap-2">
+                                  <div className="flex-1 min-w-0">
+                                    <div className="font-semibold text-sm truncate">{j.address}</div>
+                                    {c && <div className="text-xs text-white/50">{c.firstName} {c.lastName}</div>}
+                                  </div>
+                                  <div className={`text-[10px] px-2 py-0.5 rounded-full font-bold uppercase flex-shrink-0 ${
+                                    j.status === "completed" ? "bg-green-900/40 text-green-300" :
+                                    j.status === "in_progress" ? "bg-yellow-900/40 text-yellow-300" :
+                                    "bg-blue-900/40 text-blue-300"
+                                  }`}>{(j.status || "").replace("_", " ")}</div>
+                                </div>
+                                {j.scheduledTime && <div className="text-xs text-white/40 mt-0.5">🕐 {j.scheduledTime}</div>}
+                              </button>
+                              <div className="px-3 pb-2 flex items-center gap-3 border-t border-white/5 pt-2">
+                                <a href={`https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(j.address)}`}
+                                  target="_blank" rel="noreferrer"
+                                  className="text-[10px] text-blue-400/70 hover:text-blue-300 flex items-center gap-1 transition">
+                                  <Navigation size={9} />Directions
+                                </a>
+                                <a href={toGCalUrl(j)} target="_blank" rel="noreferrer"
+                                  className="text-[10px] text-green-400/70 hover:text-green-300 flex items-center gap-1 transition">
+                                  <Calendar size={9} />Add to Google Cal
+                                </a>
+                              </div>
+                            </div>
                           );
                         })}
                       </div>
@@ -1702,27 +1746,78 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
               </>
             );
           })()}
-          {/* Google tab — each employee uses their own Google connection */}
-          {tab === "google" && (
-            <div className="space-y-4">
-              <Glass className="p-5 !bg-black/40 text-center">
-                <Database size={32} className="mx-auto mb-3 text-blue-400/60" />
-                <div className="font-semibold text-base mb-1">Google Workspace</div>
-                <div className="text-sm text-white/50 mb-4 leading-relaxed">
-                  Connect <span className="text-white font-medium">your own</span> Google account to access your Gmail, Calendar, Drive, and Tasks — separate from your employer's account.
+          {/* Google tab */}
+          {tab === "google" && (() => {
+            const upcomingForCal = myJobs
+              .filter(j => j.scheduledDate >= todayStr && j.status !== "completed")
+              .sort((a, b) => {
+                const da = a.scheduledDate + (a.scheduledTime || "23:59");
+                const db = b.scheduledDate + (b.scheduledTime || "23:59");
+                return da.localeCompare(db);
+              })
+              .slice(0, 20);
+            return (
+              <div className="space-y-4">
+                {/* Header card */}
+                <Glass className="p-4 !bg-black/40 flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-blue-600/30 to-blue-900/30 border border-blue-700/30 flex items-center justify-center flex-shrink-0">
+                    <Calendar size={18} className="text-blue-400" />
+                  </div>
+                  <div>
+                    <div className="font-semibold text-sm">Google Calendar Sync</div>
+                    <div className="text-xs text-white/40 mt-0.5">Add your upcoming jobs to Google Calendar</div>
+                  </div>
+                </Glass>
+
+                {/* Upcoming jobs to add */}
+                {upcomingForCal.length === 0 ? (
+                  <div className="text-center py-10 text-white/30">
+                    <Calendar size={32} className="mx-auto mb-2 opacity-30" />
+                    <div>No upcoming jobs to sync</div>
+                  </div>
+                ) : (
+                  <>
+                    <div className="text-xs text-white/50 uppercase tracking-wider font-semibold">Upcoming Jobs</div>
+                    <div className="space-y-2">
+                      {upcomingForCal.map(j => {
+                        const c = customers.find(x => x.id === j.customerId);
+                        return (
+                          <Glass key={j.id} className="p-3 !bg-black/40">
+                            <div className="flex items-start justify-between gap-2">
+                              <div className="flex-1 min-w-0">
+                                <div className="font-semibold text-sm truncate">{j.address}</div>
+                                {c && <div className="text-xs text-white/40">{c.firstName} {c.lastName}</div>}
+                                <div className="text-xs text-white/30 mt-0.5">
+                                  {j.scheduledDate}{j.scheduledTime ? " · " + j.scheduledTime : ""}
+                                </div>
+                              </div>
+                              <a
+                                href={toGCalUrl(j)}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-blue-950/40 hover:bg-blue-900/50 border border-blue-700/30 text-blue-300 text-[10px] font-semibold transition flex-shrink-0"
+                              >
+                                <Plus size={10} />Add
+                              </a>
+                            </div>
+                          </Glass>
+                        );
+                      })}
+                    </div>
+                    <div className="text-[10px] text-white/20 text-center pt-1">
+                      Tapping "Add" opens Google Calendar — log in with your personal Google account to save the event.
+                    </div>
+                  </>
+                )}
+
+                {/* Privacy note */}
+                <div className="p-3 rounded-xl bg-yellow-950/20 border border-yellow-700/20 text-xs text-yellow-200/60 flex items-start gap-2">
+                  <Shield size={12} className="flex-shrink-0 mt-0.5" />
+                  <span>Your personal Google account is private. Employers cannot see your personal Gmail or Calendar events.</span>
                 </div>
-                <div className="p-3 rounded-xl bg-yellow-950/30 border border-yellow-700/30 text-xs text-yellow-200/70 text-left mb-4">
-                  Your Google data is always private. Employers cannot see your personal Gmail or Calendar events. Only your assigned CRM jobs appear in the team calendar.
-                </div>
-                <button
-                  onClick={() => toast("Google connection for employee accounts coming soon! Ask your manager for details.", "yellow")}
-                  className="w-full py-2.5 rounded-xl bg-gradient-to-r from-blue-700 to-blue-900 text-white text-sm font-semibold hover:from-blue-600 hover:to-blue-800 transition"
-                >
-                  Connect My Google Account
-                </button>
-              </Glass>
-            </div>
-          )}
+              </div>
+            );
+          })()}
 
         </div>
       </main>
