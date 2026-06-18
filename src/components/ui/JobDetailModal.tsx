@@ -30,6 +30,7 @@ import { createCalendarEvent, updateCalendarEvent, deleteCalendarEvent, fetchDri
 import { createGCalEvent as createGCalEventApi, updateGCalEvent as updateGCalEventApi } from "../../lib/googleApi";
 import { usePersistent } from "../../hooks/usePersistent";
 import { usePersistentRaw } from "../../hooks/usePersistentRaw";
+import { supabase } from "../../lib/supabase";
 import { Glass } from "./Glass";
 import { GBtn } from "./GBtn";
 import { GInput } from "./GInput";
@@ -159,6 +160,10 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
   const [signerName, setSignerName] = useState("");
   const [gSyncing, setGSyncing] = useState(false);
   const [notifying, setNotifying] = useState(false);
+  const [showRequestForm, setShowRequestForm] = useState(false);
+  const [requestEmpId, setRequestEmpId] = useState("");
+  const [requestMsg, setRequestMsg] = useState("");
+  const [requestSending, setRequestSending] = useState(false);
 
   // Live timer tick while clock is running
   useEffect(() => {
@@ -196,6 +201,55 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
     setNotifying(false);
     toast(sent > 0 ? `Notified ${sent} crew member${sent !== 1 ? "s" : ""} ✓` : "Email send failed — check Resend settings", sent > 0 ? "green" : "red");
   };
+
+  const sendJobRequest = async () => {
+    const emp = employees.find(e => e.id === requestEmpId);
+    if (!emp) return;
+    setRequestSending(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const { data, error } = await (supabase as any).from("job_requests").insert({
+        job_id: jobId,
+        employee_id: requestEmpId,
+        owner_id: session?.user?.id,
+        status: "pending",
+        message: requestMsg.trim() || null,
+      }).select("id").single();
+      if (!error && data) {
+        if (emp.email) {
+          const reqUrl = `${window.location.origin}${window.location.pathname}#/portal?request=${data.id}`;
+          const cust = customers.find((x: any) => x.id === job.customerId);
+          try {
+            await sendEmail(settings, {
+              to: emp.email,
+              subject: `Job Request — ${job.scheduledDate}`,
+              body: `<p>Hi ${emp.firstName},</p><p>${requestMsg || "You have a new job request:"}</p>
+                <ul>
+                  <li><b>Date:</b> ${job.scheduledDate}${job.scheduledTime ? " at " + job.scheduledTime : ""}</li>
+                  <li><b>Address:</b> ${job.address}</li>
+                  ${cust ? `<li><b>Customer:</b> ${cust.firstName} ${cust.lastName}</li>` : ""}
+                  ${job.amount ? `<li><b>Amount:</b> $${job.amount}</li>` : ""}
+                </ul>
+                <p style="margin-top:16px">
+                  <a href="${reqUrl}" style="background:#16a34a;color:white;padding:12px 20px;border-radius:6px;text-decoration:none;margin-right:8px">✓ Accept Job</a>
+                  <a href="${reqUrl}&action=deny" style="background:#dc2626;color:white;padding:12px 20px;border-radius:6px;text-decoration:none">✗ Decline</a>
+                </p>`,
+            });
+          } catch { /* email optional */ }
+        }
+        toast(`Request sent to ${emp.firstName} ✓`, "green");
+        setShowRequestForm(false);
+        setRequestMsg("");
+        setRequestEmpId("");
+      } else {
+        toast("Request failed — run the job_requests SQL in Supabase first", "red");
+      }
+    } catch {
+      toast("Error sending request", "red");
+    }
+    setRequestSending(false);
+  };
+
   const toggleEquip = eq => {
     const list = job.equipment || [];
     updateJob(jobId, { equipment: list.includes(eq) ? list.filter(x => x !== eq) : [...list, eq] });
@@ -434,12 +488,18 @@ ${job.notes ? `<div class="section"><h2>Job Notes</h2><p>${job.notes}</p></div>`
         <div>
           <div className="flex items-center justify-between mb-1">
             <label className="text-xs text-white/60 flex items-center gap-1"><Users size={10} />Crew</label>
-            {(job.crew || []).length > 0 && (
-              <button onClick={notifyCrew} disabled={notifying}
-                className="text-[10px] flex items-center gap-1 px-2 py-1 rounded-lg bg-blue-950/40 hover:bg-blue-900/50 border border-blue-700/30 text-blue-400 hover:text-blue-300 transition disabled:opacity-50">
-                <Mail size={9} />{notifying ? "Sending…" : "Notify Crew"}
+            <div className="flex items-center gap-1.5">
+              {(job.crew || []).length > 0 && (
+                <button onClick={notifyCrew} disabled={notifying}
+                  className="text-[10px] flex items-center gap-1 px-2 py-1 rounded-lg bg-blue-950/40 hover:bg-blue-900/50 border border-blue-700/30 text-blue-400 hover:text-blue-300 transition disabled:opacity-50">
+                  <Mail size={9} />{notifying ? "Sending…" : "Notify"}
+                </button>
+              )}
+              <button onClick={() => setShowRequestForm(s => !s)}
+                className="text-[10px] flex items-center gap-1 px-2 py-1 rounded-lg bg-yellow-950/40 hover:bg-yellow-900/50 border border-yellow-700/30 text-yellow-400 hover:text-yellow-300 transition">
+                <Send size={9} />Request
               </button>
-            )}
+            </div>
           </div>
           <div className="flex gap-2 flex-wrap">
             {employees.filter(e => e.status === "active").map(e => {
@@ -447,6 +507,41 @@ ${job.notes ? `<div class="section"><h2>Job Notes</h2><p>${job.notes}</p></div>`
               return <button key={e.id} onClick={() => toggleCrew(e.id)} className={"text-xs px-3 py-1.5 rounded-lg border transition " + (sel ? "bg-red-900/40 border-red-500/50 text-red-300" : "bg-white/5 border-white/10 text-white/60 hover:text-white")}>{e.firstName} {e.lastName[0]}.</button>;
             })}
           </div>
+          {showRequestForm && (
+            <div className="mt-3 p-3 rounded-xl bg-yellow-950/20 border border-yellow-700/30 space-y-2">
+              <div className="text-xs text-yellow-300 font-semibold">Request an Employee for This Job</div>
+              <select value={requestEmpId} onChange={e => setRequestEmpId(e.target.value)}
+                className="w-full bg-black/60 border border-white/20 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-yellow-500/50">
+                <option value="">Select employee…</option>
+                {employees.filter(e => e.status === "active").map(e => (
+                  <option key={e.id} value={e.id}>{e.firstName} {e.lastName}</option>
+                ))}
+              </select>
+              {requestEmpId && (() => {
+                const emp = employees.find(e => e.id === requestEmpId);
+                const av: string[] = (emp as any)?.availability || [];
+                const isUnavail = job.scheduledDate && av.includes(job.scheduledDate);
+                return isUnavail ? (
+                  <div className="text-[10px] text-orange-300 bg-orange-950/30 border border-orange-700/30 rounded-lg px-2 py-1.5">
+                    ⚠ {emp?.firstName} marked {job.scheduledDate} as unavailable. You can still request them.
+                  </div>
+                ) : null;
+              })()}
+              <textarea value={requestMsg} onChange={e => setRequestMsg(e.target.value)}
+                placeholder="Message to employee (optional)…" rows={2}
+                className="w-full bg-black/60 border border-white/20 rounded-lg px-3 py-2 text-xs text-white placeholder-white/30 focus:outline-none focus:border-yellow-500/50 resize-none" />
+              <div className="flex gap-2">
+                <button onClick={sendJobRequest} disabled={!requestEmpId || requestSending}
+                  className="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg bg-yellow-600 hover:bg-yellow-500 disabled:opacity-40 text-black text-xs font-bold transition">
+                  <Send size={11} />{requestSending ? "Sending…" : "Send Request"}
+                </button>
+                <button onClick={() => setShowRequestForm(false)}
+                  className="px-3 py-2 rounded-lg bg-white/5 hover:bg-white/10 text-white/60 text-xs transition">
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Equipment */}

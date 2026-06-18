@@ -690,6 +690,18 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   const [localEmployee, setLocalEmployee] = useState<any>(null);
   const [retrying, setRetrying] = useState(false);
   const autoRetryDoneRef = useRef(false);
+  // Job request system
+  const [requestId, setRequestId] = useState<string | null>(null);
+  const [requestData, setRequestData] = useState<any>(null);
+  const [requestLoading, setRequestLoading] = useState(false);
+  const [showDenyForm, setShowDenyForm] = useState(false);
+  const [denyReason, setDenyReason] = useState("");
+  const [requestDone, setRequestDone] = useState<string | null>(null);
+  // Employee availability
+  const [availability, setAvailability] = useState<string[]>([]);
+  const [showAvailability, setShowAvailability] = useState(false);
+  // Login extras
+  const [forgotSent, setForgotSent] = useState(false);
 
   // Normalize Supabase snake_case columns to the camelCase Employee shape the rest of the code expects
   const normalizeEmp = (e: any) => !e ? null : ({
@@ -771,6 +783,13 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     lookup();
   }, []);
 
+  // Parse job request ID from URL hash (#/portal?request=UUID)
+  useEffect(() => {
+    const hash = capturedHashRef.current;
+    const match = hash.match(/[?&]request=([a-f0-9-]{36})/i);
+    if (match) setRequestId(match[1]);
+  }, []);
+
   const myEmployee = empSession
     ? (employees.find(e => (e as any).user_id === empSession.user.id) ||
        employees.find(e => e.email?.toLowerCase() === empSession.user.email?.toLowerCase()) ||
@@ -812,6 +831,28 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
       doFetch();
     }
   }, [empSession, employees, localEmployee]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Fetch job request data when employee logs in
+  useEffect(() => {
+    if (!requestId || !empSession) return;
+    const load = async () => {
+      setRequestLoading(true);
+      try {
+        const { data } = await (supabase as any)
+          .from("job_requests").select("*").eq("id", requestId).maybeSingle();
+        setRequestData(data);
+      } catch { /* table may not exist */ }
+      setRequestLoading(false);
+    };
+    load();
+  }, [requestId, empSession?.user?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Load availability from employee record
+  useEffect(() => {
+    if (!myEmployee) return;
+    const av = (myEmployee as any).availability;
+    if (Array.isArray(av) && av.length > 0) setAvailability(av);
+  }, [(myEmployee as any)?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Merge owner-set permissions with defaults (all-on for existing employees with no permissions field)
   const perms: Record<string, boolean> = { ...DEFAULT_PERMISSIONS, ...((myEmployee as any)?.permissions || {}) };
@@ -950,6 +991,61 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
       console.error("doRetryLink error:", e);
     }
     setRetrying(false);
+  };
+
+  const doForgotPassword = async () => {
+    if (!loginEmail.trim()) { setLoginError("Enter your email first"); return; }
+    try {
+      await supabase.auth.resetPasswordForEmail(loginEmail.trim(), {
+        redirectTo: `${window.location.origin}${window.location.pathname}#/reset-password`,
+      });
+      setForgotSent(true);
+    } catch { setLoginError("Could not send reset email"); }
+  };
+
+  const handleAcceptRequest = async () => {
+    if (!requestData || !myEmployee) return;
+    try {
+      await (supabase as any).from("job_requests")
+        .update({ status: "accepted", responded_at: new Date().toISOString() })
+        .eq("id", requestId);
+      if (requestData.job_id) {
+        setJobs(prev => prev.map(j =>
+          j.id === requestData.job_id && !(j.crew || []).includes(myEmployee.id)
+            ? { ...j, crew: [...(j.crew || []), myEmployee.id] }
+            : j
+        ));
+      }
+      setRequestDone("accepted");
+      toast("Job accepted! You're on the crew. ✓");
+    } catch {
+      toast("Error accepting request", "red");
+    }
+  };
+
+  const handleDenyRequest = async () => {
+    try {
+      await (supabase as any).from("job_requests")
+        .update({ status: "denied", denial_reason: denyReason.trim(), responded_at: new Date().toISOString() })
+        .eq("id", requestId);
+      setRequestDone("denied");
+      toast("Request declined.");
+    } catch {
+      toast("Error declining request", "red");
+    }
+  };
+
+  const toggleAvailability = async (dateStr: string) => {
+    const next = availability.includes(dateStr)
+      ? availability.filter(d => d !== dateStr)
+      : [...availability, dateStr];
+    setAvailability(next);
+    try {
+      const empId = (myEmployee as any)?.id || (myEmployee as any)?.user_id;
+      if (empId) {
+        await (supabase as any).from("employees").update({ availability: next }).eq("id", empId);
+      }
+    } catch { /* ignore */ }
   };
 
   const doLogin = async () => {
@@ -1141,7 +1237,19 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
               className="w-full !justify-center !py-3">
               {loginLoading ? "Please wait…" : loginMode === "login" ? "Sign In" : "Create Account"}
             </GBtn>
-            <button onClick={() => { setLoginMode(m => m === "login" ? "register" : "login"); setLoginError(""); }}
+            {loginMode === "login" && (
+              forgotSent ? (
+                <div className="text-center text-sm text-green-400 py-1">
+                  ✓ Password reset email sent — check your inbox.
+                </div>
+              ) : (
+                <button onClick={doForgotPassword}
+                  className="w-full text-center text-xs text-white/30 hover:text-white/60 transition py-1">
+                  Forgot password?
+                </button>
+              )
+            )}
+            <button onClick={() => { setLoginMode(m => m === "login" ? "register" : "login"); setLoginError(""); setForgotSent(false); }}
               className="w-full text-center text-sm text-white/40 hover:text-white/70 transition">
               {loginMode === "login" ? "New here? Create an account →" : "← Back to sign in"}
             </button>
@@ -1171,6 +1279,138 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
           <GBtn onClick={doSignOut} variant="ghost" className="w-full justify-center">
             <LogOut size={14} className="inline mr-1.5" />Sign Out
           </GBtn>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Job Request Page ──────────────────────────────────────────────────────
+  if (requestId && empSession && myEmployee) {
+    if (requestDone) {
+      const reqJob = requestData ? jobs.find(j => j.id === requestData.job_id) : null;
+      return (
+        <div className="min-h-screen bg-black text-white flex flex-col items-center justify-center p-6 text-center">
+          <CheckCircle size={52} className={(requestDone === "accepted" ? "text-green-400" : "text-white/30") + " mb-4"} />
+          <div className="text-xl font-bold mb-2">
+            {requestDone === "accepted" ? "Job Accepted!" : "Request Declined"}
+          </div>
+          {requestDone === "accepted" && reqJob && (
+            <div className="text-sm text-white/60 mb-1">
+              {reqJob.scheduledDate}{reqJob.scheduledTime ? " at " + reqJob.scheduledTime : ""}
+            </div>
+          )}
+          <div className="text-sm text-white/50 mb-8 max-w-xs">
+            {requestDone === "accepted"
+              ? "You've been added to the crew. The job appears in your schedule."
+              : "The owner has been notified. You can update your availability in the Calendar tab."}
+          </div>
+          <GBtn onClick={() => { setRequestId(null); setRequestDone(null); }}>Go to My Portal</GBtn>
+        </div>
+      );
+    }
+    if (requestLoading) {
+      return (
+        <div className="min-h-screen bg-black flex items-center justify-center">
+          <div className="w-8 h-8 border-2 border-red-600 border-t-transparent rounded-full animate-spin" />
+        </div>
+      );
+    }
+    if (!requestData) {
+      return (
+        <div className="min-h-screen bg-black text-white flex flex-col items-center justify-center p-6 text-center">
+          <AlertCircle size={40} className="text-red-400 mb-4" />
+          <div className="text-lg font-bold mb-2">Request Not Found</div>
+          <div className="text-sm text-white/50 mb-6">This link may have expired or already been used.</div>
+          <GBtn onClick={() => setRequestId(null)} variant="ghost">Go to Portal</GBtn>
+        </div>
+      );
+    }
+    if (requestData.status !== "pending") {
+      return (
+        <div className="min-h-screen bg-black text-white flex flex-col items-center justify-center p-6 text-center">
+          <CheckCircle size={40} className={(requestData.status === "accepted" ? "text-green-400" : "text-red-400") + " mb-4"} />
+          <div className="text-lg font-bold mb-2 capitalize">Already {requestData.status}</div>
+          <div className="text-sm text-white/50 mb-6">You already responded to this job request.</div>
+          <GBtn onClick={() => setRequestId(null)} variant="ghost">Go to Portal</GBtn>
+        </div>
+      );
+    }
+    const reqJob = jobs.find(j => j.id === requestData.job_id);
+    const reqCustomer = reqJob ? customers.find(c => c.id === reqJob.customerId) : null;
+    return (
+      <div className="min-h-screen bg-black text-white flex flex-col">
+        <header className="sticky top-0 z-20 bg-black/95 border-b border-red-900/30 px-4 py-3">
+          <div className="font-semibold text-center">Job Request</div>
+        </header>
+        <div className="flex-1 overflow-y-auto p-4 max-w-lg mx-auto space-y-4">
+          <Glass className="p-5 !bg-blue-950/20 !border-blue-700/30">
+            <div className="text-xs text-blue-300 uppercase tracking-wider font-semibold mb-3">
+              You've been requested for a job
+            </div>
+            <div className="space-y-2.5">
+              {reqJob && (
+                <>
+                  <div className="flex items-start gap-2 text-sm">
+                    <MapPin size={14} className="text-white/40 flex-shrink-0 mt-0.5" />
+                    <span className="font-semibold">{reqJob.address}</span>
+                  </div>
+                  <div className="flex items-center gap-2 text-sm">
+                    <Calendar size={14} className="text-white/40 flex-shrink-0" />
+                    <span>{reqJob.scheduledDate}{reqJob.scheduledTime ? " at " + reqJob.scheduledTime : ""}</span>
+                  </div>
+                </>
+              )}
+              {reqCustomer && (
+                <div className="flex items-center gap-2 text-sm">
+                  <User size={14} className="text-white/40 flex-shrink-0" />
+                  <span>{reqCustomer.firstName} {reqCustomer.lastName}</span>
+                </div>
+              )}
+              {reqJob && reqJob.amount > 0 && (
+                <div className="flex items-center gap-2 text-sm">
+                  <DollarSign size={14} className="text-white/40 flex-shrink-0" />
+                  <span className="text-green-400 font-semibold">{fmt(reqJob.amount)}</span>
+                </div>
+              )}
+            </div>
+            {requestData.message && (
+              <div className="mt-4 p-3 rounded-xl bg-white/5 text-sm text-white/70 italic border border-white/10">
+                "{requestData.message}"
+              </div>
+            )}
+          </Glass>
+
+          {showDenyForm ? (
+            <div className="space-y-3">
+              <div className="text-sm text-white/60">Reason for declining (optional):</div>
+              <GTxt rows={3} value={denyReason} onChange={e => setDenyReason(e.target.value)}
+                placeholder="e.g. Already booked, unavailable that day…" />
+              <div className="flex gap-3">
+                <GBtn variant="danger" onClick={handleDenyRequest} className="flex-1 !justify-center">
+                  Confirm Decline
+                </GBtn>
+                <GBtn variant="ghost" onClick={() => setShowDenyForm(false)} className="!px-4">
+                  Cancel
+                </GBtn>
+              </div>
+            </div>
+          ) : (
+            <div className="flex gap-3">
+              <GBtn onClick={handleAcceptRequest}
+                className="flex-1 !justify-center !py-3.5 !bg-gradient-to-r !from-green-700 !to-green-900 !border-green-600/50">
+                <CheckCircle size={16} />Accept Job
+              </GBtn>
+              <GBtn variant="danger" onClick={() => setShowDenyForm(true)}
+                className="flex-1 !justify-center !py-3.5">
+                <X size={16} />Decline
+              </GBtn>
+            </div>
+          )}
+
+          <button onClick={() => setRequestId(null)}
+            className="w-full text-center text-xs text-white/30 hover:text-white/60 transition py-2">
+            Skip — go to portal
+          </button>
         </div>
       </div>
     );
@@ -1461,17 +1701,29 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
 
             return (
               <>
-                {/* Week / Month toggle */}
-                <div className="flex bg-white/5 rounded-xl p-1 mb-3">
-                  <button onClick={() => setCalMode("week")}
-                    className={`flex-1 py-1.5 text-xs font-semibold rounded-lg transition ${calMode === "week" ? "bg-red-600 text-white" : "text-white/50 hover:text-white"}`}>
-                    Week
-                  </button>
-                  <button onClick={() => setCalMode("month")}
-                    className={`flex-1 py-1.5 text-xs font-semibold rounded-lg transition ${calMode === "month" ? "bg-red-600 text-white" : "text-white/50 hover:text-white"}`}>
-                    Month
+                {/* Week / Month toggle + Availability */}
+                <div className="flex items-center gap-2 mb-3">
+                  <div className="flex flex-1 bg-white/5 rounded-xl p-1">
+                    <button onClick={() => setCalMode("week")}
+                      className={`flex-1 py-1.5 text-xs font-semibold rounded-lg transition ${calMode === "week" ? "bg-red-600 text-white" : "text-white/50 hover:text-white"}`}>
+                      Week
+                    </button>
+                    <button onClick={() => setCalMode("month")}
+                      className={`flex-1 py-1.5 text-xs font-semibold rounded-lg transition ${calMode === "month" ? "bg-red-600 text-white" : "text-white/50 hover:text-white"}`}>
+                      Month
+                    </button>
+                  </div>
+                  <button onClick={() => setShowAvailability(v => !v)}
+                    className={`flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-xs font-semibold border transition ${showAvailability ? "bg-orange-600/30 border-orange-500/50 text-orange-300" : "bg-white/5 border-white/10 text-white/40 hover:text-white/70"}`}>
+                    <Eye size={12} />{showAvailability ? "Done" : "Availability"}
                   </button>
                 </div>
+                {showAvailability && (
+                  <div className="mb-3 p-2.5 rounded-xl bg-orange-950/20 border border-orange-700/30 text-xs text-orange-200/70">
+                    Tap dates to mark yourself <b>unavailable</b>. Gray dates = blocked. Owner will see these when scheduling.
+                    {availability.length > 0 && <span className="ml-2 text-orange-300">{availability.length} day{availability.length !== 1 ? "s" : ""} blocked</span>}
+                  </div>
+                )}
 
                 {calMode === "week" && (
                   <>
@@ -1494,18 +1746,25 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                         const d = new Date(dateStr + "T12:00:00");
                         const dayJobs = myJobs.filter(j => j.scheduledDate === dateStr);
                         const isToday = dateStr === todayStr;
-                        const isSelected = dateStr === calSelectedDate;
+                        const isSelected = dateStr === calSelectedDate && !showAvailability;
+                        const isUnavail = availability.includes(dateStr);
                         return (
-                          <button key={dateStr} onClick={() => setCalSelectedDate(dateStr)}
-                            className={`flex flex-col items-center py-2 rounded-xl transition ${isSelected ? "bg-red-600" : isToday ? "bg-red-950/40 border border-red-700/30" : "bg-white/5 hover:bg-white/10"}`}>
-                            <div className={`text-[10px] ${isSelected || isToday ? "text-white/80" : "text-white/40"}`}>
+                          <button key={dateStr}
+                            onClick={() => showAvailability ? toggleAvailability(dateStr) : setCalSelectedDate(dateStr)}
+                            className={`flex flex-col items-center py-2 rounded-xl transition ${
+                              isUnavail ? "bg-gray-800/60 border border-gray-600/30" :
+                              isSelected ? "bg-red-600" :
+                              isToday ? "bg-red-950/40 border border-red-700/30" : "bg-white/5 hover:bg-white/10"
+                            }`}>
+                            <div className={`text-[10px] ${isUnavail ? "text-gray-500" : isSelected || isToday ? "text-white/80" : "text-white/40"}`}>
                               {d.toLocaleDateString("en-US", { weekday: "narrow" })}
                             </div>
-                            <div className={`text-sm font-bold leading-tight ${isSelected ? "text-white" : isToday ? "text-red-400" : "text-white/70"}`}>
+                            <div className={`text-sm font-bold leading-tight ${isUnavail ? "text-gray-500" : isSelected ? "text-white" : isToday ? "text-red-400" : "text-white/70"}`}>
                               {d.getDate()}
                             </div>
                             <div className="w-1.5 h-1.5 mt-0.5">
-                              {dayJobs.length > 0 && <div className={`w-1.5 h-1.5 rounded-full ${isSelected ? "bg-white" : "bg-red-400"}`} />}
+                              {isUnavail ? <div className="w-1.5 h-1.5 rounded-full bg-gray-600" /> :
+                               dayJobs.length > 0 && <div className={`w-1.5 h-1.5 rounded-full ${isSelected ? "bg-white" : "bg-red-400"}`} />}
                             </div>
                           </button>
                         );
@@ -1582,18 +1841,26 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                         const dateStr = `${calMonthYear}-${String(calMonthMonth + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
                         const dayJobs = myJobs.filter(j => j.scheduledDate === dateStr);
                         const isToday = dateStr === todayStr;
-                        const isSelected = dateStr === calSelectedDate;
+                        const isSelected = dateStr === calSelectedDate && !showAvailability;
+                        const isUnavail = availability.includes(dateStr);
                         return (
-                          <button key={day} onClick={() => setCalSelectedDate(dateStr)}
+                          <button key={day}
+                            onClick={() => showAvailability ? toggleAvailability(dateStr) : setCalSelectedDate(dateStr)}
                             className={`flex flex-col items-center py-1.5 rounded-lg transition min-h-[44px] ${
-                              isSelected ? "bg-red-600" : isToday ? "bg-red-950/50 border border-red-700/30" : "hover:bg-white/8"
+                              isUnavail ? "bg-gray-800/60 border border-gray-600/30" :
+                              isSelected ? "bg-red-600" :
+                              isToday ? "bg-red-950/50 border border-red-700/30" : "hover:bg-white/8"
                             }`}>
-                            <div className={`text-sm font-semibold ${isSelected ? "text-white" : isToday ? "text-red-400" : "text-white/60"}`}>
+                            <div className={`text-sm font-semibold ${
+                              isUnavail ? "text-gray-500" : isSelected ? "text-white" : isToday ? "text-red-400" : "text-white/60"
+                            }`}>
                               {day}
                             </div>
-                            {dayJobs.length > 0 && (
+                            {isUnavail ? (
+                              <div className="w-1.5 h-1.5 rounded-full bg-gray-600" />
+                            ) : dayJobs.length > 0 ? (
                               <div className={`w-1.5 h-1.5 rounded-full ${isSelected ? "bg-white" : "bg-red-400"}`} />
-                            )}
+                            ) : null}
                           </button>
                         );
                       })}
