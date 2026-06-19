@@ -502,6 +502,17 @@ ${job.notes ? `<div class="section"><h2>Job Notes</h2><p>${job.notes}</p></div>`
             </div>
           </div>
           <div className="flex gap-2 flex-wrap">
+            {/* Owner self-assign */}
+            {settings.ownerName && (() => {
+              const ownerId = `owner_${settings.googleEmail || "owner"}`;
+              const sel = (job.crew || []).includes(ownerId);
+              return (
+                <button key="owner" onClick={() => toggleCrew(ownerId)}
+                  className={"text-xs px-3 py-1.5 rounded-lg border transition " + (sel ? "bg-red-900/40 border-red-500/50 text-red-300" : "bg-white/5 border-white/10 text-white/60 hover:text-white")}>
+                  {settings.ownerName} (Owner)
+                </button>
+              );
+            })()}
             {employees.filter(e => e.status === "active").map(e => {
               const sel = (job.crew || []).includes(e.id);
               return <button key={e.id} onClick={() => toggleCrew(e.id)} className={"text-xs px-3 py-1.5 rounded-lg border transition " + (sel ? "bg-red-900/40 border-red-500/50 text-red-300" : "bg-white/5 border-white/10 text-white/60 hover:text-white")}>{e.firstName} {e.lastName[0]}.</button>;
