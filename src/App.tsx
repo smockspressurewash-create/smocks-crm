@@ -145,6 +145,29 @@ const navGroups = [
   },
 ];
 
+// ─── Role resolver ────────────────────────────────────────────────────────────
+// Determines whether a Supabase session belongs to an owner or an employee.
+// Priority: Google identity → role metadata → employees table → default owner.
+async function resolveUserRole(session: any): Promise<"owner" | "employee"> {
+  if (!session?.user) return "owner";
+  const identities = session.user.identities || [];
+  if (identities.some((i: any) => i.provider === "google")) return "owner";
+  const empRole = session.user.user_metadata?.role;
+  if (empRole === "technician" || empRole === "manager") return "employee";
+  if (empRole === "owner") return "owner";
+  // No role metadata — query the employees table to determine role
+  try {
+    const { data } = await (supabase as any)
+      .from("employees")
+      .select("id, role")
+      .eq("user_id", session.user.id)
+      .maybeSingle();
+    // In table but with owner role → still an owner
+    if (data && data.role !== "owner") return "employee";
+  } catch { /* employees table may not exist */ }
+  return "owner";
+}
+
 // ─── App ──────────────────────────────────────────────────────────────────────
 export function App() {
   useGlobalStyles();
@@ -511,16 +534,10 @@ export function App() {
       // Subscribe first so we catch SIGNED_IN from detectSessionInUrl processing the hash.
       // The hash-sync effect is guarded to return early while access_token is in the hash,
       // so Supabase can read and process the token before the router overwrites it.
-      const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
         console.log("AUTH CHANGE in App.tsx:", event,
-          "page:", page,
-          "provider:", session?.user?.app_metadata?.provider,
           "email:", session?.user?.email,
           "identities:", JSON.stringify(session?.user?.identities?.map((i: any) => i.provider)));
-        console.log("AUTH STATE CHANGE:", event, "session email:", session?.user?.email,
-          "provider_token present:", !!session?.provider_token,
-          "user identities:", JSON.stringify(session?.user?.identities),
-          "app_metadata:", JSON.stringify(session?.user?.app_metadata));
 
         if (event === "SIGNED_OUT") {
           setEmpSession(null);
@@ -528,64 +545,57 @@ export function App() {
           return;
         }
 
-        // Detect employee (email/password) sessions vs owner (Google OAuth) sessions.
-        // An email/password user with no Google identity is treated as an employee — even
-        // if user_metadata.role is missing (e.g. after password reset). The portal's doLogin
-        // repairs the metadata on next sign-in, but we must not block them here.
-        const isGoogle = (session?.user?.identities || []).some((i: any) => i.provider === "google");
-        const empRole = session?.user?.user_metadata?.role;
-        // Employees have explicit role metadata (technician/manager) — they may link Google but stay in portal
-        const isEmployee = empRole === "technician" || empRole === "manager" ||
-          (!isGoogle && !empRole); // backward compat: non-Google, no role = employee
+        const userRole = await resolveUserRole(session);
 
-        if (isEmployee) {
+        if (userRole === "employee") {
           setEmpSession(session);
           setPage("portal");
           setOauthProcessing(false);
           return;
         }
 
-        // Track owner email for profile dropdown
+        // Owner path
         if (session?.user?.email) setCrmUserEmail(session.user.email);
-
         applyGoogleIdentity(session);
+
         if (event === "SIGNED_IN" || (event as string) === "IDENTITY_LINKED") {
-          if ((session?.user?.identities || []).some((i: any) => i.provider === "google")) {
+          const isGoogle = (session?.user?.identities || []).some((i: any) => i.provider === "google");
+          if (isGoogle) {
             setPage("google");
+          } else {
+            // Email/password owner sign-in → go to CRM dashboard
+            setPage("dashboard");
+            setMobileViewForced("desktop");
           }
-          // SIGNED_IN means Supabase finished processing the OAuth hash
           setOauthProcessing(false);
         }
-        // Safety net: initialize() may process the token before subscription and fire
-        // INITIAL_SESSION instead of SIGNED_IN — clear the spinner in that case too
+        // Safety net: initialize() may fire INITIAL_SESSION instead of SIGNED_IN
         if (event === "INITIAL_SESSION") {
           setOauthProcessing(false);
         }
       });
       sub = subscription;
 
-      // Resolve current session to apply any already-linked Google identity
+      // Resolve current session and determine owner vs employee
       const { data: { session: initial } } = await supabase.auth.getSession();
       console.log("INITIAL SESSION resolved — email:", initial?.user?.email,
-        "provider_token present:", !!initial?.provider_token,
-        "identities:", JSON.stringify(initial?.user?.identities),
-        "app_metadata:", JSON.stringify(initial?.user?.app_metadata));
-      // Check if existing session is an employee session — same logic as onAuthStateChange above:
-      // any email/password (non-Google) user is treated as an employee, regardless of role metadata.
+        "identities:", JSON.stringify(initial?.user?.identities?.map((i: any) => i.provider)));
       const initIsGoogle = (initial?.user?.identities || []).some((i: any) => i.provider === "google");
-      const initEmpRole = initial?.user?.user_metadata?.role;
-      const initIsEmployee = initEmpRole === "technician" || initEmpRole === "manager" ||
-        (!initIsGoogle && !initEmpRole);
-      if (initial && initIsEmployee) {
+      const initRole = await resolveUserRole(initial);
+      if (initial && initRole === "employee") {
         setEmpSession(initial);
         setPage("portal");
         setOauthProcessing(false);
       } else {
         applyGoogleIdentity(initial);
-        // If initialize() already exchanged the token (SIGNED_IN missed), handle navigation here
         if (isOAuthCallback && initIsGoogle) {
           setPage("google");
           setOauthProcessing(false);
+        }
+        // Existing email/password owner session — exit mobile landing and ensure not stuck on portal
+        if (initial && !initIsGoogle) {
+          setMobileViewForced("desktop");
+          setPage(prev => prev === "portal" ? "dashboard" : prev);
         }
       }
       // Session check complete — safe to render main app or employee portal
@@ -767,11 +777,8 @@ export function App() {
           hourly_rate: 0,
         }).catch(() => {});
       }
-      // Owner role → go to CRM
-      const role = data.session?.user?.user_metadata?.role;
-      if (role === "owner" || !role) {
-        setMobileViewForced("desktop");
-      }
+      // onAuthStateChange handles routing; just exit the mobile landing immediately
+      setMobileViewForced("desktop");
     };
     return (
       <div className="min-h-screen bg-black text-white flex flex-col items-center justify-center p-6 overflow-y-auto">
