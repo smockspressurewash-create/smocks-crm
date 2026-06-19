@@ -78,7 +78,7 @@ import { ChemicalModal } from "../ui/ChemicalModal";
 import { WeeklyBusinessReview } from "../ui/WeeklyBusinessReview";
 import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 
-export function SettingsModal({ open, onClose, settings, setSettings, services, setServices, emailTemplates, setEmailTemplates, smsTemplates, setSmsTemplates, estimateTemplates = [], setEstimateTemplates = (() => {}) as any, modelStatus = {}, setModelStatus = (() => {}) as any, toast }: { open?: any; onClose?: any; settings?: any; setSettings?: any; services?: any; setServices?: any; emailTemplates?: any; setEmailTemplates?: any; smsTemplates?: any; setSmsTemplates?: any; estimateTemplates?: any[]; setEstimateTemplates?: any; modelStatus?: any; setModelStatus?: any; toast?: any }) {
+export function SettingsModal({ open, onClose, settings, setSettings, services, setServices, emailTemplates, setEmailTemplates, smsTemplates, setSmsTemplates, estimateTemplates = [], setEstimateTemplates = (() => {}) as any, modelStatus = {}, setModelStatus = (() => {}) as any, toast, onSignOut }: { open?: any; onClose?: any; settings?: any; setSettings?: any; services?: any; setServices?: any; emailTemplates?: any; setEmailTemplates?: any; smsTemplates?: any; setSmsTemplates?: any; estimateTemplates?: any[]; setEstimateTemplates?: any; modelStatus?: any; setModelStatus?: any; toast?: any; onSignOut?: () => void }) {
   const [f, setF] = useState(settings);
   const [sec, setSec] = useState("api");
   const [showKey, setShowKey] = useState(false);
@@ -151,6 +151,16 @@ export function SettingsModal({ open, onClose, settings, setSettings, services, 
               <strong>Note:</strong> This app runs entirely in your browser — no passwords or accounts are needed. Your data is stored locally on this device.
             </div>
             <PinSettings toast={toast} />
+            {onSignOut && (
+              <div className="pt-2 border-t border-red-900/30">
+                <button
+                  onClick={onSignOut}
+                  className="w-full flex items-center justify-center gap-2 py-3 px-4 rounded-xl bg-red-950/30 border border-red-700/40 text-red-400 hover:bg-red-950/50 hover:text-red-300 transition text-sm font-medium"
+                >
+                  <Lock size={14} />Sign Out of CrewBoss
+                </button>
+              </div>
+            )}
           </div>}
 
           {sec === "api" && <div className="space-y-4">

@@ -193,6 +193,9 @@ export function App() {
 
   // ── Employee portal session (email/password auth, separate from Google OAuth) ──
   const [empSession, setEmpSession] = useState<any>(null);
+  // CRM owner profile
+  const [crmUserEmail, setCrmUserEmail] = useState("");
+  const [profileDropOpen, setProfileDropOpen] = useState(false);
   // True once we've checked Supabase for an existing session on first load.
   // Prevents the CRM flashing briefly before the employee session is restored.
   const [sessionChecked, setSessionChecked] = useState(false);
@@ -542,6 +545,9 @@ export function App() {
           return;
         }
 
+        // Track owner email for profile dropdown
+        if (session?.user?.email) setCrmUserEmail(session.user.email);
+
         applyGoogleIdentity(session);
         if (event === "SIGNED_IN" || (event as string) === "IDENTITY_LINKED") {
           if ((session?.user?.identities || []).some((i: any) => i.provider === "google")) {
@@ -601,6 +607,21 @@ export function App() {
 
   // Automation engine
   useAutomationEngine({ automations, setAutomations, jobs, customers, estimates, settings, toast });
+
+  // Sign out — clears Supabase session and forces login page
+  const handleSignOut = async () => {
+    await supabase.auth.signOut();
+    setSettings((prev: any) => ({
+      ...prev,
+      googleConnected: false,
+      googleEmail: "",
+      googleProviderToken: "",
+      googleRefreshToken: "",
+    }));
+    setCrmUserEmail("");
+    setProfileDropOpen(false);
+    setMobileViewForced("mobile"); // forces the login landing page
+  };
 
   // ── OAuth loading screen ──────────────────────────────────────────────────
   if (oauthProcessing) {
@@ -908,12 +929,20 @@ export function App() {
         </nav>
 
         {/* Footer */}
-        <div className="p-3 border-t border-red-900/30 flex gap-2">
-          <button onClick={() => { setSettingsOpen(true); setSidebarOpen(false); }} className="flex-1 flex items-center justify-center gap-1.5 p-2 rounded-xl text-xs text-white/50 hover:text-white hover:bg-white/5 transition">
-            <Settings size={14} />Settings
-          </button>
-          <button onClick={() => setMobileViewForced("mobile")} className="flex items-center justify-center gap-1 p-2 rounded-xl text-xs text-white/20 hover:text-white/50 hover:bg-white/5 transition" title="Switch to mobile view">
-            <Monitor size={12} />
+        <div className="p-3 border-t border-red-900/30 space-y-1">
+          <div className="flex gap-2">
+            <button onClick={() => { setSettingsOpen(true); setSidebarOpen(false); }} className="flex-1 flex items-center justify-center gap-1.5 p-2 rounded-xl text-xs text-white/50 hover:text-white hover:bg-white/5 transition">
+              <Settings size={14} />Settings
+            </button>
+            <button onClick={() => setMobileViewForced("mobile")} className="flex items-center justify-center gap-1 p-2 rounded-xl text-xs text-white/20 hover:text-white/50 hover:bg-white/5 transition" title="Switch to mobile view">
+              <Monitor size={12} />
+            </button>
+          </div>
+          <button
+            onClick={() => { handleSignOut(); setSidebarOpen(false); }}
+            className="w-full flex items-center justify-center gap-1.5 p-2 rounded-xl text-xs text-red-500/60 hover:text-red-400 hover:bg-red-950/20 transition"
+          >
+            <Lock size={13} />Sign Out
           </button>
         </div>
       </aside>
@@ -1008,7 +1037,41 @@ export function App() {
             </>
           )}
           </div>{/* end notifications relative wrapper */}
-          <div className="w-8 h-8 rounded-full bg-gradient-to-br from-red-600 to-red-900 flex items-center justify-center text-xs font-bold">SM</div>
+          {/* Profile avatar + dropdown */}
+          <div className="relative">
+            <button
+              onClick={() => setProfileDropOpen(o => !o)}
+              className="w-8 h-8 rounded-full bg-gradient-to-br from-red-600 to-red-900 flex items-center justify-center text-xs font-bold hover:ring-2 hover:ring-red-500/50 transition"
+              title="Account"
+            >
+              {((settings.ownerName || settings.userName || crmUserEmail || "S")[0] || "S").toUpperCase()}
+            </button>
+            {profileDropOpen && (
+              <>
+                <div className="fixed inset-0 z-[150]" onClick={() => setProfileDropOpen(false)} />
+                <div className="absolute right-0 top-full mt-2 w-56 bg-black/95 border border-red-900/40 rounded-xl shadow-2xl z-[160] overflow-hidden">
+                  <div className="px-4 py-3 border-b border-red-900/30">
+                    <div className="font-semibold text-sm truncate">{settings.ownerName || settings.userName || "Owner"}</div>
+                    <div className="text-xs text-white/40 truncate mt-0.5">{crmUserEmail || settings.googleEmail || "—"}</div>
+                  </div>
+                  <div className="p-1.5 space-y-0.5">
+                    <button
+                      onClick={() => { setSettingsOpen(true); setProfileDropOpen(false); }}
+                      className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm text-white/70 hover:text-white hover:bg-white/5 transition text-left"
+                    >
+                      <Settings size={14} />Settings
+                    </button>
+                    <button
+                      onClick={handleSignOut}
+                      className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm text-red-400 hover:text-red-300 hover:bg-red-950/30 transition text-left"
+                    >
+                      <Lock size={14} />Sign Out
+                    </button>
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
         </header>
 
         {/* Page content */}
@@ -1065,6 +1128,7 @@ export function App() {
         modelStatus={modelStatus}
         setModelStatus={setModelStatus}
         toast={toast}
+        onSignOut={handleSignOut}
       />
 
       {/* Client portal */}
