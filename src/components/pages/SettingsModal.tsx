@@ -111,20 +111,22 @@ export function SettingsModal({ open, onClose, settings, setSettings, services, 
     <>
     <Modal open={open} onClose={onClose} title="Settings" maxW="max-w-5xl" noBodyScroll>
       <div className="h-full flex flex-col">
-        <div className="flex-1 min-h-0 flex overflow-hidden">
-        {/* Sidebar nav */}
-        <div className="w-44 flex-shrink-0 border-r border-red-900/30 bg-black/40 rounded-bl-2xl overflow-y-auto py-2">
+        <div className="flex-1 min-h-0 flex flex-col sm:flex-row overflow-hidden">
+        {/* Sidebar nav — vertical on desktop, horizontal scroll strip on mobile */}
+        <div className="sm:w-44 flex-shrink-0 border-b sm:border-b-0 sm:border-r border-red-900/30 bg-black/40 sm:rounded-bl-2xl sm:overflow-y-auto overflow-x-auto py-1 sm:py-2">
+          <div className="flex sm:flex-col min-w-max sm:min-w-0 px-1 sm:px-0">
           {secs.map(s => {
             const Icon = s.icon;
-            return <button key={s.key} onClick={() => setSec(s.key)} className={"w-full flex items-center gap-2.5 px-3 py-2.5 text-xs font-medium transition text-left " + (sec === s.key ? "bg-red-900/40 text-white border-r-2 border-red-500" : "text-white/50 hover:text-white hover:bg-white/5")}>
+            return <button key={s.key} onClick={() => setSec(s.key)} className={"flex items-center gap-1.5 sm:gap-2.5 px-2.5 sm:px-3 py-2 sm:py-2.5 text-xs font-medium transition whitespace-nowrap sm:w-full sm:text-left rounded-lg sm:rounded-none " + (sec === s.key ? "bg-red-900/40 text-white sm:border-r-2 sm:border-red-500" : "text-white/50 hover:text-white hover:bg-white/5")}>
               <Icon size={13} className="flex-shrink-0" />{s.label}
             </button>;
           })}
+          </div>
         </div>
         {/* Right panel */}
         <div className="flex-1 flex flex-col min-w-0">
           {/* Scrollable content */}
-          <div className="flex-1 min-h-0 overflow-y-auto p-5 space-y-4">
+          <div className="flex-1 min-h-0 overflow-y-auto p-4 sm:p-5 space-y-4">
           {sec === "profile" && <div className="space-y-4">
             <div>
               <h4 className="font-semibold text-sm mb-3 flex items-center gap-2"><User size={14} />My Profile</h4>

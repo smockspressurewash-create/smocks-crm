@@ -196,6 +196,9 @@ export function App() {
   // True once we've checked Supabase for an existing session on first load.
   // Prevents the CRM flashing briefly before the employee session is restored.
   const [sessionChecked, setSessionChecked] = useState(false);
+  // Last Supabase sync timestamp
+  const [lastSynced, setLastSynced] = useState<Date | null>(null);
+  const [isSyncing, setIsSyncing] = useState(false);
 
   // ── OAuth processing guard ───────────────────────────────────────────────
   // Set to true when the page loads with an OAuth callback hash (#access_token=...).
@@ -219,6 +222,7 @@ export function App() {
   const [ownerLoginLoading, setOwnerLoginLoading] = useState(false);
   const [ownerLoginMode, setOwnerLoginMode] = useState<"login" | "register">("login");
   const [ownerCompanyName, setOwnerCompanyName] = useState("");
+  const [ownerFullName, setOwnerFullName] = useState("");
 
   // ── Navigation ────────────────────────────────────────────────────────────
   const [page, setPage] = useState(() => {
@@ -427,6 +431,49 @@ export function App() {
     } catch { /* employees table may not exist yet */ }
   };
 
+  // Fetch jobs + customers from Supabase and merge into local state
+  const refetchData = async () => {
+    setIsSyncing(true);
+    try {
+      const [{ data: sbJobs }, { data: sbCustomers }] = await Promise.all([
+        (supabase as any).from("jobs").select("*"),
+        (supabase as any).from("customers").select("*"),
+      ]);
+      if (Array.isArray(sbJobs) && sbJobs.length > 0) {
+        setJobs(prev => {
+          const sbMap = new Map(sbJobs.map((j: any) => [j.id, j]));
+          const merged = prev.map(j => sbMap.has(j.id) ? { ...j, ...sbMap.get(j.id) } : j);
+          const existingIds = new Set(prev.map(j => j.id));
+          const added = sbJobs.filter((j: any) => !existingIds.has(j.id));
+          return [...merged, ...added];
+        });
+      }
+      if (Array.isArray(sbCustomers) && sbCustomers.length > 0) {
+        setCustomers(prev => {
+          const sbMap = new Map(sbCustomers.map((c: any) => [c.id, c]));
+          const merged = prev.map(c => sbMap.has(c.id) ? { ...c, ...sbMap.get(c.id) } : c);
+          const existingIds = new Set(prev.map(c => c.id));
+          const added = sbCustomers.filter((c: any) => !existingIds.has(c.id));
+          return [...merged, ...added];
+        });
+      }
+      setLastSynced(new Date());
+    } catch { /* tables may not exist yet */ }
+    setIsSyncing(false);
+  };
+
+  // Auto-save jobs to Supabase every 30 seconds (upsert on id)
+  useEffect(() => {
+    const interval = setInterval(async () => {
+      if (jobs.length === 0) return;
+      try {
+        await (supabase as any).from("jobs").upsert(jobs, { onConflict: "id" });
+        setLastSynced(new Date());
+      } catch { /* graceful failure */ }
+    }, 30000);
+    return () => clearInterval(interval);
+  }, [jobs]);
+
   // ── Supabase Google OAuth / identity-link capture ────────────────────────
   useEffect(() => {
     let sub: { unsubscribe: () => void } | null = null;
@@ -538,8 +585,9 @@ export function App() {
       // Session check complete — safe to render main app or employee portal
       setSessionChecked(true);
 
-      // Load employees from Supabase — overwrites seed/localStorage data if the table has rows
+      // Load employees + jobs + customers from Supabase on initial load
       refetchEmployees();
+      refetchData();
     })();
 
     return () => sub?.unsubscribe();
@@ -664,21 +712,40 @@ export function App() {
         setOwnerLoginError("Enter email and password"); return;
       }
       setOwnerLoginLoading(true); setOwnerLoginError("");
+      let isRegistering = false;
       if (ownerLoginMode === "register") {
         if (ownerPassword.length < 6) { setOwnerLoginError("Password must be at least 6 characters"); setOwnerLoginLoading(false); return; }
         const { error: signUpErr } = await supabase.auth.signUp({
           email: ownerEmail.trim(),
           password: ownerPassword,
-          options: { data: { role: "owner", companyName: ownerCompanyName.trim() || "My Company" } },
+          options: { data: { role: "owner", fullName: ownerFullName.trim(), companyName: ownerCompanyName.trim() || "My Company" } },
         });
         if (signUpErr) { setOwnerLoginError(signUpErr.message); setOwnerLoginLoading(false); return; }
         if (ownerCompanyName.trim()) {
           setSettings((prev: any) => ({ ...prev, companyName: ownerCompanyName.trim() }));
         }
+        if (ownerFullName.trim()) {
+          setSettings((prev: any) => ({ ...prev, ownerName: ownerFullName.trim() }));
+        }
+        isRegistering = true;
       }
       const { data, error } = await supabase.auth.signInWithPassword({ email: ownerEmail.trim(), password: ownerPassword });
       setOwnerLoginLoading(false);
       if (error) { setOwnerLoginError(error.message); return; }
+      // Create employee record for owner on first registration
+      if (isRegistering && data.session?.user?.id) {
+        const firstName = ownerFullName.trim().split(" ")[0] || "Owner";
+        const lastName = ownerFullName.trim().split(" ").slice(1).join(" ") || "";
+        (supabase as any).from("employees").insert({
+          user_id: data.session.user.id,
+          email: ownerEmail.trim(),
+          first_name: firstName,
+          last_name: lastName,
+          role: "owner",
+          status: "active",
+          hourly_rate: 0,
+        }).catch(() => {});
+      }
       // Owner role → go to CRM
       const role = data.session?.user?.user_metadata?.role;
       if (role === "owner" || !role) {
@@ -715,14 +782,24 @@ export function App() {
             {/* Email/password owner login */}
             <div className="space-y-2.5">
               {ownerLoginMode === "register" && (
-                <div>
-                  <label className="text-xs text-white/50 mb-1 block">Company Name</label>
-                  <input
-                    type="text" value={ownerCompanyName} onChange={e => setOwnerCompanyName(e.target.value)}
-                    placeholder="Smock's Pressure Washing"
-                    className="w-full bg-white/5 border border-white/20 rounded-xl px-4 py-3 text-base text-white placeholder-white/30 focus:outline-none focus:border-red-500/50"
-                  />
-                </div>
+                <>
+                  <div>
+                    <label className="text-xs text-white/50 mb-1 block">Full Name</label>
+                    <input
+                      type="text" value={ownerFullName} onChange={e => setOwnerFullName(e.target.value)}
+                      placeholder="Will Smock"
+                      className="w-full bg-white/5 border border-white/20 rounded-xl px-4 py-3 text-base text-white placeholder-white/30 focus:outline-none focus:border-red-500/50"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-xs text-white/50 mb-1 block">Company Name</label>
+                    <input
+                      type="text" value={ownerCompanyName} onChange={e => setOwnerCompanyName(e.target.value)}
+                      placeholder="Smock's Pressure Washing"
+                      className="w-full bg-white/5 border border-white/20 rounded-xl px-4 py-3 text-base text-white placeholder-white/30 focus:outline-none focus:border-red-500/50"
+                    />
+                  </div>
+                </>
               )}
               <div>
                 <label className="text-xs text-white/50 mb-1 block">Email</label>
@@ -859,9 +936,20 @@ export function App() {
             <Redo2 size={16} />
           </button>
           {/* Auto-save indicator */}
-          <div className="hidden md:flex items-center gap-1.5 px-2.5 py-1.5 text-xs text-green-400/50 select-none">
-            <CheckCircle size={12} />
-            <span>Saved</span>
+          <div className="hidden md:flex items-center gap-1.5 px-2.5 py-1.5 text-xs select-none">
+            {isSyncing ? (
+              <>
+                <div className="w-3 h-3 border border-white/30 border-t-white/70 rounded-full animate-spin" />
+                <span className="text-white/40">Saving…</span>
+              </>
+            ) : (
+              <>
+                <CheckCircle size={12} className="text-green-400/60" />
+                <span className="text-green-400/50">
+                  {lastSynced ? `Synced ${lastSynced.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : "Saved"}
+                </span>
+              </>
+            )}
           </div>
           {/* Portal button — opens latest approved estimate in ClientPortal */}
           <button

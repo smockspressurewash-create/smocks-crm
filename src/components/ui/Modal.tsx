@@ -40,12 +40,15 @@ export const Modal = ({ open, onClose, title, children, maxW = "max-w-lg", noBod
     transition: "background 0.25s ease, backdrop-filter 0.25s ease",
   };
 
+  const isMobile = typeof window !== "undefined" && window.innerWidth < 640;
+  const fullScreenMode = noBodyScroll && isMobile;
+
   const scrollWrapStyle: React.CSSProperties = {
     position: "fixed",
     inset: 0,
     zIndex: 301,
-    overflowY: "auto",
-    padding: "24px 16px",
+    overflowY: fullScreenMode ? "hidden" : "auto",
+    padding: fullScreenMode ? "0" : "24px 16px",
   };
 
   const cardStyle: React.CSSProperties = {
@@ -53,7 +56,7 @@ export const Modal = ({ open, onClose, title, children, maxW = "max-w-lg", noBod
     opacity: visible ? 1 : 0,
     transition: "transform 0.26s cubic-bezier(0.16,1,0.3,1), opacity 0.2s ease",
     boxShadow: "0 32px 96px rgba(0,0,0,0.9), 0 0 0 1px rgba(220,38,38,0.2)",
-    ...(noBodyScroll ? { height: "85vh" } : { maxHeight: "90vh" }),
+    ...(noBodyScroll ? (fullScreenMode ? { height: "100dvh", maxHeight: "100dvh", borderRadius: 0 } : { height: "85vh" }) : { maxHeight: "90vh" }),
   };
 
   const modal = (
@@ -63,9 +66,9 @@ export const Modal = ({ open, onClose, title, children, maxW = "max-w-lg", noBod
 
       {/* Scroll container — transparent, sits above backdrop, scrolls when card is tall */}
       <div style={scrollWrapStyle} onClick={onClose}>
-        <div style={{ display: "flex", minHeight: "100%", alignItems: "center", justifyContent: "center" }}>
+        <div style={{ display: "flex", minHeight: "100%", alignItems: fullScreenMode ? "stretch" : "center", justifyContent: "center" }}>
           <div
-            className={maxW + " w-full bg-gradient-to-br from-neutral-950 to-black border border-red-900/40 rounded-2xl shadow-2xl flex flex-col overflow-hidden"}
+            className={maxW + " w-full bg-gradient-to-br from-neutral-950 to-black border border-red-900/40 shadow-2xl flex flex-col overflow-hidden" + (fullScreenMode ? "" : " rounded-2xl")}
             style={cardStyle}
             onClick={e => e.stopPropagation()}
           >

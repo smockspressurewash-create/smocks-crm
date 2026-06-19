@@ -879,11 +879,39 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     load();
   }, [(myEmployee as any)?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Fetch jobs from Supabase so Supabase-side crew assignments are visible
+  useEffect(() => {
+    if (!myEmployee) return;
+    const empId = myEmployee.id;
+    const empUserId = (myEmployee as any).user_id;
+    console.log("ALL JOBS — jobs:", jobs.length, "myEmployee.id:", empId, "user_id:", empUserId);
+    const load = async () => {
+      try {
+        const { data } = await (supabase as any).from("jobs").select("*");
+        if (Array.isArray(data) && data.length > 0) {
+          setJobs(prev => {
+            const supabaseMap = new Map(data.map((j: any) => [j.id, j]));
+            const merged = prev.map(j => supabaseMap.has(j.id) ? { ...j, ...supabaseMap.get(j.id) } : j);
+            const existingIds = new Set(prev.map(j => j.id));
+            const added = data.filter((j: any) => !existingIds.has(j.id));
+            return [...merged, ...added];
+          });
+        }
+      } catch { /* jobs table may not exist */ }
+    };
+    load();
+  }, [(myEmployee as any)?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Merge owner-set permissions with defaults (all-on for existing employees with no permissions field)
   const perms: Record<string, boolean> = { ...DEFAULT_PERMISSIONS, ...((myEmployee as any)?.permissions || {}) };
 
   const myJobs = myEmployee
-    ? jobs.filter(j => (j.crew || []).includes(myEmployee.id))
+    ? jobs.filter(j => {
+        const crew = j.crew || [];
+        const empId = myEmployee.id;
+        const empUserId = (myEmployee as any).user_id;
+        return crew.some(c => c === empId || (empUserId && c === empUserId));
+      })
     : [];
 
   const todayStr = today();
