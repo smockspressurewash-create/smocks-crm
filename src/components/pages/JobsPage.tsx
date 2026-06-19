@@ -24,6 +24,7 @@ import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES,
 const weatherRisk = (_dateStr: string): {icon: string; level: string; reason: string} | null => null;
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
 import { twilioSend, sendEmail } from "../../lib/messaging";
+import { supabase } from "../../lib/supabase";
 import { seedWeather } from "../../lib/weather";
 import { seedCustomers, seedEstimates, seedJobs, seedEmployees, seedVehicles, seedExpenses, seedChemicals, seedServices, seedAutomations, seedEmailTemplates, seedSmsTemplates, seedRewardTiers, seedReferrals, seedMaintenance, campaignTemplates, seedSocialPosts, seedTimeline, seedGoals, seedReminders, seedAccountabilityEntries, seedMileage, seedLeadSrc, STEP_TYPES, AUTOMATION_TEMPLATES } from "../../lib/seed";
 import { callModel, MODELS } from "../../lib/api";
@@ -93,6 +94,10 @@ export function JobsPage({ jobs = [], setJobs, customers = [], employees = [], e
   const [, forceTick] = useState(0);
   const [newJobOpen, setNewJobOpen] = useState(false);
   const [newJobForm, setNewJobForm] = useState({ customerId: "", address: "", amount: "", scheduledDate: today(), scheduledTime: "", priority: "normal", notes: "" });
+  const [quickReqJobId, setQuickReqJobId] = useState<string | null>(null);
+  const [quickReqEmpId, setQuickReqEmpId] = useState("");
+  const [quickReqMsg, setQuickReqMsg] = useState("");
+  const [quickReqSending, setQuickReqSending] = useState(false);
 
   // Live tick for any running clocks
   useEffect(() => {
@@ -215,6 +220,49 @@ export function JobsPage({ jobs = [], setJobs, customers = [], employees = [], e
     const hrs = Math.round(((Date.now() - j.clockInAt) / 3600000) * 100) / 100;
     updateJob(j.id, { clockInAt: null, loggedHours: Math.round(((Number(j.loggedHours) || 0) + hrs) * 100) / 100 });
     toast("+" + hrs + "h logged");
+  };
+
+  const sendQuickJobRequest = async (job: any) => {
+    const emp = employees.find(e => e.id === quickReqEmpId);
+    if (!emp) return;
+    setQuickReqSending(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const portalUrl = `${window.location.origin}${window.location.pathname}`;
+      const { data: row, error } = await (supabase as any).from("job_requests").insert({
+        job_id: job.id,
+        employee_id: emp.id,
+        owner_id: session?.user?.id,
+        status: "pending",
+        message: quickReqMsg.trim() || null,
+      }).select("id").single();
+      if (!error && row?.id) {
+        const requestUrl = `${portalUrl}#/portal?request=${row.id}`;
+        const c = customers.find((x: any) => x.id === job.customerId);
+        if (emp.email) {
+          sendEmail(settings, {
+            to: emp.email,
+            subject: `Job Request — ${job.scheduledDate}`,
+            body: `<p>Hi ${emp.firstName},</p><p>${quickReqMsg || "You have a new job request:"}</p>
+              <ul>
+                <li><b>Date:</b> ${job.scheduledDate}${job.scheduledTime ? " at " + job.scheduledTime : ""}</li>
+                <li><b>Address:</b> ${job.address}</li>
+                ${c ? `<li><b>Customer:</b> ${c.firstName} ${c.lastName}</li>` : ""}
+              </ul>
+              <p><a href="${requestUrl}" style="background:#dc2626;color:white;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:bold;display:inline-block;">View Request</a></p>`,
+          }).catch(() => {});
+        }
+        if (toast) toast(`Request sent to ${emp.firstName} ✓`, "green");
+        setQuickReqJobId(null);
+        setQuickReqEmpId("");
+        setQuickReqMsg("");
+      } else {
+        if (toast) toast("Request failed — run the job_requests SQL in Supabase first", "red");
+      }
+    } catch {
+      if (toast) toast("Error sending request", "red");
+    }
+    setQuickReqSending(false);
   };
 
   // Touch swipe handling
@@ -543,20 +591,62 @@ export function JobsPage({ jobs = [], setJobs, customers = [], employees = [], e
                 </div>
               </div>
 
-              <div className="mb-3 flex items-center gap-2 flex-wrap text-xs">
+              <div className="mb-1 flex items-center gap-2 flex-wrap text-xs">
                 <span className="text-white/40 uppercase tracking-wider text-[10px]">Crew:</span>
                 {crewNames.length > 0 ? crewNames.map(e => (
                   <span key={e.id} className="inline-flex items-center gap-1.5 text-[10px] px-2 py-0.5 rounded-full bg-red-900/30 border border-red-800/40 text-red-300">
                     <span className="w-4 h-4 rounded-full bg-gradient-to-br from-red-500 to-red-800 flex items-center justify-center text-[8px] font-bold text-white flex-shrink-0">{e.firstName[0]}{e.lastName?.[0] || ""}</span>
                     {e.firstName}
                   </span>
-                )) : <span className="text-[10px] text-white/30 italic">None</span>}
+                )) : (
+                  <button onClick={() => { setQuickReqJobId(j.id); setQuickReqEmpId(""); setQuickReqMsg(""); }}
+                    className="inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full bg-yellow-950/30 border border-yellow-700/40 text-yellow-400 hover:bg-yellow-900/40 transition">
+                    <Send size={8} />Request Crew
+                  </button>
+                )}
                 {j.paymentStatus && (
                   <span className={"ml-auto inline-flex items-center gap-1 text-[9px] px-2 py-0.5 rounded-full border font-semibold " + (j.paymentStatus === "Paid" ? "bg-green-950/40 border-green-700/50 text-green-300" : j.paymentStatus === "Partial" ? "bg-yellow-950/40 border-yellow-700/50 text-yellow-300" : "bg-white/5 border-white/10 text-white/50")}>
                     {j.paymentStatus === "Paid" ? "✓" : j.paymentStatus === "Partial" ? "½" : "○"} {j.paymentStatus}{j.paymentType ? " · " + j.paymentType : ""}
                   </span>
                 )}
               </div>
+              {/* Quick crew request form */}
+              {quickReqJobId === j.id && (
+                <div className="mb-3 p-3 rounded-xl bg-yellow-950/20 border border-yellow-700/30 space-y-2">
+                  <div className="text-[10px] text-yellow-300 font-semibold">Request an Employee</div>
+                  <select value={quickReqEmpId} onChange={e => setQuickReqEmpId(e.target.value)}
+                    className="w-full bg-black/60 border border-white/20 rounded-lg px-2 py-1.5 text-xs text-white focus:outline-none focus:border-yellow-500/50">
+                    <option value="">Select employee…</option>
+                    {employees.filter((e: any) => e.status === "active").map((e: any) => {
+                      const av: string[] = (e as any).availability || [];
+                      const unavail = j.scheduledDate && av.includes(j.scheduledDate);
+                      return <option key={e.id} value={e.id}>{e.firstName} {e.lastName}{unavail ? " ⚠ unavailable" : ""}</option>;
+                    })}
+                  </select>
+                  {quickReqEmpId && (() => {
+                    const emp = employees.find((e: any) => e.id === quickReqEmpId);
+                    const av: string[] = (emp as any)?.availability || [];
+                    return av.includes(j.scheduledDate) ? (
+                      <div className="text-[10px] text-orange-300 bg-orange-950/30 border border-orange-700/30 rounded px-2 py-1">
+                        ⚠ {(emp as any)?.firstName} marked {j.scheduledDate} as unavailable
+                      </div>
+                    ) : null;
+                  })()}
+                  <textarea value={quickReqMsg} onChange={e => setQuickReqMsg(e.target.value)}
+                    placeholder="Optional message…" rows={2}
+                    className="w-full bg-black/60 border border-white/20 rounded-lg px-2 py-1.5 text-xs text-white placeholder-white/30 focus:outline-none focus:border-yellow-500/50 resize-none" />
+                  <div className="flex gap-2">
+                    <button onClick={() => sendQuickJobRequest(j)} disabled={!quickReqEmpId || quickReqSending}
+                      className="flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-lg bg-yellow-600 hover:bg-yellow-500 disabled:opacity-40 text-black text-xs font-bold transition">
+                      <Send size={10} />{quickReqSending ? "Sending…" : "Send Request"}
+                    </button>
+                    <button onClick={() => setQuickReqJobId(null)}
+                      className="px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-white/60 text-xs transition">
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              )}
 
               <div className="mb-3"><div className="flex items-center justify-between text-xs text-white/60 mb-1.5"><span>Checklist</span><span>{dn}/{j.checklist.length}</span></div><div className="space-y-1.5 max-h-32 overflow-y-auto">{j.checklist.map((ck, idx) => <label key={idx} className="flex items-center gap-2 text-sm cursor-pointer"><input type="checkbox" checked={ck.done} onChange={() => toggleCk(j.id, idx)} className="w-4 h-4 rounded accent-red-600" /><span className={ck.done ? "line-through text-white/40" : "text-white/80"}>{ck.text}</span></label>)}</div></div>
 

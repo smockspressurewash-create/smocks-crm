@@ -702,6 +702,11 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   const [showAvailability, setShowAvailability] = useState(false);
   // Login extras
   const [forgotSent, setForgotSent] = useState(false);
+  // Incoming job requests on Today tab
+  const [incomingRequests, setIncomingRequests] = useState<any[]>([]);
+  const [incomingLoading, setIncomingLoading] = useState(false);
+  const [inlineDenyId, setInlineDenyId] = useState<string | null>(null);
+  const [inlineDenyReason, setInlineDenyReason] = useState("");
 
   // Normalize Supabase snake_case columns to the camelCase Employee shape the rest of the code expects
   const normalizeEmp = (e: any) => !e ? null : ({
@@ -854,6 +859,26 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     if (Array.isArray(av) && av.length > 0) setAvailability(av);
   }, [(myEmployee as any)?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Fetch incoming job requests for this employee
+  useEffect(() => {
+    if (!myEmployee) return;
+    const empId = (myEmployee as any)?.id;
+    if (!empId) return;
+    const load = async () => {
+      setIncomingLoading(true);
+      try {
+        const { data } = await (supabase as any)
+          .from("job_requests")
+          .select("*")
+          .eq("employee_id", empId)
+          .order("created_at", { ascending: false });
+        if (Array.isArray(data)) setIncomingRequests(data);
+      } catch { /* table may not exist */ }
+      setIncomingLoading(false);
+    };
+    load();
+  }, [(myEmployee as any)?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Merge owner-set permissions with defaults (all-on for existing employees with no permissions field)
   const perms: Record<string, boolean> = { ...DEFAULT_PERMISSIONS, ...((myEmployee as any)?.permissions || {}) };
 
@@ -962,6 +987,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   const doSignOut = async () => {
     await supabase.auth.signOut();
     setEmpSession(null);
+    window.location.hash = "/portal";
   };
 
   const doRetryLink = async () => {
@@ -1046,6 +1072,36 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
         await (supabase as any).from("employees").update({ availability: next }).eq("id", empId);
       }
     } catch { /* ignore */ }
+  };
+
+  const handleInlineAccept = async (req: any) => {
+    if (!myEmployee) return;
+    try {
+      await (supabase as any).from("job_requests")
+        .update({ status: "accepted", responded_at: new Date().toISOString() })
+        .eq("id", req.id);
+      if (req.job_id) {
+        setJobs(prev => prev.map(j =>
+          j.id === req.job_id && !(j.crew || []).includes(myEmployee.id)
+            ? { ...j, crew: [...(j.crew || []), myEmployee.id] }
+            : j
+        ));
+      }
+      setIncomingRequests(prev => prev.map(r => r.id === req.id ? { ...r, status: "accepted" } : r));
+      toast("Job accepted! You're on the crew. ✓");
+    } catch { toast("Error accepting request", "red"); }
+  };
+
+  const handleInlineDeny = async (req: any) => {
+    try {
+      await (supabase as any).from("job_requests")
+        .update({ status: "denied", denial_reason: inlineDenyReason.trim(), responded_at: new Date().toISOString() })
+        .eq("id", req.id);
+      setIncomingRequests(prev => prev.map(r => r.id === req.id ? { ...r, status: "denied" } : r));
+      setInlineDenyId(null);
+      setInlineDenyReason("");
+      toast("Request declined.");
+    } catch { toast("Error declining request", "red"); }
   };
 
   const doLogin = async () => {
@@ -1608,6 +1664,93 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                 {new Date().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" })}
               </div>
             </div>
+
+            {/* Incoming job requests */}
+            {(() => {
+              const pending = incomingRequests.filter(r => r.status === "pending");
+              const responded = incomingRequests.filter(r => r.status !== "pending").slice(0, 3);
+              if (incomingLoading) return null;
+              if (incomingRequests.length === 0) return null;
+              return (
+                <div>
+                  {pending.length > 0 && (
+                    <div className="mb-1 flex items-center gap-2">
+                      <div className="text-xs text-white/50 uppercase tracking-wider font-semibold">Incoming Requests</div>
+                      <span className="px-2 py-0.5 rounded-full bg-yellow-600 text-[10px] font-bold text-black">{pending.length}</span>
+                    </div>
+                  )}
+                  <div className="space-y-2">
+                    {pending.map(req => {
+                      const reqJob = jobs.find(j => j.id === req.job_id);
+                      const reqCust = reqJob ? customers.find(c => c.id === reqJob.customerId) : null;
+                      return (
+                        <div key={req.id} className="rounded-2xl bg-yellow-950/20 border border-yellow-700/30 overflow-hidden">
+                          <div className="p-3">
+                            <div className="flex items-start gap-2 mb-2">
+                              <div className="flex-1 min-w-0">
+                                {reqJob && <div className="font-semibold text-sm truncate">{reqJob.address}</div>}
+                                <div className="flex items-center gap-2 text-xs text-white/50 mt-0.5 flex-wrap">
+                                  {reqJob && <span>📅 {reqJob.scheduledDate}{reqJob.scheduledTime ? " · " + reqJob.scheduledTime : ""}</span>}
+                                  {reqCust && <span>👤 {reqCust.firstName} {reqCust.lastName}</span>}
+                                  {reqJob && reqJob.amount > 0 && <span className="text-green-400 font-semibold">{fmt(reqJob.amount)}</span>}
+                                </div>
+                                {req.message && <div className="mt-1.5 text-xs text-white/60 italic bg-white/5 px-2 py-1 rounded-lg">"{req.message}"</div>}
+                              </div>
+                            </div>
+                            {inlineDenyId === req.id ? (
+                              <div className="space-y-2">
+                                <textarea value={inlineDenyReason} onChange={e => setInlineDenyReason(e.target.value)}
+                                  placeholder="Reason (optional)…" rows={2}
+                                  className="w-full bg-black/60 border border-white/20 rounded-lg px-2 py-1.5 text-xs text-white placeholder-white/30 focus:outline-none resize-none" />
+                                <div className="flex gap-2">
+                                  <button onClick={() => handleInlineDeny(req)}
+                                    className="flex-1 py-2 rounded-xl bg-red-700 hover:bg-red-600 text-white text-xs font-bold transition">
+                                    Confirm Decline
+                                  </button>
+                                  <button onClick={() => { setInlineDenyId(null); setInlineDenyReason(""); }}
+                                    className="px-3 py-2 rounded-xl bg-white/5 text-white/50 text-xs transition">
+                                    Cancel
+                                  </button>
+                                </div>
+                              </div>
+                            ) : (
+                              <div className="flex gap-2">
+                                <button onClick={() => handleInlineAccept(req)}
+                                  className="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-xl bg-green-700 hover:bg-green-600 text-white text-xs font-bold transition">
+                                  <CheckCircle size={13} />Accept
+                                </button>
+                                <button onClick={() => setInlineDenyId(req.id)}
+                                  className="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-xl bg-red-950/50 hover:bg-red-900/60 border border-red-700/40 text-red-300 text-xs font-semibold transition">
+                                  <X size={13} />Decline
+                                </button>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                    {responded.length > 0 && (
+                      <div>
+                        <div className="text-[10px] text-white/30 uppercase tracking-wider font-semibold mb-1.5 mt-3">Responded</div>
+                        <div className="space-y-1.5">
+                          {responded.map(req => {
+                            const reqJob = jobs.find(j => j.id === req.job_id);
+                            return (
+                              <div key={req.id} className="flex items-center gap-2 px-3 py-2 rounded-xl bg-white/3 border border-white/5">
+                                <div className={"w-1.5 h-1.5 rounded-full flex-shrink-0 " + (req.status === "accepted" ? "bg-green-400" : "bg-red-400/60")} />
+                                <div className="flex-1 min-w-0 text-xs text-white/50 truncate">{reqJob?.address || "Job"}</div>
+                                <div className={"text-[10px] font-semibold capitalize " + (req.status === "accepted" ? "text-green-400" : "text-red-400/70")}>{req.status}</div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            })()}
+
             {/* Stat cards */}
             <div className="grid grid-cols-3 gap-2">
               <Glass className="p-3 !bg-white/5 text-center">

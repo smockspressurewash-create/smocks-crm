@@ -92,10 +92,52 @@ export const pollTwilioIncoming = async (
   return data.messages ?? [];
 };
 
+// ─── Email via Gmail API ──────────────────────────────────────────────────────
+
+const sendViaGmail = async (
+  googleProviderToken: string,
+  fromEmail: string,
+  to: string,
+  subject: string,
+  html: string
+): Promise<void> => {
+  const mime = [
+    `From: ${fromEmail}`,
+    `To: ${to}`,
+    `Subject: ${subject}`,
+    `MIME-Version: 1.0`,
+    `Content-Type: text/html; charset=utf-8`,
+    ``,
+    html,
+  ].join("\r\n");
+
+  // base64url encode
+  const raw = btoa(unescape(encodeURIComponent(mime)))
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/, "");
+
+  const res = await fetch(
+    "https://www.googleapis.com/gmail/v1/users/me/messages/send",
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${googleProviderToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ raw }),
+    }
+  );
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({})) as { error?: { message?: string } };
+    throw new Error(err.error?.message ?? `Gmail API error ${res.status}`);
+  }
+};
+
 // ─── Email via Resend ─────────────────────────────────────────────────────────
 
 export const sendEmail = async (
-  settings: EmailSettings & { resendBackendUrl?: string; googleConnected?: boolean },
+  settings: EmailSettings & { resendBackendUrl?: string; googleConnected?: boolean; googleProviderToken?: string; googleEmail?: string },
   toOrOpts: string | { to: string; subject: string; body: string; [key: string]: any },
   subject?: string,
   html?: string
@@ -114,6 +156,16 @@ export const sendEmail = async (
     body = html!;
   }
   const { resendKey, fromEmail, fromName, resendBackendUrl } = settings;
+
+  // Try Gmail first if owner has connected Google account
+  if (settings.googleProviderToken && settings.googleEmail) {
+    try {
+      await sendViaGmail(settings.googleProviderToken, settings.googleEmail, to, subj, body);
+      return;
+    } catch {
+      // Fall through to Resend
+    }
+  }
 
   // Via backend proxy
   if (resendBackendUrl) {
