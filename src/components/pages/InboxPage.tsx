@@ -22,7 +22,7 @@ import {
 } from "recharts";
 import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE } from "../../lib/utils";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
-import { twilioSend, sendEmail } from "../../lib/messaging";
+import { twilioSend, sendEmail, pollTwilioIncoming } from "../../lib/messaging";
 import { seedWeather } from "../../lib/weather";
 import { seedCustomers, seedEstimates, seedJobs, seedEmployees, seedVehicles, seedExpenses, seedChemicals, seedServices, seedAutomations, seedEmailTemplates, seedSmsTemplates, seedRewardTiers, seedReferrals, seedMaintenance, campaignTemplates, seedSocialPosts, seedTimeline, seedGoals, seedReminders, seedAccountabilityEntries, seedMileage, seedLeadSrc, STEP_TYPES, AUTOMATION_TEMPLATES } from "../../lib/seed";
 import { callModel, MODELS } from "../../lib/api";
@@ -78,8 +78,6 @@ import { ChemicalModal } from "../ui/ChemicalModal";
 import { WeeklyBusinessReview } from "../ui/WeeklyBusinessReview";
 import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 
-const pollTwilioIncoming = async (..._args: any[]) => [];
-
 export function InboxPage({ threads = [], setThreads, customers = [], settings = {} as AppSettings, toast }: { threads?: any[]; setThreads?: any; customers?: any[]; settings?: AppSettings; toast?: any }) {
   const [active, setActive] = useState(threads[0]?.id || null);
   const [input, setInput] = useState("");
@@ -105,7 +103,7 @@ export function InboxPage({ threads = [], setThreads, customers = [], settings =
       setPolling(true);
       try {
         const lastTs = Math.max(0, ...threads.flatMap(t => t.messages.map(m => m.ts)));
-        const incoming = await pollTwilioIncoming(settings, lastTs);
+        const incoming = await pollTwilioIncoming(settings, new Date(lastTs).toISOString());
         if (incoming.length > 0) {
           setThreads(prev => {
             let updated = [...prev];

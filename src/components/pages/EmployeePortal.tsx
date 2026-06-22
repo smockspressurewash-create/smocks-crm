@@ -1248,8 +1248,10 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   };
 
   const doLogin = async () => {
+    console.log("LOGIN START — email:", loginEmail);
     setLoginLoading(true); setLoginError("");
     const { data, error } = await supabase.auth.signInWithPassword({ email: loginEmail, password: loginPwd });
+    console.log("SIGNIN RESULT — error:", error?.message || null, "session user:", data?.session?.user?.id || null);
     setLoginLoading(false);
     if (error) { setLoginError(error.message); return; }
 
@@ -1260,13 +1262,18 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     console.log("doLogin: checking email", email, "against employees:", employees.map(e => e.email));
     console.log("doLogin: user metadata role:", metaRole);
 
-    // Anyone reaching the portal's email/password login is an employee by definition
-    // (owners use Google). Cache that now so a later Google-link can never race it.
-    try { localStorage.setItem("crew_role_" + session.user.id, "employee"); } catch { /* ignore */ }
-
     // Anyone who successfully completes signInWithPassword is an email/password user — treat as employee.
     // Google OAuth users cannot reach this path. Never sign them out here.
     const matchedEmployee = employees.find(e => e.email?.toLowerCase() === email.toLowerCase());
+
+    // Cache the employee role now — but only once we actually know this account is an
+    // employee (matched an existing record, or about to create one from an invite).
+    // Caching unconditionally on any successful sign-in would also tag a non-employee
+    // account (e.g. an owner who mistakenly signs into the portal form) as a permanent
+    // employee, which is exactly the kind of misclassification that breaks the portal.
+    if (matchedEmployee || inviteRecord) {
+      try { localStorage.setItem("crew_role_" + session.user.id, "employee"); } catch { /* ignore */ }
+    }
 
     // Repair missing role metadata so App.tsx auth-state-change recognises them on reload
     if (!metaRole) {
@@ -1302,6 +1309,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     }
 
     refetchEmployees?.();
+    console.log("EMP SESSION SET — user:", session.user.id, "matchedEmployee:", matchedEmployee?.id || null);
     setEmpSession(session);
     toast("Welcome back!");
   };
@@ -1467,6 +1475,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
 
   // ── Account not linked ────────────────────────────────────────────────────
   if (!myEmployee) {
+    console.log("RENDERING PORTAL — blocked: no myEmployee match for", empSession?.user?.email, "employees loaded:", employees.length);
     return (
       <div className="min-h-screen bg-black text-white flex flex-col items-center justify-center p-6 text-center">
         <AlertCircle size={40} className="text-yellow-400 mb-4" />
@@ -1755,6 +1764,8 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
       </div>
     );
   };
+
+  console.log("RENDERING PORTAL — employee:", myEmployee.firstName, myEmployee.lastName, "myJobs:", myJobs.length, "tab:", tab);
 
   return (
     <div className="min-h-screen bg-black text-white flex flex-col">

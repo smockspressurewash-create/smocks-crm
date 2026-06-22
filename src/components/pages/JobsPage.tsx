@@ -648,7 +648,7 @@ export function JobsPage({ jobs = [], setJobs, customers = [], employees = [], e
                 </div>
               )}
 
-              <div className="mb-3"><div className="flex items-center justify-between text-xs text-white/60 mb-1.5"><span>Checklist</span><span>{dn}/{(j.checklist || []).length}</span></div><div className="space-y-1.5 max-h-32 overflow-y-auto">{(j.checklist || []).map((ck, idx) => <label key={idx} className="flex items-center gap-2 text-sm cursor-pointer"><input type="checkbox" checked={ck.done} onChange={() => toggleCk(j.id, idx)} className="w-4 h-4 rounded accent-red-600" /><span className={ck.done ? "line-through text-white/40" : "text-white/80"}>{ck.text}</span></label>)}</div></div>
+              <div className="mb-3"><div className="flex items-center justify-between text-xs text-white/60 mb-1.5"><span>Checklist</span><span>{dn}/{(j.checklist || []).length}</span></div><div className="space-y-1.5 max-h-32 overflow-y-auto">{(j.checklist || []).map((ck, idx) => <label key={idx} className="flex items-center gap-2 text-sm cursor-pointer"><input type="checkbox" checked={ck.done} onChange={() => toggleCk(j.id, idx)} className="w-4 h-4 rounded accent-red-600" /><span className={ck.done ? "line-through text-white/40" : "text-white/80"}>{ck.label}</span></label>)}</div></div>
 
               <div className="md:hidden text-[10px] text-white/30 text-center mb-2 border border-dashed border-red-900/20 rounded py-1">← swipe left to advance</div>
 

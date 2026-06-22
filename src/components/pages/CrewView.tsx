@@ -219,7 +219,7 @@ export function CrewView({ jobs = [], setJobs, customers = [], employees = [], t
               {(j.checklist || []).map((ck, idx) => (
                 <label key={idx} className={"flex items-start gap-3 p-3 rounded-xl cursor-pointer transition active:scale-95 " + (ck.done ? "bg-green-950/20 border border-green-700/30" : "bg-white/5 border border-white/10")}>
                   <input type="checkbox" checked={ck.done} onChange={() => toggleCk(j.id, idx)} className="w-5 h-5 rounded accent-green-500 flex-shrink-0 mt-0.5" />
-                  <span className={"text-sm " + (ck.done ? "line-through text-white/50" : "text-white/90")}>{ck.text}</span>
+                  <span className={"text-sm " + (ck.done ? "line-through text-white/50" : "text-white/90")}>{ck.label}</span>
                 </label>
               ))}
             </div>
