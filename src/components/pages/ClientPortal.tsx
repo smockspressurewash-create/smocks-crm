@@ -36,6 +36,7 @@ import { GDate } from "../ui/GDate";
 import { GSel } from "../ui/GSel";
 import { GTxt } from "../ui/GTxt";
 import { Modal } from "../ui/Modal";
+import { StripePaymentModal } from "../ui/StripePaymentModal";
 import { Badge } from "../ui/Badge";
 import { Stat } from "../ui/Stat";
 import { PBar } from "../ui/PBar";
@@ -79,6 +80,7 @@ import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 
 export function ClientPortal({ estimate: e, customer: c, settings = {} as AppSettings, onClose, onApprove }: { estimate?: any; customer?: any; settings?: AppSettings; onClose?: any; onApprove?: any }) {
   const [payType, setPayType] = useState("full");
+  const [showStripeModal, setShowStripeModal] = useState(false);
   const [step, setStep] = useState("view"); // view | sign | payment | done
   const [sigData, setSigData] = useState(null);
   const [tip, setTip] = useState(0);
@@ -183,8 +185,11 @@ export function ClientPortal({ estimate: e, customer: c, settings = {} as AppSet
     setSigData(null);
   };
 
-  const handleApprove = async () => {
-    if (onApprove) onApprove(e.id, { sigData, payType, tip, totalPaid: totalWithTip, signedAt: new Date().toISOString() });
+  const handleApprove = async (paymentIntentId?: string) => {
+    if (onApprove) onApprove(e.id, {
+      sigData, payType, tip, totalPaid: totalWithTip, signedAt: new Date().toISOString(),
+      ...(paymentIntentId ? { stripePaymentIntentId: paymentIntentId, stripePaymentStatus: "paid" as const } : {}),
+    });
     setStep("done");
 
     // Payment confirmation SMS to customer
@@ -394,15 +399,33 @@ export function ClientPortal({ estimate: e, customer: c, settings = {} as AppSet
                 </div>
               </Glass>
 
-              {/* Mock Stripe button */}
-              <div className="space-y-2">
-                <button onClick={handleApprove} className="w-full py-4 bg-gradient-to-r from-[#635BFF] to-[#4F46E5] text-white font-bold rounded-xl shadow-lg hover:from-[#7C74FF] hover:to-[#6056F5] transition-all flex items-center justify-center gap-2">
-                  <CreditCard size={18} />
-                  Pay {fmt(totalWithTip)} · Powered by Stripe
-                </button>
-                <div className="text-center text-[10px] text-white/30">🔒 Your payment is secured by Stripe · 256-bit SSL</div>
-              </div>
+              {/* Stripe payment — real Payment Element if keys are configured, otherwise a connect prompt */}
+              {settings?.stripePublishableKey && settings?.stripeSecretKeyEnc ? (
+                <div className="space-y-2">
+                  <button onClick={() => setShowStripeModal(true)} className="w-full py-4 bg-gradient-to-r from-[#635BFF] to-[#4F46E5] text-white font-bold rounded-xl shadow-lg hover:from-[#7C74FF] hover:to-[#6056F5] transition-all flex items-center justify-center gap-2">
+                    <CreditCard size={18} />
+                    Pay {fmt(totalWithTip)} · Powered by Stripe
+                  </button>
+                  <div className="text-center text-[10px] text-white/30">🔒 Your payment is secured by Stripe · 256-bit SSL</div>
+                </div>
+              ) : (
+                <div className="p-4 rounded-xl bg-white/5 border border-white/10 text-center space-y-2">
+                  <CreditCard size={20} className="mx-auto text-white/30" />
+                  <div className="text-sm text-white/60">Online payments aren't set up yet.</div>
+                  <div className="text-xs text-white/40">{companyName} hasn't connected Stripe — contact us directly to arrange payment.</div>
+                </div>
+              )}
               <GBtn variant="ghost" onClick={() => setStep("sign")} className="w-full">← Back to signature</GBtn>
+
+              <StripePaymentModal
+                open={showStripeModal}
+                onClose={() => setShowStripeModal(false)}
+                publishableKey={settings?.stripePublishableKey || ""}
+                secretKeyEnc={settings?.stripeSecretKeyEnc || ""}
+                amount={totalWithTip}
+                description={`${companyName} — ${e?.lineItems?.[0]?.description || "Estimate"} #${e?.id || ""}`}
+                onSuccess={(paymentIntentId) => { setShowStripeModal(false); handleApprove(paymentIntentId); }}
+              />
             </div>
           )}
 

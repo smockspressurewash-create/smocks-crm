@@ -36,6 +36,7 @@ import { GDate } from "../ui/GDate";
 import { GSel } from "../ui/GSel";
 import { GTxt } from "../ui/GTxt";
 import { Modal } from "../ui/Modal";
+import { StripePaymentModal } from "../ui/StripePaymentModal";
 import { Badge } from "../ui/Badge";
 import { Stat } from "../ui/Stat";
 import { PBar } from "../ui/PBar";
@@ -82,6 +83,14 @@ export function InvoicesPage({ estimates = [], setEstimates, customers = [], set
   const [search, setSearch] = useState("");
   const [viewing, setViewing] = useState(null);
   const [selected, setSelected] = useState([]);
+  const [stripePayInvoice, setStripePayInvoice] = useState<any>(null);
+  const stripeReady = !!(settings?.stripePublishableKey && settings?.stripeSecretKeyEnc);
+
+  const markPaidViaStripe = (invId: string, paymentIntentId: string) => {
+    setEstimates(estimates.map(e => e.id === invId ? { ...e, paidAt: today(), status: "approved", stripePaymentIntentId: paymentIntentId, stripePaymentStatus: "paid" as const } : e));
+    setStripePayInvoice(null);
+    toast?.("Payment received ✓");
+  };
 
   // Only approved+invoiced estimates are invoices
   const invoices = estimates.filter(e => e.invoiced);
@@ -260,12 +269,23 @@ export function InvoicesPage({ estimates = [], setEstimates, customers = [], set
                     <td className="px-3 py-3"><span className="font-mono text-xs text-red-400">#{inv.id.toUpperCase()}</span></td>
                     <td className="px-3 py-3"><div className="font-medium">{c?.firstName} {c?.lastName}</div><div className="text-[10px] text-white/50 md:hidden">{inv.invoicedAt}</div></td>
                     <td className="px-3 py-3 text-white/70 hidden md:table-cell">{inv.invoicedAt || "—"}</td>
-                    <td className="px-3 py-3 hidden lg:table-cell">{inv.paidAt ? <span className="text-green-400 text-xs">Paid</span> : <span className={"text-xs " + (age > 30 ? "text-red-400" : age > 14 ? "text-yellow-400" : "text-white/60")}>{age}d</span>}</td>
+                    <td className="px-3 py-3 hidden lg:table-cell">
+                      {inv.paidAt ? (
+                        <span className="text-green-400 text-xs">
+                          {inv.stripePaymentStatus === "refunded" ? "Refunded" : inv.stripePaymentIntentId ? "Paid via Stripe" : "Paid"}
+                        </span>
+                      ) : (
+                        <span className={"text-xs " + (age > 30 ? "text-red-400" : age > 14 ? "text-yellow-400" : "text-white/60")}>{age}d</span>
+                      )}
+                    </td>
                     <td className="px-3 py-3">{statusBadge(inv)}</td>
                     <td className="px-3 py-3 text-right font-bold text-red-400">{fmt(inv.total)}</td>
                     <td className="px-3 py-3 text-right">
                       <div className="flex items-center justify-end gap-1">
                         <button onClick={() => setViewing(inv)} title="View" className="p-1.5 rounded-lg hover:bg-white/10 text-white/60 hover:text-white"><Eye size={12} /></button>
+                        {!inv.paidAt && stripeReady && (
+                          <button onClick={() => setStripePayInvoice(inv)} title="Pay Now" className="p-1.5 rounded-lg hover:bg-purple-900/30 text-white/60 hover:text-purple-400"><CreditCard size={12} /></button>
+                        )}
                         <button onClick={() => {
                           const c = customers.find(x => x.id === inv.customerId);
                           const html = `<!DOCTYPE html><html><head><title>Invoice</title><style>body{font-family:Arial;padding:32px;color:#111;max-width:700px;margin:auto}h1{color:#e11d48}.hdr{display:flex;justify-content:space-between;border-bottom:2px solid #e11d48;padding-bottom:16px;margin-bottom:24px}table{width:100%;border-collapse:collapse;font-size:13px}th{text-align:left;padding:8px;border-bottom:1px solid #ccc;font-size:10px;text-transform:uppercase}td{padding:8px;border-bottom:1px solid #eee}.r{text-align:right}.total{font-weight:bold;font-size:16px;color:#e11d48}.paid{background:#dcfce7;border:1px solid #16a34a;padding:12px;text-align:center;margin-top:16px;border-radius:8px;font-weight:bold}</style></head><body>
@@ -369,7 +389,8 @@ export function InvoicesPage({ estimates = [], setEstimates, customers = [], set
                   toast("Partial payment of " + fmt(partial) + " recorded · Balance: " + fmt(newBalance));
                 }} className="!text-xs"><CreditCard size={11} className="inline mr-1" />Partial Pay</GBtn>
                 <GBtn variant="ghost" onClick={() => sendReminder(viewing)}><Send size={12} className="inline mr-1.5" />Remind</GBtn>
-                <GBtn onClick={() => { markPaid(viewing.id); setViewing({ ...viewing, paidAt: today() }); }}><CheckCircle size={12} className="inline mr-1.5" />Mark Paid</GBtn>
+                {stripeReady && <GBtn onClick={() => setStripePayInvoice(viewing)} className="!bg-gradient-to-r !from-[#635BFF] !to-[#4F46E5] !border-[#635BFF]/50"><CreditCard size={12} className="inline mr-1.5" />Pay Now</GBtn>}
+                <GBtn variant="ghost" onClick={() => { markPaid(viewing.id); setViewing({ ...viewing, paidAt: today() }); }}><CheckCircle size={12} className="inline mr-1.5" />Mark Paid</GBtn>
               </>}
               {viewing.paidAt && <>
                 <GBtn variant="ghost" className="!text-xs !border-red-800/40 !text-red-400" onClick={() => {
@@ -384,6 +405,16 @@ export function InvoicesPage({ estimates = [], setEstimates, customers = [], set
           </div>;
         })()}
       </Modal>
+
+      <StripePaymentModal
+        open={!!stripePayInvoice}
+        onClose={() => setStripePayInvoice(null)}
+        publishableKey={settings?.stripePublishableKey || ""}
+        secretKeyEnc={settings?.stripeSecretKeyEnc || ""}
+        amount={stripePayInvoice?.total || 0}
+        description={`Invoice #${stripePayInvoice?.id?.slice(-8).toUpperCase() || ""}`}
+        onSuccess={(paymentIntentId) => stripePayInvoice && markPaidViaStripe(stripePayInvoice.id, paymentIntentId)}
+      />
     </div>
   );
 }

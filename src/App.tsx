@@ -152,20 +152,32 @@ const navGroups = [
 async function resolveUserRole(session: any): Promise<"owner" | "employee"> {
   if (!session?.user) return "owner";
 
-  // Check for Google identity FIRST — before role metadata, before the employees
-  // table. Google sign-in/link is owner-only in this app (employees authenticate
-  // with email/password). A stale role: "technician"/"manager" value can end up in
-  // user_metadata (e.g. an old employees-table email match stamping it during some
-  // login flow) and would otherwise short-circuit this check before it ever runs,
-  // wrongly sending an owner who has linked Google to the employee portal.
+  // Check for Google identity FIRST — before role metadata. Google sign-in is the
+  // norm for owners, but an EMPLOYEE who connects their Google account (Connect
+  // Google Account in the portal) also ends up with a "google" identity, so a
+  // Google identity alone cannot mean "owner". Resolve it against the employees
+  // table: only a Google-linked user with NO employee record (or an employee
+  // record explicitly marked role "owner") is an owner; one with role
+  // "technician"/"manager" is still an employee.
   const identities = session.user.identities || [];
   const hasGoogle = identities.some((i: any) => i.provider === "google");
   if (hasGoogle) {
+    try {
+      const { data } = await (supabase as any)
+        .from("employees")
+        .select("id, role")
+        .eq("user_id", session.user.id)
+        .maybeSingle();
+      if (data && (data.role === "technician" || data.role === "manager")) {
+        console.log("resolveUserRole: Google identity + employee record (" + data.role + ") — returning employee");
+        return "employee";
+      }
+    } catch { /* employees table may not exist */ }
     console.log("resolveUserRole: Google identity found — returning owner");
     return "owner";
   }
 
-  // Only after the Google check, fall through to role metadata / employees lookup.
+  // No Google identity — fall through to role metadata / employees lookup.
   const empRole = session.user.user_metadata?.role;
   if (empRole === "technician" || empRole === "manager") return "employee";
   if (empRole === "owner") return "owner";

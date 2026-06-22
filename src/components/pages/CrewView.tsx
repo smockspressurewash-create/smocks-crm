@@ -88,7 +88,7 @@ export function CrewView({ jobs = [], setJobs, customers = [], employees = [], t
     .sort((a, b) => { const po = { urgent: 0, high: 1, normal: 2, low: 3 }; return (po[a.priority || "normal"] - po[b.priority || "normal"]); });
 
   const updateJob = (jid, patch) => setJobs(prev => prev.map(j => j.id === jid ? { ...j, ...patch } : j));
-  const toggleCk = (jid, idx) => setJobs(prev => prev.map(j => j.id === jid ? { ...j, checklist: j.checklist.map((c, i) => i === idx ? { ...c, done: !c.done } : c) } : j));
+  const toggleCk = (jid, idx) => setJobs(prev => prev.map(j => j.id === jid ? { ...j, checklist: (j.checklist || []).map((c, i) => i === idx ? { ...c, done: !c.done } : c) } : j));
   const clockIn = jid => { updateJob(jid, { clockInAt: Date.now() }); toast("Clocked in ✓"); };
   const clockOut = j => {
     if (!j.clockInAt) return;
@@ -138,8 +138,8 @@ export function CrewView({ jobs = [], setJobs, customers = [], employees = [], t
 
       {dayJobs.map((j, stopIdx) => {
         const c = customers.find(x => x.id === j.customerId);
-        const doneCount = j.checklist.filter(ck => ck.done).length;
-        const pct = j.checklist.length ? Math.round((doneCount / j.checklist.length) * 100) : 0;
+        const doneCount = (j.checklist || []).filter(ck => ck.done).length;
+        const pct = (j.checklist || []).length ? Math.round((doneCount / (j.checklist || []).length) * 100) : 0;
         const isClockedIn = !!j.clockInAt;
         const liveHrs = isClockedIn ? ((Date.now() - j.clockInAt) / 3600000) : 0;
         const prioColor = { urgent: "border-l-red-500", high: "border-l-yellow-500", normal: "border-l-transparent", low: "border-l-transparent" }[j.priority || "normal"];
@@ -206,8 +206,8 @@ export function CrewView({ jobs = [], setJobs, customers = [], employees = [], t
             </div>
           </div>
 
-          {/* Checklist */}
-          {j.checklist.length > 0 && <div className="px-4 pb-4">
+          {/* Checklist — always visible regardless of job status (scheduled, in_progress, completed) */}
+          {<div className="px-4 pb-4">
             <div className="flex items-center justify-between mb-2">
               <div className="text-[11px] text-white/50 uppercase tracking-wider">Checklist</div>
               <div className="text-[11px] font-semibold">{pct}% done</div>
@@ -216,7 +216,7 @@ export function CrewView({ jobs = [], setJobs, customers = [], employees = [], t
               <div className="h-full bg-gradient-to-r from-red-500 to-green-500 transition-all" style={{ width: pct + "%" }} />
             </div>
             <div className="space-y-2">
-              {j.checklist.map((ck, idx) => (
+              {(j.checklist || []).map((ck, idx) => (
                 <label key={idx} className={"flex items-start gap-3 p-3 rounded-xl cursor-pointer transition active:scale-95 " + (ck.done ? "bg-green-950/20 border border-green-700/30" : "bg-white/5 border border-white/10")}>
                   <input type="checkbox" checked={ck.done} onChange={() => toggleCk(j.id, idx)} className="w-5 h-5 rounded accent-green-500 flex-shrink-0 mt-0.5" />
                   <span className={"text-sm " + (ck.done ? "line-through text-white/50" : "text-white/90")}>{ck.text}</span>

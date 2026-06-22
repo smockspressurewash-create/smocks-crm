@@ -28,6 +28,7 @@ import { seedCustomers, seedEstimates, seedJobs, seedEmployees, seedVehicles, se
 import { callModel, MODELS } from "../../lib/api";
 import { createCalendarEvent, updateCalendarEvent, deleteCalendarEvent, fetchDriveFiles, MOCK_GOOGLE_DATA, fmtSize, fmtDate, fileIcon } from "../../lib/google";
 import { supabase } from "../../lib/supabase";
+import { obfuscate, deobfuscate } from "../../lib/crypto";
 import { usePersistent } from "../../hooks/usePersistent";
 import { usePersistentRaw } from "../../hooks/usePersistentRaw";
 import { Glass } from "../ui/Glass";
@@ -80,6 +81,8 @@ import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 
 export function SettingsModal({ open, onClose, settings, setSettings, services, setServices, emailTemplates, setEmailTemplates, smsTemplates, setSmsTemplates, estimateTemplates = [], setEstimateTemplates = (() => {}) as any, modelStatus = {}, setModelStatus = (() => {}) as any, toast, onSignOut }: { open?: any; onClose?: any; settings?: any; setSettings?: any; services?: any; setServices?: any; emailTemplates?: any; setEmailTemplates?: any; smsTemplates?: any; setSmsTemplates?: any; estimateTemplates?: any[]; setEstimateTemplates?: any; modelStatus?: any; setModelStatus?: any; toast?: any; onSignOut?: () => void }) {
   const [f, setF] = useState(settings);
+  const [stripeSecretInput, setStripeSecretInput] = useState(() => deobfuscate(settings.stripeSecretKeyEnc || ""));
+  const [showStripeSecret, setShowStripeSecret] = useState(false);
   const [sec, setSec] = useState("api");
   const [showKey, setShowKey] = useState(false);
   const [googleOAuth, setGoogleOAuth] = useState({ open: false, step: "account", email: "", selectedScopes: { gmail: true, calendar: true, drive: false, contacts: false } });
@@ -90,7 +93,16 @@ export function SettingsModal({ open, onClose, settings, setSettings, services, 
 
   useEffect(() => { if (open) setF(settings); }, [open, settings]);
 
-  const save = () => { setSettings({ ...f, monthlyRevenueGoal: Number(f.monthlyRevenueGoal), monthlyJobsGoal: Number(f.monthlyJobsGoal), taxRate: Number(f.taxRate) }); onClose(); toast("Settings saved"); };
+  const save = () => {
+    const stripeSecretKeyEnc = obfuscate(stripeSecretInput.trim());
+    setSettings({
+      ...f,
+      monthlyRevenueGoal: Number(f.monthlyRevenueGoal), monthlyJobsGoal: Number(f.monthlyJobsGoal), taxRate: Number(f.taxRate),
+      stripeSecretKeyEnc,
+      stripeConnected: !!(f.stripePublishableKey?.trim() && stripeSecretInput.trim()),
+    });
+    onClose(); toast("Settings saved");
+  };
 
   const secs = [
     { key: "profile", label: "My Profile", icon: User },
@@ -124,9 +136,9 @@ export function SettingsModal({ open, onClose, settings, setSettings, services, 
           </div>
         </div>
         {/* Right panel */}
-        <div className="flex-1 flex flex-col min-w-0">
+        <div className="flex-1 flex flex-col min-w-0 min-h-0">
           {/* Scrollable content */}
-          <div className="flex-1 min-h-0 overflow-y-auto p-4 sm:p-5 space-y-4">
+          <div className="flex-1 min-h-0 overflow-y-auto p-4 sm:p-5 pb-8 space-y-4">
           {sec === "profile" && <div className="space-y-4">
             <div>
               <h4 className="font-semibold text-sm mb-3 flex items-center gap-2"><User size={14} />My Profile</h4>
@@ -704,10 +716,27 @@ export function SettingsModal({ open, onClose, settings, setSettings, services, 
             <Glass className="p-4 !bg-black/40">
               <div className="flex items-center justify-between mb-2">
                 <div className="flex items-center gap-2"><CreditCard size={14} className="text-purple-400" /><div className="font-semibold text-sm">Stripe</div></div>
-                <Badge tone={f.stripeConnected ? "green" : "gray"}>{f.stripeConnected ? "Connected" : "Disconnected"}</Badge>
+                <Badge tone={f.stripePublishableKey?.trim() && stripeSecretInput.trim() ? "green" : "gray"}>
+                  {f.stripePublishableKey?.trim() && stripeSecretInput.trim() ? "Stripe Connected ✓" : "Not Connected"}
+                </Badge>
               </div>
-              <div className="text-xs text-white/60 mb-3">Accept deposits, payments, and tips on estimates.</div>
-              {f.stripeConnected ? <GBtn variant="danger" onClick={() => setF({ ...f, stripeConnected: false })} className="w-full !text-xs">Disconnect</GBtn> : <GBtn onClick={() => setF({ ...f, stripeConnected: true })} className="w-full !text-xs">Connect Stripe (Mock)</GBtn>}
+              <div className="text-xs text-white/60 mb-3">Accept deposits, payments, and tips on estimates and invoices.</div>
+              <div className="space-y-2.5">
+                <div>
+                  <label className="text-[10px] text-white/50 mb-1 block uppercase tracking-wider">Publishable Key</label>
+                  <GInput placeholder="pk_live_…" value={f.stripePublishableKey || ""} onChange={e => setF({ ...f, stripePublishableKey: e.target.value })} className="!text-xs font-mono" />
+                </div>
+                <div>
+                  <label className="text-[10px] text-white/50 mb-1 block uppercase tracking-wider">Secret Key</label>
+                  <div className="relative">
+                    <GInput type={showStripeSecret ? "text" : "password"} placeholder="sk_live_…" value={stripeSecretInput} onChange={e => setStripeSecretInput(e.target.value)} className="!text-xs font-mono pr-9" />
+                    <button type="button" onClick={() => setShowStripeSecret(s => !s)} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-white/40 hover:text-white/70">
+                      {showStripeSecret ? <EyeOff size={13} /> : <Eye size={13} />}
+                    </button>
+                  </div>
+                  <div className="text-[10px] text-white/30 mt-1">Stored obfuscated in localStorage — not real encryption. For production use, keys belong behind a backend.</div>
+                </div>
+              </div>
             </Glass>
 
             {/* QuickBooks */}

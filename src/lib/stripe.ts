@@ -1,0 +1,81 @@
+// ─── Stripe.js loader ──────────────────────────────────────────────────────────
+
+let stripeJsPromise: Promise<any> | null = null;
+
+export const loadStripeJs = (publishableKey: string): Promise<any> => {
+  if (!stripeJsPromise) {
+    stripeJsPromise = new Promise((resolve, reject) => {
+      if ((window as any).Stripe) { resolve((window as any).Stripe); return; }
+      const script = document.createElement("script");
+      script.src = "https://js.stripe.com/v3/";
+      script.onload = () => resolve((window as any).Stripe);
+      script.onerror = () => reject(new Error("Failed to load Stripe.js"));
+      document.head.appendChild(script);
+    });
+  }
+  return stripeJsPromise.then(Stripe => Stripe(publishableKey));
+};
+
+// ─── Payment Intents (direct from browser) ────────────────────────────────────
+// NOTE: this calls the Stripe API directly from the browser using the secret key,
+// the same direct-from-browser pattern this codebase already uses for Twilio
+// (see lib/messaging.ts twilioSend). That means the secret key is reachable from
+// the browser session it's configured in. It is NOT safe for a multi-tenant or
+// public-facing deployment — a real backend should create payment intents. This
+// is the "no backend yet" tradeoff explicitly accepted for this app.
+
+export interface StripePaymentIntent {
+  id: string;
+  client_secret: string;
+  status: string;
+}
+
+export const createPaymentIntent = async (
+  secretKey: string,
+  amountCents: number,
+  currency: string,
+  description: string
+): Promise<StripePaymentIntent> => {
+  const body = new URLSearchParams({
+    amount: String(Math.round(amountCents)),
+    currency,
+    description,
+    "automatic_payment_methods[enabled]": "true",
+  });
+  const res = await fetch("https://api.stripe.com/v1/payment_intents", {
+    method: "POST",
+    headers: {
+      Authorization: `Basic ${btoa(secretKey + ":")}`,
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
+    body: body.toString(),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({})) as { error?: { message?: string } };
+    throw new Error(err.error?.message ?? `Stripe error ${res.status}`);
+  }
+  return res.json();
+};
+
+export const retrievePaymentIntent = async (secretKey: string, id: string): Promise<StripePaymentIntent> => {
+  const res = await fetch(`https://api.stripe.com/v1/payment_intents/${id}`, {
+    headers: { Authorization: `Basic ${btoa(secretKey + ":")}` },
+  });
+  if (!res.ok) throw new Error(`Stripe error ${res.status}`);
+  return res.json();
+};
+
+export const refundPaymentIntent = async (secretKey: string, paymentIntentId: string): Promise<void> => {
+  const res = await fetch("https://api.stripe.com/v1/refunds", {
+    method: "POST",
+    headers: {
+      Authorization: `Basic ${btoa(secretKey + ":")}`,
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
+    body: new URLSearchParams({ payment_intent: paymentIntentId }).toString(),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({})) as { error?: { message?: string } };
+    throw new Error(err.error?.message ?? `Stripe refund error ${res.status}`);
+  }
+};

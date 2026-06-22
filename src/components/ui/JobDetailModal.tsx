@@ -156,6 +156,7 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
   const [attName, setAttName] = useState("");
   const [attType, setAttType] = useState("pdf");
   const [, forceTick] = useState(0);
+  const notifyEmployeesRef = useRef<(emps: any[], buildSubject: (emp: any) => string, buildHtml: (emp: any) => string) => Promise<number>>(() => Promise.resolve(0));
   const [showSignOff, setShowSignOff] = useState(false);
   const [signerName, setSignerName] = useState("");
   const [gSyncing, setGSyncing] = useState(false);
@@ -174,6 +175,38 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
     const h = setInterval(() => forceTick(t => t + 1), 1000);
     return () => clearInterval(h);
   }, [job?.clockInAt]);
+
+  // Detect schedule/address changes on an already-crewed job and notify assigned
+  // employees automatically. Skips the initial mount and skips when the modal is
+  // reused for a different job (jobId change resets the baseline silently).
+  // Must stay ABOVE the `if (!job) return null` below — hooks can never follow an
+  // early return, or the hook count differs between renders where job is/isn't set
+  // (React error #310, "rendered fewer hooks than expected").
+  const prevScheduleRef = useRef<{ jobId: string; date?: string; time?: string; address?: string }>({
+    jobId, date: job?.scheduledDate, time: job?.scheduledTime, address: job?.address,
+  });
+  useEffect(() => {
+    if (!job) return;
+    const prev = prevScheduleRef.current;
+    if (prev.jobId !== jobId) {
+      prevScheduleRef.current = { jobId, date: job.scheduledDate, time: job.scheduledTime, address: job.address };
+      return;
+    }
+    const crewEmps = (job.crew || []).map((id: string) => employees.find(e => e.id === id)).filter(Boolean);
+    const withEmail = crewEmps.filter((e: any) => e.email);
+    const changes: string[] = [];
+    if (prev.date !== job.scheduledDate) changes.push(`date changed to ${job.scheduledDate}`);
+    if (prev.time !== job.scheduledTime) changes.push(`time changed to ${job.scheduledTime || "unscheduled"}`);
+    if (prev.address !== job.address) changes.push(`address changed to ${job.address}`);
+    prevScheduleRef.current = { jobId, date: job.scheduledDate, time: job.scheduledTime, address: job.address };
+    if (changes.length > 0 && withEmail.length > 0) {
+      notifyEmployeesRef.current(
+        withEmail,
+        () => `Job Updated — ${job.address}`,
+        (emp: any) => `<p>Hi ${emp.firstName},</p><p>Your job has changed:</p><ul>${changes.map(c => `<li>${c}</li>`).join("")}</ul><p>— ${settings.companyName || "Smock's Pressure Washing"}</p>`
+      ).then((sent: number) => { if (sent > 0) toast(`Notified ${sent} crew member${sent !== 1 ? "s" : ""} of the change`, "green"); });
+    }
+  }, [job?.scheduledDate, job?.scheduledTime, job?.address, jobId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!job) return null;
   const c = customers.find(x => x.id === job.customerId);
@@ -218,6 +251,7 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
     }
     return sent;
   };
+  notifyEmployeesRef.current = notifyEmployees;
 
   const notifyCrew = async () => {
     const crewEmps = (job.crew || []).map(id => employees.find(e => e.id === id)).filter(Boolean);
@@ -234,34 +268,6 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
     setNotifying(false);
     toast(sent > 0 ? `Notified ${sent} crew member${sent !== 1 ? "s" : ""} ✓` : "Email send failed — check Resend settings", sent > 0 ? "green" : "red");
   };
-
-  // Detect schedule/address changes on an already-crewed job and notify assigned
-  // employees automatically. Skips the initial mount and skips when the modal is
-  // reused for a different job (jobId change resets the baseline silently).
-  const prevScheduleRef = useRef<{ jobId: string; date?: string; time?: string; address?: string }>({
-    jobId, date: job.scheduledDate, time: job.scheduledTime, address: job.address,
-  });
-  useEffect(() => {
-    const prev = prevScheduleRef.current;
-    if (prev.jobId !== jobId) {
-      prevScheduleRef.current = { jobId, date: job.scheduledDate, time: job.scheduledTime, address: job.address };
-      return;
-    }
-    const crewEmps = (job.crew || []).map((id: string) => employees.find(e => e.id === id)).filter(Boolean);
-    const withEmail = crewEmps.filter((e: any) => e.email);
-    const changes: string[] = [];
-    if (prev.date !== job.scheduledDate) changes.push(`date changed to ${job.scheduledDate}`);
-    if (prev.time !== job.scheduledTime) changes.push(`time changed to ${job.scheduledTime || "unscheduled"}`);
-    if (prev.address !== job.address) changes.push(`address changed to ${job.address}`);
-    prevScheduleRef.current = { jobId, date: job.scheduledDate, time: job.scheduledTime, address: job.address };
-    if (changes.length > 0 && withEmail.length > 0) {
-      notifyEmployees(
-        withEmail,
-        () => `Job Updated — ${job.address}`,
-        emp => `<p>Hi ${emp.firstName},</p><p>Your job has changed:</p><ul>${changes.map(c => `<li>${c}</li>`).join("")}</ul><p>— ${settings.companyName || "Smock's Pressure Washing"}</p>`
-      ).then(sent => { if (sent > 0) toast(`Notified ${sent} crew member${sent !== 1 ? "s" : ""} of the change`, "green"); });
-    }
-  }, [job.scheduledDate, job.scheduledTime, job.address, jobId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const sendJobRequest = async () => {
     const emp = employees.find(e => e.id === requestEmpId);

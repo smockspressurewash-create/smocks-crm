@@ -183,7 +183,7 @@ export function JobsPage({ jobs = [], setJobs, customers = [], employees = [], e
       }
     }
   };
-  const toggleCk = (jid, idx) => setJobs(jobs.map(j => j.id === jid ? { ...j, checklist: j.checklist.map((c, i) => i === idx ? { ...c, done: !c.done } : c) } : j));
+  const toggleCk = (jid, idx) => setJobs(jobs.map(j => j.id === jid ? { ...j, checklist: (j.checklist || []).map((c, i) => i === idx ? { ...c, done: !c.done } : c) } : j));
   const updateJob = (jid, patch) => {
     const oldJob = jobs.find(j => j.id === jid);
     setJobs(jobs.map(j => j.id === jid ? { ...j, ...patch } : j));
@@ -546,7 +546,7 @@ export function JobsPage({ jobs = [], setJobs, customers = [], employees = [], e
       <div className="grid md:grid-cols-2 gap-4">
         {filtered.map(j => {
           const c = customers.find(x => x.id === j.customerId);
-          const dn = j.checklist.filter(x => x.done).length;
+          const dn = (j.checklist || []).filter(x => x.done).length;
           const crewNames = (j.crew || []).map(id => employees.find(e => e.id === id)).filter(Boolean);
           const jobCost = (Number(j.laborCost) || 0) + (Number(j.materialCost) || 0) + ((j.chemicalsUsed || []).reduce((s, ch) => s + Number(ch.cost), 0));
           const jobMargin = j.amount > 0 && jobCost > 0 ? Math.round(((j.amount - jobCost) / j.amount) * 100) : null;
@@ -648,7 +648,7 @@ export function JobsPage({ jobs = [], setJobs, customers = [], employees = [], e
                 </div>
               )}
 
-              <div className="mb-3"><div className="flex items-center justify-between text-xs text-white/60 mb-1.5"><span>Checklist</span><span>{dn}/{j.checklist.length}</span></div><div className="space-y-1.5 max-h-32 overflow-y-auto">{j.checklist.map((ck, idx) => <label key={idx} className="flex items-center gap-2 text-sm cursor-pointer"><input type="checkbox" checked={ck.done} onChange={() => toggleCk(j.id, idx)} className="w-4 h-4 rounded accent-red-600" /><span className={ck.done ? "line-through text-white/40" : "text-white/80"}>{ck.text}</span></label>)}</div></div>
+              <div className="mb-3"><div className="flex items-center justify-between text-xs text-white/60 mb-1.5"><span>Checklist</span><span>{dn}/{(j.checklist || []).length}</span></div><div className="space-y-1.5 max-h-32 overflow-y-auto">{(j.checklist || []).map((ck, idx) => <label key={idx} className="flex items-center gap-2 text-sm cursor-pointer"><input type="checkbox" checked={ck.done} onChange={() => toggleCk(j.id, idx)} className="w-4 h-4 rounded accent-red-600" /><span className={ck.done ? "line-through text-white/40" : "text-white/80"}>{ck.text}</span></label>)}</div></div>
 
               <div className="md:hidden text-[10px] text-white/30 text-center mb-2 border border-dashed border-red-900/20 rounded py-1">← swipe left to advance</div>
 
@@ -702,7 +702,7 @@ export function JobsPage({ jobs = [], setJobs, customers = [], employees = [], e
                     const daysMap = { daily: 1, weekly: 7, biweekly: 14, monthly: 30, quarterly: 91, annually: 365 };
                     const days = daysMap[j.recurringFreq] || 30;
                     const nextDate = (() => { const d = new Date(j.scheduledDate); d.setDate(d.getDate() + days); return d.toISOString().slice(0, 10); })();
-                    const nextJob = { ...j, id: uid(), status: "scheduled", scheduledDate: nextDate, loggedHours: 0, clockInAt: null, checklist: j.checklist.map(ck => ({ ...ck, done: false })), commLog: [], photos: [], chemicalsUsed: [] };
+                    const nextJob = { ...j, id: uid(), status: "scheduled", scheduledDate: nextDate, loggedHours: 0, clockInAt: null, checklist: (j.checklist || []).map(ck => ({ ...ck, done: false })), commLog: [], photos: [], chemicalsUsed: [] };
                     setJobs(prev => [...prev.map(x => x.id === j.id ? { ...x, status: "completed" } : x), nextJob]);
                     toast("Next " + j.recurringFreq + " job auto-scheduled for " + nextDate);
                   }

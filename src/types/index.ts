@@ -104,6 +104,8 @@ export interface Estimate {
   partialPaid?: number;
   googleEventId?: string;
   conversions?: number;
+  stripePaymentIntentId?: string;
+  stripePaymentStatus?: "unpaid" | "paid" | "refunded";
 }
 
 // ─── Job ──────────────────────────────────────────────────────────────────────
@@ -515,6 +517,11 @@ export interface AppSettings {
   owmKey?: string;
   mapsKey?: string;
   stripeKey?: string;
+  stripeConnected?: boolean;
+  stripePublishableKey?: string;
+  // Secret key is obfuscated (see lib/crypto.ts) before being persisted — not real
+  // encryption, but keeps it from sitting in localStorage as plain text.
+  stripeSecretKeyEnc?: string;
   resendKey?: string;
   fromEmail?: string;
   resendBackendUrl?: string;
