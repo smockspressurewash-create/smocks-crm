@@ -618,6 +618,9 @@ export function App() {
         const userRole = await resolveUserRole(session);
 
         if (userRole === "employee") {
+          // Force the hash to #/portal immediately too — belt-and-suspenders so the
+          // URL itself never points at a CRM route while this resolves.
+          if (!window.location.hash.startsWith("#/portal")) window.location.hash = "/portal";
           setEmpSession(session);
           setPage("portal");
           setOauthProcessing(false);
@@ -655,6 +658,7 @@ export function App() {
       const initIsGoogle = (initial?.user?.identities || []).some((i: any) => i.provider === "google");
       const initRole = await resolveUserRole(initial);
       if (initial && initRole === "employee") {
+        if (!window.location.hash.startsWith("#/portal")) window.location.hash = "/portal";
         setEmpSession(initial);
         setPage("portal");
         setOauthProcessing(false);
@@ -720,10 +724,24 @@ export function App() {
   }
 
   // ── Session loading guard — prevents CRM flashing before employee session restores ──
+  // This must resolve role BEFORE anything else renders: no sidebar, no nav, no
+  // dashboard — just this screen — until we know for certain whether the visitor
+  // is an owner or an employee.
   if (!sessionChecked) {
     return (
       <div className="min-h-screen bg-black flex items-center justify-center">
-        <div className="w-8 h-8 border-2 border-red-600/50 border-t-transparent rounded-full animate-spin" />
+        <div className="text-center space-y-4">
+          <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-red-600 to-red-900 flex items-center justify-center mx-auto shadow-lg shadow-red-900/40">
+            <span className="text-2xl font-black text-white tracking-tight">CB</span>
+          </div>
+          <div className="space-y-2">
+            <div className="font-bold text-white tracking-tight">CrewBoss</div>
+            <div className="flex items-center justify-center gap-2 text-sm text-white/40">
+              <div className="w-3.5 h-3.5 border-2 border-red-600/50 border-t-transparent rounded-full animate-spin" />
+              Loading...
+            </div>
+          </div>
+        </div>
       </div>
     );
   }
