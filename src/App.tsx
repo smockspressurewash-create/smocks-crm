@@ -147,51 +147,63 @@ const navGroups = [
 ];
 
 // ─── Role resolver ────────────────────────────────────────────────────────────
+// Local cache of "this user is an employee", keyed by Supabase user ID. Checked
+// BEFORE any Supabase query so a momentary race right after an OAuth redirect
+// (where a fresh query could come back empty before data has propagated) can
+// never misclassify a known employee as an owner. Only ever caches "employee" —
+// "owner" is never cached, since a stale owner cache would block a legitimate
+// employee record created later for the same user.
+const getCachedRole = (userId: string): "employee" | null => {
+  try { return localStorage.getItem("crew_role_" + userId) === "employee" ? "employee" : null; } catch { return null; }
+};
+const setCachedEmployeeRole = (userId: string): void => {
+  try { localStorage.setItem("crew_role_" + userId, "employee"); } catch { /* ignore */ }
+};
+
 // Determines whether a Supabase session belongs to an owner or an employee.
-// Priority: Google identity → role metadata → employees table → default owner.
+// Priority: cached role → employees table (non-owner role → employee, owner
+// role → owner) → Google identity (no employee record → owner) → default
+// employee.
+//
+// The employees table is checked first (after the cache) and is authoritative:
+// once someone is created as an employee, nothing about their session
+// (including linking a Google account for calendar sync) can ever reclassify
+// them as an owner. A Google identity only means "owner" for a user who isn't
+// in the employees table at all.
 async function resolveUserRole(session: any): Promise<"owner" | "employee"> {
   if (!session?.user) return "owner";
 
-  // Check for Google identity FIRST — before role metadata. Google sign-in is the
-  // norm for owners, but an EMPLOYEE who connects their Google account (Connect
-  // Google Account in the portal) also ends up with a "google" identity, so a
-  // Google identity alone cannot mean "owner". Resolve it against the employees
-  // table: only a Google-linked user with NO employee record (or an employee
-  // record explicitly marked role "owner") is an owner; one with role
-  // "technician"/"manager" is still an employee.
-  const identities = session.user.identities || [];
-  const hasGoogle = identities.some((i: any) => i.provider === "google");
-  if (hasGoogle) {
-    try {
-      const { data } = await (supabase as any)
-        .from("employees")
-        .select("id, role")
-        .eq("user_id", session.user.id)
-        .maybeSingle();
-      if (data && (data.role === "technician" || data.role === "manager")) {
-        console.log("resolveUserRole: Google identity + employee record (" + data.role + ") — returning employee");
-        return "employee";
-      }
-    } catch { /* employees table may not exist */ }
-    console.log("resolveUserRole: Google identity found — returning owner");
-    return "owner";
+  if (getCachedRole(session.user.id) === "employee") {
+    console.log("resolveUserRole: cached role — returning employee");
+    return "employee";
   }
 
-  // No Google identity — fall through to role metadata / employees lookup.
-  const empRole = session.user.user_metadata?.role;
-  if (empRole === "technician" || empRole === "manager") return "employee";
-  if (empRole === "owner") return "owner";
-  // Pure email/password user with no role metadata and no Google identity —
-  // query the employees table to determine role.
   try {
     const { data } = await (supabase as any)
       .from("employees")
       .select("id, role")
       .eq("user_id", session.user.id)
       .maybeSingle();
-    if (data && data.role !== "owner") return "employee";
+    if (data) {
+      if (data.role === "owner") {
+        console.log("resolveUserRole: employees table — role owner — returning owner");
+        return "owner";
+      }
+      console.log("resolveUserRole: employees table — role " + data.role + " — returning employee");
+      setCachedEmployeeRole(session.user.id);
+      return "employee";
+    }
   } catch { /* employees table may not exist */ }
-  return "owner";
+
+  const identities = session.user.identities || [];
+  const hasGoogle = identities.some((i: any) => i.provider === "google");
+  if (hasGoogle) {
+    console.log("resolveUserRole: no employee record + Google identity — returning owner");
+    return "owner";
+  }
+
+  console.log("resolveUserRole: no employee record, no Google identity — returning employee");
+  return "employee";
 }
 
 // Captures the Google OAuth token bridged via sessionStorage (see the manual
@@ -426,10 +438,24 @@ export function App() {
   const [companySetupName, setCompanySetupName] = useState("");
 
   useEffect(() => {
-    if (settings.googleConnected && !setupDone && !oauthProcessing) {
+    if (!settings.googleConnected || setupDone || oauthProcessing) return;
+    (async () => {
+      // Defensive guard: never show owner first-run setup to a user who was
+      // previously known to be an employee (cached by resolveUserRole / portal
+      // login), even if settings.googleConnected was set incorrectly.
+      const { data: { session } } = await supabase.auth.getSession();
+      const userId = session?.user?.id;
+      if (userId) {
+        try {
+          if (localStorage.getItem("crew_role_" + userId) === "employee") {
+            console.log("Company setup modal suppressed — cached employee role for", userId);
+            return;
+          }
+        } catch { /* ignore */ }
+      }
       setCompanySetupName((settings as any).companyName || "");
       setCompanySetupOpen(true);
-    }
+    })();
   }, [settings.googleConnected, setupDone, oauthProcessing]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const saveCompanySetup = async () => {

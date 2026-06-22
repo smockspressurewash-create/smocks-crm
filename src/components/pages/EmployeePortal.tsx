@@ -1260,6 +1260,10 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     console.log("doLogin: checking email", email, "against employees:", employees.map(e => e.email));
     console.log("doLogin: user metadata role:", metaRole);
 
+    // Anyone reaching the portal's email/password login is an employee by definition
+    // (owners use Google). Cache that now so a later Google-link can never race it.
+    try { localStorage.setItem("crew_role_" + session.user.id, "employee"); } catch { /* ignore */ }
+
     // Anyone who successfully completes signInWithPassword is an email/password user — treat as employee.
     // Google OAuth users cannot reach this path. Never sign them out here.
     const matchedEmployee = employees.find(e => e.email?.toLowerCase() === email.toLowerCase());
@@ -2390,6 +2394,14 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
               .slice(0, 20);
             const handleConnectGoogle = async () => {
               console.log("GOOGLE LINK INITIATED — employee:", empSession?.user?.id);
+              // Cache the role BEFORE redirecting — once linkIdentity/signInWithOAuth
+              // navigates away, no more JS runs on this page, so this must be set
+              // synchronously now, not after the redirect comes back. On return,
+              // resolveUserRole checks this cache first so a momentary Supabase query
+              // race can never misclassify a freshly-Google-linked employee as owner.
+              if (empSession?.user?.id) {
+                try { localStorage.setItem("crew_role_" + empSession.user.id, "employee"); } catch { /* ignore */ }
+              }
               const SCOPES = [
                 "https://www.googleapis.com/auth/calendar",
                 "https://www.googleapis.com/auth/calendar.events",
