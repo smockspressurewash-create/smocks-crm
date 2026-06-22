@@ -154,22 +154,22 @@ async function resolveUserRole(session: any): Promise<"owner" | "employee"> {
   const empRole = session.user.user_metadata?.role;
   if (empRole === "technician" || empRole === "manager") return "employee";
   if (empRole === "owner") return "owner";
-  // No role metadata — query the employees table to determine role.
-  // This must run BEFORE the Google-identity check: an employee who links their
-  // Google account (linkIdentity) ends up with a "google" identity on their
-  // session too, so checking identities first would wrongly reclassify them as
-  // an owner the moment they connect Google.
+  // A Google identity always means owner — Google sign-in/link is owner-only in this
+  // app (employees authenticate with email/password). Check this BEFORE the employees
+  // table lookup: a stale/duplicate employees row sharing the owner's email or user_id
+  // would otherwise misclassify the owner as an employee the moment Google is linked.
+  const identities = session.user.identities || [];
+  if (identities.some((i: any) => i.provider === "google")) return "owner";
+  // Pure email/password user with no role metadata and no Google identity —
+  // query the employees table to determine role.
   try {
     const { data } = await (supabase as any)
       .from("employees")
       .select("id, role")
       .eq("user_id", session.user.id)
       .maybeSingle();
-    // In table but with owner role → still an owner
-    if (data) return data.role !== "owner" ? "employee" : "owner";
+    if (data && data.role !== "owner") return "employee";
   } catch { /* employees table may not exist */ }
-  const identities = session.user.identities || [];
-  if (identities.some((i: any) => i.provider === "google")) return "owner";
   return "owner";
 }
 
