@@ -151,15 +151,24 @@ const navGroups = [
 // Priority: Google identity → role metadata → employees table → default owner.
 async function resolveUserRole(session: any): Promise<"owner" | "employee"> {
   if (!session?.user) return "owner";
+
+  // Check for Google identity FIRST — before role metadata, before the employees
+  // table. Google sign-in/link is owner-only in this app (employees authenticate
+  // with email/password). A stale role: "technician"/"manager" value can end up in
+  // user_metadata (e.g. an old employees-table email match stamping it during some
+  // login flow) and would otherwise short-circuit this check before it ever runs,
+  // wrongly sending an owner who has linked Google to the employee portal.
+  const identities = session.user.identities || [];
+  const hasGoogle = identities.some((i: any) => i.provider === "google");
+  if (hasGoogle) {
+    console.log("resolveUserRole: Google identity found — returning owner");
+    return "owner";
+  }
+
+  // Only after the Google check, fall through to role metadata / employees lookup.
   const empRole = session.user.user_metadata?.role;
   if (empRole === "technician" || empRole === "manager") return "employee";
   if (empRole === "owner") return "owner";
-  // A Google identity always means owner — Google sign-in/link is owner-only in this
-  // app (employees authenticate with email/password). Check this BEFORE the employees
-  // table lookup: a stale/duplicate employees row sharing the owner's email or user_id
-  // would otherwise misclassify the owner as an employee the moment Google is linked.
-  const identities = session.user.identities || [];
-  if (identities.some((i: any) => i.provider === "google")) return "owner";
   // Pure email/password user with no role metadata and no Google identity —
   // query the employees table to determine role.
   try {
@@ -526,9 +535,24 @@ export function App() {
     const interval = setInterval(async () => {
       if (jobs.length === 0) return;
       try {
-        await (supabase as any).from("jobs").upsert(jobs, { onConflict: "id" });
+        // Supabase-js resolves (rather than rejects) on a PostgREST error, so check
+        // the returned `error` explicitly — a bare try/catch alone won't see a 400.
+        const { error } = await (supabase as any).from("jobs").upsert(jobs, { onConflict: "id" });
+        if (error) {
+          if (String(error.code) === "400" || error.message?.includes("400") || error.message?.includes("column")) {
+            console.warn("Auto-save skipped — jobs table columns missing. Run the ALTER TABLE SQL.");
+            return;
+          }
+          throw error;
+        }
         setLastSynced(new Date());
-      } catch { /* graceful failure */ }
+      } catch (err: any) {
+        if (err?.code === "400" || err?.message?.includes("400")) {
+          console.warn("Auto-save skipped — jobs table columns missing. Run the ALTER TABLE SQL.");
+          return; // Don't crash, just skip
+        }
+        console.warn("Auto-save failed:", err?.message);
+      }
     }, 30000);
     return () => clearInterval(interval);
   }, [jobs]);
