@@ -1064,14 +1064,33 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
         .update({ status: "accepted", responded_at: new Date().toISOString() })
         .eq("id", requestId);
       if (requestData.job_id) {
+        const empId = myEmployee.id;
+        const empUserId = (myEmployee as any).user_id;
         setJobs(prev => prev.map(j => {
-          if (j.id === requestData.job_id && !(j.crew || []).includes(myEmployee.id)) {
-            const newCrew = [...(j.crew || []), myEmployee.id];
-            (supabase as any).from("jobs").update({ crew: newCrew }).eq("id", requestData.job_id).catch(() => {});
-            return { ...j, crew: newCrew };
+          if (j.id === requestData.job_id) {
+            const currentCrew = j.crew || [];
+            if (!currentCrew.includes(empId) && !currentCrew.includes(empUserId)) {
+              const newCrew = [...currentCrew, empId];
+              console.log("Accepting request job", requestData.job_id, "— crew before:", currentCrew, "after:", newCrew);
+              (supabase as any).from("jobs").update({ crew: newCrew }).eq("id", requestData.job_id).catch(() => {});
+              return { ...j, crew: newCrew };
+            }
           }
           return j;
         }));
+        // Refetch to confirm Supabase state
+        try {
+          const { data: freshJobs } = await (supabase as any).from("jobs").select("*");
+          if (Array.isArray(freshJobs) && freshJobs.length > 0) {
+            setJobs(prev => {
+              const sbMap = new Map(freshJobs.map((j: any) => [j.id, j]));
+              const merged = prev.map(j => sbMap.has(j.id) ? { ...j, ...sbMap.get(j.id) } : j);
+              const existingIds = new Set(prev.map(j => j.id));
+              const added = freshJobs.filter((j: any) => !existingIds.has(j.id));
+              return [...merged, ...added];
+            });
+          }
+        } catch { /* ignore */ }
       }
       setRequestDone("accepted");
       toast("Job accepted! You're on the crew. ✓");
@@ -1112,15 +1131,37 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
         .update({ status: "accepted", responded_at: new Date().toISOString() })
         .eq("id", req.id);
       if (req.job_id) {
+        // Optimistic local update
         setJobs(prev => prev.map(j => {
-          if (j.id === req.job_id && !(j.crew || []).includes(myEmployee.id)) {
-            const newCrew = [...(j.crew || []), myEmployee.id];
-            // Persist crew change to Supabase jobs table
-            (supabase as any).from("jobs").update({ crew: newCrew }).eq("id", req.job_id).catch(() => {});
-            return { ...j, crew: newCrew };
+          if (j.id === req.job_id) {
+            const currentCrew = j.crew || [];
+            const empId = myEmployee.id;
+            const empUserId = (myEmployee as any).user_id;
+            if (!currentCrew.includes(empId) && !currentCrew.includes(empUserId)) {
+              const newCrew = [...currentCrew, empId];
+              console.log("Accepting job", req.job_id, "— crew before:", currentCrew, "after:", newCrew);
+              (supabase as any).from("jobs").update({ crew: newCrew }).eq("id", req.job_id).catch(() => {});
+              return { ...j, crew: newCrew };
+            }
           }
           return j;
         }));
+        // Refetch from Supabase to ensure latest crew is reflected
+        try {
+          const { data: freshJobs } = await (supabase as any).from("jobs").select("*");
+          if (Array.isArray(freshJobs) && freshJobs.length > 0) {
+            setJobs(prev => {
+              const sbMap = new Map(freshJobs.map((j: any) => [j.id, j]));
+              const merged = prev.map(j => sbMap.has(j.id) ? { ...j, ...sbMap.get(j.id) } : j);
+              const existingIds = new Set(prev.map(j => j.id));
+              const added = freshJobs.filter((j: any) => !existingIds.has(j.id));
+              const result = [...merged, ...added];
+              console.log("Post-accept refetch — jobs with crew for", myEmployee.id, ":",
+                result.filter(j => (j.crew || []).some((c: string) => c === myEmployee.id || c === (myEmployee as any).user_id)).map(j => j.id));
+              return result;
+            });
+          }
+        } catch { /* ignore refetch failure */ }
       }
       setIncomingRequests(prev => prev.map(r => r.id === req.id ? { ...r, status: "accepted" } : r));
       toast("Job accepted! You're on the crew. ✓");
@@ -2111,9 +2152,10 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
             );
 
             return myJobs.length === 0 ? (
-              <div className="text-center py-10 text-white/30">
-                <Briefcase size={32} className="mx-auto mb-2 opacity-30" />
-                <div>No jobs assigned yet</div>
+              <div className="text-center py-14 text-white/30 px-4">
+                <Briefcase size={36} className="mx-auto mb-3 opacity-20" />
+                <div className="font-semibold text-white/40 mb-1">No jobs assigned yet</div>
+                <div className="text-sm leading-relaxed">When your manager assigns you to a job, it will appear here.</div>
               </div>
             ) : (
               <div className="space-y-5">
@@ -2196,6 +2238,9 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
             const empGoogleLinked = empSession
               ? (empSession.user?.identities || []).some((i: any) => i.provider === "google")
               : false;
+            const empGoogleEmail = empSession
+              ? ((empSession.user?.identities || []).find((i: any) => i.provider === "google")?.identity_data?.email || "")
+              : "";
             const upcomingForCal = myJobs
               .filter(j => j.scheduledDate >= todayStr && j.status !== "completed")
               .sort((a, b) => {
@@ -2204,24 +2249,31 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                 return da.localeCompare(db);
               })
               .slice(0, 20);
-            const handleConnectGoogle = () => {
-              supabase.auth.linkIdentity({
+            const handleConnectGoogle = async () => {
+              const SCOPES = [
+                "https://www.googleapis.com/auth/calendar",
+                "https://www.googleapis.com/auth/calendar.events",
+                "https://mail.google.com/",
+                "https://www.googleapis.com/auth/drive.file",
+                "https://www.googleapis.com/auth/contacts.readonly",
+                "https://www.googleapis.com/auth/tasks",
+              ].join(" ");
+              const redirectTo = `${window.location.origin}${window.location.pathname}#/portal`;
+              const { error } = await (supabase.auth as any).linkIdentity({
                 provider: "google",
-                options: {
-                  redirectTo: `${window.location.origin}${window.location.pathname}#/portal`,
-                  scopes: "https://www.googleapis.com/auth/calendar https://www.googleapis.com/auth/calendar.events",
-                },
-              } as any).catch(() => {
-                // Fallback: full OAuth (some Supabase plans require this)
+                options: { redirectTo, scopes: SCOPES },
+              });
+              if (error) {
+                // Fallback: full OAuth sign-in (some Supabase plans don't support linkIdentity)
                 supabase.auth.signInWithOAuth({
                   provider: "google",
                   options: {
-                    redirectTo: `${window.location.origin}${window.location.pathname}#/portal`,
-                    scopes: "https://www.googleapis.com/auth/calendar https://www.googleapis.com/auth/calendar.events",
+                    redirectTo,
+                    scopes: SCOPES,
                     queryParams: { access_type: "offline", prompt: "consent" },
                   },
                 });
-              });
+              }
             };
             return (
               <div className="space-y-4">
@@ -2231,6 +2283,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                     <CheckCircle size={18} className="text-green-400 flex-shrink-0" />
                     <div className="flex-1 min-w-0">
                       <div className="font-semibold text-sm text-green-300">Google Connected ✓</div>
+                      {empGoogleEmail && <div className="text-xs text-white/50 mt-0.5">{empGoogleEmail}</div>}
                       <div className="text-xs text-white/40 mt-0.5">Calendar sync is active — jobs auto-added on accept</div>
                     </div>
                   </Glass>

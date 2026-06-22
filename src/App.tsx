@@ -222,6 +222,8 @@ export function App() {
   // True once we've checked Supabase for an existing session on first load.
   // Prevents the CRM flashing briefly before the employee session is restored.
   const [sessionChecked, setSessionChecked] = useState(false);
+  // True once any owner session is confirmed — gates the CRM from unauthenticated access
+  const [hasCrmSession, setHasCrmSession] = useState(false);
   // Last Supabase sync timestamp
   const [lastSynced, setLastSynced] = useState<Date | null>(null);
   const [isSyncing, setIsSyncing] = useState(false);
@@ -541,6 +543,7 @@ export function App() {
 
         if (event === "SIGNED_OUT") {
           setEmpSession(null);
+          setHasCrmSession(false);
           setOauthProcessing(false);
           return;
         }
@@ -555,6 +558,7 @@ export function App() {
         }
 
         // Owner path
+        if (session) setHasCrmSession(true);
         if (session?.user?.email) setCrmUserEmail(session.user.email);
         applyGoogleIdentity(session);
 
@@ -587,6 +591,7 @@ export function App() {
         setPage("portal");
         setOauthProcessing(false);
       } else {
+        if (initial) setHasCrmSession(true);
         applyGoogleIdentity(initial);
         if (isOAuthCallback && initIsGoogle) {
           setPage("google");
@@ -629,8 +634,8 @@ export function App() {
       googleRefreshToken: "",
     }));
     setCrmUserEmail("");
+    setHasCrmSession(false);
     setProfileDropOpen(false);
-    setMobileViewForced("mobile"); // forces the login landing page
   };
 
   // ── OAuth loading screen ──────────────────────────────────────────────────
@@ -723,12 +728,8 @@ export function App() {
     );
   }
 
-  // ── Mobile login landing page (when on mobile and Google not connected) ──
-  const isMobileDevice = typeof window !== "undefined" && window.innerWidth < 768;
-  const showMobileLanding = (mobileViewForced === "mobile" || (isMobileDevice && mobileViewForced !== "desktop"))
-    && !settings.googleConnected;
-
-  if (showMobileLanding) {
+  // ── Login page — shown to any visitor without an active session ──────────
+  if (!empSession && !hasCrmSession) {
     const handleGoogleLogin = () => {
       supabase.auth.signInWithOAuth({
         provider: "google",
@@ -803,7 +804,7 @@ export function App() {
 
             <div className="flex items-center gap-3">
               <div className="flex-1 h-px bg-white/10" />
-              <span className="text-xs text-white/30">or owner email</span>
+              <span className="text-xs text-white/30">or email / password</span>
               <div className="flex-1 h-px bg-white/10" />
             </div>
 
