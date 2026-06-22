@@ -94,7 +94,7 @@ export const pollTwilioIncoming = async (
 
 // ─── Email via Gmail API ──────────────────────────────────────────────────────
 
-const sendViaGmail = async (
+export const sendViaGmail = async (
   googleProviderToken: string,
   fromEmail: string,
   to: string,

@@ -302,6 +302,37 @@ export const fetchGContacts = async (token: string): Promise<GContact[]> => {
     .filter(c => c.name !== "Unknown");
 };
 
+// ─── Per-employee Google token persistence ────────────────────────────────────
+// Employee OAuth tokens are stored in localStorage keyed by the employee's own
+// Supabase user ID, so each employee's browser only ever sees their own token.
+
+export interface EmpGoogleToken {
+  token: string;
+  refreshToken?: string;
+  email: string;
+  expiresAt: number;
+}
+
+const empGoogleKey = (userId: string) => `smocks.empGoogle.${userId}`;
+
+export const saveEmpGoogleToken = (userId: string, data: EmpGoogleToken): void => {
+  try { localStorage.setItem(empGoogleKey(userId), JSON.stringify(data)); } catch { /* ignore */ }
+};
+
+export const getEmpGoogleToken = (userId: string): EmpGoogleToken | null => {
+  try {
+    const raw = localStorage.getItem(empGoogleKey(userId));
+    return raw ? JSON.parse(raw) : null;
+  } catch { return null; }
+};
+
+export const clearEmpGoogleToken = (userId: string): void => {
+  try { localStorage.removeItem(empGoogleKey(userId)); } catch { /* ignore */ }
+};
+
+export const isEmpGoogleTokenValid = (t: EmpGoogleToken | null): boolean =>
+  !!t && !!t.token && t.expiresAt > Date.now();
+
 // ─── Drive ───────────────────────────────────────────────────────────────────
 
 export interface GDriveFile {

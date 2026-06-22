@@ -46,6 +46,7 @@ import { CrewView } from "./components/pages/CrewView";
 import { SettingsModal } from "./components/pages/SettingsModal";
 import { ClientPortal } from "./components/pages/ClientPortal";
 import { EmployeePortal } from "./components/pages/EmployeePortal";
+import { saveEmpGoogleToken } from "./lib/googleApi";
 import { ResetPassword } from "./components/pages/ResetPassword";
 
 // ─── Seed data ────────────────────────────────────────────────────────────────
@@ -150,12 +151,14 @@ const navGroups = [
 // Priority: Google identity → role metadata → employees table → default owner.
 async function resolveUserRole(session: any): Promise<"owner" | "employee"> {
   if (!session?.user) return "owner";
-  const identities = session.user.identities || [];
-  if (identities.some((i: any) => i.provider === "google")) return "owner";
   const empRole = session.user.user_metadata?.role;
   if (empRole === "technician" || empRole === "manager") return "employee";
   if (empRole === "owner") return "owner";
-  // No role metadata — query the employees table to determine role
+  // No role metadata — query the employees table to determine role.
+  // This must run BEFORE the Google-identity check: an employee who links their
+  // Google account (linkIdentity) ends up with a "google" identity on their
+  // session too, so checking identities first would wrongly reclassify them as
+  // an owner the moment they connect Google.
   try {
     const { data } = await (supabase as any)
       .from("employees")
@@ -163,9 +166,37 @@ async function resolveUserRole(session: any): Promise<"owner" | "employee"> {
       .eq("user_id", session.user.id)
       .maybeSingle();
     // In table but with owner role → still an owner
-    if (data && data.role !== "owner") return "employee";
+    if (data) return data.role !== "owner" ? "employee" : "owner";
   } catch { /* employees table may not exist */ }
+  const identities = session.user.identities || [];
+  if (identities.some((i: any) => i.provider === "google")) return "owner";
   return "owner";
+}
+
+// Captures the Google OAuth token bridged via sessionStorage (see the manual
+// OAuth token exchange effect below) and persists it for an EMPLOYEE session —
+// keyed to their own user ID in localStorage, plus a best-effort write to their
+// Supabase employees row so owner-side calendar/email features can reach it too.
+function persistEmployeeGoogleToken(session: any): void {
+  if (!session?.user) return;
+  const googleId = (session.user.identities || []).find((i: any) => i.provider === "google");
+  if (!googleId) return;
+  const bridgedToken = sessionStorage.getItem("smocks.gpt") || "";
+  const bridgedRefreshToken = sessionStorage.getItem("smocks.grt") || "";
+  const providerToken = bridgedToken || session.provider_token || "";
+  if (!providerToken) return;
+  if (bridgedToken) sessionStorage.removeItem("smocks.gpt");
+  if (bridgedRefreshToken) sessionStorage.removeItem("smocks.grt");
+  const googleEmail = googleId.identity_data?.email || session.user.email || "";
+  const expiresAt = Date.now() + 55 * 60 * 1000; // Google access tokens last ~1hr
+  console.log("GOOGLE LINK SUCCESS — employee:", session.user.id, googleEmail);
+  saveEmpGoogleToken(session.user.id, { token: providerToken, refreshToken: bridgedRefreshToken, email: googleEmail, expiresAt });
+  console.log("TOKEN SAVED — localStorage key smocks.empGoogle." + session.user.id);
+  (supabase as any).from("employees")
+    .update({ google_token: providerToken, google_refresh_token: bridgedRefreshToken || null, google_email: googleEmail, google_token_expires_at: new Date(expiresAt).toISOString() })
+    .eq("user_id", session.user.id)
+    .then(() => console.log("TOKEN SAVED — Supabase employees row for", session.user.id))
+    .catch((e: any) => console.warn("Could not persist employee Google token to Supabase (columns may not exist):", e?.message));
 }
 
 // ─── App ──────────────────────────────────────────────────────────────────────
@@ -554,6 +585,7 @@ export function App() {
           setEmpSession(session);
           setPage("portal");
           setOauthProcessing(false);
+          persistEmployeeGoogleToken(session);
           return;
         }
 
@@ -590,6 +622,7 @@ export function App() {
         setEmpSession(initial);
         setPage("portal");
         setOauthProcessing(false);
+        persistEmployeeGoogleToken(initial);
       } else {
         if (initial) setHasCrmSession(true);
         applyGoogleIdentity(initial);

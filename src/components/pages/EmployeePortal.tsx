@@ -6,6 +6,8 @@ import {
   Video, PenLine, Shield, Navigation, Database
 } from "lucide-react";
 import { supabase } from "../../lib/supabase";
+import { getEmpGoogleToken, isEmpGoogleTokenValid, createGCalEvent } from "../../lib/googleApi";
+import { sendViaGmail } from "../../lib/messaging";
 import { Glass } from "../ui/Glass";
 import { GBtn } from "../ui/GBtn";
 import { GInput } from "../ui/GInput";
@@ -914,6 +916,39 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
       })
     : [];
 
+  // 24h job reminder — checks once on load (and hourly while the portal stays open)
+  // for jobs starting within the next 24h, and emails the employee via their own
+  // connected Gmail account. Dedupes via localStorage so each job only reminds once.
+  useEffect(() => {
+    if (!myEmployee || !empSession?.user?.id) return;
+    const checkReminders = () => {
+      const empToken = getEmpGoogleToken(empSession.user.id);
+      if (!isEmpGoogleTokenValid(empToken)) return;
+      const remindedKey = "smocks.empReminded";
+      let reminded: string[] = [];
+      try { reminded = JSON.parse(localStorage.getItem(remindedKey) || "[]"); } catch { /* ignore */ }
+      const now = Date.now();
+      myJobs.forEach(j => {
+        if (!j.scheduledDate || j.status === "completed" || reminded.includes(j.id)) return;
+        const startDt = new Date(`${j.scheduledDate}T${j.scheduledTime || "09:00"}:00`).getTime();
+        const hoursAway = (startDt - now) / 3600000;
+        if (hoursAway > 0 && hoursAway <= 24) {
+          sendViaGmail(
+            empToken!.token, empToken!.email, empToken!.email,
+            `Reminder: Job Tomorrow — ${j.address}`,
+            `<p>Reminder: you have a job at <strong>${j.address}</strong> on ${j.scheduledDate}${j.scheduledTime ? " at " + j.scheduledTime : ""}.</p>`
+          ).then(() => {
+            reminded.push(j.id);
+            try { localStorage.setItem(remindedKey, JSON.stringify(reminded)); } catch { /* ignore */ }
+          }).catch(() => {});
+        }
+      });
+    };
+    checkReminders();
+    const h = setInterval(checkReminders, 60 * 60 * 1000);
+    return () => clearInterval(h);
+  }, [(myEmployee as any)?.id, myJobs.length]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const todayStr = today();
   const todayJobs = myJobs.filter(j => j.scheduledDate === todayStr);
 
@@ -1057,6 +1092,36 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     } catch { setLoginError("Could not send reset email"); }
   };
 
+  // Create a Google Calendar event on the EMPLOYEE'S OWN calendar using their own
+  // stored OAuth token, after they accept/are assigned to a job. Silently no-ops
+  // if they haven't connected Google or their token has expired.
+  const syncAcceptedJobToCalendar = async (job: Job | undefined) => {
+    if (!job || !job.scheduledDate || !empSession?.user?.id) return;
+    const empToken = getEmpGoogleToken(empSession.user.id);
+    if (!isEmpGoogleTokenValid(empToken)) return;
+    try {
+      const timeStr = job.scheduledTime || "09:00";
+      const startDt = new Date(`${job.scheduledDate}T${timeStr}:00`);
+      const endDt = new Date(startDt.getTime() + (Number(job.duration) || 2) * 3600000);
+      const cust = customers.find(c => c.id === job.customerId);
+      const custName = cust ? `${cust.firstName} ${cust.lastName}` : "Customer";
+      const checklistSummary = [...(job.preChecklist || []), ...(job.duringChecklist || [])]
+        .map(i => i.label).join(", ");
+      const evId = await createGCalEvent(empToken!.token, {
+        title: `CrewBoss Job: ${custName}`,
+        start: startDt.toISOString(),
+        end: endDt.toISOString(),
+        location: job.address,
+        description: checklistSummary,
+      });
+      setJobs(prev => prev.map(j => j.id === job.id ? { ...j, googleEventId: evId } : j));
+      (supabase as any).from("jobs").update({ googleEventId: evId }).eq("id", job.id).catch(() => {});
+      toast("📅 Added to your Google Calendar");
+    } catch (e) {
+      console.warn("Employee calendar sync failed:", e);
+    }
+  };
+
   const handleAcceptRequest = async () => {
     if (!requestData || !myEmployee) return;
     try {
@@ -1091,6 +1156,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
             });
           }
         } catch { /* ignore */ }
+        syncAcceptedJobToCalendar(jobs.find(j => j.id === requestData.job_id));
       }
       setRequestDone("accepted");
       toast("Job accepted! You're on the crew. ✓");
@@ -1162,6 +1228,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
             });
           }
         } catch { /* ignore refetch failure */ }
+        syncAcceptedJobToCalendar(jobs.find(j => j.id === req.job_id));
       }
       setIncomingRequests(prev => prev.map(r => r.id === req.id ? { ...r, status: "accepted" } : r));
       toast("Job accepted! You're on the crew. ✓");
@@ -1741,6 +1808,46 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
               </div>
             </div>
 
+            {/* Weekly overview mini-calendar */}
+            <div className="flex items-center justify-between gap-1.5">
+              {Array.from({ length: 7 }, (_, i) => {
+                const d = new Date(); d.setDate(d.getDate() - d.getDay() + i);
+                const dStr = d.toISOString().slice(0, 10);
+                const isToday = dStr === todayStr;
+                const hasJob = myJobs.some(j => j.scheduledDate === dStr);
+                return (
+                  <button key={dStr} onClick={() => { setCalSelectedDate(dStr); setTab("calendar"); }}
+                    className={"flex-1 flex flex-col items-center gap-1 py-2 rounded-xl border transition " + (isToday ? "bg-red-950/30 border-red-700/40" : "bg-white/5 border-white/5 hover:bg-white/10")}>
+                    <div className="text-[9px] text-white/40 uppercase">{d.toLocaleDateString("en-US", { weekday: "short" })[0]}</div>
+                    <div className={"text-xs font-bold " + (isToday ? "text-red-300" : "text-white/70")}>{d.getDate()}</div>
+                    <div className={"w-1.5 h-1.5 rounded-full " + (hasJob ? "bg-blue-400" : "bg-transparent")} />
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* Quick actions */}
+            {(() => {
+              const quickJob = activeClockJob || todayJobs[0] || upNextJob;
+              const goToQuickJob = () => { if (quickJob) { setSelectedJobId(quickJob.id); setTab("jobs"); } };
+              return (
+                <div className="flex gap-2">
+                  <button onClick={goToQuickJob} disabled={!quickJob}
+                    className="flex-1 flex items-center justify-center gap-1.5 py-2.5 rounded-full bg-green-900/30 hover:bg-green-800/40 border border-green-700/30 text-green-300 text-xs font-semibold transition disabled:opacity-30">
+                    <Play size={12} />Start Job
+                  </button>
+                  <button onClick={goToQuickJob} disabled={!quickJob}
+                    className="flex-1 flex items-center justify-center gap-1.5 py-2.5 rounded-full bg-blue-900/30 hover:bg-blue-800/40 border border-blue-700/30 text-blue-300 text-xs font-semibold transition disabled:opacity-30">
+                    <Camera size={12} />Upload Photo
+                  </button>
+                  <button onClick={goToQuickJob} disabled={!quickJob}
+                    className="flex-1 flex items-center justify-center gap-1.5 py-2.5 rounded-full bg-purple-900/30 hover:bg-purple-800/40 border border-purple-700/30 text-purple-300 text-xs font-semibold transition disabled:opacity-30">
+                    <PenLine size={12} />Get Signature
+                  </button>
+                </div>
+              );
+            })()}
+
             {/* Incoming job requests */}
             {(() => {
               const pending = incomingRequests.filter(r => r.status === "pending");
@@ -1899,6 +2006,34 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                 </div>
               </div>
             )}
+
+            {/* Recent activity feed */}
+            {(() => {
+              const activity: { id: string; icon: string; text: string; date: string }[] = [];
+              myJobs.forEach(j => {
+                const cust = customers.find(c => c.id === j.customerId);
+                const custLabel = cust ? `${cust.firstName} ${cust.lastName}` : j.address;
+                if (j.signOff) activity.push({ id: j.id + "-signoff", icon: "✍️", text: `Got sign-off from ${custLabel}`, date: j.signOff.timestamp });
+                (j.commLog || []).forEach(c => activity.push({ id: c.id, icon: "📝", text: `Note on ${custLabel}: "${c.note}"`, date: c.date }));
+                if (j.status === "completed") activity.push({ id: j.id + "-done", icon: "✅", text: `Completed job at ${j.address}`, date: j.scheduledDate });
+              });
+              activity.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+              const recent = activity.slice(0, 5);
+              if (recent.length === 0) return null;
+              return (
+                <div>
+                  <div className="text-xs text-white/50 uppercase tracking-wider font-semibold mb-2">Recent Activity</div>
+                  <div className="space-y-1.5">
+                    {recent.map(a => (
+                      <div key={a.id} className="flex items-center gap-2 px-3 py-2 rounded-xl bg-white/3 border border-white/5">
+                        <span className="text-sm flex-shrink-0">{a.icon}</span>
+                        <div className="flex-1 min-w-0 text-xs text-white/60 truncate">{a.text}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })()}
           </>}
 
           {/* Calendar tab */}
@@ -2235,12 +2370,16 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
           })()}
           {/* Google tab */}
           {tab === "google" && (() => {
-            const empGoogleLinked = empSession
+            const empUserId = empSession?.user?.id;
+            const storedToken = empUserId ? getEmpGoogleToken(empUserId) : null;
+            const empGoogleValid = isEmpGoogleTokenValid(storedToken);
+            const empGoogleIdentityLinked = empSession
               ? (empSession.user?.identities || []).some((i: any) => i.provider === "google")
               : false;
-            const empGoogleEmail = empSession
-              ? ((empSession.user?.identities || []).find((i: any) => i.provider === "google")?.identity_data?.email || "")
-              : "";
+            // Linked but no valid token (token never captured, or the ~1hr access token expired)
+            const empGoogleExpired = empGoogleIdentityLinked && !empGoogleValid;
+            const empGoogleEmail = storedToken?.email
+              || ((empSession?.user?.identities || []).find((i: any) => i.provider === "google")?.identity_data?.email || "");
             const upcomingForCal = myJobs
               .filter(j => j.scheduledDate >= todayStr && j.status !== "completed")
               .sort((a, b) => {
@@ -2250,6 +2389,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
               })
               .slice(0, 20);
             const handleConnectGoogle = async () => {
+              console.log("GOOGLE LINK INITIATED — employee:", empSession?.user?.id);
               const SCOPES = [
                 "https://www.googleapis.com/auth/calendar",
                 "https://www.googleapis.com/auth/calendar.events",
@@ -2277,15 +2417,32 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
             };
             return (
               <div className="space-y-4">
-                {/* Connect / connected banner */}
-                {empGoogleLinked ? (
+                {/* Connect / connected / expired banner */}
+                {empGoogleValid ? (
                   <Glass className="p-4 !bg-green-950/20 !border-green-700/30 flex items-center gap-3">
                     <CheckCircle size={18} className="text-green-400 flex-shrink-0" />
                     <div className="flex-1 min-w-0">
                       <div className="font-semibold text-sm text-green-300">Google Connected ✓</div>
-                      {empGoogleEmail && <div className="text-xs text-white/50 mt-0.5">{empGoogleEmail}</div>}
+                      {empGoogleEmail && <div className="text-xs text-white/50 mt-0.5">Connected as {empGoogleEmail}</div>}
                       <div className="text-xs text-white/40 mt-0.5">Calendar sync is active — jobs auto-added on accept</div>
                     </div>
+                  </Glass>
+                ) : empGoogleExpired ? (
+                  <Glass className="p-4 !bg-yellow-950/20 !border-yellow-700/30">
+                    <div className="flex items-center gap-3 mb-3">
+                      <AlertCircle size={18} className="text-yellow-400 flex-shrink-0" />
+                      <div className="flex-1 min-w-0">
+                        <div className="font-semibold text-sm text-yellow-300">Google Connection Expired</div>
+                        {empGoogleEmail && <div className="text-xs text-white/50 mt-0.5">{empGoogleEmail}</div>}
+                        <div className="text-xs text-white/40 mt-0.5">Your access token expired — reconnect to resume calendar sync</div>
+                      </div>
+                    </div>
+                    <button
+                      onClick={handleConnectGoogle}
+                      className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl bg-yellow-600 hover:bg-yellow-500 text-black font-semibold text-sm active:scale-95 transition-all"
+                    >
+                      Reconnect Google
+                    </button>
                   </Glass>
                 ) : (
                   <Glass className="p-4 !bg-black/40">

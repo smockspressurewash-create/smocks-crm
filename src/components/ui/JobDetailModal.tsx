@@ -22,7 +22,7 @@ import {
 } from "recharts";
 import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE } from "../../lib/utils";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField, JobChecklistItem, ChecklistPhoto, JobVideo, JobSignOff } from "../../types";
-import { twilioSend, sendEmail } from "../../lib/messaging";
+import { twilioSend, sendEmail, sendViaGmail } from "../../lib/messaging";
 import { seedWeather } from "../../lib/weather";
 import { seedCustomers, seedEstimates, seedJobs, seedEmployees, seedVehicles, seedExpenses, seedChemicals, seedServices, seedAutomations, seedEmailTemplates, seedSmsTemplates, seedRewardTiers, seedReferrals, seedMaintenance, campaignTemplates, seedSocialPosts, seedTimeline, seedGoals, seedReminders, seedAccountabilityEntries, seedMileage, seedLeadSrc, STEP_TYPES, AUTOMATION_TEMPLATES } from "../../lib/seed";
 import { callModel, MODELS } from "../../lib/api";
@@ -164,6 +164,9 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
   const [requestEmpId, setRequestEmpId] = useState("");
   const [requestMsg, setRequestMsg] = useState("");
   const [requestSending, setRequestSending] = useState(false);
+  const [showScheduleForm, setShowScheduleForm] = useState(false);
+  const [scheduleEmpId, setScheduleEmpId] = useState("");
+  const [scheduling, setScheduling] = useState(false);
 
   // Live timer tick while clock is running
   useEffect(() => {
@@ -180,6 +183,42 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
     updateJob(jobId, { crew: crew.includes(eid) ? crew.filter(x => x !== eid) : [...crew, eid] });
   };
 
+  // Sends one notification per employee. Prefers the EMPLOYEE'S OWN connected Gmail
+  // account (their token, persisted in their employees row when they connect Google
+  // in the portal) so the email comes from/through their own account; falls back to
+  // the owner's configured email channel (Resend or owner Gmail) when unavailable.
+  const notifyEmployees = async (
+    emps: any[],
+    buildSubject: (emp: any) => string,
+    buildHtml: (emp: any) => string
+  ): Promise<number> => {
+    let sent = 0;
+    for (const emp of emps) {
+      if (!emp.email) continue;
+      const subj = buildSubject(emp);
+      const html = buildHtml(emp);
+      let viaEmpGmail = false;
+      try {
+        const { data: empRow } = await (supabase as any)
+          .from("employees").select("google_token, google_token_expires_at, google_email")
+          .eq("id", emp.id).maybeSingle();
+        const tok = empRow?.google_token;
+        const validTok = tok && empRow?.google_token_expires_at && new Date(empRow.google_token_expires_at).getTime() > Date.now();
+        if (validTok) {
+          await sendViaGmail(tok, empRow.google_email || emp.email, emp.email, subj, html);
+          viaEmpGmail = true;
+        }
+      } catch { /* fall through to owner channel */ }
+      if (!viaEmpGmail) {
+        try {
+          await sendEmail(settings, { to: emp.email, subject: subj, body: html });
+        } catch { continue; }
+      }
+      sent++;
+    }
+    return sent;
+  };
+
   const notifyCrew = async () => {
     const crewEmps = (job.crew || []).map(id => employees.find(e => e.id === id)).filter(Boolean);
     const withEmail = crewEmps.filter(e => e.email);
@@ -187,20 +226,42 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
     setNotifying(true);
     const c = customers.find(x => x.id === job.customerId);
     const jobLink = `${window.location.origin}${window.location.pathname}#/portal`;
-    let sent = 0;
-    for (const emp of withEmail) {
-      try {
-        await sendEmail(settings, {
-          to: emp.email,
-          subject: `Job Assignment — ${job.scheduledDate}`,
-          body: `<p>Hi ${emp.firstName},</p><p>You've been assigned to a job:</p><ul><li><b>Date:</b> ${job.scheduledDate}${job.scheduledTime ? " at " + job.scheduledTime : ""}</li><li><b>Address:</b> ${job.address}</li>${c ? `<li><b>Customer:</b> ${c.firstName} ${c.lastName}</li>` : ""}</ul><p>Open the crew portal to see details: <a href="${jobLink}">${jobLink}</a></p><p>— ${settings.companyName || "Smock's Pressure Washing"}</p>`,
-        });
-        sent++;
-      } catch { /* ignore per-emp errors */ }
-    }
+    const sent = await notifyEmployees(
+      withEmail,
+      () => `Job Assignment — ${job.scheduledDate}`,
+      emp => `<p>Hi ${emp.firstName},</p><p>You've been assigned to a job:</p><ul><li><b>Date:</b> ${job.scheduledDate}${job.scheduledTime ? " at " + job.scheduledTime : ""}</li><li><b>Address:</b> ${job.address}</li>${c ? `<li><b>Customer:</b> ${c.firstName} ${c.lastName}</li>` : ""}</ul><p>Open the crew portal to see details: <a href="${jobLink}">${jobLink}</a></p><p>— ${settings.companyName || "Smock's Pressure Washing"}</p>`
+    );
     setNotifying(false);
     toast(sent > 0 ? `Notified ${sent} crew member${sent !== 1 ? "s" : ""} ✓` : "Email send failed — check Resend settings", sent > 0 ? "green" : "red");
   };
+
+  // Detect schedule/address changes on an already-crewed job and notify assigned
+  // employees automatically. Skips the initial mount and skips when the modal is
+  // reused for a different job (jobId change resets the baseline silently).
+  const prevScheduleRef = useRef<{ jobId: string; date?: string; time?: string; address?: string }>({
+    jobId, date: job.scheduledDate, time: job.scheduledTime, address: job.address,
+  });
+  useEffect(() => {
+    const prev = prevScheduleRef.current;
+    if (prev.jobId !== jobId) {
+      prevScheduleRef.current = { jobId, date: job.scheduledDate, time: job.scheduledTime, address: job.address };
+      return;
+    }
+    const crewEmps = (job.crew || []).map((id: string) => employees.find(e => e.id === id)).filter(Boolean);
+    const withEmail = crewEmps.filter((e: any) => e.email);
+    const changes: string[] = [];
+    if (prev.date !== job.scheduledDate) changes.push(`date changed to ${job.scheduledDate}`);
+    if (prev.time !== job.scheduledTime) changes.push(`time changed to ${job.scheduledTime || "unscheduled"}`);
+    if (prev.address !== job.address) changes.push(`address changed to ${job.address}`);
+    prevScheduleRef.current = { jobId, date: job.scheduledDate, time: job.scheduledTime, address: job.address };
+    if (changes.length > 0 && withEmail.length > 0) {
+      notifyEmployees(
+        withEmail,
+        () => `Job Updated — ${job.address}`,
+        emp => `<p>Hi ${emp.firstName},</p><p>Your job has changed:</p><ul>${changes.map(c => `<li>${c}</li>`).join("")}</ul><p>— ${settings.companyName || "Smock's Pressure Washing"}</p>`
+      ).then(sent => { if (sent > 0) toast(`Notified ${sent} crew member${sent !== 1 ? "s" : ""} of the change`, "green"); });
+    }
+  }, [job.scheduledDate, job.scheduledTime, job.address, jobId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const sendJobRequest = async () => {
     const emp = employees.find(e => e.id === requestEmpId);
@@ -220,10 +281,10 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
           const reqUrl = `${window.location.origin}${window.location.pathname}#/portal?request=${data.id}`;
           const cust = customers.find((x: any) => x.id === job.customerId);
           try {
-            await sendEmail(settings, {
-              to: emp.email,
-              subject: `Job Request — ${job.scheduledDate}`,
-              body: `<p>Hi ${emp.firstName},</p><p>${requestMsg || "You have a new job request:"}</p>
+            await notifyEmployees(
+              [emp],
+              () => `Job Request — ${job.scheduledDate}`,
+              () => `<p>Hi ${emp.firstName},</p><p>${requestMsg || "You have a new job request:"}</p>
                 <ul>
                   <li><b>Date:</b> ${job.scheduledDate}${job.scheduledTime ? " at " + job.scheduledTime : ""}</li>
                   <li><b>Address:</b> ${job.address}</li>
@@ -233,8 +294,8 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
                 <p style="margin-top:16px">
                   <a href="${reqUrl}" style="background:#16a34a;color:white;padding:12px 20px;border-radius:6px;text-decoration:none;margin-right:8px">✓ Accept Job</a>
                   <a href="${reqUrl}&action=deny" style="background:#dc2626;color:white;padding:12px 20px;border-radius:6px;text-decoration:none">✗ Decline</a>
-                </p>`,
-            });
+                </p>`
+            );
           } catch { /* email optional */ }
         }
         toast(`Request sent to ${emp.firstName} ✓`, "green");
@@ -248,6 +309,55 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
       toast("Error sending request", "red");
     }
     setRequestSending(false);
+  };
+
+  // Schedule & Notify — assigns crew immediately, attempts a Google Calendar event
+  // on the employee's own calendar (only possible if they've connected Google and
+  // their token has been persisted to Supabase), and sends a "you're scheduled"
+  // email without requiring acceptance.
+  const scheduleAndNotify = async () => {
+    const emp = employees.find(e => e.id === scheduleEmpId);
+    if (!emp) return;
+    setScheduling(true);
+    try {
+      const crew = job.crew || [];
+      if (!crew.includes(emp.id)) updateJob(jobId, { crew: [...crew, emp.id] });
+
+      let calendarSynced = false;
+      if (job.scheduledDate) {
+        try {
+          const { data: empRow } = await (supabase as any)
+            .from("employees").select("google_token, google_token_expires_at")
+            .eq("id", emp.id).maybeSingle();
+          const tok = empRow?.google_token;
+          const validTok = tok && empRow?.google_token_expires_at && new Date(empRow.google_token_expires_at).getTime() > Date.now();
+          if (validTok) {
+            const timeStr = job.scheduledTime || "09:00";
+            const startDt = new Date(`${job.scheduledDate}T${timeStr}:00`);
+            const endDt = new Date(startDt.getTime() + (Number(job.duration) || 2) * 3600000);
+            const cust = customers.find(x => x.id === job.customerId);
+            const custName = cust ? `${cust.firstName} ${cust.lastName}` : "Customer";
+            const evId = await createGCalEventApi(tok, { title: `CrewBoss Job: ${custName}`, start: startDt.toISOString(), end: endDt.toISOString(), location: job.address, description: job.notes || "" });
+            updateJob(jobId, { googleEventId: evId });
+            calendarSynced = true;
+          }
+        } catch { /* employee hasn't connected Google — skip calendar, still notify */ }
+      }
+
+      const cust = customers.find(x => x.id === job.customerId);
+      await notifyEmployees(
+        [emp],
+        () => `You've Been Scheduled — ${job.scheduledDate}`,
+        () => `<p>Hi ${emp.firstName},</p><p>You've been scheduled for a job — you're confirmed, no action needed:</p><ul><li><b>Date:</b> ${job.scheduledDate}${job.scheduledTime ? " at " + job.scheduledTime : ""}</li><li><b>Address:</b> ${job.address}</li>${cust ? `<li><b>Customer:</b> ${cust.firstName} ${cust.lastName}</li>` : ""}</ul>${calendarSynced ? "<p>This has been added to your Google Calendar.</p>" : ""}<p>— ${settings.companyName || "Smock's Pressure Washing"}</p>`
+      );
+
+      toast(`${emp.firstName} scheduled & notified${calendarSynced ? " — calendar synced ✓" : ""}`, "green");
+      setShowScheduleForm(false);
+      setScheduleEmpId("");
+    } catch {
+      toast("Error scheduling employee", "red");
+    }
+    setScheduling(false);
   };
 
   const toggleEquip = eq => {
@@ -499,6 +609,10 @@ ${job.notes ? `<div class="section"><h2>Job Notes</h2><p>${job.notes}</p></div>`
                 className="text-[10px] flex items-center gap-1 px-2 py-1 rounded-lg bg-yellow-950/40 hover:bg-yellow-900/50 border border-yellow-700/30 text-yellow-400 hover:text-yellow-300 transition">
                 <Send size={9} />Request
               </button>
+              <button onClick={() => setShowScheduleForm(s => !s)}
+                className="text-[10px] flex items-center gap-1 px-2 py-1 rounded-lg bg-purple-950/40 hover:bg-purple-900/50 border border-purple-700/30 text-purple-300 hover:text-purple-200 transition">
+                <Calendar size={9} />Schedule & Notify
+              </button>
             </div>
           </div>
           <div className="flex gap-2 flex-wrap">
@@ -547,6 +661,29 @@ ${job.notes ? `<div class="section"><h2>Job Notes</h2><p>${job.notes}</p></div>`
                   <Send size={11} />{requestSending ? "Sending…" : "Send Request"}
                 </button>
                 <button onClick={() => setShowRequestForm(false)}
+                  className="px-3 py-2 rounded-lg bg-white/5 hover:bg-white/10 text-white/60 text-xs transition">
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
+          {showScheduleForm && (
+            <div className="mt-3 p-3 rounded-xl bg-purple-950/20 border border-purple-700/30 space-y-2">
+              <div className="text-xs text-purple-300 font-semibold">Schedule & Notify — assigns immediately, no acceptance needed</div>
+              <select value={scheduleEmpId} onChange={e => setScheduleEmpId(e.target.value)}
+                className="w-full bg-black/60 border border-white/20 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-purple-500/50">
+                <option value="">Select employee…</option>
+                {employees.filter(e => e.status === "active").map(e => (
+                  <option key={e.id} value={e.id}>{e.firstName} {e.lastName}</option>
+                ))}
+              </select>
+              <div className="text-[10px] text-white/40">Adds them to crew, emails "You've been scheduled," and adds a Google Calendar event on their calendar if they've connected one.</div>
+              <div className="flex gap-2">
+                <button onClick={scheduleAndNotify} disabled={!scheduleEmpId || scheduling}
+                  className="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg bg-purple-600 hover:bg-purple-500 disabled:opacity-40 text-white text-xs font-bold transition">
+                  <Calendar size={11} />{scheduling ? "Scheduling…" : "Schedule & Notify"}
+                </button>
+                <button onClick={() => setShowScheduleForm(false)}
                   className="px-3 py-2 rounded-lg bg-white/5 hover:bg-white/10 text-white/60 text-xs transition">
                   Cancel
                 </button>
