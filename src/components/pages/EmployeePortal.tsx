@@ -13,7 +13,7 @@ import { GBtn } from "../ui/GBtn";
 import { GInput } from "../ui/GInput";
 import { GTxt } from "../ui/GTxt";
 import { BeforeAfterSlider } from "../ui/BeforeAfterSlider";
-import { fmt, uid, today } from "../../lib/utils";
+import { fmt, uid, today, toSnakeCaseJob, toCamelCaseJob } from "../../lib/utils";
 import type { Job, Employee, Customer, AppSettings, JobChecklistItem } from "../../types";
 
 const PRE_DEFAULTS: JobChecklistItem[] = [
@@ -931,8 +931,9 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     const empUserId = (myEmployee as any).user_id;
     const load = async () => {
       try {
-        const { data } = await (supabase as any).from("jobs").select("*");
-        console.log("FETCHED JOBS FROM SUPABASE:", data);
+        const { data: rawData } = await (supabase as any).from("jobs").select("*");
+        console.log("FETCHED JOBS FROM SUPABASE:", rawData);
+        const data = Array.isArray(rawData) ? rawData.map(toCamelCaseJob) : rawData;
         if (Array.isArray(data)) {
           data.forEach((j: any) => {
             console.log("  job", j.id, "crew:", j.crew, "— matches me?",
@@ -1168,7 +1169,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
         description: checklistSummary,
       });
       setJobs(prev => prev.map(j => j.id === job.id ? { ...j, googleEventId: evId } : j));
-      (supabase as any).from("jobs").update({ googleEventId: evId }).eq("id", job.id).catch(() => {});
+      (supabase as any).from("jobs").update(toSnakeCaseJob({ googleEventId: evId })).eq("id", job.id).catch(() => {});
       toast("📅 Added to your Google Calendar");
     } catch (e) {
       console.warn("Employee calendar sync failed:", e);
@@ -1190,7 +1191,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
             if (!crewIncludesEmployee(currentCrew, empId, empUserId)) {
               const newCrew = [...currentCrew, empId];
               console.log("Accepting request job", requestData.job_id, "— crew before:", currentCrew, "after:", newCrew);
-              (supabase as any).from("jobs").update({ crew: newCrew }).eq("id", requestData.job_id).catch(() => {});
+              (supabase as any).from("jobs").update(toSnakeCaseJob({ crew: newCrew })).eq("id", requestData.job_id).catch(() => {});
               return { ...j, crew: newCrew };
             }
           }
@@ -1198,8 +1199,9 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
         }));
         // Refetch to confirm Supabase state
         try {
-          const { data: freshJobs } = await (supabase as any).from("jobs").select("*");
-          if (Array.isArray(freshJobs) && freshJobs.length > 0) {
+          const { data: rawFreshJobs } = await (supabase as any).from("jobs").select("*");
+          if (Array.isArray(rawFreshJobs) && rawFreshJobs.length > 0) {
+            const freshJobs = rawFreshJobs.map(toCamelCaseJob);
             setJobs(prev => {
               const sbMap = new Map(freshJobs.map((j: any) => [j.id, j]));
               const merged = prev.map(j => sbMap.has(j.id) ? { ...j, ...sbMap.get(j.id) } : j);
@@ -1259,7 +1261,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
             if (!crewIncludesEmployee(currentCrew, empId, empUserId)) {
               const newCrew = [...currentCrew, empId];
               console.log("Accepting job", req.job_id, "— crew before:", currentCrew, "after:", newCrew);
-              (supabase as any).from("jobs").update({ crew: newCrew }).eq("id", req.job_id).catch(() => {});
+              (supabase as any).from("jobs").update(toSnakeCaseJob({ crew: newCrew })).eq("id", req.job_id).catch(() => {});
               return { ...j, crew: newCrew };
             }
           }
@@ -1267,8 +1269,9 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
         }));
         // Refetch from Supabase to ensure latest crew is reflected
         try {
-          const { data: freshJobs } = await (supabase as any).from("jobs").select("*");
-          if (Array.isArray(freshJobs) && freshJobs.length > 0) {
+          const { data: rawFreshJobs } = await (supabase as any).from("jobs").select("*");
+          if (Array.isArray(rawFreshJobs) && rawFreshJobs.length > 0) {
+            const freshJobs = rawFreshJobs.map(toCamelCaseJob);
             setJobs(prev => {
               const sbMap = new Map(freshJobs.map((j: any) => [j.id, j]));
               const merged = prev.map(j => sbMap.has(j.id) ? { ...j, ...sbMap.get(j.id) } : j);
@@ -1276,7 +1279,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
               const added = freshJobs.filter((j: any) => !existingIds.has(j.id));
               const result = [...merged, ...added];
               console.log("Post-accept refetch — jobs with crew for", myEmployee.id, ":",
-                result.filter(j => (j.crew || []).some((c: string) => c === myEmployee.id || c === (myEmployee as any).user_id)).map(j => j.id));
+                result.filter(j => crewIncludesEmployee(j.crew, myEmployee.id, (myEmployee as any).user_id)).map(j => j.id));
               return result;
             });
           }

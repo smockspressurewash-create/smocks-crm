@@ -20,7 +20,7 @@ import {
   Tooltip, ResponsiveContainer, Area, AreaChart, LineChart, Line,
   ComposedChart, Legend
 } from "recharts";
-import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE } from "../../lib/utils";
+import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, toSnakeCaseJob, toCamelCaseJob } from "../../lib/utils";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
 import { twilioSend, sendEmail } from "../../lib/messaging";
 import { seedWeather } from "../../lib/weather";
@@ -127,7 +127,7 @@ export function CalendarPage({ jobs = [], setJobs, customers = [], employees = [
     // 30s auto-save interval, since the employee portal polls Supabase directly.
     if (patch.crew !== undefined) {
       console.log("SAVING JOB — crew:", patch.crew, "job id:", jid);
-      (supabase as any).from("jobs").update({ crew: patch.crew }).eq("id", jid)
+      (supabase as any).from("jobs").update(toSnakeCaseJob({ crew: patch.crew })).eq("id", jid)
         .then((result: any) => console.log("SUPABASE SAVE RESULT:", result))
         .catch((e: any) => console.warn("SUPABASE SAVE FAILED:", e?.message));
     }

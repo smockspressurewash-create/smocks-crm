@@ -59,7 +59,7 @@ import {
 } from "./lib/seed";
 import { seedWeather } from "./lib/weather";
 import { fetchRealWeather } from "./lib/weather";
-import { fmt, uid, today, daysSince, daysFromNow } from "./lib/utils";
+import { fmt, uid, today, daysSince, daysFromNow, toSnakeCaseJob, toCamelCaseJob } from "./lib/utils";
 import type {
   Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense,
   Chemical, Service, Campaign, Automation, Review, SocialPost,
@@ -560,11 +560,12 @@ export function App() {
         (supabase as any).from("customers").select("*"),
       ]);
       if (Array.isArray(sbJobs) && sbJobs.length > 0) {
+        const camelJobs = sbJobs.map(toCamelCaseJob);
         setJobs(prev => {
-          const sbMap = new Map(sbJobs.map((j: any) => [j.id, j]));
+          const sbMap = new Map(camelJobs.map((j: any) => [j.id, j]));
           const merged = prev.map(j => sbMap.has(j.id) ? { ...j, ...sbMap.get(j.id) } : j);
           const existingIds = new Set(prev.map(j => j.id));
-          const added = sbJobs.filter((j: any) => !existingIds.has(j.id));
+          const added = camelJobs.filter((j: any) => !existingIds.has(j.id));
           return [...merged, ...added];
         });
       }
@@ -589,7 +590,7 @@ export function App() {
       try {
         // Supabase-js resolves (rather than rejects) on a PostgREST error, so check
         // the returned `error` explicitly — a bare try/catch alone won't see a 400.
-        const { error } = await (supabase as any).from("jobs").upsert(jobs, { onConflict: "id" });
+        const { error } = await (supabase as any).from("jobs").upsert(jobs.map(toSnakeCaseJob), { onConflict: "id" });
         if (error) {
           if (String(error.code) === "400" || error.message?.includes("400") || error.message?.includes("column")) {
             console.warn("Auto-save skipped — jobs table columns missing. Run the ALTER TABLE SQL.");
