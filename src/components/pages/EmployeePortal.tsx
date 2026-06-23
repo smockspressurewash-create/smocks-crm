@@ -571,6 +571,15 @@ function OwnerTeamPortal({ jobs, employees, customers, onClose }: {
             <option key={e.id} value={e.id}>{e.firstName} {e.lastName}</option>
           ))}
         </select>
+        {/* Escape hatch — this view only shows because the owner's session is still
+            active on this browser. An employee sharing the device needs a way to reach
+            their own login instead of being stuck looking at the owner's team preview. */}
+        <button
+          onClick={async () => { await supabase.auth.signOut(); }}
+          className="text-[10px] text-white/40 hover:text-white/70 underline whitespace-nowrap"
+        >
+          Not you? Sign in
+        </button>
       </header>
 
       <main className="flex-1 overflow-y-auto p-4 max-w-lg mx-auto space-y-4">

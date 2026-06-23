@@ -834,7 +834,13 @@ export function App() {
         customers={customers}
         settings={settings}
         toast={toast}
-        isOwnerView={!empSession && page === "portal" && !window.location.hash.includes("invite=") && !!settings.googleConnected}
+        // hasCrmSession (a verified, currently-active owner session) is the correct signal
+        // here — settings.googleConnected is a sticky per-browser localStorage flag that
+        // stays true forever after the owner's first Google sign-in on that machine. Using
+        // it meant any employee opening #/portal on a shared/non-incognito browser the
+        // owner had used before got shown the owner's stripped-down team-preview stub
+        // (OwnerTeamPortal) instead of their own login screen and full portal.
+        isOwnerView={!empSession && page === "portal" && !window.location.hash.includes("invite=") && hasCrmSession}
         onClose={() => setPage("dashboard")}
         refetchEmployees={refetchEmployees}
       />
