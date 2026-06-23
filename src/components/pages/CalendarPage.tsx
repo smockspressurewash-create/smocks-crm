@@ -30,6 +30,7 @@ import { createCalendarEvent, updateCalendarEvent, deleteCalendarEvent, fetchDri
 import { updateGCalEvent as updateGCalEventApi, deleteGCalEvent as deleteGCalEventApi, fetchCalendarEvents, createGCalEvent as createGCalEventApi, type GCalEvent } from "../../lib/googleApi";
 import { usePersistent } from "../../hooks/usePersistent";
 import { usePersistentRaw } from "../../hooks/usePersistentRaw";
+import { supabase } from "../../lib/supabase";
 import { Glass } from "../ui/Glass";
 import { GBtn } from "../ui/GBtn";
 import { GInput } from "../ui/GInput";
@@ -120,7 +121,17 @@ export function CalendarPage({ jobs = [], setJobs, customers = [], employees = [
   const key = d => y + "-" + String(m + 1).padStart(2, "0") + "-" + String(d).padStart(2, "0");
   const tKey = today();
 
-  const updateJob = (jid: string, patch: any) => setJobs((prev: any[]) => prev.map(j => j.id === jid ? { ...j, ...patch } : j));
+  const updateJob = (jid: string, patch: any) => {
+    setJobs((prev: any[]) => prev.map(j => j.id === jid ? { ...j, ...patch } : j));
+    // Crew assignment must reach Supabase immediately rather than waiting on the
+    // 30s auto-save interval, since the employee portal polls Supabase directly.
+    if (patch.crew !== undefined) {
+      console.log("SAVING JOB — crew:", patch.crew, "job id:", jid);
+      (supabase as any).from("jobs").update({ crew: patch.crew }).eq("id", jid)
+        .then((result: any) => console.log("SUPABASE SAVE RESULT:", result))
+        .catch((e: any) => console.warn("SUPABASE SAVE FAILED:", e?.message));
+    }
+  };
 
   const sColor = (s: string) => ({ scheduled: "bg-blue-600", in_progress: "bg-orange-500", completed: "bg-green-600", cancelled: "bg-red-800" }[s] || "bg-gray-600");
   const eventBg = (j: any) => j.googleEventId ? "bg-green-700" : sColor(j.status);

@@ -147,35 +147,41 @@ const navGroups = [
 ];
 
 // ─── Role resolver ────────────────────────────────────────────────────────────
-// Local cache of "this user is an employee", keyed by Supabase user ID. Checked
-// BEFORE any Supabase query so a momentary race right after an OAuth redirect
-// (where a fresh query could come back empty before data has propagated) can
-// never misclassify a known employee as an owner. Only ever caches "employee" —
-// "owner" is never cached, since a stale owner cache would block a legitimate
-// employee record created later for the same user.
-const getCachedRole = (userId: string): "employee" | null => {
-  try { return localStorage.getItem("crew_role_" + userId) === "employee" ? "employee" : null; } catch { return null; }
+// Local cache of "this user is an employee or manager", keyed by Supabase user
+// ID. Checked BEFORE any Supabase query so a momentary race right after an
+// OAuth redirect (where a fresh query could come back empty before data has
+// propagated) can never misclassify a known employee/manager as an owner.
+// Only ever caches "employee"/"manager" — "owner" is never cached, since a
+// stale owner cache would block a legitimate employee record created later for
+// the same user.
+const getCachedRole = (userId: string): "employee" | "manager" | null => {
+  try {
+    const v = localStorage.getItem("crew_role_" + userId);
+    return v === "employee" || v === "manager" ? v : null;
+  } catch { return null; }
 };
-const setCachedEmployeeRole = (userId: string): void => {
-  try { localStorage.setItem("crew_role_" + userId, "employee"); } catch { /* ignore */ }
+const setCachedRole = (userId: string, role: "employee" | "manager"): void => {
+  try { localStorage.setItem("crew_role_" + userId, role); } catch { /* ignore */ }
 };
 
-// Determines whether a Supabase session belongs to an owner or an employee.
-// Priority: cached role → employees table (non-owner role → employee, owner
-// role → owner) → Google identity (no employee record → owner) → default
-// employee.
+// Determines whether a Supabase session belongs to an owner, a manager, or a
+// plain employee. Priority: cached role → employees table (owner role → owner,
+// manager role → manager, anything else → employee) → Google identity (no
+// employee record → owner) → default employee.
 //
 // The employees table is checked first (after the cache) and is authoritative:
-// once someone is created as an employee, nothing about their session
+// once someone is created as an employee/manager, nothing about their session
 // (including linking a Google account for calendar sync) can ever reclassify
 // them as an owner. A Google identity only means "owner" for a user who isn't
-// in the employees table at all.
-async function resolveUserRole(session: any): Promise<"owner" | "employee"> {
+// in the employees table at all. Managers get CRM access like owners (see the
+// auth-state handler below) but with Settings restricted to their own profile.
+async function resolveUserRole(session: any): Promise<"owner" | "manager" | "employee"> {
   if (!session?.user) return "owner";
 
-  if (getCachedRole(session.user.id) === "employee") {
-    console.log("resolveUserRole: cached role — returning employee");
-    return "employee";
+  const cached = getCachedRole(session.user.id);
+  if (cached) {
+    console.log("resolveUserRole: cached role — returning", cached);
+    return cached;
   }
 
   try {
@@ -185,12 +191,18 @@ async function resolveUserRole(session: any): Promise<"owner" | "employee"> {
       .eq("user_id", session.user.id)
       .maybeSingle();
     if (data) {
-      if (data.role === "owner") {
+      const role = (data.role || "").toLowerCase();
+      if (role === "owner") {
         console.log("resolveUserRole: employees table — role owner — returning owner");
         return "owner";
       }
+      if (role === "manager") {
+        console.log("resolveUserRole: employees table — role manager — returning manager");
+        setCachedRole(session.user.id, "manager");
+        return "manager";
+      }
       console.log("resolveUserRole: employees table — role " + data.role + " — returning employee");
-      setCachedEmployeeRole(session.user.id);
+      setCachedRole(session.user.id, "employee");
       return "employee";
     }
   } catch { /* employees table may not exist */ }
@@ -288,6 +300,9 @@ export function App() {
   const [sessionChecked, setSessionChecked] = useState(false);
   // True once any owner session is confirmed — gates the CRM from unauthenticated access
   const [hasCrmSession, setHasCrmSession] = useState(false);
+  // "owner" or "manager" — both get the CRM, but managers get a restricted Settings modal
+  // (profile tab only) and can't touch billing/Stripe or delete company data.
+  const [crmRole, setCrmRole] = useState<"owner" | "manager">("owner");
   // Last Supabase sync timestamp
   const [lastSynced, setLastSynced] = useState<Date | null>(null);
   const [isSyncing, setIsSyncing] = useState(false);
@@ -441,17 +456,16 @@ export function App() {
     if (!settings.googleConnected || setupDone || oauthProcessing) return;
     (async () => {
       // Defensive guard: never show owner first-run setup to a user who was
-      // previously known to be an employee (cached by resolveUserRole / portal
-      // login), even if settings.googleConnected was set incorrectly.
+      // previously known to be an employee or manager (cached by resolveUserRole
+      // / portal login), even if settings.googleConnected was set incorrectly.
       const { data: { session } } = await supabase.auth.getSession();
       const userId = session?.user?.id;
       if (userId) {
-        try {
-          if (localStorage.getItem("crew_role_" + userId) === "employee") {
-            console.log("Company setup modal suppressed — cached employee role for", userId);
-            return;
-          }
-        } catch { /* ignore */ }
+        const cached = getCachedRole(userId);
+        if (cached) {
+          console.log("Company setup modal suppressed — cached " + cached + " role for", userId);
+          return;
+        }
       }
       setCompanySetupName((settings as any).companyName || "");
       setCompanySetupOpen(true);
@@ -637,6 +651,7 @@ export function App() {
         if (event === "SIGNED_OUT") {
           setEmpSession(null);
           setHasCrmSession(false);
+          setCrmRole("owner");
           setOauthProcessing(false);
           return;
         }
@@ -654,8 +669,9 @@ export function App() {
           return;
         }
 
-        // Owner path
+        // Owner / manager path — both get the CRM, crmRole drives Settings restrictions
         if (session) setHasCrmSession(true);
+        setCrmRole(userRole === "manager" ? "manager" : "owner");
         if (session?.user?.email) setCrmUserEmail(session.user.email);
         applyGoogleIdentity(session);
 
@@ -691,6 +707,7 @@ export function App() {
         persistEmployeeGoogleToken(initial);
       } else {
         if (initial) setHasCrmSession(true);
+        setCrmRole(initRole === "manager" ? "manager" : "owner");
         applyGoogleIdentity(initial);
         if (isOAuthCallback && initIsGoogle) {
           setPage("google");
@@ -1256,6 +1273,7 @@ export function App() {
         setModelStatus={setModelStatus}
         toast={toast}
         onSignOut={handleSignOut}
+        restrictToProfile={crmRole === "manager"}
       />
 
       {/* Client portal */}

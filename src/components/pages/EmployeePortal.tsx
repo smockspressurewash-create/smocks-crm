@@ -932,18 +932,22 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     const load = async () => {
       try {
         const { data } = await (supabase as any).from("jobs").select("*");
-        console.log("ALL JOBS — fetched from Supabase:", Array.isArray(data) ? data.length : 0,
-          "myEmployee.id:", empId, "user_id:", empUserId);
+        console.log("FETCHED JOBS FROM SUPABASE:", data);
+        if (Array.isArray(data)) {
+          data.forEach((j: any) => {
+            console.log("  job", j.id, "crew:", j.crew, "— matches me?",
+              crewIncludesEmployee(j.crew, empId, empUserId));
+          });
+        }
         if (Array.isArray(data) && data.length > 0) {
-          console.log("ALL JOBS — sample fetched job crew:", data[0]?.crew);
           setJobs(prev => {
             const supabaseMap = new Map(data.map((j: any) => [j.id, j]));
             const merged = prev.map(j => supabaseMap.has(j.id) ? { ...j, ...supabaseMap.get(j.id) } : j);
             const existingIds = new Set(prev.map(j => j.id));
             const added = data.filter((j: any) => !existingIds.has(j.id));
             const result = [...merged, ...added];
-            console.log("ALL JOBS — my jobs after merge:",
-              result.filter(j => crewIncludesEmployee(j.crew, empId, empUserId)).map(j => j.id));
+            const myFiltered = result.filter(j => crewIncludesEmployee(j.crew, empId, empUserId));
+            console.log("FILTERED MY JOBS:", myFiltered);
             return result;
           });
         }
@@ -1341,8 +1345,10 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     }
 
     // If they arrived via invite and have no employee record yet, create one now
+    let isManager = (matchedEmployee as any)?.role?.toLowerCase?.().includes("manager") || false;
     if (!matchedEmployee && inviteRecord) {
       const authRole = inviteRecord.role?.toLowerCase().includes("manager") ? "manager" : "technician";
+      isManager = authRole === "manager";
       const newEmp = {
         firstName: inviteRecord.firstName || "",
         lastName: inviteRecord.lastName || "",
@@ -1358,7 +1364,20 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     }
 
     refetchEmployees?.();
-    console.log("EMP SESSION SET — user:", session.user.id, "matchedEmployee:", matchedEmployee?.id || null);
+    console.log("EMP SESSION SET — user:", session.user.id, "matchedEmployee:", matchedEmployee?.id || null, "isManager:", isManager);
+
+    // Managers get the CRM, not the portal — once their role is established, send
+    // them to the dashboard. A full reload re-runs App.tsx's session resolution
+    // cleanly via resolveUserRole, rather than juggling empSession/hasCrmSession
+    // across two components mid-flight.
+    if (isManager) {
+      try { localStorage.setItem("crew_role_" + session.user.id, "manager"); } catch { /* ignore */ }
+      toast("Welcome back! Redirecting to your dashboard…");
+      window.location.hash = "/dashboard";
+      window.location.reload();
+      return;
+    }
+
     setEmpSession(session);
     toast("Welcome back!");
   };
@@ -1421,6 +1440,18 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
       if (linkedEmployee) setLocalEmployee(normalizeEmp(linkedEmployee));
 
       refetchEmployees?.();
+
+      // Managers get the CRM, not the portal. See doLogin for why a reload (vs.
+      // juggling empSession/hasCrmSession across components) is used here.
+      const isManager = authRole === "manager" || (linkedEmployee as any)?.role?.toLowerCase?.().includes("manager");
+      if (isManager) {
+        try { localStorage.setItem("crew_role_" + newUserId, "manager"); } catch { /* ignore */ }
+        toast("Account created! Redirecting to your dashboard…");
+        window.location.hash = "/dashboard";
+        window.location.reload();
+        return;
+      }
+
       setEmpSession(signInData.session);
       toast("Welcome! Account created ✓");
     } else {

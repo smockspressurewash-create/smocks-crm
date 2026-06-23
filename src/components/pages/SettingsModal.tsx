@@ -79,11 +79,11 @@ import { ChemicalModal } from "../ui/ChemicalModal";
 import { WeeklyBusinessReview } from "../ui/WeeklyBusinessReview";
 import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 
-export function SettingsModal({ open, onClose, settings, setSettings, services, setServices, emailTemplates, setEmailTemplates, smsTemplates, setSmsTemplates, estimateTemplates = [], setEstimateTemplates = (() => {}) as any, modelStatus = {}, setModelStatus = (() => {}) as any, toast, onSignOut }: { open?: any; onClose?: any; settings?: any; setSettings?: any; services?: any; setServices?: any; emailTemplates?: any; setEmailTemplates?: any; smsTemplates?: any; setSmsTemplates?: any; estimateTemplates?: any[]; setEstimateTemplates?: any; modelStatus?: any; setModelStatus?: any; toast?: any; onSignOut?: () => void }) {
+export function SettingsModal({ open, onClose, settings, setSettings, services, setServices, emailTemplates, setEmailTemplates, smsTemplates, setSmsTemplates, estimateTemplates = [], setEstimateTemplates = (() => {}) as any, modelStatus = {}, setModelStatus = (() => {}) as any, toast, onSignOut, restrictToProfile = false }: { open?: any; onClose?: any; settings?: any; setSettings?: any; services?: any; setServices?: any; emailTemplates?: any; setEmailTemplates?: any; smsTemplates?: any; setSmsTemplates?: any; estimateTemplates?: any[]; setEstimateTemplates?: any; modelStatus?: any; setModelStatus?: any; toast?: any; onSignOut?: () => void; restrictToProfile?: boolean }) {
   const [f, setF] = useState(settings);
   const [stripeSecretInput, setStripeSecretInput] = useState(() => deobfuscate(settings.stripeSecretKeyEnc || ""));
   const [showStripeSecret, setShowStripeSecret] = useState(false);
-  const [sec, setSec] = useState("api");
+  const [sec, setSec] = useState(restrictToProfile ? "profile" : "api");
   const [showKey, setShowKey] = useState(false);
   const [googleOAuth, setGoogleOAuth] = useState({ open: false, step: "account", email: "", selectedScopes: { gmail: true, calendar: true, drive: false, contacts: false } });
   const [tplTab, setTplTab] = useState<"messaging" | "estimates">("messaging");
@@ -104,20 +104,24 @@ export function SettingsModal({ open, onClose, settings, setSettings, services, 
     onClose(); toast("Settings saved");
   };
 
-  const secs = [
-    { key: "profile", label: "My Profile", icon: User },
-    { key: "api", label: "API Keys", icon: Key },
-    { key: "models", label: "AI Models", icon: Bot },
-    { key: "company", label: "Company", icon: Settings },
-    { key: "services", label: "Services", icon: Briefcase },
-    { key: "goals", label: "Goals", icon: Target },
-    { key: "notifications", label: "Notifications", icon: Bell },
-    { key: "templates", label: "Templates", icon: FileText },
-    { key: "integrations", label: "Integrations", icon: Zap },
-    { key: "legal", label: "Legal", icon: Shield },
-    { key: "audit", label: "Audit Log", icon: Shield },
-    { key: "data", label: "Data", icon: Download }
-  ];
+  // Managers only get their own profile — no API keys, billing/Stripe (under
+  // Integrations), company settings, or the "Delete All Data" danger zone (under Data).
+  const secs = restrictToProfile
+    ? [{ key: "profile", label: "My Profile", icon: User }]
+    : [
+        { key: "profile", label: "My Profile", icon: User },
+        { key: "api", label: "API Keys", icon: Key },
+        { key: "models", label: "AI Models", icon: Bot },
+        { key: "company", label: "Company", icon: Settings },
+        { key: "services", label: "Services", icon: Briefcase },
+        { key: "goals", label: "Goals", icon: Target },
+        { key: "notifications", label: "Notifications", icon: Bell },
+        { key: "templates", label: "Templates", icon: FileText },
+        { key: "integrations", label: "Integrations", icon: Zap },
+        { key: "legal", label: "Legal", icon: Shield },
+        { key: "audit", label: "Audit Log", icon: Shield },
+        { key: "data", label: "Data", icon: Download }
+      ];
 
   return (
     <>

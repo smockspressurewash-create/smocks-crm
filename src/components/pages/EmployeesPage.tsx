@@ -174,7 +174,7 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setting
   const del = id => { if (confirm("Remove employee?")) setEmployees(prev => prev.filter(e => e.id !== id)); };
   const toggle = id => setEmployees(prev => prev.map(e => e.id === id ? { ...e, status: e.status === "active" ? "inactive" : "active" } : e));
 
-  const roles = ["Owner", "Lead Technician", "Technician", "Helper", "Office", "Sales"];
+  const roles = ["Owner", "Manager", "Lead Technician", "Technician", "Helper", "Office", "Sales"];
 
   // Calculate real hours from jobs (loggedHours on jobs they're crewed on)
   const getEmployeeHours = (empId, startDate, endDate) => {
@@ -385,7 +385,7 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setting
             <div className="grid grid-cols-2 gap-2">
               <div><label className="text-xs text-white/60 mb-1 block">Role</label>
                 <GSel value={inviteF.role} onChange={e => setInviteF(p => ({ ...p, role: e.target.value }))}>
-                  {["Technician","Lead Technician","Helper","Office","Sales"].map(r => <option key={r} value={r} className="bg-black">{r}</option>)}
+                  {["Technician","Lead Technician","Manager","Helper","Office","Sales"].map(r => <option key={r} value={r} className="bg-black">{r}</option>)}
                 </GSel>
               </div>
               <div><label className="text-xs text-white/60 mb-1 block">Hourly Rate ($)</label><GInput type="number" step="0.5" value={inviteF.hourlyRate} onChange={e => setInviteF(p => ({ ...p, hourlyRate: Number(e.target.value) }))} /></div>

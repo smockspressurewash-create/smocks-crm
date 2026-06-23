@@ -187,6 +187,15 @@ export function JobsPage({ jobs = [], setJobs, customers = [], employees = [], e
   const updateJob = (jid, patch) => {
     const oldJob = jobs.find(j => j.id === jid);
     setJobs(jobs.map(j => j.id === jid ? { ...j, ...patch } : j));
+    // Crew assignment must reach Supabase immediately — the employee portal
+    // polls Supabase directly, and waiting for the 30s auto-save interval in
+    // App.tsx means an assignment can sit invisible to the employee that long.
+    if (patch.crew !== undefined) {
+      console.log("SAVING JOB — crew:", patch.crew, "full job:", { ...oldJob, ...patch });
+      (supabase as any).from("jobs").update({ crew: patch.crew }).eq("id", jid)
+        .then((result: any) => console.log("SUPABASE SAVE RESULT:", result))
+        .catch((e: any) => console.warn("SUPABASE SAVE FAILED:", e?.message));
+    }
     // Sync Google Calendar when date or time changes
     if (oldJob?.googleEventId && (settings as any)?.googleConnected && (settings as any)?.googleToken) {
       if (patch.scheduledDate !== undefined || patch.scheduledTime !== undefined) {
