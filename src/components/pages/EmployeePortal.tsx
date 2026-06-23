@@ -34,6 +34,37 @@ const POST_DEFAULTS: JobChecklistItem[] = [
   { id: "post4", label: "Take after photos", done: false },
 ];
 
+// Normalizes a single crew entry to a comparable id string. Crew is meant to be a
+// plain array of employee-id strings, but Supabase JSONB round-trips and older
+// write paths have been known to store objects ({ id }, { employeeId }) instead —
+// a bare `c === empId` string comparison silently fails (no error, just an empty
+// result) against those, which looks exactly like "the job isn't assigned" even
+// though the data is there. Also tolerates a stringified-JSON crew column.
+const crewEntryId = (c: any): string => {
+  if (c == null) return "";
+  if (typeof c === "string") return c.trim().toLowerCase();
+  if (typeof c === "object") {
+    const v = c.id ?? c.employeeId ?? c.employee_id ?? c.user_id ?? c.userId ?? "";
+    return String(v).trim().toLowerCase();
+  }
+  return String(c).trim().toLowerCase();
+};
+
+const normalizeCrewArray = (crew: any): any[] => {
+  if (Array.isArray(crew)) return crew;
+  if (typeof crew === "string" && crew.trim().startsWith("[")) {
+    try { const parsed = JSON.parse(crew); return Array.isArray(parsed) ? parsed : []; } catch { return []; }
+  }
+  return [];
+};
+
+export const crewIncludesEmployee = (crew: any, empId?: string | null, empUserId?: string | null): boolean => {
+  const list = normalizeCrewArray(crew).map(crewEntryId);
+  const targets = [empId, empUserId].filter(Boolean).map(v => String(v).trim().toLowerCase());
+  if (targets.length === 0) return false;
+  return list.some(c => c && targets.includes(c));
+};
+
 export const PERMISSION_DEFS = [
   { key: "can_view_jobs",          label: "View assigned jobs",        desc: "See their job schedule" },
   { key: "can_clock_in",           label: "Clock in / out",            desc: "Track time on jobs" },
@@ -890,39 +921,48 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     load();
   }, [(myEmployee as any)?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Fetch jobs from Supabase so Supabase-side crew assignments are visible
+  // Fetch jobs from Supabase so Supabase-side crew assignments are visible.
+  // Runs once when the employee resolves, then polls every 20s so a job the
+  // owner assigns WHILE the employee already has the portal open still shows
+  // up without requiring a full reload.
   useEffect(() => {
     if (!myEmployee) return;
     const empId = myEmployee.id;
     const empUserId = (myEmployee as any).user_id;
-    console.log("ALL JOBS — jobs:", jobs.length, "myEmployee.id:", empId, "user_id:", empUserId);
     const load = async () => {
       try {
         const { data } = await (supabase as any).from("jobs").select("*");
+        console.log("ALL JOBS — fetched from Supabase:", Array.isArray(data) ? data.length : 0,
+          "myEmployee.id:", empId, "user_id:", empUserId);
         if (Array.isArray(data) && data.length > 0) {
+          console.log("ALL JOBS — sample fetched job crew:", data[0]?.crew);
           setJobs(prev => {
             const supabaseMap = new Map(data.map((j: any) => [j.id, j]));
             const merged = prev.map(j => supabaseMap.has(j.id) ? { ...j, ...supabaseMap.get(j.id) } : j);
             const existingIds = new Set(prev.map(j => j.id));
             const added = data.filter((j: any) => !existingIds.has(j.id));
-            return [...merged, ...added];
+            const result = [...merged, ...added];
+            console.log("ALL JOBS — my jobs after merge:",
+              result.filter(j => crewIncludesEmployee(j.crew, empId, empUserId)).map(j => j.id));
+            return result;
           });
         }
-      } catch { /* jobs table may not exist */ }
+      } catch (e) { console.warn("ALL JOBS — fetch failed:", e); }
     };
     load();
+    const interval = setInterval(load, 20000);
+    return () => clearInterval(interval);
   }, [(myEmployee as any)?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Merge owner-set permissions with defaults (all-on for existing employees with no permissions field)
   const perms: Record<string, boolean> = { ...DEFAULT_PERMISSIONS, ...((myEmployee as any)?.permissions || {}) };
 
+  console.log("ALL JOBS — total jobs:", jobs.length);
+  console.log("ALL JOBS — myEmployee:", myEmployee?.id, (myEmployee as any)?.user_id);
+  console.log("ALL JOBS — sample job crew:", jobs[0]?.crew);
+
   const myJobs = myEmployee
-    ? jobs.filter(j => {
-        const crew = j.crew || [];
-        const empId = myEmployee.id;
-        const empUserId = (myEmployee as any).user_id;
-        return crew.some(c => c === empId || (empUserId && c === empUserId));
-      })
+    ? jobs.filter(j => crewIncludesEmployee(j.crew, myEmployee.id, (myEmployee as any).user_id))
     : [];
 
   // 24h job reminder — checks once on load (and hourly while the portal stays open)
@@ -1143,7 +1183,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
         setJobs(prev => prev.map(j => {
           if (j.id === requestData.job_id) {
             const currentCrew = j.crew || [];
-            if (!currentCrew.includes(empId) && !currentCrew.includes(empUserId)) {
+            if (!crewIncludesEmployee(currentCrew, empId, empUserId)) {
               const newCrew = [...currentCrew, empId];
               console.log("Accepting request job", requestData.job_id, "— crew before:", currentCrew, "after:", newCrew);
               (supabase as any).from("jobs").update({ crew: newCrew }).eq("id", requestData.job_id).catch(() => {});
@@ -1212,7 +1252,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
             const currentCrew = j.crew || [];
             const empId = myEmployee.id;
             const empUserId = (myEmployee as any).user_id;
-            if (!currentCrew.includes(empId) && !currentCrew.includes(empUserId)) {
+            if (!crewIncludesEmployee(currentCrew, empId, empUserId)) {
               const newCrew = [...currentCrew, empId];
               console.log("Accepting job", req.job_id, "— crew before:", currentCrew, "after:", newCrew);
               (supabase as any).from("jobs").update({ crew: newCrew }).eq("id", req.job_id).catch(() => {});
