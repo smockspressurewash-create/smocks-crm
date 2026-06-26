@@ -209,72 +209,8 @@ export const normalizeAutomation = (a: Record<string, unknown>) => ({
 
 export const IRS_RATE = 0.67; // 2024 rate per mile
 
-// ─── Job <-> Supabase column-name mapping ────────────────────────────────────
-// The CRM's Job objects use camelCase throughout; the Supabase `jobs` table uses
-// snake_case columns. Every read from / write to that table must go through
-// these so the two naming conventions never silently drift apart (a camelCase
-// key written straight to Supabase is just dropped — no error, the column
-// simply doesn't exist — which looks exactly like "jobs aren't saving").
-const JOB_CAMEL_TO_SNAKE: Record<string, string> = {
-  customerId: "customer_id",
-  scheduledDate: "scheduled_date",
-  scheduledTime: "scheduled_time",
-  estimatedDuration: "estimated_duration",
-  internalNotes: "internal_notes",
-  commLog: "comm_log",
-  chemicalsUsed: "chemicals_used",
-  loggedHours: "logged_hours",
-  laborCost: "labor_cost",
-  materialCost: "material_cost",
-  clockInAt: "clock_in_at",
-  isRecurring: "is_recurring",
-  recurringFreq: "recurring_freq",
-  isCash: "is_cash",
-  noShow: "no_show",
-  cancelReason: "cancel_reason",
-  googleEventId: "google_event_id",
-  pipelineStage: "pipeline_stage",
-  stageChangedAt: "stage_changed_at",
-  createdAt: "created_at",
-  lostReason: "lost_reason",
-  _showProfit: "show_profit",
-  paymentType: "payment_type",
-  paymentStatus: "payment_status",
-  amountCollected: "amount_collected",
-  surfaceType: "surface_type",
-  chemMixRatio: "chem_mix_ratio",
-  customerAccepted: "customer_accepted",
-  preChecklist: "pre_checklist",
-  duringChecklist: "during_checklist",
-  postChecklist: "post_checklist",
-  signOff: "sign_off",
-  rainGuarantee: "rain_guarantee",
-  rainGuaranteeDate: "rain_guarantee_date",
-  weatherOverride: "weather_override",
-  sqFootage: "sq_footage",
-  sqFtRate: "sq_ft_rate",
-};
-const JOB_SNAKE_TO_CAMEL: Record<string, string> = Object.fromEntries(
-  Object.entries(JOB_CAMEL_TO_SNAKE).map(([camel, snake]) => [snake, camel])
-);
-
-// Converts one job (partial patch or full object) from camelCase to snake_case
-// before it goes to Supabase. Only renames keys that are actually present, so
-// it's safe to use on partial `.update()` patches as well as full rows.
-export const toSnakeCaseJob = (job: Record<string, any>): Record<string, any> => {
-  const out: Record<string, any> = {};
-  for (const [key, value] of Object.entries(job)) {
-    out[JOB_CAMEL_TO_SNAKE[key] ?? key] = value;
-  }
-  return out;
-};
-
-// Converts one job row back from snake_case to camelCase after fetching from
-// Supabase, so the rest of the app never has to know the DB's column names.
-export const toCamelCaseJob = (row: Record<string, any>): Record<string, any> => {
-  const out: Record<string, any> = {};
-  for (const [key, value] of Object.entries(row)) {
-    out[JOB_SNAKE_TO_CAMEL[key] ?? key] = value;
-  }
-  return out;
-};
+// ─── Job <-> Supabase columns ─────────────────────────────────────────────────
+// The `jobs` table's columns are named to match the Job type's camelCase field
+// names exactly (e.g. "customerId", "scheduledDate") — see the SQL in the
+// Supabase SQL editor that adds these camelCase columns. No code-side mapping
+// is needed; reads/writes pass Job objects straight through to Supabase.
