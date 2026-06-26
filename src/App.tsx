@@ -613,6 +613,21 @@ export function App() {
   useEffect(() => {
     let sub: { unsubscribe: () => void } | null = null;
 
+    // Hard ceiling on the loading screen — independent of the async chain below.
+    // supabase.auth.getSession()/onAuthStateChange can both hang (not throw) if
+    // an earlier auth.initialize() call left an internal navigator-lock engaged,
+    // a network request never settles, etc. A hang skips both try/catch AND
+    // finally, since nothing ever rejects — so the only thing that can rescue
+    // the UI from a permanently-stuck loading screen is a timer that doesn't
+    // depend on any of this resolving at all.
+    let bootstrapDone = false;
+    const forceRenderTimer = setTimeout(() => {
+      if (!bootstrapDone) {
+        console.warn("Session bootstrap exceeded 5s — forcing login/CRM render");
+        setSessionChecked(true);
+      }
+    }, 5000);
+
     const applyGoogleIdentity = (session: any) => {
       if (!session?.user) return;
       const googleId = (session.user.identities || []).find((i: any) => i.provider === "google");
@@ -739,11 +754,16 @@ export function App() {
         // Session check complete — safe to render main app or employee portal.
         // Always runs, even if something above threw, so the app never gets
         // stuck on the loading screen.
+        bootstrapDone = true;
+        clearTimeout(forceRenderTimer);
         setSessionChecked(true);
       }
     })();
 
-    return () => sub?.unsubscribe();
+    return () => {
+      clearTimeout(forceRenderTimer);
+      sub?.unsubscribe();
+    };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Fetch real weather when OWM key is set
