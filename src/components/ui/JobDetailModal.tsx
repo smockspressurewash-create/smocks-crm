@@ -211,9 +211,26 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
   if (!job) return null;
   const c = customers.find(x => x.id === job.customerId);
 
+  // Direct assignment = automatic acceptance: toggling an employee onto the crew
+  // here saves immediately (no accept/decline step) and emails them right away.
+  // Only the "Request" flow (sendJobRequest below) requires the employee to
+  // accept/decline via the Incoming Requests section of their portal.
   const toggleCrew = eid => {
     const crew = job.crew || [];
-    updateJob(jobId, { crew: crew.includes(eid) ? crew.filter(x => x !== eid) : [...crew, eid] });
+    const adding = !crew.includes(eid);
+    const newCrew = adding ? [...crew, eid] : crew.filter(x => x !== eid);
+    updateJob(jobId, { crew: newCrew });
+    if (adding) {
+      const emp = employees.find(e => e.id === eid);
+      if (emp?.email) {
+        const cust = customers.find(x => x.id === job.customerId);
+        notifyEmployeesRef.current(
+          [emp],
+          () => `You've Been Assigned — ${job.scheduledDate || job.address}`,
+          () => `<p>Hi ${emp.firstName},</p><p>You've been assigned to a job:</p><ul><li><b>Date:</b> ${job.scheduledDate}${job.scheduledTime ? " at " + job.scheduledTime : ""}</li><li><b>Address:</b> ${job.address}</li>${cust ? `<li><b>Customer:</b> ${cust.firstName} ${cust.lastName}</li>` : ""}</ul><p>This job is already on your schedule — no action needed.</p><p>— ${settings.companyName || "Smock's Pressure Washing"}</p>`
+        ).then((sent: number) => { if (sent > 0) toast?.(`Notified ${emp.firstName} ✓`, "green"); });
+      }
+    }
   };
 
   // Sends one notification per employee. Prefers the EMPLOYEE'S OWN connected Gmail

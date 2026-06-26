@@ -196,6 +196,9 @@ export function JobsPage({ jobs = [], setJobs, customers = [], employees = [], e
         .then((result: any) => {
           console.log("SUPABASE SAVE RESULT:", result);
           if (result?.error) toast?.("Crew assignment failed to save — " + result.error.message, "red");
+          // Verify the write actually landed — re-query the row directly.
+          (supabase as any).from("jobs").select("crew").eq("id", jid).maybeSingle()
+            .then((verify: any) => console.log("VERIFY CREW SAVED — job", jid, ":", verify?.data?.crew));
         })
         .catch((e: any) => {
           console.warn("SUPABASE SAVE FAILED:", e?.message);

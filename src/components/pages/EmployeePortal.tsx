@@ -934,7 +934,10 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     const load = async () => {
       try {
         const { data } = await (supabase as any).from("jobs").select("*");
-        console.log("FETCHED JOBS FROM SUPABASE:", data);
+        console.log("FETCHED JOBS — raw data:", JSON.stringify(data));
+        console.log("FETCHED JOBS — count:", data?.length);
+        console.log("FETCHED JOBS — first job crew:", JSON.stringify(data?.[0]?.crew));
+        console.log("MY EMPLOYEE ID:", empId, "USER_ID:", empUserId);
         if (Array.isArray(data)) {
           data.forEach((j: any) => {
             console.log("  job", j.id, "crew:", j.crew, "— matches me?",
@@ -948,8 +951,9 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
             const existingIds = new Set(prev.map(j => j.id));
             const added = data.filter((j: any) => !existingIds.has(j.id));
             const result = [...merged, ...added];
-            const myFiltered = result.filter(j => crewIncludesEmployee(j.crew, empId, empUserId));
-            console.log("FILTERED MY JOBS:", myFiltered);
+            const myJobsFiltered = result.filter(j => crewIncludesEmployee(j.crew, empId, empUserId));
+            console.log("FILTERED MY JOBS — count:", myJobsFiltered.length);
+            console.log("FILTERED MY JOBS — ids:", myJobsFiltered.map((j: any) => j.id));
             return result;
           });
         }
@@ -970,6 +974,8 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   const myJobs = myEmployee
     ? jobs.filter(j => crewIncludesEmployee(j.crew, myEmployee.id, (myEmployee as any).user_id))
     : [];
+  console.log("FILTERED MY JOBS — count:", myJobs.length);
+  console.log("FILTERED MY JOBS — ids:", myJobs.map(j => j.id));
 
   // 24h job reminder — checks once on load (and hourly while the portal stays open)
   // for jobs starting within the next 24h, and emails the employee via their own
