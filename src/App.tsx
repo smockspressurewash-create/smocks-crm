@@ -637,94 +637,110 @@ export function App() {
     };
 
     (async () => {
-      // Capture now — Supabase may clear the hash before getSession() resolves
-      const isOAuthCallback = window.location.hash.includes("access_token");
+      // Everything below must never leave setSessionChecked(false) permanently —
+      // a thrown error here (a flaky network request, a Supabase query failing)
+      // with no catch would mean the app is stuck on the full-screen loading
+      // state forever, since nothing else can render until sessionChecked is true.
+      try {
+        // Capture now — Supabase may clear the hash before getSession() resolves
+        const isOAuthCallback = window.location.hash.includes("access_token");
 
-      // Subscribe first so we catch SIGNED_IN from detectSessionInUrl processing the hash.
-      // The hash-sync effect is guarded to return early while access_token is in the hash,
-      // so Supabase can read and process the token before the router overwrites it.
-      const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
-        console.log("AUTH CHANGE in App.tsx:", event,
-          "email:", session?.user?.email,
-          "identities:", JSON.stringify(session?.user?.identities?.map((i: any) => i.provider)));
+        // Subscribe first so we catch SIGNED_IN from detectSessionInUrl processing the hash.
+        // The hash-sync effect is guarded to return early while access_token is in the hash,
+        // so Supabase can read and process the token before the router overwrites it.
+        const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
+          try {
+            console.log("AUTH CHANGE in App.tsx:", event,
+              "email:", session?.user?.email,
+              "identities:", JSON.stringify(session?.user?.identities?.map((i: any) => i.provider)));
 
-        if (event === "SIGNED_OUT") {
-          setEmpSession(null);
-          setHasCrmSession(false);
-          setCrmRole("owner");
-          setOauthProcessing(false);
-          return;
-        }
+            if (event === "SIGNED_OUT") {
+              setEmpSession(null);
+              setHasCrmSession(false);
+              setCrmRole("owner");
+              setOauthProcessing(false);
+              return;
+            }
 
-        const userRole = await resolveUserRole(session);
+            const userRole = await resolveUserRole(session);
 
-        if (userRole === "employee") {
-          // Force the hash to #/portal immediately too — belt-and-suspenders so the
-          // URL itself never points at a CRM route while this resolves.
+            if (userRole === "employee") {
+              // Force the hash to #/portal immediately too — belt-and-suspenders so the
+              // URL itself never points at a CRM route while this resolves.
+              if (!window.location.hash.startsWith("#/portal")) window.location.hash = "/portal";
+              setEmpSession(session);
+              setPage("portal");
+              setOauthProcessing(false);
+              persistEmployeeGoogleToken(session);
+              return;
+            }
+
+            // Owner / manager path — both get the CRM, crmRole drives Settings restrictions
+            if (session) setHasCrmSession(true);
+            setCrmRole(userRole === "manager" ? "manager" : "owner");
+            if (session?.user?.email) setCrmUserEmail(session.user.email);
+            applyGoogleIdentity(session);
+
+            if (event === "SIGNED_IN" || (event as string) === "IDENTITY_LINKED") {
+              const isGoogle = (session?.user?.identities || []).some((i: any) => i.provider === "google");
+              if (isGoogle) {
+                setPage("google");
+              } else {
+                // Email/password owner sign-in → go to CRM dashboard
+                setPage("dashboard");
+                setMobileViewForced("desktop");
+              }
+              setOauthProcessing(false);
+            }
+            // Safety net: initialize() may fire INITIAL_SESSION instead of SIGNED_IN
+            if (event === "INITIAL_SESSION") {
+              setOauthProcessing(false);
+            }
+          } catch (err) {
+            console.error("onAuthStateChange handler failed:", err);
+            setOauthProcessing(false);
+          }
+        });
+        sub = subscription;
+
+        // Resolve current session and determine owner vs employee
+        const { data: { session: initial } } = await supabase.auth.getSession();
+        console.log("INITIAL SESSION resolved — email:", initial?.user?.email,
+          "identities:", JSON.stringify(initial?.user?.identities?.map((i: any) => i.provider)));
+        const initIsGoogle = (initial?.user?.identities || []).some((i: any) => i.provider === "google");
+        const initRole = await resolveUserRole(initial);
+        if (initial && initRole === "employee") {
           if (!window.location.hash.startsWith("#/portal")) window.location.hash = "/portal";
-          setEmpSession(session);
+          setEmpSession(initial);
           setPage("portal");
           setOauthProcessing(false);
-          persistEmployeeGoogleToken(session);
-          return;
-        }
-
-        // Owner / manager path — both get the CRM, crmRole drives Settings restrictions
-        if (session) setHasCrmSession(true);
-        setCrmRole(userRole === "manager" ? "manager" : "owner");
-        if (session?.user?.email) setCrmUserEmail(session.user.email);
-        applyGoogleIdentity(session);
-
-        if (event === "SIGNED_IN" || (event as string) === "IDENTITY_LINKED") {
-          const isGoogle = (session?.user?.identities || []).some((i: any) => i.provider === "google");
-          if (isGoogle) {
+          persistEmployeeGoogleToken(initial);
+        } else {
+          if (initial) setHasCrmSession(true);
+          setCrmRole(initRole === "manager" ? "manager" : "owner");
+          applyGoogleIdentity(initial);
+          if (isOAuthCallback && initIsGoogle) {
             setPage("google");
-          } else {
-            // Email/password owner sign-in → go to CRM dashboard
-            setPage("dashboard");
-            setMobileViewForced("desktop");
+            setOauthProcessing(false);
           }
-          setOauthProcessing(false);
+          // Existing email/password owner session — exit mobile landing and ensure not stuck on portal
+          if (initial && !initIsGoogle) {
+            setMobileViewForced("desktop");
+            setPage(prev => prev === "portal" ? "dashboard" : prev);
+          }
         }
-        // Safety net: initialize() may fire INITIAL_SESSION instead of SIGNED_IN
-        if (event === "INITIAL_SESSION") {
-          setOauthProcessing(false);
-        }
-      });
-      sub = subscription;
 
-      // Resolve current session and determine owner vs employee
-      const { data: { session: initial } } = await supabase.auth.getSession();
-      console.log("INITIAL SESSION resolved — email:", initial?.user?.email,
-        "identities:", JSON.stringify(initial?.user?.identities?.map((i: any) => i.provider)));
-      const initIsGoogle = (initial?.user?.identities || []).some((i: any) => i.provider === "google");
-      const initRole = await resolveUserRole(initial);
-      if (initial && initRole === "employee") {
-        if (!window.location.hash.startsWith("#/portal")) window.location.hash = "/portal";
-        setEmpSession(initial);
-        setPage("portal");
-        setOauthProcessing(false);
-        persistEmployeeGoogleToken(initial);
-      } else {
-        if (initial) setHasCrmSession(true);
-        setCrmRole(initRole === "manager" ? "manager" : "owner");
-        applyGoogleIdentity(initial);
-        if (isOAuthCallback && initIsGoogle) {
-          setPage("google");
-          setOauthProcessing(false);
-        }
-        // Existing email/password owner session — exit mobile landing and ensure not stuck on portal
-        if (initial && !initIsGoogle) {
-          setMobileViewForced("desktop");
-          setPage(prev => prev === "portal" ? "dashboard" : prev);
-        }
+        // Load employees + jobs + customers from Supabase on initial load
+        refetchEmployees();
+        refetchData();
+      } catch (err) {
+        console.error("Session bootstrap failed — falling back to login screen:", err);
+      } finally {
+        // Session check complete — safe to render main app or employee portal.
+        // Always runs, even if something above threw, so the app never gets
+        // stuck on the loading screen.
+        setSessionChecked(true);
       }
-      // Session check complete — safe to render main app or employee portal
-      setSessionChecked(true);
-
-      // Load employees + jobs + customers from Supabase on initial load
-      refetchEmployees();
-      refetchData();
     })();
 
     return () => sub?.unsubscribe();
