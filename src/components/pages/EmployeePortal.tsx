@@ -738,6 +738,9 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   const [driveTimes, setDriveTimes] = useState<Record<string, string>>({});
   const [completionNotif, setCompletionNotif] = useState<{ message: string; nextJobId?: string } | null>(null);
   const fetchedDriveIds = useRef(new Set<string>());
+  // Lets handleAcceptRequest/handleInlineAccept trigger an immediate jobs refetch
+  // right after a successful accept, instead of waiting up to 10s for the next poll.
+  const refetchJobsRef = useRef<() => Promise<void>>(async () => {});
   const userLocationRef = useRef<{ lat: number; lng: number } | null>(null);
   const [loginEmail, setLoginEmail] = useState("");
   const [loginPwd, setLoginPwd] = useState("");
@@ -953,7 +956,33 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     const empUserId = (myEmployee as any).user_id;
     const load = async () => {
       try {
-        const { data } = await (supabase as any).from("jobs").select("*");
+        // Layered fetch: an RLS policy filtering by org_id could legitimately return
+        // [] from a plain select even for jobs this employee IS assigned to, if those
+        // jobs are missing org_id. Try narrowing by crew membership first (two id
+        // shapes, since crew entries may store either), then fall back to fetching
+        // everything and filtering client-side — logging each attempt so it's clear
+        // which path actually returned data.
+        let data: any[] | null = null;
+        try {
+          const attempt1 = await (supabase as any).from("jobs").select("*").contains("crew", [empId]);
+          console.log("FETCH ATTEMPT 1 — contains('crew', [employeeId]):", attempt1);
+          if (Array.isArray(attempt1.data) && attempt1.data.length > 0) data = attempt1.data;
+        } catch (e) { console.warn("FETCH ATTEMPT 1 failed:", e); }
+
+        if (!data && empUserId) {
+          try {
+            const attempt2 = await (supabase as any).from("jobs").select("*").contains("crew", [empUserId]);
+            console.log("FETCH ATTEMPT 2 — contains('crew', [userId]):", attempt2);
+            if (Array.isArray(attempt2.data) && attempt2.data.length > 0) data = attempt2.data;
+          } catch (e) { console.warn("FETCH ATTEMPT 2 failed:", e); }
+        }
+
+        if (!data) {
+          const attempt3 = await (supabase as any).from("jobs").select("*");
+          console.log("FETCH ATTEMPT 3 — select all, filter client-side:", attempt3);
+          data = Array.isArray(attempt3.data) ? attempt3.data : [];
+        }
+
         console.log("FETCHED JOBS — raw data:", JSON.stringify(data));
         console.log("FETCHED JOBS — count:", data?.length);
         console.log("FETCHED JOBS — first job crew:", JSON.stringify(data?.[0]?.crew));
@@ -979,6 +1008,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
         }
       } catch (e) { console.warn("ALL JOBS — fetch failed:", e); }
     };
+    refetchJobsRef.current = load;
     load();
     const interval = setInterval(load, 10000);
     return () => clearInterval(interval);
@@ -1226,19 +1256,10 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
           const saveResult = await (supabase as any).from("jobs").update({ crew: newCrew }).eq("id", requestData.job_id);
           console.log("ACCEPT SAVE RESULT:", saveResult);
         }
-        // Refetch to confirm Supabase state
-        try {
-          const { data: freshJobs } = await (supabase as any).from("jobs").select("*");
-          if (Array.isArray(freshJobs) && freshJobs.length > 0) {
-            setJobs(prev => {
-              const sbMap = new Map(freshJobs.map((j: any) => [j.id, j]));
-              const merged = prev.map(j => sbMap.has(j.id) ? { ...j, ...sbMap.get(j.id) } : j);
-              const existingIds = new Set(prev.map(j => j.id));
-              const added = freshJobs.filter((j: any) => !existingIds.has(j.id));
-              return [...merged, ...added];
-            });
-          }
-        } catch { /* ignore */ }
+        // Confirm against Supabase immediately rather than waiting up to 10s for the
+        // next poll — the optimistic setJobs above already updated myJobs for instant
+        // UI feedback; this just reconciles with the server-confirmed state right away.
+        refetchJobsRef.current().catch(() => {});
         syncAcceptedJobToCalendar(jobs.find(j => j.id === requestData.job_id));
       }
       setRequestDone("accepted");
@@ -1295,22 +1316,10 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
           const saveResult = await (supabase as any).from("jobs").update({ crew: newCrew }).eq("id", req.job_id);
           console.log("ACCEPT SAVE RESULT:", saveResult);
         }
-        // Refetch from Supabase to ensure latest crew is reflected
-        try {
-          const { data: freshJobs } = await (supabase as any).from("jobs").select("*");
-          if (Array.isArray(freshJobs) && freshJobs.length > 0) {
-            setJobs(prev => {
-              const sbMap = new Map(freshJobs.map((j: any) => [j.id, j]));
-              const merged = prev.map(j => sbMap.has(j.id) ? { ...j, ...sbMap.get(j.id) } : j);
-              const existingIds = new Set(prev.map(j => j.id));
-              const added = freshJobs.filter((j: any) => !existingIds.has(j.id));
-              const result = [...merged, ...added];
-              console.log("Post-accept refetch — jobs with crew for", myEmployee.id, ":",
-                result.filter(j => crewIncludesEmployee(j.crew, myEmployee.id, (myEmployee as any).user_id)).map(j => j.id));
-              return result;
-            });
-          }
-        } catch { /* ignore refetch failure */ }
+        // Confirm against Supabase immediately rather than waiting up to 10s for the
+        // next poll — the optimistic setJobs above already updated myJobs for instant
+        // UI feedback; this just reconciles with the server-confirmed state right away.
+        refetchJobsRef.current().catch(() => {});
         syncAcceptedJobToCalendar(jobs.find(j => j.id === req.job_id));
       }
       setIncomingRequests(prev => prev.map(r => r.id === req.id ? { ...r, status: "accepted" } : r));

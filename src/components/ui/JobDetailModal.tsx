@@ -342,11 +342,17 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
     const emp = employees.find(e => e.id === scheduleEmpId);
     if (!emp) return;
     setScheduling(true);
+    // The crew assignment and notification must complete even if Google Calendar
+    // sync fails OR hangs (a 401 from an expired/disconnected employee token can
+    // trigger an internal Supabase token-refresh attempt that itself stalls) —
+    // a calendar problem should never leave this button stuck on "Scheduling…"
+    // forever, and it should never block the actual crew save either.
     try {
       const crew = job.crew || [];
       if (!crew.includes(emp.id)) updateJob(jobId, { crew: [...crew, emp.id] });
 
       let calendarSynced = false;
+      let calendarSkippedReason = "";
       if (job.scheduledDate) {
         try {
           const { data: empRow } = await (supabase as any)
@@ -360,27 +366,47 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
             const endDt = new Date(startDt.getTime() + (Number(job.duration) || 2) * 3600000);
             const cust = customers.find(x => x.id === job.customerId);
             const custName = cust ? `${cust.firstName} ${cust.lastName}` : "Customer";
-            const evId = await createGCalEventApi(tok, { title: `CrewBoss Job: ${custName}`, start: startDt.toISOString(), end: endDt.toISOString(), location: job.address, description: job.notes || "" });
+            // Race against a hard timeout so a hung token-refresh/API call can never
+            // block this flow — 10s is generous for a real network round trip.
+            const evId = await Promise.race([
+              createGCalEventApi(tok, { title: `CrewBoss Job: ${custName}`, start: startDt.toISOString(), end: endDt.toISOString(), location: job.address, description: job.notes || "" }),
+              new Promise<never>((_, reject) => setTimeout(() => reject(new Error("Google Calendar sync timed out")), 10000)),
+            ]);
             updateJob(jobId, { googleEventId: evId });
             calendarSynced = true;
+          } else {
+            calendarSkippedReason = "employee hasn't connected Google";
           }
-        } catch { /* employee hasn't connected Google — skip calendar, still notify */ }
+        } catch (err) {
+          console.warn("Google Calendar sync failed — continuing without it:", err);
+          calendarSkippedReason = "calendar sync failed";
+        }
       }
 
       const cust = customers.find(x => x.id === job.customerId);
-      await notifyEmployees(
-        [emp],
-        () => `You've Been Scheduled — ${job.scheduledDate}`,
-        () => `<p>Hi ${emp.firstName},</p><p>You've been scheduled for a job — you're confirmed, no action needed:</p><ul><li><b>Date:</b> ${job.scheduledDate}${job.scheduledTime ? " at " + job.scheduledTime : ""}</li><li><b>Address:</b> ${job.address}</li>${cust ? `<li><b>Customer:</b> ${cust.firstName} ${cust.lastName}</li>` : ""}</ul>${calendarSynced ? "<p>This has been added to your Google Calendar.</p>" : ""}<p>— ${settings.companyName || "Smock's Pressure Washing"}</p>`
-      );
+      try {
+        await notifyEmployees(
+          [emp],
+          () => `You've Been Scheduled — ${job.scheduledDate}`,
+          () => `<p>Hi ${emp.firstName},</p><p>You've been scheduled for a job — you're confirmed, no action needed:</p><ul><li><b>Date:</b> ${job.scheduledDate}${job.scheduledTime ? " at " + job.scheduledTime : ""}</li><li><b>Address:</b> ${job.address}</li>${cust ? `<li><b>Customer:</b> ${cust.firstName} ${cust.lastName}</li>` : ""}</ul>${calendarSynced ? "<p>This has been added to your Google Calendar.</p>" : ""}<p>— ${settings.companyName || "Smock's Pressure Washing"}</p>`
+        );
+      } catch (err) {
+        console.warn("Schedule notification email failed — crew assignment still saved:", err);
+      }
 
-      toast(`${emp.firstName} scheduled & notified${calendarSynced ? " — calendar synced ✓" : ""}`, "green");
+      if (calendarSynced) {
+        toast(`${emp.firstName} scheduled & notified — calendar synced ✓`, "green");
+      } else {
+        toast(`Crew assigned! (Google Calendar sync skipped — ${calendarSkippedReason || "no Google token"})`, "yellow");
+      }
       setShowScheduleForm(false);
       setScheduleEmpId("");
-    } catch {
+    } catch (err) {
+      console.error("Error scheduling employee:", err);
       toast("Error scheduling employee", "red");
+    } finally {
+      setScheduling(false);
     }
-    setScheduling(false);
   };
 
   const toggleEquip = eq => {
