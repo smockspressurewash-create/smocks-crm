@@ -37,6 +37,8 @@ import { GSel } from "../ui/GSel";
 import { GTxt } from "../ui/GTxt";
 import { Modal } from "../ui/Modal";
 import { StripePaymentModal } from "../ui/StripePaymentModal";
+import { createCheckoutSession, retrieveCheckoutSession } from "../../lib/stripe";
+import { deobfuscate } from "../../lib/crypto";
 import { Badge } from "../ui/Badge";
 import { Stat } from "../ui/Stat";
 import { PBar } from "../ui/PBar";
@@ -84,13 +86,87 @@ export function InvoicesPage({ estimates = [], setEstimates, customers = [], set
   const [viewing, setViewing] = useState(null);
   const [selected, setSelected] = useState([]);
   const [stripePayInvoice, setStripePayInvoice] = useState<any>(null);
+  const [checkoutLoadingId, setCheckoutLoadingId] = useState<string | null>(null);
   const stripeReady = !!(settings?.stripePublishableKey && settings?.stripeSecretKeyEnc);
+
+  const sendStripeReceipt = (inv: any) => {
+    const cust = customers.find(c => c.id === inv.customerId);
+    if (!cust?.email) return;
+    sendEmail(settings as any, cust.email, `Receipt — ${settings?.companyName || "Smock's Pressure Washing"}`,
+      `<p>Hi ${cust.firstName},</p><p>Thanks for your payment of <strong>${fmt(inv.amount)}</strong> for ${inv.address || "your service"}.</p><p>This receipt confirms your invoice is paid in full.</p><p>— ${settings?.companyName || "Smock's Pressure Washing"}</p>`
+    ).catch(() => {});
+  };
 
   const markPaidViaStripe = (invId: string, paymentIntentId: string) => {
     setEstimates(estimates.map(e => e.id === invId ? { ...e, paidAt: today(), status: "approved", stripePaymentIntentId: paymentIntentId, stripePaymentStatus: "paid" as const } : e));
     setStripePayInvoice(null);
     toast?.("Payment received ✓");
+    const inv = estimates.find(e => e.id === invId);
+    if (inv) sendStripeReceipt(inv);
   };
+
+  // Hosted Stripe Checkout — redirects the browser to Stripe's own payment page
+  // instead of the embedded Payment Element (StripePaymentModal). Stripe redirects
+  // back here afterward with ?stripe_checkout=success|cancel&invoice=&session_id=.
+  const payWithStripeCheckout = async (inv: any) => {
+    if (!settings?.stripeSecretKeyEnc || !settings?.stripePublishableKey) {
+      toast?.("Set up Stripe in Settings → Integrations first", "yellow");
+      return;
+    }
+    setCheckoutLoadingId(inv.id);
+    try {
+      const secretKey = deobfuscate(settings.stripeSecretKeyEnc);
+      const cust = customers.find(c => c.id === inv.customerId);
+      const base = window.location.origin + window.location.pathname + window.location.hash.split("?")[0];
+      const session = await createCheckoutSession(secretKey, {
+        amountCents: Math.round(Number(inv.amount || 0) * 100),
+        currency: "usd",
+        description: `Invoice — ${inv.address || inv.id}`,
+        successUrl: `${base}?stripe_checkout=success&invoice=${inv.id}&session_id={CHECKOUT_SESSION_ID}`,
+        cancelUrl: `${base}?stripe_checkout=cancel&invoice=${inv.id}`,
+        customerEmail: cust?.email,
+      });
+      window.location.href = session.url;
+    } catch (e: any) {
+      toast?.(e.message || "Failed to start Stripe Checkout", "red");
+      setCheckoutLoadingId(null);
+    }
+  };
+
+  // On return from Stripe Checkout, verify the session and mark the invoice paid.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search || window.location.hash.split("?")[1] || "");
+    const checkoutState = params.get("stripe_checkout");
+    const invId = params.get("invoice");
+    const sessionId = params.get("session_id");
+    if (!checkoutState || !invId) return;
+    const cleanUrl = () => {
+      const url = new URL(window.location.href);
+      url.searchParams.delete("stripe_checkout"); url.searchParams.delete("invoice"); url.searchParams.delete("session_id");
+      window.history.replaceState({}, "", url.toString());
+    };
+    if (checkoutState === "cancel") {
+      toast?.("Payment cancelled", "yellow");
+      cleanUrl();
+      return;
+    }
+    if (checkoutState === "success" && sessionId && settings?.stripeSecretKeyEnc) {
+      (async () => {
+        try {
+          const secretKey = deobfuscate(settings.stripeSecretKeyEnc!);
+          const session = await retrieveCheckoutSession(secretKey, sessionId);
+          if (session.payment_status === "paid") {
+            markPaidViaStripe(invId, session.payment_intent || session.id);
+          } else {
+            toast?.("Payment not completed", "yellow");
+          }
+        } catch (e: any) {
+          toast?.(e.message || "Couldn't verify Stripe payment", "red");
+        }
+        cleanUrl();
+      })();
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Only approved+invoiced estimates are invoices
   const invoices = estimates.filter(e => e.invoiced);
@@ -284,7 +360,10 @@ export function InvoicesPage({ estimates = [], setEstimates, customers = [], set
                       <div className="flex items-center justify-end gap-1">
                         <button onClick={() => setViewing(inv)} title="View" className="p-1.5 rounded-lg hover:bg-white/10 text-white/60 hover:text-white"><Eye size={12} /></button>
                         {!inv.paidAt && stripeReady && (
-                          <button onClick={() => setStripePayInvoice(inv)} title="Pay Now" className="p-1.5 rounded-lg hover:bg-purple-900/30 text-white/60 hover:text-purple-400"><CreditCard size={12} /></button>
+                          <button onClick={() => setStripePayInvoice(inv)} title="Pay Now (in-app)" className="p-1.5 rounded-lg hover:bg-purple-900/30 text-white/60 hover:text-purple-400"><CreditCard size={12} /></button>
+                        )}
+                        {!inv.paidAt && stripeReady && (
+                          <button onClick={() => payWithStripeCheckout(inv)} disabled={checkoutLoadingId === inv.id} title="Pay with Stripe Checkout" className="p-1.5 rounded-lg hover:bg-purple-900/30 text-white/60 hover:text-purple-400 disabled:opacity-40"><ExternalLink size={12} /></button>
                         )}
                         <button onClick={() => {
                           const c = customers.find(x => x.id === inv.customerId);
@@ -390,6 +469,11 @@ export function InvoicesPage({ estimates = [], setEstimates, customers = [], set
                 }} className="!text-xs"><CreditCard size={11} className="inline mr-1" />Partial Pay</GBtn>
                 <GBtn variant="ghost" onClick={() => sendReminder(viewing)}><Send size={12} className="inline mr-1.5" />Remind</GBtn>
                 {stripeReady && <GBtn onClick={() => setStripePayInvoice(viewing)} className="!bg-gradient-to-r !from-[#635BFF] !to-[#4F46E5] !border-[#635BFF]/50"><CreditCard size={12} className="inline mr-1.5" />Pay Now</GBtn>}
+                {stripeReady && !viewing?.paidAt && (
+                  <GBtn variant="ghost" disabled={checkoutLoadingId === viewing?.id} onClick={() => payWithStripeCheckout(viewing)} className="!text-xs">
+                    <ExternalLink size={11} className="inline mr-1" />{checkoutLoadingId === viewing?.id ? "Redirecting…" : "Pay with Stripe Checkout"}
+                  </GBtn>
+                )}
                 <GBtn variant="ghost" onClick={() => { markPaid(viewing.id); setViewing({ ...viewing, paidAt: today() }); }}><CheckCircle size={12} className="inline mr-1.5" />Mark Paid</GBtn>
               </>}
               {viewing.paidAt && <>

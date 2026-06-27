@@ -7,7 +7,7 @@ let _ready = false;
 let _loading = false;
 const _queue: Array<() => void> = [];
 
-function loadMapsScript(key: string): Promise<void> {
+export function loadMapsScript(key: string): Promise<void> {
   return new Promise(resolve => {
     if (_ready) { resolve(); return; }
     _queue.push(resolve);

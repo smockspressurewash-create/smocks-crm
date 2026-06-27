@@ -188,6 +188,9 @@ export interface Job {
   laborCost?: number;
   materialCost?: number;
   clockInAt?: number | null;
+  lunchStartAt?: number | null;
+  lunchMinutes?: number;
+  lunchExceeded?: boolean;
   isRecurring?: boolean;
   recurringFreq?: string;
   isCash?: boolean;
@@ -500,6 +503,9 @@ export interface AppSettings {
   ownerRole?: string;
   myPhone?: string;
   myEmail?: string;
+
+  // Crew policy
+  maxLunchMinutes?: number;
 
   // API keys
   twilioSid?: string;

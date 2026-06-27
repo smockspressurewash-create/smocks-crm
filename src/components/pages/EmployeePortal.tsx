@@ -3,7 +3,7 @@ import {
   Clock, Briefcase, Calendar, ChevronLeft, CheckSquare, Camera,
   LogOut, MapPin, Phone, User, Play, Square, Plus, X, Eye, DollarSign,
   ChevronRight, Home, List, CheckCircle, AlertCircle, Image, FileText,
-  Video, PenLine, Shield, Navigation, Database
+  Video, PenLine, Shield, Navigation, Database, Route
 } from "lucide-react";
 import { supabase } from "../../lib/supabase";
 import { getEmpGoogleToken, isEmpGoogleTokenValid, createGCalEvent } from "../../lib/googleApi";
@@ -13,6 +13,7 @@ import { GBtn } from "../ui/GBtn";
 import { GInput } from "../ui/GInput";
 import { GTxt } from "../ui/GTxt";
 import { BeforeAfterSlider } from "../ui/BeforeAfterSlider";
+import { loadMapsScript } from "../ui/AddressAutocomplete";
 import { fmt, uid, today } from "../../lib/utils";
 import type { Job, Employee, Customer, AppSettings, JobChecklistItem } from "../../types";
 
@@ -158,10 +159,10 @@ function PortalChecklistSection({ title, emoji, items, onUpdate, allowPhotos = f
   );
 }
 
-function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName = "the company", onComplete, perms: permsOverride }: {
+function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName = "the company", onComplete, perms: permsOverride, maxLunchMinutes = 30 }: {
   job: Job; customer?: Customer; onBack: () => void;
   onUpdateJob: (patch: Partial<Job>) => void; toast: (msg: string, tone?: any) => void;
-  companyName?: string; onComplete?: () => void; perms?: Record<string, boolean>;
+  companyName?: string; onComplete?: () => void; perms?: Record<string, boolean>; maxLunchMinutes?: number;
 }) {
   const effPerms = { ...DEFAULT_PERMISSIONS, ...(permsOverride || {}) };
   const [note, setNote] = useState("");
@@ -175,21 +176,45 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
     return () => clearInterval(h);
   }, [job.clockInAt]);
 
-  const liveDisplay = (() => {
-    if (!job.clockInAt) return null;
-    const total = Math.floor((Date.now() - job.clockInAt) / 1000);
+  const secsToHms = (total: number) => {
     const h = Math.floor(total / 3600);
     const m = Math.floor((total % 3600) / 60);
     const s = total % 60;
     return [h, m, s].map(n => String(n).padStart(2, "0")).join(":");
+  };
+
+  // Work timer excludes lunch: frozen at the moment lunch starts, and the
+  // accumulated lunch time is subtracted once lunch ends.
+  const liveDisplay = (() => {
+    if (!job.clockInAt) return null;
+    const lunchMs = (job.lunchMinutes || 0) * 60000;
+    const endpoint = job.lunchStartAt || Date.now();
+    const total = Math.max(0, Math.floor((endpoint - job.clockInAt - lunchMs) / 1000));
+    return secsToHms(total);
   })();
 
-  const clockIn = () => { onUpdateJob({ clockInAt: Date.now() }); toast("Clocked in ✓"); };
+  const lunchDisplay = job.lunchStartAt ? secsToHms(Math.max(0, Math.floor((Date.now() - job.lunchStartAt) / 1000))) : null;
+
+  const clockIn = () => { onUpdateJob({ clockInAt: Date.now(), lunchStartAt: null }); toast("Clocked in ✓"); };
   const clockOut = () => {
     if (!job.clockInAt) return;
-    const hrs = Math.round((Date.now() - job.clockInAt) / 36000) / 100;
-    onUpdateJob({ clockInAt: null, loggedHours: Math.round(((Number(job.loggedHours) || 0) + hrs) * 100) / 100 });
+    const lunchMs = (job.lunchMinutes || 0) * 60000;
+    const hrs = Math.round((Date.now() - job.clockInAt - lunchMs) / 36000) / 100;
+    onUpdateJob({ clockInAt: null, lunchStartAt: null, loggedHours: Math.round(((Number(job.loggedHours) || 0) + hrs) * 100) / 100 });
     toast(`+${hrs}h logged`);
+  };
+
+  const takeLunch = () => { onUpdateJob({ lunchStartAt: Date.now() }); toast("Lunch started 🍽️"); };
+  const endLunch = () => {
+    if (!job.lunchStartAt) return;
+    const lunchMinsThisBreak = Math.round((Date.now() - job.lunchStartAt) / 60000);
+    const exceeded = lunchMinsThisBreak > maxLunchMinutes;
+    onUpdateJob({
+      lunchStartAt: null,
+      lunchMinutes: (job.lunchMinutes || 0) + lunchMinsThisBreak,
+      ...(exceeded ? { lunchExceeded: true } : {}),
+    });
+    toast(exceeded ? `Lunch ended — ${lunchMinsThisBreak}m (exceeded ${maxLunchMinutes}m limit)` : `Lunch ended — ${lunchMinsThisBreak}m`, exceeded ? "yellow" : "green");
   };
 
   const addPhoto = (type: "before" | "after", dataUrl: string) => {
@@ -399,6 +424,28 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
               )
             )}
           </div>
+          {effPerms.can_clock_in && job.clockInAt && (
+            <div className="mt-3 pt-3 border-t border-white/10 flex items-center justify-between">
+              {job.lunchStartAt ? (
+                <>
+                  <div>
+                    <div className="text-[10px] text-yellow-400/70 uppercase tracking-wider">On Lunch</div>
+                    <div className="font-mono text-lg font-bold text-yellow-400">{lunchDisplay}</div>
+                  </div>
+                  <GBtn onClick={endLunch} className="!gap-2 !bg-yellow-700 hover:!bg-yellow-600 !border-yellow-600/50">
+                    <Square size={12} />End Lunch
+                  </GBtn>
+                </>
+              ) : (
+                <>
+                  <div className="text-xs text-white/40">{job.lunchMinutes ? `${job.lunchMinutes}m lunch logged${job.lunchExceeded ? " ⚠️ exceeded limit" : ""}` : "No lunch taken yet"}</div>
+                  <GBtn onClick={takeLunch} className="!gap-2 !bg-white/10 hover:!bg-white/15 !border-white/20 !text-white/80">
+                    🍽️ Take Lunch
+                  </GBtn>
+                </>
+              )}
+            </div>
+          )}
         </Glass>
 
         {/* Photos & Videos */}
@@ -481,13 +528,13 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
             disabled={!effPerms.can_complete_checklist}
           />
           <PortalChecklistSection
-            title="During Job" emoji="🟡"
+            title="During Job" emoji="🟡" allowPhotos
             items={durItems}
             onUpdate={items => onUpdateJob({ duringChecklist: items })}
             disabled={!effPerms.can_complete_checklist}
           />
           <PortalChecklistSection
-            title="Post-Job" emoji="🟢"
+            title="Post-Job" emoji="🟢" allowPhotos
             items={postItems}
             onUpdate={items => onUpdateJob({ postChecklist: items })}
             disabled={!effPerms.can_complete_checklist}
@@ -516,7 +563,14 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
           </GBtn>
         ) : effPerms.can_get_signoff ? (
           <div className="text-center text-xs text-white/30 py-2">Complete all checklist items to get customer sign-off</div>
-        ) : null}
+        ) : allDone ? (
+          <GBtn onClick={() => { onUpdateJob({ status: "completed" }); toast("Job marked complete ✓"); if (onComplete) setTimeout(onComplete, 1200); }}
+            className="w-full !justify-center !py-3 !bg-gradient-to-r !from-green-700 !to-green-900 !border-green-600/50">
+            <CheckCircle size={16} />Complete Job
+          </GBtn>
+        ) : (
+          <div className="text-center text-xs text-white/30 py-2">Complete all checklist items to finish this job</div>
+        )}
 
         {/* Internal notes */}
         {job.internalNotes && (
@@ -731,6 +785,9 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     return () => window.removeEventListener("hashchange", handler);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
+  const [activeJobMenuOpen, setActiveJobMenuOpen] = useState(false);
+  const [routeLoading, setRouteLoading] = useState(false);
+  const [routeInfo, setRouteInfo] = useState<{ order: Job[]; totalDuration: string; totalDistance: string; etas: string[] } | null>(null);
   const [calMode, setCalMode] = useState<"week" | "month">("month");
   const [calSelectedDate, setCalSelectedDate] = useState(today());
   const [calWeekOffset, setCalWeekOffset] = useState(0);
@@ -1089,7 +1146,12 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   const periodHours = periodJobs.reduce((s, j) => s + Number(j.loggedHours || j.duration || 0), 0);
   const estimatedPay = periodHours * (myEmployee?.hourlyRate || 0);
 
-  const activeClockJob = myJobs.find(j => j.clockInAt);
+  const activeClockJobs = myJobs.filter(j => !!j.clockInAt);
+  const activeClockJob = activeClockJobs[0];
+  const formatElapsed = (clockInAt: number): string => {
+    const sec = Math.max(0, Math.floor((Date.now() - clockInAt) / 1000));
+    return [Math.floor(sec / 3600), Math.floor((sec % 3600) / 60), sec % 60].map(n => String(n).padStart(2, "0")).join(":");
+  };
 
   const updateJob = (jobId: string, patch: Partial<Job>) => {
     setJobs(prev => prev.map(j => j.id === jobId ? { ...j, ...patch } : j));
@@ -1123,6 +1185,64 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
         }
       );
     } catch { /* silently fail */ }
+  };
+
+  // Route optimization for today's jobs — uses the Maps JS DirectionsService
+  // (optimizeWaypoints) to reorder stops for the shortest total drive, then
+  // hands that order off to a Google Maps URL for actual turn-by-turn nav.
+  const optimizeRoute = () => {
+    if (!settings.googleMapsKey) { toast("Add a Google Maps API key in Settings to use Route", "yellow"); return; }
+    const loc = userLocationRef.current;
+    if (!loc) { toast("Waiting on your location — enable location access and try again", "yellow"); return; }
+    const stops = todayJobs.filter(j => j.status !== "completed" && j.address);
+    if (stops.length === 0) { toast("No jobs left today to route"); return; }
+    setRouteLoading(true);
+    loadMapsScript(settings.googleMapsKey).then(() => {
+      const gm = (window as any).google?.maps;
+      if (!gm?.DirectionsService) { setRouteLoading(false); toast("Google Maps failed to load", "red"); return; }
+      const svc = new gm.DirectionsService();
+      const destination = stops[stops.length - 1].address;
+      const waypoints = stops.slice(0, -1).map(j => ({ location: j.address, stopover: true }));
+      svc.route(
+        {
+          origin: loc,
+          destination,
+          waypoints,
+          optimizeWaypoints: true,
+          travelMode: gm.TravelMode.DRIVING,
+        },
+        (result: any, status: string) => {
+          setRouteLoading(false);
+          if (status !== "OK" || !result?.routes?.[0]) { toast("Couldn't calculate a route", "red"); return; }
+          const route = result.routes[0];
+          const order: Job[] = (route.waypoint_order || []).map((idx: number) => stops[idx]).concat([stops[stops.length - 1]]);
+          let totalSec = 0, totalMeters = 0;
+          const etas: string[] = [];
+          let cursor = Date.now();
+          (route.legs || []).forEach((leg: any) => {
+            totalSec += leg.duration?.value || 0;
+            totalMeters += leg.distance?.value || 0;
+            cursor += (leg.duration?.value || 0) * 1000;
+            etas.push(new Date(cursor).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" }));
+          });
+          setRouteInfo({
+            order,
+            totalDuration: Math.round(totalSec / 60) + " min",
+            totalDistance: (totalMeters / 1609.34).toFixed(1) + " mi",
+            etas,
+          });
+        }
+      );
+    });
+  };
+
+  const openRouteInMaps = () => {
+    if (!routeInfo) return;
+    const loc = userLocationRef.current;
+    const dest = encodeURIComponent(routeInfo.order[routeInfo.order.length - 1].address);
+    const waypts = routeInfo.order.slice(0, -1).map(j => encodeURIComponent(j.address)).join("|");
+    const originParam = loc ? `&origin=${loc.lat},${loc.lng}` : "";
+    window.open(`https://www.google.com/maps/dir/?api=1${originParam}&destination=${dest}${waypts ? "&waypoints=" + waypts : ""}&travelmode=driving`, "_blank");
   };
 
   // Get user location once, then fire drive-time lookups for upcoming jobs
@@ -1762,6 +1882,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
         companyName={settings.companyName || "Smock's Pressure Washing"}
         onComplete={handleJobComplete}
         perms={perms}
+        maxLunchMinutes={settings.maxLunchMinutes ?? 30}
       />
     );
   }
@@ -1795,12 +1916,14 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     const clockOutCard = (e: React.MouseEvent) => {
       e.stopPropagation();
       if (!job.clockInAt) return;
-      const hrs = Math.round((Date.now() - job.clockInAt) / 36000) / 100;
-      updateJob(job.id, { clockInAt: null, loggedHours: Math.round(((Number(job.loggedHours) || 0) + hrs) * 100) / 100 });
+      const lunchMs = (job.lunchMinutes || 0) * 60000;
+      const hrs = Math.round((Date.now() - job.clockInAt - lunchMs) / 36000) / 100;
+      updateJob(job.id, { clockInAt: null, lunchStartAt: null, loggedHours: Math.round(((Number(job.loggedHours) || 0) + hrs) * 100) / 100 });
       toast(`+${hrs}h logged`);
     };
 
-    const elapsedSec = job.clockInAt ? Math.floor((Date.now() - job.clockInAt) / 1000) : 0;
+    const lunchMsCard = (job.lunchMinutes || 0) * 60000;
+    const elapsedSec = job.clockInAt ? Math.max(0, Math.floor(((job.lunchStartAt || Date.now()) - job.clockInAt - lunchMsCard) / 1000)) : 0;
     const timerDisplay = job.clockInAt
       ? [Math.floor(elapsedSec / 3600), Math.floor((elapsedSec % 3600) / 60), elapsedSec % 60].map(n => String(n).padStart(2, "0")).join(":")
       : null;
@@ -1880,6 +2003,12 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
               : <div className="text-xs text-white/30">{job.loggedHours ? `${job.loggedHours}h logged` : ""}</div>
           )}
         </div>
+        <div className="px-4 pb-3">
+          <button onClick={() => setSelectedJobId(job.id)}
+            className="w-full flex items-center justify-center gap-1.5 py-2 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-white/60 text-xs font-semibold transition">
+            <ChevronRight size={12} />View Details
+          </button>
+        </div>
       </div>
     );
   };
@@ -1899,9 +2028,36 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
         </div>
         {/* Employee info + actions */}
         <div className="flex items-center gap-2.5">
-          {activeClockJob && (
-            <div className="hidden sm:flex items-center gap-1 text-[10px] text-green-400 animate-pulse font-semibold">
-              <span className="w-1.5 h-1.5 rounded-full bg-green-400 inline-block" />On Job
+          {activeClockJobs.length > 0 && (
+            <div className="relative">
+              <button
+                onClick={() => activeClockJobs.length > 1 ? setActiveJobMenuOpen(o => !o) : setSelectedJobId(activeClockJob.id)}
+                className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-full bg-green-950/40 border border-green-700/40 text-green-300 text-[11px] font-semibold transition hover:bg-green-900/50"
+              >
+                <span className="relative flex items-center justify-center w-2 h-2 flex-shrink-0">
+                  <span className="absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75 animate-ping" />
+                  <span className="relative inline-flex rounded-full h-2 w-2 bg-green-400" />
+                </span>
+                <span className="hidden sm:inline">Active Job{activeClockJobs.length > 1 ? "s (" + activeClockJobs.length + ")" : ""}</span>
+                <span className="font-mono">{formatElapsed(activeClockJob.clockInAt!)}</span>
+              </button>
+              {activeJobMenuOpen && activeClockJobs.length > 1 && (
+                <div className="absolute right-0 top-full mt-2 w-60 rounded-xl bg-black border border-white/10 shadow-2xl overflow-hidden z-30">
+                  {activeClockJobs.map(j => {
+                    const c = customers.find(x => x.id === j.customerId);
+                    return (
+                      <button key={j.id} onClick={() => { setSelectedJobId(j.id); setActiveJobMenuOpen(false); }}
+                        className="w-full text-left px-3 py-2.5 hover:bg-white/10 transition border-b border-white/5 last:border-0">
+                        <div className="text-xs font-semibold truncate text-white">{j.address}</div>
+                        <div className="text-[10px] text-white/40 flex items-center gap-1.5">
+                          {c && <span>{c.firstName} {c.lastName}</span>}
+                          <span className="font-mono text-green-400">{formatElapsed(j.clockInAt!)}</span>
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           )}
           <div className="text-right hidden xs:block">
@@ -1981,6 +2137,46 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                 </div>
               );
             })()}
+
+            {/* Route optimization for today's jobs */}
+            {todayJobs.filter(j => j.status !== "completed").length > 1 && (
+              <Glass className="p-4 !bg-black/40">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <Navigation size={14} className="text-blue-400 flex-shrink-0" />
+                    <div className="text-sm font-semibold truncate">Today's Route</div>
+                  </div>
+                  <button onClick={optimizeRoute} disabled={routeLoading}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-blue-950/40 hover:bg-blue-900/50 border border-blue-700/40 text-blue-300 text-xs font-semibold transition disabled:opacity-40 flex-shrink-0">
+                    <Route size={12} />{routeLoading ? "Optimizing…" : "Route"}
+                  </button>
+                </div>
+                {routeInfo && (
+                  <div className="mt-3 pt-3 border-t border-white/10 space-y-2">
+                    <div className="flex items-center gap-4 text-xs text-white/50">
+                      <span>🚗 <span className="text-white/80 font-semibold">{routeInfo.totalDistance}</span></span>
+                      <span>⏱ <span className="text-white/80 font-semibold">{routeInfo.totalDuration}</span> drive time</span>
+                    </div>
+                    <div className="space-y-1">
+                      {routeInfo.order.map((j, i) => {
+                        const c = customers.find(x => x.id === j.customerId);
+                        return (
+                          <div key={j.id} className="flex items-center gap-2 text-xs">
+                            <span className="w-5 h-5 rounded-full bg-blue-900/50 text-blue-300 flex items-center justify-center font-bold flex-shrink-0">{i + 1}</span>
+                            <span className="flex-1 truncate text-white/70">{j.address}{c ? " · " + c.firstName + " " + c.lastName : ""}</span>
+                            <span className="text-white/40 flex-shrink-0">ETA {routeInfo.etas[i]}</span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                    <button onClick={openRouteInMaps}
+                      className="w-full flex items-center justify-center gap-1.5 py-2 rounded-xl bg-white text-gray-900 text-xs font-semibold mt-2 hover:bg-gray-50 transition">
+                      <Navigation size={12} />Open Route in Google Maps
+                    </button>
+                  </div>
+                )}
+              </Glass>
+            )}
 
             {/* Incoming job requests */}
             {(() => {
@@ -2405,10 +2601,11 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
           {/* All Jobs tab — grouped by date */}
           {tab === "jobs" && (() => {
             const jwEnd = (() => { const d = new Date(); d.setDate(d.getDate() + (6 - d.getDay())); return d.toISOString().slice(0, 10); })();
-            const todayGrp   = myJobs.filter(j => j.scheduledDate === todayStr);
-            const weekGrp    = myJobs.filter(j => j.scheduledDate > todayStr && j.scheduledDate <= jwEnd);
-            const upcomingGrp = myJobs.filter(j => j.scheduledDate > jwEnd);
-            const earlierGrp = myJobs.filter(j => j.scheduledDate < todayStr);
+            const activeGrp  = myJobs.filter(j => !!j.clockInAt);
+            const todayGrp   = myJobs.filter(j => !j.clockInAt && j.scheduledDate === todayStr);
+            const weekGrp    = myJobs.filter(j => !j.clockInAt && j.scheduledDate > todayStr && j.scheduledDate <= jwEnd);
+            const upcomingGrp = myJobs.filter(j => !j.clockInAt && j.scheduledDate > jwEnd);
+            const earlierGrp = myJobs.filter(j => !j.clockInAt && j.scheduledDate < todayStr);
 
             const Group = ({ label, jobs: grpJobs }: { label: string; jobs: typeof myJobs }) => grpJobs.length === 0 ? null : (
               <div>
@@ -2428,6 +2625,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
               </div>
             ) : (
               <div className="space-y-5">
+                <Group label="Active" jobs={activeGrp} />
                 <Group label="Today" jobs={todayGrp} />
                 <Group label="This Week" jobs={weekGrp.sort((a, b) => a.scheduledDate.localeCompare(b.scheduledDate))} />
                 <Group label="Upcoming" jobs={upcomingGrp.sort((a, b) => a.scheduledDate.localeCompare(b.scheduledDate))} />

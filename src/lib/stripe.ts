@@ -65,6 +65,56 @@ export const retrievePaymentIntent = async (secretKey: string, id: string): Prom
   return res.json();
 };
 
+// ─── Checkout Sessions (hosted checkout page) ─────────────────────────────────
+// Alternative to the embedded Payment Element flow above: creates a Checkout
+// Session and redirects the browser to Stripe's own hosted page, then Stripe
+// redirects back to successUrl/cancelUrl. Same direct-from-browser secret-key
+// tradeoff as createPaymentIntent above.
+
+export interface StripeCheckoutSession {
+  id: string;
+  url: string;
+  payment_status: string;
+  payment_intent?: string;
+}
+
+export const createCheckoutSession = async (
+  secretKey: string,
+  opts: { amountCents: number; currency: string; description: string; successUrl: string; cancelUrl: string; customerEmail?: string }
+): Promise<StripeCheckoutSession> => {
+  const body = new URLSearchParams({
+    mode: "payment",
+    success_url: opts.successUrl,
+    cancel_url: opts.cancelUrl,
+    "line_items[0][price_data][currency]": opts.currency,
+    "line_items[0][price_data][product_data][name]": opts.description,
+    "line_items[0][price_data][unit_amount]": String(Math.round(opts.amountCents)),
+    "line_items[0][quantity]": "1",
+  });
+  if (opts.customerEmail) body.set("customer_email", opts.customerEmail);
+  const res = await fetch("https://api.stripe.com/v1/checkout/sessions", {
+    method: "POST",
+    headers: {
+      Authorization: `Basic ${btoa(secretKey + ":")}`,
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
+    body: body.toString(),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({})) as { error?: { message?: string } };
+    throw new Error(err.error?.message ?? `Stripe error ${res.status}`);
+  }
+  return res.json();
+};
+
+export const retrieveCheckoutSession = async (secretKey: string, sessionId: string): Promise<StripeCheckoutSession> => {
+  const res = await fetch(`https://api.stripe.com/v1/checkout/sessions/${sessionId}`, {
+    headers: { Authorization: `Basic ${btoa(secretKey + ":")}` },
+  });
+  if (!res.ok) throw new Error(`Stripe error ${res.status}`);
+  return res.json();
+};
+
 export const refundPaymentIntent = async (secretKey: string, paymentIntentId: string): Promise<void> => {
   const res = await fetch("https://api.stripe.com/v1/refunds", {
     method: "POST",
