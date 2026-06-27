@@ -23,7 +23,7 @@ import {
 import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE } from "../../lib/utils";
 const weatherRisk = (_dateStr: string): {icon: string; level: string; reason: string} | null => null;
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
-import { twilioSend, sendEmail } from "../../lib/messaging";
+import { twilioSend, sendEmail, emailShell, emailButton } from "../../lib/messaging";
 import { supabase } from "../../lib/supabase";
 import { seedWeather } from "../../lib/weather";
 import { seedCustomers, seedEstimates, seedJobs, seedEmployees, seedVehicles, seedExpenses, seedChemicals, seedServices, seedAutomations, seedEmailTemplates, seedSmsTemplates, seedRewardTiers, seedReferrals, seedMaintenance, campaignTemplates, seedSocialPosts, seedTimeline, seedGoals, seedReminders, seedAccountabilityEntries, seedMileage, seedLeadSrc, STEP_TYPES, AUTOMATION_TEMPLATES } from "../../lib/seed";
@@ -93,7 +93,8 @@ export function JobsPage({ jobs = [], setJobs, customers = [], employees = [], e
   const [bulkAction, setBulkAction] = useState(null);
   const [, forceTick] = useState(0);
   const [newJobOpen, setNewJobOpen] = useState(false);
-  const [newJobForm, setNewJobForm] = useState({ customerId: "", address: "", amount: "", scheduledDate: today(), scheduledTime: "", priority: "normal", notes: "", duration: "" });
+  const [newJobForm, setNewJobForm] = useState({ customerId: "", address: "", amount: "", scheduledDate: today(), scheduledTime: "", priority: "normal", notes: "", duration: "", crewEmpId: "" });
+  const [newJobCrewMode, setNewJobCrewMode] = useState<"assign" | "request">("assign");
   const [quickReqJobId, setQuickReqJobId] = useState<string | null>(null);
   const [quickReqEmpId, setQuickReqEmpId] = useState("");
   const [quickReqMsg, setQuickReqMsg] = useState("");
@@ -425,11 +426,35 @@ export function JobsPage({ jobs = [], setJobs, customers = [], employees = [], e
             <label className="text-xs text-white/60 mb-1 block">Notes (optional)</label>
             <GTxt placeholder="Service details, access instructions..." value={newJobForm.notes} onChange={e => setNewJobForm(f => ({ ...f, notes: e.target.value }))} rows={3} />
           </div>
+          <div>
+            <label className="text-xs text-white/60 mb-1 block">Crew (optional)</label>
+            <div className="flex gap-2">
+              <GSel className="flex-1" value={newJobForm.crewEmpId} onChange={e => setNewJobForm(f => ({ ...f, crewEmpId: e.target.value }))}>
+                <option value="" className="bg-black">— No crew yet —</option>
+                {employees.filter((e: any) => e.status !== "inactive").map((e: any) => <option key={e.id} value={e.id} className="bg-black">{e.firstName} {e.lastName}</option>)}
+              </GSel>
+              {newJobForm.crewEmpId && (
+                <GSel className="!w-36 flex-shrink-0" value={newJobCrewMode} onChange={e => setNewJobCrewMode(e.target.value as any)}>
+                  <option value="assign" className="bg-black">Assign</option>
+                  <option value="request" className="bg-black">Request</option>
+                </GSel>
+              )}
+            </div>
+            {newJobForm.crewEmpId && (
+              <div className="text-[11px] text-white/30 mt-1">
+                {newJobCrewMode === "assign"
+                  ? "Adds them to the crew immediately and emails them — no response needed."
+                  : "Sends a request they must accept or decline before they're on the crew."}
+              </div>
+            )}
+          </div>
           <div className="flex gap-2 justify-end pt-2">
             <GBtn variant="ghost" onClick={() => setNewJobOpen(false)}>Cancel</GBtn>
-            <GBtn onClick={() => {
+            <GBtn onClick={async () => {
               if (!newJobForm.customerId) { toast("Select a customer", "error"); return; }
               if (!newJobForm.scheduledDate) { toast("Enter a date", "error"); return; }
+              const assignedEmp = newJobForm.crewEmpId ? employees.find((e: any) => e.id === newJobForm.crewEmpId) : null;
+              const directAssign = !!assignedEmp && newJobCrewMode === "assign";
               const job = {
                 id: uid(), customerId: newJobForm.customerId,
                 address: newJobForm.address || customers.find(c => c.id === newJobForm.customerId)?.address || "",
@@ -440,7 +465,7 @@ export function JobsPage({ jobs = [], setJobs, customers = [], employees = [], e
                 priority: newJobForm.priority as any,
                 notes: newJobForm.notes,
                 duration: newJobForm.duration ? Number(newJobForm.duration) : undefined,
-                crew: [], checklist: [], photos: [], commLog: [], chemicalsUsed: [], equipment: [], tags: [],
+                crew: directAssign ? [assignedEmp.id] : [], checklist: [], photos: [], commLog: [], chemicalsUsed: [], equipment: [], tags: [],
                 loggedHours: 0, createdAt: today(),
               };
               setJobs(prev => [...prev, job]);
@@ -459,7 +484,30 @@ export function JobsPage({ jobs = [], setJobs, customers = [], employees = [], e
                   setJobs(prev => prev.map(j => j.id === job.id ? { ...j, googleEventId: eventId } : j));
                 }).catch(() => {});
               }
+              // Notify the crew member — assigned (no response needed) or requested (accept/decline).
+              if (assignedEmp?.email) {
+                const cust = customers.find(c => c.id === job.customerId);
+                const custLine = cust ? `<li><b>Customer:</b> ${cust.firstName} ${cust.lastName}</li>` : "";
+                if (directAssign) {
+                  const portalLink = `${window.location.origin}${window.location.pathname}#/portal`;
+                  const html = emailShell(settings.companyName || "Smock's Pressure Washing", "Job Assignment", `<p>Hi ${assignedEmp.firstName},</p><p>You've been assigned to a new job:</p><ul><li><b>Date:</b> ${job.scheduledDate}${job.scheduledTime ? " at " + job.scheduledTime : ""}</li><li><b>Address:</b> ${job.address}</li>${custLine}</ul>` + emailButton("Open Crew Portal", portalLink));
+                  sendEmail(settings, { to: assignedEmp.email, subject: `You've Been Assigned — ${job.scheduledDate}`, body: html }).catch(() => {});
+                } else {
+                  try {
+                    const { data: { session } } = await supabase.auth.getSession();
+                    const { data } = await (supabase as any).from("job_requests").insert({
+                      job_id: job.id, employee_id: assignedEmp.id, owner_id: session?.user?.id, status: "pending",
+                    }).select("id").single();
+                    if (data?.id) {
+                      const reqUrl = `${window.location.origin}${window.location.pathname}#/portal?request=${data.id}`;
+                      const html = emailShell(settings.companyName || "Smock's Pressure Washing", "Job Request", `<p>Hi ${assignedEmp.firstName},</p><p>You have a new job request:</p><ul><li><b>Date:</b> ${job.scheduledDate}${job.scheduledTime ? " at " + job.scheduledTime : ""}</li><li><b>Address:</b> ${job.address}</li>${custLine}</ul><div style="text-align:center;margin:22px 0 4px"><a href="${reqUrl}" style="display:inline-block;background:#16a34a;color:#fff;text-decoration:none;font-weight:700;font-size:14px;padding:13px 24px;border-radius:10px;margin-right:8px">✓ Accept Job</a><a href="${reqUrl}&action=deny" style="display:inline-block;background:#dc2626;color:#fff;text-decoration:none;font-weight:700;font-size:14px;padding:13px 24px;border-radius:10px">✗ Decline</a></div>`);
+                      sendEmail(settings, { to: assignedEmp.email, subject: `Job Request — ${job.scheduledDate}`, body: html }).catch(() => {});
+                    }
+                  } catch { /* job_requests table may not exist yet */ }
+                }
+              }
               setNewJobOpen(false);
+              setNewJobForm(f => ({ ...f, crewEmpId: "" }));
               toast("Job scheduled for " + newJobForm.scheduledDate);
             }}>Schedule Job</GBtn>
           </div>
@@ -531,7 +579,7 @@ export function JobsPage({ jobs = [], setJobs, customers = [], employees = [], e
           <div className="text-xs text-white/40 mt-0.5">{jobs.filter(j => j.status === "scheduled").length} scheduled · {jobs.filter(j => j.status === "in_progress").length} in progress</div>
         </div>
         <button
-          onClick={() => { setNewJobForm({ customerId: "", address: "", amount: "", scheduledDate: today(), scheduledTime: "", priority: "normal", notes: "", duration: "" }); setNewJobOpen(true); }}
+          onClick={() => { setNewJobForm({ customerId: "", address: "", amount: "", scheduledDate: today(), scheduledTime: "", priority: "normal", notes: "", duration: "", crewEmpId: "" }); setNewJobOpen(true); }}
           className="flex items-center gap-2 px-4 py-2.5 bg-gradient-to-r from-red-600 to-red-800 border border-red-500/50 rounded-2xl text-sm font-semibold text-white shadow-lg shadow-red-900/30 hover:shadow-red-600/40 hover:scale-[1.02] active:scale-95 transition-all"
         >
           <Plus size={16} />Schedule Job
@@ -547,7 +595,7 @@ export function JobsPage({ jobs = [], setJobs, customers = [], employees = [], e
       </div>
 
       <div className="flex flex-wrap gap-2 items-center">
-        <GBtn onClick={() => { setNewJobForm({ customerId: "", address: "", amount: "", scheduledDate: today(), scheduledTime: "", priority: "normal", notes: "", duration: "" }); setNewJobOpen(true); }} className="!py-1.5 !text-xs flex-shrink-0"><Plus size={13} className="inline mr-1" />Schedule Job</GBtn>
+        <GBtn onClick={() => { setNewJobForm({ customerId: "", address: "", amount: "", scheduledDate: today(), scheduledTime: "", priority: "normal", notes: "", duration: "", crewEmpId: "" }); setNewJobOpen(true); }} className="!py-1.5 !text-xs flex-shrink-0"><Plus size={13} className="inline mr-1" />Schedule Job</GBtn>
         <div className="relative flex-1 min-w-[160px]">
           <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-white/40" />
           <GInput placeholder="Search customer, address, tag..." value={search} onChange={e => setSearch(e.target.value)} className="!pl-9 !py-1.5 !text-xs" />

@@ -22,7 +22,7 @@ import {
 } from "recharts";
 import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, requiredChemicalsList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE } from "../../lib/utils";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField, JobChecklistItem, ChecklistPhoto, JobVideo, JobSignOff } from "../../types";
-import { twilioSend, sendEmail, sendViaGmail } from "../../lib/messaging";
+import { twilioSend, sendEmail, sendViaGmail, emailShell, emailButton } from "../../lib/messaging";
 import { seedWeather } from "../../lib/weather";
 import { seedCustomers, seedEstimates, seedJobs, seedEmployees, seedVehicles, seedExpenses, seedChemicals, seedServices, seedAutomations, seedEmailTemplates, seedSmsTemplates, seedRewardTiers, seedReferrals, seedMaintenance, campaignTemplates, seedSocialPosts, seedTimeline, seedGoals, seedReminders, seedAccountabilityEntries, seedMileage, seedLeadSrc, STEP_TYPES, AUTOMATION_TEMPLATES } from "../../lib/seed";
 import { callModel, MODELS } from "../../lib/api";
@@ -147,16 +147,35 @@ function ChecklistSection({ title, emoji, items, onUpdate }: {
 }
 
 // Small Street View thumbnail for a job address; click to expand full-size.
-// Silently renders nothing without a Maps key — no broken-image placeholder.
+// Shows a visible setup hint when no Maps key is configured (rather than just
+// vanishing) and a "no imagery" message if the request itself fails, so a
+// blank space always has an explanation instead of looking broken.
 function StreetViewThumb({ address, apiKey }: { address: string; apiKey?: string }) {
   const [expanded, setExpanded] = useState(false);
-  if (!apiKey || !address) return null;
-  const thumbUrl = `https://maps.googleapis.com/maps/api/streetview?size=400x200&location=${encodeURIComponent(address)}&key=${apiKey}`;
-  const bigUrl = `https://maps.googleapis.com/maps/api/streetview?size=800x500&location=${encodeURIComponent(address)}&key=${apiKey}`;
+  const [loadError, setLoadError] = useState(false);
+  if (!address) return null;
+  if (!apiKey) {
+    return (
+      <div className="w-full rounded-xl border border-white/10 bg-black/30 p-3 text-xs text-white/40 flex items-center gap-2">
+        <MapPin size={13} className="flex-shrink-0" />
+        Street View needs a Google Maps API key — add one in Settings → Integrations.
+      </div>
+    );
+  }
+  const thumbUrl = `https://maps.googleapis.com/maps/api/streetview?size=600x300&location=${encodeURIComponent(address)}&key=${apiKey}`;
+  const bigUrl = `https://maps.googleapis.com/maps/api/streetview?size=1200x600&location=${encodeURIComponent(address)}&key=${apiKey}`;
+  if (loadError) {
+    return (
+      <div className="w-full rounded-xl border border-white/10 bg-black/30 p-3 text-xs text-white/40 flex items-center gap-2">
+        <MapPin size={13} className="flex-shrink-0" />
+        No Street View imagery available for this address.
+      </div>
+    );
+  }
   return (
     <>
       <button onClick={() => setExpanded(true)} className="w-full rounded-xl overflow-hidden border border-white/10 relative group">
-        <img src={thumbUrl} alt="Street View" className="w-full h-32 object-cover" onError={e => { (e.target as HTMLImageElement).style.display = "none"; }} />
+        <img src={thumbUrl} alt="Street View" className="w-full h-32 object-cover" onError={() => setLoadError(true)} />
         <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition flex items-center justify-center">
           <span className="opacity-0 group-hover:opacity-100 text-white text-xs font-semibold transition">Click to expand</span>
         </div>
@@ -242,7 +261,7 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
       notifyEmployeesRef.current(
         withEmail,
         () => `Job Updated — ${job.address}`,
-        (emp: any) => `<p>Hi ${emp.firstName},</p><p>Your job has changed:</p><ul>${changes.map(c => `<li>${c}</li>`).join("")}</ul><p>— ${settings.companyName || "Smock's Pressure Washing"}</p>`
+        (emp: any) => emailShell(settings.companyName || "Smock's Pressure Washing", "Job Updated", `<p>Hi ${emp.firstName},</p><p>Your job has changed:</p><ul>${changes.map(c => `<li>${c}</li>`).join("")}</ul>`)
       ).then((sent: number) => { if (sent > 0) toast(`Notified ${sent} crew member${sent !== 1 ? "s" : ""} of the change`, "green"); });
     }
   }, [job?.scheduledDate, job?.scheduledTime, job?.address, jobId]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -266,7 +285,7 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
         notifyEmployeesRef.current(
           [emp],
           () => `You've Been Assigned — ${job.scheduledDate || job.address}`,
-          () => `<p>Hi ${emp.firstName},</p><p>You've been assigned to a job:</p><ul><li><b>Date:</b> ${job.scheduledDate}${job.scheduledTime ? " at " + job.scheduledTime : ""}</li><li><b>Address:</b> ${job.address}</li>${cust ? `<li><b>Customer:</b> ${cust.firstName} ${cust.lastName}</li>` : ""}</ul><p>This job is already on your schedule — no action needed.</p><p>— ${settings.companyName || "Smock's Pressure Washing"}</p>`
+          () => emailShell(settings.companyName || "Smock's Pressure Washing", "You've Been Assigned", `<p>Hi ${emp.firstName},</p><p>You've been assigned to a job:</p><ul><li><b>Date:</b> ${job.scheduledDate}${job.scheduledTime ? " at " + job.scheduledTime : ""}</li><li><b>Address:</b> ${job.address}</li>${cust ? `<li><b>Customer:</b> ${cust.firstName} ${cust.lastName}</li>` : ""}</ul><p>This job is already on your schedule — no action needed.</p>`)
         ).then((sent: number) => { if (sent > 0) toast?.(`Notified ${emp.firstName} ✓`, "green"); });
       }
     }
@@ -326,7 +345,7 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
       const sent = await notifyEmployees(
         withEmail,
         () => `Job Assignment — ${job.scheduledDate}`,
-        emp => `<p>Hi ${emp.firstName},</p><p>You've been assigned to a job:</p><ul><li><b>Date:</b> ${job.scheduledDate}${job.scheduledTime ? " at " + job.scheduledTime : ""}</li><li><b>Address:</b> ${job.address}</li>${c ? `<li><b>Customer:</b> ${c.firstName} ${c.lastName}</li>` : ""}</ul><p>Open the crew portal to see details: <a href="${jobLink}">${jobLink}</a></p><p>— ${settings.companyName || "Smock's Pressure Washing"}</p>`
+        emp => emailShell(settings.companyName || "Smock's Pressure Washing", "Job Assignment", `<p>Hi ${emp.firstName},</p><p>You've been assigned to a job:</p><ul><li><b>Date:</b> ${job.scheduledDate}${job.scheduledTime ? " at " + job.scheduledTime : ""}</li><li><b>Address:</b> ${job.address}</li>${c ? `<li><b>Customer:</b> ${c.firstName} ${c.lastName}</li>` : ""}</ul>` + emailButton("Open Crew Portal", jobLink))
       );
       toast(sent > 0 ? `Notified ${sent} crew member${sent !== 1 ? "s" : ""} ✓` : "Email send failed — check Resend settings", sent > 0 ? "green" : "red");
     } catch (err: any) {
@@ -363,17 +382,17 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
             await notifyEmployees(
               [emp],
               () => `Job Request — ${job.scheduledDate}`,
-              () => `<p>Hi ${emp.firstName},</p><p>${requestMsg || "You have a new job request:"}</p>
+              () => emailShell(settings.companyName || "Smock's Pressure Washing", "Job Request", `<p>Hi ${emp.firstName},</p><p>${requestMsg || "You have a new job request:"}</p>
                 <ul>
                   <li><b>Date:</b> ${job.scheduledDate}${job.scheduledTime ? " at " + job.scheduledTime : ""}</li>
                   <li><b>Address:</b> ${job.address}</li>
                   ${cust ? `<li><b>Customer:</b> ${cust.firstName} ${cust.lastName}</li>` : ""}
                   ${job.amount ? `<li><b>Amount:</b> $${job.amount}</li>` : ""}
                 </ul>
-                <p style="margin-top:16px">
-                  <a href="${reqUrl}" style="background:#16a34a;color:white;padding:12px 20px;border-radius:6px;text-decoration:none;margin-right:8px">✓ Accept Job</a>
-                  <a href="${reqUrl}&action=deny" style="background:#dc2626;color:white;padding:12px 20px;border-radius:6px;text-decoration:none">✗ Decline</a>
-                </p>`
+                <div style="text-align:center;margin:22px 0 4px">
+                  <a href="${reqUrl}" style="display:inline-block;background:#16a34a;color:#fff;text-decoration:none;font-weight:700;font-size:14px;padding:13px 24px;border-radius:10px;margin-right:8px">✓ Accept Job</a>
+                  <a href="${reqUrl}&action=deny" style="display:inline-block;background:#dc2626;color:#fff;text-decoration:none;font-weight:700;font-size:14px;padding:13px 24px;border-radius:10px">✗ Decline</a>
+                </div>`)
             );
           } catch (err) {
             console.warn("Job request email notification failed — request still saved:", err);
@@ -448,7 +467,7 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
         await notifyEmployees(
           [emp],
           () => `You've Been Scheduled — ${job.scheduledDate}`,
-          () => `<p>Hi ${emp.firstName},</p><p>You've been scheduled for a job — you're confirmed, no action needed:</p><ul><li><b>Date:</b> ${job.scheduledDate}${job.scheduledTime ? " at " + job.scheduledTime : ""}</li><li><b>Address:</b> ${job.address}</li>${cust ? `<li><b>Customer:</b> ${cust.firstName} ${cust.lastName}</li>` : ""}</ul>${calendarSynced ? "<p>This has been added to your Google Calendar.</p>" : ""}<p>— ${settings.companyName || "Smock's Pressure Washing"}</p>`
+          () => emailShell(settings.companyName || "Smock's Pressure Washing", "You've Been Scheduled", `<p>Hi ${emp.firstName},</p><p>You've been scheduled for a job — you're confirmed, no action needed:</p><ul><li><b>Date:</b> ${job.scheduledDate}${job.scheduledTime ? " at " + job.scheduledTime : ""}</li><li><b>Address:</b> ${job.address}</li>${cust ? `<li><b>Customer:</b> ${cust.firstName} ${cust.lastName}</li>` : ""}</ul>${calendarSynced ? "<p>This has been added to your Google Calendar.</p>" : ""}`)
         );
       } catch (err) {
         console.warn("Schedule notification email failed — crew assignment still saved:", err);

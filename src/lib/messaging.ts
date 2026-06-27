@@ -137,7 +137,7 @@ export const sendViaGmail = async (
 // ─── Email via Resend ─────────────────────────────────────────────────────────
 
 export const sendEmail = async (
-  settings: EmailSettings & { resendBackendUrl?: string; googleConnected?: boolean; googleProviderToken?: string; googleEmail?: string },
+  settings: EmailSettings & { resendBackendUrl?: string; googleConnected?: boolean; googleProviderToken?: string; googleEmail?: string; ownerName?: string; myEmail?: string },
   toOrOpts: string | { to: string; subject: string; body: string; [key: string]: any },
   subject?: string,
   html?: string
@@ -155,7 +155,12 @@ export const sendEmail = async (
     subj = subject!;
     body = html!;
   }
-  const { resendKey, fromEmail, fromName, resendBackendUrl } = settings;
+  const { resendKey, fromEmail, resendBackendUrl } = settings;
+  // The owner's name/email from Settings → My Profile takes priority as the
+  // visible sender and reply target — falls back to the generic company name
+  // when the owner hasn't filled in their profile yet.
+  const fromName = settings.fromName ?? settings.ownerName;
+  const replyTo = settings.myEmail || undefined;
 
   // Try Gmail first if owner has connected Google account
   if (settings.googleProviderToken && settings.googleEmail) {
@@ -172,7 +177,7 @@ export const sendEmail = async (
     const res = await fetch(`${resendBackendUrl}/email`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ to, subject: subj, html: body, from: `${fromName ?? "Smock's"} <${fromEmail ?? "noreply@smocks.com"}>` }),
+      body: JSON.stringify({ to, subject: subj, html: body, from: `${fromName ?? "Smock's"} <${fromEmail ?? "noreply@smocks.com"}>`, replyTo }),
     });
     if (!res.ok) throw new Error(`Email proxy error: ${res.status}`);
     return;
@@ -191,6 +196,7 @@ export const sendEmail = async (
       to: [to],
       subject: subj,
       html: body,
+      ...(replyTo ? { reply_to: replyTo } : {}),
     }),
   });
   if (!res.ok) {
@@ -199,20 +205,35 @@ export const sendEmail = async (
   }
 };
 
-// ─── Daily crew emails ─────────────────────────────────────────────────────────
-// A shared HTML shell so "Tomorrow's Jobs" and "Daily Briefing" look like real
-// transactional email rather than plain text — branded header, card list, footer.
-const emailShell = (companyName: string, title: string, bodyHtml: string): string => `
-<div style="font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;max-width:560px;margin:0 auto;background:#0a0a0a;color:#fff;border-radius:16px;overflow:hidden">
-  <div style="background:linear-gradient(135deg,#dc2626,#7f1d1d);padding:24px;text-align:center">
-    <div style="font-size:20px;font-weight:800;letter-spacing:-0.02em">${companyName}</div>
-    <div style="font-size:13px;opacity:0.85;margin-top:4px">${title}</div>
-  </div>
-  <div style="padding:24px;background:#111">${bodyHtml}</div>
-  <div style="padding:16px 24px;text-align:center;font-size:11px;color:rgba(255,255,255,0.3);background:#0a0a0a">
-    Sent automatically by ${companyName}'s CrewBoss system.
-  </div>
-</div>`;
+// ─── Branded HTML email shell ──────────────────────────────────────────────────
+// One shared shell applied to every outgoing email (job assignments, requests,
+// reminders, daily briefings, tomorrow's jobs) so they all look like real,
+// mobile-friendly transactional email instead of plain text — branded header,
+// readable typography, optional action button, footer. Wrapped in an outer
+// table for consistent rendering across email clients (Gmail/Outlook strip
+// <style> blocks, so all styling here is inline).
+export const emailShell = (companyName: string, title: string, bodyHtml: string): string => `
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#000;padding:24px 12px">
+  <tr><td align="center">
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;background:#0a0a0a;color:#fff;border-radius:16px;overflow:hidden">
+      <tr><td style="background:linear-gradient(135deg,#dc2626,#7f1d1d);padding:28px 24px;text-align:center">
+        <div style="font-size:21px;font-weight:800;letter-spacing:-0.02em">${companyName}</div>
+        <div style="font-size:13px;opacity:0.85;margin-top:4px">${title}</div>
+      </td></tr>
+      <tr><td style="padding:28px 24px;background:#111;font-size:14px;line-height:1.6;color:rgba(255,255,255,0.85)">${bodyHtml}</td></tr>
+      <tr><td style="padding:16px 24px;text-align:center;font-size:11px;color:rgba(255,255,255,0.3);background:#0a0a0a">
+        Sent automatically by ${companyName}'s CrewBoss system.
+      </td></tr>
+    </table>
+  </td></tr>
+</table>`;
+
+// A pill-style call-to-action button, used for "Open the crew portal" / "View
+// estimate" / "Confirm" links so emails read as actionable, not just informative.
+export const emailButton = (label: string, href: string): string => `
+  <div style="text-align:center;margin:22px 0 4px">
+    <a href="${href}" style="display:inline-block;background:#dc2626;color:#fff;text-decoration:none;font-weight:700;font-size:14px;padding:13px 30px;border-radius:10px">${label}</a>
+  </div>`;
 
 const jobCardHtml = (j: any, custName: string): string => `
   <div style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:12px;padding:14px;margin-bottom:10px">

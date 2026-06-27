@@ -77,7 +77,7 @@ import { ChemicalModal } from "../ui/ChemicalModal";
 import { WeeklyBusinessReview } from "../ui/WeeklyBusinessReview";
 import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 
-export function AccountabilityPage({ entries = [], setEntries, goals = [], setGoals, wins = [], setWins, toast }: { entries?: any[]; setEntries?: any; goals?: any[]; setGoals?: any; wins?: any[]; setWins?: any; toast?: any }) {
+export function AccountabilityPage({ entries = [], setEntries, goals = [], setGoals, wins = [], setWins, toast, settings = {} as AppSettings }: { entries?: any[]; setEntries?: any; goals?: any[]; setGoals?: any; wins?: any[]; setWins?: any; toast?: any; settings?: AppSettings }) {
   const [tab, setTab] = useState("today");
   const [f, setF] = useState<{ sleep: any; water: any; gymMinutes: any; meditationMinutes: any; steps: any; mood: any; notes: string; personalNotes?: string }>({ sleep: 7, water: 0, gymMinutes: 0, meditationMinutes: 0, steps: 0, mood: 3, notes: "" });
   const [gText, setGText] = useState("");
@@ -112,11 +112,7 @@ export function AccountabilityPage({ entries = [], setEntries, goals = [], setGo
     toast("Win logged! 🏆");
   };
 
-  const [reminders, setReminders] = usePersistent("smocks.reminders", [
-    { id: "r1", text: "Call Mom", frequency: "weekly", emoji: "📞", lastDone: null },
-    { id: "r2", text: "Review business goals", frequency: "weekly", emoji: "🎯", lastDone: null },
-    { id: "r3", text: "Send invoices", frequency: "daily", emoji: "💰", lastDone: null },
-  ]);
+  const [reminders, setReminders] = usePersistent("smocks.reminders", []);
 
   // Large personal expense alert — pull from personal budget transactions
   const [personalTxns] = usePersistent("smocks.personal.transactions", []);
@@ -362,7 +358,7 @@ export function AccountabilityPage({ entries = [], setEntries, goals = [], setGo
           </div>
         </Glass>
       )}
-      {tab === "reflect" && <WeeklyReflectionTab entries={entries} goals={goals} wins={wins} toast={toast} />}
+      {tab === "reflect" && <WeeklyReflectionTab entries={entries} goals={goals} wins={wins} toast={toast} settings={settings} />}
     </div>
   );
 }

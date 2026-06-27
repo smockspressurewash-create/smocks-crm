@@ -22,10 +22,11 @@ import {
 } from "recharts";
 import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE } from "../../lib/utils";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
-import { twilioSend, sendEmail } from "../../lib/messaging";
+import { twilioSend, sendEmail, emailShell, emailButton } from "../../lib/messaging";
 import { seedWeather } from "../../lib/weather";
 import { seedCustomers, seedEstimates, seedJobs, seedEmployees, seedVehicles, seedExpenses, seedChemicals, seedServices, seedAutomations, seedEmailTemplates, seedSmsTemplates, seedRewardTiers, seedReferrals, seedMaintenance, campaignTemplates, seedSocialPosts, seedTimeline, seedGoals, seedReminders, seedAccountabilityEntries, seedMileage, seedLeadSrc, STEP_TYPES, AUTOMATION_TEMPLATES } from "../../lib/seed";
 import { callModel, MODELS, parseRateLimitError } from "../../lib/api";
+import { supabase } from "../../lib/supabase";
 import { createCalendarEvent, updateCalendarEvent, deleteCalendarEvent, fetchDriveFiles, MOCK_GOOGLE_DATA, fmtSize, fmtDate, fileIcon } from "../../lib/google";
 import { usePersistent } from "../../hooks/usePersistent";
 import { usePersistentRaw } from "../../hooks/usePersistentRaw";
@@ -737,6 +738,45 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           setJobs(prev => prev.map(x => x.id === inputs.jobId ? { ...x, priority: inputs.priority } : x));
           return { success: true, jobId: inputs.jobId, newPriority: inputs.priority };
         }
+        case "assign_employee": {
+          const j = jobs.find(x => x.id === inputs.jobId);
+          if (!j) return { error: "Job not found" };
+          const emp = employees.find(e => e.id === inputs.employeeId || (e.firstName + " " + e.lastName).toLowerCase() === (inputs.employeeName || "").toLowerCase());
+          if (!emp) return { error: "Employee not found" };
+          const crew = j.crew || [];
+          if (!crew.includes(emp.id)) setJobs(prev => prev.map(x => x.id === j.id ? { ...x, crew: [...(x.crew || []), emp.id] } : x));
+          if (emp.email) {
+            const c = customers.find(x => x.id === j.customerId);
+            const portalLink = `${window.location.origin}${window.location.pathname}#/portal`;
+            const html = emailShell(settings.companyName || "Smock's Pressure Washing", "Job Assignment", `<p>Hi ${emp.firstName},</p><p>You've been assigned to a job:</p><ul><li><b>Date:</b> ${j.scheduledDate}${j.scheduledTime ? " at " + j.scheduledTime : ""}</li><li><b>Address:</b> ${j.address}</li>${c ? `<li><b>Customer:</b> ${c.firstName} ${c.lastName}</li>` : ""}</ul>` + emailButton("Open Crew Portal", portalLink));
+            sendEmail(settings, { to: emp.email, subject: `You've Been Assigned — ${j.scheduledDate}`, body: html }).catch(() => {});
+          }
+          toast("Alfred assigned " + emp.firstName + " to the " + j.scheduledDate + " job");
+          return { success: true, jobId: j.id, employeeId: emp.id, employee: emp.firstName + " " + emp.lastName };
+        }
+        case "request_employee": {
+          const j = jobs.find(x => x.id === inputs.jobId);
+          if (!j) return { error: "Job not found" };
+          const emp = employees.find(e => e.id === inputs.employeeId || (e.firstName + " " + e.lastName).toLowerCase() === (inputs.employeeName || "").toLowerCase());
+          if (!emp) return { error: "Employee not found" };
+          try {
+            const { data: { session } } = await supabase.auth.getSession();
+            const { data, error } = await (supabase as any).from("job_requests").insert({
+              job_id: j.id, employee_id: emp.id, owner_id: session?.user?.id, status: "pending", message: inputs.message || null,
+            }).select("id").single();
+            if (error || !data) return { error: "Could not save request — run the job_requests SQL in Supabase first" };
+            if (emp.email) {
+              const c = customers.find(x => x.id === j.customerId);
+              const reqUrl = `${window.location.origin}${window.location.pathname}#/portal?request=${data.id}`;
+              const html = emailShell(settings.companyName || "Smock's Pressure Washing", "Job Request", `<p>Hi ${emp.firstName},</p><p>${inputs.message || "You have a new job request:"}</p><ul><li><b>Date:</b> ${j.scheduledDate}${j.scheduledTime ? " at " + j.scheduledTime : ""}</li><li><b>Address:</b> ${j.address}</li>${c ? `<li><b>Customer:</b> ${c.firstName} ${c.lastName}</li>` : ""}</ul><div style="text-align:center;margin:22px 0 4px"><a href="${reqUrl}" style="display:inline-block;background:#16a34a;color:#fff;text-decoration:none;font-weight:700;font-size:14px;padding:13px 24px;border-radius:10px;margin-right:8px">✓ Accept Job</a><a href="${reqUrl}&action=deny" style="display:inline-block;background:#dc2626;color:#fff;text-decoration:none;font-weight:700;font-size:14px;padding:13px 24px;border-radius:10px">✗ Decline</a></div>`);
+              sendEmail(settings, { to: emp.email, subject: `Job Request — ${j.scheduledDate}`, body: html }).catch(() => {});
+            }
+            toast("Alfred sent a job request to " + emp.firstName);
+            return { success: true, jobId: j.id, employeeId: emp.id, requestId: data.id, employee: emp.firstName + " " + emp.lastName };
+          } catch (e: any) {
+            return { error: "Request failed: " + (e?.message || String(e)) };
+          }
+        }
         case "send_reminder": {
           const c = customers.find(x => x.id === inputs.customerId);
           if (!c) return { error: "Customer not found" };
@@ -750,7 +790,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
               return { success: false, note: "Twilio not configured — add credentials in Settings to send real SMS", draft: msg };
             }
           } else if (channel === "email" && c.email) {
-            try { await sendEmail(settings, { to: c.email, subject: inputs.subject || "Reminder from Smock's", body: msg }); }
+            try { await sendEmail(settings, { to: c.email, subject: inputs.subject || "Reminder from Smock's", body: emailShell(settings?.companyName || "Smock's Pressure Washing", "Reminder", `<p>${msg}</p>`) }); }
             catch(e) { return { error: "Email failed: " + e.message }; }
           }
           toast("Reminder sent to " + c.firstName + " via " + channel + " ✓");
@@ -947,6 +987,16 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
       name: "update_job_priority",
       description: "Change the priority of an existing job.",
       input_schema: { type: "object", properties: { jobId: { type: "string" }, priority: { type: "string", enum: ["low", "normal", "high", "urgent"] } }, required: ["jobId", "priority"] }
+    },
+    {
+      name: "assign_employee",
+      description: "Assign an employee to a job's crew directly — they're added immediately and emailed, no acceptance needed.",
+      input_schema: { type: "object", properties: { jobId: { type: "string" }, employeeId: { type: "string" }, employeeName: { type: "string", description: "Full name like 'Jake Smith' as alternative to employeeId" } }, required: ["jobId"] }
+    },
+    {
+      name: "request_employee",
+      description: "Send a job request to an employee — they must accept or decline before being added to the crew.",
+      input_schema: { type: "object", properties: { jobId: { type: "string" }, employeeId: { type: "string" }, employeeName: { type: "string", description: "Full name like 'Jake Smith' as alternative to employeeId" }, message: { type: "string" } }, required: ["jobId"] }
     },
     {
       name: "send_reminder",

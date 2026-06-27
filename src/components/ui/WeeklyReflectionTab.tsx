@@ -42,10 +42,14 @@ import { PBar } from "./PBar";
 import { PageFade } from "./PageFade";
 import { TimeframeSelector } from "./TimeframeSelector";
 
-export function WeeklyReflectionTab({ entries = [], goals = [], wins = [], toast }) {
+export function WeeklyReflectionTab({ entries = [], goals = [], wins = [], toast, settings = {} as AppSettings }) {
   const [reflection, setReflection] = useState("");
   const [loading, setLoading] = useState(false);
-  const [saved, setSaved] = useState([]);
+  const [saved, setSaved] = usePersistent("smocks.weeklyReflections", []);
+
+  useEffect(() => {
+    if (!reflection && saved.length > 0) setReflection(saved[0].text);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const weekEntries = entries.filter(e => daysSince(e.date) <= 7);
   const avgSleep = weekEntries.length ? (weekEntries.reduce((s, e) => s + e.sleep, 0) / weekEntries.length).toFixed(1) : 0;
@@ -72,18 +76,20 @@ Last 7 days data:
 Write a 3-4 paragraph reflection covering: what went well, what to improve, and one specific recommendation for next week. Be real, not generic.`;
 
     try {
-      const res = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: 400, messages: [{ role: "user", content: prompt }] })
+      const modelId = settings.activeModel || "claude";
+      const apiKey = (settings.modelKeys || {})[modelId] || (modelId === "claude" ? settings.anthropicKey : undefined);
+      const res = await callModel({
+        modelId,
+        apiKey,
+        messages: [{ role: "user", content: prompt }],
+        maxTokens: 500,
       });
-      const data = await res.json();
-      const text = data.content?.[0]?.text || "Unable to generate reflection.";
+      const text = res.text || "Unable to generate reflection.";
       setReflection(text);
       setSaved(prev => [{ id: uid(), date: today(), text }, ...prev.slice(0, 9)]);
       toast("Reflection generated ✓");
-    } catch (e) {
-      setReflection("Could not generate reflection — check your internet connection.");
+    } catch (e: any) {
+      setReflection(e?.message || "Could not generate reflection — check your AI model settings.");
       toast("Generation failed", "error");
     } finally {
       setLoading(false);

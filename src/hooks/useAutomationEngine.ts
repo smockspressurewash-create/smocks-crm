@@ -74,12 +74,12 @@ export function useAutomationEngine({
           }
         }
 
-        // ── Trigger: estimate follow-up ─────────────────────────────────────
+        // ── Trigger: estimate follow-up (3 days after sending, still unviewed) ──
         if (auto.trigger.toLowerCase().includes("estimate sent") && hour >= 9 && hour < 11) {
           const staleEstimates = estimates.filter(e =>
             e.status === "pending" &&
             e.sentAt &&
-            daysSince(e.sentAt) >= 1 &&
+            daysSince(e.sentAt) >= 3 &&
             !e.viewed
           );
           for (const est of staleEstimates.slice(0, 5)) {
@@ -97,13 +97,16 @@ export function useAutomationEngine({
           }
         }
 
-        // ── Trigger: review request (48h after completion) ──────────────────
+        // ── Trigger: review request (48h after completion) ───────────────────
+        // Prefer the real completion timestamp recorded on the customer's
+        // sign-off (set the moment the employee closes out the job) over
+        // scheduledDate, which can be days off if a job ran long or slipped.
         if (auto.trigger.toLowerCase().includes("job completed") && hour >= 10 && hour < 12) {
-          const recentJobs = jobs.filter(j =>
-            j.status === "completed" &&
-            j.scheduledDate &&
-            daysSince(j.scheduledDate) === 2
-          );
+          const recentJobs = jobs.filter(j => {
+            if (j.status !== "completed") return false;
+            const completedDate = j.signOff?.timestamp?.slice(0, 10) || j.scheduledDate;
+            return completedDate && daysSince(completedDate) === 2;
+          });
           for (const job of recentJobs) {
             const c = customers.find(x => x.id === job.customerId);
             if (!c?.phone || c.smsOptOut) continue;

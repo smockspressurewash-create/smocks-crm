@@ -275,6 +275,27 @@ export function Dashboard({ jobs = [], customers = [], estimates = [], automatio
     green: "bg-green-950/20 border-green-700/40 text-green-300"
   }[t] || "bg-white/5 border-white/10 text-white/70");
 
+  // Live team view — who's clocked in right now, on which job, and how far
+  // along their checklist is. Re-renders every 30s so elapsed time and any
+  // newly clocked-in/out crew show up without a manual refresh.
+  const [, liveTeamTick] = useState(0);
+  useEffect(() => {
+    const interval = setInterval(() => liveTeamTick(t => t + 1), 30000);
+    return () => clearInterval(interval);
+  }, []);
+  const activeJobs = jobs.filter(j => j.clockInAt && j.status !== "completed" && j.status !== "cancelled");
+  const checklistProgress = (j: any) => {
+    const items = [...(j.preChecklist || []), ...(j.duringChecklist || []), ...(j.postChecklist || []), ...(j.checklist || [])];
+    if (items.length === 0) return null;
+    const done = items.filter((it: any) => it.done).length;
+    return { done, total: items.length, pct: Math.round((done / items.length) * 100) };
+  };
+  const fmtElapsed = (ms: number) => {
+    const mins = Math.floor(ms / 60000);
+    const h = Math.floor(mins / 60), m = mins % 60;
+    return h > 0 ? `${h}h ${m}m` : `${m}m`;
+  };
+
   const w: any = settings.dashboardWidgets || { quickActions: true, kpis: true, revenuePeriods: true, goals: true, outstanding: true, charts: true, activity: true };
   const [custOpen, setCustOpen] = useState(false);
   const widgetDefs = [
@@ -342,6 +363,42 @@ export function Dashboard({ jobs = [], customers = [], estimates = [], automatio
           })}
           {alerts.length > 5 && <span className="text-xs text-white/40 self-center">+{alerts.length - 5} more</span>}
         </div>
+      )}
+
+      {/* Live team view — active jobs with clocked-in crew, auto-refreshes every 30s */}
+      {activeJobs.length > 0 && (
+        <Glass className="p-4">
+          <div className="flex items-center gap-2 mb-3">
+            <Users2 size={15} className="text-green-400" />
+            <h3 className="font-semibold text-sm">Live Team View</h3>
+            <Badge tone="green">{activeJobs.length} active</Badge>
+          </div>
+          <div className="space-y-2">
+            {activeJobs.map(j => {
+              const c = customers.find(x => x.id === j.customerId);
+              const crewNames = (j.crew || []).map((eid: string) => employees.find((e: any) => e.id === eid)).filter(Boolean).map((e: any) => e.firstName).join(", ") || "Unassigned";
+              const elapsedMs = Date.now() - Number(j.clockInAt);
+              const overSchedule = j.duration && elapsedMs / 3600000 > Number(j.duration);
+              const prog = checklistProgress(j);
+              return (
+                <div key={j.id} className={"flex items-center gap-3 p-3 rounded-xl border " + (overSchedule ? "bg-yellow-950/20 border-yellow-700/40" : "bg-black/30 border-white/10")}>
+                  <div className="w-8 h-8 rounded-full bg-green-900/40 border border-green-600/40 flex items-center justify-center flex-shrink-0">
+                    <Clock size={13} className="text-green-400" />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-medium truncate">{crewNames} — {c ? c.firstName + " " + c.lastName : j.address}</div>
+                    <div className="text-xs text-white/40 flex items-center gap-2 flex-wrap">
+                      <span>{fmtElapsed(elapsedMs)} elapsed{j.duration ? ` of ~${j.duration}h` : ""}</span>
+                      {prog && <span className="flex items-center gap-1"><CheckSquare size={10} />{prog.done}/{prog.total} checklist</span>}
+                      {overSchedule && <span className="text-yellow-400 font-semibold">⚠ Running over schedule</span>}
+                    </div>
+                  </div>
+                  <button onClick={() => onNav("jobs")} className="px-2.5 py-1.5 bg-white/5 border border-white/10 rounded-lg text-xs text-white/60 hover:text-white flex-shrink-0">View</button>
+                </div>
+              );
+            })}
+          </div>
+        </Glass>
       )}
 
       {/* End-of-day summary — auto-generated from today's job/crew activity */}

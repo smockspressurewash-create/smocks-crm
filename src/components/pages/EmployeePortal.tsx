@@ -3,10 +3,10 @@ import {
   Clock, Briefcase, Calendar, ChevronLeft, CheckSquare, Camera,
   LogOut, MapPin, Phone, User, Play, Square, Plus, X, Eye, DollarSign,
   ChevronRight, Home, List, CheckCircle, AlertCircle, Image, FileText,
-  Video, PenLine, Shield, Navigation, Database, Route, ToggleRight, ToggleLeft
+  Video, PenLine, Shield, Navigation, Database, Route, ToggleRight, ToggleLeft, Download
 } from "lucide-react";
 import { supabase } from "../../lib/supabase";
-import { getEmpGoogleToken, isEmpGoogleTokenValid, createGCalEvent } from "../../lib/googleApi";
+import { getEmpGoogleToken, isEmpGoogleTokenValid, saveEmpGoogleToken, createGCalEvent } from "../../lib/googleApi";
 import { sendViaGmail } from "../../lib/messaging";
 import { Glass } from "../ui/Glass";
 import { GBtn } from "../ui/GBtn";
@@ -36,17 +36,36 @@ const POST_DEFAULTS: JobChecklistItem[] = [
   { id: "post4", label: "Take after photos", done: false },
 ];
 
-// Small Street View thumbnail for a job address; click to expand full-size.
-// Silently renders nothing without a Maps key — no broken-image placeholder.
+// Small Street View thumbnail for a job address; tap to expand full-size.
+// Shows a visible setup hint when no Maps key is configured (rather than just
+// vanishing) and a "no imagery" message if the request itself fails, so a
+// blank space always has an explanation instead of looking broken.
 function StreetViewThumb({ address, apiKey }: { address: string; apiKey?: string }) {
   const [expanded, setExpanded] = useState(false);
-  if (!apiKey || !address) return null;
-  const thumbUrl = `https://maps.googleapis.com/maps/api/streetview?size=400x200&location=${encodeURIComponent(address)}&key=${apiKey}`;
-  const bigUrl = `https://maps.googleapis.com/maps/api/streetview?size=800x500&location=${encodeURIComponent(address)}&key=${apiKey}`;
+  const [loadError, setLoadError] = useState(false);
+  if (!address) return null;
+  if (!apiKey) {
+    return (
+      <div className="w-full rounded-xl border border-white/10 bg-black/30 p-3 text-xs text-white/40 flex items-center gap-2">
+        <MapPin size={13} className="flex-shrink-0" />
+        Street View needs a Google Maps API key — add one in Settings.
+      </div>
+    );
+  }
+  const thumbUrl = `https://maps.googleapis.com/maps/api/streetview?size=600x300&location=${encodeURIComponent(address)}&key=${apiKey}`;
+  const bigUrl = `https://maps.googleapis.com/maps/api/streetview?size=1200x600&location=${encodeURIComponent(address)}&key=${apiKey}`;
+  if (loadError) {
+    return (
+      <div className="w-full rounded-xl border border-white/10 bg-black/30 p-3 text-xs text-white/40 flex items-center gap-2">
+        <MapPin size={13} className="flex-shrink-0" />
+        No Street View imagery available for this address.
+      </div>
+    );
+  }
   return (
     <>
       <button onClick={() => setExpanded(true)} className="w-full rounded-xl overflow-hidden border border-white/10 relative group">
-        <img src={thumbUrl} alt="Street View" className="w-full h-32 object-cover" onError={e => { (e.target as HTMLImageElement).style.display = "none"; }} />
+        <img src={thumbUrl} alt="Street View" className="w-full h-32 object-cover" onError={() => setLoadError(true)} />
         <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition flex items-center justify-center">
           <span className="opacity-0 group-hover:opacity-100 text-white text-xs font-semibold transition">Tap to expand</span>
         </div>
@@ -214,6 +233,8 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
 }) {
   const effPerms = { ...DEFAULT_PERMISSIONS, ...(permsOverride || {}) };
   const [note, setNote] = useState("");
+  const [delayNote, setDelayNote] = useState("");
+  const [delayNoteOpen, setDelayNoteOpen] = useState(false);
   const [, forceTick] = useState(0);
   const [showSignOff, setShowSignOff] = useState(false);
   const [signerName, setSignerName] = useState("");
@@ -242,6 +263,7 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
   })();
 
   const lunchDisplay = job.lunchStartAt ? secsToHms(Math.max(0, Math.floor((Date.now() - job.lunchStartAt) / 1000))) : null;
+  const isOverSchedule = !!(job.clockInAt && job.duration && (Date.now() - job.clockInAt) / 3600000 > Number(job.duration));
 
   const hasRequiredGear = (job.equipment || []).length > 0 || (job.requiredChemicals || []).length > 0;
   const clockIn = () => {
@@ -489,6 +511,32 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
           </Glass>
         )}
 
+        {/* Over-schedule warning — job has been clocked in longer than its estimate */}
+        {isOverSchedule && (
+          <Glass className="p-3 !bg-yellow-950/20 !border-yellow-700/40">
+            <div className="flex items-center gap-2 mb-2">
+              <AlertCircle size={15} className="text-yellow-400 flex-shrink-0" />
+              <div className="text-sm font-semibold text-yellow-300 flex-1">Running over schedule</div>
+            </div>
+            <div className="text-xs text-white/50 mb-2">
+              This job has run longer than its {formatEstDuration(job.duration!)} estimate. Let the owner know what's holding things up.
+            </div>
+            {delayNoteOpen ? (
+              <div className="flex gap-2">
+                <GInput value={delayNote} onChange={e => setDelayNote(e.target.value)} placeholder="What's causing the delay?" className="flex-1 !text-xs" />
+                <GBtn className="!text-xs !py-1.5" onClick={() => {
+                  if (!delayNote.trim()) return;
+                  onUpdateJob({ commLog: [...(job.commLog || []), { id: uid(), type: "note" as const, date: today(), note: "⚠ Delay: " + delayNote.trim() }] });
+                  setDelayNote(""); setDelayNoteOpen(false);
+                  toast("Delay note added");
+                }}>Send</GBtn>
+              </div>
+            ) : (
+              <button onClick={() => setDelayNoteOpen(true)} className="text-xs text-yellow-300 underline">Explain delay →</button>
+            )}
+          </Glass>
+        )}
+
         {/* Clock in/out */}
         <Glass className={"p-4 " + (job.clockInAt ? "!bg-green-950/20 !border-green-700/40" : "!bg-black/40")}>
           <div className="flex items-center justify-between">
@@ -702,8 +750,8 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
 }
 
 // ── Owner Team Portal ─────────────────────────────────────────────────────────
-function OwnerTeamPortal({ jobs, employees, customers, onClose }: {
-  jobs: Job[]; employees: Employee[]; customers: Customer[]; onClose: () => void;
+function OwnerTeamPortal({ jobs, employees, customers, onClose, googleMapsKey }: {
+  jobs: Job[]; employees: Employee[]; customers: Customer[]; onClose: () => void; googleMapsKey?: string;
 }) {
   const [selectedEmpId, setSelectedEmpId] = useState<string>("all");
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
@@ -726,6 +774,7 @@ function OwnerTeamPortal({ jobs, employees, customers, onClose }: {
         onBack={() => setSelectedJobId(null)}
         onUpdateJob={() => {}}
         toast={() => {}}
+        googleMapsKey={googleMapsKey}
       />
     );
   }
@@ -1075,6 +1124,28 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     if ((myEmployee as any).autoSyncCalendar === false) setAutoSyncCalendar(false);
     if ((myEmployee as any).homeBaseAddress) setHomeBaseAddressState((myEmployee as any).homeBaseAddress);
   }, [(myEmployee as any)?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Hydrate the Google connection from Supabase if localStorage doesn't have it
+  // (different browser/device, or localStorage cleared) — so a real, still-valid
+  // token saved by App.tsx's OAuth callback shows "Connected" without re-asking.
+  useEffect(() => {
+    if (!myEmployee || !empSession?.user?.id) return;
+    const uid = empSession.user.id;
+    const existing = getEmpGoogleToken(uid);
+    if (isEmpGoogleTokenValid(existing)) return;
+    const dbToken = (myEmployee as any).google_token;
+    const dbExpiresAt = (myEmployee as any).google_token_expires_at;
+    if (!dbToken || !dbExpiresAt) return;
+    const expiresAt = new Date(dbExpiresAt).getTime();
+    if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) return;
+    saveEmpGoogleToken(uid, {
+      token: dbToken,
+      refreshToken: (myEmployee as any).google_refresh_token || undefined,
+      email: (myEmployee as any).google_email || empSession.user.email || "",
+      expiresAt,
+    });
+    setGoogleHydrateTick(t => t + 1);
+  }, [(myEmployee as any)?.id, empSession?.user?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Fetch incoming job requests for this employee
   useEffect(() => {
@@ -1668,13 +1739,29 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   };
 
   const [homeBaseAddress, setHomeBaseAddressState] = useState("");
+  const [, setGoogleHydrateTick] = useState(0);
   const saveHomeBaseAddress = async (addr: string) => {
     setHomeBaseAddressState(addr);
+    try {
+      const uid = empSession?.user?.id;
+      if (uid) localStorage.setItem("smocks.homeBase." + uid, addr);
+    } catch { /* ignore */ }
     try {
       const empId = (myEmployee as any)?.id;
       if (empId) await (supabase as any).from("employees").update({ homeBaseAddress: addr }).eq("id", empId);
     } catch { /* ignore */ }
   };
+
+  // Load home base from localStorage immediately on mount (instant, no Supabase
+  // round-trip needed) so it survives a refresh even before myEmployee resolves.
+  useEffect(() => {
+    const uid = empSession?.user?.id;
+    if (!uid) return;
+    try {
+      const cached = localStorage.getItem("smocks.homeBase." + uid);
+      if (cached) setHomeBaseAddressState(cached);
+    } catch { /* ignore */ }
+  }, [empSession?.user?.id]);
 
   const toggleAutoSyncCalendar = async () => {
     const next = !autoSyncCalendar;
@@ -1911,6 +1998,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
         employees={employees}
         customers={customers}
         onClose={onClose}
+        googleMapsKey={settings?.googleMapsKey}
       />
     );
   }
@@ -2216,11 +2304,17 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
       : null;
 
     const isNextUp = job.id === completionNotif?.nextJobId;
+    const isOverScheduleCard = !!(job.clockInAt && job.duration && (Date.now() - job.clockInAt) / 3600000 > Number(job.duration));
     return (
       <div
-        className={"rounded-2xl border transition " + (job.clockInAt ? "bg-green-950/10 border-green-700/30" : isNextUp ? "bg-blue-950/15 border-blue-600/40" : "bg-white/5 border-white/10 hover:bg-white/8 hover:border-red-600/20")}
+        className={"rounded-2xl border transition " + (isOverScheduleCard ? "bg-yellow-950/15 border-yellow-700/40" : job.clockInAt ? "bg-green-950/10 border-green-700/30" : isNextUp ? "bg-blue-950/15 border-blue-600/40" : "bg-white/5 border-white/10 hover:bg-white/8 hover:border-red-600/20")}
       >
-        {isNextUp && (
+        {isOverScheduleCard && (
+          <div className="px-4 pt-2.5 pb-0">
+            <span className="text-[10px] font-bold text-yellow-400 uppercase tracking-wide flex items-center gap-1"><AlertCircle size={10} />Running over schedule</span>
+          </div>
+        )}
+        {isNextUp && !isOverScheduleCard && (
           <div className="px-4 pt-2.5 pb-0">
             <span className="text-[10px] font-bold text-blue-400 uppercase tracking-wide animate-pulse">▶ Up Next</span>
           </div>
@@ -2987,6 +3081,65 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
             const expectedHours = 80; // typical 2-week period
             const TAX_RATE = 0.20;
             const takeHome = Math.round(current.pay * (1 - TAX_RATE) * 100) / 100;
+
+            // Year-to-date + prior-year earnings, bucketed by the calendar year
+            // each job's logged hours fall in — same hrs × rate math as the pay
+            // periods above, just rolled up annually for tax purposes.
+            const earningsByYear: Record<string, number> = {};
+            myJobs.forEach(j => {
+              if (!j.scheduledDate || !Number(j.loggedHours)) return;
+              const yr = j.scheduledDate.slice(0, 4);
+              earningsByYear[yr] = (earningsByYear[yr] || 0) + Number(j.loggedHours) * (myEmployee?.hourlyRate || 0);
+            });
+            const thisYear = String(new Date().getFullYear());
+            const ytdGross = Math.round((earningsByYear[thisYear] || 0) * 100) / 100;
+            const priorYears = Object.keys(earningsByYear).filter(y => y !== thisYear).sort((a, b) => b.localeCompare(a));
+
+            // Simplified estimator — SE-style 15.3% + a federal-bracket approximation,
+            // same shape as the owner's business tax estimate. Real withholding
+            // depends on W-4 elections; this is a ballpark, not payroll advice.
+            const seRateEst = 0.153;
+            const fedRateEst = ytdGross > 89075 ? 0.24 : ytdGross > 41775 ? 0.22 : ytdGross > 11000 ? 0.12 : 0.10;
+            const estAnnualTax = Math.round(ytdGross * (seRateEst + fedRateEst) * 100) / 100;
+            const estAnnualTakeHome = Math.round((ytdGross - estAnnualTax) * 100) / 100;
+
+            const downloadTaxPdf = () => {
+              const periodRows = periods.filter(p => p.pay > 0).map(p => `<tr><td>${p.label}</td><td>${p.start} — ${p.end}</td><td class="r">${p.hours}</td><td class="r">$${p.pay.toFixed(2)}</td></tr>`).join("");
+              const priorRows = priorYears.map(y => `<tr><td>${y}</td><td class="r">$${earningsByYear[y].toFixed(2)}</td></tr>`).join("");
+              const empName = `${myEmployee?.firstName || ""} ${myEmployee?.lastName || ""}`.trim() || "Employee";
+              const html = `<!DOCTYPE html><html><head><title>Tax Summary — ${empName}</title>
+              <style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:Arial,sans-serif;padding:40px;color:#111;max-width:900px;margin:auto;font-size:13px}
+              h1{color:#dc2626;font-size:24px}h2{color:#333;font-size:16px;border-bottom:2px solid #dc2626;padding-bottom:6px;margin:24px 0 12px}
+              .header{display:flex;justify-content:space-between;align-items:start;border-bottom:3px solid #dc2626;padding-bottom:16px;margin-bottom:24px}
+              .kpis{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-bottom:24px}
+              .kpi{background:#f9f9f9;padding:16px;border-radius:8px;border:1px solid #eee}
+              .kpi label{font-size:10px;text-transform:uppercase;letter-spacing:.5px;color:#888}
+              .kpi .val{font-size:20px;font-weight:bold;color:#dc2626;margin-top:4px}
+              table{width:100%;border-collapse:collapse;font-size:12px;margin-bottom:20px}
+              th{background:#f0f0f0;padding:8px 10px;text-align:left;border-bottom:2px solid #ccc;font-size:10px;text-transform:uppercase;letter-spacing:.5px}
+              td{padding:7px 10px;border-bottom:1px solid #eee}.r{text-align:right}
+              .total-row{background:#fff8f8;font-weight:bold;color:#dc2626}
+              .disclaimer{margin-top:32px;padding:12px;background:#fffbf0;border:1px solid #f0c040;border-radius:6px;font-size:11px;color:#555}
+              @media print{body{padding:20px}}</style></head><body>
+              <div class="header">
+                <div><h1>${settings.companyName || "Smock's Pressure Washing"}</h1><p style="color:#666;margin-top:4px">Employee Tax Summary — ${empName} · ${thisYear} · Generated ${today()}</p></div>
+              </div>
+              <div class="kpis">
+                <div class="kpi"><label>YTD Gross Earnings</label><div class="val">$${ytdGross.toFixed(2)}</div></div>
+                <div class="kpi"><label>Est. Tax (Fed + SE)</label><div class="val">$${estAnnualTax.toFixed(2)}</div></div>
+                <div class="kpi"><label>Est. Take-Home</label><div class="val">$${estAnnualTakeHome.toFixed(2)}</div></div>
+              </div>
+              <h2>Pay Period Breakdown (${thisYear})</h2>
+              <table><thead><tr><th>Period</th><th>Dates</th><th class="r">Hours</th><th class="r">Gross Pay</th></tr></thead>
+              <tbody>${periodRows || `<tr><td colspan="4">No pay periods logged yet</td></tr>`}<tr class="total-row"><td colspan="3">YTD Total</td><td class="r">$${ytdGross.toFixed(2)}</td></tr></tbody></table>
+              ${priorYears.length ? `<h2>Previous Tax Years</h2><table><thead><tr><th>Year</th><th class="r">Gross Earnings</th></tr></thead><tbody>${priorRows}</tbody></table>` : ""}
+              <div class="disclaimer">⚠️ <strong>Disclaimer:</strong> This is a simplified estimate for personal planning only and is not tax advice. Your actual withholding and liability depend on your filing status, W-4 elections, and other income. Consult a qualified tax professional.</div>
+              <script>window.onload=()=>setTimeout(window.print,400)</script></body></html>`;
+              const w = window.open("", "_blank");
+              if (w) { w.document.write(html); w.document.close(); }
+              toast("Tax summary opened — save as PDF");
+            };
+
             return (
               <>
                 <Glass className="p-5 !bg-gradient-to-br !from-green-950/30 !to-black/60 !border-green-700/30">
@@ -3075,6 +3228,45 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                     </Glass>
                   ))}
                 </div>
+
+                {/* Tax Center */}
+                <Glass className="p-4 !bg-black/40">
+                  <div className="flex items-center justify-between mb-3">
+                    <div className="text-xs text-white/50 uppercase tracking-wider">Tax Center · {thisYear}</div>
+                    <GBtn onClick={downloadTaxPdf} className="!text-xs !py-1.5"><Download size={11} className="inline mr-1" />Tax PDF</GBtn>
+                  </div>
+                  <div className="grid grid-cols-3 gap-2 mb-3">
+                    <div className="p-2.5 rounded-xl bg-green-950/20 border border-green-700/20">
+                      <div className="text-[10px] text-white/40 uppercase">YTD Gross</div>
+                      <div className="text-base font-black text-green-400">{fmt(ytdGross)}</div>
+                    </div>
+                    <div className="p-2.5 rounded-xl bg-yellow-950/20 border border-yellow-700/20">
+                      <div className="text-[10px] text-white/40 uppercase">Est. Tax</div>
+                      <div className="text-base font-black text-yellow-400">{fmt(estAnnualTax)}</div>
+                    </div>
+                    <div className="p-2.5 rounded-xl bg-white/5 border border-white/10">
+                      <div className="text-[10px] text-white/40 uppercase">Est. Take-Home</div>
+                      <div className="text-base font-black text-white/80">{fmt(estAnnualTakeHome)}</div>
+                    </div>
+                  </div>
+                  <div className="text-[10px] text-white/30">
+                    Estimate uses ~15.3% SE-style tax + a federal bracket approximation on YTD gross earnings — not official payroll or tax advice.
+                  </div>
+                  {priorYears.length > 0 && (
+                    <div className="mt-3 pt-3 border-t border-white/10">
+                      <div className="text-[10px] text-white/40 uppercase tracking-wider mb-1.5">Previous Tax Years</div>
+                      <div className="space-y-1">
+                        {priorYears.map(y => (
+                          <div key={y} className="flex justify-between text-xs text-white/60">
+                            <span>{y}</span>
+                            <span className="font-semibold text-white/80">{fmt(earningsByYear[y])}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </Glass>
+
                 <div className="text-[10px] text-white/20 text-center pt-2">
                   Pay estimates are based on logged hours × hourly rate.<br />Contact your manager for official payroll figures.
                 </div>
@@ -3206,6 +3398,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                   <label className="text-sm font-semibold mb-1 block flex items-center gap-1.5"><MapPin size={13} className="text-blue-400" />Home Base</label>
                   <div className="text-xs text-white/40 mb-2">Your starting address — used as the origin point when optimizing today's route</div>
                   <input
+                    key={homeBaseAddress}
                     type="text"
                     defaultValue={homeBaseAddress}
                     onBlur={e => { if (e.target.value !== homeBaseAddress) saveHomeBaseAddress(e.target.value); }}

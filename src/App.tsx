@@ -415,8 +415,8 @@ export function App() {
   const [reviews,         setReviews]         = usePersistent<Review[]>("smocks.reviews", []);
   const [socialPosts,     setSocialPosts]     = usePersistent<SocialPost[]>("smocks.socialPosts", seedSocialPosts);
   const [inboxThreads,    setInboxThreads]    = usePersistent<InboxThread[]>("smocks.inbox", []);
-  const [accountability,  setAccountability]  = usePersistent<AccountabilityEntry[]>("smocks.accountability", seedAccountabilityEntries);
-  const [goalsList,       setGoalsList]       = usePersistent<Goal[]>("smocks.goals", seedGoals);
+  const [accountability,  setAccountability]  = usePersistent<AccountabilityEntry[]>("smocks.accountability", []);
+  const [goalsList,       setGoalsList]       = usePersistent<Goal[]>("smocks.goals", []);
   const [wins,            setWins]            = usePersistent<Win[]>("smocks.wins", []);
   const [negativeAlerts,  setNegativeAlerts]  = usePersistent<Review[]>("smocks.negativeAlerts", []);
   const [referrals,       setReferrals]       = usePersistent<typeof seedReferrals>("smocks.referrals", seedReferrals);
@@ -1351,7 +1351,7 @@ export function App() {
                 {page === "analytics"      && <AnalyticsPage jobs={jobs} customers={customers} estimates={estimates} expenses={expenses} />}
                 {page === "budget"         && <BudgetPage jobs={jobs} estimates={estimates} expenses={expenses} settings={settings} toast={toast} />}
                 {page === "personal"       && <PersonalBudgetPage toast={toast} />}
-                {page === "accountability" && <AccountabilityPage entries={accountability} setEntries={setAccountability} goals={goalsList} setGoals={setGoalsList} wins={wins} setWins={setWins} toast={toast} />}
+                {page === "accountability" && <AccountabilityPage entries={accountability} setEntries={setAccountability} goals={goalsList} setGoals={setGoalsList} wins={wins} setWins={setWins} toast={toast} settings={settings} />}
                 {page === "referrals"      && <ReferralsPage customers={customers} referrals={referrals as any} toast={toast} settings={settings} />}
                 {page === "crew"           && <CrewView jobs={jobs} setJobs={setJobs} customers={customers} employees={employees} toast={toast} />}
               </SafePage>

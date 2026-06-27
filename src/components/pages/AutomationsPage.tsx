@@ -88,7 +88,9 @@ export function AutomationsPage({ automations = [], setAutomations, jobs = [], c
   const [execLog, setExecLog] = useState<any[]>([]);
   const runWorkflow = async (a: any, ctx: any, toastFn: any, s: any) => ({ triggered: true, log: [] } as { triggered: boolean; log: any[] });
 
-  useAutomationEngine({ automations, setAutomations, jobs, customers, estimates, settings, toast });
+  // The automation engine already runs globally in App.tsx so it fires
+  // regardless of which page is open — running it again here would double-fire
+  // every trigger (e.g. two SMS sends) whenever this page happens to be mounted.
 
   const toggle = id => setAutomations(automations.map(a => a.id === id ? { ...a, active: !a.active } : a));
   const del = id => { if (confirm("Delete this workflow?")) setAutomations(automations.filter(a => a.id !== id)); };
