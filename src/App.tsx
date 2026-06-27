@@ -333,8 +333,12 @@ export function App() {
 
   // ── Navigation ────────────────────────────────────────────────────────────
   const [page, setPage] = useState(() => {
-    // Restore page from URL hash on first load
+    // Restore page from URL hash on first load. The employee portal owns sub-paths
+    // under its own route (#/portal/calendar, #/portal/jobs, etc.) for its tabs —
+    // any hash starting with "portal" still resolves to the "portal" page here;
+    // EmployeePortal itself reads the sub-path to pick the initial tab.
     const hash = window.location.hash.replace(/^#\/?/, "").split("?")[0];
+    if (hash === "portal" || hash.startsWith("portal/")) return "portal";
     const valid = ["dashboard","alfred","inbox","customers","estimates","invoices","pipeline","intake","jobs","calendar","crew","campaigns","reviews","automations","social","referrals","expenses","reports","analytics","budget","personal","accountability","employees","fleet","chemicals","google","portal","reset-password"];
     return valid.includes(hash) ? hash : "dashboard";
   });
@@ -365,6 +369,7 @@ export function App() {
     const valid = ["dashboard","alfred","inbox","customers","estimates","invoices","pipeline","intake","jobs","calendar","crew","campaigns","reviews","automations","social","referrals","expenses","reports","analytics","budget","personal","accountability","employees","fleet","chemicals","google","portal","reset-password"];
     const handler = () => {
       const hash = window.location.hash.replace(/^#\/?/, "").split("?")[0];
+      if (hash === "portal" || hash.startsWith("portal/")) { setPage("portal"); return; }
       if (valid.includes(hash)) setPage(hash);
     };
     window.addEventListener("hashchange", handler);

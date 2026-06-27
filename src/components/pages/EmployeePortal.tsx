@@ -709,7 +709,27 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   isOwnerView?: boolean; onClose?: () => void;
   refetchEmployees?: () => Promise<void>;
 }) {
-  const [tab, setTab] = useState<"today" | "calendar" | "jobs" | "pay" | "google">("today");
+  const TAB_TO_SLUG: Record<string, string> = { today: "", calendar: "calendar", jobs: "jobs", pay: "pay", google: "google" };
+  const SLUG_TO_TAB: Record<string, "today" | "calendar" | "jobs" | "pay" | "google"> = { "": "today", calendar: "calendar", jobs: "jobs", pay: "pay", google: "google" };
+  const tabFromHash = (): "today" | "calendar" | "jobs" | "pay" | "google" => {
+    const slug = window.location.hash.replace(/^#\/?/, "").split("?")[0].replace(/^portal\/?/, "");
+    return SLUG_TO_TAB[slug] || "today";
+  };
+  const [tab, setTabState] = useState<"today" | "calendar" | "jobs" | "pay" | "google">(tabFromHash);
+  // Keeps the URL in sync with the active tab (#/portal, #/portal/calendar, #/portal/jobs,
+  // #/portal/pay, #/portal/google) without going through App.tsx's page-level routing —
+  // page stays "portal" the whole time, so App's hash-sync effect never overwrites this.
+  const setTab = (next: "today" | "calendar" | "jobs" | "pay" | "google") => {
+    setTabState(next);
+    const slug = TAB_TO_SLUG[next];
+    window.location.hash = slug ? "/portal/" + slug : "/portal";
+  };
+  // Respond to direct navigation / browser back-forward landing on a #/portal/* sub-path
+  useEffect(() => {
+    const handler = () => setTabState(tabFromHash());
+    window.addEventListener("hashchange", handler);
+    return () => window.removeEventListener("hashchange", handler);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
   const [calMode, setCalMode] = useState<"week" | "month">("month");
   const [calSelectedDate, setCalSelectedDate] = useState(today());
@@ -1192,18 +1212,20 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
       if (requestData.job_id) {
         const empId = myEmployee.id;
         const empUserId = (myEmployee as any).user_id;
-        setJobs(prev => prev.map(j => {
-          if (j.id === requestData.job_id) {
-            const currentCrew = j.crew || [];
-            if (!crewIncludesEmployee(currentCrew, empId, empUserId)) {
-              const newCrew = [...currentCrew, empId];
-              console.log("Accepting request job", requestData.job_id, "— crew before:", currentCrew, "after:", newCrew);
-              (supabase as any).from("jobs").update({ crew: newCrew }).eq("id", requestData.job_id).catch(() => {});
-              return { ...j, crew: newCrew };
-            }
-          }
-          return j;
-        }));
+        const targetJob = jobs.find(j => j.id === requestData.job_id);
+        const currentCrew = targetJob?.crew || [];
+        if (!crewIncludesEmployee(currentCrew, empId, empUserId)) {
+          const newCrew = [...currentCrew, empId];
+          console.log("Accepting request job", requestData.job_id, "— crew before:", currentCrew, "after:", newCrew);
+          // Optimistic local update
+          setJobs(prev => prev.map(j => j.id === requestData.job_id ? { ...j, crew: newCrew } : j));
+          // Save MUST be awaited before refetching — otherwise the refetch below can
+          // land before this write commits and overwrite the optimistic crew with the
+          // still-empty array from Supabase, which is exactly why accepted jobs were
+          // vanishing again right after acceptance.
+          const saveResult = await (supabase as any).from("jobs").update({ crew: newCrew }).eq("id", requestData.job_id);
+          console.log("ACCEPT SAVE RESULT:", saveResult);
+        }
         // Refetch to confirm Supabase state
         try {
           const { data: freshJobs } = await (supabase as any).from("jobs").select("*");
@@ -1258,21 +1280,21 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
         .update({ status: "accepted", responded_at: new Date().toISOString() })
         .eq("id", req.id);
       if (req.job_id) {
-        // Optimistic local update
-        setJobs(prev => prev.map(j => {
-          if (j.id === req.job_id) {
-            const currentCrew = j.crew || [];
-            const empId = myEmployee.id;
-            const empUserId = (myEmployee as any).user_id;
-            if (!crewIncludesEmployee(currentCrew, empId, empUserId)) {
-              const newCrew = [...currentCrew, empId];
-              console.log("Accepting job", req.job_id, "— crew before:", currentCrew, "after:", newCrew);
-              (supabase as any).from("jobs").update({ crew: newCrew }).eq("id", req.job_id).catch(() => {});
-              return { ...j, crew: newCrew };
-            }
-          }
-          return j;
-        }));
+        const empId = myEmployee.id;
+        const empUserId = (myEmployee as any).user_id;
+        const targetJob = jobs.find(j => j.id === req.job_id);
+        const currentCrew = targetJob?.crew || [];
+        if (!crewIncludesEmployee(currentCrew, empId, empUserId)) {
+          const newCrew = [...currentCrew, empId];
+          console.log("Accepting job", req.job_id, "— crew before:", currentCrew, "after:", newCrew);
+          // Optimistic local update
+          setJobs(prev => prev.map(j => j.id === req.job_id ? { ...j, crew: newCrew } : j));
+          // Must await the save before refetching — see handleAcceptRequest for why
+          // an un-awaited fire-and-forget write here let the refetch race ahead and
+          // clobber the optimistic crew with Supabase's still-stale (empty) row.
+          const saveResult = await (supabase as any).from("jobs").update({ crew: newCrew }).eq("id", req.job_id);
+          console.log("ACCEPT SAVE RESULT:", saveResult);
+        }
         // Refetch from Supabase to ensure latest crew is reflected
         try {
           const { data: freshJobs } = await (supabase as any).from("jobs").select("*");
