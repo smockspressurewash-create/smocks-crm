@@ -77,7 +77,7 @@ import { ChemicalModal } from "../ui/ChemicalModal";
 import { WeeklyBusinessReview } from "../ui/WeeklyBusinessReview";
 import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 
-export function Dashboard({ jobs = [], customers = [], estimates = [], automations = [], stats, goals, vehicles = [], maintenance = [], chemicals = [], settings = {} as AppSettings, setSettings = () => {}, onNav, toast, weatherData = seedWeather, inboxThreads = [] }: { jobs?: any[]; customers?: any[]; estimates?: any[]; automations?: any[]; stats?: any; goals?: any; vehicles?: any[]; maintenance?: any[]; chemicals?: any[]; settings?: AppSettings; setSettings?: any; onNav?: any; toast?: any; weatherData?: any; inboxThreads?: any[] }) {
+export function Dashboard({ jobs = [], customers = [], estimates = [], automations = [], stats, goals, vehicles = [], maintenance = [], chemicals = [], settings = {} as AppSettings, setSettings = () => {}, onNav, toast, weatherData = seedWeather, inboxThreads = [], employees = [], onSendDailyBriefing }: { jobs?: any[]; customers?: any[]; estimates?: any[]; automations?: any[]; stats?: any; goals?: any; vehicles?: any[]; maintenance?: any[]; chemicals?: any[]; settings?: AppSettings; setSettings?: any; onNav?: any; toast?: any; weatherData?: any; inboxThreads?: any[]; employees?: any[]; onSendDailyBriefing?: () => Promise<void> }) {
   const pipelineVal = jobs.filter(j => j.status !== "completed").reduce((s, j) => s + j.amount, 0);
   const dayOfMonth = new Date().getDate();
   const daysInMonth = new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0).getDate();
@@ -230,6 +230,24 @@ export function Dashboard({ jobs = [], customers = [], estimates = [], automatio
   const unreadCount = (typeof inboxThreads !== "undefined" ? inboxThreads : []).filter(t => t.unread).length;
   if (unreadCount > 0) alerts.push({ key: "inbox", icon: MessageSquare, tone: "blue", msg: unreadCount + " unread message" + (unreadCount !== 1 ? "s" : "") + " in inbox", action: () => onNav("inbox") });
 
+  // Employee late-arrival flags — jobs clocked in well after their scheduled start
+  const lateToday = jobs.filter(j => {
+    if (j.scheduledDate !== todayStr || !j.clockInAt || !j.scheduledTime) return false;
+    const scheduled = new Date(`${j.scheduledDate}T${j.scheduledTime}:00`).getTime();
+    return (j.clockInAt - scheduled) / 60000 > 15;
+  });
+  if (lateToday.length > 0) {
+    alerts.push({ key: "late", icon: Clock, tone: "yellow", msg: lateToday.length + " late arrival" + (lateToday.length !== 1 ? "s" : "") + " today", action: () => onNav("jobs") });
+  }
+
+  // Employee notes/issues logged on jobs today (field reports flagged via the portal's "Add Note")
+  const todaysIssueNotes = jobs
+    .filter(j => j.scheduledDate === todayStr)
+    .flatMap(j => (j.commLog || []).filter((e: any) => e.type === "note" && e.date === todayStr).map((e: any) => ({ job: j, entry: e })));
+  if (todaysIssueNotes.length > 0) {
+    alerts.push({ key: "fieldnotes", icon: MessageSquare, tone: "orange", msg: todaysIssueNotes.length + " field note" + (todaysIssueNotes.length !== 1 ? "s" : "") + " from crew today", action: () => onNav("jobs") });
+  }
+
   // Low chemical stock alert
   const lowStock = (typeof chemicals !== "undefined" ? chemicals : []).filter(c => c.stock <= c.reorderLevel);
   if (lowStock.length > 0) alerts.push({ key: "lowstock", icon: FlaskConical, tone: "yellow", msg: lowStock.length + " chemical" + (lowStock.length !== 1 ? "s" : "") + " low — " + lowStock[0]?.name + " needs reorder", action: () => onNav("chemicals") });
@@ -325,6 +343,52 @@ export function Dashboard({ jobs = [], customers = [], estimates = [], automatio
           {alerts.length > 5 && <span className="text-xs text-white/40 self-center">+{alerts.length - 5} more</span>}
         </div>
       )}
+
+      {/* End-of-day summary — auto-generated from today's job/crew activity */}
+      {(() => {
+        const todaysJobs = jobs.filter(j => j.scheduledDate === todayStr);
+        const completedToday = todaysJobs.filter(j => j.status === "completed");
+        if (todaysJobs.length === 0) return null;
+        const ratedEmployees = employees.filter((e: any) => typeof e.ratingScore === "number");
+        return (
+          <Glass className="p-4 !bg-black/40">
+            <div className="flex items-center justify-between mb-3">
+              <div className="text-xs text-white/50 uppercase tracking-wider font-semibold">📋 Daily Summary — {new Date().toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric" })}</div>
+              {onSendDailyBriefing && (
+                <button onClick={onSendDailyBriefing} className="flex items-center gap-1 text-[10px] px-2.5 py-1 rounded-full bg-blue-950/30 border border-blue-700/30 text-blue-300 hover:bg-blue-900/40 transition flex-shrink-0">
+                  <Mail size={10} />Email Briefing
+                </button>
+              )}
+            </div>
+            <div className="grid grid-cols-3 gap-3 mb-3">
+              <div className="text-center p-2.5 rounded-xl bg-green-950/20 border border-green-700/20">
+                <div className="text-xl font-black text-green-400">{completedToday.length}/{todaysJobs.length}</div>
+                <div className="text-[10px] text-white/40 uppercase mt-0.5">Jobs Done</div>
+              </div>
+              <div className="text-center p-2.5 rounded-xl bg-yellow-950/20 border border-yellow-700/20">
+                <div className="text-xl font-black text-yellow-400">{lateToday.length}</div>
+                <div className="text-[10px] text-white/40 uppercase mt-0.5">Late Arrivals</div>
+              </div>
+              <div className="text-center p-2.5 rounded-xl bg-orange-950/20 border border-orange-700/20">
+                <div className="text-xl font-black text-orange-400">{todaysIssueNotes.length}</div>
+                <div className="text-[10px] text-white/40 uppercase mt-0.5">Field Notes</div>
+              </div>
+            </div>
+            {ratedEmployees.length > 0 && (
+              <div>
+                <div className="text-[10px] text-white/40 uppercase tracking-wider mb-1.5">Crew Ratings</div>
+                <div className="flex flex-wrap gap-2">
+                  {ratedEmployees.map((e: any) => (
+                    <span key={e.id} className={"text-[10px] px-2.5 py-1 rounded-full border " + (e.ratingScore >= 80 ? "bg-green-950/30 border-green-700/30 text-green-300" : e.ratingScore >= 60 ? "bg-yellow-950/30 border-yellow-700/30 text-yellow-300" : "bg-red-950/30 border-red-700/30 text-red-300")}>
+                      {e.firstName} {e.lastName} — {e.ratingScore}/100
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+          </Glass>
+        );
+      })()}
 
       {/* Top row: quick actions + revenue periods */}
       <div className="grid grid-cols-2 lg:grid-cols-6 gap-4">

@@ -222,7 +222,7 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
                   try { await sendEmail(settings, { to: c.email, subject, body }); toast("Estimate emailed to " + c.firstName + " ✓"); setEstimates(prev => prev.map(x => x.id === e.id ? { ...x, sentAt: today() } : x)); }
                   catch(er) { toast(er.message, "error"); }
                 }} title="Email estimate to customer" className="flex-1 p-1.5 rounded-lg hover:bg-blue-900/30 text-white/60 hover:text-blue-400 text-[11px] transition flex items-center justify-center gap-1"><Mail size={11} />Email</button>
-                <button onClick={() => onPortal(e.id)} className="flex-1 p-1.5 rounded-lg hover:bg-purple-900/30 text-white/60 hover:text-purple-400 text-[11px] transition flex items-center justify-center gap-1" title="Customer portal"><Globe size={11} />Portal</button>
+                <button onClick={() => onPortal(e.id)} className="flex-1 p-1.5 rounded-lg hover:bg-purple-900/30 text-white/60 hover:text-purple-400 text-[11px] transition flex items-center justify-center gap-1" title="Preview exactly what the customer sees — sign, pay, and account history"><Globe size={11} />Preview as Customer</button>
                 <button onClick={() => duplicate(e)} className="p-1.5 rounded-lg hover:bg-white/10 text-white/60 hover:text-white text-[11px] transition flex items-center justify-center"><Copy size={11} /></button>
               </div>
             </Glass>

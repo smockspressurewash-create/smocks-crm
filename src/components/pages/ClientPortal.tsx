@@ -78,7 +78,8 @@ import { ChemicalModal } from "../ui/ChemicalModal";
 import { WeeklyBusinessReview } from "../ui/WeeklyBusinessReview";
 import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 
-export function ClientPortal({ estimate: e, customer: c, settings = {} as AppSettings, onClose, onApprove }: { estimate?: any; customer?: any; settings?: AppSettings; onClose?: any; onApprove?: any }) {
+export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [], settings = {} as AppSettings, onClose, onApprove }: { estimate?: any; customer?: any; jobs?: any[]; invoices?: any[]; settings?: AppSettings; onClose?: any; onApprove?: any }) {
+  const [showAccount, setShowAccount] = useState(false);
   const [payType, setPayType] = useState("full");
   const [showStripeModal, setShowStripeModal] = useState(false);
   const [step, setStep] = useState("view"); // view | sign | payment | done
@@ -226,13 +227,59 @@ export function ClientPortal({ estimate: e, customer: c, settings = {} as AppSet
               <div className="text-red-200 text-xs">{companyPhone} · York, PA</div>
             </div>
             <div className="text-right text-white/80 text-xs">
-              <div className="font-bold text-sm">ESTIMATE</div>
+              {showAccount ? (
+                <button onClick={() => setShowAccount(false)} className="font-bold text-sm flex items-center gap-1 ml-auto"><ChevronLeft size={12} />Back</button>
+              ) : (
+                <button onClick={() => setShowAccount(true)} className="font-bold text-sm flex items-center gap-1 ml-auto hover:text-white"><User size={12} />My Account</button>
+              )}
               <div>#{e.id.toUpperCase()}</div>
-              <div>Valid until {e.validUntil}</div>
             </div>
           </div>
         </div>
 
+        {showAccount ? (
+          <div className="p-6 space-y-4">
+            <div className="text-lg font-bold">Hi {c.firstName} 👋</div>
+            <div>
+              <div className="text-xs text-white/50 uppercase tracking-wider font-semibold mb-2">Past Jobs</div>
+              {jobs.filter((j: any) => j.customerId === c.id).length === 0 ? (
+                <div className="text-sm text-white/40 py-4 text-center">No job history yet</div>
+              ) : (
+                <div className="space-y-2">
+                  {jobs.filter((j: any) => j.customerId === c.id).sort((a: any, b: any) => (b.scheduledDate || "").localeCompare(a.scheduledDate || "")).map((j: any) => (
+                    <Glass key={j.id} className="p-3 !bg-black/40 flex items-center justify-between gap-2">
+                      <div className="min-w-0">
+                        <div className="text-sm font-medium truncate">{j.address}</div>
+                        <div className="text-xs text-white/40">{j.scheduledDate}</div>
+                      </div>
+                      <Badge tone={j.status === "completed" ? "green" : j.status === "cancelled" ? "red" : "blue"}>{j.status}</Badge>
+                    </Glass>
+                  ))}
+                </div>
+              )}
+            </div>
+            <div>
+              <div className="text-xs text-white/50 uppercase tracking-wider font-semibold mb-2">Invoices</div>
+              {invoices.filter((inv: any) => inv.customerId === c.id).length === 0 ? (
+                <div className="text-sm text-white/40 py-4 text-center">No invoices yet</div>
+              ) : (
+                <div className="space-y-2">
+                  {invoices.filter((inv: any) => inv.customerId === c.id).map((inv: any) => (
+                    <Glass key={inv.id} className="p-3 !bg-black/40 flex items-center justify-between gap-2">
+                      <div className="min-w-0">
+                        <div className="text-sm font-medium">{fmt(inv.total)}</div>
+                        <div className="text-xs text-white/40">{inv.invoicedAt}</div>
+                      </div>
+                      <Badge tone={inv.paidAt ? "green" : "yellow"}>{inv.paidAt ? "Paid" : "Unpaid"}</Badge>
+                    </Glass>
+                  ))}
+                </div>
+              )}
+            </div>
+            <GBtn variant="ghost" onClick={() => setShowAccount(false)} className="w-full">← Back to Estimate</GBtn>
+          </div>
+        ) : (
+        <>
         {/* Step indicator */}
         <div className="flex items-center px-6 py-3 bg-black/20 border-b border-red-900/20 gap-2">
           {["view","sign","payment","done"].map((s, i) => (
@@ -515,6 +562,8 @@ export function ClientPortal({ estimate: e, customer: c, settings = {} as AppSet
             </div>
           )}
         </div>
+        </>
+        )}
       </div>
     </Modal>
   );

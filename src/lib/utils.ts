@@ -125,6 +125,15 @@ export const equipmentList = [
   "Buffer Tank (65gal)",
 ];
 
+export const requiredChemicalsList = [
+  "SH 12.5%",
+  "Surfactant",
+  "Oxalic Acid",
+  "Degreaser",
+  "Rust Remover",
+  "Roof Cleaner (SH blend)",
+];
+
 export const jobTagOptions = [
   "Emergency", "Warranty", "Follow-up", "HOA", "Commercial", "VIP",
 ];
@@ -204,6 +213,34 @@ export const normalizeAutomation = (a: Record<string, unknown>) => ({
   steps: (a.steps as unknown[]) ?? [],
   description: (a.description as string) ?? "",
 });
+
+// ─── Employee job rating ──────────────────────────────────────────────────────
+// Scores a single completed job out of 100: on-time arrival (30pts), checklist
+// completion (40pts), customer sign-off obtained (30pts). Used to roll up an
+// employee's overall rating after each job they complete.
+export const computeJobRatingScore = (job: Record<string, any>): number => {
+  let score = 0;
+  // On-time arrival
+  if (job.scheduledDate && job.clockInAt) {
+    const scheduled = new Date(`${job.scheduledDate}T${job.scheduledTime || "09:00"}:00`).getTime();
+    const lateMinutes = (job.clockInAt - scheduled) / 60000;
+    if (lateMinutes <= 5) score += 30;
+    else if (lateMinutes <= 15) score += 20;
+    else if (lateMinutes <= 30) score += 10;
+  } else {
+    score += 15; // no schedule to judge against — neutral credit
+  }
+  // Checklist completion
+  const allItems = [...(job.preChecklist || []), ...(job.duringChecklist || []), ...(job.postChecklist || [])];
+  if (allItems.length > 0) {
+    score += Math.round((allItems.filter((i: any) => i.done).length / allItems.length) * 40);
+  } else {
+    score += 20;
+  }
+  // Customer sign-off
+  if (job.signOff) score += 30;
+  return Math.max(0, Math.min(100, score));
+};
 
 // ─── IRS Rate (mileage deduction) ────────────────────────────────────────────
 

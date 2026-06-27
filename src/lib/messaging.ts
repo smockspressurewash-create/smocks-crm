@@ -198,3 +198,44 @@ export const sendEmail = async (
     throw new Error(err.message ?? `Resend error ${res.status}`);
   }
 };
+
+// ─── Daily crew emails ─────────────────────────────────────────────────────────
+// A shared HTML shell so "Tomorrow's Jobs" and "Daily Briefing" look like real
+// transactional email rather than plain text — branded header, card list, footer.
+const emailShell = (companyName: string, title: string, bodyHtml: string): string => `
+<div style="font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;max-width:560px;margin:0 auto;background:#0a0a0a;color:#fff;border-radius:16px;overflow:hidden">
+  <div style="background:linear-gradient(135deg,#dc2626,#7f1d1d);padding:24px;text-align:center">
+    <div style="font-size:20px;font-weight:800;letter-spacing:-0.02em">${companyName}</div>
+    <div style="font-size:13px;opacity:0.85;margin-top:4px">${title}</div>
+  </div>
+  <div style="padding:24px;background:#111">${bodyHtml}</div>
+  <div style="padding:16px 24px;text-align:center;font-size:11px;color:rgba(255,255,255,0.3);background:#0a0a0a">
+    Sent automatically by ${companyName}'s CrewBoss system.
+  </div>
+</div>`;
+
+const jobCardHtml = (j: any, custName: string): string => `
+  <div style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:12px;padding:14px;margin-bottom:10px">
+    <div style="font-weight:700;font-size:14px">${j.address || ""}</div>
+    <div style="font-size:12px;color:rgba(255,255,255,0.5);margin-top:2px">${j.scheduledTime ? j.scheduledTime + " · " : ""}${custName}</div>
+    ${j.notes ? `<div style="font-size:12px;color:rgba(255,255,255,0.6);margin-top:6px;font-style:italic">"${j.notes}"</div>` : ""}
+  </div>`;
+
+export const buildTomorrowJobsEmailHtml = (companyName: string, empFirstName: string, jobsList: Array<{ job: any; custName: string }>): string => {
+  const body = `<p style="font-size:14px;color:rgba(255,255,255,0.8)">Hi ${empFirstName}, here's your schedule for tomorrow:</p>` +
+    jobsList.map(({ job, custName }) => jobCardHtml(job, custName)).join("") +
+    `<p style="font-size:12px;color:rgba(255,255,255,0.4);margin-top:16px">Open the crew portal for full details, directions, and checklists.</p>`;
+  return emailShell(companyName, "Tomorrow's Jobs", body);
+};
+
+export const buildDailyBriefingEmailHtml = (companyName: string, stats: { completed: number; total: number; revenue: number; late: number; issues: number }): string => {
+  const body = `
+    <p style="font-size:14px;color:rgba(255,255,255,0.8)">Here's how today went:</p>
+    <table style="width:100%;border-collapse:collapse;margin-top:10px">
+      <tr><td style="padding:8px 0;color:rgba(255,255,255,0.5);font-size:13px">Jobs completed</td><td style="text-align:right;font-weight:700;font-size:13px">${stats.completed} / ${stats.total}</td></tr>
+      <tr><td style="padding:8px 0;color:rgba(255,255,255,0.5);font-size:13px">Revenue today</td><td style="text-align:right;font-weight:700;font-size:13px;color:#4ade80">$${stats.revenue.toLocaleString()}</td></tr>
+      <tr><td style="padding:8px 0;color:rgba(255,255,255,0.5);font-size:13px">Late arrivals</td><td style="text-align:right;font-weight:700;font-size:13px;color:${stats.late > 0 ? "#facc15" : "#fff"}">${stats.late}</td></tr>
+      <tr><td style="padding:8px 0;color:rgba(255,255,255,0.5);font-size:13px">Field notes/issues</td><td style="text-align:right;font-weight:700;font-size:13px;color:${stats.issues > 0 ? "#fb923c" : "#fff"}">${stats.issues}</td></tr>
+    </table>`;
+  return emailShell(companyName, "Daily Briefing", body);
+};

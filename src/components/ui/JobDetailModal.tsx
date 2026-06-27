@@ -20,7 +20,7 @@ import {
   Tooltip, ResponsiveContainer, Area, AreaChart, LineChart, Line,
   ComposedChart, Legend
 } from "recharts";
-import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE } from "../../lib/utils";
+import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, requiredChemicalsList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE } from "../../lib/utils";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField, JobChecklistItem, ChecklistPhoto, JobVideo, JobSignOff } from "../../types";
 import { twilioSend, sendEmail, sendViaGmail } from "../../lib/messaging";
 import { seedWeather } from "../../lib/weather";
@@ -356,11 +356,11 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
       if (job.scheduledDate) {
         try {
           const { data: empRow } = await (supabase as any)
-            .from("employees").select("google_token, google_token_expires_at")
+            .from("employees").select("google_token, google_token_expires_at, autoSyncCalendar")
             .eq("id", emp.id).maybeSingle();
           const tok = empRow?.google_token;
           const validTok = tok && empRow?.google_token_expires_at && new Date(empRow.google_token_expires_at).getTime() > Date.now();
-          if (validTok) {
+          if (validTok && empRow?.autoSyncCalendar !== false) {
             const timeStr = job.scheduledTime || "09:00";
             const startDt = new Date(`${job.scheduledDate}T${timeStr}:00`);
             const endDt = new Date(startDt.getTime() + (Number(job.duration) || 2) * 3600000);
@@ -375,7 +375,7 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
             updateJob(jobId, { googleEventId: evId });
             calendarSynced = true;
           } else {
-            calendarSkippedReason = "employee hasn't connected Google";
+            calendarSkippedReason = empRow?.autoSyncCalendar === false ? "employee has auto-sync turned off" : "employee hasn't connected Google";
           }
         } catch (err) {
           console.warn("Google Calendar sync failed — continuing without it:", err);
@@ -412,6 +412,10 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
   const toggleEquip = eq => {
     const list = job.equipment || [];
     updateJob(jobId, { equipment: list.includes(eq) ? list.filter(x => x !== eq) : [...list, eq] });
+  };
+  const toggleRequiredChemical = chem => {
+    const list = job.requiredChemicals || [];
+    updateJob(jobId, { requiredChemicals: list.includes(chem) ? list.filter(x => x !== chem) : [...list, chem] });
   };
   const toggleTag = t => {
     const tags = job.tags || [];
@@ -743,13 +747,30 @@ ${job.notes ? `<div class="section"><h2>Job Notes</h2><p>${job.notes}</p></div>`
 
         {/* Equipment */}
         <div>
-          <label className="text-xs text-white/60 mb-1 block">Equipment Used</label>
+          <label className="text-xs text-white/60 mb-1 block">Required Equipment <span className="text-white/30">(crew sees this before starting)</span></label>
           <div className="flex gap-2 flex-wrap">
             {equipmentList.map(eq => {
               const sel = (job.equipment || []).includes(eq);
               return <button key={eq} onClick={() => toggleEquip(eq)} className={"text-xs px-3 py-1.5 rounded-lg border transition " + (sel ? "bg-red-900/40 border-red-500/50 text-red-300" : "bg-white/5 border-white/10 text-white/60 hover:text-white")}>{eq}</button>;
             })}
           </div>
+        </div>
+
+        {/* Required chemicals */}
+        <div>
+          <label className="text-xs text-white/60 mb-1 block">Required Chemicals</label>
+          <div className="flex gap-2 flex-wrap">
+            {requiredChemicalsList.map(chem => {
+              const sel = (job.requiredChemicals || []).includes(chem);
+              return <button key={chem} onClick={() => toggleRequiredChemical(chem)} className={"text-xs px-3 py-1.5 rounded-lg border transition " + (sel ? "bg-purple-900/40 border-purple-500/50 text-purple-300" : "bg-white/5 border-white/10 text-white/60 hover:text-white")}>{chem}</button>;
+            })}
+          </div>
+        </div>
+
+        {/* Job Notes — visible to both owner and the assigned employee in their job detail view */}
+        <div>
+          <label className="text-xs text-white/60 mb-1 block flex items-center gap-1"><FileText size={10} />Notes <span className="text-white/30 font-normal">(visible to crew)</span></label>
+          <GTxt rows={2} value={job.notes || ""} onChange={e => updateJob(jobId, { notes: e.target.value })} placeholder="Service details, access instructions..." />
         </div>
 
         {/* Internal Notes */}

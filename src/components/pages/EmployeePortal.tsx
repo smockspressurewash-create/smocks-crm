@@ -3,7 +3,7 @@ import {
   Clock, Briefcase, Calendar, ChevronLeft, CheckSquare, Camera,
   LogOut, MapPin, Phone, User, Play, Square, Plus, X, Eye, DollarSign,
   ChevronRight, Home, List, CheckCircle, AlertCircle, Image, FileText,
-  Video, PenLine, Shield, Navigation, Database, Route
+  Video, PenLine, Shield, Navigation, Database, Route, ToggleRight, ToggleLeft
 } from "lucide-react";
 import { supabase } from "../../lib/supabase";
 import { getEmpGoogleToken, isEmpGoogleTokenValid, createGCalEvent } from "../../lib/googleApi";
@@ -14,7 +14,8 @@ import { GInput } from "../ui/GInput";
 import { GTxt } from "../ui/GTxt";
 import { BeforeAfterSlider } from "../ui/BeforeAfterSlider";
 import { loadMapsScript } from "../ui/AddressAutocomplete";
-import { fmt, uid, today } from "../../lib/utils";
+import { BarChart, Bar, XAxis, YAxis, ResponsiveContainer, Tooltip, CartesianGrid } from "recharts";
+import { fmt, uid, today, computeJobRatingScore } from "../../lib/utils";
 import type { Job, Employee, Customer, AppSettings, JobChecklistItem } from "../../types";
 
 const PRE_DEFAULTS: JobChecklistItem[] = [
@@ -159,10 +160,11 @@ function PortalChecklistSection({ title, emoji, items, onUpdate, allowPhotos = f
   );
 }
 
-function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName = "the company", onComplete, perms: permsOverride, maxLunchMinutes = 30 }: {
+function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName = "the company", onComplete, perms: permsOverride, maxLunchMinutes = 30, onJobCompleted }: {
   job: Job; customer?: Customer; onBack: () => void;
   onUpdateJob: (patch: Partial<Job>) => void; toast: (msg: string, tone?: any) => void;
   companyName?: string; onComplete?: () => void; perms?: Record<string, boolean>; maxLunchMinutes?: number;
+  onJobCompleted?: (job: Job) => void;
 }) {
   const effPerms = { ...DEFAULT_PERMISSIONS, ...(permsOverride || {}) };
   const [note, setNote] = useState("");
@@ -195,7 +197,15 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
 
   const lunchDisplay = job.lunchStartAt ? secsToHms(Math.max(0, Math.floor((Date.now() - job.lunchStartAt) / 1000))) : null;
 
-  const clockIn = () => { onUpdateJob({ clockInAt: Date.now(), lunchStartAt: null }); toast("Clocked in ✓"); };
+  const hasRequiredGear = (job.equipment || []).length > 0 || (job.requiredChemicals || []).length > 0;
+  const clockIn = () => {
+    onUpdateJob({ clockInAt: Date.now(), lunchStartAt: null });
+    if (hasRequiredGear && !job.equipmentChecked) {
+      toast("⚠️ Clocked in without confirming required equipment/chemicals", "yellow");
+    } else {
+      toast("Clocked in ✓");
+    }
+  };
   const clockOut = () => {
     if (!job.clockInAt) return;
     const lunchMs = (job.lunchMinutes || 0) * 60000;
@@ -259,7 +269,9 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
 
   const saveSignOff = () => {
     if (!signerName.trim()) return;
-    onUpdateJob({ signOff: { signerName: signerName.trim(), timestamp: new Date().toISOString() }, status: "completed" });
+    const signOff = { signerName: signerName.trim(), timestamp: new Date().toISOString() };
+    onUpdateJob({ signOff, status: "completed" });
+    onJobCompleted?.({ ...job, signOff, status: "completed" });
     toast("Sign-off saved ✓");
     setShowSignOff(false);
     if (onComplete) setTimeout(onComplete, 1200);
@@ -395,6 +407,37 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
             </div>
             {customer.gateCode && <div className="mt-2 text-xs text-yellow-400/80">🔐 Gate code: {customer.gateCode}</div>}
             {customer.hasDog && <div className="mt-0.5 text-xs text-orange-400/80">🐕 Dog on property{customer.dogName ? ` — ${customer.dogName}` : ""}</div>}
+          </Glass>
+        )}
+
+        {/* Job notes — set by the owner when scheduling, editable anytime in JobDetailModal */}
+        {job.notes && (
+          <Glass className="p-4 !bg-blue-950/15 !border-blue-700/25">
+            <div className="text-xs text-blue-400/80 uppercase tracking-wider mb-1 font-semibold flex items-center gap-1"><FileText size={11} />Job Notes</div>
+            <div className="text-sm text-white/80">{job.notes}</div>
+          </Glass>
+        )}
+
+        {/* Required equipment & chemicals — confirm before starting */}
+        {hasRequiredGear && (
+          <Glass className={"p-4 " + (job.equipmentChecked ? "!bg-green-950/20 !border-green-700/30" : "!bg-yellow-950/15 !border-yellow-700/30")}>
+            <div className="text-xs text-white/60 uppercase tracking-wider mb-2 flex items-center gap-1">
+              <CheckSquare size={12} />Required Equipment & Chemicals
+              {!job.equipmentChecked && <span className="text-yellow-400 ml-auto text-[10px] normal-case">Confirm before starting</span>}
+            </div>
+            <div className="flex flex-wrap gap-1.5 mb-3">
+              {(job.equipment || []).map(eq => (
+                <span key={eq} className="text-[10px] px-2 py-1 rounded-lg bg-red-950/30 border border-red-700/30 text-red-300">{eq}</span>
+              ))}
+              {(job.requiredChemicals || []).map(chem => (
+                <span key={chem} className="text-[10px] px-2 py-1 rounded-lg bg-purple-950/30 border border-purple-700/30 text-purple-300">{chem}</span>
+              ))}
+            </div>
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input type="checkbox" checked={!!job.equipmentChecked} onChange={e => onUpdateJob({ equipmentChecked: e.target.checked })}
+                className="w-4 h-4 accent-green-500 cursor-pointer" />
+              <span className="text-xs text-white/70">I have all required equipment and chemicals</span>
+            </label>
           </Glass>
         )}
 
@@ -564,7 +607,7 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
         ) : effPerms.can_get_signoff ? (
           <div className="text-center text-xs text-white/30 py-2">Complete all checklist items to get customer sign-off</div>
         ) : allDone ? (
-          <GBtn onClick={() => { onUpdateJob({ status: "completed" }); toast("Job marked complete ✓"); if (onComplete) setTimeout(onComplete, 1200); }}
+          <GBtn onClick={() => { onUpdateJob({ status: "completed" }); onJobCompleted?.({ ...job, status: "completed" }); toast("Job marked complete ✓"); if (onComplete) setTimeout(onComplete, 1200); }}
             className="w-full !justify-center !py-3 !bg-gradient-to-r !from-green-700 !to-green-900 !border-green-600/50">
             <CheckCircle size={16} />Complete Job
           </GBtn>
@@ -787,13 +830,14 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
   const [activeJobMenuOpen, setActiveJobMenuOpen] = useState(false);
   const [routeLoading, setRouteLoading] = useState(false);
-  const [routeInfo, setRouteInfo] = useState<{ order: Job[]; totalDuration: string; totalDistance: string; etas: string[] } | null>(null);
+  const [routeInfo, setRouteInfo] = useState<{ order: Job[]; totalDuration: string; totalDistance: string; etas: string[]; origin: { lat: number; lng: number } | string } | null>(null);
   const [calMode, setCalMode] = useState<"week" | "month">("month");
   const [calSelectedDate, setCalSelectedDate] = useState(today());
   const [calWeekOffset, setCalWeekOffset] = useState(0);
   const [calMonthOffset, setCalMonthOffset] = useState(0);
   const [driveTimes, setDriveTimes] = useState<Record<string, string>>({});
   const [completionNotif, setCompletionNotif] = useState<{ message: string; nextJobId?: string } | null>(null);
+  const [nextJobEta, setNextJobEta] = useState<{ jobId: string; etaTime: string; lateMinutes: number } | null>(null);
   const fetchedDriveIds = useRef(new Set<string>());
   // Lets handleAcceptRequest/handleInlineAccept trigger an immediate jobs refetch
   // right after a successful accept, instead of waiting up to 10s for the next poll.
@@ -821,6 +865,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   const [requestDone, setRequestDone] = useState<string | null>(null);
   // Employee availability
   const [availability, setAvailability] = useState<string[]>([]);
+  const [autoSyncCalendar, setAutoSyncCalendar] = useState(true);
   const [showAvailability, setShowAvailability] = useState(false);
   // Login extras
   const [forgotSent, setForgotSent] = useState(false);
@@ -979,6 +1024,8 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     if (!myEmployee) return;
     const av = (myEmployee as any).availability;
     if (Array.isArray(av) && av.length > 0) setAvailability(av);
+    if ((myEmployee as any).autoSyncCalendar === false) setAutoSyncCalendar(false);
+    if ((myEmployee as any).homeBaseAddress) setHomeBaseAddressState((myEmployee as any).homeBaseAddress);
   }, [(myEmployee as any)?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Fetch incoming job requests for this employee
@@ -1155,6 +1202,14 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
 
   const updateJob = (jobId: string, patch: Partial<Job>) => {
     setJobs(prev => prev.map(j => j.id === jobId ? { ...j, ...patch } : j));
+    // Persist immediately rather than waiting on the 30s App-level auto-save —
+    // the jobs-fetch poll below runs every 10s and merges Supabase's row straight
+    // over local state, so anything not yet saved (clock-in, lunch, checklist
+    // progress) can get silently reverted by the very next poll tick. That race
+    // is what made actions like Clock In appear to randomly "undo" themselves.
+    (supabase as any).from("jobs").update(patch).eq("id", jobId)
+      .then((result: any) => { if (result?.error) console.warn("Job update failed to save:", result.error); })
+      .catch((e: any) => console.warn("Job update failed to save:", e?.message));
   };
 
   // Tick every second when any job is clocked in so card timers update live
@@ -1190,22 +1245,46 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   // Route optimization for today's jobs — uses the Maps JS DirectionsService
   // (optimizeWaypoints) to reorder stops for the shortest total drive, then
   // hands that order off to a Google Maps URL for actual turn-by-turn nav.
-  const optimizeRoute = () => {
+  // Resolves an origin point for the route: fresh GPS fix first (don't rely on
+  // the silent background fetch from mount, which may never have resolved if
+  // permission was slow/denied), then the employee's saved Home Base address,
+  // then — rather than dead-ending with nothing — the first stop itself, so
+  // Route always produces a usable result instead of silently doing nothing.
+  const resolveRouteOrigin = (): Promise<{ lat: number; lng: number } | string | null> => {
+    return new Promise(resolve => {
+      if (userLocationRef.current) { resolve(userLocationRef.current); return; }
+      if (!navigator.geolocation) { resolve(homeBaseAddress || null); return; }
+      const timer = setTimeout(() => resolve(homeBaseAddress || null), 6000);
+      navigator.geolocation.getCurrentPosition(
+        pos => { clearTimeout(timer); const loc = { lat: pos.coords.latitude, lng: pos.coords.longitude }; userLocationRef.current = loc; resolve(loc); },
+        () => { clearTimeout(timer); resolve(homeBaseAddress || null); },
+        { timeout: 5500 }
+      );
+    });
+  };
+
+  const optimizeRoute = async () => {
     if (!settings.googleMapsKey) { toast("Add a Google Maps API key in Settings to use Route", "yellow"); return; }
-    const loc = userLocationRef.current;
-    if (!loc) { toast("Waiting on your location — enable location access and try again", "yellow"); return; }
     const stops = todayJobs.filter(j => j.status !== "completed" && j.address);
-    if (stops.length === 0) { toast("No jobs left today to route"); return; }
+    if (stops.length === 0) { toast("No jobs left today to route", "yellow"); return; }
     setRouteLoading(true);
-    loadMapsScript(settings.googleMapsKey).then(() => {
+    const origin = await resolveRouteOrigin();
+    // Last resort: route between the stops themselves, starting from the first one,
+    // so a denied/unavailable location never blocks the feature entirely.
+    const effectiveOrigin = origin || stops[0].address;
+    const routeStops = origin ? stops : stops.slice(1);
+    if (!origin) toast("Couldn't get your location — routing from the first job instead", "yellow");
+    if (routeStops.length === 0) { setRouteLoading(false); toast("Only one job today — nothing to optimize", "yellow"); return; }
+    try {
+      await loadMapsScript(settings.googleMapsKey);
       const gm = (window as any).google?.maps;
       if (!gm?.DirectionsService) { setRouteLoading(false); toast("Google Maps failed to load", "red"); return; }
       const svc = new gm.DirectionsService();
-      const destination = stops[stops.length - 1].address;
-      const waypoints = stops.slice(0, -1).map(j => ({ location: j.address, stopover: true }));
+      const destination = routeStops[routeStops.length - 1].address;
+      const waypoints = routeStops.slice(0, -1).map(j => ({ location: j.address, stopover: true }));
       svc.route(
         {
-          origin: loc,
+          origin: effectiveOrigin,
           destination,
           waypoints,
           optimizeWaypoints: true,
@@ -1213,9 +1292,9 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
         },
         (result: any, status: string) => {
           setRouteLoading(false);
-          if (status !== "OK" || !result?.routes?.[0]) { toast("Couldn't calculate a route", "red"); return; }
+          if (status !== "OK" || !result?.routes?.[0]) { toast("Couldn't calculate a route — " + status, "red"); return; }
           const route = result.routes[0];
-          const order: Job[] = (route.waypoint_order || []).map((idx: number) => stops[idx]).concat([stops[stops.length - 1]]);
+          const order: Job[] = (route.waypoint_order || []).map((idx: number) => routeStops[idx]).concat([routeStops[routeStops.length - 1]]);
           let totalSec = 0, totalMeters = 0;
           const etas: string[] = [];
           let cursor = Date.now();
@@ -1230,19 +1309,80 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
             totalDuration: Math.round(totalSec / 60) + " min",
             totalDistance: (totalMeters / 1609.34).toFixed(1) + " mi",
             etas,
+            origin: effectiveOrigin,
           });
         }
       );
-    });
+    } catch (e: any) {
+      setRouteLoading(false);
+      toast(e?.message || "Failed to load Google Maps", "red");
+    }
+  };
+
+  // Recalculates drive time/distance/ETAs for a manually-reordered stop list —
+  // fixed order this time (no optimizeWaypoints), since the whole point of a
+  // manual reorder is to override the algorithm's choice.
+  const recalcRouteForOrder = (newOrder: Job[]) => {
+    if (!settings.googleMapsKey) return;
+    const gm = (window as any).google?.maps;
+    if (!gm?.DirectionsService) return;
+    const svc = new gm.DirectionsService();
+    const originStr = typeof routeInfo!.origin === "string" ? routeInfo!.origin : routeInfo!.origin;
+    const destination = newOrder[newOrder.length - 1].address;
+    const waypoints = newOrder.slice(0, -1).map(j => ({ location: j.address, stopover: true }));
+    svc.route(
+      { origin: originStr, destination, waypoints, optimizeWaypoints: false, travelMode: gm.TravelMode.DRIVING },
+      (result: any, status: string) => {
+        if (status !== "OK" || !result?.routes?.[0]) { toast("Couldn't recalculate route", "red"); return; }
+        const route = result.routes[0];
+        let totalSec = 0, totalMeters = 0;
+        const etas: string[] = [];
+        let cursor = Date.now();
+        (route.legs || []).forEach((leg: any) => {
+          totalSec += leg.duration?.value || 0;
+          totalMeters += leg.distance?.value || 0;
+          cursor += (leg.duration?.value || 0) * 1000;
+          etas.push(new Date(cursor).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" }));
+        });
+        setRouteInfo(prev => prev ? {
+          ...prev,
+          order: newOrder,
+          totalDuration: Math.round(totalSec / 60) + " min",
+          totalDistance: (totalMeters / 1609.34).toFixed(1) + " mi",
+          etas,
+        } : prev);
+      }
+    );
+  };
+
+  const moveStop = (index: number, dir: -1 | 1) => {
+    if (!routeInfo) return;
+    const next = [...routeInfo.order];
+    const target = index + dir;
+    if (target < 0 || target >= next.length) return;
+    [next[index], next[target]] = [next[target], next[index]];
+    setRouteInfo({ ...routeInfo, order: next }); // optimistic reorder, then refresh ETAs
+    recalcRouteForOrder(next);
+  };
+
+  const dragStopIndexRef = useRef<number | null>(null);
+  const onStopDragStart = (i: number) => { dragStopIndexRef.current = i; };
+  const onStopDrop = (i: number) => {
+    if (!routeInfo || dragStopIndexRef.current === null || dragStopIndexRef.current === i) return;
+    const next = [...routeInfo.order];
+    const [moved] = next.splice(dragStopIndexRef.current, 1);
+    next.splice(i, 0, moved);
+    dragStopIndexRef.current = null;
+    setRouteInfo({ ...routeInfo, order: next });
+    recalcRouteForOrder(next);
   };
 
   const openRouteInMaps = () => {
     if (!routeInfo) return;
-    const loc = userLocationRef.current;
     const dest = encodeURIComponent(routeInfo.order[routeInfo.order.length - 1].address);
     const waypts = routeInfo.order.slice(0, -1).map(j => encodeURIComponent(j.address)).join("|");
-    const originParam = loc ? `&origin=${loc.lat},${loc.lng}` : "";
-    window.open(`https://www.google.com/maps/dir/?api=1${originParam}&destination=${dest}${waypts ? "&waypoints=" + waypts : ""}&travelmode=driving`, "_blank");
+    const originStr = typeof routeInfo.origin === "string" ? routeInfo.origin : `${routeInfo.origin.lat},${routeInfo.origin.lng}`;
+    window.open(`https://www.google.com/maps/dir/?api=1&origin=${encodeURIComponent(originStr)}&destination=${dest}${waypts ? "&waypoints=" + waypts : ""}&travelmode=driving`, "_blank");
   };
 
   // Get user location once, then fire drive-time lookups for upcoming jobs
@@ -1255,6 +1395,18 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   }, []); // run once on mount
 
   // Navigate back after job completion, show next-job notification
+  // Rolls a completed job's score into the employee's overall rating (simple
+  // running average, weighted 75/25 toward history so one bad day can't tank it
+  // and one good day can't fully redeem a pattern of lateness).
+  const recordJobRating = (job: Job) => {
+    const empId = (myEmployee as any)?.id;
+    if (!empId) return;
+    const score = computeJobRatingScore(job);
+    const prevScore = (myEmployee as any)?.ratingScore;
+    const nextScore = typeof prevScore === "number" ? Math.round(prevScore * 0.75 + score * 0.25) : score;
+    (supabase as any).from("employees").update({ ratingScore: nextScore }).eq("id", empId).catch(() => {});
+  };
+
   const handleJobComplete = () => {
     const nextJob = [...myJobs]
       .filter(j => j.id !== selectedJobId && j.scheduledDate >= todayStr && j.status !== "completed")
@@ -1265,6 +1417,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
       })[0] ?? null;
     setSelectedJobId(null);
     setTab("jobs");
+    setNextJobEta(null);
     if (nextJob) {
       const nc = customers.find(c => c.id === nextJob.customerId);
       const name = nc ? `${nc.firstName} ${nc.lastName}` : "";
@@ -1272,10 +1425,48 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
         message: `Job complete! Next: ${name ? name + " · " : ""}${nextJob.address}`,
         nextJobId: nextJob.id,
       });
-      setTimeout(() => setCompletionNotif(null), 6000);
+      checkNextJobEta(nextJob);
     } else {
       toast("✅ All done! No more jobs today.");
     }
+  };
+
+  // Estimates whether the employee will arrive late to the next job based on
+  // live drive time from their current location, vs. that job's scheduled start.
+  const checkNextJobEta = (nextJob: Job) => {
+    const loc = userLocationRef.current;
+    if (!loc || !settings.googleMapsKey || !nextJob.scheduledTime) { setNextJobEta(null); return; }
+    loadMapsScript(settings.googleMapsKey).then(() => {
+      const gm = (window as any).google?.maps;
+      if (!gm?.DistanceMatrixService) return;
+      const svc = new gm.DistanceMatrixService();
+      svc.getDistanceMatrix(
+        { origins: [loc], destinations: [nextJob.address], travelMode: gm.TravelMode.DRIVING },
+        (result: any, status: string) => {
+          if (status !== "OK") return;
+          const durSec: number | undefined = result?.rows?.[0]?.elements?.[0]?.duration?.value;
+          if (durSec == null) return;
+          const arrival = new Date(Date.now() + durSec * 1000);
+          const scheduled = new Date(`${nextJob.scheduledDate}T${nextJob.scheduledTime}:00`);
+          const lateMinutes = Math.round((arrival.getTime() - scheduled.getTime()) / 60000);
+          setNextJobEta({
+            jobId: nextJob.id,
+            etaTime: arrival.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" }),
+            lateMinutes,
+          });
+        }
+      );
+    });
+  };
+
+  const messageNextJobCustomer = (job: Job, lateMinutes: number) => {
+    const cust = customers.find(c => c.id === job.customerId);
+    if (!cust?.phone) { toast("No phone number on file for this customer", "yellow"); return; }
+    const eta = nextJobEta?.etaTime || "shortly";
+    const msg = lateMinutes > 0
+      ? `Hi ${cust.firstName}, running a few minutes behind — ETA ${eta}. Sorry for the delay!`
+      : `Hi ${cust.firstName}, on my way — ETA ${eta}. See you soon!`;
+    window.location.href = "sms:" + cust.phone.replace(/\D/g, "") + "?body=" + encodeURIComponent(msg);
   };
 
   const doSignOut = async () => {
@@ -1328,6 +1519,10 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   // if they haven't connected Google or their token has expired.
   const syncAcceptedJobToCalendar = async (job: Job | undefined) => {
     if (!job || !job.scheduledDate || !empSession?.user?.id) return;
+    // Auto-sync defaults to on (matches the prior always-sync behavior) but the
+    // employee can turn it off in the Google tab — when off, they add jobs to
+    // their calendar manually via the per-job "Add to Google Calendar" button.
+    if (!autoSyncCalendar) return;
     const empToken = getEmpGoogleToken(empSession.user.id);
     if (!isEmpGoogleTokenValid(empToken)) return;
     try {
@@ -1399,6 +1594,24 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     } catch {
       toast("Error declining request", "red");
     }
+  };
+
+  const [homeBaseAddress, setHomeBaseAddressState] = useState("");
+  const saveHomeBaseAddress = async (addr: string) => {
+    setHomeBaseAddressState(addr);
+    try {
+      const empId = (myEmployee as any)?.id;
+      if (empId) await (supabase as any).from("employees").update({ homeBaseAddress: addr }).eq("id", empId);
+    } catch { /* ignore */ }
+  };
+
+  const toggleAutoSyncCalendar = async () => {
+    const next = !autoSyncCalendar;
+    setAutoSyncCalendar(next);
+    try {
+      const empId = (myEmployee as any)?.id;
+      if (empId) await (supabase as any).from("employees").update({ autoSyncCalendar: next }).eq("id", empId);
+    } catch { /* ignore */ }
   };
 
   const toggleAvailability = async (dateStr: string) => {
@@ -1883,6 +2096,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
         onComplete={handleJobComplete}
         perms={perms}
         maxLunchMinutes={settings.maxLunchMinutes ?? 30}
+        onJobCompleted={recordJobRating}
       />
     );
   }
@@ -2075,17 +2289,48 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
 
       {/* Content */}
       <main className="flex-1 overflow-y-auto pb-24">
-        {completionNotif && (
-          <div className="px-4 pt-4 max-w-lg mx-auto">
-            <div className="p-3 rounded-xl bg-green-950/40 border border-green-700/40 flex items-center gap-3">
-              <span className="text-lg flex-shrink-0">✅</span>
-              <div className="flex-1 text-sm text-green-300 min-w-0">{completionNotif.message}</div>
-              <button onClick={() => setCompletionNotif(null)} className="text-white/30 hover:text-white/60 transition flex-shrink-0">
-                <X size={14} />
-              </button>
+        {completionNotif && (() => {
+          const nextJob = completionNotif.nextJobId ? jobs.find(j => j.id === completionNotif.nextJobId) : null;
+          const cust = nextJob ? customers.find(c => c.id === nextJob.customerId) : null;
+          const eta = nextJobEta?.jobId === nextJob?.id ? nextJobEta : null;
+          const isLate = eta && eta.lateMinutes > 5;
+          return (
+            <div className="px-4 pt-4 max-w-lg mx-auto">
+              <div className="p-3 rounded-xl bg-green-950/40 border border-green-700/40">
+                <div className="flex items-center gap-3">
+                  <span className="text-lg flex-shrink-0">✅</span>
+                  <div className="flex-1 text-sm text-green-300 min-w-0">{completionNotif.message}</div>
+                  <button onClick={() => setCompletionNotif(null)} className="text-white/30 hover:text-white/60 transition flex-shrink-0">
+                    <X size={14} />
+                  </button>
+                </div>
+                {nextJob && (
+                  <div className="mt-2 pt-2 border-t border-green-700/20 space-y-2">
+                    {eta && (
+                      <div className={"text-xs font-semibold " + (isLate ? "text-yellow-400" : "text-green-400")}>
+                        {isLate
+                          ? `⚠️ Running ${eta.lateMinutes} min behind — ETA ${eta.etaTime}`
+                          : `You're on schedule! ETA ${eta.etaTime}${nextJob.scheduledTime ? " · next job at " + nextJob.scheduledTime : ""}`}
+                      </div>
+                    )}
+                    <div className="flex gap-2">
+                      <a href={`https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(nextJob.address)}`} target="_blank" rel="noreferrer"
+                        className="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-xl bg-blue-950/40 hover:bg-blue-900/50 border border-blue-700/40 text-blue-300 text-xs font-semibold transition">
+                        <Navigation size={11} />Directions
+                      </a>
+                      {cust?.phone && (
+                        <button onClick={() => messageNextJobCustomer(nextJob, eta?.lateMinutes || 0)}
+                          className="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-xl bg-white/10 hover:bg-white/15 border border-white/15 text-white/70 text-xs font-semibold transition">
+                          Message {cust.firstName}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
             </div>
-          </div>
-        )}
+          );
+        })()}
         <div className="p-4 max-w-lg mx-auto space-y-4">
 
           {/* Today tab */}
@@ -2157,14 +2402,24 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                       <span>🚗 <span className="text-white/80 font-semibold">{routeInfo.totalDistance}</span></span>
                       <span>⏱ <span className="text-white/80 font-semibold">{routeInfo.totalDuration}</span> drive time</span>
                     </div>
+                    <div className="text-[9px] text-white/30">Drag a stop, or use the arrows, to reorder manually</div>
                     <div className="space-y-1">
                       {routeInfo.order.map((j, i) => {
                         const c = customers.find(x => x.id === j.customerId);
                         return (
-                          <div key={j.id} className="flex items-center gap-2 text-xs">
+                          <div key={j.id}
+                            draggable
+                            onDragStart={() => onStopDragStart(i)}
+                            onDragOver={e => e.preventDefault()}
+                            onDrop={() => onStopDrop(i)}
+                            className="flex items-center gap-2 text-xs p-1.5 rounded-lg cursor-grab active:cursor-grabbing hover:bg-white/5 transition">
                             <span className="w-5 h-5 rounded-full bg-blue-900/50 text-blue-300 flex items-center justify-center font-bold flex-shrink-0">{i + 1}</span>
                             <span className="flex-1 truncate text-white/70">{j.address}{c ? " · " + c.firstName + " " + c.lastName : ""}</span>
                             <span className="text-white/40 flex-shrink-0">ETA {routeInfo.etas[i]}</span>
+                            <div className="flex flex-col flex-shrink-0">
+                              <button onClick={() => moveStop(i, -1)} disabled={i === 0} className="text-white/30 hover:text-white disabled:opacity-20 leading-none">▲</button>
+                              <button onClick={() => moveStop(i, 1)} disabled={i === routeInfo.order.length - 1} className="text-white/30 hover:text-white disabled:opacity-20 leading-none">▼</button>
+                            </div>
                           </div>
                         );
                       })}
@@ -2654,13 +2909,65 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                 jobs: pJobs.filter(j => j.status === "completed").length,
               });
             }
+            const current = periods[0];
+            const expectedHours = 80; // typical 2-week period
+            const TAX_RATE = 0.20;
+            const takeHome = Math.round(current.pay * (1 - TAX_RATE) * 100) / 100;
             return (
               <>
                 <Glass className="p-5 !bg-gradient-to-br !from-green-950/30 !to-black/60 !border-green-700/30">
-                  <div className="text-xs text-white/50 uppercase tracking-wider mb-1">Current Pay Rate</div>
-                  <div className="text-3xl font-black text-green-400">{fmt(myEmployee?.hourlyRate || 0)}<span className="text-base font-normal text-white/50">/hr</span></div>
-                  <div className="text-xs text-white/40 mt-1 capitalize">{myEmployee?.role}</div>
+                  <div className="flex items-start justify-between">
+                    <div>
+                      <div className="text-xs text-white/50 uppercase tracking-wider mb-1">Current Pay Rate</div>
+                      <div className="text-3xl font-black text-green-400">{fmt(myEmployee?.hourlyRate || 0)}<span className="text-base font-normal text-white/50">/hr</span></div>
+                      <div className="text-xs text-white/40 mt-1 capitalize">{myEmployee?.role}</div>
+                    </div>
+                    {typeof (myEmployee as any)?.ratingScore === "number" && (
+                      <div className="text-right">
+                        <div className="text-[10px] text-white/40 uppercase tracking-wider">Rating</div>
+                        <div className="text-xl font-black text-yellow-400">{(myEmployee as any).ratingScore}<span className="text-xs text-white/40">/100</span></div>
+                      </div>
+                    )}
+                  </div>
                 </Glass>
+
+                <Glass className="p-4 !bg-black/40">
+                  <div className="text-xs text-white/50 uppercase tracking-wider mb-2">This Pay Period</div>
+                  <div className="flex justify-between text-[11px] text-white/40 mb-1">
+                    <span>{current.hours}h worked</span>
+                    <span>{expectedHours}h expected</span>
+                  </div>
+                  <div className="h-2 rounded-full bg-white/10 overflow-hidden mb-3">
+                    <div className="h-full bg-green-500 rounded-full" style={{ width: Math.min(100, current.hours / expectedHours * 100) + "%" }} />
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="p-2.5 rounded-xl bg-green-950/20 border border-green-700/20">
+                      <div className="text-[10px] text-white/40 uppercase">Estimated Gross</div>
+                      <div className="text-xl font-black text-green-400">{fmt(current.pay)}</div>
+                    </div>
+                    <div className="p-2.5 rounded-xl bg-white/5 border border-white/10">
+                      <div className="text-[10px] text-white/40 uppercase flex items-center gap-1">Est. Take-Home <span className="text-white/25">(after ~20% tax)</span></div>
+                      <div className="text-xl font-black text-white/80">{fmt(takeHome)}</div>
+                    </div>
+                  </div>
+                </Glass>
+
+                {periods.some(p => p.pay > 0) && (
+                  <Glass className="p-4 !bg-black/40">
+                    <div className="text-xs text-white/50 uppercase tracking-wider mb-2">Earnings Over Time</div>
+                    <div style={{ width: "100%", height: 160 }}>
+                      <ResponsiveContainer>
+                        <BarChart data={[...periods].reverse().map(p => ({ name: p.label === "Current Period" ? "Current" : p.label.split(" – ")[0], pay: p.pay }))}>
+                          <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" vertical={false} />
+                          <XAxis dataKey="name" tick={{ fill: "rgba(255,255,255,0.4)", fontSize: 10 }} axisLine={false} tickLine={false} />
+                          <YAxis tick={{ fill: "rgba(255,255,255,0.4)", fontSize: 10 }} axisLine={false} tickLine={false} width={36} />
+                          <Tooltip contentStyle={{ background: "#111", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 8, fontSize: 11 }} formatter={(v: any) => fmt(v)} />
+                          <Bar dataKey="pay" fill="#22c55e" radius={[4, 4, 0, 0]} />
+                        </BarChart>
+                      </ResponsiveContainer>
+                    </div>
+                  </Glass>
+                )}
 
                 <div className="text-xs text-white/50 uppercase tracking-wider font-semibold mb-2">Pay Period History</div>
                 <div className="space-y-2">
@@ -2804,6 +3111,34 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                     </button>
                   </Glass>
                 )}
+
+                {empGoogleValid && (
+                  <Glass className="p-4 !bg-black/40 flex items-center justify-between gap-3">
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm font-semibold">Auto-sync jobs to Google Calendar</div>
+                      <div className="text-xs text-white/40 mt-0.5">
+                        {autoSyncCalendar
+                          ? "Every assigned or accepted job is added to your calendar automatically"
+                          : "Add jobs to your calendar manually with the button below"}
+                      </div>
+                    </div>
+                    <button onClick={toggleAutoSyncCalendar} className={"transition flex-shrink-0 " + (autoSyncCalendar ? "text-blue-400" : "text-white/30")}>
+                      {autoSyncCalendar ? <ToggleRight size={28} /> : <ToggleLeft size={28} />}
+                    </button>
+                  </Glass>
+                )}
+
+                <Glass className="p-4 !bg-black/40">
+                  <label className="text-sm font-semibold mb-1 block flex items-center gap-1.5"><MapPin size={13} className="text-blue-400" />Home Base</label>
+                  <div className="text-xs text-white/40 mb-2">Your starting address — used as the origin point when optimizing today's route</div>
+                  <input
+                    type="text"
+                    defaultValue={homeBaseAddress}
+                    onBlur={e => { if (e.target.value !== homeBaseAddress) saveHomeBaseAddress(e.target.value); }}
+                    placeholder="412 Oak Ridge Ln, York PA"
+                    className="w-full bg-black/40 border border-white/10 rounded-xl px-3 py-2 text-sm text-white placeholder-white/20 focus:outline-none focus:border-blue-500/50"
+                  />
+                </Glass>
 
                 {/* Upcoming jobs to add */}
                 {upcomingForCal.length === 0 ? (

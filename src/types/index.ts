@@ -183,6 +183,8 @@ export interface Job {
   commLog: CommLogEntry[];
   chemicalsUsed: ChemicalUsed[];
   equipment: string[];
+  requiredChemicals?: string[];
+  equipmentChecked?: boolean;
   tags: string[];
   loggedHours?: number;
   laborCost?: number;
@@ -238,6 +240,9 @@ export interface Employee {
   startDate?: string;
   emergencyContact?: string;
   notes?: string;
+  autoSyncCalendar?: boolean;
+  homeBaseAddress?: string;
+  ratingScore?: number;
 }
 
 // ─── Vehicle / Fleet ──────────────────────────────────────────────────────────
@@ -506,6 +511,7 @@ export interface AppSettings {
 
   // Crew policy
   maxLunchMinutes?: number;
+  homeBaseAddress?: string;
 
   // API keys
   twilioSid?: string;

@@ -147,20 +147,30 @@ export function SettingsModal({ open, onClose, settings, setSettings, services, 
             <div>
               <h4 className="font-semibold text-sm mb-3 flex items-center gap-2"><User size={14} />My Profile</h4>
               <div className="flex items-center gap-4 mb-4 p-4 bg-black/40 border border-red-900/30 rounded-xl">
-                <div className="w-16 h-16 rounded-full bg-gradient-to-br from-red-600 to-red-900 flex items-center justify-center text-2xl font-black text-white flex-shrink-0">
-                  {(f.userName || f.companyName || "W")[0]?.toUpperCase()}
-                </div>
+                {f.logoUrl ? <img src={f.logoUrl} alt="Logo" className="w-16 h-16 object-cover rounded-full flex-shrink-0 border border-red-900/30" /> : (
+                  <div className="w-16 h-16 rounded-full bg-gradient-to-br from-red-600 to-red-900 flex items-center justify-center text-2xl font-black text-white flex-shrink-0">
+                    {(f.ownerName || f.companyName || "W")[0]?.toUpperCase()}
+                  </div>
+                )}
                 <div className="flex-1">
-                  <div className="font-bold">{f.userName || "Will Smock"}</div>
-                  <div className="text-xs text-white/50">{f.userRole || "Owner · Smock's Pressure Washing"}</div>
+                  <div className="font-bold">{f.ownerName || "Will Smock"}</div>
+                  <div className="text-xs text-white/50">{f.ownerRole || "Owner · Smock's Pressure Washing"}</div>
                   <div className="text-xs text-white/40">{f.companyEmail || "—"}</div>
                 </div>
+                <label className="cursor-pointer px-3 py-2 bg-black/40 border border-red-900/30 rounded-xl text-xs text-white/70 hover:text-white transition flex items-center gap-1.5 flex-shrink-0">
+                  <input type="file" accept="image/*" className="hidden" onChange={e => { const file = e.target.files?.[0]; if (!file) return; const r = new FileReader(); r.onload = ev => setF(prev => ({ ...prev, logoUrl: ev.target?.result as string })); r.readAsDataURL(file); }} />
+                  <Upload size={12} /> Photo
+                </label>
               </div>
               <div className="grid md:grid-cols-2 gap-3">
-                <div><label className="text-xs text-white/60 mb-1 block">Your Name</label><GInput value={f.userName || ""} onChange={e => setF({ ...f, userName: e.target.value })} placeholder="Will Smock" /></div>
-                <div><label className="text-xs text-white/60 mb-1 block">Role / Title</label><GInput value={f.userRole || ""} onChange={e => setF({ ...f, userRole: e.target.value })} placeholder="Owner" /></div>
+                <div><label className="text-xs text-white/60 mb-1 block">Your Name</label><GInput value={f.ownerName || ""} onChange={e => setF({ ...f, ownerName: e.target.value })} placeholder="Will Smock" /></div>
+                <div><label className="text-xs text-white/60 mb-1 block">Role / Title</label><GInput value={f.ownerRole || ""} onChange={e => setF({ ...f, ownerRole: e.target.value })} placeholder="Owner" /></div>
                 <div><label className="text-xs text-white/60 mb-1 block">Your Mobile # (for Alfred SMS)</label><GInput value={f.myPhone || ""} onChange={e => setF({ ...f, myPhone: e.target.value })} placeholder="+17175550100" /></div>
                 <div><label className="text-xs text-white/60 mb-1 block">Business Email</label><GInput value={f.companyEmail || ""} onChange={e => setF({ ...f, companyEmail: e.target.value })} placeholder="will@smocks.com" /></div>
+              </div>
+              <div className="mt-3">
+                <label className="text-xs text-white/60 mb-1 block flex items-center gap-1"><MapPin size={10} />Home Base <span className="text-white/30 font-normal">(starting point for route optimization)</span></label>
+                <AddressAutocomplete value={f.homeBaseAddress || ""} onChange={v => setF({ ...f, homeBaseAddress: v })} mapsKey={f.googleMapsKey} placeholder="412 Oak Ridge Ln, York PA" />
               </div>
             </div>
             <div className="p-3 bg-yellow-950/20 border border-yellow-700/30 rounded-xl text-xs text-yellow-200/70">
@@ -621,7 +631,11 @@ export function SettingsModal({ open, onClose, settings, setSettings, services, 
                       { k: "contacts", label: "Contacts", icon: "👥", desc: "Import contacts" },
                       { k: "maps", label: "Maps", icon: "🗺️", desc: "Address autocomplete" },
                     ].map(s => {
-                      const on = s.k === "maps" ? !!(f.googleMapsKey || f.googleConnected) : (f.googleScopes || {})[s.k];
+                      // Read and write the same place — previously "maps" was always
+                      // re-derived from googleMapsKey/googleConnected for display, so
+                      // clicking its toggle wrote to googleScopes.maps but the tile
+                      // never reflected that write, making the toggle look broken.
+                      const on = (f.googleScopes || {})[s.k] ?? (s.k === "maps" ? !!(f.googleMapsKey || f.googleConnected) : false);
                       return <button key={s.k} onClick={() => setF({ ...f, googleScopes: { ...(f.googleScopes || {}), [s.k]: !on } })} className={"flex items-center gap-2 p-2 rounded-xl border text-xs transition " + (on ? "bg-blue-950/30 border-blue-700/50 text-white" : "bg-black/40 border-white/10 text-white/50 hover:text-white")}>
                         <span>{s.icon}</span>
                         <div className="flex-1 text-left">

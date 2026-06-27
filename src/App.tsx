@@ -60,6 +60,7 @@ import {
 import { seedWeather } from "./lib/weather";
 import { fetchRealWeather } from "./lib/weather";
 import { fmt, uid, today, daysSince, daysFromNow } from "./lib/utils";
+import { sendEmail, buildTomorrowJobsEmailHtml, buildDailyBriefingEmailHtml } from "./lib/messaging";
 import type {
   Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense,
   Chemical, Service, Campaign, Automation, Review, SocialPost,
@@ -777,6 +778,69 @@ export function App() {
     fetchRealWeather(settings.owmKey).then(setWeatherData).catch(() => {});
   }, [settings.owmKey]);
 
+  // "Tomorrow's Jobs" crew email — there's no server cron in a client-only app,
+  // so this checks once on load and hourly thereafter: if it's 6pm or later and
+  // today's batch hasn't gone out yet (deduped via localStorage by date), send
+  // each employee with a job tomorrow their schedule. Only fires while someone
+  // has the app open on or after 6pm — a real limitation of having no backend.
+  useEffect(() => {
+    const checkAndSendTomorrowJobs = async () => {
+      if (new Date().getHours() < 18) return;
+      const dedupeKey = "smocks.tomorrowJobsSent." + today();
+      if (localStorage.getItem(dedupeKey)) return;
+      const tomorrow = daysFromNow(1);
+      const tomorrowJobs = jobs.filter(j => j.scheduledDate === tomorrow && j.status !== "cancelled");
+      if (tomorrowJobs.length === 0) { localStorage.setItem(dedupeKey, "1"); return; }
+      const byEmployee = new Map<string, typeof tomorrowJobs>();
+      tomorrowJobs.forEach(j => {
+        (j.crew || []).forEach((empId: any) => {
+          const list = byEmployee.get(empId) || [];
+          list.push(j);
+          byEmployee.set(empId, list);
+        });
+      });
+      for (const [empId, empJobs] of byEmployee) {
+        const emp = employees.find(e => e.id === empId);
+        if (!emp?.email) continue;
+        const jobsList = empJobs.map(j => ({
+          job: j,
+          custName: (() => { const c = customers.find(x => x.id === j.customerId); return c ? `${c.firstName} ${c.lastName}` : ""; })(),
+        }));
+        const html = buildTomorrowJobsEmailHtml(settings.companyName || "Smock's Pressure Washing", emp.firstName, jobsList);
+        try { await sendEmail(settings as any, emp.email, "Tomorrow's Jobs", html); } catch { /* best-effort */ }
+      }
+      localStorage.setItem(dedupeKey, "1");
+    };
+    checkAndSendTomorrowJobs();
+    const interval = setInterval(checkAndSendTomorrowJobs, 60 * 60 * 1000);
+    return () => clearInterval(interval);
+  }, [jobs, employees, customers, settings]);
+
+  // Manually triggered by the owner from the Dashboard — emails the owner a
+  // same-day performance summary on demand, using the same template the
+  // (currently unimplemented) automatic end-of-day send would use.
+  const sendDailyBriefingNow = async () => {
+    const tKey = today();
+    const todaysJobs = jobs.filter(j => j.scheduledDate === tKey);
+    const completed = todaysJobs.filter(j => j.status === "completed");
+    const revenue = completed.reduce((s, j) => s + (Number(j.amount) || 0), 0);
+    const late = todaysJobs.filter(j => {
+      if (!j.clockInAt || !j.scheduledTime) return false;
+      const scheduled = new Date(`${j.scheduledDate}T${j.scheduledTime}:00`).getTime();
+      return (j.clockInAt - scheduled) / 60000 > 15;
+    }).length;
+    const issues = todaysJobs.flatMap(j => (j.commLog || []).filter((e: any) => e.type === "note" && e.date === tKey)).length;
+    const html = buildDailyBriefingEmailHtml(settings.companyName || "Smock's Pressure Washing", { completed: completed.length, total: todaysJobs.length, revenue, late, issues });
+    const toEmail = settings.companyEmail || settings.myEmail;
+    if (!toEmail) { toast("Add a business email in Settings → My Profile first", "yellow"); return; }
+    try {
+      await sendEmail(settings as any, toEmail, "Daily Briefing", html);
+      toast("Daily briefing sent ✓");
+    } catch (e: any) {
+      toast(e.message || "Failed to send daily briefing", "red");
+    }
+  };
+
   // Automation engine
   useAutomationEngine({ automations, setAutomations, jobs, customers, estimates, settings, toast });
 
@@ -1264,7 +1328,7 @@ export function App() {
           <div className="p-4 md:p-6 max-w-[1600px] mx-auto">
             <PageFade key={page}>
               <SafePage>
-                {page === "dashboard"      && <Dashboard jobs={jobs} customers={customers} estimates={estimates} automations={automations} stats={{ totalRev, activeJobs, pendingEst, closeRate, doneMonth }} goals={{ revenue: settings.monthlyRevenueGoal ?? 8000, jobCount: settings.monthlyJobsGoal ?? 20 }} vehicles={vehicles} maintenance={maintenance} chemicals={chemicals} settings={settings} setSettings={setSettings} onNav={setPage} toast={toast} weatherData={weatherData} inboxThreads={inboxThreads} />}
+                {page === "dashboard"      && <Dashboard jobs={jobs} customers={customers} estimates={estimates} automations={automations} stats={{ totalRev, activeJobs, pendingEst, closeRate, doneMonth }} goals={{ revenue: settings.monthlyRevenueGoal ?? 8000, jobCount: settings.monthlyJobsGoal ?? 20 }} vehicles={vehicles} maintenance={maintenance} chemicals={chemicals} settings={settings} setSettings={setSettings} onNav={setPage} toast={toast} weatherData={weatherData} inboxThreads={inboxThreads} employees={employees} onSendDailyBriefing={sendDailyBriefingNow} />}
                 {page === "customers"      && <CustomersPage customers={customers} setCustomers={setCustomers} estimates={estimates} jobs={jobs} toast={toast} timeline={timeline} setTimeline={setTimeline} settings={settings} />}
                 {page === "estimates"      && <EstimatesPage estimates={estimates} setEstimates={setEstimates} customers={customers} services={services} settings={settings} toast={toast} onPortal={id => setPortalEstId(id)} estimateTemplates={estimateTemplates} setEstimateTemplates={setEstimateTemplates} setJobs={setJobs} onNav={setPage} />}
                 {page === "invoices"       && <InvoicesPage estimates={estimates} setEstimates={setEstimates} customers={customers} settings={settings} toast={toast} />}
@@ -1322,6 +1386,8 @@ export function App() {
         <ClientPortal
           estimate={estimates.find(e => e.id === portalEstId)}
           customer={customers.find(c => c.id === estimates.find(e => e.id === portalEstId)?.customerId)}
+          jobs={jobs}
+          invoices={estimates.filter(e => e.invoiced)}
           settings={settings}
           onClose={() => setPortalEstId(null)}
           onApprove={(id, data) => {
