@@ -351,6 +351,15 @@ export function SettingsModal({ open, onClose, settings, setSettings, services, 
             <div><label className="text-xs text-white/60 mb-1 block flex items-center gap-1"><Phone size={10} />Your Mobile # <span className="text-white/30 font-normal">(for Alfred SMS summaries)</span></label><GInput type="tel" value={f.myPhone || ""} onChange={e => setF({ ...f, myPhone: e.target.value })} placeholder="+17175550100" className="!text-xs" /></div>
             <div><label className="text-xs text-white/60 mb-1 block flex items-center gap-1"><Star size={10} />Google Place ID <span className="text-white/30 font-normal">(for review links)</span></label><GInput value={f.googlePlaceId || ""} onChange={e => setF({ ...f, googlePlaceId: e.target.value })} placeholder="ChIJ..." className="!text-xs" /><div className="text-[10px] text-white/30 mt-1">Find at <a href="https://developers.google.com/maps/documentation/places/web-service/place-id" target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:underline">developers.google.com/maps/…/place-id</a></div></div>
             <div><label className="text-xs text-white/60 mb-1 block flex items-center gap-1"><Clock size={10} />Max Lunch Break <span className="text-white/30 font-normal">(minutes)</span></label><GInput type="number" value={f.maxLunchMinutes ?? 30} onChange={e => setF({ ...f, maxLunchMinutes: Number(e.target.value) || 0 })} placeholder="30" className="!text-xs" /><div className="text-[10px] text-white/30 mt-1">Crew lunch breaks longer than this are flagged on the job</div></div>
+            <div className="flex items-center justify-between p-3 bg-black/40 border border-red-900/20 rounded-xl">
+              <div className="flex-1 min-w-0 pr-3">
+                <div className="text-sm font-medium">Paid Lunch Breaks</div>
+                <div className="text-[10px] text-white/50">{f.paidLunchBreaks ? "Lunch time counts toward payroll" : "Lunch time is deducted from logged hours"}</div>
+              </div>
+              <button onClick={() => setF({ ...f, paidLunchBreaks: !f.paidLunchBreaks })} className={"transition " + (f.paidLunchBreaks ? "text-red-400" : "text-white/30")}>
+                {f.paidLunchBreaks ? <ToggleRight size={28} /> : <ToggleLeft size={28} />}
+              </button>
+            </div>
             <div>
               <label className="text-xs text-white/60 mb-2 block flex items-center gap-1">🎨 Brand Colors</label>
               <div className="grid grid-cols-2 md:grid-cols-3 gap-3">

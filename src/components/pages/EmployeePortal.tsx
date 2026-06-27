@@ -36,6 +36,52 @@ const POST_DEFAULTS: JobChecklistItem[] = [
   { id: "post4", label: "Take after photos", done: false },
 ];
 
+// Small Street View thumbnail for a job address; click to expand full-size.
+// Silently renders nothing without a Maps key — no broken-image placeholder.
+function StreetViewThumb({ address, apiKey }: { address: string; apiKey?: string }) {
+  const [expanded, setExpanded] = useState(false);
+  if (!apiKey || !address) return null;
+  const thumbUrl = `https://maps.googleapis.com/maps/api/streetview?size=400x200&location=${encodeURIComponent(address)}&key=${apiKey}`;
+  const bigUrl = `https://maps.googleapis.com/maps/api/streetview?size=800x500&location=${encodeURIComponent(address)}&key=${apiKey}`;
+  return (
+    <>
+      <button onClick={() => setExpanded(true)} className="w-full rounded-xl overflow-hidden border border-white/10 relative group">
+        <img src={thumbUrl} alt="Street View" className="w-full h-32 object-cover" onError={e => { (e.target as HTMLImageElement).style.display = "none"; }} />
+        <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition flex items-center justify-center">
+          <span className="opacity-0 group-hover:opacity-100 text-white text-xs font-semibold transition">Tap to expand</span>
+        </div>
+      </button>
+      {expanded && (
+        <div className="fixed inset-0 z-50 bg-black/90 flex items-center justify-center p-4" onClick={() => setExpanded(false)}>
+          <img src={bigUrl} alt="Street View" className="max-w-full max-h-full rounded-xl" />
+          <button onClick={() => setExpanded(false)} className="absolute top-4 right-4 p-2 rounded-full bg-white/10 text-white hover:bg-white/20">
+            <X size={20} />
+          </button>
+        </div>
+      )}
+    </>
+  );
+}
+
+// Formats a job's estimated duration (decimal hours) as "Est. 3 hours" /
+// "Est. 1 hour" / "Est. 2h 30m" for fractional values.
+const formatEstDuration = (hours: number): string => {
+  const h = Math.floor(hours);
+  const m = Math.round((hours - h) * 60);
+  if (m === 0) return `Est. ${h} hour${h === 1 ? "" : "s"}`;
+  if (h === 0) return `Est. ${m} min`;
+  return `Est. ${h}h ${m}m`;
+};
+
+// Races a promise against a hard timeout so a hung await (no error, no resolve —
+// e.g. internal Supabase/Google auth-lock contention) can never block a button's
+// loading state forever; a normal rejection is still caught by the caller as usual.
+const withTimeout = <T,>(p: Promise<T>, ms: number, label: string): Promise<T> =>
+  Promise.race([
+    p,
+    new Promise<T>((_, reject) => setTimeout(() => reject(new Error(label + " timed out")), ms)),
+  ]);
+
 // Normalizes a single crew entry to a comparable id string. Crew is meant to be a
 // plain array of employee-id strings, but Supabase JSONB round-trips and older
 // write paths have been known to store objects ({ id }, { employeeId }) instead —
@@ -160,11 +206,11 @@ function PortalChecklistSection({ title, emoji, items, onUpdate, allowPhotos = f
   );
 }
 
-function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName = "the company", onComplete, perms: permsOverride, maxLunchMinutes = 30, onJobCompleted }: {
+function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName = "the company", onComplete, perms: permsOverride, maxLunchMinutes = 30, onJobCompleted, googleMapsKey = "", paidLunchBreaks = false }: {
   job: Job; customer?: Customer; onBack: () => void;
   onUpdateJob: (patch: Partial<Job>) => void; toast: (msg: string, tone?: any) => void;
   companyName?: string; onComplete?: () => void; perms?: Record<string, boolean>; maxLunchMinutes?: number;
-  onJobCompleted?: (job: Job) => void;
+  onJobCompleted?: (job: Job) => void; googleMapsKey?: string; paidLunchBreaks?: boolean;
 }) {
   const effPerms = { ...DEFAULT_PERMISSIONS, ...(permsOverride || {}) };
   const [note, setNote] = useState("");
@@ -189,7 +235,7 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
   // accumulated lunch time is subtracted once lunch ends.
   const liveDisplay = (() => {
     if (!job.clockInAt) return null;
-    const lunchMs = (job.lunchMinutes || 0) * 60000;
+    const lunchMs = paidLunchBreaks ? 0 : (job.lunchMinutes || 0) * 60000;
     const endpoint = job.lunchStartAt || Date.now();
     const total = Math.max(0, Math.floor((endpoint - job.clockInAt - lunchMs) / 1000));
     return secsToHms(total);
@@ -208,7 +254,7 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
   };
   const clockOut = () => {
     if (!job.clockInAt) return;
-    const lunchMs = (job.lunchMinutes || 0) * 60000;
+    const lunchMs = paidLunchBreaks ? 0 : (job.lunchMinutes || 0) * 60000;
     const hrs = Math.round((Date.now() - job.clockInAt - lunchMs) / 36000) / 100;
     onUpdateJob({ clockInAt: null, lunchStartAt: null, loggedHours: Math.round(((Number(job.loggedHours) || 0) + hrs) * 100) / 100 });
     toast(`+${hrs}h logged`);
@@ -329,7 +375,7 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
             <div className="flex items-start gap-2 mb-3">
               <Shield size={14} className="text-blue-400 mt-0.5 flex-shrink-0" />
               <div className="text-xs text-white/60 leading-relaxed">
-                I confirm that all services have been completed to my satisfaction. I accept the work as described above and acknowledge that <span className="text-white font-medium">{companyName}</span> is not liable for pre-existing conditions documented in the pre-job checklist.
+                I confirm that all services have been completed to my satisfaction. I accept the work as described and acknowledge that <span className="text-white font-medium">{companyName}</span> is not liable for pre-existing conditions documented in the pre-job checklist. I understand that this serves as a legally binding acceptance of completed work.
               </div>
             </div>
           </Glass>
@@ -410,6 +456,8 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
           </Glass>
         )}
 
+        <StreetViewThumb address={job.address} apiKey={googleMapsKey} />
+
         {/* Job notes — set by the owner when scheduling, editable anytime in JobDetailModal */}
         {job.notes && (
           <Glass className="p-4 !bg-blue-950/15 !border-blue-700/25">
@@ -451,7 +499,7 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
               ) : (
                 <div className="text-sm text-white/60">
                   Logged: <span className="text-white font-semibold">{job.loggedHours || 0}h</span>
-                  {job.duration ? ` · est ${job.duration}h` : ""}
+                  {job.duration ? ` · ${formatEstDuration(job.duration)}` : ""}
                 </div>
               )}
             </div>
@@ -1030,7 +1078,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
 
   // Fetch incoming job requests for this employee
   useEffect(() => {
-    if (!myEmployee) return;
+    if (!empSession || !myEmployee) return;
     const empId = (myEmployee as any)?.id;
     if (!empId) return;
     const load = async () => {
@@ -1055,7 +1103,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   // owner assigns WHILE the employee already has the portal open still shows
   // up without requiring a full reload.
   useEffect(() => {
-    if (!myEmployee) return;
+    if (!empSession || !myEmployee) return;
     const empId = myEmployee.id;
     const empUserId = (myEmployee as any).user_id;
     const load = async () => {
@@ -1121,15 +1169,20 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   // Merge owner-set permissions with defaults (all-on for existing employees with no permissions field)
   const perms: Record<string, boolean> = { ...DEFAULT_PERMISSIONS, ...((myEmployee as any)?.permissions || {}) };
 
-  console.log("ALL JOBS — total jobs:", jobs.length);
-  console.log("ALL JOBS — myEmployee:", myEmployee?.id, (myEmployee as any)?.user_id);
-  console.log("ALL JOBS — sample job crew:", jobs[0]?.crew);
-
-  const myJobs = myEmployee
+  // This whole component also mounts for the owner's "preview as team" view
+  // (isOwnerView), which has no empSession/myEmployee at all — none of the
+  // employee-specific filtering, logging, or fetching below is meaningful
+  // there, so it's gated on empSession rather than running unconditionally.
+  const myJobs = empSession && myEmployee
     ? jobs.filter(j => crewIncludesEmployee(j.crew, myEmployee.id, (myEmployee as any).user_id))
     : [];
-  console.log("FILTERED MY JOBS — count:", myJobs.length);
-  console.log("FILTERED MY JOBS — ids:", myJobs.map(j => j.id));
+  if (empSession) {
+    console.log("ALL JOBS — total jobs:", jobs.length);
+    console.log("ALL JOBS — myEmployee:", myEmployee?.id, (myEmployee as any)?.user_id);
+    console.log("ALL JOBS — sample job crew:", jobs[0]?.crew);
+    console.log("FILTERED MY JOBS — count:", myJobs.length);
+    console.log("FILTERED MY JOBS — ids:", myJobs.map(j => j.id));
+  }
 
   // 24h job reminder — checks once on load (and hourly while the portal stays open)
   // for jobs starting within the next 24h, and emails the employee via their own
@@ -1263,59 +1316,77 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     });
   };
 
+  // Guaranteed fallback — needs no API key, no DirectionsService, nothing that
+  // can fail or hang: it just opens Maps with every stop as a waypoint in
+  // whatever order they're already in. This is what fires if the optimized
+  // route can't be computed for any reason, so the button always does something.
+  const openPlainMapsRoute = (stops: Job[], origin: { lat: number; lng: number } | string | null) => {
+    const dest = encodeURIComponent(stops[stops.length - 1].address);
+    const waypts = stops.slice(0, -1).map(j => encodeURIComponent(j.address)).join("|");
+    const originParam = origin ? `&origin=${encodeURIComponent(typeof origin === "string" ? origin : `${origin.lat},${origin.lng}`)}` : "";
+    window.open(`https://www.google.com/maps/dir/?api=1${originParam}&destination=${dest}${waypts ? "&waypoints=" + waypts : ""}&travelmode=driving`, "_blank");
+  };
+
   const optimizeRoute = async () => {
-    if (!settings.googleMapsKey) { toast("Add a Google Maps API key in Settings to use Route", "yellow"); return; }
     const stops = todayJobs.filter(j => j.status !== "completed" && j.address);
     if (stops.length === 0) { toast("No jobs left today to route", "yellow"); return; }
     setRouteLoading(true);
     const origin = await resolveRouteOrigin();
-    // Last resort: route between the stops themselves, starting from the first one,
-    // so a denied/unavailable location never blocks the feature entirely.
     const effectiveOrigin = origin || stops[0].address;
     const routeStops = origin ? stops : stops.slice(1);
     if (!origin) toast("Couldn't get your location — routing from the first job instead", "yellow");
-    if (routeStops.length === 0) { setRouteLoading(false); toast("Only one job today — nothing to optimize", "yellow"); return; }
+    if (routeStops.length === 0) {
+      // Single stop — no optimization needed, just go.
+      setRouteLoading(false);
+      openPlainMapsRoute(stops, origin);
+      return;
+    }
+    if (!settings.googleMapsKey) {
+      setRouteLoading(false);
+      toast("No Google Maps key set — opening unoptimized route", "yellow");
+      openPlainMapsRoute(routeStops, origin);
+      return;
+    }
     try {
-      await loadMapsScript(settings.googleMapsKey);
+      await withTimeout(loadMapsScript(settings.googleMapsKey), 8000, "Maps script load");
       const gm = (window as any).google?.maps;
-      if (!gm?.DirectionsService) { setRouteLoading(false); toast("Google Maps failed to load", "red"); return; }
+      if (!gm?.DirectionsService) throw new Error("DirectionsService unavailable");
       const svc = new gm.DirectionsService();
       const destination = routeStops[routeStops.length - 1].address;
       const waypoints = routeStops.slice(0, -1).map(j => ({ location: j.address, stopover: true }));
-      svc.route(
-        {
-          origin: effectiveOrigin,
-          destination,
-          waypoints,
-          optimizeWaypoints: true,
-          travelMode: gm.TravelMode.DRIVING,
-        },
-        (result: any, status: string) => {
-          setRouteLoading(false);
-          if (status !== "OK" || !result?.routes?.[0]) { toast("Couldn't calculate a route — " + status, "red"); return; }
-          const route = result.routes[0];
-          const order: Job[] = (route.waypoint_order || []).map((idx: number) => routeStops[idx]).concat([routeStops[routeStops.length - 1]]);
-          let totalSec = 0, totalMeters = 0;
-          const etas: string[] = [];
-          let cursor = Date.now();
-          (route.legs || []).forEach((leg: any) => {
-            totalSec += leg.duration?.value || 0;
-            totalMeters += leg.distance?.value || 0;
-            cursor += (leg.duration?.value || 0) * 1000;
-            etas.push(new Date(cursor).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" }));
-          });
-          setRouteInfo({
-            order,
-            totalDuration: Math.round(totalSec / 60) + " min",
-            totalDistance: (totalMeters / 1609.34).toFixed(1) + " mi",
-            etas,
-            origin: effectiveOrigin,
-          });
-        }
-      );
-    } catch (e: any) {
+      const result: any = await withTimeout(new Promise((resolve, reject) => {
+        svc.route(
+          { origin: effectiveOrigin, destination, waypoints, optimizeWaypoints: true, travelMode: gm.TravelMode.DRIVING },
+          (res: any, status: string) => status === "OK" && res?.routes?.[0] ? resolve(res) : reject(new Error("DirectionsService status: " + status))
+        );
+      }), 10000, "Route calculation");
       setRouteLoading(false);
-      toast(e?.message || "Failed to load Google Maps", "red");
+      const route = result.routes[0];
+      const order: Job[] = (route.waypoint_order || []).map((idx: number) => routeStops[idx]).concat([routeStops[routeStops.length - 1]]);
+      let totalSec = 0, totalMeters = 0;
+      const etas: string[] = [];
+      let cursor = Date.now();
+      (route.legs || []).forEach((leg: any) => {
+        totalSec += leg.duration?.value || 0;
+        totalMeters += leg.distance?.value || 0;
+        cursor += (leg.duration?.value || 0) * 1000;
+        etas.push(new Date(cursor).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" }));
+      });
+      setRouteInfo({
+        order,
+        totalDuration: Math.round(totalSec / 60) + " min",
+        totalDistance: (totalMeters / 1609.34).toFixed(1) + " mi",
+        etas,
+        origin: effectiveOrigin,
+      });
+    } catch (err: any) {
+      // Optimization failed or hung — fall back to a plain, unoptimized Maps
+      // link rather than leaving the employee with nothing. The button must
+      // always produce a usable result.
+      console.warn("Route optimization failed — opening unoptimized route instead:", err);
+      setRouteLoading(false);
+      toast("Couldn't optimize the route — opening it in Google Maps instead", "yellow");
+      openPlainMapsRoute(routeStops, origin);
     }
   };
 
@@ -2097,6 +2168,8 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
         perms={perms}
         maxLunchMinutes={settings.maxLunchMinutes ?? 30}
         onJobCompleted={recordJobRating}
+        googleMapsKey={settings.googleMapsKey}
+        paidLunchBreaks={!!settings.paidLunchBreaks}
       />
     );
   }
@@ -2130,13 +2203,13 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     const clockOutCard = (e: React.MouseEvent) => {
       e.stopPropagation();
       if (!job.clockInAt) return;
-      const lunchMs = (job.lunchMinutes || 0) * 60000;
+      const lunchMs = settings.paidLunchBreaks ? 0 : (job.lunchMinutes || 0) * 60000;
       const hrs = Math.round((Date.now() - job.clockInAt - lunchMs) / 36000) / 100;
       updateJob(job.id, { clockInAt: null, lunchStartAt: null, loggedHours: Math.round(((Number(job.loggedHours) || 0) + hrs) * 100) / 100 });
       toast(`+${hrs}h logged`);
     };
 
-    const lunchMsCard = (job.lunchMinutes || 0) * 60000;
+    const lunchMsCard = settings.paidLunchBreaks ? 0 : (job.lunchMinutes || 0) * 60000;
     const elapsedSec = job.clockInAt ? Math.max(0, Math.floor(((job.lunchStartAt || Date.now()) - job.clockInAt - lunchMsCard) / 1000)) : 0;
     const timerDisplay = job.clockInAt
       ? [Math.floor(elapsedSec / 3600), Math.floor((elapsedSec % 3600) / 60), elapsedSec % 60].map(n => String(n).padStart(2, "0")).join(":")
@@ -2168,6 +2241,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
           </div>
           <div className="text-xs text-white/40">
             {job.scheduledDate}{job.scheduledTime ? " · " + job.scheduledTime : ""}
+            {job.duration ? <span className="ml-2 text-white/50">{formatEstDuration(job.duration)}</span> : null}
             {job.loggedHours ? <span className="ml-2 text-white/50">{job.loggedHours}h logged</span> : null}
           </div>
           {allItems.length > 0 && (

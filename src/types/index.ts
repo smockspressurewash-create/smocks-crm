@@ -512,6 +512,7 @@ export interface AppSettings {
   // Crew policy
   maxLunchMinutes?: number;
   homeBaseAddress?: string;
+  paidLunchBreaks?: boolean;
 
   // API keys
   twilioSid?: string;

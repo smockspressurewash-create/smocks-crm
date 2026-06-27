@@ -93,7 +93,7 @@ export function JobsPage({ jobs = [], setJobs, customers = [], employees = [], e
   const [bulkAction, setBulkAction] = useState(null);
   const [, forceTick] = useState(0);
   const [newJobOpen, setNewJobOpen] = useState(false);
-  const [newJobForm, setNewJobForm] = useState({ customerId: "", address: "", amount: "", scheduledDate: today(), scheduledTime: "", priority: "normal", notes: "" });
+  const [newJobForm, setNewJobForm] = useState({ customerId: "", address: "", amount: "", scheduledDate: today(), scheduledTime: "", priority: "normal", notes: "", duration: "" });
   const [quickReqJobId, setQuickReqJobId] = useState<string | null>(null);
   const [quickReqEmpId, setQuickReqEmpId] = useState("");
   const [quickReqMsg, setQuickReqMsg] = useState("");
@@ -418,6 +418,10 @@ export function JobsPage({ jobs = [], setJobs, customers = [], employees = [], e
             </div>
           </div>
           <div>
+            <label className="text-xs text-white/60 mb-1 block">Est. Duration <span className="text-white/30">(hours)</span></label>
+            <GInput type="number" step="0.25" min="0" placeholder="e.g. 3.5" value={newJobForm.duration || ""} onChange={e => setNewJobForm(f => ({ ...f, duration: e.target.value }))} />
+          </div>
+          <div>
             <label className="text-xs text-white/60 mb-1 block">Notes (optional)</label>
             <GTxt placeholder="Service details, access instructions..." value={newJobForm.notes} onChange={e => setNewJobForm(f => ({ ...f, notes: e.target.value }))} rows={3} />
           </div>
@@ -435,6 +439,7 @@ export function JobsPage({ jobs = [], setJobs, customers = [], employees = [], e
                 scheduledTime: newJobForm.scheduledTime,
                 priority: newJobForm.priority as any,
                 notes: newJobForm.notes,
+                duration: newJobForm.duration ? Number(newJobForm.duration) : undefined,
                 crew: [], checklist: [], photos: [], commLog: [], chemicalsUsed: [], equipment: [], tags: [],
                 loggedHours: 0, createdAt: today(),
               };
@@ -526,7 +531,7 @@ export function JobsPage({ jobs = [], setJobs, customers = [], employees = [], e
           <div className="text-xs text-white/40 mt-0.5">{jobs.filter(j => j.status === "scheduled").length} scheduled · {jobs.filter(j => j.status === "in_progress").length} in progress</div>
         </div>
         <button
-          onClick={() => { setNewJobForm({ customerId: "", address: "", amount: "", scheduledDate: today(), scheduledTime: "", priority: "normal", notes: "" }); setNewJobOpen(true); }}
+          onClick={() => { setNewJobForm({ customerId: "", address: "", amount: "", scheduledDate: today(), scheduledTime: "", priority: "normal", notes: "", duration: "" }); setNewJobOpen(true); }}
           className="flex items-center gap-2 px-4 py-2.5 bg-gradient-to-r from-red-600 to-red-800 border border-red-500/50 rounded-2xl text-sm font-semibold text-white shadow-lg shadow-red-900/30 hover:shadow-red-600/40 hover:scale-[1.02] active:scale-95 transition-all"
         >
           <Plus size={16} />Schedule Job
@@ -542,7 +547,7 @@ export function JobsPage({ jobs = [], setJobs, customers = [], employees = [], e
       </div>
 
       <div className="flex flex-wrap gap-2 items-center">
-        <GBtn onClick={() => { setNewJobForm({ customerId: "", address: "", amount: "", scheduledDate: today(), scheduledTime: "", priority: "normal", notes: "" }); setNewJobOpen(true); }} className="!py-1.5 !text-xs flex-shrink-0"><Plus size={13} className="inline mr-1" />Schedule Job</GBtn>
+        <GBtn onClick={() => { setNewJobForm({ customerId: "", address: "", amount: "", scheduledDate: today(), scheduledTime: "", priority: "normal", notes: "", duration: "" }); setNewJobOpen(true); }} className="!py-1.5 !text-xs flex-shrink-0"><Plus size={13} className="inline mr-1" />Schedule Job</GBtn>
         <div className="relative flex-1 min-w-[160px]">
           <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-white/40" />
           <GInput placeholder="Search customer, address, tag..." value={search} onChange={e => setSearch(e.target.value)} className="!pl-9 !py-1.5 !text-xs" />
@@ -781,6 +786,14 @@ export function JobsPage({ jobs = [], setJobs, customers = [], employees = [], e
                     }
                   } else toast("Rescheduled to " + newDate);
                 }} className="flex-1 text-xs text-blue-400 flex items-center justify-center gap-1 py-1.5 border border-blue-700/30 rounded-lg hover:bg-blue-950/30 transition"><RefreshCw size={10} />Reschedule + Text</button>}
+                {tab === "cancelled" && (
+                  <button onClick={() => {
+                    if (!window.confirm("Permanently delete this job? This cannot be undone.")) return;
+                    setJobs(prev => prev.filter(x => x.id !== j.id));
+                    if (j.id === detailId) setDetailId(null);
+                    toast("Job deleted");
+                  }} className="flex-1 text-xs text-red-400 flex items-center justify-center gap-1 py-1.5 border border-red-700/30 rounded-lg hover:bg-red-950/30 transition"><Trash2 size={10} />Delete Job</button>
+                )}
               </div>
             </Glass>
           );

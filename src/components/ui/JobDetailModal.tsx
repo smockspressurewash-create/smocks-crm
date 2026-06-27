@@ -146,6 +146,45 @@ function ChecklistSection({ title, emoji, items, onUpdate }: {
   );
 }
 
+// Small Street View thumbnail for a job address; click to expand full-size.
+// Silently renders nothing without a Maps key — no broken-image placeholder.
+function StreetViewThumb({ address, apiKey }: { address: string; apiKey?: string }) {
+  const [expanded, setExpanded] = useState(false);
+  if (!apiKey || !address) return null;
+  const thumbUrl = `https://maps.googleapis.com/maps/api/streetview?size=400x200&location=${encodeURIComponent(address)}&key=${apiKey}`;
+  const bigUrl = `https://maps.googleapis.com/maps/api/streetview?size=800x500&location=${encodeURIComponent(address)}&key=${apiKey}`;
+  return (
+    <>
+      <button onClick={() => setExpanded(true)} className="w-full rounded-xl overflow-hidden border border-white/10 relative group">
+        <img src={thumbUrl} alt="Street View" className="w-full h-32 object-cover" onError={e => { (e.target as HTMLImageElement).style.display = "none"; }} />
+        <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition flex items-center justify-center">
+          <span className="opacity-0 group-hover:opacity-100 text-white text-xs font-semibold transition">Click to expand</span>
+        </div>
+      </button>
+      {expanded && (
+        <div className="fixed inset-0 z-50 bg-black/90 flex items-center justify-center p-4" onClick={() => setExpanded(false)}>
+          <img src={bigUrl} alt="Street View" className="max-w-full max-h-full rounded-xl" />
+          <button onClick={() => setExpanded(false)} className="absolute top-4 right-4 p-2 rounded-full bg-white/10 text-white hover:bg-white/20">
+            <X size={20} />
+          </button>
+        </div>
+      )}
+    </>
+  );
+}
+
+// Races any promise against a hard timeout — a thrown error already gets
+// caught by try/catch, but a HUNG promise (an awaited Supabase/Google call
+// that never resolves or rejects, e.g. from internal auth-lock contention)
+// skips catch entirely and can block a button's loading state forever. This
+// is the actual fix for "button hangs on a 401" — the 401 itself throws
+// fine; it's the surrounding await chain that can stall.
+const withTimeout = <T,>(p: Promise<T>, ms: number, label: string): Promise<T> =>
+  Promise.race([
+    p,
+    new Promise<T>((_, reject) => setTimeout(() => reject(new Error(label + " timed out")), ms)),
+  ]);
+
 export function JobDetailModal({ jobId, job, onClose, customers = [], employees = [], updateJob, toast, gToken = "", settings = {} as any }: { jobId: any; job: any; onClose: any; customers?: any[]; employees?: any[]; updateJob: any; toast: any; gToken?: string; settings?: any }) {
   const [commNote, setCommNote] = useState("");
   const [commType, setCommType] = useState("note");
@@ -249,20 +288,26 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
       const html = buildHtml(emp);
       let viaEmpGmail = false;
       try {
-        const { data: empRow } = await (supabase as any)
-          .from("employees").select("google_token, google_token_expires_at, google_email")
-          .eq("id", emp.id).maybeSingle();
+        const { data: empRow } = await withTimeout<any>(
+          (supabase as any).from("employees").select("google_token, google_token_expires_at, google_email").eq("id", emp.id).maybeSingle(),
+          8000, "Employee lookup"
+        );
         const tok = empRow?.google_token;
         const validTok = tok && empRow?.google_token_expires_at && new Date(empRow.google_token_expires_at).getTime() > Date.now();
         if (validTok) {
-          await sendViaGmail(tok, empRow.google_email || emp.email, emp.email, subj, html);
+          await withTimeout(sendViaGmail(tok, empRow.google_email || emp.email, emp.email, subj, html), 10000, "Gmail send");
           viaEmpGmail = true;
         }
-      } catch { /* fall through to owner channel */ }
+      } catch (err) {
+        console.warn("Employee Gmail send failed — falling back to owner channel:", err);
+      }
       if (!viaEmpGmail) {
         try {
-          await sendEmail(settings, { to: emp.email, subject: subj, body: html });
-        } catch { continue; }
+          await withTimeout(sendEmail(settings, { to: emp.email, subject: subj, body: html }), 10000, "Email send");
+        } catch (err) {
+          console.warn("Fallback email send failed:", err);
+          continue;
+        }
       }
       sent++;
     }
@@ -275,15 +320,20 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
     const withEmail = crewEmps.filter(e => e.email);
     if (!withEmail.length) { toast("No crew members have email addresses set", "yellow"); return; }
     setNotifying(true);
-    const c = customers.find(x => x.id === job.customerId);
-    const jobLink = `${window.location.origin}${window.location.pathname}#/portal`;
-    const sent = await notifyEmployees(
-      withEmail,
-      () => `Job Assignment — ${job.scheduledDate}`,
-      emp => `<p>Hi ${emp.firstName},</p><p>You've been assigned to a job:</p><ul><li><b>Date:</b> ${job.scheduledDate}${job.scheduledTime ? " at " + job.scheduledTime : ""}</li><li><b>Address:</b> ${job.address}</li>${c ? `<li><b>Customer:</b> ${c.firstName} ${c.lastName}</li>` : ""}</ul><p>Open the crew portal to see details: <a href="${jobLink}">${jobLink}</a></p><p>— ${settings.companyName || "Smock's Pressure Washing"}</p>`
-    );
-    setNotifying(false);
-    toast(sent > 0 ? `Notified ${sent} crew member${sent !== 1 ? "s" : ""} ✓` : "Email send failed — check Resend settings", sent > 0 ? "green" : "red");
+    try {
+      const c = customers.find(x => x.id === job.customerId);
+      const jobLink = `${window.location.origin}${window.location.pathname}#/portal`;
+      const sent = await notifyEmployees(
+        withEmail,
+        () => `Job Assignment — ${job.scheduledDate}`,
+        emp => `<p>Hi ${emp.firstName},</p><p>You've been assigned to a job:</p><ul><li><b>Date:</b> ${job.scheduledDate}${job.scheduledTime ? " at " + job.scheduledTime : ""}</li><li><b>Address:</b> ${job.address}</li>${c ? `<li><b>Customer:</b> ${c.firstName} ${c.lastName}</li>` : ""}</ul><p>Open the crew portal to see details: <a href="${jobLink}">${jobLink}</a></p><p>— ${settings.companyName || "Smock's Pressure Washing"}</p>`
+      );
+      toast(sent > 0 ? `Notified ${sent} crew member${sent !== 1 ? "s" : ""} ✓` : "Email send failed — check Resend settings", sent > 0 ? "green" : "red");
+    } catch (err: any) {
+      toast(err?.message || "Failed to notify crew", "red");
+    } finally {
+      setNotifying(false);
+    }
   };
 
   const sendJobRequest = async () => {
@@ -291,15 +341,21 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
     if (!emp) return;
     setRequestSending(true);
     try {
-      const { data: { session } } = await supabase.auth.getSession();
-      const { data, error } = await (supabase as any).from("job_requests").insert({
-        job_id: jobId,
-        employee_id: requestEmpId,
-        owner_id: session?.user?.id,
-        status: "pending",
-        message: requestMsg.trim() || null,
-      }).select("id").single();
+      const { data: { session } } = await withTimeout<any>(supabase.auth.getSession(), 8000, "Get session");
+      const { data, error } = await withTimeout<any>(
+        (supabase as any).from("job_requests").insert({
+          job_id: jobId,
+          employee_id: requestEmpId,
+          owner_id: session?.user?.id,
+          status: "pending",
+          message: requestMsg.trim() || null,
+        }).select("id").single(),
+        8000, "Save request"
+      );
       if (!error && data) {
+        // The save succeeded — the request is on the books regardless of whether
+        // the notification email below succeeds, so the UI must reflect success
+        // here and treat the email as best-effort, not a precondition.
         if (emp.email) {
           const reqUrl = `${window.location.origin}${window.location.pathname}#/portal?request=${data.id}`;
           const cust = customers.find((x: any) => x.id === job.customerId);
@@ -319,7 +375,9 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
                   <a href="${reqUrl}&action=deny" style="background:#dc2626;color:white;padding:12px 20px;border-radius:6px;text-decoration:none">✗ Decline</a>
                 </p>`
             );
-          } catch { /* email optional */ }
+          } catch (err) {
+            console.warn("Job request email notification failed — request still saved:", err);
+          }
         }
         toast(`Request sent to ${emp.firstName} ✓`, "green");
         setShowRequestForm(false);
@@ -328,10 +386,11 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
       } else {
         toast("Request failed — run the job_requests SQL in Supabase first", "red");
       }
-    } catch {
-      toast("Error sending request", "red");
+    } catch (err: any) {
+      toast(err?.message || "Error sending request", "red");
+    } finally {
+      setRequestSending(false);
     }
-    setRequestSending(false);
   };
 
   // Schedule & Notify — assigns crew immediately, attempts a Google Calendar event
@@ -355,9 +414,10 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
       let calendarSkippedReason = "";
       if (job.scheduledDate) {
         try {
-          const { data: empRow } = await (supabase as any)
-            .from("employees").select("google_token, google_token_expires_at, autoSyncCalendar")
-            .eq("id", emp.id).maybeSingle();
+          const { data: empRow } = await withTimeout<any>(
+            (supabase as any).from("employees").select("google_token, google_token_expires_at, autoSyncCalendar").eq("id", emp.id).maybeSingle(),
+            8000, "Employee lookup"
+          );
           const tok = empRow?.google_token;
           const validTok = tok && empRow?.google_token_expires_at && new Date(empRow.google_token_expires_at).getTime() > Date.now();
           if (validTok && empRow?.autoSyncCalendar !== false) {
@@ -584,6 +644,8 @@ ${job.notes ? `<div class="section"><h2>Job Notes</h2><p>${job.notes}</p></div>`
   return (
     <Modal open={!!jobId} onClose={onClose} title={"Job · " + (c?.firstName + " " + c?.lastName)} maxW="max-w-2xl">
       <div className="space-y-4">
+        {job.address && <StreetViewThumb address={job.address} apiKey={settings.googleMapsKey} />}
+
         {/* Priority + Duration + Recurring */}
         <div className="grid grid-cols-3 gap-3">
           <div>
