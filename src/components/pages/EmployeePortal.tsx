@@ -6,8 +6,8 @@ import {
   Video, PenLine, Shield, Navigation, Database, Route, ToggleRight, ToggleLeft, Download
 } from "lucide-react";
 import { supabase } from "../../lib/supabase";
-import { getEmpGoogleToken, isEmpGoogleTokenValid, saveEmpGoogleToken, refreshEmpGoogleToken, createGCalEvent } from "../../lib/googleApi";
-import { sendViaGmail, sendEmail, emailShell, emailButton } from "../../lib/messaging";
+import { getEmpGoogleToken, isEmpGoogleTokenValid, saveEmpGoogleToken, refreshEmpGoogleToken, createGCalEvent, updateGCalEvent } from "../../lib/googleApi";
+import { sendViaGmail, sendEmail, emailShell, emailButton, twilioSend } from "../../lib/messaging";
 import { Glass } from "../ui/Glass";
 import { GBtn } from "../ui/GBtn";
 import { GInput } from "../ui/GInput";
@@ -59,7 +59,7 @@ function StreetViewThumb({ address, apiKey }: { address: string; apiKey?: string
   return (
     <>
       <button onClick={() => setExpanded(true)} className="w-full rounded-xl overflow-hidden border border-white/10 relative group">
-        <img src={thumbUrl} alt="Street View" className="w-full h-32 object-cover" onError={() => setLoadError(true)} />
+        <img src={thumbUrl} alt="Street View" className="w-full h-32 object-cover" onError={() => { console.warn("Street View image failed to load for", address, "— check that the Street View Static API (not just Maps JS/Places) is enabled and billed on this key."); setLoadError(true); }} />
         <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition flex items-center justify-center">
           <span className="opacity-0 group-hover:opacity-100 text-white text-xs font-semibold transition">Tap to expand</span>
         </div>
@@ -439,7 +439,10 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
   const startCompleteFlow = () => { setCompleteStep("review"); setPaidChoice(""); setPaymentMethod(""); };
 
   const sendInvoiceFromPortal = async () => {
-    if (!customer?.email) { toast("Customer has no email on file", "red"); return false; }
+    if (!customer?.email && !customer?.phone) {
+      toast("No contact info for this customer. Add email or phone first.", "red");
+      return false;
+    }
     setSendingCompleteInvoice(true);
     try {
       const newInv = {
@@ -450,8 +453,12 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
       };
       setEstimates((prev: any[]) => [...prev, newInv]);
       const payLink = `${window.location.origin}${window.location.pathname}#/portal/${newInv.id}`;
-      const html = emailShell(companyName, "Invoice", `<p>Hi ${customer.firstName},</p><p>Thanks for choosing us! Your service at <b>${job.address}</b> is complete.</p><p><b>Amount due:</b> $${(Number(job.amount) || 0).toFixed(2)}</p>` + emailButton("View & Pay Invoice", payLink));
-      await sendEmail(settings, { to: customer.email, subject: `Invoice — ${companyName}`, body: html });
+      if (customer.email) {
+        const html = emailShell(companyName, "Invoice", `<p>Hi ${customer.firstName},</p><p>Thanks for choosing us! Your service at <b>${job.address}</b> is complete.</p><p><b>Amount due:</b> $${(Number(job.amount) || 0).toFixed(2)}</p>` + emailButton("View & Pay Invoice", payLink));
+        await sendEmail(settings, { to: customer.email, subject: `Invoice — ${companyName}`, body: html });
+      } else {
+        await twilioSend(settings as any, customer.phone!, `Hi ${customer.firstName}, your invoice for ${fmt(Number(job.amount) || 0)} is ready: ${payLink}`);
+      }
       toast(`Invoice sent to ${customer.firstName} ✓`, "green");
       return true;
     } catch (err: any) {
@@ -674,7 +681,7 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
               <div className="text-lg font-bold">Send invoice to customer?</div>
               <div className="text-sm text-white/50">We'll email them a payment link for {fmt(job.amount)}.</div>
               <div className="grid grid-cols-2 gap-3">
-                <GBtn onClick={async () => { const sent = await sendInvoiceFromPortal(); finalizeCompletion("Pending", undefined, sent); }} disabled={sendingCompleteInvoice} className="!py-3 !justify-center">
+                <GBtn onClick={async () => { const sent = await sendInvoiceFromPortal(); if (sent) finalizeCompletion("Pending", undefined, true); }} disabled={sendingCompleteInvoice} className="!py-3 !justify-center">
                   {sendingCompleteInvoice ? "Sending…" : "Yes, Send Invoice"}
                 </GBtn>
                 <GBtn variant="ghost" onClick={() => finalizeCompletion("Pending", undefined, false)} className="!py-3 !justify-center">
@@ -1608,7 +1615,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
         .on("postgres_changes", { event: "*", schema: "public", table: "jobs" }, () => { load(); })
         .subscribe();
     } catch { /* realtime may not be enabled on this project */ }
-    const interval = setInterval(load, 5000);
+    const interval = setInterval(load, 3000);
     return () => {
       clearInterval(interval);
       try { channel?.unsubscribe(); } catch { /* ignore */ }
@@ -2034,10 +2041,12 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     } catch { setLoginError("Could not send reset email"); }
   };
 
-  // Create a Google Calendar event on the EMPLOYEE'S OWN calendar using their own
-  // stored OAuth token, after they accept/are assigned to a job. Silently no-ops
-  // if they haven't connected Google or their token has expired.
-  const syncAcceptedJobToCalendar = async (job: Job | undefined) => {
+  // Create or update a Google Calendar event on the EMPLOYEE'S OWN calendar
+  // using their own stored OAuth token, after they accept a job (creates) or
+  // complete one (updates the existing event so it reflects the outcome, or
+  // creates one if none exists yet). Silently no-ops if they haven't
+  // connected Google, their token has expired, or auto-sync is off.
+  const syncJobToCalendar = async (job: Job | undefined, opts: { completed?: boolean; silent?: boolean } = {}) => {
     if (!job || !job.scheduledDate || !empSession?.user?.id) return;
     // Auto-sync defaults to on (matches the prior always-sync behavior) but the
     // employee can turn it off in the Google tab — when off, they add jobs to
@@ -2053,20 +2062,23 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
       const custName = cust ? `${cust.firstName} ${cust.lastName}` : "Customer";
       const checklistSummary = [...(job.preChecklist || []), ...(job.duringChecklist || [])]
         .map(i => i.label).join(", ");
-      const evId = await createGCalEvent(empToken!.token, {
-        title: `CrewBoss Job: ${custName}`,
-        start: startDt.toISOString(),
-        end: endDt.toISOString(),
-        location: job.address,
-        description: checklistSummary,
-      });
-      setJobs(prev => prev.map(j => j.id === job.id ? { ...j, googleEventId: evId } : j));
-      (supabase as any).from("jobs").update({ googleEventId: evId }).eq("id", job.id).catch(() => {});
-      toast("📅 Added to your Google Calendar");
+      const title = `${opts.completed ? "✓ " : ""}CrewBoss Job: ${custName}${opts.completed ? " (Completed)" : ""}`;
+      if (job.googleEventId) {
+        await updateGCalEvent(empToken!.token, job.googleEventId, { title, location: job.address, description: checklistSummary });
+        if (!opts.silent) toast("📅 Google Calendar event updated");
+      } else {
+        const evId = await createGCalEvent(empToken!.token, {
+          title, start: startDt.toISOString(), end: endDt.toISOString(), location: job.address, description: checklistSummary,
+        });
+        setJobs(prev => prev.map(j => j.id === job.id ? { ...j, googleEventId: evId } : j));
+        (supabase as any).from("jobs").update({ googleEventId: evId }).eq("id", job.id).catch(() => {});
+        if (!opts.silent) toast("📅 Added to your Google Calendar");
+      }
     } catch (e) {
       console.warn("Employee calendar sync failed:", e);
     }
   };
+  const syncAcceptedJobToCalendar = (job: Job | undefined) => syncJobToCalendar(job);
 
   const handleAcceptRequest = async () => {
     if (!requestData || !myEmployee) return;
@@ -2640,7 +2652,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
         onComplete={handleJobComplete}
         perms={perms}
         maxLunchMinutes={settings.maxLunchMinutes ?? 30}
-        onJobCompleted={recordJobRating}
+        onJobCompleted={(j: Job) => { recordJobRating(j); syncJobToCalendar(j, { completed: true, silent: true }); }}
         googleMapsKey={settings.googleMapsKey || settings.mapsKey}
         paidLunchBreaks={!!settings.paidLunchBreaks}
         signOffDisclaimer={job.signOffTerms || settings.termsAndConditions || settings.terms || ""}

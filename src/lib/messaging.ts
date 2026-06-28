@@ -15,15 +15,61 @@ export interface EmailSettings {
 }
 
 // ─── Buffer (social posting) ────────────────────────────────────────────────
-// Buffer's API (api.bufferapp.com) generally doesn't allow direct browser-
-// origin CORS requests, so this is a best-effort direct call exactly like the
-// Twilio direct-API path below — it works for accounts/proxies where CORS is
-// permitted, and the caller is expected to catch failures and fall back to
-// the manual copy/share flow when it isn't.
+// Buffer retired its old REST API (api.bufferapp.com/1/...) in favor of a
+// GraphQL API at api.buffer.com, authenticated with a Bearer API key from
+// https://publish.buffer.com/settings/api (see developers.buffer.com). This
+// is a best-effort direct browser call exactly like the Twilio direct-API
+// path below — the caller is expected to catch failures and fall back to
+// the manual copy/share flow when CORS or permissions block it.
+const BUFFER_GRAPHQL_URL = "https://api.buffer.com";
+
 export interface BufferSettings {
-  bufferAccessToken?: string;
-  bufferProfileIds?: Record<string, string>;
+  bufferApiKey?: string;
+  bufferOrganizationId?: string;
+  bufferChannelIds?: Record<string, string>;
 }
+
+const bufferGraphQL = async <T = any>(apiKey: string, query: string, variables: Record<string, unknown>): Promise<T> => {
+  const res = await fetch(BUFFER_GRAPHQL_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
+    body: JSON.stringify({ query, variables }),
+  });
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok || json.errors) {
+    throw new Error(json.errors?.[0]?.message ?? `Buffer error ${res.status}`);
+  }
+  return json.data as T;
+};
+
+export interface BufferChannel {
+  id: string;
+  name: string;
+  displayName: string;
+  service: string;
+  avatar?: string;
+}
+
+// Buffer's GraphQL schema scopes channels to an Organization — fetch the
+// account's first/only org automatically so the user only has to paste an
+// API key, not hunt down an org ID.
+export const fetchBufferOrganizationId = async (apiKey: string): Promise<string | null> => {
+  const data = await bufferGraphQL<{ account: { organizations: { id: string }[] } }>(
+    apiKey,
+    `query { account { organizations { id } } }`,
+    {}
+  );
+  return data?.account?.organizations?.[0]?.id ?? null;
+};
+
+export const fetchBufferChannels = async (apiKey: string, organizationId: string): Promise<BufferChannel[]> => {
+  const data = await bufferGraphQL<{ channels: BufferChannel[] }>(
+    apiKey,
+    `query GetChannels($organizationId: String!) { channels(input: { organizationId: $organizationId }) { id name displayName service avatar } }`,
+    { organizationId }
+  );
+  return data?.channels ?? [];
+};
 
 export const postToBuffer = async (
   settings: BufferSettings,
@@ -31,25 +77,26 @@ export const postToBuffer = async (
   text: string,
   scheduledAt?: Date
 ): Promise<void> => {
-  const { bufferAccessToken, bufferProfileIds } = settings;
-  const profileId = bufferProfileIds?.[platform];
-  if (!bufferAccessToken || !profileId) {
-    throw new Error("Buffer not connected for this platform — add an access token and profile ID in Settings.");
+  const { bufferApiKey, bufferChannelIds } = settings;
+  const channelId = bufferChannelIds?.[platform];
+  if (!bufferApiKey || !channelId) {
+    throw new Error("Buffer not connected for this platform — add an API key and pick a channel in Settings.");
   }
-  const body = new URLSearchParams({
-    "profile_ids[]": profileId,
-    text,
-    ...(scheduledAt ? { scheduled_at: String(Math.floor(scheduledAt.getTime() / 1000)) } : { now: "true" }),
-  });
-  const res = await fetch(`https://api.bufferapp.com/1/updates/create.json?access_token=${encodeURIComponent(bufferAccessToken)}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: body.toString(),
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({})) as { message?: string };
-    throw new Error(err.message ?? `Buffer error ${res.status}`);
-  }
+  const data = await bufferGraphQL<{ createPost: { __typename: string; message?: string } }>(
+    bufferApiKey,
+    `mutation CreatePost($text: String!, $channelId: String!, $schedulingType: PostSchedulingTypeInput!, $mode: PostCreationModeInput!) {
+      createPost(input: { text: $text, channelId: $channelId, schedulingType: $schedulingType, mode: $mode }) {
+        ... on PostActionSuccess { post { id } }
+        ... on MutationError { message }
+      }
+    }`,
+    {
+      text, channelId,
+      schedulingType: scheduledAt ? "automatic" : "notification",
+      mode: scheduledAt ? "addToQueue" : "shareNow",
+    }
+  );
+  if (data?.createPost?.message) throw new Error(data.createPost.message);
 };
 
 // ─── Twilio SMS / WhatsApp ────────────────────────────────────────────────────

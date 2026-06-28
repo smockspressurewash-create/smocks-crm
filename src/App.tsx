@@ -62,6 +62,7 @@ import { seedWeather } from "./lib/weather";
 import { fetchRealWeather } from "./lib/weather";
 import { fmt, uid, today, daysSince, daysFromNow } from "./lib/utils";
 import { sendEmail, buildTomorrowJobsEmailHtml, buildDailyBriefingEmailHtml } from "./lib/messaging";
+import { exchangeSocialOAuthCode, type SocialPlatform } from "./lib/socialOAuth";
 import type {
   Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense,
   Chemical, Service, Campaign, Automation, Review, SocialPost,
@@ -366,6 +367,34 @@ export function App() {
     }
   }, []);
 
+  // Direct social-platform OAuth callback (Facebook/LinkedIn/TikTok "Connect"
+  // in Settings → Integrations redirects here with ?code=...). Exchanges the
+  // code for a token via the configured backend proxy, saves it to settings,
+  // then sends the owner back to Social.
+  useEffect(() => {
+    if (!window.location.hash.startsWith("#/social-oauth-callback")) return;
+    const hash = window.location.hash.split("?")[1] || "";
+    const params = new URLSearchParams(hash);
+    const code = params.get("code");
+    const state = params.get("state");
+    const expectedState = sessionStorage.getItem("smocks.socialOAuthState");
+    const platform = sessionStorage.getItem("smocks.socialOAuthPlatform") as SocialPlatform | null;
+    sessionStorage.removeItem("smocks.socialOAuthState");
+    sessionStorage.removeItem("smocks.socialOAuthPlatform");
+    if (!code || !platform || state !== expectedState) { setPage("social"); return; }
+    (async () => {
+      const tok = await exchangeSocialOAuthCode(settings.socialBackendUrl || "", platform, code);
+      if (tok) {
+        const tokenField = platform === "facebook" ? "metaAccessToken" : platform === "linkedin" ? "linkedinAccessToken" : "tiktokAccessToken";
+        setSettings(s => ({ ...s, [tokenField]: tok.accessToken }));
+        toast(`${platform} connected ✓`, "green");
+      } else {
+        toast(`Could not connect ${platform} — check the backend URL in Settings`, "red");
+      }
+      setPage("social");
+    })();
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Listen for browser back/forward
   useEffect(() => {
     const valid = ["dashboard","alfred","inbox","customers","estimates","invoices","pipeline","intake","jobs","calendar","crew","campaigns","reviews","automations","social","referrals","expenses","reports","analytics","budget","personal","accountability","employees","fleet","chemicals","google","portal","reset-password"];
@@ -595,9 +624,21 @@ export function App() {
     const interval = setInterval(async () => {
       if (jobs.length === 0) return;
       try {
+        // Fields the employee portal writes directly (clock-in/lunch/hours) are
+        // omitted from this bulk upsert — owner-side `jobs` state can be stale
+        // for these by up to one poll interval, and sending them here would
+        // overwrite a clock-in/clock-out the employee just made on their phone
+        // with the owner's stale copy. Upsert only sends columns present on
+        // each row object, so omitting a key leaves that column untouched.
+        const EMPLOYEE_OWNED_FIELDS = ["clockInAt", "lunchStartAt", "lunchMinutes", "lunchExceeded", "loggedHours"] as const;
+        const safeJobs = jobs.map(j => {
+          const copy: any = { ...j };
+          EMPLOYEE_OWNED_FIELDS.forEach(f => delete copy[f]);
+          return copy;
+        });
         // Supabase-js resolves (rather than rejects) on a PostgREST error, so check
         // the returned `error` explicitly — a bare try/catch alone won't see a 400.
-        const { error } = await (supabase as any).from("jobs").upsert(jobs, { onConflict: "id" });
+        const { error } = await (supabase as any).from("jobs").upsert(safeJobs, { onConflict: "id" });
         if (error) {
           if (String(error.code) === "400" || error.message?.includes("400") || error.message?.includes("column")) {
             console.warn("Auto-save skipped — jobs table columns missing. Run the ALTER TABLE SQL.");
@@ -632,7 +673,7 @@ export function App() {
         .on("postgres_changes", { event: "*", schema: "public", table: "jobs" }, () => { refetchData(); })
         .subscribe();
     } catch { /* realtime may not be enabled on this project */ }
-    const interval = setInterval(refetchData, 5000);
+    const interval = setInterval(refetchData, 3000);
     return () => {
       clearInterval(interval);
       try { channel?.unsubscribe(); } catch { /* ignore */ }

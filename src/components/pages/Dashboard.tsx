@@ -79,7 +79,8 @@ import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 
 export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = [], estimates = [], setEstimates = (() => {}) as any, automations = [], stats, goals, vehicles = [], maintenance = [], chemicals = [], settings = {} as AppSettings, setSettings = () => {}, onNav, toast, weatherData = seedWeather, inboxThreads = [], employees = [], onSendDailyBriefing, onViewJob = (id: string) => {} }: { jobs?: any[]; setJobs?: any; customers?: any[]; estimates?: any[]; setEstimates?: any; automations?: any[]; stats?: any; goals?: any; vehicles?: any[]; maintenance?: any[]; chemicals?: any[]; settings?: AppSettings; setSettings?: any; onNav?: any; toast?: any; weatherData?: any; inboxThreads?: any[]; employees?: any[]; onSendDailyBriefing?: () => Promise<void>; onViewJob?: (id: string) => void }) {
   const [sendingDashInvoiceId, setSendingDashInvoiceId] = useState<string | null>(null);
-  const needsInvoiceJobs = jobs.filter((j: any) => j.status === "completed" && j.paymentStatus !== "Paid" && !j.invoiceSentAt);
+  const [needsInvoiceCollapsed, setNeedsInvoiceCollapsed] = useState(false);
+  const needsInvoiceJobs = jobs.filter((j: any) => j.status === "completed" && !!j.clockInAt && j.paymentStatus !== "Paid" && !j.invoiceSentAt);
   const sendDashInvoice = async (job: any) => {
     const cust = customers.find((c: any) => c.id === job.customerId);
     if (!cust?.email) { toast?.("Customer has no email on file", "red"); return; }
@@ -390,21 +391,15 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
         </div>
       )}
 
-      {/* Live team view — always visible so the owner can see the feature is
-          wired up even when no one is currently clocked in; auto-refreshes
-          every 30s via the liveTeamTick interval above. */}
+      {/* Live team view — only rendered while someone is actually clocked in;
+          auto-refreshes every 30s via the liveTeamTick interval above. */}
+      {activeJobs.length > 0 && (
       <Glass className="p-4">
         <div className="flex items-center gap-2 mb-3">
           <Users2 size={15} className="text-green-400" />
           <h3 className="font-semibold text-sm">Live Team View</h3>
-          {activeJobs.length > 0 && <Badge tone="green">{activeJobs.length} active</Badge>}
+          <Badge tone="green">{activeJobs.length} active</Badge>
         </div>
-        {activeJobs.length === 0 ? (
-          <div className="text-center py-6 text-white/30 text-sm">
-            <Clock size={22} className="mx-auto mb-2 opacity-30" />
-            No one is clocked in right now
-          </div>
-        ) : (
           <div className="space-y-2">
             {activeJobs.map(j => {
               const c = customers.find(x => x.id === j.customerId);
@@ -417,7 +412,7 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
               return (
                 <div key={j.id} className={"flex items-center gap-3 p-3 rounded-xl border " + (overSchedule ? "bg-yellow-950/20 border-yellow-700/40" : "bg-black/30 border-white/10")}>
                   {mapsKey && j.address ? (
-                    <img src={`https://maps.googleapis.com/maps/api/streetview?size=72x72&location=${encodeURIComponent(j.address)}&key=${mapsKey}`} alt="" className="w-14 h-14 rounded-lg object-cover flex-shrink-0 border border-white/10" onError={(e: any) => { e.target.style.display = "none"; }} />
+                    <img src={`https://maps.googleapis.com/maps/api/streetview?size=72x72&location=${encodeURIComponent(j.address)}&key=${mapsKey}`} alt="" className="w-14 h-14 rounded-lg object-cover flex-shrink-0 border border-white/10" onError={(e: any) => { console.warn("Street View image failed to load for", j.address, "— check that the Street View Static API (not just Maps JS/Places) is enabled and billed on this key."); e.target.style.display = "none"; }} />
                   ) : (
                     <div className="w-14 h-14 rounded-lg bg-green-900/40 border border-green-600/40 flex items-center justify-center flex-shrink-0">
                       <Clock size={16} className="text-green-400" />
@@ -438,35 +433,40 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
               );
             })}
           </div>
-        )}
       </Glass>
+      )}
 
       {/* Completed jobs that haven't been invoiced or marked paid yet */}
       {needsInvoiceJobs.length > 0 && (
         <Glass className="p-4 !bg-yellow-950/15 !border-yellow-700/30">
-          <div className="flex items-center gap-2 mb-3">
+          <button onClick={() => setNeedsInvoiceCollapsed(c => !c)} className="w-full flex items-center gap-2 mb-3 text-left">
             <AlertTriangle size={14} className="text-yellow-400" />
-            <h3 className="font-semibold text-sm">Completed — Needs Invoice</h3>
+            <h3 className="font-semibold text-sm flex-1">Completed — Needs Invoice</h3>
             <Badge tone="yellow">{needsInvoiceJobs.length}</Badge>
-          </div>
-          <div className="space-y-2">
-            {needsInvoiceJobs.slice(0, 5).map((j: any) => {
-              const cust = customers.find((c: any) => c.id === j.customerId);
-              return (
-                <div key={j.id} className="flex items-center justify-between gap-3 p-3 rounded-xl bg-black/30 border border-white/10">
-                  <div className="min-w-0 flex-1">
-                    <div className="text-sm font-medium truncate">{cust ? `${cust.firstName} ${cust.lastName}` : j.address}</div>
-                    <div className="text-xs text-white/40">{j.address} · {fmt(j.amount)}</div>
-                  </div>
-                  <GBtn onClick={() => sendDashInvoice(j)} disabled={sendingDashInvoiceId === j.id} className="!text-xs !py-1.5 flex-shrink-0">
-                    {sendingDashInvoiceId === j.id ? "Sending…" : "Send Invoice"}
-                  </GBtn>
-                </div>
-              );
-            })}
-          </div>
-          {needsInvoiceJobs.length > 5 && (
-            <button onClick={() => onNav("invoices")} className="w-full mt-2 text-xs text-white/40 hover:text-white/60 text-center">View all {needsInvoiceJobs.length} →</button>
+            <ChevronRight size={14} className={"text-white/40 transition-transform " + (needsInvoiceCollapsed ? "" : "rotate-90")} />
+          </button>
+          {!needsInvoiceCollapsed && (
+            <>
+              <div className="space-y-2">
+                {needsInvoiceJobs.slice(0, 5).map((j: any) => {
+                  const cust = customers.find((c: any) => c.id === j.customerId);
+                  return (
+                    <div key={j.id} className="flex items-center justify-between gap-3 p-3 rounded-xl bg-black/30 border border-white/10">
+                      <div className="min-w-0 flex-1">
+                        <div className="text-sm font-medium truncate">{cust ? `${cust.firstName} ${cust.lastName}` : j.address}</div>
+                        <div className="text-xs text-white/40">{j.address} · {fmt(j.amount)}</div>
+                      </div>
+                      <GBtn onClick={() => sendDashInvoice(j)} disabled={sendingDashInvoiceId === j.id} className="!text-xs !py-1.5 flex-shrink-0">
+                        {sendingDashInvoiceId === j.id ? "Sending…" : "Send Invoice"}
+                      </GBtn>
+                    </div>
+                  );
+                })}
+              </div>
+              {needsInvoiceJobs.length > 5 && (
+                <button onClick={() => onNav("invoices")} className="w-full mt-2 text-xs text-white/40 hover:text-white/60 text-center">View all {needsInvoiceJobs.length} →</button>
+              )}
+            </>
           )}
         </Glass>
       )}

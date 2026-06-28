@@ -199,6 +199,18 @@ export function JobsPage({ jobs = [], setJobs, customers = [], employees = [], e
     // Crew assignment must reach Supabase immediately — the employee portal
     // polls Supabase directly, and waiting for the 30s auto-save interval in
     // App.tsx means an assignment can sit invisible to the employee that long.
+    // Clock-in/lunch/hours fields are excluded from the App-level 30s bulk
+    // autosave (so it never clobbers a more-recent write the employee portal
+    // made directly), so any owner-side edit to them must be pushed to
+    // Supabase immediately right here instead.
+    const EMPLOYEE_OWNED_FIELDS = ["clockInAt", "lunchStartAt", "lunchMinutes", "lunchExceeded", "loggedHours"] as const;
+    const ownedPatch: any = {};
+    EMPLOYEE_OWNED_FIELDS.forEach(f => { if ((patch as any)[f] !== undefined) ownedPatch[f] = (patch as any)[f]; });
+    if (Object.keys(ownedPatch).length > 0) {
+      (supabase as any).from("jobs").update(ownedPatch).eq("id", jid)
+        .then((result: any) => { if (result?.error) toast?.("Failed to save — " + result.error.message, "red"); })
+        .catch((e: any) => toast?.("Failed to save: " + e?.message, "red"));
+    }
     if (patch.crew !== undefined) {
       console.log("SAVING JOB — crew:", patch.crew, "full job:", { ...oldJob, ...patch });
       (supabase as any).from("jobs").update({ crew: patch.crew }).eq("id", jid)
@@ -267,17 +279,13 @@ export function JobsPage({ jobs = [], setJobs, customers = [], employees = [], e
         const requestUrl = `${portalUrl}#/portal?request=${row.id}`;
         const c = customers.find((x: any) => x.id === job.customerId);
         if (emp.email) {
-          sendEmail(settings, {
-            to: emp.email,
-            subject: `Job Request — ${job.scheduledDate}`,
-            body: `<p>Hi ${emp.firstName},</p><p>${quickReqMsg || "You have a new job request:"}</p>
+          const html = emailShell(settings.companyName || "Smock's Pressure Washing", "Job Request", `<p>Hi ${emp.firstName},</p><p>${quickReqMsg || "You have a new job request:"}</p>
               <ul>
                 <li><b>Date:</b> ${job.scheduledDate}${job.scheduledTime ? " at " + job.scheduledTime : ""}</li>
                 <li><b>Address:</b> ${job.address}</li>
                 ${c ? `<li><b>Customer:</b> ${c.firstName} ${c.lastName}</li>` : ""}
-              </ul>
-              <p><a href="${requestUrl}" style="background:#dc2626;color:white;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:bold;display:inline-block;">View Request</a></p>`,
-          }).catch(() => {});
+              </ul>` + emailButton("View Request — Accept or Decline", requestUrl));
+          sendEmail(settings, { to: emp.email, subject: `Job Request — ${job.scheduledDate}`, body: html }).catch(() => {});
         }
         if (toast) toast(`Request sent to ${emp.firstName} ✓`, "green");
         setQuickReqJobId(null);
@@ -396,12 +404,12 @@ export function JobsPage({ jobs = [], setJobs, customers = [], employees = [], e
                       ))}
                     </GSel>
                     {selectedId === "__custom__" && (
-                      <GInput placeholder="123 Main St, York PA" value={newJobForm.address} onChange={e => setNewJobForm(f => ({ ...f, address: e.target.value }))} />
+                      <AddressAutocomplete value={newJobForm.address} onChange={v => setNewJobForm(f => ({ ...f, address: v }))} mapsKey={settings.googleMapsKey || settings.mapsKey || ""} placeholder="123 Main St, York PA" />
                     )}
                   </div>
                 );
               }
-              return <GInput placeholder="123 Main St, York PA" value={newJobForm.address} onChange={e => setNewJobForm(f => ({ ...f, address: e.target.value }))} />;
+              return <AddressAutocomplete value={newJobForm.address} onChange={v => setNewJobForm(f => ({ ...f, address: v }))} mapsKey={settings.googleMapsKey || settings.mapsKey || ""} placeholder="123 Main St, York PA" />;
             })()}
           </div>
           <div className="grid grid-cols-2 gap-3">

@@ -22,7 +22,8 @@ import {
 } from "recharts";
 import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE } from "../../lib/utils";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
-import { twilioSend, sendEmail } from "../../lib/messaging";
+import { twilioSend, sendEmail, fetchBufferOrganizationId, fetchBufferChannels, type BufferChannel } from "../../lib/messaging";
+import { buildSocialAuthorizeUrl, type SocialPlatform } from "../../lib/socialOAuth";
 import { seedWeather } from "../../lib/weather";
 import { seedCustomers, seedEstimates, seedJobs, seedEmployees, seedVehicles, seedExpenses, seedChemicals, seedServices, seedAutomations, seedEmailTemplates, seedSmsTemplates, seedRewardTiers, seedReferrals, seedMaintenance, campaignTemplates, seedSocialPosts, seedTimeline, seedGoals, seedReminders, seedAccountabilityEntries, seedMileage, seedLeadSrc, STEP_TYPES, AUTOMATION_TEMPLATES } from "../../lib/seed";
 import { callModel, MODELS } from "../../lib/api";
@@ -87,6 +88,8 @@ export function SettingsModal({ open, onClose, settings, setSettings, services, 
   const [showKey, setShowKey] = useState(false);
   const [googleOAuth, setGoogleOAuth] = useState({ open: false, step: "account", email: "", selectedScopes: { gmail: true, calendar: true, drive: false, contacts: false } });
   const [tplTab, setTplTab] = useState<"messaging" | "estimates">("messaging");
+  const [bufferChannels, setBufferChannels] = useState<BufferChannel[]>([]);
+  const [bufferConnecting, setBufferConnecting] = useState(false);
   const [editingTpl, setEditingTpl] = useState<any>(null); // null = list view, {} = new, {...} = editing existing
   const blankTpl = () => ({ id: "", name: "", description: "", lineItems: [{ id: Date.now().toString(), description: "", quantity: 1, unitPrice: 0 }], notes: "", terms: "Payment due upon completion. 3-day cancellation notice requested. Weather reschedules free of charge.", customFields: [] });
   const blankField = () => ({ id: Date.now().toString() + Math.random(), label: "", type: "text", required: false, customerVisible: true, options: "" });
@@ -100,6 +103,7 @@ export function SettingsModal({ open, onClose, settings, setSettings, services, 
       monthlyRevenueGoal: Number(f.monthlyRevenueGoal), monthlyJobsGoal: Number(f.monthlyJobsGoal), taxRate: Number(f.taxRate),
       stripeSecretKeyEnc,
       stripeConnected: !!(f.stripePublishableKey?.trim() && stripeSecretInput.trim()),
+      googleMapsKey: (f.googleMapsKey || "").trim(),
     });
     onClose(); toast("Settings saved");
   };
@@ -266,9 +270,9 @@ export function SettingsModal({ open, onClose, settings, setSettings, services, 
             </div>
             <div>
               <h4 className="font-semibold text-sm mb-2 flex items-center gap-2"><MapPin size={13} className="text-red-400" />Google Maps API Key</h4>
-              <div className="text-[11px] text-white/50 mb-2">Powers address autocomplete and satellite view for property estimation.</div>
-              <GInput type="password" value={f.googleMapsKey || ""} onChange={e => setF({ ...f, googleMapsKey: e.target.value })} placeholder="AIza..." />
-              <div className="text-[10px] text-white/40 mt-1"><a href="https://console.cloud.google.com" target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:underline">console.cloud.google.com</a> → Enable Maps JavaScript API</div>
+              <div className="text-[11px] text-white/50 mb-2">Powers address autocomplete and Street View thumbnails on jobs.</div>
+              <GInput type="password" value={f.googleMapsKey || ""} onChange={e => setF({ ...f, googleMapsKey: e.target.value.trim() })} placeholder="AIza..." />
+              <div className="text-[10px] text-white/40 mt-1"><a href="https://console.cloud.google.com" target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:underline">console.cloud.google.com</a> → enable <b>Places API</b> (autocomplete) AND <b>Street View Static API</b> (job thumbnails) — they're billed and enabled separately, so a key that only has one will silently fail the other.</div>
             </div>
           </div>}
 
@@ -822,24 +826,113 @@ export function SettingsModal({ open, onClose, settings, setSettings, services, 
               </div>
             </Glass>
 
-            {/* Buffer — real social posting */}
+            {/* Buffer — real social posting via Buffer's current GraphQL API */}
             <Glass className="p-4 !bg-black/40">
               <div className="flex items-center justify-between mb-3">
                 <div className="flex items-center gap-2"><Share2 size={16} className="text-blue-400" /><div className="font-semibold text-sm">Buffer</div></div>
-                <Badge tone={f.bufferAccessToken ? "green" : "gray"}>{f.bufferAccessToken ? "Configured" : "Not set"}</Badge>
+                <Badge tone={f.bufferChannelIds && Object.keys(f.bufferChannelIds).length > 0 ? "green" : f.bufferApiKey ? "yellow" : "gray"}>
+                  {f.bufferChannelIds && Object.keys(f.bufferChannelIds).length > 0 ? "Connected" : f.bufferApiKey ? "Key set — pick channels" : "Not set"}
+                </Badge>
               </div>
-              <div className="text-xs text-white/60 mb-3">Post directly to connected platforms from the Social page. Without this, posts still save and you can copy/paste or use the share sheet. Get a token at <a href="https://buffer.com/developers/apps" target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:text-blue-300">buffer.com/developers</a></div>
+              <div className="text-xs text-white/60 mb-3">Primary way to post to all your platforms from the Social page. Buffer retired its old token-based API — get a key at <a href="https://publish.buffer.com/settings/api" target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:text-blue-300">publish.buffer.com/settings/api</a> (docs: <a href="https://developers.buffer.com" target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:text-blue-300">developers.buffer.com</a>)</div>
               <div className="space-y-2">
-                <div>
-                  <label className="text-[10px] text-white/50 uppercase tracking-wider">Access Token</label>
-                  <GInput type="password" value={f.bufferAccessToken || ""} onChange={e => setF({ ...f, bufferAccessToken: e.target.value })} placeholder="Buffer access token" className="!text-xs mt-1" />
+                <div className="flex gap-2">
+                  <GInput type="password" value={f.bufferApiKey || ""} onChange={e => setF({ ...f, bufferApiKey: e.target.value.trim() })} placeholder="Buffer API key" className="!text-xs" />
+                  <GBtn
+                    disabled={!f.bufferApiKey || bufferConnecting}
+                    onClick={async () => {
+                      setBufferConnecting(true);
+                      try {
+                        const orgId = f.bufferOrganizationId || await fetchBufferOrganizationId(f.bufferApiKey);
+                        if (!orgId) { toast?.("No Buffer organization found for this key", "red"); return; }
+                        const channels = await fetchBufferChannels(f.bufferApiKey, orgId);
+                        setBufferChannels(channels);
+                        setF((p: any) => ({ ...p, bufferOrganizationId: orgId }));
+                        toast?.(`Found ${channels.length} connected channel${channels.length !== 1 ? "s" : ""} ✓`, "green");
+                      } catch (e: any) {
+                        toast?.(e?.message || "Could not reach Buffer", "red");
+                      } finally {
+                        setBufferConnecting(false);
+                      }
+                    }}
+                    className="!text-xs !py-1.5 flex-shrink-0"
+                  >
+                    {bufferConnecting ? "Connecting…" : "Find Channels"}
+                  </GBtn>
                 </div>
-                {["instagram", "facebook", "tiktok"].map(p => (
-                  <div key={p}>
-                    <label className="text-[10px] text-white/50 uppercase tracking-wider capitalize">{p} Profile ID</label>
-                    <GInput value={f.bufferProfileIds?.[p] || ""} onChange={e => setF({ ...f, bufferProfileIds: { ...(f.bufferProfileIds || {}), [p]: e.target.value } })} placeholder="Profile ID from Buffer" className="!text-xs mt-1" />
+                {bufferChannels.length > 0 && (
+                  <div className="space-y-1.5 pt-1">
+                    {["instagram", "facebook", "tiktok", "linkedin"].map(platform => (
+                      <div key={platform} className="flex items-center justify-between gap-2">
+                        <label className="text-[10px] text-white/50 uppercase tracking-wider capitalize w-20 flex-shrink-0">{platform}</label>
+                        <GSel
+                          value={f.bufferChannelIds?.[platform] || ""}
+                          onChange={e => setF((p: any) => ({ ...p, bufferChannelIds: { ...(p.bufferChannelIds || {}), [platform]: e.target.value } }))}
+                          className="!text-xs !py-1.5 flex-1"
+                        >
+                          <option value="" className="bg-black">Not connected</option>
+                          {bufferChannels.filter(c => c.service?.toLowerCase().includes(platform) || (platform === "facebook" && c.service?.toLowerCase() === "fb")).map(c => (
+                            <option key={c.id} value={c.id} className="bg-black">{c.displayName || c.name}</option>
+                          ))}
+                        </GSel>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {bufferChannels.length === 0 && f.bufferChannelIds && Object.keys(f.bufferChannelIds).length > 0 && (
+                  <div className="text-[10px] text-white/40">Channels connected previously — click "Find Channels" again to change them.</div>
+                )}
+              </div>
+            </Glass>
+
+            {/* Direct platform OAuth — fallback for accounts not on Buffer */}
+            <Glass className="p-4 !bg-black/40">
+              <div className="flex items-center gap-2 mb-1"><Link size={16} className="text-purple-400" /><div className="font-semibold text-sm">Direct Platform Connections</div></div>
+              <div className="text-xs text-white/60 mb-3">Fallback for platforms not connected through Buffer. Connecting redirects to the platform to authorize, then exchanges the code for a token through your backend (same proxy used for Google) — set it below first.</div>
+              <div className="mb-3">
+                <label className="text-[10px] text-white/50 uppercase tracking-wider">Backend URL (token exchange proxy)</label>
+                <GInput value={f.socialBackendUrl || ""} onChange={e => setF({ ...f, socialBackendUrl: e.target.value })} placeholder="https://your-backend.railway.app" className="!text-xs mt-1" />
+              </div>
+              <div className="space-y-3">
+                {([
+                  { platform: "facebook" as SocialPlatform, label: "Facebook", clientIdKey: "metaClientId", tokenKey: "metaAccessToken" },
+                  { platform: "linkedin" as SocialPlatform, label: "LinkedIn", clientIdKey: "linkedinClientId", tokenKey: "linkedinAccessToken" },
+                  { platform: "tiktok" as SocialPlatform, label: "TikTok", clientIdKey: "tiktokClientId", tokenKey: "tiktokAccessToken" },
+                ]).map(p => (
+                  <div key={p.platform} className="flex items-center gap-2 p-2.5 bg-black/40 border border-white/5 rounded-xl">
+                    <div className="flex-1 min-w-0">
+                      <div className="text-xs font-medium mb-1">{p.label}</div>
+                      <GInput value={(f as any)[p.clientIdKey] || ""} onChange={e => setF({ ...f, [p.clientIdKey]: e.target.value })} placeholder={`${p.label} Client/App ID`} className="!text-xs" />
+                    </div>
+                    <Badge tone={(f as any)[p.tokenKey] ? "green" : "gray"}>{(f as any)[p.tokenKey] ? "Connected" : "Not connected"}</Badge>
+                    <GBtn
+                      variant="ghost"
+                      disabled={!(f as any)[p.clientIdKey]}
+                      onClick={() => {
+                        sessionStorage.setItem("smocks.socialOAuthPlatform", p.platform);
+                        const state = uid();
+                        sessionStorage.setItem("smocks.socialOAuthState", state);
+                        window.location.href = buildSocialAuthorizeUrl(p.platform, (f as any)[p.clientIdKey], state);
+                      }}
+                      className="!text-xs !py-1.5 flex-shrink-0"
+                    >
+                      Connect
+                    </GBtn>
                   </div>
                 ))}
+                {(f as any).metaAccessToken && (
+                  <div>
+                    <label className="text-[10px] text-white/50 uppercase tracking-wider">Facebook Page ID</label>
+                    <GInput value={(f as any).metaPageId || ""} onChange={e => setF({ ...f, metaPageId: e.target.value })} placeholder="Page ID to post to" className="!text-xs mt-1" />
+                  </div>
+                )}
+                {(f as any).linkedinAccessToken && (
+                  <div>
+                    <label className="text-[10px] text-white/50 uppercase tracking-wider">LinkedIn Author URN</label>
+                    <GInput value={(f as any).linkedinAuthorUrn || ""} onChange={e => setF({ ...f, linkedinAuthorUrn: e.target.value })} placeholder="urn:li:person:xxxxx" className="!text-xs mt-1" />
+                  </div>
+                )}
+                <div className="text-[10px] text-white/30">Instagram and TikTok posting still needs a publicly hosted image/video URL their APIs require, so those two keep using the share-sheet/copy fallback even once connected — Facebook and LinkedIn post real text directly.</div>
               </div>
             </Glass>
           </div>}

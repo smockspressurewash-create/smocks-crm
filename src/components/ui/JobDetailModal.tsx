@@ -159,7 +159,7 @@ function StreetViewThumb({ address, apiKey }: { address: string; apiKey?: string
   return (
     <>
       <button onClick={() => setExpanded(true)} className="w-full rounded-xl overflow-hidden border border-white/10 relative group">
-        <img src={thumbUrl} alt="Street View" className="w-full h-32 object-cover" onError={() => setLoadError(true)} />
+        <img src={thumbUrl} alt="Street View" className="w-full h-32 object-cover" onError={() => { console.warn("Street View image failed to load for", address, "— check that the Street View Static API (not just Maps JS/Places) is enabled and billed on this key."); setLoadError(true); }} />
         <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition flex items-center justify-center">
           <span className="opacity-0 group-hover:opacity-100 text-white text-xs font-semibold transition">Click to expand</span>
         </div>
@@ -326,7 +326,7 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
   // record — pay the remaining balance.
   const sendInvoice = async () => {
     const c = customers.find(x => x.id === job.customerId);
-    if (!c?.email) { toast("Customer has no email on file", "red"); return; }
+    if (!c?.email && !c?.phone) { toast("No contact info for this customer. Add email or phone first.", "red"); return; }
     setSendingInvoice(true);
     try {
       const newInv = {
@@ -346,8 +346,12 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
       };
       setEstimates((prev: any[]) => [...prev, newInv]);
       const payLink = `${window.location.origin}${window.location.pathname}#/portal/${newInv.id}`;
-      const html = emailShell(settings.companyName || "Smock's Pressure Washing", "Invoice", `<p>Hi ${c.firstName},</p><p>Thanks for choosing us! Your service at <b>${job.address}</b> is complete.</p><p><b>Amount due:</b> $${(Number(job.amount) || 0).toFixed(2)}</p><p>You can pay in full, pay a deposit, or pay any remaining balance from the link below.</p>` + emailButton("View & Pay Invoice", payLink));
-      await withTimeout(sendEmail(settings, { to: c.email, subject: `Invoice — ${settings.companyName || "Smock's Pressure Washing"}`, body: html }), 10000, "Invoice email");
+      if (c.email) {
+        const html = emailShell(settings.companyName || "Smock's Pressure Washing", "Invoice", `<p>Hi ${c.firstName},</p><p>Thanks for choosing us! Your service at <b>${job.address}</b> is complete.</p><p><b>Amount due:</b> $${(Number(job.amount) || 0).toFixed(2)}</p><p>You can pay in full, pay a deposit, or pay any remaining balance from the link below.</p>` + emailButton("View & Pay Invoice", payLink));
+        await withTimeout(sendEmail(settings, { to: c.email, subject: `Invoice — ${settings.companyName || "Smock's Pressure Washing"}`, body: html }), 10000, "Invoice email");
+      } else {
+        await withTimeout(twilioSend(settings as any, c.phone!, `Hi ${c.firstName}, your invoice for $${(Number(job.amount) || 0).toFixed(2)} is ready: ${payLink}`), 10000, "Invoice SMS");
+      }
       updateJob(jobId, { invoiceSentAt: today(), paymentType: "Invoice" as any, paymentStatus: job.paymentStatus === "Paid" ? job.paymentStatus : "Pending" as any });
       toast(`Invoice sent to ${c.firstName} ✓`, "green");
     } catch (err: any) {

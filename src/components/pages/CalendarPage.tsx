@@ -123,6 +123,17 @@ export function CalendarPage({ jobs = [], setJobs, customers = [], employees = [
 
   const updateJob = (jid: string, patch: any) => {
     setJobs((prev: any[]) => prev.map(j => j.id === jid ? { ...j, ...patch } : j));
+    // Clock-in/lunch/hours fields are excluded from the App-level 30s bulk
+    // autosave so it never clobbers a more-recent employee-portal write —
+    // so any owner-side edit to them must be pushed immediately here.
+    const EMPLOYEE_OWNED_FIELDS = ["clockInAt", "lunchStartAt", "lunchMinutes", "lunchExceeded", "loggedHours"] as const;
+    const ownedPatch: any = {};
+    EMPLOYEE_OWNED_FIELDS.forEach(f => { if ((patch as any)[f] !== undefined) ownedPatch[f] = (patch as any)[f]; });
+    if (Object.keys(ownedPatch).length > 0) {
+      (supabase as any).from("jobs").update(ownedPatch).eq("id", jid)
+        .then((result: any) => { if (result?.error) toast?.("Failed to save — " + result.error.message, "red"); })
+        .catch((e: any) => toast?.("Failed to save: " + e?.message, "red"));
+    }
     // Crew assignment must reach Supabase immediately rather than waiting on the
     // 30s auto-save interval, since the employee portal polls Supabase directly.
     if (patch.crew !== undefined) {

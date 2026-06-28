@@ -587,9 +587,21 @@ export interface AppSettings {
 
   // Integrations misc
   bufferTime?: number;
-  bufferAccessToken?: string;
-  bufferProfileIds?: Record<string, string>;
+  bufferApiKey?: string;
+  bufferOrganizationId?: string;
+  bufferChannelIds?: Record<string, string>;
   googleCalendarColor?: boolean;
+
+  // Direct platform OAuth (fallback to Buffer)
+  socialBackendUrl?: string;
+  metaClientId?: string;
+  metaAccessToken?: string;
+  metaPageId?: string;
+  linkedinClientId?: string;
+  linkedinAccessToken?: string;
+  linkedinAuthorUrn?: string;
+  tiktokClientId?: string;
+  tiktokAccessToken?: string;
 
   // Models
   selectedModel?: string;

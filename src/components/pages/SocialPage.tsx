@@ -23,6 +23,7 @@ import {
 import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE } from "../../lib/utils";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
 import { twilioSend, sendEmail, postToBuffer } from "../../lib/messaging";
+import { postToFacebookPage, postToLinkedIn } from "../../lib/socialOAuth";
 import { seedWeather } from "../../lib/weather";
 import { seedCustomers, seedEstimates, seedJobs, seedEmployees, seedVehicles, seedExpenses, seedChemicals, seedServices, seedAutomations, seedEmailTemplates, seedSmsTemplates, seedRewardTiers, seedReferrals, seedMaintenance, campaignTemplates, seedSocialPosts, seedTimeline, seedGoals, seedReminders, seedAccountabilityEntries, seedMileage, seedLeadSrc, STEP_TYPES, AUTOMATION_TEMPLATES } from "../../lib/seed";
 import { callModel, MODELS } from "../../lib/api";
@@ -88,6 +89,7 @@ export function SocialPage({ posts = [], setPosts, toast, settings = {} as AppSe
     instagram: { color: "from-pink-600 to-purple-700", icon: "📸", limit: 2200, label: "Instagram" },
     facebook: { color: "from-blue-600 to-blue-800", icon: "👥", limit: 63206, label: "Facebook" },
     tiktok: { color: "from-black to-neutral-900", icon: "🎵", limit: 2200, label: "TikTok" },
+    linkedin: { color: "from-blue-700 to-sky-800", icon: "💼", limit: 3000, label: "LinkedIn" },
     google: { color: "from-blue-500 to-red-500", icon: "🗺️", limit: 1500, label: "Google Business" },
     nextdoor: { color: "from-green-600 to-green-800", icon: "🏘️", limit: 3000, label: "Nextdoor" }
   };
@@ -154,16 +156,35 @@ export function SocialPage({ posts = [], setPosts, toast, settings = {} as AppSe
 
     if (post) {
       const caption = (post.caption || "") + (post.hashtags ? "\n\n" + post.hashtags : "");
-      // Real posting via Buffer when an access token + profile ID are
-      // configured for this platform — otherwise fall through to the
+      // Real posting via Buffer when an API key + channel are configured for
+      // this platform — otherwise fall through to a direct platform token
+      // (Facebook/LinkedIn only — those accept plain text), then finally the
       // manual copy/deep-link/share-sheet flow below.
-      if (settings.bufferAccessToken && settings.bufferProfileIds?.[post.platform]) {
+      if (settings.bufferApiKey && settings.bufferChannelIds?.[post.platform]) {
         try {
           await postToBuffer(settings, post.platform, caption);
           toast(`Posted to ${post.platform} via Buffer ✓`, "green");
           return;
         } catch (e: any) {
           toast(e?.message || "Buffer post failed — copy/paste instead", "yellow");
+        }
+      }
+      if (post.platform === "facebook" && (settings as any).metaAccessToken && (settings as any).metaPageId) {
+        try {
+          await postToFacebookPage((settings as any).metaAccessToken, (settings as any).metaPageId, caption);
+          toast("Posted to Facebook ✓", "green");
+          return;
+        } catch (e: any) {
+          toast(e?.message || "Facebook post failed — copy/paste instead", "yellow");
+        }
+      }
+      if (post.platform === "linkedin" && (settings as any).linkedinAccessToken && (settings as any).linkedinAuthorUrn) {
+        try {
+          await postToLinkedIn((settings as any).linkedinAccessToken, (settings as any).linkedinAuthorUrn, caption);
+          toast("Posted to LinkedIn ✓", "green");
+          return;
+        } catch (e: any) {
+          toast(e?.message || "LinkedIn post failed — copy/paste instead", "yellow");
         }
       }
     }
@@ -239,6 +260,22 @@ export function SocialPage({ posts = [], setPosts, toast, settings = {} as AppSe
           <GBtn onClick={() => setModal(true)} className="flex-shrink-0"><Plus size={14} className="inline mr-1.5" />New Post</GBtn>
         </div>
       </Glass>
+
+      {/* Connection status per platform — Buffer first, then a direct token */}
+      <div className="flex gap-2 flex-wrap">
+        {Object.entries(platformMeta).filter(([k]) => k !== "google" && k !== "nextdoor").map(([k, m]) => {
+          const connected = !!settings.bufferChannelIds?.[k]
+            || (k === "facebook" && !!(settings as any).metaAccessToken)
+            || (k === "linkedin" && !!(settings as any).linkedinAccessToken);
+          return (
+            <div key={k} className={"flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] border " + (connected ? "bg-green-950/30 border-green-700/40 text-green-300" : "bg-white/5 border-white/10 text-white/40")}>
+              <span>{m.icon} {m.label}</span>
+              <span className={"w-1.5 h-1.5 rounded-full " + (connected ? "bg-green-400" : "bg-white/20")} />
+              <span>{connected ? "Connected" : "Not connected"}</span>
+            </div>
+          );
+        })}
+      </div>
 
       {/* Stats */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">

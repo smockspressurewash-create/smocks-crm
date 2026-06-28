@@ -232,7 +232,7 @@ export function LeadIntakePage({ customers = [], setCustomers, estimates = [], s
                 </div>
                 <div><label className="text-xs text-white/60 mb-1 block">Phone Number *</label><GInput type="tel" value={f.phone} onChange={e => setF({ ...f, phone: e.target.value })} placeholder="(717) 555-0100" /></div>
                 <div><label className="text-xs text-white/60 mb-1 block">Email</label><GInput type="email" value={f.email} onChange={e => setF({ ...f, email: e.target.value })} placeholder="jen@email.com" /></div>
-                <div><label className="text-xs text-white/60 mb-1 block">Property Address *</label><GInput value={f.address} onChange={e => setF({ ...f, address: e.target.value })} placeholder="412 Oak Ridge Ln, York PA" /></div>
+                <div><label className="text-xs text-white/60 mb-1 block">Property Address *</label><AddressAutocomplete value={f.address} onChange={v => setF({ ...f, address: v })} mapsKey={settings.googleMapsKey || (settings as any).mapsKey || ""} placeholder="412 Oak Ridge Ln, York PA" /></div>
                 <div className="grid grid-cols-2 gap-3">
                   <div><label className="text-xs text-white/60 mb-1 block">Service Needed</label>
                     <GSel value={f.service} onChange={e => setF({ ...f, service: e.target.value })} className="!text-xs">
