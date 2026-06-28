@@ -42,13 +42,21 @@ import { PBar } from "./PBar";
 import { PageFade } from "./PageFade";
 import { TimeframeSelector } from "./TimeframeSelector";
 
+// Records a voice note and transcribes it: Whisper API when an OpenAI key is
+// configured (more accurate, works on any browser), otherwise falls back to
+// the browser's built-in SpeechRecognition (works without any key, but only
+// in Chromium-based browsers). Either way, the transcript is handed to
+// onTranscript — no API key is required for this button to function at all.
 export function VoiceMicButton({ onTranscript, apiKey }: { onTranscript?: any; apiKey?: any }) {
   const [recording, setRecording] = useState(false);
   const [processing, setProcessing] = useState(false);
   const mediaRef = useRef(null);
   const chunksRef = useRef([]);
+  const recognitionRef = useRef<any>(null);
 
-  const startRecording = async () => {
+  const SpeechRecognitionCtor = typeof window !== "undefined" ? ((window as any).SpeechRecognition || (window as any).webkitSpeechRecognition) : null;
+
+  const startWhisperRecording = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       const mr = new MediaRecorder(stream, { mimeType: "audio/webm;codecs=opus" });
@@ -70,6 +78,7 @@ export function VoiceMicButton({ onTranscript, apiKey }: { onTranscript?: any; a
           });
           const data = await res.json();
           if (data.text) onTranscript(data.text.trim());
+          else if (data.error) console.warn("Whisper transcription failed:", data.error);
         } catch (e) {
           console.error("Whisper error:", e);
         } finally {
@@ -84,8 +93,27 @@ export function VoiceMicButton({ onTranscript, apiKey }: { onTranscript?: any; a
     }
   };
 
+  const startBrowserRecognition = () => {
+    if (!SpeechRecognitionCtor) { alert("Voice input isn't supported in this browser. Try Chrome, or add an OpenAI key in Settings for Whisper transcription."); return; }
+    const rec = new SpeechRecognitionCtor();
+    rec.lang = "en-US";
+    rec.interimResults = false;
+    rec.maxAlternatives = 1;
+    rec.onresult = (e: any) => {
+      const text = e.results?.[0]?.[0]?.transcript;
+      if (text) onTranscript(text.trim());
+    };
+    rec.onerror = () => { /* user cancelled or no speech — nothing to report */ };
+    rec.onend = () => setRecording(false);
+    recognitionRef.current = rec;
+    rec.start();
+    setRecording(true);
+  };
+
+  const startRecording = () => { apiKey ? startWhisperRecording() : startBrowserRecognition(); };
   const stopRecording = () => {
-    mediaRef.current?.stop();
+    if (apiKey) mediaRef.current?.stop();
+    else recognitionRef.current?.stop();
     setRecording(false);
   };
 
@@ -97,7 +125,7 @@ export function VoiceMicButton({ onTranscript, apiKey }: { onTranscript?: any; a
       onMouseUp={stopRecording}
       onTouchStart={startRecording}
       onTouchEnd={stopRecording}
-      title="Hold to record voice message (Whisper)"
+      title={apiKey ? "Hold to record voice message (Whisper)" : "Hold to record voice message (browser speech recognition)"}
       className={"p-2 rounded-xl transition flex-shrink-0 " + (recording ? "bg-red-600/40 text-red-300 animate-pulse" : "text-white/40 hover:text-white/70 hover:bg-white/5")}
     >
       <Mic size={16} />

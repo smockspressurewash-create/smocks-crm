@@ -6,7 +6,7 @@ import {
   Video, PenLine, Shield, Navigation, Database, Route, ToggleRight, ToggleLeft, Download
 } from "lucide-react";
 import { supabase } from "../../lib/supabase";
-import { getEmpGoogleToken, isEmpGoogleTokenValid, saveEmpGoogleToken, refreshEmpGoogleToken, createGCalEvent, updateGCalEvent } from "../../lib/googleApi";
+import { getEmpGoogleToken, isEmpGoogleTokenValid, saveEmpGoogleToken, refreshEmpGoogleToken, getValidEmpGoogleToken, createGCalEvent, updateGCalEvent } from "../../lib/googleApi";
 import { sendViaGmail, sendEmail, emailShell, emailButton, twilioSend } from "../../lib/messaging";
 import { Glass } from "../ui/Glass";
 import { GBtn } from "../ui/GBtn";
@@ -47,19 +47,31 @@ export function paymentStatusLabel(job: Job): string {
 }
 
 // Small Street View thumbnail for a job address; tap to expand full-size.
-// Renders nothing at all — no error, no setup hint — whenever a key isn't
-// configured or the image fails to load, instead of nagging the employee
-// with an "add a key" message every time they open a job.
+// Renders nothing when no key is set at all (unremarkable — not yet
+// configured). If a key IS set but the image still fails, that almost
+// always means Street View Static API specifically isn't enabled on it
+// (it's billed/enabled separately from Maps JS/Places) — show the exact
+// Cloud Console URL to fix it instead of hiding the problem.
+const STREET_VIEW_API_ENABLE_URL = "https://console.cloud.google.com/apis/library/street-view-image-backend.googleapis.com";
 function StreetViewThumb({ address, apiKey }: { address: string; apiKey?: string }) {
   const [expanded, setExpanded] = useState(false);
   const [loadError, setLoadError] = useState(false);
-  if (!address || !apiKey || loadError) return null;
+  if (!address || !apiKey) return null;
+  if (loadError) {
+    return (
+      <div className="w-full rounded-xl border border-yellow-700/40 bg-yellow-950/15 p-3 text-xs text-yellow-200">
+        <div className="font-semibold mb-1">Street View image didn't load</div>
+        <div className="text-yellow-200/80 mb-2">Ask the owner to enable the <b>Street View Static API</b> for this key — it's billed and enabled separately from Maps JS/Places.</div>
+        <a href={STREET_VIEW_API_ENABLE_URL} target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:text-blue-300 underline break-all">{STREET_VIEW_API_ENABLE_URL}</a>
+      </div>
+    );
+  }
   const thumbUrl = `https://maps.googleapis.com/maps/api/streetview?size=600x300&location=${encodeURIComponent(address)}&key=${apiKey}`;
   const bigUrl = `https://maps.googleapis.com/maps/api/streetview?size=1200x600&location=${encodeURIComponent(address)}&key=${apiKey}`;
   return (
     <>
       <button onClick={() => setExpanded(true)} className="w-full rounded-xl overflow-hidden border border-white/10 relative group">
-        <img src={thumbUrl} alt="Street View" className="w-full h-32 object-cover" onError={() => { console.warn("Street View image failed to load for", address, "— check that the Street View Static API (not just Maps JS/Places) is enabled and billed on this key."); setLoadError(true); }} />
+        <img src={thumbUrl} alt="Street View" className="w-full h-32 object-cover" onError={() => { console.warn("Street View image failed to load for", address, "— enable the Street View Static API:", STREET_VIEW_API_ENABLE_URL); setLoadError(true); }} />
         <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition flex items-center justify-center">
           <span className="opacity-0 group-hover:opacity-100 text-white text-xs font-semibold transition">Tap to expand</span>
         </div>
@@ -1645,9 +1657,9 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   // connected Gmail account. Dedupes via localStorage so each job only reminds once.
   useEffect(() => {
     if (!myEmployee || !empSession?.user?.id) return;
-    const checkReminders = () => {
-      const empToken = getEmpGoogleToken(empSession.user.id);
-      if (!isEmpGoogleTokenValid(empToken)) return;
+    const checkReminders = async () => {
+      const empToken = await getValidEmpGoogleToken(empSession.user.id, settings?.googleBackendUrl);
+      if (!empToken) return;
       const remindedKey = "smocks.empReminded";
       let reminded: string[] = [];
       try { reminded = JSON.parse(localStorage.getItem(remindedKey) || "[]"); } catch { /* ignore */ }
@@ -2052,8 +2064,8 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     // employee can turn it off in the Google tab — when off, they add jobs to
     // their calendar manually via the per-job "Add to Google Calendar" button.
     if (!autoSyncCalendar) return;
-    const empToken = getEmpGoogleToken(empSession.user.id);
-    if (!isEmpGoogleTokenValid(empToken)) return;
+    const empToken = await getValidEmpGoogleToken(empSession.user.id, settings?.googleBackendUrl);
+    if (!empToken) return;
     try {
       const timeStr = job.scheduledTime || "09:00";
       const startDt = new Date(`${job.scheduledDate}T${timeStr}:00`);
@@ -3503,6 +3515,8 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
             // through" date on this employee's record, anything logged after
             // that date counts as outstanding too, even across closed periods.
             const lastPaidThrough = (myEmployee as any)?.lastPaidThrough || "";
+            const completedJobs = myJobs.filter(j => j.status === "completed" && Number(j.loggedHours) > 0);
+            const paidJobs = lastPaidThrough ? completedJobs.filter(j => j.scheduledDate <= lastPaidThrough) : [];
             const unpaidJobs = lastPaidThrough ? myJobs.filter(j => j.scheduledDate > lastPaidThrough) : current.jobs ? myJobs.filter(j => j.scheduledDate >= current.start) : [];
             const pendingHours = lastPaidThrough
               ? Math.round(unpaidJobs.reduce((s, j) => s + Number(j.loggedHours || 0), 0) * 10) / 10
@@ -3510,6 +3524,8 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
             const pendingPay = lastPaidThrough
               ? Math.round(pendingHours * (myEmployee?.hourlyRate || 0) * 100) / 100
               : current.pay;
+            const totalPaidHours = Math.round(paidJobs.reduce((s, j) => s + Number(j.loggedHours || 0), 0) * 10) / 10;
+            const totalPaid = Math.round(totalPaidHours * (myEmployee?.hourlyRate || 0) * 100) / 100;
 
             // Year-to-date + prior-year earnings, bucketed by the calendar year
             // each job's logged hours fall in — same hrs × rate math as the pay
@@ -3618,9 +3634,9 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                       <div className="text-[10px] text-white/30 mt-0.5">{pendingHours}h not yet in a closed period</div>
                     </div>
                     <div className="p-3 rounded-xl bg-green-950/20 border border-green-700/30">
-                      <div className="text-[10px] text-green-400/70 uppercase">Total Outstanding</div>
-                      <div className="text-xl font-black text-green-400">{fmt(pendingPay)}</div>
-                      <div className="text-[10px] text-white/30 mt-0.5">What you're owed so far</div>
+                      <div className="text-[10px] text-green-400/70 uppercase">Total Paid</div>
+                      <div className="text-xl font-black text-green-400">{fmt(totalPaid)}</div>
+                      <div className="text-[10px] text-white/30 mt-0.5">{lastPaidThrough ? `${totalPaidHours}h through ${lastPaidThrough}` : "Not marked paid yet"}</div>
                     </div>
                   </div>
                   {lastClosed && lastClosed.pay > 0 && (

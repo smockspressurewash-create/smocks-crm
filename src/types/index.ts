@@ -622,6 +622,9 @@ export interface AppSettings {
   quarterlyRevenueGoal?: number;
   annualRevenueGoal?: number;
   weeklyJobsGoal?: number;
+  customerAcquisitionGoal?: number;
+  avgJobValueGoal?: number;
+  reviewRatingGoal?: number;
 
   // Misc settings used across pages
   instagramHandle?: string;

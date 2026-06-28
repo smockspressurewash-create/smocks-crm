@@ -360,6 +360,27 @@ export const refreshEmpGoogleToken = async (
   }
 };
 
+// Point-of-use guard: returns a valid access token, transparently refreshing
+// first if the stored one has expired. The 5-minute background interval that
+// calls refreshEmpGoogleToken proactively still exists, but relying on that
+// alone leaves a gap right after expiry and before the next tick — any
+// feature that actually needs the token (calendar sync, reminder emails)
+// should call this instead of just checking isEmpGoogleTokenValid and giving
+// up, so a stale token only blocks the user if a real refresh attempt fails.
+export const getValidEmpGoogleToken = async (
+  userId: string,
+  backendUrl?: string
+): Promise<EmpGoogleToken | null> => {
+  const existing = getEmpGoogleToken(userId);
+  if (isEmpGoogleTokenValid(existing)) return existing;
+  if (!existing?.refreshToken || !backendUrl) return null;
+  const refreshed = await refreshEmpGoogleToken(backendUrl, existing.refreshToken);
+  if (!refreshed) return null;
+  const updated: EmpGoogleToken = { ...existing, token: refreshed.token, expiresAt: refreshed.expiresAt };
+  saveEmpGoogleToken(userId, updated);
+  return updated;
+};
+
 // ─── Drive ───────────────────────────────────────────────────────────────────
 
 export interface GDriveFile {

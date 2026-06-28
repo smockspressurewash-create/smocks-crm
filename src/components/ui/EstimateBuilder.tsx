@@ -103,11 +103,40 @@ export function EstimateBuilder({ open, onClose, customers = [], services = [], 
   };
 
   const loadTemplate = tpl => {
-    setItems(tpl.lineItems.map(li => ({ ...li, id: uid() })));
+    setItems((tpl.lineItems || []).map(li => ({ ...li, id: uid() })));
     if (tpl.discount) setDiscount(tpl.discount);
     if (tpl.depositRequired) setDepositRequired(tpl.depositRequired);
     if (tpl.terms) setTerms(tpl.terms);
     if (tpl.notes) setNotes(tpl.notes);
+    // Custom-uploaded PDF templates can't be parsed into structured line
+    // items, so the original file is just opened for reference instead.
+    if (tpl._docType === "pdf" && tpl._docContent) {
+      window.open(tpl._docContent, "_blank");
+    }
+  };
+
+  // Custom estimate templates uploaded as HTML or PDF. HTML text is pulled in
+  // as the template's notes (best-effort — there's no reliable way to turn
+  // arbitrary markup into structured line items); a PDF can't be parsed at
+  // all, so it's kept as-is and opened for reference when loaded.
+  const handleUploadTemplate = (file: File) => {
+    const isPdf = file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (isPdf) {
+        setEstimateTemplates(prev => [...prev, {
+          id: uid(), name: file.name, lineItems: [], terms: "", notes: `Custom PDF template: ${file.name}`,
+          _docType: "pdf", _docContent: reader.result as string, createdAt: today(),
+        }]);
+      } else {
+        const text = String(reader.result).replace(/<style[\s\S]*?<\/style>/gi, "").replace(/<script[\s\S]*?<\/script>/gi, "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+        setEstimateTemplates(prev => [...prev, {
+          id: uid(), name: file.name, lineItems: [], terms: "", notes: text.slice(0, 2000),
+          _docType: "html", _docContent: String(reader.result), createdAt: today(),
+        }]);
+      }
+    };
+    if (isPdf) reader.readAsDataURL(file); else reader.readAsText(file);
   };
 
   const saveAsTemplate = () => {
@@ -167,14 +196,18 @@ export function EstimateBuilder({ open, onClose, customers = [], services = [], 
         </div>
 
         {/* Template loader */}
-        {estimateTemplates.length > 0 && <div className="flex items-center gap-2 p-3 bg-purple-950/20 border border-purple-700/30 rounded-xl">
+        <div className="flex items-center gap-2 p-3 bg-purple-950/20 border border-purple-700/30 rounded-xl">
           <Layers size={13} className="text-purple-400 flex-shrink-0" />
           <label className="text-xs text-white/60 flex-shrink-0">Load template:</label>
           <GSel onChange={e => { if (e.target.value) { const t = estimateTemplates.find(x => x.id === e.target.value); if (t) loadTemplate(t); e.target.value = ""; } }} value="" className="!text-xs flex-1">
             <option value="" className="bg-black">— Choose template —</option>
-            {estimateTemplates.map(t => <option key={t.id} value={t.id} className="bg-black">{t.name}</option>)}
+            {estimateTemplates.map(t => <option key={t.id} value={t.id} className="bg-black">{t.name}{t._docType ? ` (custom ${t._docType.toUpperCase()})` : ""}</option>)}
           </GSel>
-        </div>}
+          <label className="text-xs px-2.5 py-1.5 rounded-lg border border-purple-700/40 text-purple-300 hover:bg-purple-900/30 cursor-pointer flex-shrink-0 flex items-center gap-1">
+            <Upload size={11} />Upload
+            <input type="file" accept=".html,.htm,.pdf,application/pdf,text/html" className="hidden" onChange={e => { const f = e.target.files?.[0]; if (f) handleUploadTemplate(f); e.target.value = ""; }} />
+          </label>
+        </div>
 
         <div className="p-3 bg-black/40 border border-red-900/20 rounded-xl">
           <label className="text-xs text-white/60 mb-1 block">Add from catalog</label>

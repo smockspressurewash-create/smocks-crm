@@ -238,7 +238,7 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
         const c = customers.find(x => x.id === est.customerId);
         if (c) setTimeline(prev => ({ ...prev, [c.id]: [{ id: uid(), type: "estimate", note: "Estimate created — " + fmt(est.total), date: today() }, ...(prev[c.id] || [])] }));
       }} />
-      <EstimatePreview estimate={viewing} customers={customers} onClose={() => setViewing(null)} onApprove={id => { setEstimates(estimates.map(x => x.id === id ? { ...x, status: "approved", signedAt: today() } : x)); setViewing(null); toast("Approved!"); }} onConvert={id => { setEstimates(estimates.map(x => x.id === id ? { ...x, invoiced: true, invoicedAt: today() } : x)); setViewing(null); toast("Converted to invoice"); }} onSchedule={est => {
+      <EstimatePreview estimate={viewing} customers={customers} settings={settings} onClose={() => setViewing(null)} onApprove={id => { setEstimates(estimates.map(x => x.id === id ? { ...x, status: "approved", signedAt: today() } : x)); setViewing(null); toast("Approved!"); }} onConvert={id => { setEstimates(estimates.map(x => x.id === id ? { ...x, invoiced: true, invoicedAt: today() } : x)); setViewing(null); toast("Converted to invoice"); }} onSchedule={est => {
         const c = customers.find(x => x.id === est.customerId);
         const newJob = { id: uid(), customerId: est.customerId, address: c?.address || "", amount: est.total, status: "scheduled", scheduledDate: today(), duration: 3, priority: "normal", checklist: [], photos: [], chemicalsUsed: [], crew: [], notes: "From estimate #" + (est.id || "").slice(-4), isRecurring: false, pipelineStage: "scheduled", createdAt: today() };
         setJobs(prev => [...prev, newJob]);

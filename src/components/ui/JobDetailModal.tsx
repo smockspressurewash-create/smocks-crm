@@ -38,6 +38,7 @@ import { GDate } from "./GDate";
 import { GSel } from "./GSel";
 import { GTxt } from "./GTxt";
 import { Modal } from "./Modal";
+import { InvoicePreviewModal } from "./InvoicePreviewModal";
 import { Badge } from "./Badge";
 import { Stat } from "./Stat";
 import { PBar } from "./PBar";
@@ -147,19 +148,31 @@ function ChecklistSection({ title, emoji, items, onUpdate }: {
 }
 
 // Small Street View thumbnail for a job address; click to expand full-size.
-// Renders nothing at all — no error, no setup hint — whenever a key isn't
-// configured or the image fails to load, instead of nagging the owner with
-// an "add a key" message every time they open a job.
+// Renders nothing when there's no key at all (not yet configured — that's a
+// separate, unremarkable state). If a key IS set but the image still fails
+// to load, that almost always means the key is valid for Maps JS/Places but
+// the separately-billed Street View Static API hasn't been enabled on it —
+// so show exactly which Cloud Console URL fixes it instead of hiding silently.
+const STREET_VIEW_API_ENABLE_URL = "https://console.cloud.google.com/apis/library/street-view-image-backend.googleapis.com";
 function StreetViewThumb({ address, apiKey }: { address: string; apiKey?: string }) {
   const [expanded, setExpanded] = useState(false);
   const [loadError, setLoadError] = useState(false);
-  if (!address || !apiKey || loadError) return null;
+  if (!address || !apiKey) return null;
+  if (loadError) {
+    return (
+      <div className="w-full rounded-xl border border-yellow-700/40 bg-yellow-950/15 p-3 text-xs text-yellow-200">
+        <div className="font-semibold mb-1">Street View image didn't load</div>
+        <div className="text-yellow-200/80 mb-2">Your key works for other Maps features, but the <b>Street View Static API</b> is billed and enabled separately — it likely isn't turned on yet for this key's project.</div>
+        <a href={STREET_VIEW_API_ENABLE_URL} target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:text-blue-300 underline break-all">{STREET_VIEW_API_ENABLE_URL}</a>
+      </div>
+    );
+  }
   const thumbUrl = `https://maps.googleapis.com/maps/api/streetview?size=600x300&location=${encodeURIComponent(address)}&key=${apiKey}`;
   const bigUrl = `https://maps.googleapis.com/maps/api/streetview?size=1200x600&location=${encodeURIComponent(address)}&key=${apiKey}`;
   return (
     <>
       <button onClick={() => setExpanded(true)} className="w-full rounded-xl overflow-hidden border border-white/10 relative group">
-        <img src={thumbUrl} alt="Street View" className="w-full h-32 object-cover" onError={() => { console.warn("Street View image failed to load for", address, "— check that the Street View Static API (not just Maps JS/Places) is enabled and billed on this key."); setLoadError(true); }} />
+        <img src={thumbUrl} alt="Street View" className="w-full h-32 object-cover" onError={() => { console.warn("Street View image failed to load for", address, "— enable the Street View Static API:", STREET_VIEW_API_ENABLE_URL); setLoadError(true); }} />
         <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition flex items-center justify-center">
           <span className="opacity-0 group-hover:opacity-100 text-white text-xs font-semibold transition">Click to expand</span>
         </div>
@@ -173,6 +186,28 @@ function StreetViewThumb({ address, apiKey }: { address: string; apiKey?: string
         </div>
       )}
     </>
+  );
+}
+
+// Small "type a name, hit Enter or click +" input used to add equipment or
+// chemical items that aren't on the preset list — owners aren't limited to
+// whatever's hardcoded in equipmentList/requiredChemicalsList.
+function CustomItemInput({ placeholder, onAdd }: { placeholder: string; onAdd: (v: string) => void }) {
+  const [v, setV] = useState("");
+  const submit = () => { const t = v.trim(); if (!t) return; onAdd(t); setV(""); };
+  return (
+    <div className="flex gap-2">
+      <input
+        value={v}
+        onChange={e => setV(e.target.value)}
+        onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); submit(); } }}
+        placeholder={placeholder}
+        className="flex-1 text-xs px-3 py-1.5 rounded-lg border border-white/10 bg-white/5 text-white/80 placeholder:text-white/30 focus:outline-none focus:border-red-500/50"
+      />
+      <button onClick={submit} disabled={!v.trim()} className="text-xs px-3 py-1.5 rounded-lg border border-white/10 bg-white/5 text-white/60 hover:text-white disabled:opacity-40">
+        <Plus size={11} className="inline mr-1" />Add
+      </button>
+    </div>
   );
 }
 
@@ -191,6 +226,7 @@ const withTimeout = <T,>(p: Promise<T>, ms: number, label: string): Promise<T> =
 export function JobDetailModal({ jobId, job, onClose, customers = [], employees = [], updateJob, toast, gToken = "", settings = {} as any, estimates = [], setEstimates = (() => {}) as any, onPortal = (_id: string) => {} }: { jobId: any; job: any; onClose: any; customers?: any[]; employees?: any[]; updateJob: any; toast: any; gToken?: string; settings?: any; estimates?: any[]; setEstimates?: any; onPortal?: (id: string) => void }) {
   const [commNote, setCommNote] = useState("");
   const [sendingInvoice, setSendingInvoice] = useState(false);
+  const [showInvoicePreview, setShowInvoicePreview] = useState(false);
   const [commType, setCommType] = useState("note");
   const [chemName, setChemName] = useState("");
   const [chemGal, setChemGal] = useState(0);
@@ -323,10 +359,17 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
   // completed job's amount, then emails the customer a payment link. The link
   // re-uses the same client-portal flow estimates already use, where the
   // customer can pay in full, pay a deposit, or — once a deposit is on
-  // record — pay the remaining balance.
-  const sendInvoice = async () => {
+  // record — pay the remaining balance. "Send Invoice" only validates contact
+  // info and opens the preview modal — the actual send happens in
+  // confirmSendInvoice once the owner reviews/edits it and clicks Send there.
+  const sendInvoice = () => {
     const c = customers.find(x => x.id === job.customerId);
     if (!c?.email && !c?.phone) { toast("No contact info for this customer. Add email or phone first.", "red"); return; }
+    setShowInvoicePreview(true);
+  };
+  const confirmSendInvoice = async (subject: string, bodyHtml: string) => {
+    const c = customers.find(x => x.id === job.customerId);
+    if (!c) return;
     setSendingInvoice(true);
     try {
       const newInv = {
@@ -347,13 +390,14 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
       setEstimates((prev: any[]) => [...prev, newInv]);
       const payLink = `${window.location.origin}${window.location.pathname}#/portal/${newInv.id}`;
       if (c.email) {
-        const html = emailShell(settings.companyName || "Smock's Pressure Washing", "Invoice", `<p>Hi ${c.firstName},</p><p>Thanks for choosing us! Your service at <b>${job.address}</b> is complete.</p><p><b>Amount due:</b> $${(Number(job.amount) || 0).toFixed(2)}</p><p>You can pay in full, pay a deposit, or pay any remaining balance from the link below.</p>` + emailButton("View & Pay Invoice", payLink));
-        await withTimeout(sendEmail(settings, { to: c.email, subject: `Invoice — ${settings.companyName || "Smock's Pressure Washing"}`, body: html }), 10000, "Invoice email");
+        const html = emailShell(settings.companyName || "Smock's Pressure Washing", subject, bodyHtml + emailButton("View & Pay Invoice", payLink));
+        await withTimeout(sendEmail(settings, { to: c.email, subject, body: html }), 10000, "Invoice email");
       } else {
         await withTimeout(twilioSend(settings as any, c.phone!, `Hi ${c.firstName}, your invoice for $${(Number(job.amount) || 0).toFixed(2)} is ready: ${payLink}`), 10000, "Invoice SMS");
       }
       updateJob(jobId, { invoiceSentAt: today(), paymentType: "Invoice" as any, paymentStatus: job.paymentStatus === "Paid" ? job.paymentStatus : "Pending" as any });
       toast(`Invoice sent to ${c.firstName} ✓`, "green");
+      setShowInvoicePreview(false);
     } catch (err: any) {
       toast(err?.message || "Failed to send invoice", "red");
     } finally {
@@ -879,23 +923,31 @@ ${job.notes ? `<div class="section"><h2>Job Notes</h2><p>${job.notes}</p></div>`
         {/* Equipment */}
         <div>
           <label className="text-xs text-white/60 mb-1 block">Required Equipment <span className="text-white/30">(crew sees this before starting)</span></label>
-          <div className="flex gap-2 flex-wrap">
+          <div className="flex gap-2 flex-wrap mb-2">
             {equipmentList.map(eq => {
               const sel = (job.equipment || []).includes(eq);
               return <button key={eq} onClick={() => toggleEquip(eq)} className={"text-xs px-3 py-1.5 rounded-lg border transition " + (sel ? "bg-red-900/40 border-red-500/50 text-red-300" : "bg-white/5 border-white/10 text-white/60 hover:text-white")}>{eq}</button>;
             })}
+            {(job.equipment || []).filter((eq: string) => !equipmentList.includes(eq)).map((eq: string) => (
+              <button key={eq} onClick={() => toggleEquip(eq)} className="text-xs px-3 py-1.5 rounded-lg border bg-red-900/40 border-red-500/50 text-red-300 flex items-center gap-1">{eq}<X size={10} /></button>
+            ))}
           </div>
+          <CustomItemInput placeholder="Add custom equipment…" onAdd={v => toggleEquip(v)} />
         </div>
 
         {/* Required chemicals */}
         <div>
           <label className="text-xs text-white/60 mb-1 block">Required Chemicals</label>
-          <div className="flex gap-2 flex-wrap">
+          <div className="flex gap-2 flex-wrap mb-2">
             {requiredChemicalsList.map(chem => {
               const sel = (job.requiredChemicals || []).includes(chem);
               return <button key={chem} onClick={() => toggleRequiredChemical(chem)} className={"text-xs px-3 py-1.5 rounded-lg border transition " + (sel ? "bg-purple-900/40 border-purple-500/50 text-purple-300" : "bg-white/5 border-white/10 text-white/60 hover:text-white")}>{chem}</button>;
             })}
+            {(job.requiredChemicals || []).filter((chem: string) => !requiredChemicalsList.includes(chem)).map((chem: string) => (
+              <button key={chem} onClick={() => toggleRequiredChemical(chem)} className="text-xs px-3 py-1.5 rounded-lg border bg-purple-900/40 border-purple-500/50 text-purple-300 flex items-center gap-1">{chem}<X size={10} /></button>
+            ))}
           </div>
+          <CustomItemInput placeholder="Add custom chemical…" onAdd={v => toggleRequiredChemical(v)} />
         </div>
 
         {/* Job Notes — visible to both owner and the assigned employee in their job detail view */}
@@ -1305,6 +1357,17 @@ ${job.notes ? `<div class="section"><h2>Job Notes</h2><p>${job.notes}</p></div>`
 
         <div className="flex justify-end"><GBtn onClick={onClose}>Done</GBtn></div>
       </div>
+      <InvoicePreviewModal
+        open={showInvoicePreview}
+        onClose={() => setShowInvoicePreview(false)}
+        onConfirm={confirmSendInvoice}
+        sending={sendingInvoice}
+        data={(() => {
+          const c = customers.find(x => x.id === job.customerId);
+          if (!c) return null;
+          return { customerName: c.firstName, address: job.address || "", amount: Number(job.amount) || 0, companyName: settings.companyName || "Smock's Pressure Washing", payLink: "" };
+        })()}
+      />
     </Modal>
   );
 }

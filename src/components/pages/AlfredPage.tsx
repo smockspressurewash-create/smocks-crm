@@ -665,6 +665,27 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
     }
   };
 
+  // When a name lookup misses an exact match, surface the closest candidates
+  // (substring match either direction, or shared first name) instead of a
+  // bare "not found" — that's what lets Alfred ask "Do you mean X?" with
+  // real suggestions instead of a generic follow-up question.
+  const suggestNames = (query: string, list: any[], nameFn: (t: any) => string, limit = 3): string[] => {
+    const q = (query || "").toLowerCase().trim();
+    if (!q) return [];
+    const scored = list
+      .map(item => {
+        const name = nameFn(item).toLowerCase();
+        let score = 0;
+        if (name.includes(q) || q.includes(name)) score = 3;
+        else if (name.split(" ").some(part => part && (part.startsWith(q) || q.startsWith(part)))) score = 2;
+        else if (name.split(" ").some(part => q.split(" ").some(qp => qp && part.startsWith(qp.slice(0, 3))))) score = 1;
+        return { name: nameFn(item), score };
+      })
+      .filter(x => x.score > 0)
+      .sort((a, b) => b.score - a.score);
+    return scored.slice(0, limit).map(x => x.name);
+  };
+
   // ===== ALFRED TOOL DEFINITIONS =====
   // Tools Alfred can invoke to read/modify the CRM. Each returns a JSON-serializable result.
   const executeTool = async (name, inputs) => {
@@ -679,7 +700,12 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
         }
         case "get_customer_details": {
           const c = customers.find(x => x.id === inputs.customerId || (x.firstName + " " + x.lastName).toLowerCase() === (inputs.name || "").toLowerCase());
-          if (!c) return { error: "Customer not found" };
+          if (!c) {
+            const suggestions = suggestNames(inputs.name || "", customers, x => `${x.firstName} ${x.lastName}`);
+            return suggestions.length
+              ? { error: "Customer not found", suggestions, instruction: "Ask the user 'Do you mean " + suggestions.join(", or ") + "?' — do not ask a generic follow-up question." }
+              : { error: "Customer not found" };
+          }
           const cJobs = jobs.filter(j => j.customerId === c.id);
           const cEsts = estimates.filter(e => e.customerId === c.id);
           return {
@@ -714,7 +740,12 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
         }
         case "create_estimate": {
           const c = customers.find(x => x.id === inputs.customerId || (x.firstName + " " + x.lastName).toLowerCase() === (inputs.customerName || "").toLowerCase());
-          if (!c) return { error: "Customer not found. Create customer first or provide valid customerId." };
+          if (!c) {
+            const suggestions = suggestNames(inputs.customerName || "", customers, x => `${x.firstName} ${x.lastName}`);
+            return suggestions.length
+              ? { error: "Customer not found", suggestions, instruction: "Ask the user 'Do you mean " + suggestions.join(", or ") + "?' — do not ask a generic follow-up question." }
+              : { error: "Customer not found. Create customer first or provide valid customerId." };
+          }
           const items = (inputs.lineItems || []).map(li => ({ id: uid(), description: li.description, quantity: li.quantity || 1, unitPrice: li.unitPrice || 0 }));
           const subtotal = items.reduce((s, i) => s + i.quantity * i.unitPrice, 0);
           const tax = subtotal * ((Number(settings.taxRate) || 6) / 100);
@@ -726,7 +757,12 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
         }
         case "schedule_job": {
           const c = customers.find(x => x.id === inputs.customerId || (x.firstName + " " + x.lastName).toLowerCase() === (inputs.customerName || "").toLowerCase());
-          if (!c) return { error: "Customer not found" };
+          if (!c) {
+            const suggestions = suggestNames(inputs.customerName || "", customers, x => `${x.firstName} ${x.lastName}`);
+            return suggestions.length
+              ? { error: "Customer not found", suggestions, instruction: "Ask the user 'Do you mean " + suggestions.join(", or ") + "?' — do not ask a generic follow-up question." }
+              : { error: "Customer not found" };
+          }
           const newJ = { id: uid(), customerId: c.id, scheduledDate: inputs.date || daysFromNow(3), status: "scheduled", pipelineStage: "scheduled", address: c.address, amount: inputs.amount || 0, photos: [], checklist: (inputs.checklist || ["Confirm water access"]).map(t => ({ label: t, done: false })), isRecurring: false, recurringFreq: "monthly", cancelReason: "", noShow: false, crew: [], duration: inputs.duration || 2, internalNotes: inputs.notes || "", chemicalsUsed: [], equipment: [], commLog: [], priority: inputs.priority || "normal", tags: inputs.tags || [], loggedHours: 0, clockInAt: null, attachments: [] };
           setJobs(prev => [...prev, newJ]);
           toast("Alfred scheduled job for " + c.firstName + " on " + newJ.scheduledDate);
@@ -742,7 +778,12 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           const j = jobs.find(x => x.id === inputs.jobId);
           if (!j) return { error: "Job not found" };
           const emp = employees.find(e => e.id === inputs.employeeId || (e.firstName + " " + e.lastName).toLowerCase() === (inputs.employeeName || "").toLowerCase());
-          if (!emp) return { error: "Employee not found" };
+          if (!emp) {
+            const suggestions = suggestNames(inputs.employeeName || "", employees, e => `${e.firstName} ${e.lastName}`);
+            return suggestions.length
+              ? { error: "Employee not found", suggestions, instruction: "Ask the user 'Do you mean " + suggestions.join(", or ") + "?' — do not ask a generic follow-up question." }
+              : { error: "Employee not found" };
+          }
           const crew = j.crew || [];
           if (!crew.includes(emp.id)) setJobs(prev => prev.map(x => x.id === j.id ? { ...x, crew: [...(x.crew || []), emp.id] } : x));
           if (emp.email) {
@@ -758,7 +799,12 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           const j = jobs.find(x => x.id === inputs.jobId);
           if (!j) return { error: "Job not found" };
           const emp = employees.find(e => e.id === inputs.employeeId || (e.firstName + " " + e.lastName).toLowerCase() === (inputs.employeeName || "").toLowerCase());
-          if (!emp) return { error: "Employee not found" };
+          if (!emp) {
+            const suggestions = suggestNames(inputs.employeeName || "", employees, e => `${e.firstName} ${e.lastName}`);
+            return suggestions.length
+              ? { error: "Employee not found", suggestions, instruction: "Ask the user 'Do you mean " + suggestions.join(", or ") + "?' — do not ask a generic follow-up question." }
+              : { error: "Employee not found" };
+          }
           try {
             const { data: { session } } = await supabase.auth.getSession();
             const { data, error } = await (supabase as any).from("job_requests").insert({
@@ -1139,7 +1185,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
       const googleStatus = settings.googleConnected
         ? `\n\nGoogle Workspace: CONNECTED as ${settings.googleEmail}. Backend: ${settings.googleBackendUrl ? "configured ✓" : "NOT configured — calls will be queued until backend URL is added"}. Enabled scopes: ${Object.entries(settings.googleScopes || {}).filter(([k, v]) => v).map(([k]) => k).join(", ")}. You CAN use send_email_via_gmail, create_calendar_event, create_google_task, and upload_to_drive — they will call the real Google APIs if backend is configured, or stage for later if not.`
         : `\n\nGoogle Workspace: NOT CONNECTED. If the user asks to send email, create calendar events, or manage tasks, tell them to go to Settings → Integrations → Google and connect their backend.`;
-      const toolHint = `\n\nYou have tools available to READ and MODIFY the CRM. USE THEM AGGRESSIVELY — don't just describe what you would do, actually do it.\n\nKEY TOOL RULES:\n- Customer queries → USE search_customers or get_customer_details FIRST\n- Stats requests → USE get_business_stats\n- "Remember/note/don't forget" → USE remember_fact\n- Create estimates, customers, jobs → USE create_estimate/create_customer/schedule_job\n- Navigate somewhere → USE navigate_to\n- Preferences/facts shared → USE remember_fact automatically\n\nAUTOMATION TOOLS (VERY IMPORTANT):\n- When user describes ANY workflow, drip sequence, reminder, or "when X do Y" scenario → USE create_automation IMMEDIATELY. Build a proper n8n-style multi-step workflow with real step types: trigger (first), then delays, conditions, actions. NEVER just describe what you'd build — actually build it with create_automation.\n- "Send review request after job complete" → trigger: Job complete, delay: 2h, action: SMS review request\n- "Follow up on unpaid invoices" → trigger: Invoice unpaid 7 days, action: polite reminder email, delay: 4 days, condition: still unpaid, action: firm SMS\n- To check existing workflows → USE list_automations\n- To enable/disable a workflow → USE toggle_automation\n\nCurrent automations: ${automations.length} total, ${automations.filter(a => a.active).length} active`;
+      const toolHint = `\n\nYou have tools available to READ and MODIFY the CRM. USE THEM AGGRESSIVELY — don't just describe what you would do, actually do it.\n\nKEY TOOL RULES:\n- Customer queries → USE search_customers or get_customer_details FIRST\n- Stats requests → USE get_business_stats\n- "Remember/note/don't forget" → USE remember_fact\n- Create estimates, customers, jobs → USE create_estimate/create_customer/schedule_job\n- Navigate somewhere → USE navigate_to\n- Preferences/facts shared → USE remember_fact automatically\n\nAUTOMATION TOOLS (VERY IMPORTANT):\n- When user describes ANY workflow, drip sequence, reminder, or "when X do Y" scenario → USE create_automation IMMEDIATELY. Build a proper n8n-style multi-step workflow with real step types: trigger (first), then delays, conditions, actions. NEVER just describe what you'd build — actually build it with create_automation.\n- "Send review request after job complete" → trigger: Job complete, delay: 2h, action: SMS review request\n- "Follow up on unpaid invoices" → trigger: Invoice unpaid 7 days, action: polite reminder email, delay: 4 days, condition: still unpaid, action: firm SMS\n- To check existing workflows → USE list_automations\n- To enable/disable a workflow → USE toggle_automation\n\nCurrent automations: ${automations.length} total, ${automations.filter(a => a.active).length} active\n\nNAME MATCHING: if a tool result comes back with "error": "Customer not found" or "Employee not found" and includes a "suggestions" array, ask the user "Do you mean [name], or [name]?" using those exact suggested names — never ask a generic clarifying question like "who do you mean?" when real candidate names are available.`;
       const systemPrompt = prompts[activePersonality] + memoryContext + businessContext + googleStatus + toolHint;
 
       // Build initial message list — allow multi-turn tool calls up to 5 rounds
@@ -1669,8 +1715,10 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
                 }} />
                 <Paperclip size={16} />
               </label>
-              {/* Whisper voice transcription */}
-              {(settings?.openAiKey || settings?.openaiKey) && <VoiceMicButton onTranscript={text => setInput(prev => prev + (prev ? " " : "") + text)} apiKey={settings.openAiKey || settings.openaiKey || ""} />}
+              {/* Voice notes — Whisper if an OpenAI key is set, browser
+                  SpeechRecognition otherwise; either way works with no key
+                  required. Sends straight to Alfred once transcribed. */}
+              <VoiceMicButton onTranscript={text => send(text)} apiKey={settings?.openAiKey || settings?.openaiKey || ""} />
               <textarea
                 ref={inputRef}
                 rows={1}

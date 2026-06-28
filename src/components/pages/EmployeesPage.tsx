@@ -476,6 +476,38 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setting
           </div>
           <div><label className="text-xs text-white/60 mb-1 block">Emergency Contact</label><GInput value={f.emergencyContact} onChange={e => setF({ ...f, emergencyContact: e.target.value })} placeholder="Name — (717) 555-0000" /></div>
           <div><label className="text-xs text-white/60 mb-1 block">Notes</label><GTxt rows={2} value={f.notes} onChange={e => setF({ ...f, notes: e.target.value })} /></div>
+
+          {/* Pay — real hours pulled from this employee's completed jobs, split
+              into what's already been marked paid vs still pending. */}
+          {f.id && (() => {
+            const empJobs = jobs.filter((j: any) => (j.crew || []).includes(f.id) && j.status === "completed" && Number(j.loggedHours) > 0);
+            const lastPaidThrough = f.lastPaidThrough || "";
+            const paidJobs = lastPaidThrough ? empJobs.filter((j: any) => j.scheduledDate <= lastPaidThrough) : [];
+            const pendingJobs = lastPaidThrough ? empJobs.filter((j: any) => j.scheduledDate > lastPaidThrough) : empJobs;
+            const paidHours = paidJobs.reduce((s: number, j: any) => s + Number(j.loggedHours || 0), 0);
+            const pendingHours = pendingJobs.reduce((s: number, j: any) => s + Number(j.loggedHours || 0), 0);
+            const totalPaid = Math.round(paidHours * (Number(f.hourlyRate) || 0) * 100) / 100;
+            const pendingPay = Math.round(pendingHours * (Number(f.hourlyRate) || 0) * 100) / 100;
+            return (
+              <div className="border border-white/10 rounded-xl p-3 space-y-2">
+                <div className="text-xs font-semibold text-white/70 flex items-center gap-1.5 mb-1"><DollarSign size={12} />Pay</div>
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="p-2.5 rounded-xl bg-green-950/20 border border-green-700/30">
+                    <div className="text-[10px] text-green-400/70 uppercase">Total Paid</div>
+                    <div className="text-lg font-black text-green-400">{fmt(totalPaid)}</div>
+                  </div>
+                  <div className="p-2.5 rounded-xl bg-yellow-950/20 border border-yellow-700/30">
+                    <div className="text-[10px] text-yellow-400/70 uppercase">Pending</div>
+                    <div className="text-lg font-black text-yellow-400">{fmt(pendingPay)}</div>
+                  </div>
+                </div>
+                <div className="flex items-center justify-between gap-2 pt-1">
+                  <div className="text-[10px] text-white/40">{lastPaidThrough ? `Paid through ${lastPaidThrough}` : "Never marked paid"}</div>
+                  <GBtn variant="ghost" onClick={() => setF((p: any) => ({ ...p, lastPaidThrough: today() }))} className="!text-xs !py-1">Mark Paid Through Today</GBtn>
+                </div>
+              </div>
+            );
+          })()}
           {/* Permissions editor */}
           <div className="border border-white/10 rounded-xl overflow-hidden">
             <button

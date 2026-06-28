@@ -402,7 +402,7 @@ export function CustomersPage({ customers = [], setCustomers, estimates = [], jo
         </div>
       </Glass>
 
-      <CustomerModal open={modal.open} onClose={() => setModal({ open: false, data: null })} data={modal.data} onSave={save} mapsKey={settings.googleMapsKey} />
+      <CustomerModal open={modal.open} onClose={() => setModal({ open: false, data: null })} data={modal.data} onSave={save} mapsKey={settings.googleMapsKey || (settings as any).mapsKey || ""} />
       <CustomerDetail customer={detail} onClose={() => setDetail(null)} estimates={estimates} jobs={jobs} timeline={timeline} setTimeline={setTimeline} settings={settings} />
       </>}
     </div>

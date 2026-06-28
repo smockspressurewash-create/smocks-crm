@@ -101,6 +101,8 @@ export function SettingsModal({ open, onClose, settings, setSettings, services, 
     setSettings({
       ...f,
       monthlyRevenueGoal: Number(f.monthlyRevenueGoal), monthlyJobsGoal: Number(f.monthlyJobsGoal), taxRate: Number(f.taxRate),
+      annualRevenueGoal: Number(f.annualRevenueGoal) || 0, customerAcquisitionGoal: Number(f.customerAcquisitionGoal) || 0,
+      avgJobValueGoal: Number(f.avgJobValueGoal) || 0, reviewRatingGoal: Number(f.reviewRatingGoal) || 0,
       stripeSecretKeyEnc,
       stripeConnected: !!(f.stripePublishableKey?.trim() && stripeSecretInput.trim()),
       googleMapsKey: (f.googleMapsKey || "").trim(),
@@ -356,6 +358,11 @@ export function SettingsModal({ open, onClose, settings, setSettings, services, 
             <div><label className="text-xs text-white/60 mb-1 block flex items-center gap-1"><Phone size={10} />Your Mobile # <span className="text-white/30 font-normal">(for Alfred SMS summaries)</span></label><GInput type="tel" value={f.myPhone || ""} onChange={e => setF({ ...f, myPhone: e.target.value })} placeholder="+17175550100" className="!text-xs" /></div>
             <div><label className="text-xs text-white/60 mb-1 block flex items-center gap-1"><Star size={10} />Google Place ID <span className="text-white/30 font-normal">(for review links)</span></label><GInput value={f.googlePlaceId || ""} onChange={e => setF({ ...f, googlePlaceId: e.target.value })} placeholder="ChIJ..." className="!text-xs" /><div className="text-[10px] text-white/30 mt-1">Find at <a href="https://developers.google.com/maps/documentation/places/web-service/place-id" target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:underline">developers.google.com/maps/…/place-id</a></div></div>
             <div><label className="text-xs text-white/60 mb-1 block flex items-center gap-1"><Clock size={10} />Max Lunch Break <span className="text-white/30 font-normal">(minutes)</span></label><GInput type="number" value={f.maxLunchMinutes ?? 30} onChange={e => setF({ ...f, maxLunchMinutes: Number(e.target.value) || 0 })} placeholder="30" className="!text-xs" /><div className="text-[10px] text-white/30 mt-1">Crew lunch breaks longer than this are flagged on the job</div></div>
+            <div>
+              <label className="text-xs text-white/60 mb-1 block flex items-center gap-1"><FileText size={10} />Terms & Conditions <span className="text-white/30 font-normal">(shown on the customer sign-off screen)</span></label>
+              <GTxt rows={5} value={f.termsAndConditions || ""} onChange={(e: any) => setF({ ...f, termsAndConditions: e.target.value })} placeholder="I confirm that all services have been completed to my satisfaction..." className="!text-xs" />
+              <div className="text-[10px] text-white/30 mt-1">Use {"{{company}}"} to insert your company name. Leave blank to use the default disclaimer.</div>
+            </div>
             <div className="flex items-center justify-between p-3 bg-black/40 border border-red-900/20 rounded-xl">
               <div className="flex-1 min-w-0 pr-3">
                 <div className="text-sm font-medium">Paid Lunch Breaks</div>
@@ -467,6 +474,10 @@ export function SettingsModal({ open, onClose, settings, setSettings, services, 
             <div><label className="text-xs text-white/60 mb-1 block">Monthly Revenue Goal ($)</label><GInput type="number" value={f.monthlyRevenueGoal} onChange={e => setF({ ...f, monthlyRevenueGoal: e.target.value })} /></div>
             <div><label className="text-xs text-white/60 mb-1 block">Quarterly Revenue Goal ($)</label><GInput type="number" value={f.quarterlyRevenueGoal || ""} onChange={e => setF({ ...f, quarterlyRevenueGoal: e.target.value })} placeholder={(f.monthlyRevenueGoal * 3) || "45000"} /></div>
             <div><label className="text-xs text-white/60 mb-1 block">Monthly Jobs Goal</label><GInput type="number" value={f.monthlyJobsGoal} onChange={e => setF({ ...f, monthlyJobsGoal: e.target.value })} /></div>
+            <div><label className="text-xs text-white/60 mb-1 block">Annual Revenue Goal ($)</label><GInput type="number" value={f.annualRevenueGoal || ""} onChange={e => setF({ ...f, annualRevenueGoal: e.target.value })} placeholder={(f.monthlyRevenueGoal * 12) || "120000"} /></div>
+            <div><label className="text-xs text-white/60 mb-1 block">Customer Acquisition Goal <span className="text-white/30">(new customers/mo)</span></label><GInput type="number" value={f.customerAcquisitionGoal || ""} onChange={e => setF({ ...f, customerAcquisitionGoal: e.target.value })} placeholder="10" /></div>
+            <div><label className="text-xs text-white/60 mb-1 block">Avg Job Value Goal ($)</label><GInput type="number" value={f.avgJobValueGoal || ""} onChange={e => setF({ ...f, avgJobValueGoal: e.target.value })} placeholder="350" /></div>
+            <div><label className="text-xs text-white/60 mb-1 block">Review Rating Goal <span className="text-white/30">(out of 5)</span></label><GInput type="number" step="0.1" min="1" max="5" value={f.reviewRatingGoal || ""} onChange={e => setF({ ...f, reviewRatingGoal: e.target.value })} placeholder="4.8" /></div>
             <div><label className="text-xs text-white/60 mb-1 block">Tax Rate (%)</label><GInput type="number" step="0.01" value={f.taxRate} onChange={e => setF({ ...f, taxRate: e.target.value })} /></div>
           </div>}
 
@@ -895,29 +906,39 @@ export function SettingsModal({ open, onClose, settings, setSettings, services, 
               </div>
               <div className="space-y-3">
                 {([
-                  { platform: "facebook" as SocialPlatform, label: "Facebook", clientIdKey: "metaClientId", tokenKey: "metaAccessToken" },
-                  { platform: "linkedin" as SocialPlatform, label: "LinkedIn", clientIdKey: "linkedinClientId", tokenKey: "linkedinAccessToken" },
-                  { platform: "tiktok" as SocialPlatform, label: "TikTok", clientIdKey: "tiktokClientId", tokenKey: "tiktokAccessToken" },
+                  { platform: "facebook" as SocialPlatform, label: "Facebook", clientIdKey: "metaClientId", tokenKey: "metaAccessToken", devUrl: "https://developers.facebook.com/" },
+                  { platform: "facebook" as SocialPlatform, label: "Instagram", clientIdKey: "metaClientId", tokenKey: "metaAccessToken", devUrl: "https://developers.facebook.com/", sharedWithFacebook: true },
+                  { platform: "linkedin" as SocialPlatform, label: "LinkedIn", clientIdKey: "linkedinClientId", tokenKey: "linkedinAccessToken", devUrl: "https://developer.linkedin.com/" },
+                  { platform: "tiktok" as SocialPlatform, label: "TikTok", clientIdKey: "tiktokClientId", tokenKey: "tiktokAccessToken", devUrl: "https://developers.tiktok.com/" },
                 ]).map(p => (
-                  <div key={p.platform} className="flex items-center gap-2 p-2.5 bg-black/40 border border-white/5 rounded-xl">
+                  <div key={p.label} className="flex items-center gap-2 p-2.5 bg-black/40 border border-white/5 rounded-xl">
                     <div className="flex-1 min-w-0">
-                      <div className="text-xs font-medium mb-1">{p.label}</div>
-                      <GInput value={(f as any)[p.clientIdKey] || ""} onChange={e => setF({ ...f, [p.clientIdKey]: e.target.value })} placeholder={`${p.label} Client/App ID`} className="!text-xs" />
+                      <div className="text-xs font-medium mb-1 flex items-center gap-1.5">
+                        {p.label}
+                        <a href={p.devUrl} target="_blank" rel="noopener noreferrer" className="text-[10px] text-blue-400 hover:text-blue-300 font-normal">Get API credentials →</a>
+                      </div>
+                      {p.sharedWithFacebook ? (
+                        <div className="text-[10px] text-white/40">Uses the same Meta app/credentials as Facebook above.</div>
+                      ) : (
+                        <GInput value={(f as any)[p.clientIdKey] || ""} onChange={e => setF({ ...f, [p.clientIdKey]: e.target.value })} placeholder={`${p.label} Client/App ID`} className="!text-xs" />
+                      )}
                     </div>
                     <Badge tone={(f as any)[p.tokenKey] ? "green" : "gray"}>{(f as any)[p.tokenKey] ? "Connected" : "Not connected"}</Badge>
-                    <GBtn
-                      variant="ghost"
-                      disabled={!(f as any)[p.clientIdKey]}
-                      onClick={() => {
-                        sessionStorage.setItem("smocks.socialOAuthPlatform", p.platform);
-                        const state = uid();
-                        sessionStorage.setItem("smocks.socialOAuthState", state);
-                        window.location.href = buildSocialAuthorizeUrl(p.platform, (f as any)[p.clientIdKey], state);
-                      }}
-                      className="!text-xs !py-1.5 flex-shrink-0"
-                    >
-                      Connect
-                    </GBtn>
+                    {!p.sharedWithFacebook && (
+                      <GBtn
+                        variant="ghost"
+                        disabled={!(f as any)[p.clientIdKey]}
+                        onClick={() => {
+                          sessionStorage.setItem("smocks.socialOAuthPlatform", p.platform);
+                          const state = uid();
+                          sessionStorage.setItem("smocks.socialOAuthState", state);
+                          window.location.href = buildSocialAuthorizeUrl(p.platform, (f as any)[p.clientIdKey], state);
+                        }}
+                        className="!text-xs !py-1.5 flex-shrink-0"
+                      >
+                        Connect
+                      </GBtn>
+                    )}
                   </div>
                 ))}
                 {(f as any).metaAccessToken && (

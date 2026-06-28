@@ -77,7 +77,7 @@ export function CustomerModal({ open, onClose, data, onSave, mapsKey = "" }) {
         </div>
         <div><label className="text-xs text-white/60 mb-1 block">Email</label><GInput type="email" value={f.email} onChange={e => setF({ ...f, email: e.target.value })} /></div>
         <div><label className="text-xs text-white/60 mb-1 block">Phone</label><GInput value={f.phone} onChange={e => setF({ ...f, phone: e.target.value })} /></div>
-        <div><label className="text-xs text-white/60 mb-1 block">Address</label><AddressAutocomplete value={f.address} onChange={v => setF({ ...f, address: v })} mapsKey={mapsKey} placeholder="412 Oak Ridge Ln, York PA" /></div>
+        <div><label className="text-xs text-white/60 mb-1 block">Address</label><AddressAutocomplete value={f.address} onChange={v => setF({ ...f, address: v })} onPlaceSelect={place => setF(p => ({ ...p, address: place.street, city: place.city, state: place.state, zip: place.zip }))} mapsKey={mapsKey} placeholder="412 Oak Ridge Ln, York PA" /></div>
 
         <div className="grid grid-cols-2 gap-3">
           <div>

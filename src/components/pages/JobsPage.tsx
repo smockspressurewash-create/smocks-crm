@@ -84,6 +84,17 @@ export function JobsPage({ jobs = [], setJobs, customers = [], employees = [], e
   const [tab, setTab] = useState("scheduled");
   const [cancelModal, setCancelModal] = useState(null);
   const [cancelReason, setCancelReason] = useState(cancelReasons[0]);
+  const [deleteModal, setDeleteModal] = useState<string | null>(null);
+  const confirmDelete = () => {
+    if (!deleteModal) return;
+    setJobs((prev: any[]) => prev.filter((x: any) => x.id !== deleteModal));
+    if (deleteModal === detailId) setDetailId(null);
+    // Must also delete server-side — otherwise the next cross-device sync
+    // poll just re-fetches this row from Supabase and it reappears locally.
+    (supabase as any).from("jobs").delete().eq("id", deleteModal).catch(() => {});
+    setDeleteModal(null);
+    toast("Job permanently deleted");
+  };
   const [detailId, setDetailId] = useState(null);
 
   // Deep-link into a specific job's detail — e.g. from Dashboard's Live Team
@@ -850,14 +861,7 @@ export function JobsPage({ jobs = [], setJobs, customers = [], employees = [], e
                     }
                   } else toast("Rescheduled to " + newDate);
                 }} className="flex-1 text-xs text-blue-400 flex items-center justify-center gap-1 py-1.5 border border-blue-700/30 rounded-lg hover:bg-blue-950/30 transition"><RefreshCw size={10} />Reschedule + Text</button>}
-                {tab === "cancelled" && (
-                  <button onClick={() => {
-                    if (!window.confirm("Permanently delete this job? This cannot be undone.")) return;
-                    setJobs(prev => prev.filter(x => x.id !== j.id));
-                    if (j.id === detailId) setDetailId(null);
-                    toast("Job deleted");
-                  }} className="flex-1 text-xs text-red-400 flex items-center justify-center gap-1 py-1.5 border border-red-700/30 rounded-lg hover:bg-red-950/30 transition"><Trash2 size={10} />Delete Job</button>
-                )}
+                <button onClick={() => setDeleteModal(j.id)} className="flex-1 text-xs text-red-400 flex items-center justify-center gap-1 py-1.5 border border-red-700/30 rounded-lg hover:bg-red-950/30 transition"><Trash2 size={10} />Delete Job</button>
               </div>
             </Glass>
           );
@@ -871,6 +875,16 @@ export function JobsPage({ jobs = [], setJobs, customers = [], employees = [], e
         <div className="space-y-3">
           <GSel value={cancelReason} onChange={e => setCancelReason(e.target.value)}>{cancelReasons.map(r => <option key={r} value={r} className="bg-black">{r}</option>)}</GSel>
           <div className="flex gap-2 justify-end"><GBtn variant="ghost" onClick={() => setCancelModal(null)}>Back</GBtn><GBtn variant="danger" onClick={confirmCancel}>Cancel Job</GBtn></div>
+        </div>
+      </Modal>
+
+      <Modal open={!!deleteModal} onClose={() => setDeleteModal(null)} title="Delete Job">
+        <div className="space-y-4">
+          <div className="text-sm text-white/80">Are you sure you want to permanently delete this job? This cannot be undone.</div>
+          <div className="flex gap-2 justify-end">
+            <GBtn variant="ghost" onClick={() => setDeleteModal(null)}>Cancel</GBtn>
+            <GBtn variant="danger" onClick={confirmDelete}><Trash2 size={12} className="inline mr-1.5" />Delete Permanently</GBtn>
+          </div>
         </div>
       </Modal>
     </div>

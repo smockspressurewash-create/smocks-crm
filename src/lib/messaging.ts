@@ -1,3 +1,5 @@
+import { supabase } from "./supabase";
+
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export interface TwilioSettings {
@@ -179,13 +181,7 @@ export const pollTwilioIncoming = async (
 
 // ─── Email via Gmail API ──────────────────────────────────────────────────────
 
-export const sendViaGmail = async (
-  googleProviderToken: string,
-  fromEmail: string,
-  to: string,
-  subject: string,
-  html: string
-): Promise<void> => {
+const sendGmailRaw = async (googleProviderToken: string, fromEmail: string, to: string, subject: string, html: string): Promise<Response> => {
   const mime = [
     `From: ${fromEmail}`,
     `To: ${to}`,
@@ -202,7 +198,7 @@ export const sendViaGmail = async (
     .replace(/\//g, "_")
     .replace(/=+$/, "");
 
-  const res = await fetch(
+  return fetch(
     "https://www.googleapis.com/gmail/v1/users/me/messages/send",
     {
       method: "POST",
@@ -213,6 +209,31 @@ export const sendViaGmail = async (
       body: JSON.stringify({ raw }),
     }
   );
+};
+
+// Google access tokens last ~1hr, and this is called from many places across
+// the app (not just the Google Workspace settings page), so a stale token is
+// the normal case, not the exception. On a 401, ask Supabase to refresh the
+// session — Supabase holds Google's refresh token server-side from the
+// initial OAuth link, so this works without needing our own backend or the
+// OAuth client secret — and retry once before giving up. Without this, every
+// Gmail send after the first hour would silently fail and fall through to
+// Resend, which is exactly the "everything uses Resend" bug this fixes.
+export const sendViaGmail = async (
+  googleProviderToken: string,
+  fromEmail: string,
+  to: string,
+  subject: string,
+  html: string
+): Promise<void> => {
+  let res = await sendGmailRaw(googleProviderToken, fromEmail, to, subject, html);
+  if (res.status === 401) {
+    const { data } = await supabase.auth.refreshSession();
+    const freshToken = (data.session as any)?.provider_token;
+    if (freshToken) {
+      res = await sendGmailRaw(freshToken, fromEmail, to, subject, html);
+    }
+  }
   if (!res.ok) {
     const err = await res.json().catch(() => ({})) as { error?: { message?: string } };
     throw new Error(err.error?.message ?? `Gmail API error ${res.status}`);

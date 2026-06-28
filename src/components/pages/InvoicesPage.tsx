@@ -36,6 +36,7 @@ import { GDate } from "../ui/GDate";
 import { GSel } from "../ui/GSel";
 import { GTxt } from "../ui/GTxt";
 import { Modal } from "../ui/Modal";
+import { InvoicePreviewModal } from "../ui/InvoicePreviewModal";
 import { StripePaymentModal } from "../ui/StripePaymentModal";
 import { createCheckoutSession, retrieveCheckoutSession } from "../../lib/stripe";
 import { deobfuscate } from "../../lib/crypto";
@@ -84,7 +85,8 @@ export function InvoicesPage({ estimates = [], setEstimates, customers = [], set
   const [sendingJobInvoiceId, setSendingJobInvoiceId] = useState<string | null>(null);
   const needsInvoiceJobs = jobs.filter((j: any) => j.status === "completed" && j.paymentStatus !== "Paid" && !j.invoiceSentAt);
 
-  const sendInvoiceForJob = async (job: any) => {
+  const [previewInvoiceJob, setPreviewInvoiceJob] = useState<any>(null);
+  const sendInvoiceForJob = async (job: any, subject: string, bodyHtml: string) => {
     const cust = customers.find(c => c.id === job.customerId);
     if (!cust?.email) { toast?.("Customer has no email on file", "red"); return; }
     setSendingJobInvoiceId(job.id);
@@ -97,10 +99,11 @@ export function InvoicesPage({ estimates = [], setEstimates, customers = [], set
       };
       setEstimates((prev: any[]) => [...prev, newInv]);
       const payLink = `${window.location.origin}${window.location.pathname}#/portal/${newInv.id}`;
-      const html = `<p>Hi ${cust.firstName},</p><p>Thanks for choosing us! Your service at <b>${job.address}</b> is complete.</p><p><b>Amount due:</b> $${(Number(job.amount) || 0).toFixed(2)}</p><p><a href="${payLink}">View & Pay Invoice</a></p>`;
-      await sendEmail(settings as any, { to: cust.email, subject: `Invoice — ${settings?.companyName || "Smock's Pressure Washing"}`, body: html });
+      const html = bodyHtml + `<div style="text-align:center;margin:22px 0 4px"><a href="${payLink}" style="display:inline-block;background:#dc2626;color:#fff;text-decoration:none;font-weight:700;font-size:14px;padding:13px 30px;border-radius:10px">View & Pay Invoice</a></div>`;
+      await sendEmail(settings as any, { to: cust.email, subject, body: html });
       setJobs((prev: any[]) => prev.map(j => j.id === job.id ? { ...j, invoiceSentAt: today(), paymentType: "Invoice", paymentStatus: j.paymentStatus === "Paid" ? j.paymentStatus : "Pending" } : j));
       toast?.(`Invoice sent to ${cust.firstName} ✓`, "green");
+      setPreviewInvoiceJob(null);
     } catch (e: any) {
       toast?.(e?.message || "Failed to send invoice", "red");
     } finally {
@@ -327,7 +330,7 @@ export function InvoicesPage({ estimates = [], setEstimates, customers = [], set
                     <div className="text-sm font-medium truncate">{cust ? `${cust.firstName} ${cust.lastName}` : j.address}</div>
                     <div className="text-xs text-white/40">{j.address} · {fmt(j.amount)} · completed {j.completedAt ? new Date(j.completedAt).toLocaleDateString() : j.scheduledDate}</div>
                   </div>
-                  <GBtn onClick={() => sendInvoiceForJob(j)} disabled={sendingJobInvoiceId === j.id} className="!text-xs !py-1.5 flex-shrink-0">
+                  <GBtn onClick={() => setPreviewInvoiceJob(j)} disabled={sendingJobInvoiceId === j.id} className="!text-xs !py-1.5 flex-shrink-0">
                     {sendingJobInvoiceId === j.id ? "Sending…" : <><Send size={11} className="inline mr-1" />Send Invoice</>}
                   </GBtn>
                 </div>
@@ -552,6 +555,17 @@ export function InvoicesPage({ estimates = [], setEstimates, customers = [], set
         amount={stripePayInvoice?.total || 0}
         description={`Invoice #${stripePayInvoice?.id?.slice(-8).toUpperCase() || ""}`}
         onSuccess={(paymentIntentId) => stripePayInvoice && markPaidViaStripe(stripePayInvoice.id, paymentIntentId)}
+      />
+
+      <InvoicePreviewModal
+        open={!!previewInvoiceJob}
+        onClose={() => setPreviewInvoiceJob(null)}
+        sending={!!previewInvoiceJob && sendingJobInvoiceId === previewInvoiceJob.id}
+        onConfirm={(subject, bodyHtml) => sendInvoiceForJob(previewInvoiceJob, subject, bodyHtml)}
+        data={previewInvoiceJob ? (() => {
+          const cust = customers.find((c: any) => c.id === previewInvoiceJob.customerId);
+          return { customerName: cust?.firstName || "Customer", address: previewInvoiceJob.address || "", amount: Number(previewInvoiceJob.amount) || 0, companyName: settings?.companyName || "Smock's Pressure Washing", payLink: "" };
+        })() : null}
       />
     </div>
   );

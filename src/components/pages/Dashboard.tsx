@@ -42,6 +42,7 @@ import { PBar } from "../ui/PBar";
 import { PageFade } from "../ui/PageFade";
 import { TimeframeSelector } from "../ui/TimeframeSelector";
 import { AddressAutocomplete } from "../ui/AddressAutocomplete";
+import { InvoicePreviewModal } from "../ui/InvoicePreviewModal";
 import { BeforeAfterSlider } from "../ui/BeforeAfterSlider";
 import { CustomerModal } from "../ui/CustomerModal";
 import { CustomerDetail } from "../ui/CustomerDetail";
@@ -77,11 +78,45 @@ import { ChemicalModal } from "../ui/ChemicalModal";
 import { WeeklyBusinessReview } from "../ui/WeeklyBusinessReview";
 import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 
-export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = [], estimates = [], setEstimates = (() => {}) as any, automations = [], stats, goals, vehicles = [], maintenance = [], chemicals = [], settings = {} as AppSettings, setSettings = () => {}, onNav, toast, weatherData = seedWeather, inboxThreads = [], employees = [], onSendDailyBriefing, onViewJob = (id: string) => {} }: { jobs?: any[]; setJobs?: any; customers?: any[]; estimates?: any[]; setEstimates?: any; automations?: any[]; stats?: any; goals?: any; vehicles?: any[]; maintenance?: any[]; chemicals?: any[]; settings?: AppSettings; setSettings?: any; onNav?: any; toast?: any; weatherData?: any; inboxThreads?: any[]; employees?: any[]; onSendDailyBriefing?: () => Promise<void>; onViewJob?: (id: string) => void }) {
+const STREET_VIEW_API_ENABLE_URL = "https://console.cloud.google.com/apis/library/street-view-image-backend.googleapis.com";
+
+// Mini 56px Street View thumbnail for the Live Team View row. If the image
+// fails to load with a key present, that's almost always because the
+// Street View Static API (billed/enabled separately from Maps JS/Places)
+// isn't turned on for this key — show a small warning icon linking straight
+// to the Cloud Console page that fixes it, instead of just hiding.
+function MiniStreetViewThumb({ address, mapsKey }: { address: string; mapsKey?: string }) {
+  const [loadError, setLoadError] = useState(false);
+  if (!mapsKey || !address) {
+    return (
+      <div className="w-14 h-14 rounded-lg bg-green-900/40 border border-green-600/40 flex items-center justify-center flex-shrink-0">
+        <Clock size={16} className="text-green-400" />
+      </div>
+    );
+  }
+  if (loadError) {
+    return (
+      <a href={STREET_VIEW_API_ENABLE_URL} target="_blank" rel="noopener noreferrer" title="Street View Static API not enabled for this key — click to enable it" className="w-14 h-14 rounded-lg bg-yellow-950/30 border border-yellow-700/40 flex items-center justify-center flex-shrink-0 hover:bg-yellow-900/40">
+        <AlertTriangle size={16} className="text-yellow-400" />
+      </a>
+    );
+  }
+  return (
+    <img
+      src={`https://maps.googleapis.com/maps/api/streetview?size=72x72&location=${encodeURIComponent(address)}&key=${mapsKey}`}
+      alt=""
+      className="w-14 h-14 rounded-lg object-cover flex-shrink-0 border border-white/10"
+      onError={() => { console.warn("Street View image failed to load for", address, "— enable the Street View Static API:", STREET_VIEW_API_ENABLE_URL); setLoadError(true); }}
+    />
+  );
+}
+
+export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = [], estimates = [], setEstimates = (() => {}) as any, automations = [], stats, goals, vehicles = [], maintenance = [], chemicals = [], settings = {} as AppSettings, setSettings = () => {}, onNav, toast, weatherData = seedWeather, inboxThreads = [], employees = [], reviews = [], onSendDailyBriefing, onViewJob = (id: string) => {} }: { jobs?: any[]; setJobs?: any; customers?: any[]; estimates?: any[]; setEstimates?: any; automations?: any[]; stats?: any; goals?: any; vehicles?: any[]; maintenance?: any[]; chemicals?: any[]; settings?: AppSettings; setSettings?: any; onNav?: any; toast?: any; weatherData?: any; inboxThreads?: any[]; employees?: any[]; reviews?: any[]; onSendDailyBriefing?: () => Promise<void>; onViewJob?: (id: string) => void }) {
   const [sendingDashInvoiceId, setSendingDashInvoiceId] = useState<string | null>(null);
   const [needsInvoiceCollapsed, setNeedsInvoiceCollapsed] = useState(false);
+  const [previewInvoiceJob, setPreviewInvoiceJob] = useState<any>(null);
   const needsInvoiceJobs = jobs.filter((j: any) => j.status === "completed" && !!j.clockInAt && j.paymentStatus !== "Paid" && !j.invoiceSentAt);
-  const sendDashInvoice = async (job: any) => {
+  const sendDashInvoice = async (job: any, subject: string, bodyHtml: string) => {
     const cust = customers.find((c: any) => c.id === job.customerId);
     if (!cust?.email) { toast?.("Customer has no email on file", "red"); return; }
     setSendingDashInvoiceId(job.id);
@@ -94,10 +129,11 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
       };
       setEstimates((prev: any[]) => [...prev, newInv]);
       const payLink = `${window.location.origin}${window.location.pathname}#/portal/${newInv.id}`;
-      const html = `<p>Hi ${cust.firstName},</p><p>Thanks for choosing us! Your service at <b>${job.address}</b> is complete.</p><p><b>Amount due:</b> $${(Number(job.amount) || 0).toFixed(2)}</p><p><a href="${payLink}">View & Pay Invoice</a></p>`;
-      await sendEmail(settings as any, { to: cust.email, subject: `Invoice — ${settings?.companyName || "Smock's Pressure Washing"}`, body: html });
+      const html = bodyHtml + `<div style="text-align:center;margin:22px 0 4px"><a href="${payLink}" style="display:inline-block;background:#dc2626;color:#fff;text-decoration:none;font-weight:700;font-size:14px;padding:13px 30px;border-radius:10px">View & Pay Invoice</a></div>`;
+      await sendEmail(settings as any, { to: cust.email, subject, body: html });
       setJobs((prev: any[]) => prev.map((j: any) => j.id === job.id ? { ...j, invoiceSentAt: today(), paymentType: "Invoice", paymentStatus: j.paymentStatus === "Paid" ? j.paymentStatus : "Pending" } : j));
       toast?.(`Invoice sent to ${cust.firstName} ✓`, "green");
+      setPreviewInvoiceJob(null);
     } catch (e: any) {
       toast?.(e?.message || "Failed to send invoice", "red");
     } finally {
@@ -411,13 +447,7 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
               const mapsKey = settings.googleMapsKey || settings.mapsKey;
               return (
                 <div key={j.id} className={"flex items-center gap-3 p-3 rounded-xl border " + (overSchedule ? "bg-yellow-950/20 border-yellow-700/40" : "bg-black/30 border-white/10")}>
-                  {mapsKey && j.address ? (
-                    <img src={`https://maps.googleapis.com/maps/api/streetview?size=72x72&location=${encodeURIComponent(j.address)}&key=${mapsKey}`} alt="" className="w-14 h-14 rounded-lg object-cover flex-shrink-0 border border-white/10" onError={(e: any) => { console.warn("Street View image failed to load for", j.address, "— check that the Street View Static API (not just Maps JS/Places) is enabled and billed on this key."); e.target.style.display = "none"; }} />
-                  ) : (
-                    <div className="w-14 h-14 rounded-lg bg-green-900/40 border border-green-600/40 flex items-center justify-center flex-shrink-0">
-                      <Clock size={16} className="text-green-400" />
-                    </div>
-                  )}
+                  <MiniStreetViewThumb address={j.address} mapsKey={mapsKey} />
                   <div className="flex-1 min-w-0">
                     <div className="text-sm font-medium truncate">{crewNames} — {c ? c.firstName + " " + c.lastName : j.address}</div>
                     <div className="text-xs text-white/40 flex items-center gap-2 flex-wrap mt-0.5">
@@ -456,7 +486,7 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
                         <div className="text-sm font-medium truncate">{cust ? `${cust.firstName} ${cust.lastName}` : j.address}</div>
                         <div className="text-xs text-white/40">{j.address} · {fmt(j.amount)}</div>
                       </div>
-                      <GBtn onClick={() => sendDashInvoice(j)} disabled={sendingDashInvoiceId === j.id} className="!text-xs !py-1.5 flex-shrink-0">
+                      <GBtn onClick={() => setPreviewInvoiceJob(j)} disabled={sendingDashInvoiceId === j.id} className="!text-xs !py-1.5 flex-shrink-0">
                         {sendingDashInvoiceId === j.id ? "Sending…" : "Send Invoice"}
                       </GBtn>
                     </div>
@@ -734,6 +764,42 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
                 <div className="flex justify-between text-xs mb-1"><span className="text-white/70">Jobs Done</span><span className={jobsPct >= 75 ? "text-green-400 font-bold" : "text-white/60"}>{stats.doneMonth} / {goals.jobCount}</span></div>
                 <PBar value={stats.doneMonth} max={goals.jobCount || 1} />
               </div>
+              {settings.annualRevenueGoal > 0 && (() => {
+                const yrStart = new Date(new Date().getFullYear(), 0, 1).toISOString().slice(0, 10);
+                const yrRev = jobs.filter(j => j.status === "completed" && j.scheduledDate >= yrStart).reduce((s, j) => s + j.amount, 0);
+                const pct = Math.round(yrRev / settings.annualRevenueGoal * 100);
+                return <div>
+                  <div className="flex justify-between text-xs mb-1"><span className="text-white/70">Annual Revenue</span><span className={pct >= 75 ? "text-green-400 font-bold" : "text-white/60"}>{fmt(yrRev)} / {fmt(settings.annualRevenueGoal)} ({pct}%)</span></div>
+                  <PBar value={yrRev} max={settings.annualRevenueGoal} />
+                </div>;
+              })()}
+              {settings.customerAcquisitionGoal > 0 && (() => {
+                const monthStart = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().slice(0, 10);
+                const newCust = customers.filter((c: any) => c.createdAt >= monthStart).length;
+                const pct = Math.round(newCust / settings.customerAcquisitionGoal * 100);
+                return <div>
+                  <div className="flex justify-between text-xs mb-1"><span className="text-white/70">New Customers</span><span className={pct >= 75 ? "text-green-400 font-bold" : "text-white/60"}>{newCust} / {settings.customerAcquisitionGoal}</span></div>
+                  <PBar value={newCust} max={settings.customerAcquisitionGoal} />
+                </div>;
+              })()}
+              {settings.avgJobValueGoal > 0 && (() => {
+                const monthStart = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().slice(0, 10);
+                const monthJobs = jobs.filter(j => j.status === "completed" && j.scheduledDate >= monthStart);
+                const avgVal = monthJobs.length > 0 ? monthJobs.reduce((s, j) => s + j.amount, 0) / monthJobs.length : 0;
+                const pct = Math.round(avgVal / settings.avgJobValueGoal * 100);
+                return <div>
+                  <div className="flex justify-between text-xs mb-1"><span className="text-white/70">Avg Job Value</span><span className={pct >= 75 ? "text-green-400 font-bold" : "text-white/60"}>{fmt(avgVal)} / {fmt(settings.avgJobValueGoal)}</span></div>
+                  <PBar value={avgVal} max={settings.avgJobValueGoal} />
+                </div>;
+              })()}
+              {settings.reviewRatingGoal > 0 && reviews.length > 0 && (() => {
+                const avgRating = reviews.reduce((s: number, r: any) => s + (r.rating || 0), 0) / reviews.length;
+                const pct = Math.round(avgRating / settings.reviewRatingGoal * 100);
+                return <div>
+                  <div className="flex justify-between text-xs mb-1"><span className="text-white/70">Review Rating</span><span className={pct >= 95 ? "text-green-400 font-bold" : "text-white/60"}>⭐ {avgRating.toFixed(1)} / {settings.reviewRatingGoal}</span></div>
+                  <PBar value={avgRating} max={settings.reviewRatingGoal} />
+                </div>;
+              })()}
               <div className="pt-2 border-t border-red-900/20 space-y-2">
                 <div className="flex justify-between text-xs"><span className="text-white/50">Run-rate forecast</span><span className={forecast >= (goals.revenue || 10000) ? "text-green-400 font-bold" : "text-yellow-400 font-semibold"}>{fmt(forecast)}</span></div>
                 <div className="flex justify-between text-xs"><span className="text-white/40">Day {dayOfMonth}/{daysInMonth}</span><span className="text-white/40">{fmt(Math.round(stats.totalRev / dayOfMonth))}/day avg</span></div>
@@ -929,6 +995,17 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
           </div>
         </Glass>}
       </div>}
+
+      <InvoicePreviewModal
+        open={!!previewInvoiceJob}
+        onClose={() => setPreviewInvoiceJob(null)}
+        sending={!!previewInvoiceJob && sendingDashInvoiceId === previewInvoiceJob.id}
+        onConfirm={(subject, bodyHtml) => sendDashInvoice(previewInvoiceJob, subject, bodyHtml)}
+        data={previewInvoiceJob ? (() => {
+          const cust = customers.find((c: any) => c.id === previewInvoiceJob.customerId);
+          return { customerName: cust?.firstName || "Customer", address: previewInvoiceJob.address || "", amount: Number(previewInvoiceJob.amount) || 0, companyName: settings?.companyName || "Smock's Pressure Washing", payLink: "" };
+        })() : null}
+      />
     </div>
   );
 }
