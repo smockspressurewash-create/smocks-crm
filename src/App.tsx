@@ -414,7 +414,7 @@ export function App() {
   const [campaigns,       setCampaigns]       = usePersistent<Campaign[]>("smocks.campaigns", []);
   const [automations,     setAutomations]     = usePersistent<Automation[]>("smocks.automations", seedAutomations);
   const [reviews,         setReviews]         = usePersistent<Review[]>("smocks.reviews", []);
-  const [socialPosts,     setSocialPosts]     = usePersistent<SocialPost[]>("smocks.socialPosts", seedSocialPosts);
+  const [socialPosts,     setSocialPosts]     = usePersistent<SocialPost[]>("smocks.socialPosts", []);
   const [inboxThreads,    setInboxThreads]    = usePersistent<InboxThread[]>("smocks.inbox", []);
   const [accountability,  setAccountability]  = usePersistent<AccountabilityEntry[]>("smocks.accountability", []);
   const [goalsList,       setGoalsList]       = usePersistent<Goal[]>("smocks.goals", []);
@@ -616,6 +616,28 @@ export function App() {
     }, 30000);
     return () => clearInterval(interval);
   }, [jobs]);
+
+  // ── Cross-device sync ────────────────────────────────────────────────────
+  // refetchData() previously only ran once at session bootstrap, so a change
+  // an employee made on their phone never reached an owner's already-open
+  // dashboard until they refreshed the page. Two complementary mechanisms:
+  // a Supabase realtime subscription for instant updates when the table has
+  // realtime enabled, plus a 5s poll as a fallback that works regardless.
+  useEffect(() => {
+    if (!hasCrmSession) return;
+    let channel: any = null;
+    try {
+      channel = (supabase as any)
+        .channel("jobs-sync")
+        .on("postgres_changes", { event: "*", schema: "public", table: "jobs" }, () => { refetchData(); })
+        .subscribe();
+    } catch { /* realtime may not be enabled on this project */ }
+    const interval = setInterval(refetchData, 5000);
+    return () => {
+      clearInterval(interval);
+      try { channel?.unsubscribe(); } catch { /* ignore */ }
+    };
+  }, [hasCrmSession]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Supabase Google OAuth / identity-link capture ────────────────────────
   useEffect(() => {
@@ -957,6 +979,8 @@ export function App() {
         employees={employees}
         customers={customers}
         settings={settings}
+        estimates={estimates}
+        setEstimates={setEstimates}
         toast={toast}
         // hasCrmSession (a verified, currently-active owner session) is the correct signal
         // here — settings.googleConnected is a sticky per-browser localStorage flag that
@@ -1349,10 +1373,10 @@ export function App() {
           <div className="p-4 md:p-6 max-w-[1600px] mx-auto">
             <PageFade key={page}>
               <SafePage>
-                {page === "dashboard"      && <Dashboard jobs={jobs} customers={customers} estimates={estimates} automations={automations} stats={{ totalRev, activeJobs, pendingEst, closeRate, doneMonth }} goals={{ revenue: settings.monthlyRevenueGoal ?? 8000, jobCount: settings.monthlyJobsGoal ?? 20 }} vehicles={vehicles} maintenance={maintenance} chemicals={chemicals} settings={settings} setSettings={setSettings} onNav={setPage} toast={toast} weatherData={weatherData} inboxThreads={inboxThreads} employees={employees} onSendDailyBriefing={sendDailyBriefingNow} onViewJob={id => { setOpenJobId(id); setPage("jobs"); }} />}
+                {page === "dashboard"      && <Dashboard jobs={jobs} setJobs={setJobs} customers={customers} estimates={estimates} setEstimates={setEstimates} automations={automations} stats={{ totalRev, activeJobs, pendingEst, closeRate, doneMonth }} goals={{ revenue: settings.monthlyRevenueGoal ?? 8000, jobCount: settings.monthlyJobsGoal ?? 20 }} vehicles={vehicles} maintenance={maintenance} chemicals={chemicals} settings={settings} setSettings={setSettings} onNav={setPage} toast={toast} weatherData={weatherData} inboxThreads={inboxThreads} employees={employees} onSendDailyBriefing={sendDailyBriefingNow} onViewJob={id => { setOpenJobId(id); setPage("jobs"); }} />}
                 {page === "customers"      && <CustomersPage customers={customers} setCustomers={setCustomers} estimates={estimates} jobs={jobs} toast={toast} timeline={timeline} setTimeline={setTimeline} settings={settings} />}
                 {page === "estimates"      && <EstimatesPage estimates={estimates} setEstimates={setEstimates} customers={customers} services={services} settings={settings} toast={toast} onPortal={id => setPortalEstId(id)} estimateTemplates={estimateTemplates} setEstimateTemplates={setEstimateTemplates} setJobs={setJobs} onNav={setPage} />}
-                {page === "invoices"       && <InvoicesPage estimates={estimates} setEstimates={setEstimates} customers={customers} settings={settings} toast={toast} />}
+                {page === "invoices"       && <InvoicesPage estimates={estimates} setEstimates={setEstimates} customers={customers} settings={settings} toast={toast} jobs={jobs} setJobs={setJobs} />}
                 {page === "jobs"           && <JobsPage jobs={jobs} setJobs={setJobs} customers={customers} employees={employees} estimates={estimates} setEstimates={setEstimates} settings={settings} toast={toast} posts={socialPosts} setPosts={setSocialPosts} setTimeline={setTimeline} initialDetailId={openJobId} onInitialDetailIdConsumed={() => setOpenJobId(null)} onPortal={id => setPortalEstId(id)} />}
                 {page === "pipeline"       && <PipelinePage jobs={jobs} setJobs={setJobs} customers={customers} toast={toast} />}
                 {page === "calendar"       && <CalendarPage jobs={jobs} setJobs={setJobs} customers={customers} employees={employees} toast={toast} settings={settings} />}
@@ -1411,6 +1435,7 @@ export function App() {
           invoices={estimates.filter(e => e.invoiced)}
           settings={settings}
           onClose={() => setPortalEstId(null)}
+          onView={id => setEstimates(prev => prev.map(e => e.id === id && !e.viewed ? { ...e, viewed: true, viewedAt: new Date().toISOString() } : e))}
           onApprove={(id, data) => {
             setEstimates(prev => prev.map(e => e.id === id ? {
               ...e, status: "approved", signedAt: data.signedAt || e.signedAt, sigData: data.sigData || e.sigData, paidAt: today(),

@@ -821,6 +821,27 @@ export function SettingsModal({ open, onClose, settings, setSettings, services, 
                 </div>
               </div>
             </Glass>
+
+            {/* Buffer — real social posting */}
+            <Glass className="p-4 !bg-black/40">
+              <div className="flex items-center justify-between mb-3">
+                <div className="flex items-center gap-2"><Share2 size={16} className="text-blue-400" /><div className="font-semibold text-sm">Buffer</div></div>
+                <Badge tone={f.bufferAccessToken ? "green" : "gray"}>{f.bufferAccessToken ? "Configured" : "Not set"}</Badge>
+              </div>
+              <div className="text-xs text-white/60 mb-3">Post directly to connected platforms from the Social page. Without this, posts still save and you can copy/paste or use the share sheet. Get a token at <a href="https://buffer.com/developers/apps" target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:text-blue-300">buffer.com/developers</a></div>
+              <div className="space-y-2">
+                <div>
+                  <label className="text-[10px] text-white/50 uppercase tracking-wider">Access Token</label>
+                  <GInput type="password" value={f.bufferAccessToken || ""} onChange={e => setF({ ...f, bufferAccessToken: e.target.value })} placeholder="Buffer access token" className="!text-xs mt-1" />
+                </div>
+                {["instagram", "facebook", "tiktok"].map(p => (
+                  <div key={p}>
+                    <label className="text-[10px] text-white/50 uppercase tracking-wider capitalize">{p} Profile ID</label>
+                    <GInput value={f.bufferProfileIds?.[p] || ""} onChange={e => setF({ ...f, bufferProfileIds: { ...(f.bufferProfileIds || {}), [p]: e.target.value } })} placeholder="Profile ID from Buffer" className="!text-xs mt-1" />
+                  </div>
+                ))}
+              </div>
+            </Glass>
           </div>}
 
           {sec === "notifications" && <div className="space-y-3">

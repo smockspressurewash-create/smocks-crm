@@ -6,16 +6,16 @@ import {
   Video, PenLine, Shield, Navigation, Database, Route, ToggleRight, ToggleLeft, Download
 } from "lucide-react";
 import { supabase } from "../../lib/supabase";
-import { getEmpGoogleToken, isEmpGoogleTokenValid, saveEmpGoogleToken, createGCalEvent } from "../../lib/googleApi";
-import { sendViaGmail } from "../../lib/messaging";
+import { getEmpGoogleToken, isEmpGoogleTokenValid, saveEmpGoogleToken, refreshEmpGoogleToken, createGCalEvent } from "../../lib/googleApi";
+import { sendViaGmail, sendEmail, emailShell, emailButton } from "../../lib/messaging";
 import { Glass } from "../ui/Glass";
 import { GBtn } from "../ui/GBtn";
 import { GInput } from "../ui/GInput";
 import { GTxt } from "../ui/GTxt";
 import { BeforeAfterSlider } from "../ui/BeforeAfterSlider";
-import { loadMapsScript } from "../ui/AddressAutocomplete";
+import { loadMapsScript, AddressAutocomplete } from "../ui/AddressAutocomplete";
 import { BarChart, Bar, XAxis, YAxis, ResponsiveContainer, Tooltip, CartesianGrid } from "recharts";
-import { fmt, uid, today, computeJobRatingScore } from "../../lib/utils";
+import { fmt, uid, today, daysFromNow, computeJobRatingScore } from "../../lib/utils";
 import type { Job, Employee, Customer, AppSettings, JobChecklistItem } from "../../types";
 
 const PRE_DEFAULTS: JobChecklistItem[] = [
@@ -36,32 +36,26 @@ const POST_DEFAULTS: JobChecklistItem[] = [
   { id: "post4", label: "Take after photos", done: false },
 ];
 
+// Payment status label shown on completed jobs — owner and employee views
+// both use this so "Paid (Cash)" / "Unpaid — Invoice Sent" / "Unpaid" read
+// the same everywhere.
+export function paymentStatusLabel(job: Job): string {
+  if (job.paymentStatus === "Paid") return `Paid (${job.paymentType || "Cash"})`;
+  if (job.paymentType === "Invoice" || job.invoiceSentAt) return "Unpaid — Invoice Sent";
+  if (job.paymentStatus === "Pending") return "Unpaid";
+  return "Unpaid";
+}
+
 // Small Street View thumbnail for a job address; tap to expand full-size.
-// Shows a visible setup hint when no Maps key is configured (rather than just
-// vanishing) and a "no imagery" message if the request itself fails, so a
-// blank space always has an explanation instead of looking broken.
+// Renders nothing at all — no error, no setup hint — whenever a key isn't
+// configured or the image fails to load, instead of nagging the employee
+// with an "add a key" message every time they open a job.
 function StreetViewThumb({ address, apiKey }: { address: string; apiKey?: string }) {
   const [expanded, setExpanded] = useState(false);
   const [loadError, setLoadError] = useState(false);
-  if (!address) return null;
-  if (!apiKey) {
-    return (
-      <div className="w-full rounded-xl border border-white/10 bg-black/30 p-3 text-xs text-white/40 flex items-center gap-2">
-        <MapPin size={13} className="flex-shrink-0" />
-        Street View needs a Google Maps API key — add one in Settings.
-      </div>
-    );
-  }
+  if (!address || !apiKey || loadError) return null;
   const thumbUrl = `https://maps.googleapis.com/maps/api/streetview?size=600x300&location=${encodeURIComponent(address)}&key=${apiKey}`;
   const bigUrl = `https://maps.googleapis.com/maps/api/streetview?size=1200x600&location=${encodeURIComponent(address)}&key=${apiKey}`;
-  if (loadError) {
-    return (
-      <div className="w-full rounded-xl border border-white/10 bg-black/30 p-3 text-xs text-white/40 flex items-center gap-2">
-        <MapPin size={13} className="flex-shrink-0" />
-        No Street View imagery available for this address.
-      </div>
-    );
-  }
   return (
     <>
       <button onClick={() => setExpanded(true)} className="w-full rounded-xl overflow-hidden border border-white/10 relative group">
@@ -165,6 +159,11 @@ function PortalChecklistSection({ title, emoji, items, onUpdate, allowPhotos = f
       ? isVideo ? { ...it, videos: [...(it.videos || []), media] } : { ...it, photos: [...(it.photos || []), media] }
       : it));
   };
+  const deleteItemMedia = (id: string, mediaId: string, isVideo: boolean) => {
+    onUpdate(items.map(it => it.id === id
+      ? isVideo ? { ...it, videos: (it.videos || []).filter(v => v.id !== mediaId) } : { ...it, photos: (it.photos || []).filter(p => p.id !== mediaId) }
+      : it));
+  };
 
   return (
     <div className="mb-4">
@@ -211,14 +210,24 @@ function PortalChecklistSection({ title, emoji, items, onUpdate, allowPhotos = f
                 {((item.photos || []).length > 0 || (item.videos || []).length > 0) && (
                   <div className="mt-1.5 flex gap-1.5 flex-wrap">
                     {(item.photos || []).map((p, pi) => (
-                      <div key={p.id || pi} className="w-14 h-14 rounded-lg overflow-hidden flex-shrink-0 border border-white/10">
+                      <div key={p.id || pi} className="w-14 h-14 rounded-lg overflow-hidden flex-shrink-0 border border-white/10 relative">
                         <img src={p.dataUrl} alt="" className="w-full h-full object-cover" />
+                        {!disabled && (
+                          <button onClick={() => deleteItemMedia(item.id, p.id, false)} className="absolute top-0.5 right-0.5 w-4 h-4 rounded-full bg-black/70 hover:bg-red-700 text-white flex items-center justify-center">
+                            <X size={9} />
+                          </button>
+                        )}
                       </div>
                     ))}
                     {(item.videos || []).map((v, vi) => (
                       <div key={v.id || vi} className="w-14 h-14 rounded-lg overflow-hidden flex-shrink-0 border border-white/10 relative bg-black">
                         <video src={v.dataUrl} className="w-full h-full object-cover" />
                         <Video size={14} className="absolute inset-0 m-auto text-white/80" />
+                        {!disabled && (
+                          <button onClick={() => deleteItemMedia(item.id, v.id, true)} className="absolute top-0.5 right-0.5 w-4 h-4 rounded-full bg-black/70 hover:bg-red-700 text-white flex items-center justify-center">
+                            <X size={9} />
+                          </button>
+                        )}
                       </div>
                     ))}
                   </div>
@@ -241,11 +250,12 @@ function PortalChecklistSection({ title, emoji, items, onUpdate, allowPhotos = f
 
 const DEFAULT_SIGNOFF_DISCLAIMER = "I confirm that all services have been completed to my satisfaction. I accept the work as described and acknowledge that {{company}} is not liable for pre-existing conditions documented in the pre-job checklist. I understand that this serves as a legally binding acceptance of completed work.";
 
-function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName = "the company", onComplete, perms: permsOverride, maxLunchMinutes = 30, onJobCompleted, googleMapsKey = "", paidLunchBreaks = false, signOffDisclaimer = "" }: {
+function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName = "the company", onComplete, perms: permsOverride, maxLunchMinutes = 30, onJobCompleted, googleMapsKey = "", paidLunchBreaks = false, signOffDisclaimer = "", settings = {} as AppSettings, setEstimates = (() => {}) as any, nextJob = null, nextJobCustomer = null }: {
   job: Job; customer?: Customer; onBack: () => void;
   onUpdateJob: (patch: Partial<Job>) => void; toast: (msg: string, tone?: any) => void;
   companyName?: string; onComplete?: () => void; perms?: Record<string, boolean>; maxLunchMinutes?: number;
   onJobCompleted?: (job: Job) => void; googleMapsKey?: string; paidLunchBreaks?: boolean; signOffDisclaimer?: string;
+  settings?: AppSettings; setEstimates?: any; nextJob?: Job | null; nextJobCustomer?: Customer | null;
 }) {
   const effPerms = { ...DEFAULT_PERMISSIONS, ...(permsOverride || {}) };
   const [note, setNote] = useState("");
@@ -254,6 +264,12 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
   const [, forceTick] = useState(0);
   const [showSignOff, setShowSignOff] = useState(false);
   const [signerName, setSignerName] = useState("");
+  // "Complete Job" flow: review (checklist/sign-off status) → payment → summary
+  const [completeStep, setCompleteStep] = useState<"" | "review" | "payment" | "method" | "invoice" | "summary">("");
+  const [paidChoice, setPaidChoice] = useState<"yes" | "no" | "">("");
+  const [paymentMethod, setPaymentMethod] = useState("");
+  const [sendingCompleteInvoice, setSendingCompleteInvoice] = useState(false);
+  const [completeSummary, setCompleteSummary] = useState<{ hours: number; amount: number; paymentStatus: string } | null>(null);
 
   useEffect(() => {
     if (!job.clockInAt) return;
@@ -351,6 +367,9 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
     toast("Note added");
   };
 
+  // Saves the signature only — completion itself (and any payment info) is
+  // handled by the separate "Complete Job" flow, so sign-off can happen
+  // independently without forcing the job closed.
   const saveSignOff = () => {
     if (sigMode === "type") {
       if (!signerName.trim()) return;
@@ -361,11 +380,9 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
       sigType: sigMode,
       ...(sigMode === "draw" ? { sigData: sigDrawData } : {}),
     };
-    onUpdateJob({ signOff, status: "completed" });
-    onJobCompleted?.({ ...job, signOff, status: "completed" });
-    toast("Sign-off saved ✓");
+    onUpdateJob({ signOff });
+    toast("Sign-off saved ✓", "green");
     setShowSignOff(false);
-    if (onComplete) setTimeout(onComplete, 1200);
   };
 
   // Draw-mode signature canvas
@@ -416,6 +433,58 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
   const postItems = job.postChecklist?.length ? job.postChecklist : POST_DEFAULTS;
   const allItems = [...preItems, ...durItems, ...postItems];
   const allDone = allItems.length > 0 && allItems.every(i => i.done);
+
+  // "Complete Job" flow — review status, collect payment info, finalize.
+  const checklistRemaining = allItems.filter(i => !i.done).length;
+  const startCompleteFlow = () => { setCompleteStep("review"); setPaidChoice(""); setPaymentMethod(""); };
+
+  const sendInvoiceFromPortal = async () => {
+    if (!customer?.email) { toast("Customer has no email on file", "red"); return false; }
+    setSendingCompleteInvoice(true);
+    try {
+      const newInv = {
+        id: uid(), customerId: job.customerId,
+        lineItems: [{ id: uid(), description: job.notes || job.address || "Service", quantity: 1, unitPrice: Number(job.amount) || 0 }],
+        subtotal: Number(job.amount) || 0, discount: 0, depositRequired: 0, tax: 0, total: Number(job.amount) || 0,
+        status: "approved" as const, createdAt: today(), validUntil: daysFromNow(30), invoiced: true, invoicedAt: today(),
+      };
+      setEstimates((prev: any[]) => [...prev, newInv]);
+      const payLink = `${window.location.origin}${window.location.pathname}#/portal/${newInv.id}`;
+      const html = emailShell(companyName, "Invoice", `<p>Hi ${customer.firstName},</p><p>Thanks for choosing us! Your service at <b>${job.address}</b> is complete.</p><p><b>Amount due:</b> $${(Number(job.amount) || 0).toFixed(2)}</p>` + emailButton("View & Pay Invoice", payLink));
+      await sendEmail(settings, { to: customer.email, subject: `Invoice — ${companyName}`, body: html });
+      toast(`Invoice sent to ${customer.firstName} ✓`, "green");
+      return true;
+    } catch (err: any) {
+      toast(err?.message || "Failed to send invoice", "red");
+      return false;
+    } finally {
+      setSendingCompleteInvoice(false);
+    }
+  };
+
+  const finalizeCompletion = (paymentStatus: "Paid" | "Pending", method?: string, invoiceSent?: boolean) => {
+    let hrs = Number(job.loggedHours) || 0;
+    const patch: Partial<Job> = { status: "completed", completedAt: new Date().toISOString() };
+    if (job.clockInAt) {
+      const lunchMs = paidLunchBreaks ? 0 : (job.lunchMinutes || 0) * 60000;
+      const added = Math.round((Date.now() - job.clockInAt - lunchMs) / 36000) / 100;
+      hrs = Math.round((hrs + added) * 100) / 100;
+      patch.clockInAt = null; patch.lunchStartAt = null; patch.loggedHours = hrs;
+    }
+    if (paymentStatus === "Paid") {
+      patch.paymentType = (method as any) || "Cash";
+      patch.paymentStatus = "Paid";
+      patch.amountCollected = Number(job.amount) || 0;
+    } else {
+      patch.paymentStatus = "Pending";
+      if (invoiceSent) { patch.paymentType = "Invoice"; patch.invoiceSentAt = today(); }
+    }
+    onUpdateJob(patch);
+    onJobCompleted?.({ ...job, ...patch } as Job);
+    setCompleteSummary({ hours: hrs, amount: Number(job.amount) || 0, paymentStatus: paymentStatus === "Paid" ? `Paid (${patch.paymentType})` : invoiceSent ? "Unpaid — Invoice Sent" : "Unpaid" });
+    setCompleteStep("summary");
+    toast("Job marked complete ✓", "green");
+  };
 
   // ── Customer sign-off overlay ─────────────────────────────────────────────
   if (showSignOff) {
@@ -523,6 +592,140 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
     );
   }
 
+  // ── "Complete Job" flow — review → payment → summary ─────────────────────
+  if (completeStep) {
+    return (
+      <div className="min-h-screen bg-black text-white flex flex-col">
+        <div className="sticky top-0 z-20 bg-black/95 border-b border-red-900/30 px-4 py-3 flex items-center gap-3">
+          {completeStep !== "summary" && (
+            <button onClick={() => setCompleteStep("")} className="p-2 rounded-xl hover:bg-white/10 text-white/60 -ml-2">
+              <ChevronLeft size={20} />
+            </button>
+          )}
+          <div className="font-semibold">Complete Job</div>
+        </div>
+        <div className="flex-1 overflow-y-auto p-4 max-w-lg mx-auto w-full space-y-4">
+          {completeStep === "review" && (
+            <>
+              <Glass className="p-4 !bg-black/40 space-y-2.5">
+                <div className="text-xs text-white/50 uppercase tracking-wider font-semibold mb-1">Status Check</div>
+                <div className="flex items-center justify-between text-sm">
+                  <span className="text-white/70">Checklist</span>
+                  <span className={checklistRemaining === 0 ? "text-green-400 font-semibold" : "text-yellow-400 font-semibold"}>
+                    {allItems.length - checklistRemaining}/{allItems.length} done
+                  </span>
+                </div>
+                <div className="flex items-center justify-between text-sm">
+                  <span className="text-white/70">Customer sign-off</span>
+                  <span className={job.signOff ? "text-green-400 font-semibold" : "text-yellow-400 font-semibold"}>
+                    {job.signOff ? "Obtained ✓" : "Not obtained"}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between text-sm">
+                  <span className="text-white/70">Payment</span>
+                  <span className="text-yellow-400 font-semibold">Not yet collected</span>
+                </div>
+              </Glass>
+              {(checklistRemaining > 0 || !job.signOff) && (
+                <div className="text-xs text-white/40 text-center">
+                  {checklistRemaining > 0 && `${checklistRemaining} checklist item${checklistRemaining !== 1 ? "s" : ""} remaining. `}
+                  {!job.signOff && "No sign-off yet. "}
+                  You can still continue.
+                </div>
+              )}
+              {!job.signOff && (
+                <GBtn variant="ghost" onClick={() => { setCompleteStep(""); setShowSignOff(true); }} className="w-full !justify-center">
+                  <PenLine size={14} className="inline mr-1.5" />Get Sign-Off First
+                </GBtn>
+              )}
+              <GBtn onClick={() => setCompleteStep("payment")} className="w-full !justify-center !py-3">
+                Continue <ChevronRight size={14} className="inline ml-1" />
+              </GBtn>
+            </>
+          )}
+
+          {completeStep === "payment" && (
+            <>
+              <div className="text-lg font-bold">Has the customer paid?</div>
+              <div className="text-sm text-white/50">Amount due: <span className="text-green-400 font-semibold">{fmt(job.amount)}</span></div>
+              <div className="grid grid-cols-2 gap-3">
+                <button onClick={() => { setPaidChoice("yes"); setCompleteStep("method"); }} className="py-4 rounded-xl border-2 border-green-600/50 bg-green-950/30 text-green-300 font-semibold hover:bg-green-900/40 transition">Yes</button>
+                <button onClick={() => { setPaidChoice("no"); setCompleteStep("invoice"); }} className="py-4 rounded-xl border-2 border-white/10 bg-black/40 text-white/70 font-semibold hover:border-white/30 transition">No</button>
+              </div>
+            </>
+          )}
+
+          {completeStep === "method" && (
+            <>
+              <div className="text-lg font-bold">How did they pay?</div>
+              <div className="grid grid-cols-2 gap-2">
+                {["Cash", "Check", "Card", "Zelle", "Venmo", "Other"].map(m => (
+                  <button key={m} onClick={() => setPaymentMethod(m)} className={"py-3 rounded-xl border-2 text-sm font-semibold transition " + (paymentMethod === m ? "border-green-500 bg-green-950/30 text-green-300" : "border-white/10 bg-black/40 text-white/60 hover:border-white/30")}>{m}</button>
+                ))}
+              </div>
+              <GBtn onClick={() => finalizeCompletion("Paid", paymentMethod || "Cash")} disabled={!paymentMethod} className="w-full !justify-center !py-3">
+                <CheckCircle size={16} className="inline mr-1.5" />Mark Complete
+              </GBtn>
+            </>
+          )}
+
+          {completeStep === "invoice" && (
+            <>
+              <div className="text-lg font-bold">Send invoice to customer?</div>
+              <div className="text-sm text-white/50">We'll email them a payment link for {fmt(job.amount)}.</div>
+              <div className="grid grid-cols-2 gap-3">
+                <GBtn onClick={async () => { const sent = await sendInvoiceFromPortal(); finalizeCompletion("Pending", undefined, sent); }} disabled={sendingCompleteInvoice} className="!py-3 !justify-center">
+                  {sendingCompleteInvoice ? "Sending…" : "Yes, Send Invoice"}
+                </GBtn>
+                <GBtn variant="ghost" onClick={() => finalizeCompletion("Pending", undefined, false)} className="!py-3 !justify-center">
+                  No, Skip
+                </GBtn>
+              </div>
+            </>
+          )}
+
+          {completeStep === "summary" && completeSummary && (
+            <>
+              <div className="text-center py-2">
+                <div className="w-16 h-16 rounded-full bg-green-900/40 border border-green-600/50 flex items-center justify-center mx-auto mb-3">
+                  <CheckCircle size={28} className="text-green-400" />
+                </div>
+                <div className="text-xl font-bold">Job Complete!</div>
+              </div>
+              <Glass className="p-4 !bg-black/40 grid grid-cols-3 gap-2 text-center">
+                <div>
+                  <div className="text-[10px] text-white/40 uppercase">Time</div>
+                  <div className="text-lg font-bold">{completeSummary.hours}h</div>
+                </div>
+                <div>
+                  <div className="text-[10px] text-white/40 uppercase">Amount</div>
+                  <div className="text-lg font-bold text-green-400">{fmt(completeSummary.amount)}</div>
+                </div>
+                <div>
+                  <div className="text-[10px] text-white/40 uppercase">Payment</div>
+                  <div className="text-xs font-bold mt-1">{completeSummary.paymentStatus}</div>
+                </div>
+              </Glass>
+              {nextJob && (
+                <Glass className="p-4 !bg-blue-950/15 !border-blue-700/30">
+                  <div className="text-xs text-blue-400/80 uppercase tracking-wider mb-2 font-semibold">Next Job</div>
+                  <div className="text-sm font-medium">{nextJobCustomer ? `${nextJobCustomer.firstName} ${nextJobCustomer.lastName}` : nextJob.address}</div>
+                  <div className="text-xs text-white/40 mt-0.5">{nextJob.address}{nextJob.scheduledTime ? ` · ${nextJob.scheduledTime}` : ""}</div>
+                  <a href={`https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(nextJob.address || "")}&travelmode=driving`} target="_blank" rel="noreferrer" className="mt-3 w-full flex items-center justify-center gap-2 py-2.5 rounded-xl bg-blue-900/30 hover:bg-blue-800/40 border border-blue-700/30 text-blue-300 text-sm font-semibold transition">
+                    <Navigation size={14} />Directions to Next Job
+                  </a>
+                </Glass>
+              )}
+              <GBtn onClick={() => { setCompleteStep(""); if (onComplete) onComplete(); }} className="w-full !justify-center !py-3">
+                Done
+              </GBtn>
+            </>
+          )}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-black text-white pb-24">
       {/* Header */}
@@ -543,6 +746,20 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
       </div>
 
       <div className="p-4 space-y-4 max-w-lg mx-auto">
+        {/* Payment status — only meaningful once the job is done */}
+        {job.status === "completed" && (
+          <Glass className={"p-3 flex items-center justify-between gap-3 " + (job.paymentStatus === "Paid" ? "!bg-green-950/20 !border-green-700/30" : "!bg-yellow-950/20 !border-yellow-700/30")}>
+            <div>
+              <div className={"text-xs font-bold " + (job.paymentStatus === "Paid" ? "text-green-300" : "text-yellow-300")}>{paymentStatusLabel(job)}</div>
+              <div className="text-[10px] text-white/40 mt-0.5">
+                {job.amountCollected ? `${fmt(job.amountCollected)} collected` : `${fmt(job.amount)} due`}
+                {job.completedAt ? ` · Completed ${new Date(job.completedAt).toLocaleDateString()}` : ""}
+                {job.loggedHours ? ` · ${job.loggedHours}h worked` : ""}
+              </div>
+            </div>
+          </Glass>
+        )}
+
         {/* Customer info */}
         {customer && (
           <Glass className="p-4 !bg-black/40">
@@ -727,10 +944,16 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
           {(job.photos || []).length > 0 && (
             <div className="mt-2 grid grid-cols-3 gap-1.5">
               {(job.photos || []).map((p, i) => p.dataUrl ? (
-                <div key={p.id || i} className="relative aspect-square rounded-lg overflow-hidden">
+                <div key={p.id || i} className="relative aspect-square rounded-lg overflow-hidden group">
                   <img src={p.dataUrl} alt="" className="w-full h-full object-cover" />
                   <div className={"absolute top-1 left-1 text-[8px] px-1 py-0.5 rounded font-bold uppercase " +
                     (p.type === "before" ? "bg-blue-600/90" : "bg-green-600/90")}>{p.type}</div>
+                  {effPerms.can_upload_photos && (
+                    <button onClick={() => { if (window.confirm("Delete this photo?")) onUpdateJob({ photos: (job.photos || []).filter(x => (x.id || x) !== (p.id || p)) }); }}
+                      className="absolute top-1 right-1 w-5 h-5 rounded-full bg-black/70 hover:bg-red-700 text-white flex items-center justify-center transition">
+                      <X size={11} />
+                    </button>
+                  )}
                 </div>
               ) : null)}
             </div>
@@ -738,8 +961,14 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
           {(job.videos || []).length > 0 && (
             <div className="mt-2 space-y-2">
               {(job.videos || []).map((v, i) => (
-                <div key={v.id || i} className="rounded-xl overflow-hidden bg-black/60">
+                <div key={v.id || i} className="rounded-xl overflow-hidden bg-black/60 relative">
                   <video src={v.dataUrl} controls className="w-full rounded-xl" style={{ maxHeight: 200 }} />
+                  {effPerms.can_upload_photos && (
+                    <button onClick={() => { if (window.confirm("Delete this video?")) onUpdateJob({ videos: (job.videos || []).filter(x => (x.id || x) !== (v.id || v)) }); }}
+                      className="absolute top-2 right-2 w-6 h-6 rounded-full bg-black/70 hover:bg-red-700 text-white flex items-center justify-center transition">
+                      <X size={13} />
+                    </button>
+                  )}
                   {v.addedAt && <div className="text-[10px] text-white/30 px-2 pb-1">{v.addedAt}</div>}
                 </div>
               ))}
@@ -773,7 +1002,7 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
         </Glass>
 
         {/* Customer sign-off */}
-        {job.signOff ? (
+        {job.signOff && (
           <Glass className="p-4 !bg-green-950/20 !border-green-700/30">
             <div className="flex items-center gap-2 mb-1">
               <CheckCircle size={14} className="text-green-400" />
@@ -785,38 +1014,27 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
               <div style={{ fontFamily: "Georgia, serif", fontStyle: "italic" }} className="text-lg text-white/80 mt-1">{job.signOff.signerName}</div>
             )}
             <div className="text-[10px] text-white/30 mt-1">{new Date(job.signOff.timestamp).toLocaleString()}</div>
-            {onComplete && (
-              <button onClick={onComplete}
-                className="mt-3 w-full flex items-center justify-center gap-2 py-2 rounded-xl bg-green-900/30 hover:bg-green-800/40 border border-green-700/30 text-green-300 text-sm font-semibold transition">
-                <ChevronLeft size={14} />Back to Jobs
-              </button>
-            )}
           </Glass>
-        ) : (() => {
-          // Checklist completion is no longer a hard gate — some items don't
-          // apply to every job. Unchecked items stay unchecked; the employee
-          // just gets a confirmation so finishing early is a deliberate choice.
-          const remaining = allItems.filter(i => !i.done).length;
-          const confirmIfIncomplete = () => {
-            if (remaining === 0) return true;
-            return window.confirm(`${remaining} checklist item${remaining !== 1 ? "s" : ""} remain incomplete. Mark job as complete anyway?`);
-          };
-          if (effPerms.can_get_signoff) {
-            return (
-              <GBtn onClick={() => { if (confirmIfIncomplete()) setShowSignOff(true); }} className="w-full !justify-center !py-3 !bg-gradient-to-r !from-green-700 !to-green-900 !border-green-600/50">
-                <PenLine size={16} />Get Customer Sign-Off
+        )}
+        {job.status === "completed" ? (
+          onComplete && (
+            <button onClick={onComplete}
+              className="w-full flex items-center justify-center gap-2 py-2 rounded-xl bg-green-900/30 hover:bg-green-800/40 border border-green-700/30 text-green-300 text-sm font-semibold transition">
+              <ChevronLeft size={14} />Back to Jobs
+            </button>
+          )
+        ) : (
+          <div className="space-y-2">
+            {effPerms.can_get_signoff && !job.signOff && (
+              <GBtn variant="ghost" onClick={() => setShowSignOff(true)} className="w-full !justify-center">
+                <PenLine size={14} className="inline mr-1.5" />Get Customer Sign-Off
               </GBtn>
-            );
-          }
-          return (
-            <GBtn onClick={() => {
-              if (!confirmIfIncomplete()) return;
-              onUpdateJob({ status: "completed" }); onJobCompleted?.({ ...job, status: "completed" }); toast("Job marked complete ✓"); if (onComplete) setTimeout(onComplete, 1200);
-            }} className="w-full !justify-center !py-3 !bg-gradient-to-r !from-green-700 !to-green-900 !border-green-600/50">
+            )}
+            <GBtn onClick={startCompleteFlow} className="w-full !justify-center !py-3 !bg-gradient-to-r !from-green-700 !to-green-900 !border-green-600/50">
               <CheckCircle size={16} />Complete Job
             </GBtn>
-          );
-        })()}
+          </div>
+        )}
 
         {/* Internal notes */}
         {job.internalNotes && (
@@ -1002,13 +1220,14 @@ function OwnerTeamPortal({ jobs, employees, customers, onClose, googleMapsKey }:
   );
 }
 
-export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, employees, customers, settings, toast, isOwnerView = false, onClose = () => {}, refetchEmployees }: {
+export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, employees, customers, settings, toast, isOwnerView = false, onClose = () => {}, refetchEmployees, estimates = [], setEstimates = (() => {}) as any }: {
   empSession: any; setEmpSession: (s: any) => void;
   jobs: Job[]; setJobs: (fn: (prev: Job[]) => Job[]) => void;
   employees: Employee[]; customers: Customer[];
   settings: AppSettings; toast: (msg: string, tone?: any) => void;
   isOwnerView?: boolean; onClose?: () => void;
   refetchEmployees?: () => Promise<void>;
+  estimates?: any[]; setEstimates?: any;
 }) {
   const TAB_TO_SLUG: Record<string, string> = { today: "", calendar: "calendar", jobs: "jobs", pay: "pay", google: "google" };
   const SLUG_TO_TAB: Record<string, "today" | "calendar" | "jobs" | "pay" | "google"> = { "": "today", calendar: "calendar", jobs: "jobs", pay: "pay", google: "google" };
@@ -1254,13 +1473,43 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     setGoogleHydrateTick(t => t + 1);
   }, [(myEmployee as any)?.id, empSession?.user?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Fetch incoming job requests for this employee
+  // Silently refresh an expired Google access token using the stored
+  // refresh_token before ever asking the employee to reconnect. Checked on
+  // mount and every 5 minutes — Google access tokens last ~1hr, so this
+  // catches expiry well before it would actually block a calendar/Gmail call.
+  useEffect(() => {
+    if (!empSession?.user?.id) return;
+    const uid = empSession.user.id;
+    const tryRefresh = async () => {
+      const existing = getEmpGoogleToken(uid);
+      if (isEmpGoogleTokenValid(existing) || !existing?.refreshToken) return;
+      const backendUrl = settings?.googleBackendUrl;
+      if (!backendUrl) return;
+      const refreshed = await refreshEmpGoogleToken(backendUrl, existing.refreshToken);
+      if (!refreshed) return; // refresh failed — fall through to the normal "reconnect" prompt
+      saveEmpGoogleToken(uid, { ...existing, token: refreshed.token, expiresAt: refreshed.expiresAt });
+      (supabase as any).from("employees")
+        .update({ google_token: refreshed.token, google_token_expires_at: new Date(refreshed.expiresAt).toISOString() })
+        .eq("user_id", uid)
+        .catch(() => {});
+      setGoogleHydrateTick(t => t + 1);
+    };
+    tryRefresh();
+    const interval = setInterval(tryRefresh, 5 * 60 * 1000);
+    return () => clearInterval(interval);
+  }, [empSession?.user?.id, settings?.googleBackendUrl]);
+
+  // Fetch incoming job requests for this employee. The loading flag only
+  // gates the very first fetch — flipping it on every 10s background poll
+  // made the "Incoming Requests" section vanish and reappear continuously,
+  // which is what caused the Today tab to visibly jump up and down.
+  const incomingFirstLoadRef = useRef(true);
   useEffect(() => {
     if (!empSession || !myEmployee) return;
     const empId = (myEmployee as any)?.id;
     if (!empId) return;
     const load = async () => {
-      setIncomingLoading(true);
+      if (incomingFirstLoadRef.current) setIncomingLoading(true);
       try {
         const { data } = await (supabase as any)
           .from("job_requests")
@@ -1269,7 +1518,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
           .order("created_at", { ascending: false });
         if (Array.isArray(data)) setIncomingRequests(data);
       } catch { /* table may not exist */ }
-      setIncomingLoading(false);
+      if (incomingFirstLoadRef.current) { setIncomingLoading(false); incomingFirstLoadRef.current = false; }
     };
     load();
     const interval = setInterval(load, 10000);
@@ -1277,9 +1526,10 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   }, [(myEmployee as any)?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Fetch jobs from Supabase so Supabase-side crew assignments are visible.
-  // Runs once when the employee resolves, then polls every 20s so a job the
-  // owner assigns WHILE the employee already has the portal open still shows
-  // up without requiring a full reload.
+  // Runs once when the employee resolves, then polls every 5s (plus a
+  // realtime subscription where available) so changes the owner — or this
+  // employee on another device — makes while this portal is open show up
+  // without a manual refresh.
   useEffect(() => {
     if (!empSession || !myEmployee) return;
     const empId = myEmployee.id;
@@ -1351,8 +1601,18 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     };
     refetchJobsRef.current = load;
     load();
-    const interval = setInterval(load, 10000);
-    return () => clearInterval(interval);
+    let channel: any = null;
+    try {
+      channel = (supabase as any)
+        .channel("emp-jobs-sync-" + empId)
+        .on("postgres_changes", { event: "*", schema: "public", table: "jobs" }, () => { load(); })
+        .subscribe();
+    } catch { /* realtime may not be enabled on this project */ }
+    const interval = setInterval(load, 5000);
+    return () => {
+      clearInterval(interval);
+      try { channel?.unsubscribe(); } catch { /* ignore */ }
+    };
   }, [(myEmployee as any)?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Merge owner-set permissions with defaults (all-on for existing employees with no permissions field)
@@ -2363,6 +2623,12 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     const job = jobs.find(j => j.id === selectedJobId);
     if (!job) { setSelectedJobId(null); return null; }
     const customer = customers.find(c => c.id === job.customerId);
+    // Next job today (or soonest after) that isn't this one, completed, or
+    // cancelled — shown on the post-completion summary with directions.
+    const nextJob = myJobs
+      .filter(j => j.id !== job.id && j.status !== "completed" && j.status !== "cancelled" && j.scheduledDate >= todayStr)
+      .sort((a, b) => (a.scheduledDate + (a.scheduledTime || "23:59")).localeCompare(b.scheduledDate + (b.scheduledTime || "23:59")))[0] || null;
+    const nextJobCustomer = nextJob ? customers.find(c => c.id === nextJob.customerId) || null : null;
     return (
       <JobDetailView
         job={job}
@@ -2378,6 +2644,10 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
         googleMapsKey={settings.googleMapsKey || settings.mapsKey}
         paidLunchBreaks={!!settings.paidLunchBreaks}
         signOffDisclaimer={job.signOffTerms || settings.termsAndConditions || settings.terms || ""}
+        settings={settings}
+        setEstimates={setEstimates}
+        nextJob={nextJob}
+        nextJobCustomer={nextJobCustomer}
       />
     );
   }
@@ -3573,13 +3843,11 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                 <Glass className="p-4 !bg-black/40">
                   <label className="text-sm font-semibold mb-1 block flex items-center gap-1.5"><MapPin size={13} className="text-blue-400" />Home Base</label>
                   <div className="text-xs text-white/40 mb-2">Your starting address — used as the origin point when optimizing today's route</div>
-                  <input
-                    key={homeBaseAddress}
-                    type="text"
-                    defaultValue={homeBaseAddress}
-                    onBlur={e => { if (e.target.value !== homeBaseAddress) saveHomeBaseAddress(e.target.value); }}
+                  <AddressAutocomplete
+                    value={homeBaseAddress}
+                    onChange={v => saveHomeBaseAddress(v)}
                     placeholder="412 Oak Ridge Ln, York PA"
-                    className="w-full bg-black/40 border border-white/10 rounded-xl px-3 py-2 text-sm text-white placeholder-white/20 focus:outline-none focus:border-blue-500/50"
+                    mapsKey={settings.googleMapsKey || settings.mapsKey || ""}
                   />
                 </Glass>
 

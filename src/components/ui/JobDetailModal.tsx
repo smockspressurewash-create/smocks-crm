@@ -147,31 +147,15 @@ function ChecklistSection({ title, emoji, items, onUpdate }: {
 }
 
 // Small Street View thumbnail for a job address; click to expand full-size.
-// Shows a visible setup hint when no Maps key is configured (rather than just
-// vanishing) and a "no imagery" message if the request itself fails, so a
-// blank space always has an explanation instead of looking broken.
+// Renders nothing at all — no error, no setup hint — whenever a key isn't
+// configured or the image fails to load, instead of nagging the owner with
+// an "add a key" message every time they open a job.
 function StreetViewThumb({ address, apiKey }: { address: string; apiKey?: string }) {
   const [expanded, setExpanded] = useState(false);
   const [loadError, setLoadError] = useState(false);
-  if (!address) return null;
-  if (!apiKey) {
-    return (
-      <div className="w-full rounded-xl border border-white/10 bg-black/30 p-3 text-xs text-white/40 flex items-center gap-2">
-        <MapPin size={13} className="flex-shrink-0" />
-        Street View needs a Google Maps API key — add one in Settings → Integrations.
-      </div>
-    );
-  }
+  if (!address || !apiKey || loadError) return null;
   const thumbUrl = `https://maps.googleapis.com/maps/api/streetview?size=600x300&location=${encodeURIComponent(address)}&key=${apiKey}`;
   const bigUrl = `https://maps.googleapis.com/maps/api/streetview?size=1200x600&location=${encodeURIComponent(address)}&key=${apiKey}`;
-  if (loadError) {
-    return (
-      <div className="w-full rounded-xl border border-white/10 bg-black/30 p-3 text-xs text-white/40 flex items-center gap-2">
-        <MapPin size={13} className="flex-shrink-0" />
-        No Street View imagery available for this address.
-      </div>
-    );
-  }
   return (
     <>
       <button onClick={() => setExpanded(true)} className="w-full rounded-xl overflow-hidden border border-white/10 relative group">
@@ -364,6 +348,7 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
       const payLink = `${window.location.origin}${window.location.pathname}#/portal/${newInv.id}`;
       const html = emailShell(settings.companyName || "Smock's Pressure Washing", "Invoice", `<p>Hi ${c.firstName},</p><p>Thanks for choosing us! Your service at <b>${job.address}</b> is complete.</p><p><b>Amount due:</b> $${(Number(job.amount) || 0).toFixed(2)}</p><p>You can pay in full, pay a deposit, or pay any remaining balance from the link below.</p>` + emailButton("View & Pay Invoice", payLink));
       await withTimeout(sendEmail(settings, { to: c.email, subject: `Invoice — ${settings.companyName || "Smock's Pressure Washing"}`, body: html }), 10000, "Invoice email");
+      updateJob(jobId, { invoiceSentAt: today(), paymentType: "Invoice" as any, paymentStatus: job.paymentStatus === "Paid" ? job.paymentStatus : "Pending" as any });
       toast(`Invoice sent to ${c.firstName} ✓`, "green");
     } catch (err: any) {
       toast(err?.message || "Failed to send invoice", "red");
@@ -732,16 +717,26 @@ ${job.notes ? `<div class="section"><h2>Job Notes</h2><p>${job.notes}</p></div>`
           </div>
         </Glass>
 
-        {/* Send Invoice — only once the job is actually done */}
+        {/* Payment status + Send Invoice — only once the job is actually done */}
         {job.status === "completed" && (
-          <Glass className="p-3 !bg-green-950/15 !border-green-700/30 flex items-center justify-between gap-3">
+          <Glass className={"p-3 flex items-center justify-between gap-3 " + (job.paymentStatus === "Paid" ? "!bg-green-950/15 !border-green-700/30" : "!bg-yellow-950/15 !border-yellow-700/30")}>
             <div className="text-xs text-white/60">
-              <div className="font-semibold text-green-300 mb-0.5">Job complete</div>
-              Email the customer an invoice with a payment link — full, deposit, or remaining balance.
+              <div className={"font-semibold mb-0.5 " + (job.paymentStatus === "Paid" ? "text-green-300" : "text-yellow-300")}>
+                {job.paymentStatus === "Paid" ? `Paid (${job.paymentType || "Cash"})` : job.paymentType === "Invoice" || job.invoiceSentAt ? "Unpaid — Invoice Sent" : "Unpaid"}
+              </div>
+              {job.amountCollected ? `${job.amountCollected} collected` : "Email the customer an invoice with a payment link — full, deposit, or remaining balance."}
             </div>
-            <GBtn onClick={sendInvoice} disabled={sendingInvoice} className="!text-xs !py-1.5 flex-shrink-0">
-              {sendingInvoice ? "Sending…" : <><Send size={11} className="inline mr-1" />Send Invoice</>}
-            </GBtn>
+            {job.paymentStatus !== "Paid" && (
+              <div className="flex items-center gap-1.5 flex-shrink-0">
+                <GSel value="" onChange={e => { if (e.target.value) updateJob(jobId, { paymentStatus: "Paid", paymentType: e.target.value as any, amountCollected: Number(job.amount) || 0 }); }} className="!text-xs !py-1.5 !w-28">
+                  <option value="" className="bg-black">Mark Paid…</option>
+                  {["Cash", "Check", "Card", "Zelle", "Venmo"].map(m => <option key={m} value={m} className="bg-black">{m}</option>)}
+                </GSel>
+                <GBtn onClick={sendInvoice} disabled={sendingInvoice} className="!text-xs !py-1.5">
+                  {sendingInvoice ? "Sending…" : <><Send size={11} className="inline mr-1" />Send Invoice</>}
+                </GBtn>
+              </div>
+            )}
           </Glass>
         )}
 

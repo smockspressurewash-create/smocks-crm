@@ -14,6 +14,44 @@ export interface EmailSettings {
   fromName?: string;
 }
 
+// ─── Buffer (social posting) ────────────────────────────────────────────────
+// Buffer's API (api.bufferapp.com) generally doesn't allow direct browser-
+// origin CORS requests, so this is a best-effort direct call exactly like the
+// Twilio direct-API path below — it works for accounts/proxies where CORS is
+// permitted, and the caller is expected to catch failures and fall back to
+// the manual copy/share flow when it isn't.
+export interface BufferSettings {
+  bufferAccessToken?: string;
+  bufferProfileIds?: Record<string, string>;
+}
+
+export const postToBuffer = async (
+  settings: BufferSettings,
+  platform: string,
+  text: string,
+  scheduledAt?: Date
+): Promise<void> => {
+  const { bufferAccessToken, bufferProfileIds } = settings;
+  const profileId = bufferProfileIds?.[platform];
+  if (!bufferAccessToken || !profileId) {
+    throw new Error("Buffer not connected for this platform — add an access token and profile ID in Settings.");
+  }
+  const body = new URLSearchParams({
+    "profile_ids[]": profileId,
+    text,
+    ...(scheduledAt ? { scheduled_at: String(Math.floor(scheduledAt.getTime() / 1000)) } : { now: "true" }),
+  });
+  const res = await fetch(`https://api.bufferapp.com/1/updates/create.json?access_token=${encodeURIComponent(bufferAccessToken)}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: body.toString(),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({})) as { message?: string };
+    throw new Error(err.message ?? `Buffer error ${res.status}`);
+  }
+};
+
 // ─── Twilio SMS / WhatsApp ────────────────────────────────────────────────────
 
 export const twilioSend = async (

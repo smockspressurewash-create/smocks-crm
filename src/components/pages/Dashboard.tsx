@@ -77,7 +77,32 @@ import { ChemicalModal } from "../ui/ChemicalModal";
 import { WeeklyBusinessReview } from "../ui/WeeklyBusinessReview";
 import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 
-export function Dashboard({ jobs = [], customers = [], estimates = [], automations = [], stats, goals, vehicles = [], maintenance = [], chemicals = [], settings = {} as AppSettings, setSettings = () => {}, onNav, toast, weatherData = seedWeather, inboxThreads = [], employees = [], onSendDailyBriefing, onViewJob = (id: string) => {} }: { jobs?: any[]; customers?: any[]; estimates?: any[]; automations?: any[]; stats?: any; goals?: any; vehicles?: any[]; maintenance?: any[]; chemicals?: any[]; settings?: AppSettings; setSettings?: any; onNav?: any; toast?: any; weatherData?: any; inboxThreads?: any[]; employees?: any[]; onSendDailyBriefing?: () => Promise<void>; onViewJob?: (id: string) => void }) {
+export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = [], estimates = [], setEstimates = (() => {}) as any, automations = [], stats, goals, vehicles = [], maintenance = [], chemicals = [], settings = {} as AppSettings, setSettings = () => {}, onNav, toast, weatherData = seedWeather, inboxThreads = [], employees = [], onSendDailyBriefing, onViewJob = (id: string) => {} }: { jobs?: any[]; setJobs?: any; customers?: any[]; estimates?: any[]; setEstimates?: any; automations?: any[]; stats?: any; goals?: any; vehicles?: any[]; maintenance?: any[]; chemicals?: any[]; settings?: AppSettings; setSettings?: any; onNav?: any; toast?: any; weatherData?: any; inboxThreads?: any[]; employees?: any[]; onSendDailyBriefing?: () => Promise<void>; onViewJob?: (id: string) => void }) {
+  const [sendingDashInvoiceId, setSendingDashInvoiceId] = useState<string | null>(null);
+  const needsInvoiceJobs = jobs.filter((j: any) => j.status === "completed" && j.paymentStatus !== "Paid" && !j.invoiceSentAt);
+  const sendDashInvoice = async (job: any) => {
+    const cust = customers.find((c: any) => c.id === job.customerId);
+    if (!cust?.email) { toast?.("Customer has no email on file", "red"); return; }
+    setSendingDashInvoiceId(job.id);
+    try {
+      const newInv = {
+        id: uid(), customerId: job.customerId,
+        lineItems: [{ id: uid(), description: job.notes || job.address || "Service", quantity: 1, unitPrice: Number(job.amount) || 0 }],
+        subtotal: Number(job.amount) || 0, discount: 0, depositRequired: 0, tax: 0, total: Number(job.amount) || 0,
+        status: "approved" as const, createdAt: today(), validUntil: daysFromNow(30), invoiced: true, invoicedAt: today(),
+      };
+      setEstimates((prev: any[]) => [...prev, newInv]);
+      const payLink = `${window.location.origin}${window.location.pathname}#/portal/${newInv.id}`;
+      const html = `<p>Hi ${cust.firstName},</p><p>Thanks for choosing us! Your service at <b>${job.address}</b> is complete.</p><p><b>Amount due:</b> $${(Number(job.amount) || 0).toFixed(2)}</p><p><a href="${payLink}">View & Pay Invoice</a></p>`;
+      await sendEmail(settings as any, { to: cust.email, subject: `Invoice — ${settings?.companyName || "Smock's Pressure Washing"}`, body: html });
+      setJobs((prev: any[]) => prev.map((j: any) => j.id === job.id ? { ...j, invoiceSentAt: today(), paymentType: "Invoice", paymentStatus: j.paymentStatus === "Paid" ? j.paymentStatus : "Pending" } : j));
+      toast?.(`Invoice sent to ${cust.firstName} ✓`, "green");
+    } catch (e: any) {
+      toast?.(e?.message || "Failed to send invoice", "red");
+    } finally {
+      setSendingDashInvoiceId(null);
+    }
+  };
   const pipelineVal = jobs.filter(j => j.status !== "completed").reduce((s, j) => s + j.amount, 0);
   const dayOfMonth = new Date().getDate();
   const daysInMonth = new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0).getDate();
@@ -365,14 +390,21 @@ export function Dashboard({ jobs = [], customers = [], estimates = [], automatio
         </div>
       )}
 
-      {/* Live team view — active jobs with clocked-in crew, auto-refreshes every 30s */}
-      {activeJobs.length > 0 && (
-        <Glass className="p-4">
-          <div className="flex items-center gap-2 mb-3">
-            <Users2 size={15} className="text-green-400" />
-            <h3 className="font-semibold text-sm">Live Team View</h3>
-            <Badge tone="green">{activeJobs.length} active</Badge>
+      {/* Live team view — always visible so the owner can see the feature is
+          wired up even when no one is currently clocked in; auto-refreshes
+          every 30s via the liveTeamTick interval above. */}
+      <Glass className="p-4">
+        <div className="flex items-center gap-2 mb-3">
+          <Users2 size={15} className="text-green-400" />
+          <h3 className="font-semibold text-sm">Live Team View</h3>
+          {activeJobs.length > 0 && <Badge tone="green">{activeJobs.length} active</Badge>}
+        </div>
+        {activeJobs.length === 0 ? (
+          <div className="text-center py-6 text-white/30 text-sm">
+            <Clock size={22} className="mx-auto mb-2 opacity-30" />
+            No one is clocked in right now
           </div>
+        ) : (
           <div className="space-y-2">
             {activeJobs.map(j => {
               const c = customers.find(x => x.id === j.customerId);
@@ -380,24 +412,62 @@ export function Dashboard({ jobs = [], customers = [], estimates = [], automatio
               const elapsedMs = Date.now() - Number(j.clockInAt);
               const overSchedule = j.duration && elapsedMs / 3600000 > Number(j.duration);
               const prog = checklistProgress(j);
+              const photoCount = (j.photos || []).length;
+              const mapsKey = settings.googleMapsKey || settings.mapsKey;
               return (
                 <div key={j.id} className={"flex items-center gap-3 p-3 rounded-xl border " + (overSchedule ? "bg-yellow-950/20 border-yellow-700/40" : "bg-black/30 border-white/10")}>
-                  <div className="w-8 h-8 rounded-full bg-green-900/40 border border-green-600/40 flex items-center justify-center flex-shrink-0">
-                    <Clock size={13} className="text-green-400" />
-                  </div>
+                  {mapsKey && j.address ? (
+                    <img src={`https://maps.googleapis.com/maps/api/streetview?size=72x72&location=${encodeURIComponent(j.address)}&key=${mapsKey}`} alt="" className="w-14 h-14 rounded-lg object-cover flex-shrink-0 border border-white/10" onError={(e: any) => { e.target.style.display = "none"; }} />
+                  ) : (
+                    <div className="w-14 h-14 rounded-lg bg-green-900/40 border border-green-600/40 flex items-center justify-center flex-shrink-0">
+                      <Clock size={16} className="text-green-400" />
+                    </div>
+                  )}
                   <div className="flex-1 min-w-0">
                     <div className="text-sm font-medium truncate">{crewNames} — {c ? c.firstName + " " + c.lastName : j.address}</div>
-                    <div className="text-xs text-white/40 flex items-center gap-2 flex-wrap">
-                      <span>{fmtElapsed(elapsedMs)} elapsed{j.duration ? ` of ~${j.duration}h` : ""}</span>
+                    <div className="text-xs text-white/40 flex items-center gap-2 flex-wrap mt-0.5">
+                      <span>Clocked in {new Date(Number(j.clockInAt)).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</span>
+                      <span>· {fmtElapsed(elapsedMs)} elapsed{j.duration ? ` of ~${j.duration}h` : ""}</span>
                       {prog && <span className="flex items-center gap-1"><CheckSquare size={10} />{prog.done}/{prog.total} checklist</span>}
-                      {overSchedule && <span className="text-yellow-400 font-semibold">⚠ Running over schedule</span>}
+                      {photoCount > 0 && <span className="flex items-center gap-1"><ImageIcon size={10} />{photoCount} photo{photoCount !== 1 ? "s" : ""}</span>}
+                      {overSchedule && <span className="text-yellow-400 font-semibold">⚠ Over schedule</span>}
                     </div>
                   </div>
-                  <button onClick={() => onViewJob(j.id)} className="px-2.5 py-1.5 bg-white/5 border border-white/10 rounded-lg text-xs text-white/60 hover:text-white flex-shrink-0">View</button>
+                  <button onClick={() => onViewJob(j.id)} className="px-2.5 py-1.5 bg-white/5 border border-white/10 rounded-lg text-xs text-white/60 hover:text-white flex-shrink-0">View Details</button>
                 </div>
               );
             })}
           </div>
+        )}
+      </Glass>
+
+      {/* Completed jobs that haven't been invoiced or marked paid yet */}
+      {needsInvoiceJobs.length > 0 && (
+        <Glass className="p-4 !bg-yellow-950/15 !border-yellow-700/30">
+          <div className="flex items-center gap-2 mb-3">
+            <AlertTriangle size={14} className="text-yellow-400" />
+            <h3 className="font-semibold text-sm">Completed — Needs Invoice</h3>
+            <Badge tone="yellow">{needsInvoiceJobs.length}</Badge>
+          </div>
+          <div className="space-y-2">
+            {needsInvoiceJobs.slice(0, 5).map((j: any) => {
+              const cust = customers.find((c: any) => c.id === j.customerId);
+              return (
+                <div key={j.id} className="flex items-center justify-between gap-3 p-3 rounded-xl bg-black/30 border border-white/10">
+                  <div className="min-w-0 flex-1">
+                    <div className="text-sm font-medium truncate">{cust ? `${cust.firstName} ${cust.lastName}` : j.address}</div>
+                    <div className="text-xs text-white/40">{j.address} · {fmt(j.amount)}</div>
+                  </div>
+                  <GBtn onClick={() => sendDashInvoice(j)} disabled={sendingDashInvoiceId === j.id} className="!text-xs !py-1.5 flex-shrink-0">
+                    {sendingDashInvoiceId === j.id ? "Sending…" : "Send Invoice"}
+                  </GBtn>
+                </div>
+              );
+            })}
+          </div>
+          {needsInvoiceJobs.length > 5 && (
+            <button onClick={() => onNav("invoices")} className="w-full mt-2 text-xs text-white/40 hover:text-white/60 text-center">View all {needsInvoiceJobs.length} →</button>
+          )}
         </Glass>
       )}
 

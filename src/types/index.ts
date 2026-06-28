@@ -228,6 +228,8 @@ export interface Job {
   sqFtRate?: number;
   attachments?: { id: string; name: string; type: string }[];
   signOffTerms?: string;
+  completedAt?: string;
+  invoiceSentAt?: string;
 }
 
 // ─── Employee ─────────────────────────────────────────────────────────────────
@@ -585,6 +587,8 @@ export interface AppSettings {
 
   // Integrations misc
   bufferTime?: number;
+  bufferAccessToken?: string;
+  bufferProfileIds?: Record<string, string>;
   googleCalendarColor?: boolean;
 
   // Models

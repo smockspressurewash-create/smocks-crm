@@ -333,6 +333,33 @@ export const clearEmpGoogleToken = (userId: string): void => {
 export const isEmpGoogleTokenValid = (t: EmpGoogleToken | null): boolean =>
   !!t && !!t.token && t.expiresAt > Date.now();
 
+// ─── Token refresh ──────────────────────────────────────────────────────────
+// Google access tokens last ~1hr; refreshing requires the OAuth client secret,
+// which never belongs in frontend code, so this calls an optional self-hosted
+// backend (the same googleBackendUrl already used for Calendar/Drive/Gmail
+// proxying) that holds the secret server-side. Without a backend configured,
+// there's no way to refresh client-side — the caller should fall back to
+// asking the user to reconnect, but only after this returns null.
+export const refreshEmpGoogleToken = async (
+  backendUrl: string,
+  refreshToken: string
+): Promise<{ token: string; expiresAt: number } | null> => {
+  if (!backendUrl || !refreshToken) return null;
+  try {
+    const res = await fetch(`${backendUrl}/google/refresh`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ refresh_token: refreshToken }),
+    });
+    if (!res.ok) return null;
+    const data = await res.json() as { access_token?: string; expires_in?: number };
+    if (!data?.access_token) return null;
+    return { token: data.access_token, expiresAt: Date.now() + (Number(data.expires_in) || 3300) * 1000 };
+  } catch {
+    return null;
+  }
+};
+
 // ─── Drive ───────────────────────────────────────────────────────────────────
 
 export interface GDriveFile {

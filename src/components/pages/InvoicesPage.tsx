@@ -80,7 +80,33 @@ import { ChemicalModal } from "../ui/ChemicalModal";
 import { WeeklyBusinessReview } from "../ui/WeeklyBusinessReview";
 import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 
-export function InvoicesPage({ estimates = [], setEstimates, customers = [], settings = {} as AppSettings, toast }: { estimates?: any[]; setEstimates?: any; customers?: any[]; settings?: AppSettings; toast?: any }) {
+export function InvoicesPage({ estimates = [], setEstimates, customers = [], settings = {} as AppSettings, toast, jobs = [], setJobs = (() => {}) as any }: { estimates?: any[]; setEstimates?: any; customers?: any[]; settings?: AppSettings; toast?: any; jobs?: any[]; setJobs?: any }) {
+  const [sendingJobInvoiceId, setSendingJobInvoiceId] = useState<string | null>(null);
+  const needsInvoiceJobs = jobs.filter((j: any) => j.status === "completed" && j.paymentStatus !== "Paid" && !j.invoiceSentAt);
+
+  const sendInvoiceForJob = async (job: any) => {
+    const cust = customers.find(c => c.id === job.customerId);
+    if (!cust?.email) { toast?.("Customer has no email on file", "red"); return; }
+    setSendingJobInvoiceId(job.id);
+    try {
+      const newInv = {
+        id: uid(), customerId: job.customerId,
+        lineItems: [{ id: uid(), description: job.notes || job.address || "Service", quantity: 1, unitPrice: Number(job.amount) || 0 }],
+        subtotal: Number(job.amount) || 0, discount: 0, depositRequired: 0, tax: 0, total: Number(job.amount) || 0,
+        status: "approved" as const, createdAt: today(), validUntil: daysFromNow(30), invoiced: true, invoicedAt: today(),
+      };
+      setEstimates((prev: any[]) => [...prev, newInv]);
+      const payLink = `${window.location.origin}${window.location.pathname}#/portal/${newInv.id}`;
+      const html = `<p>Hi ${cust.firstName},</p><p>Thanks for choosing us! Your service at <b>${job.address}</b> is complete.</p><p><b>Amount due:</b> $${(Number(job.amount) || 0).toFixed(2)}</p><p><a href="${payLink}">View & Pay Invoice</a></p>`;
+      await sendEmail(settings as any, { to: cust.email, subject: `Invoice — ${settings?.companyName || "Smock's Pressure Washing"}`, body: html });
+      setJobs((prev: any[]) => prev.map(j => j.id === job.id ? { ...j, invoiceSentAt: today(), paymentType: "Invoice", paymentStatus: j.paymentStatus === "Paid" ? j.paymentStatus : "Pending" } : j));
+      toast?.(`Invoice sent to ${cust.firstName} ✓`, "green");
+    } catch (e: any) {
+      toast?.(e?.message || "Failed to send invoice", "red");
+    } finally {
+      setSendingJobInvoiceId(null);
+    }
+  };
   const [filter, setFilter] = useState("all");
   const [search, setSearch] = useState("");
   const [viewing, setViewing] = useState(null);
@@ -262,7 +288,8 @@ export function InvoicesPage({ estimates = [], setEstimates, customers = [], set
     if (b === "overdue60") return <Badge tone="red">60+ days</Badge>;
     if (b === "overdue30") return <Badge tone="red">30+ days</Badge>;
     if (b === "overdue") return <Badge tone="yellow">Overdue</Badge>;
-    return <Badge tone="blue">Open</Badge>;
+    if (inv.viewed) return <Badge tone="blue">Viewed</Badge>;
+    return <Badge tone="blue">Sent</Badge>;
   };
 
   const filterTabs = [
@@ -282,6 +309,33 @@ export function InvoicesPage({ estimates = [], setEstimates, customers = [], set
         <Stat icon={CheckCircle} label="Paid YTD" value={fmt(totalPaid)} />
         <Stat icon={Clock} label="Avg Days to Pay" value={avgDaysToPay} />
       </div>
+
+      {/* Completed jobs that haven't been invoiced or marked paid yet */}
+      {needsInvoiceJobs.length > 0 && (
+        <Glass className="p-4 !bg-yellow-950/15 !border-yellow-700/30">
+          <div className="flex items-center gap-2 mb-3">
+            <AlertTriangle size={14} className="text-yellow-400" />
+            <h3 className="font-semibold text-sm">Completed — Needs Invoice</h3>
+            <Badge tone="yellow">{needsInvoiceJobs.length}</Badge>
+          </div>
+          <div className="space-y-2">
+            {needsInvoiceJobs.map((j: any) => {
+              const cust = customers.find(c => c.id === j.customerId);
+              return (
+                <div key={j.id} className="flex items-center justify-between gap-3 p-3 rounded-xl bg-black/30 border border-white/10">
+                  <div className="min-w-0 flex-1">
+                    <div className="text-sm font-medium truncate">{cust ? `${cust.firstName} ${cust.lastName}` : j.address}</div>
+                    <div className="text-xs text-white/40">{j.address} · {fmt(j.amount)} · completed {j.completedAt ? new Date(j.completedAt).toLocaleDateString() : j.scheduledDate}</div>
+                  </div>
+                  <GBtn onClick={() => sendInvoiceForJob(j)} disabled={sendingJobInvoiceId === j.id} className="!text-xs !py-1.5 flex-shrink-0">
+                    {sendingJobInvoiceId === j.id ? "Sending…" : <><Send size={11} className="inline mr-1" />Send Invoice</>}
+                  </GBtn>
+                </div>
+              );
+            })}
+          </div>
+        </Glass>
+      )}
 
       {/* Aging breakdown */}
       {totalAging > 0 && <Glass className="p-5">

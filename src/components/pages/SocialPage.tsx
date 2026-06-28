@@ -22,7 +22,7 @@ import {
 } from "recharts";
 import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE } from "../../lib/utils";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
-import { twilioSend, sendEmail } from "../../lib/messaging";
+import { twilioSend, sendEmail, postToBuffer } from "../../lib/messaging";
 import { seedWeather } from "../../lib/weather";
 import { seedCustomers, seedEstimates, seedJobs, seedEmployees, seedVehicles, seedExpenses, seedChemicals, seedServices, seedAutomations, seedEmailTemplates, seedSmsTemplates, seedRewardTiers, seedReferrals, seedMaintenance, campaignTemplates, seedSocialPosts, seedTimeline, seedGoals, seedReminders, seedAccountabilityEntries, seedMileage, seedLeadSrc, STEP_TYPES, AUTOMATION_TEMPLATES } from "../../lib/seed";
 import { callModel, MODELS } from "../../lib/api";
@@ -123,17 +123,10 @@ export function SocialPage({ posts = [], setPosts, toast, settings = {} as AppSe
       } else {
         messageContent = `Write ${typeDesc} for Smock's Pressure Washing in York, PA. The owner's name is Will. Write one caption only — no alternatives, no intro text. Make it engaging, real, and slightly casual. Include a call to action. Keep it under 150 words. Use natural line breaks for readability. Don't use quotation marks around the whole thing. Platform: ${f.platform}.`;
       }
-      const res = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: "claude-sonnet-4-20250514",
-          max_tokens: 300,
-          messages: [{ role: "user", content: messageContent }]
-        })
-      });
-      const data = await res.json();
-      const text = data.content?.[0]?.text?.trim();
+      const modelId = settings.activeModel || "claude";
+      const apiKey = (settings.modelKeys || {})[modelId] || (modelId === "claude" ? settings.anthropicKey : undefined);
+      const res = await callModel({ modelId, apiKey, messages: [{ role: "user", content: messageContent }], maxTokens: 300 });
+      const text = res.text?.trim();
       if (text) { setF(prev => ({ ...prev, caption: text })); toast(imageData ? "Caption generated from your photo ✓" : "Caption generated ✓"); }
       else throw new Error("No content");
     } catch {
@@ -159,6 +152,21 @@ export function SocialPage({ posts = [], setPosts, toast, settings = {} as AppSe
     const post = posts.find(p => p.id === id);
     setPosts(posts.map(p => p.id === id ? { ...p, status: "published", publishedAt: today(), likes: p.likes || 0, shares: p.shares || 0, comments: p.comments || 0, reach: p.reach || 0 } : p));
 
+    if (post) {
+      const caption = (post.caption || "") + (post.hashtags ? "\n\n" + post.hashtags : "");
+      // Real posting via Buffer when an access token + profile ID are
+      // configured for this platform — otherwise fall through to the
+      // manual copy/deep-link/share-sheet flow below.
+      if (settings.bufferAccessToken && settings.bufferProfileIds?.[post.platform]) {
+        try {
+          await postToBuffer(settings, post.platform, caption);
+          toast(`Posted to ${post.platform} via Buffer ✓`, "green");
+          return;
+        } catch (e: any) {
+          toast(e?.message || "Buffer post failed — copy/paste instead", "yellow");
+        }
+      }
+    }
     if (post && (post.platform === "instagram" || post.platform === "tiktok")) {
       const caption = (post.caption || "") + (post.hashtags ? "\n\n" + post.hashtags : "");
       // Instagram bridge: open app via deep link with caption pre-filled

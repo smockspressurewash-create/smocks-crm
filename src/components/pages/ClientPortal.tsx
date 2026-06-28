@@ -78,7 +78,7 @@ import { ChemicalModal } from "../ui/ChemicalModal";
 import { WeeklyBusinessReview } from "../ui/WeeklyBusinessReview";
 import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 
-export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [], settings = {} as AppSettings, onClose, onApprove }: { estimate?: any; customer?: any; jobs?: any[]; invoices?: any[]; settings?: AppSettings; onClose?: any; onApprove?: any }) {
+export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [], settings = {} as AppSettings, onClose, onApprove, onView = (_id: string) => {} }: { estimate?: any; customer?: any; jobs?: any[]; invoices?: any[]; settings?: AppSettings; onClose?: any; onApprove?: any; onView?: (id: string) => void }) {
   const [showAccount, setShowAccount] = useState(false);
   const [payType, setPayType] = useState("full");
   const [showStripeModal, setShowStripeModal] = useState(false);
@@ -148,6 +148,7 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
       const msg = "👀 ESTIMATE VIEWED\n\n" + c.firstName + " " + c.lastName + " just opened their estimate for " + fmt(e.total) + ".\n\nNow's a great time to follow up if they don't sign in 30 min. — Alfred";
       twilioSend(settings, settings.myPhone, msg).catch(() => {});
     }
+    onView?.(e.id);
   }, [e?.id]); // eslint-disable-line
 
   if (!e || !c) return null;
