@@ -204,8 +204,9 @@ const withTimeout = <T,>(p: Promise<T>, ms: number, label: string): Promise<T> =
     new Promise<T>((_, reject) => setTimeout(() => reject(new Error(label + " timed out")), ms)),
   ]);
 
-export function JobDetailModal({ jobId, job, onClose, customers = [], employees = [], updateJob, toast, gToken = "", settings = {} as any }: { jobId: any; job: any; onClose: any; customers?: any[]; employees?: any[]; updateJob: any; toast: any; gToken?: string; settings?: any }) {
+export function JobDetailModal({ jobId, job, onClose, customers = [], employees = [], updateJob, toast, gToken = "", settings = {} as any, estimates = [], setEstimates = (() => {}) as any, onPortal = (_id: string) => {} }: { jobId: any; job: any; onClose: any; customers?: any[]; employees?: any[]; updateJob: any; toast: any; gToken?: string; settings?: any; estimates?: any[]; setEstimates?: any; onPortal?: (id: string) => void }) {
   const [commNote, setCommNote] = useState("");
+  const [sendingInvoice, setSendingInvoice] = useState(false);
   const [commType, setCommType] = useState("note");
   const [chemName, setChemName] = useState("");
   const [chemGal, setChemGal] = useState(0);
@@ -333,6 +334,43 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
     return sent;
   };
   notifyEmployeesRef.current = notifyEmployees;
+
+  // Generates an invoice (an Estimate record flagged invoiced=true) from this
+  // completed job's amount, then emails the customer a payment link. The link
+  // re-uses the same client-portal flow estimates already use, where the
+  // customer can pay in full, pay a deposit, or — once a deposit is on
+  // record — pay the remaining balance.
+  const sendInvoice = async () => {
+    const c = customers.find(x => x.id === job.customerId);
+    if (!c?.email) { toast("Customer has no email on file", "red"); return; }
+    setSendingInvoice(true);
+    try {
+      const newInv = {
+        id: uid(),
+        customerId: job.customerId,
+        lineItems: [{ id: uid(), description: job.notes || job.address || "Service", quantity: 1, unitPrice: Number(job.amount) || 0 }],
+        subtotal: Number(job.amount) || 0,
+        discount: 0,
+        depositRequired: 0,
+        tax: 0,
+        total: Number(job.amount) || 0,
+        status: "approved" as const,
+        createdAt: today(),
+        validUntil: daysFromNow(30),
+        invoiced: true,
+        invoicedAt: today(),
+      };
+      setEstimates((prev: any[]) => [...prev, newInv]);
+      const payLink = `${window.location.origin}${window.location.pathname}#/portal/${newInv.id}`;
+      const html = emailShell(settings.companyName || "Smock's Pressure Washing", "Invoice", `<p>Hi ${c.firstName},</p><p>Thanks for choosing us! Your service at <b>${job.address}</b> is complete.</p><p><b>Amount due:</b> $${(Number(job.amount) || 0).toFixed(2)}</p><p>You can pay in full, pay a deposit, or pay any remaining balance from the link below.</p>` + emailButton("View & Pay Invoice", payLink));
+      await withTimeout(sendEmail(settings, { to: c.email, subject: `Invoice — ${settings.companyName || "Smock's Pressure Washing"}`, body: html }), 10000, "Invoice email");
+      toast(`Invoice sent to ${c.firstName} ✓`, "green");
+    } catch (err: any) {
+      toast(err?.message || "Failed to send invoice", "red");
+    } finally {
+      setSendingInvoice(false);
+    }
+  };
 
   const notifyCrew = async () => {
     const crewEmps = (job.crew || []).map(id => employees.find(e => e.id === id)).filter(Boolean);
@@ -663,7 +701,7 @@ ${job.notes ? `<div class="section"><h2>Job Notes</h2><p>${job.notes}</p></div>`
   return (
     <Modal open={!!jobId} onClose={onClose} title={"Job · " + (c?.firstName + " " + c?.lastName)} maxW="max-w-2xl">
       <div className="space-y-4">
-        {job.address && <StreetViewThumb address={job.address} apiKey={settings.googleMapsKey} />}
+        {job.address && <StreetViewThumb address={job.address} apiKey={settings.googleMapsKey || settings.mapsKey} />}
 
         {/* Priority + Duration + Recurring */}
         <div className="grid grid-cols-3 gap-3">
@@ -693,6 +731,19 @@ ${job.notes ? `<div class="section"><h2>Job Notes</h2><p>${job.notes}</p></div>`
             {job.clockInAt ? <GBtn variant="danger" onClick={clockOut} className="!text-xs">Clock Out</GBtn> : <GBtn onClick={clockIn} className="!text-xs"><Play size={10} className="inline mr-1" />Clock In</GBtn>}
           </div>
         </Glass>
+
+        {/* Send Invoice — only once the job is actually done */}
+        {job.status === "completed" && (
+          <Glass className="p-3 !bg-green-950/15 !border-green-700/30 flex items-center justify-between gap-3">
+            <div className="text-xs text-white/60">
+              <div className="font-semibold text-green-300 mb-0.5">Job complete</div>
+              Email the customer an invoice with a payment link — full, deposit, or remaining balance.
+            </div>
+            <GBtn onClick={sendInvoice} disabled={sendingInvoice} className="!text-xs !py-1.5 flex-shrink-0">
+              {sendingInvoice ? "Sending…" : <><Send size={11} className="inline mr-1" />Send Invoice</>}
+            </GBtn>
+          </Glass>
+        )}
 
         {/* Google Calendar Sync */}
         {gToken && (
@@ -1179,7 +1230,11 @@ ${job.notes ? `<div class="section"><h2>Job Notes</h2><p>${job.notes}</p></div>`
           </div>
           {job.signOff ? (
             <div className="space-y-1">
-              <div className="text-sm font-medium text-white/90">{job.signOff.signerName}</div>
+              {(job.signOff as any).sigType === "draw" && (job.signOff as any).sigData ? (
+                <img src={(job.signOff as any).sigData} alt="Signature" className="bg-white rounded-lg max-h-16" />
+              ) : (
+                <div className="text-sm font-medium text-white/90">{job.signOff.signerName}</div>
+              )}
               <div className="text-[11px] text-white/40">{job.signOff.timestamp}</div>
               <div className="flex gap-2 mt-2">
                 <GBtn onClick={() => printSignOff(job.signOff!.signerName, job.signOff!.timestamp)} className="!text-xs !py-1.5">

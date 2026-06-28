@@ -48,6 +48,7 @@ import { ClientPortal } from "./components/pages/ClientPortal";
 import { EmployeePortal } from "./components/pages/EmployeePortal";
 import { saveEmpGoogleToken } from "./lib/googleApi";
 import { ResetPassword } from "./components/pages/ResetPassword";
+import { OnboardingFlow } from "./components/ui/OnboardingFlow";
 
 // ─── Seed data ────────────────────────────────────────────────────────────────
 import {
@@ -452,6 +453,7 @@ export function App() {
 
   // Portal
   const [portalEstId, setPortalEstId] = useState<string | null>(null);
+  const [openJobId, setOpenJobId] = useState<string | null>(null);
 
   // Company first-run setup
   const [setupDone, setSetupDone] = usePersistentRaw("smocks.setupDone", "");
@@ -1000,6 +1002,7 @@ export function App() {
         if (ownerFullName.trim()) {
           setSettings((prev: any) => ({ ...prev, ownerName: ownerFullName.trim() }));
         }
+        setSettings((prev: any) => ({ ...prev, onboardingComplete: false }));
         isRegistering = true;
       }
       const { data, error } = await supabase.auth.signInWithPassword({ email: ownerEmail.trim(), password: ownerPassword });
@@ -1129,6 +1132,24 @@ export function App() {
           </button>
         </div>
       </div>
+    );
+  }
+
+  // ── Owner onboarding — only for brand-new registrations (onboardingComplete
+  // is explicitly false, set at signup); pre-existing accounts have it
+  // undefined and skip straight to the main app. Re-openable from
+  // Settings → Onboarding, which also flips it back to false.
+  if (settings.onboardingComplete === false) {
+    return (
+      <OnboardingFlow
+        settings={settings}
+        setSettings={setSettings}
+        setCustomers={setCustomers}
+        services={services}
+        setServices={setServices}
+        toast={toast}
+        onFinish={() => setPage("dashboard")}
+      />
     );
   }
 
@@ -1328,11 +1349,11 @@ export function App() {
           <div className="p-4 md:p-6 max-w-[1600px] mx-auto">
             <PageFade key={page}>
               <SafePage>
-                {page === "dashboard"      && <Dashboard jobs={jobs} customers={customers} estimates={estimates} automations={automations} stats={{ totalRev, activeJobs, pendingEst, closeRate, doneMonth }} goals={{ revenue: settings.monthlyRevenueGoal ?? 8000, jobCount: settings.monthlyJobsGoal ?? 20 }} vehicles={vehicles} maintenance={maintenance} chemicals={chemicals} settings={settings} setSettings={setSettings} onNav={setPage} toast={toast} weatherData={weatherData} inboxThreads={inboxThreads} employees={employees} onSendDailyBriefing={sendDailyBriefingNow} />}
+                {page === "dashboard"      && <Dashboard jobs={jobs} customers={customers} estimates={estimates} automations={automations} stats={{ totalRev, activeJobs, pendingEst, closeRate, doneMonth }} goals={{ revenue: settings.monthlyRevenueGoal ?? 8000, jobCount: settings.monthlyJobsGoal ?? 20 }} vehicles={vehicles} maintenance={maintenance} chemicals={chemicals} settings={settings} setSettings={setSettings} onNav={setPage} toast={toast} weatherData={weatherData} inboxThreads={inboxThreads} employees={employees} onSendDailyBriefing={sendDailyBriefingNow} onViewJob={id => { setOpenJobId(id); setPage("jobs"); }} />}
                 {page === "customers"      && <CustomersPage customers={customers} setCustomers={setCustomers} estimates={estimates} jobs={jobs} toast={toast} timeline={timeline} setTimeline={setTimeline} settings={settings} />}
                 {page === "estimates"      && <EstimatesPage estimates={estimates} setEstimates={setEstimates} customers={customers} services={services} settings={settings} toast={toast} onPortal={id => setPortalEstId(id)} estimateTemplates={estimateTemplates} setEstimateTemplates={setEstimateTemplates} setJobs={setJobs} onNav={setPage} />}
                 {page === "invoices"       && <InvoicesPage estimates={estimates} setEstimates={setEstimates} customers={customers} settings={settings} toast={toast} />}
-                {page === "jobs"           && <JobsPage jobs={jobs} setJobs={setJobs} customers={customers} employees={employees} estimates={estimates} setEstimates={setEstimates} settings={settings} toast={toast} posts={socialPosts} setPosts={setSocialPosts} setTimeline={setTimeline} />}
+                {page === "jobs"           && <JobsPage jobs={jobs} setJobs={setJobs} customers={customers} employees={employees} estimates={estimates} setEstimates={setEstimates} settings={settings} toast={toast} posts={socialPosts} setPosts={setSocialPosts} setTimeline={setTimeline} initialDetailId={openJobId} onInitialDetailIdConsumed={() => setOpenJobId(null)} onPortal={id => setPortalEstId(id)} />}
                 {page === "pipeline"       && <PipelinePage jobs={jobs} setJobs={setJobs} customers={customers} toast={toast} />}
                 {page === "calendar"       && <CalendarPage jobs={jobs} setJobs={setJobs} customers={customers} employees={employees} toast={toast} settings={settings} />}
                 {page === "inbox"          && <InboxPage threads={inboxThreads} setThreads={setInboxThreads} customers={customers} settings={settings} toast={toast} />}
@@ -1391,8 +1412,12 @@ export function App() {
           settings={settings}
           onClose={() => setPortalEstId(null)}
           onApprove={(id, data) => {
-            setEstimates(prev => prev.map(e => e.id === id ? { ...e, status: "approved", signedAt: data.signedAt, sigData: data.sigData, paidAt: today(), paidDeposit: data.payType === "deposit" ? data.totalPaid : 0, paidFull: data.payType === "full" ? data.totalPaid : 0 } : e));
-            toast("✓ Signed & paid — " + fmt(data.totalPaid));
+            setEstimates(prev => prev.map(e => e.id === id ? {
+              ...e, status: "approved", signedAt: data.signedAt || e.signedAt, sigData: data.sigData || e.sigData, paidAt: today(),
+              paidDeposit: data.payType === "deposit" ? data.totalPaid : (e.paidDeposit || 0),
+              paidFull: data.payType === "full" ? data.totalPaid : data.payType === "remaining" ? (e.paidDeposit || 0) + data.totalPaid : (e.paidFull || 0),
+            } : e));
+            toast("✓ Paid — " + fmt(data.totalPaid));
             setPortalEstId(null);
           }}
         />

@@ -94,6 +94,14 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
   const drawing = useRef(false);
   const lastPos = useRef(null);
 
+  // Default to whichever payment option actually applies — once a deposit is
+  // on record, "remaining balance" is the only sensible default.
+  useEffect(() => {
+    if (!e) return;
+    const paid = Number(e.paidDeposit) || 0;
+    if (paid > 0 && !e.paidFull) setPayType("remaining");
+  }, [e?.id]);
+
   // Initialize options/package state when estimate is available
   useEffect(() => {
     if (!e) return;
@@ -121,7 +129,13 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
     : (e?.total || 0);
 
   const depositAmt = e ? (e.depositRequired || Math.round(effectiveTotal * 0.25)) : 0;
-  const payAmt = payType === "deposit" ? depositAmt : effectiveTotal;
+  // A deposit already on record (paidDeposit > 0, nothing paid in full yet)
+  // means the customer is back to settle up — offer the actual remainder
+  // instead of making them pay the deposit or full total a second time.
+  const alreadyPaid = Number(e?.paidDeposit) || 0;
+  const remainingAmt = Math.max(0, effectiveTotal - alreadyPaid);
+  const hasRemainingBalance = alreadyPaid > 0 && !e?.paidFull && remainingAmt > 0;
+  const payAmt = payType === "deposit" ? depositAmt : payType === "remaining" ? remainingAmt : effectiveTotal;
   const totalWithTip = payAmt + tip;
 
   // Notify Will when estimate is first viewed
@@ -410,11 +424,14 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
           {step === "payment" && (
             <div className="space-y-4">
               <div className="font-semibold">Payment Options</div>
-              <div className="grid grid-cols-2 gap-3">
-                {[
-                  { k: "deposit", l: "Pay Deposit", sub: fmt(depositAmt) + " now, remainder on completion" },
-                  { k: "full", l: "Pay in Full", sub: fmt(e.total) + " — save time on service day" }
-                ].map(o => (
+              <div className={"grid gap-3 " + (hasRemainingBalance ? "grid-cols-1" : "grid-cols-2")}>
+                {(hasRemainingBalance
+                  ? [{ k: "remaining", l: "Pay Remaining Balance", sub: fmt(remainingAmt) + " due — " + fmt(alreadyPaid) + " already paid" }]
+                  : [
+                      { k: "deposit", l: "Pay Deposit", sub: fmt(depositAmt) + " now, remainder on completion" },
+                      { k: "full", l: "Pay in Full", sub: fmt(e.total) + " — save time on service day" }
+                    ]
+                ).map(o => (
                   <button key={o.k} onClick={() => setPayType(o.k)} className={"p-4 rounded-xl border-2 text-left transition-all " + (payType === o.k ? "border-red-500 bg-red-950/30" : "border-white/10 bg-black/40 hover:border-white/20")}>
                     <div className="font-semibold text-sm">{o.l}</div>
                     <div className="text-[10px] text-white/60 mt-1">{o.sub}</div>

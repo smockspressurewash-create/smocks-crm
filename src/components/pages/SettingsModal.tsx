@@ -120,6 +120,7 @@ export function SettingsModal({ open, onClose, settings, setSettings, services, 
         { key: "integrations", label: "Integrations", icon: Zap },
         { key: "legal", label: "Legal", icon: Shield },
         { key: "audit", label: "Audit Log", icon: Shield },
+        { key: "onboarding", label: "Onboarding", icon: CheckCircle },
         { key: "data", label: "Data", icon: Download }
       ];
 
@@ -888,6 +889,22 @@ export function SettingsModal({ open, onClose, settings, setSettings, services, 
               </GSel>
               <div className="text-[10px] text-white/40 mt-1">Reviews at this rating or above show in the public wall on the Reviews page.</div>
             </div>
+          </div>}
+
+          {sec === "onboarding" && <div className="space-y-3">
+            <h4 className="font-semibold text-sm">Onboarding</h4>
+            <div className="text-xs text-white/50 mb-2">
+              {settings.onboardingComplete === false
+                ? "Onboarding is currently in progress."
+                : "Re-run the setup flow — tell us about your business, import clients, and set rates again."}
+            </div>
+            <Glass className="p-4 !bg-black/40">
+              <div className="text-sm font-semibold mb-1">Restart Onboarding</div>
+              <div className="text-xs text-white/50 mb-3">This won't delete any existing data — it just walks you through the setup steps again.</div>
+              <GBtn onClick={() => { setSettings((s: any) => ({ ...s, onboardingComplete: false })); onClose(); }} className="!text-xs">
+                Start Onboarding
+              </GBtn>
+            </Glass>
           </div>}
 
           {sec === "data" && <div className="space-y-3">

@@ -134,6 +134,7 @@ export interface JobChecklistItem {
   label: string;
   done: boolean;
   photos?: ChecklistPhoto[];
+  videos?: ChecklistPhoto[];
   notes?: string;
 }
 
@@ -147,6 +148,8 @@ export interface JobVideo {
 export interface JobSignOff {
   signerName: string;
   timestamp: string;
+  sigData?: string;
+  sigType?: "type" | "draw";
 }
 
 export interface ChemicalUsed {
@@ -224,6 +227,7 @@ export interface Job {
   sqFootage?: number;
   sqFtRate?: number;
   attachments?: { id: string; name: string; type: string }[];
+  signOffTerms?: string;
 }
 
 // ─── Employee ─────────────────────────────────────────────────────────────────
@@ -243,6 +247,7 @@ export interface Employee {
   autoSyncCalendar?: boolean;
   homeBaseAddress?: string;
   ratingScore?: number;
+  lastPaidThrough?: string;
 }
 
 // ─── Vehicle / Fleet ──────────────────────────────────────────────────────────
@@ -513,6 +518,13 @@ export interface AppSettings {
   maxLunchMinutes?: number;
   homeBaseAddress?: string;
   paidLunchBreaks?: boolean;
+
+  // Onboarding — explicitly false only for brand-new owner registrations;
+  // undefined (pre-existing accounts) is treated as already complete.
+  onboardingComplete?: boolean;
+  onboardingYearsInBusiness?: number;
+  onboardingServicesOffered?: string[];
+  onboardingTeamSize?: number;
 
   // API keys
   twilioSid?: string;

@@ -159,9 +159,11 @@ function PortalChecklistSection({ title, emoji, items, onUpdate, allowPhotos = f
   const done = items.filter(i => i.done).length;
   const toggle = (id: string) => { if (!disabled) onUpdate(items.map(it => it.id === id ? { ...it, done: !it.done } : it)); };
   const updateNotes = (id: string, notes: string) => onUpdate(items.map(it => it.id === id ? { ...it, notes } : it));
-  const addItemPhoto = (id: string, dataUrl: string) => {
-    const photo = { id: uid(), dataUrl };
-    onUpdate(items.map(it => it.id === id ? { ...it, photos: [...(it.photos || []), photo] } : it));
+  const addItemPhoto = (id: string, dataUrl: string, isVideo: boolean) => {
+    const media = { id: uid(), dataUrl };
+    onUpdate(items.map(it => it.id === id
+      ? isVideo ? { ...it, videos: [...(it.videos || []), media] } : { ...it, photos: [...(it.photos || []), media] }
+      : it));
   };
 
   return (
@@ -186,11 +188,17 @@ function PortalChecklistSection({ title, emoji, items, onUpdate, allowPhotos = f
                   </div>
                   {allowPhotos && (
                     <label className="cursor-pointer flex-shrink-0">
-                      <input type="file" accept="image/*" capture="environment" className="hidden"
+                      {/* capture="environment" opens the device camera directly on mobile
+                          (native camera app) and a file picker with a camera option on
+                          desktop; accepting both photo and video mime types lets one
+                          button cover both, and the file is auto-uploaded on selection —
+                          there's no separate "upload" step. */}
+                      <input type="file" accept="image/*,video/*" capture="environment" className="hidden"
                         onChange={e => {
                           const f = e.target.files?.[0]; if (!f) return;
+                          const isVideo = f.type.startsWith("video/");
                           const r = new FileReader();
-                          r.onload = ev => addItemPhoto(item.id, ev.target!.result as string);
+                          r.onload = ev => addItemPhoto(item.id, ev.target!.result as string, isVideo);
                           r.readAsDataURL(f); e.target.value = "";
                         }} />
                       <div className="p-1 rounded-lg bg-blue-950/40 hover:bg-blue-900/50 text-blue-400/80 hover:text-blue-300 transition">
@@ -199,12 +207,18 @@ function PortalChecklistSection({ title, emoji, items, onUpdate, allowPhotos = f
                     </label>
                   )}
                 </div>
-                {/* Per-item photo thumbnails */}
-                {(item.photos || []).length > 0 && (
+                {/* Per-item photo/video thumbnails */}
+                {((item.photos || []).length > 0 || (item.videos || []).length > 0) && (
                   <div className="mt-1.5 flex gap-1.5 flex-wrap">
                     {(item.photos || []).map((p, pi) => (
                       <div key={p.id || pi} className="w-14 h-14 rounded-lg overflow-hidden flex-shrink-0 border border-white/10">
                         <img src={p.dataUrl} alt="" className="w-full h-full object-cover" />
+                      </div>
+                    ))}
+                    {(item.videos || []).map((v, vi) => (
+                      <div key={v.id || vi} className="w-14 h-14 rounded-lg overflow-hidden flex-shrink-0 border border-white/10 relative bg-black">
+                        <video src={v.dataUrl} className="w-full h-full object-cover" />
+                        <Video size={14} className="absolute inset-0 m-auto text-white/80" />
                       </div>
                     ))}
                   </div>
@@ -225,11 +239,13 @@ function PortalChecklistSection({ title, emoji, items, onUpdate, allowPhotos = f
   );
 }
 
-function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName = "the company", onComplete, perms: permsOverride, maxLunchMinutes = 30, onJobCompleted, googleMapsKey = "", paidLunchBreaks = false }: {
+const DEFAULT_SIGNOFF_DISCLAIMER = "I confirm that all services have been completed to my satisfaction. I accept the work as described and acknowledge that {{company}} is not liable for pre-existing conditions documented in the pre-job checklist. I understand that this serves as a legally binding acceptance of completed work.";
+
+function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName = "the company", onComplete, perms: permsOverride, maxLunchMinutes = 30, onJobCompleted, googleMapsKey = "", paidLunchBreaks = false, signOffDisclaimer = "" }: {
   job: Job; customer?: Customer; onBack: () => void;
   onUpdateJob: (patch: Partial<Job>) => void; toast: (msg: string, tone?: any) => void;
   companyName?: string; onComplete?: () => void; perms?: Record<string, boolean>; maxLunchMinutes?: number;
-  onJobCompleted?: (job: Job) => void; googleMapsKey?: string; paidLunchBreaks?: boolean;
+  onJobCompleted?: (job: Job) => void; googleMapsKey?: string; paidLunchBreaks?: boolean; signOffDisclaimer?: string;
 }) {
   const effPerms = { ...DEFAULT_PERMISSIONS, ...(permsOverride || {}) };
   const [note, setNote] = useState("");
@@ -336,13 +352,60 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
   };
 
   const saveSignOff = () => {
-    if (!signerName.trim()) return;
-    const signOff = { signerName: signerName.trim(), timestamp: new Date().toISOString() };
+    if (sigMode === "type") {
+      if (!signerName.trim()) return;
+    } else if (!sigDrawData) return;
+    const signOff: any = {
+      signerName: signerName.trim() || "Drawn signature",
+      timestamp: new Date().toISOString(),
+      sigType: sigMode,
+      ...(sigMode === "draw" ? { sigData: sigDrawData } : {}),
+    };
     onUpdateJob({ signOff, status: "completed" });
     onJobCompleted?.({ ...job, signOff, status: "completed" });
     toast("Sign-off saved ✓");
     setShowSignOff(false);
     if (onComplete) setTimeout(onComplete, 1200);
+  };
+
+  // Draw-mode signature canvas
+  const [sigMode, setSigMode] = useState<"type" | "draw">("type");
+  const [sigDrawData, setSigDrawData] = useState<string | null>(null);
+  const sigCanvasRef = useRef<HTMLCanvasElement>(null);
+  const sigDrawing = useRef(false);
+  const sigLastPos = useRef({ x: 0, y: 0 });
+  const sigGetPos = (canvas: HTMLCanvasElement, e: any) => {
+    const r = canvas.getBoundingClientRect();
+    const src = e.touches ? e.touches[0] : e;
+    return { x: src.clientX - r.left, y: src.clientY - r.top };
+  };
+  const sigStartDraw = (e: any) => {
+    const canvas = sigCanvasRef.current; if (!canvas) return;
+    sigDrawing.current = true;
+    sigLastPos.current = sigGetPos(canvas, e);
+  };
+  const sigDraw = (e: any) => {
+    if (!sigDrawing.current) return;
+    e.preventDefault();
+    const canvas = sigCanvasRef.current; if (!canvas) return;
+    const ctx = canvas.getContext("2d"); if (!ctx) return;
+    ctx.strokeStyle = "#1e3a8a"; ctx.lineWidth = 2.5; ctx.lineCap = "round"; ctx.lineJoin = "round";
+    const pos = sigGetPos(canvas, e);
+    ctx.beginPath(); ctx.moveTo(sigLastPos.current.x, sigLastPos.current.y); ctx.lineTo(pos.x, pos.y); ctx.stroke();
+    sigLastPos.current = pos;
+  };
+  const sigStopDraw = () => {
+    if (!sigDrawing.current) return;
+    sigDrawing.current = false;
+    const canvas = sigCanvasRef.current; if (canvas) setSigDrawData(canvas.toDataURL());
+  };
+  const sigClear = () => {
+    const canvas = sigCanvasRef.current; if (!canvas) return;
+    canvas.getContext("2d")?.clearRect(0, 0, canvas.width, canvas.height);
+    setSigDrawData(null);
+  };
+  const switchSigMode = (m: "type" | "draw") => {
+    setSigMode(m); setSignerName(""); sigClear();
   };
 
   const beforePhoto = (job.photos || []).find(p => p.type === "before" && p.dataUrl);
@@ -392,38 +455,67 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
             </Glass>
           )}
 
-          {/* Legal disclaimer */}
+          {/* Legal disclaimer — job-specific terms, then Settings → Terms &
+              Conditions, then the standard fallback wording, in that order */}
           <Glass className="p-4 !bg-white/5 !border-white/10">
             <div className="flex items-start gap-2 mb-3">
               <Shield size={14} className="text-blue-400 mt-0.5 flex-shrink-0" />
-              <div className="text-xs text-white/60 leading-relaxed">
-                I confirm that all services have been completed to my satisfaction. I accept the work as described and acknowledge that <span className="text-white font-medium">{companyName}</span> is not liable for pre-existing conditions documented in the pre-job checklist. I understand that this serves as a legally binding acceptance of completed work.
+              <div className="text-xs text-white/60 leading-relaxed whitespace-pre-wrap">
+                {(signOffDisclaimer || DEFAULT_SIGNOFF_DISCLAIMER).replace(/\{\{company\}\}/g, companyName)}
               </div>
             </div>
           </Glass>
 
-          {/* Signature input */}
+          {/* Signature input — type or draw, both legally binding with a timestamp */}
           <Glass className="p-4 !bg-black/40">
             <div className="text-xs text-white/50 uppercase tracking-wider mb-2 font-semibold flex items-center gap-1">
-              <PenLine size={11} />Digital Signature — Type your full name
+              <PenLine size={11} />Digital Signature
             </div>
-            <input
-              type="text"
-              value={signerName}
-              onChange={e => setSignerName(e.target.value)}
-              placeholder="Full name..."
-              className="w-full bg-transparent border-b-2 border-red-600/40 focus:border-red-500 text-white text-lg py-2 focus:outline-none placeholder-white/20"
-            />
-            {signerName.trim() && (
-              <div className="mt-3 p-3 bg-white/5 rounded-xl text-center">
-                <div className="text-white/40 text-[10px] uppercase mb-1">Signature Preview</div>
-                <div style={{ fontFamily: "Georgia, serif", fontStyle: "italic" }} className="text-2xl text-white/80">{signerName}</div>
-                <div className="text-[10px] text-white/30 mt-2">{new Date().toLocaleString()}</div>
-              </div>
+            <div className="flex gap-2 mb-3">
+              {([["type", "⌨️ Type"], ["draw", "✍️ Draw"]] as const).map(([m, l]) => (
+                <button key={m} onClick={() => switchSigMode(m)} className={"flex-1 py-2 rounded-xl text-xs font-semibold border transition " + (sigMode === m ? "bg-blue-900/40 border-blue-500/60 text-blue-200" : "bg-black/30 border-white/10 text-white/50 hover:text-white")}>{l}</button>
+              ))}
+            </div>
+            {sigMode === "type" ? (
+              <>
+                <input
+                  type="text"
+                  value={signerName}
+                  onChange={e => setSignerName(e.target.value)}
+                  placeholder="Full name..."
+                  className="w-full bg-transparent border-b-2 border-red-600/40 focus:border-red-500 text-white text-lg py-2 focus:outline-none placeholder-white/20"
+                />
+                {signerName.trim() && (
+                  <div className="mt-3 p-3 bg-white/5 rounded-xl text-center">
+                    <div className="text-white/40 text-[10px] uppercase mb-1">Signature Preview</div>
+                    <div style={{ fontFamily: "Georgia, serif", fontStyle: "italic" }} className="text-2xl text-white/80">{signerName}</div>
+                    <div className="text-[10px] text-white/30 mt-2">{new Date().toLocaleString()}</div>
+                  </div>
+                )}
+              </>
+            ) : (
+              <>
+                <input
+                  type="text"
+                  value={signerName}
+                  onChange={e => setSignerName(e.target.value)}
+                  placeholder="Full name (optional, for the record)"
+                  className="w-full bg-transparent border-b border-white/10 focus:border-red-500 text-white text-sm py-1.5 mb-2 focus:outline-none placeholder-white/20"
+                />
+                <div className="bg-white rounded-xl overflow-hidden border-2 border-dashed border-gray-300">
+                  <canvas ref={sigCanvasRef} width={580} height={160} className="w-full cursor-crosshair touch-none" style={{ height: 160 }}
+                    onMouseDown={sigStartDraw} onMouseMove={sigDraw} onMouseUp={sigStopDraw} onMouseLeave={sigStopDraw}
+                    onTouchStart={sigStartDraw} onTouchMove={sigDraw} onTouchEnd={sigStopDraw} />
+                </div>
+                <div className="flex items-center justify-between text-xs text-white/40 mt-2">
+                  <span>Sign above with your finger or mouse</span>
+                  <button onClick={sigClear} className="text-red-400 hover:text-red-300">Clear</button>
+                </div>
+              </>
             )}
           </Glass>
 
-          <GBtn onClick={saveSignOff} disabled={!signerName.trim()} className="w-full !justify-center !py-3">
+          <GBtn onClick={saveSignOff} disabled={sigMode === "type" ? !signerName.trim() : !sigDrawData} className="w-full !justify-center !py-3">
             <CheckCircle size={16} />Sign & Save
           </GBtn>
         </div>
@@ -687,7 +779,11 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
               <CheckCircle size={14} className="text-green-400" />
               <div className="text-xs font-semibold text-green-300">Customer Signed Off</div>
             </div>
-            <div style={{ fontFamily: "Georgia, serif", fontStyle: "italic" }} className="text-lg text-white/80 mt-1">{job.signOff.signerName}</div>
+            {job.signOff.sigType === "draw" && job.signOff.sigData ? (
+              <img src={job.signOff.sigData} alt="Signature" className="mt-1 bg-white rounded-lg max-h-20" />
+            ) : (
+              <div style={{ fontFamily: "Georgia, serif", fontStyle: "italic" }} className="text-lg text-white/80 mt-1">{job.signOff.signerName}</div>
+            )}
             <div className="text-[10px] text-white/30 mt-1">{new Date(job.signOff.timestamp).toLocaleString()}</div>
             {onComplete && (
               <button onClick={onComplete}
@@ -696,20 +792,31 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
               </button>
             )}
           </Glass>
-        ) : effPerms.can_get_signoff && allDone ? (
-          <GBtn onClick={() => setShowSignOff(true)} className="w-full !justify-center !py-3 !bg-gradient-to-r !from-green-700 !to-green-900 !border-green-600/50">
-            <PenLine size={16} />Get Customer Sign-Off
-          </GBtn>
-        ) : effPerms.can_get_signoff ? (
-          <div className="text-center text-xs text-white/30 py-2">Complete all checklist items to get customer sign-off</div>
-        ) : allDone ? (
-          <GBtn onClick={() => { onUpdateJob({ status: "completed" }); onJobCompleted?.({ ...job, status: "completed" }); toast("Job marked complete ✓"); if (onComplete) setTimeout(onComplete, 1200); }}
-            className="w-full !justify-center !py-3 !bg-gradient-to-r !from-green-700 !to-green-900 !border-green-600/50">
-            <CheckCircle size={16} />Complete Job
-          </GBtn>
-        ) : (
-          <div className="text-center text-xs text-white/30 py-2">Complete all checklist items to finish this job</div>
-        )}
+        ) : (() => {
+          // Checklist completion is no longer a hard gate — some items don't
+          // apply to every job. Unchecked items stay unchecked; the employee
+          // just gets a confirmation so finishing early is a deliberate choice.
+          const remaining = allItems.filter(i => !i.done).length;
+          const confirmIfIncomplete = () => {
+            if (remaining === 0) return true;
+            return window.confirm(`${remaining} checklist item${remaining !== 1 ? "s" : ""} remain incomplete. Mark job as complete anyway?`);
+          };
+          if (effPerms.can_get_signoff) {
+            return (
+              <GBtn onClick={() => { if (confirmIfIncomplete()) setShowSignOff(true); }} className="w-full !justify-center !py-3 !bg-gradient-to-r !from-green-700 !to-green-900 !border-green-600/50">
+                <PenLine size={16} />Get Customer Sign-Off
+              </GBtn>
+            );
+          }
+          return (
+            <GBtn onClick={() => {
+              if (!confirmIfIncomplete()) return;
+              onUpdateJob({ status: "completed" }); onJobCompleted?.({ ...job, status: "completed" }); toast("Job marked complete ✓"); if (onComplete) setTimeout(onComplete, 1200);
+            }} className="w-full !justify-center !py-3 !bg-gradient-to-r !from-green-700 !to-green-900 !border-green-600/50">
+              <CheckCircle size={16} />Complete Job
+            </GBtn>
+          );
+        })()}
 
         {/* Internal notes */}
         {job.internalNotes && (
@@ -1216,10 +1323,21 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
               crewIncludesEmployee(j.crew, empId, empUserId));
           });
         }
+        // Fields the employee's own clock/lunch actions own — an in-flight
+        // Supabase write for one of these (or a stale/slow row read) must never
+        // win against a more recent local change, or the clock-out → clock-in
+        // toggle can revert mid-air on the next poll tick and look stuck.
+        const EMPLOYEE_OWNED_FIELDS = ["clockInAt", "lunchStartAt", "lunchMinutes", "lunchExceeded", "loggedHours"] as const;
         if (Array.isArray(data) && data.length > 0) {
           setJobs(prev => {
             const supabaseMap = new Map(data.map((j: any) => [j.id, j]));
-            const merged = prev.map(j => supabaseMap.has(j.id) ? { ...j, ...supabaseMap.get(j.id) } : j);
+            const merged = prev.map(j => {
+              if (!supabaseMap.has(j.id)) return j;
+              const remote = supabaseMap.get(j.id);
+              const next = { ...j, ...remote };
+              EMPLOYEE_OWNED_FIELDS.forEach(f => { next[f] = (j as any)[f]; });
+              return next;
+            });
             const existingIds = new Set(prev.map(j => j.id));
             const added = data.filter((j: any) => !existingIds.has(j.id));
             const result = [...merged, ...added];
@@ -1740,6 +1858,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
 
   const [homeBaseAddress, setHomeBaseAddressState] = useState("");
   const [, setGoogleHydrateTick] = useState(0);
+  const [showCanceledJobs, setShowCanceledJobs] = useState(false);
   const saveHomeBaseAddress = async (addr: string) => {
     setHomeBaseAddressState(addr);
     try {
@@ -1998,7 +2117,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
         employees={employees}
         customers={customers}
         onClose={onClose}
-        googleMapsKey={settings?.googleMapsKey}
+        googleMapsKey={settings?.googleMapsKey || settings?.mapsKey}
       />
     );
   }
@@ -2256,8 +2375,9 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
         perms={perms}
         maxLunchMinutes={settings.maxLunchMinutes ?? 30}
         onJobCompleted={recordJobRating}
-        googleMapsKey={settings.googleMapsKey}
+        googleMapsKey={settings.googleMapsKey || settings.mapsKey}
         paidLunchBreaks={!!settings.paidLunchBreaks}
+        signOffDisclaimer={job.signOffTerms || settings.termsAndConditions || settings.terms || ""}
       />
     );
   }
@@ -3024,11 +3144,13 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
           {/* All Jobs tab — grouped by date */}
           {tab === "jobs" && (() => {
             const jwEnd = (() => { const d = new Date(); d.setDate(d.getDate() + (6 - d.getDay())); return d.toISOString().slice(0, 10); })();
-            const activeGrp  = myJobs.filter(j => !!j.clockInAt);
-            const todayGrp   = myJobs.filter(j => !j.clockInAt && j.scheduledDate === todayStr);
-            const weekGrp    = myJobs.filter(j => !j.clockInAt && j.scheduledDate > todayStr && j.scheduledDate <= jwEnd);
-            const upcomingGrp = myJobs.filter(j => !j.clockInAt && j.scheduledDate > jwEnd);
-            const earlierGrp = myJobs.filter(j => !j.clockInAt && j.scheduledDate < todayStr);
+            const visibleJobs = showCanceledJobs ? myJobs : myJobs.filter(j => j.status !== "cancelled");
+            const canceledCount = myJobs.filter(j => j.status === "cancelled").length;
+            const activeGrp  = visibleJobs.filter(j => !!j.clockInAt);
+            const todayGrp   = visibleJobs.filter(j => !j.clockInAt && j.scheduledDate === todayStr);
+            const weekGrp    = visibleJobs.filter(j => !j.clockInAt && j.scheduledDate > todayStr && j.scheduledDate <= jwEnd);
+            const upcomingGrp = visibleJobs.filter(j => !j.clockInAt && j.scheduledDate > jwEnd);
+            const earlierGrp = visibleJobs.filter(j => !j.clockInAt && j.scheduledDate < todayStr);
 
             const Group = ({ label, jobs: grpJobs }: { label: string; jobs: typeof myJobs }) => grpJobs.length === 0 ? null : (
               <div>
@@ -3040,19 +3162,29 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
               </div>
             );
 
-            return myJobs.length === 0 ? (
-              <div className="text-center py-14 text-white/30 px-4">
-                <Briefcase size={36} className="mx-auto mb-3 opacity-20" />
-                <div className="font-semibold text-white/40 mb-1">No jobs assigned yet</div>
-                <div className="text-sm leading-relaxed">When your manager assigns you to a job, it will appear here.</div>
-              </div>
-            ) : (
+            return (
               <div className="space-y-5">
-                <Group label="Active" jobs={activeGrp} />
-                <Group label="Today" jobs={todayGrp} />
-                <Group label="This Week" jobs={weekGrp.sort((a, b) => a.scheduledDate.localeCompare(b.scheduledDate))} />
-                <Group label="Upcoming" jobs={upcomingGrp.sort((a, b) => a.scheduledDate.localeCompare(b.scheduledDate))} />
-                <Group label="Past" jobs={earlierGrp.sort((a, b) => b.scheduledDate.localeCompare(a.scheduledDate))} />
+                {canceledCount > 0 && (
+                  <button onClick={() => setShowCanceledJobs(v => !v)} className={"w-full flex items-center justify-center gap-1.5 py-2 rounded-xl border text-xs font-medium transition " + (showCanceledJobs ? "bg-red-950/20 border-red-700/40 text-red-300" : "bg-black/30 border-white/10 text-white/40 hover:text-white/60")}>
+                    {showCanceledJobs ? <ToggleRight size={14} /> : <ToggleLeft size={14} />}
+                    {showCanceledJobs ? `Showing ${canceledCount} canceled job${canceledCount !== 1 ? "s" : ""}` : `Show Canceled (${canceledCount})`}
+                  </button>
+                )}
+                {myJobs.length === 0 ? (
+                  <div className="text-center py-14 text-white/30 px-4">
+                    <Briefcase size={36} className="mx-auto mb-3 opacity-20" />
+                    <div className="font-semibold text-white/40 mb-1">No jobs assigned yet</div>
+                    <div className="text-sm leading-relaxed">When your manager assigns you to a job, it will appear here.</div>
+                  </div>
+                ) : (
+                  <>
+                    <Group label="Active" jobs={activeGrp} />
+                    <Group label="Today" jobs={todayGrp} />
+                    <Group label="This Week" jobs={weekGrp.sort((a, b) => a.scheduledDate.localeCompare(b.scheduledDate))} />
+                    <Group label="Upcoming" jobs={upcomingGrp.sort((a, b) => a.scheduledDate.localeCompare(b.scheduledDate))} />
+                    <Group label="Past" jobs={earlierGrp.sort((a, b) => b.scheduledDate.localeCompare(a.scheduledDate))} />
+                  </>
+                )}
               </div>
             );
           })()}
@@ -3078,9 +3210,24 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
               });
             }
             const current = periods[0];
+            const lastClosed = periods[1];
             const expectedHours = 80; // typical 2-week period
             const TAX_RATE = 0.20;
             const takeHome = Math.round(current.pay * (1 - TAX_RATE) * 100) / 100;
+
+            // Outstanding balance — without a connected payroll system there's no
+            // real "paid" flag, so the current (still-open) pay period is treated
+            // as pending/owed by default. If the owner has recorded a "paid
+            // through" date on this employee's record, anything logged after
+            // that date counts as outstanding too, even across closed periods.
+            const lastPaidThrough = (myEmployee as any)?.lastPaidThrough || "";
+            const unpaidJobs = lastPaidThrough ? myJobs.filter(j => j.scheduledDate > lastPaidThrough) : current.jobs ? myJobs.filter(j => j.scheduledDate >= current.start) : [];
+            const pendingHours = lastPaidThrough
+              ? Math.round(unpaidJobs.reduce((s, j) => s + Number(j.loggedHours || 0), 0) * 10) / 10
+              : current.hours;
+            const pendingPay = lastPaidThrough
+              ? Math.round(pendingHours * (myEmployee?.hourlyRate || 0) * 100) / 100
+              : current.pay;
 
             // Year-to-date + prior-year earnings, bucketed by the calendar year
             // each job's logged hours fall in — same hrs × rate math as the pay
@@ -3177,6 +3324,35 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                       <div className="text-xl font-black text-white/80">{fmt(takeHome)}</div>
                     </div>
                   </div>
+                </Glass>
+
+                {/* Outstanding balance — clear paid vs pending separation */}
+                <Glass className="p-4 !bg-black/40">
+                  <div className="text-xs text-white/50 uppercase tracking-wider mb-3">Outstanding Balance</div>
+                  <div className="grid grid-cols-2 gap-3 mb-3">
+                    <div className="p-3 rounded-xl bg-yellow-950/20 border border-yellow-700/30">
+                      <div className="text-[10px] text-yellow-400/70 uppercase">Pending Pay</div>
+                      <div className="text-xl font-black text-yellow-400">{fmt(pendingPay)}</div>
+                      <div className="text-[10px] text-white/30 mt-0.5">{pendingHours}h not yet in a closed period</div>
+                    </div>
+                    <div className="p-3 rounded-xl bg-green-950/20 border border-green-700/30">
+                      <div className="text-[10px] text-green-400/70 uppercase">Total Outstanding</div>
+                      <div className="text-xl font-black text-green-400">{fmt(pendingPay)}</div>
+                      <div className="text-[10px] text-white/30 mt-0.5">What you're owed so far</div>
+                    </div>
+                  </div>
+                  {lastClosed && lastClosed.pay > 0 && (
+                    <div className="flex items-center justify-between p-2.5 rounded-xl bg-white/5 border border-white/10">
+                      <div>
+                        <div className="text-[10px] text-white/40 uppercase">Last Pay Period</div>
+                        <div className="text-xs text-white/50">{lastClosed.start} — {lastClosed.end}</div>
+                      </div>
+                      <div className="text-right">
+                        <div className="text-sm font-bold text-white/70">{fmt(lastClosed.pay)}</div>
+                        <div className="text-[10px] text-white/30">{lastClosed.hours}h · assumed paid</div>
+                      </div>
+                    </div>
+                  )}
                 </Glass>
 
                 {periods.some(p => p.pay > 0) && (

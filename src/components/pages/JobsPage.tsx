@@ -80,11 +80,19 @@ import { ChemicalModal } from "../ui/ChemicalModal";
 import { WeeklyBusinessReview } from "../ui/WeeklyBusinessReview";
 import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 
-export function JobsPage({ jobs = [], setJobs, customers = [], employees = [], estimates = [], setEstimates = () => {}, settings = {} as AppSettings, toast, posts = [], setPosts = () => {}, setTimeline = () => {} }: { jobs?: any[]; setJobs?: any; customers?: any[]; employees?: any[]; estimates?: any[]; setEstimates?: any; settings?: AppSettings; toast?: any; posts?: any[]; setPosts?: any; setTimeline?: any }) {
+export function JobsPage({ jobs = [], setJobs, customers = [], employees = [], estimates = [], setEstimates = () => {}, settings = {} as AppSettings, toast, posts = [], setPosts = () => {}, setTimeline = () => {}, initialDetailId = null, onInitialDetailIdConsumed = () => {}, onPortal = (_id: string) => {} }: { jobs?: any[]; setJobs?: any; customers?: any[]; employees?: any[]; estimates?: any[]; setEstimates?: any; settings?: AppSettings; toast?: any; posts?: any[]; setPosts?: any; setTimeline?: any; initialDetailId?: string | null; onInitialDetailIdConsumed?: () => void; onPortal?: (id: string) => void }) {
   const [tab, setTab] = useState("scheduled");
   const [cancelModal, setCancelModal] = useState(null);
   const [cancelReason, setCancelReason] = useState(cancelReasons[0]);
   const [detailId, setDetailId] = useState(null);
+
+  // Deep-link into a specific job's detail — e.g. from Dashboard's Live Team
+  // View "View" button, which navigates here with a target job already known.
+  useEffect(() => {
+    if (!initialDetailId) return;
+    setDetailId(initialDetailId);
+    onInitialDetailIdConsumed();
+  }, [initialDetailId]); // eslint-disable-line react-hooks/exhaustive-deps
   const [prioFilter, setPrioFilter] = useState("all");
   const [search, setSearch] = useState("");
   const [sortBy, setSortBy] = useState("date");
@@ -849,7 +857,7 @@ export function JobsPage({ jobs = [], setJobs, customers = [], employees = [], e
         {filtered.length === 0 && <div className="md:col-span-2 text-center py-12 text-white/40">No {tabs[tab].toLowerCase()} jobs</div>}
       </div>
 
-      <JobDetailModal jobId={detailId} job={jobs.find(j => j.id === detailId)} onClose={() => setDetailId(null)} customers={customers} employees={employees} updateJob={updateJob} toast={toast} settings={settings} />
+      <JobDetailModal jobId={detailId} job={jobs.find(j => j.id === detailId)} onClose={() => setDetailId(null)} customers={customers} employees={employees} updateJob={updateJob} toast={toast} settings={settings} estimates={estimates} setEstimates={setEstimates} onPortal={onPortal} />
 
       <Modal open={!!cancelModal} onClose={() => setCancelModal(null)} title="Cancel Job">
         <div className="space-y-3">

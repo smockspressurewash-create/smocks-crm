@@ -77,7 +77,7 @@ import { ChemicalModal } from "../ui/ChemicalModal";
 import { WeeklyBusinessReview } from "../ui/WeeklyBusinessReview";
 import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 
-export function Dashboard({ jobs = [], customers = [], estimates = [], automations = [], stats, goals, vehicles = [], maintenance = [], chemicals = [], settings = {} as AppSettings, setSettings = () => {}, onNav, toast, weatherData = seedWeather, inboxThreads = [], employees = [], onSendDailyBriefing }: { jobs?: any[]; customers?: any[]; estimates?: any[]; automations?: any[]; stats?: any; goals?: any; vehicles?: any[]; maintenance?: any[]; chemicals?: any[]; settings?: AppSettings; setSettings?: any; onNav?: any; toast?: any; weatherData?: any; inboxThreads?: any[]; employees?: any[]; onSendDailyBriefing?: () => Promise<void> }) {
+export function Dashboard({ jobs = [], customers = [], estimates = [], automations = [], stats, goals, vehicles = [], maintenance = [], chemicals = [], settings = {} as AppSettings, setSettings = () => {}, onNav, toast, weatherData = seedWeather, inboxThreads = [], employees = [], onSendDailyBriefing, onViewJob = (id: string) => {} }: { jobs?: any[]; customers?: any[]; estimates?: any[]; automations?: any[]; stats?: any; goals?: any; vehicles?: any[]; maintenance?: any[]; chemicals?: any[]; settings?: AppSettings; setSettings?: any; onNav?: any; toast?: any; weatherData?: any; inboxThreads?: any[]; employees?: any[]; onSendDailyBriefing?: () => Promise<void>; onViewJob?: (id: string) => void }) {
   const pipelineVal = jobs.filter(j => j.status !== "completed").reduce((s, j) => s + j.amount, 0);
   const dayOfMonth = new Date().getDate();
   const daysInMonth = new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0).getDate();
@@ -393,7 +393,7 @@ export function Dashboard({ jobs = [], customers = [], estimates = [], automatio
                       {overSchedule && <span className="text-yellow-400 font-semibold">⚠ Running over schedule</span>}
                     </div>
                   </div>
-                  <button onClick={() => onNav("jobs")} className="px-2.5 py-1.5 bg-white/5 border border-white/10 rounded-lg text-xs text-white/60 hover:text-white flex-shrink-0">View</button>
+                  <button onClick={() => onViewJob(j.id)} className="px-2.5 py-1.5 bg-white/5 border border-white/10 rounded-lg text-xs text-white/60 hover:text-white flex-shrink-0">View</button>
                 </div>
               );
             })}
