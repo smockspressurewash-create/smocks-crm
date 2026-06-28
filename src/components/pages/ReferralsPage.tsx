@@ -77,25 +77,41 @@ import { ChemicalModal } from "../ui/ChemicalModal";
 import { WeeklyBusinessReview } from "../ui/WeeklyBusinessReview";
 import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 
-export function ReferralsPage({ customers = [], referrals = {}, toast, settings = {} as AppSettings }: { customers?: any[]; referrals?: any; toast?: any; settings?: AppSettings }) {
+export function ReferralsPage({ customers = [], setCustomers = (() => {}) as any, jobs = [], toast, settings = {} as AppSettings, setSettings = (() => {}) as any }: { customers?: any[]; setCustomers?: any; jobs?: any[]; toast?: any; settings?: AppSettings; setSettings?: any }) {
   const [copied, setCopied] = useState(null);
   const [sending, setSending] = useState(null);
   const [tab, setTab] = useState("customers"); // customers | leaderboard | settings
-  const [rewardSettings, setRewardSettings] = usePersistent("smocks.referralSettings", {
-    referrerCredit: 25,
-    refereeDiscount: 10,
-    refereeDiscountType: "percent",
-    autoSendRequest: true,
-    requestDelay: 7
-  });
+  // Lives on settings (not a separate persisted store) so the credit amount
+  // awarded automatically when a referred customer's first job completes
+  // (in JobsPage.tsx) always matches what's configured here.
+  const rewardSettings = (settings as any).referralSettings || { referrerCredit: 25, refereeDiscount: 10, refereeDiscountType: "percent", autoSendRequest: true, requestDelay: 7 };
+  const setRewardSettings = (updater: any) => setSettings((s: any) => ({ ...s, referralSettings: typeof updater === "function" ? updater(rewardSettings) : updater }));
 
-  const withM = customers.map(c => ({ ...c, m: referrals[c.id] || { code: c.id.slice(-6).toUpperCase(), count: 0, revenue: 0 } })).sort((a, b) => b.m.count - a.m.count);
+  // Real referral data — who each customer actually referred (referredBy on
+  // the referee), and how much revenue those referred customers generated.
+  // Ensures every customer has a stable code instead of deriving one on the
+  // fly (new customers get one set at creation in CustomersPage.tsx; backfill
+  // here for any older records that predate that).
+  const codeFor = (c: any) => c.referralCode || (c.firstName?.slice(0, 3) || "REF").toUpperCase() + c.id.slice(-4).toUpperCase();
+  const withM = customers.map(c => {
+    const referred = customers.filter((x: any) => x.referredBy === c.id);
+    const revenue = referred.reduce((s: number, r: any) => s + jobs.filter((j: any) => j.customerId === r.id && j.status === "completed").reduce((s2: number, j: any) => s2 + (Number(j.amount) || 0), 0), 0);
+    return { ...c, m: { code: codeFor(c), count: referred.length, revenue } };
+  }).sort((a, b) => b.m.count - a.m.count);
   const totRefs = withM.reduce((s, c) => s + c.m.count, 0);
   const totRev = withM.reduce((s, c) => s + c.m.revenue, 0);
   const top = withM.find(c => c.m.count > 0);
+  const totalCreditOwed = customers.reduce((s: number, c: any) => s + (Number(c.referralCreditOwed) || 0), 0);
+
+  const applyCredit = (c: any) => {
+    const owed = Number(c.referralCreditOwed) || 0;
+    if (owed <= 0) return;
+    setCustomers((prev: any[]) => prev.map(x => x.id === c.id ? { ...x, referralCreditOwed: 0, referralCreditApplied: (Number(x.referralCreditApplied) || 0) + owed } : x));
+    toast?.(`$${owed} referral credit applied for ${c.firstName} — deduct it on their next invoice`, "green");
+  };
 
   const copy = (code, channel = "link") => {
-    const url = "https://smocks.com/refer/" + code;
+    const url = `${window.location.origin}${window.location.pathname}#/intake?ref=${code}`;
     const msg = "I use Smock's Pressure Washing for my home — they're great! Use my code " + code + " and get 10% off: " + url;
     if (channel === "link") {
       navigator.clipboard?.writeText(url).catch(() => {});
@@ -133,10 +149,11 @@ export function ReferralsPage({ customers = [], referrals = {}, toast, settings 
 
   return (
     <div className="space-y-4">
-      <div className="grid grid-cols-3 gap-3">
+      <div className="grid grid-cols-4 gap-3">
         <Stat icon={Award} label="Total Referrals" value={totRefs} />
         <Stat icon={DollarSign} label="Referral Revenue" value={fmt(totRev)} />
         <Stat icon={Star} label="Top Referrer" value={top ? top.firstName + " " + top.lastName[0] + "." : "—"} />
+        <Stat icon={CreditCard} label="Credit Owed" value={fmt(totalCreditOwed)} />
       </div>
 
       {/* Reward tiers */}
@@ -199,6 +216,11 @@ export function ReferralsPage({ customers = [], referrals = {}, toast, settings 
                   <td className="px-4 py-3 text-right hidden lg:table-cell"><span className={c.m.revenue > 0 ? "text-red-400 font-bold" : "text-white/30"}>{fmt(c.m.revenue)}</span></td>
                   <td className="px-4 py-3 text-right">
                     <div className="flex items-center justify-end gap-1.5">
+                      {Number(c.referralCreditOwed) > 0 && (
+                        <GBtn onClick={() => applyCredit(c)} className="!text-[10px] !py-1 !px-2 !bg-green-700 hover:!bg-green-600">
+                          ${c.referralCreditOwed} owed — Apply
+                        </GBtn>
+                      )}
                       <button onClick={() => copy(c.m.code, "link")} title="Copy link" className="p-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-white/60 hover:text-white border border-white/10 transition"><Link size={11} /></button>
                       <button onClick={() => copy(c.m.code, "sms")} title="Share via SMS" className="p-1.5 rounded-lg bg-blue-950/40 hover:bg-blue-900/50 text-blue-300 border border-blue-800/40 transition"><MessageSquare size={11} /></button>
                       <button onClick={() => copy(c.m.code, "whatsapp")} title="Share via WhatsApp" className="p-1.5 rounded-lg bg-green-950/40 hover:bg-green-900/50 text-green-300 border border-green-800/40 transition"><Share2 size={11} /></button>

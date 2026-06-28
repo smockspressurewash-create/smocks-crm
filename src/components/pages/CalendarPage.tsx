@@ -89,6 +89,8 @@ export function CalendarPage({ jobs = [], setJobs, customers = [], employees = [
   const [gLoading, setGLoading] = useState(false);
 
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
+  const [jobContextMenu, setJobContextMenu] = useState<{ jobId: string; x: number; y: number } | null>(null);
+  const longPressTimer = useRef<any>(null);
   const [selectedGEvent, setSelectedGEvent] = useState<GCalEvent | null>(null);
   const [showNewGEvent, setShowNewGEvent] = useState(false);
   const [newEvt, setNewEvt] = useState({ title: "", date: today(), time: "09:00", duration: 2, description: "", location: "" });
@@ -232,6 +234,37 @@ export function CalendarPage({ jobs = [], setJobs, customers = [], employees = [
     }
   };
 
+  // Quick actions context menu — right-click (or long-press on mobile) a job
+  // pill instead of always having to open the full detail modal first.
+  const cancelJobQuick = (jid: string) => {
+    if (!window.confirm("Cancel this job?")) return;
+    const job = jobs.find(j => j.id === jid);
+    setJobs(jobs.map(j => j.id === jid ? { ...j, status: "cancelled", cancelReason: "Cancelled via calendar quick action" } : j));
+    toast("Job cancelled");
+    if (job?.googleEventId && settings?.googleConnected && (settings as any)?.googleProviderToken) {
+      deleteGCalEventApi((settings as any).googleProviderToken, job.googleEventId).catch(() => {});
+    }
+    setJobContextMenu(null);
+  };
+  const rescheduleJobQuick = (jid: string) => {
+    const job = jobs.find(j => j.id === jid);
+    const newDate = window.prompt("New date (YYYY-MM-DD):", job?.scheduledDate || "");
+    setJobContextMenu(null);
+    if (!newDate) return;
+    updateJob(jid, { scheduledDate: newDate });
+    toast("Rescheduled to " + newDate);
+  };
+  const openJobContextMenu = (e: React.MouseEvent | React.TouchEvent, jid: string) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const point = "touches" in e ? e.touches[0] : (e as React.MouseEvent);
+    setJobContextMenu({ jobId: jid, x: point.clientX, y: point.clientY });
+  };
+  const startLongPress = (e: React.TouchEvent, jid: string) => {
+    longPressTimer.current = setTimeout(() => openJobContextMenu(e, jid), 500);
+  };
+  const cancelLongPress = () => { if (longPressTimer.current) clearTimeout(longPressTimer.current); };
+
   // Day revenue totals
   const dayTotal = k => (byDate[k] || []).reduce((s, j) => s + (j.amount || 0), 0);
 
@@ -306,7 +339,7 @@ export function CalendarPage({ jobs = [], setJobs, customers = [], employees = [
                       const initials = crewInitials(j);
                       return <React.Fragment key={j.id}>
                         {showBuffer && <div className="text-[8px] px-1 py-0.5 rounded bg-orange-950/50 border border-orange-800/30 text-orange-400/60 truncate">🚗 travel</div>}
-                        <div draggable onDragStart={() => setDragId(j.id)} onClick={() => setSelectedJobId(j.id)} className={"text-[9px] px-1 py-0.5 rounded truncate cursor-pointer text-white " + eventBg(j) + " " + prioRing(j.priority)} title={c?.firstName + " " + c?.lastName + " · " + fmt(j.amount) + (j.priority && j.priority !== "normal" ? " · " + j.priority : "") + (j.googleEventId ? " · synced" : "")}>
+                        <div draggable onDragStart={() => setDragId(j.id)} onClick={() => setSelectedJobId(j.id)} onContextMenu={(e: React.MouseEvent) => openJobContextMenu(e, j.id)} onTouchStart={(e: React.TouchEvent) => startLongPress(e, j.id)} onTouchEnd={cancelLongPress} onTouchMove={cancelLongPress} className={"text-[9px] px-1 py-0.5 rounded truncate cursor-pointer text-white " + eventBg(j) + " " + prioRing(j.priority)} title={c?.firstName + " " + c?.lastName + " · " + fmt(j.amount) + (j.priority && j.priority !== "normal" ? " · " + j.priority : "") + (j.googleEventId ? " · synced" : "")}>
                           {j.priority === "urgent" && "🚨 "}{j.googleEventId && "☁"}{c?.firstName}{initials && <span className="opacity-60 ml-0.5">{initials}</span>}
                         </div>
                         {showBuffer && <div className="text-[8px] px-1 py-0.5 rounded bg-gray-950/50 border border-gray-800/30 text-gray-400/60 truncate">⏸ buffer</div>}
@@ -420,6 +453,19 @@ export function CalendarPage({ jobs = [], setJobs, customers = [], employees = [
             })}
           </div>
         </Glass>
+      )}
+
+      {/* Quick actions context menu — right-click or long-press a job pill */}
+      {jobContextMenu && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={() => setJobContextMenu(null)} onContextMenu={(e: React.MouseEvent) => { e.preventDefault(); setJobContextMenu(null); }} />
+          <div className="fixed z-50 bg-black/95 border border-red-900/40 rounded-xl shadow-2xl overflow-hidden py-1 w-44" style={{ left: Math.min(jobContextMenu.x, window.innerWidth - 180), top: Math.min(jobContextMenu.y, window.innerHeight - 180) }}>
+            <button onClick={() => { setSelectedJobId(jobContextMenu.jobId); setJobContextMenu(null); }} className="w-full flex items-center gap-2 px-3 py-2 text-xs text-white/80 hover:bg-white/10 transition"><Eye size={12} />View Details</button>
+            <button onClick={() => { setSelectedJobId(jobContextMenu.jobId); setJobContextMenu(null); }} className="w-full flex items-center gap-2 px-3 py-2 text-xs text-white/80 hover:bg-white/10 transition"><UserCheck size={12} />Assign Crew</button>
+            <button onClick={() => rescheduleJobQuick(jobContextMenu.jobId)} className="w-full flex items-center gap-2 px-3 py-2 text-xs text-white/80 hover:bg-white/10 transition"><RefreshCw size={12} />Reschedule</button>
+            <button onClick={() => cancelJobQuick(jobContextMenu.jobId)} className="w-full flex items-center gap-2 px-3 py-2 text-xs text-red-300 hover:bg-red-950/30 transition border-t border-white/10"><Ban size={12} />Cancel Job</button>
+          </div>
+        </>
       )}
 
       {/* Job Detail Modal — opens when a CRM job chip is clicked */}

@@ -27,7 +27,7 @@ import { seedWeather } from "../../lib/weather";
 import { seedCustomers, seedEstimates, seedJobs, seedEmployees, seedVehicles, seedExpenses, seedChemicals, seedServices, seedAutomations, seedEmailTemplates, seedSmsTemplates, seedRewardTiers, seedReferrals, seedMaintenance, campaignTemplates, seedSocialPosts, seedTimeline, seedGoals, seedReminders, seedAccountabilityEntries, seedMileage, seedLeadSrc, STEP_TYPES, AUTOMATION_TEMPLATES } from "../../lib/seed";
 import { callModel, MODELS } from "../../lib/api";
 import { createCalendarEvent, updateCalendarEvent, deleteCalendarEvent, fetchDriveFiles, MOCK_GOOGLE_DATA, fmtSize, fmtDate, fileIcon } from "../../lib/google";
-import { createGCalEvent as createGCalEventApi, updateGCalEvent as updateGCalEventApi } from "../../lib/googleApi";
+import { createGCalEvent as createGCalEventApi, updateGCalEvent as updateGCalEventApi, refreshEmpGoogleToken } from "../../lib/googleApi";
 import { usePersistent } from "../../hooks/usePersistent";
 import { usePersistentRaw } from "../../hooks/usePersistentRaw";
 import { supabase } from "../../lib/supabase";
@@ -298,7 +298,12 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
     const crew = job.crew || [];
     const adding = !crew.includes(eid);
     const newCrew = adding ? [...crew, eid] : crew.filter(x => x !== eid);
-    updateJob(jobId, { crew: newCrew });
+    // crewAssignedAt records when each employee was added, so the portal's
+    // Today tab can show a "New Assignment" banner for anything assigned
+    // recently — this doubles as the durable assignment record itself.
+    const patch: any = { crew: newCrew };
+    if (adding) patch.crewAssignedAt = { ...(job.crewAssignedAt || {}), [eid]: Date.now() };
+    updateJob(jobId, patch);
     if (adding) {
       const emp = employees.find(e => e.id === eid);
       if (emp?.email) {
@@ -321,20 +326,33 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
     buildSubject: (emp: any) => string,
     buildHtml: (emp: any) => string
   ): Promise<number> => {
-    let sent = 0;
-    for (const emp of emps) {
-      if (!emp.email) continue;
+    // Lookups run in parallel (not one-at-a-time) so a single slow row never
+    // delays everyone else's notification, and the timeout is short (5s, was
+    // 8s) so the owner-channel fallback kicks in fast instead of stalling.
+    const results = await Promise.allSettled(emps.filter(e => e.email).map(async emp => {
       const subj = buildSubject(emp);
       const html = buildHtml(emp);
       let viaEmpGmail = false;
       try {
         const { data: empRow } = await withTimeout<any>(
-          (supabase as any).from("employees").select("google_token, google_token_expires_at, google_email").eq("id", emp.id).maybeSingle(),
-          8000, "Employee lookup"
+          (supabase as any).from("employees").select("google_token, google_token_expires_at, google_refresh_token, google_email").eq("id", emp.id).maybeSingle(),
+          5000, "Employee lookup"
         );
-        const tok = empRow?.google_token;
+        let tok = empRow?.google_token;
         const validTok = tok && empRow?.google_token_expires_at && new Date(empRow.google_token_expires_at).getTime() > Date.now();
-        if (validTok) {
+        if (tok && !validTok && empRow?.google_refresh_token && settings?.googleBackendUrl) {
+          // Employee's token is expired — this needs THEIR refresh_token, not
+          // the owner's session, so the owner-side supabase.auth.refreshSession()
+          // retry inside sendViaGmail would refresh the wrong account's token.
+          const refreshed = await refreshEmpGoogleToken(settings.googleBackendUrl, empRow.google_refresh_token);
+          if (refreshed) {
+            tok = refreshed.token;
+            (supabase as any).from("employees").update({ google_token: refreshed.token, google_token_expires_at: new Date(refreshed.expiresAt).toISOString() }).eq("id", emp.id).catch(() => {});
+          } else tok = null;
+        } else if (!validTok) {
+          tok = null;
+        }
+        if (tok) {
           await withTimeout(sendViaGmail(tok, empRow.google_email || emp.email, emp.email, subj, html), 10000, "Gmail send");
           viaEmpGmail = true;
         }
@@ -342,16 +360,11 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
         console.warn("Employee Gmail send failed — falling back to owner channel:", err);
       }
       if (!viaEmpGmail) {
-        try {
-          await withTimeout(sendEmail(settings, { to: emp.email, subject: subj, body: html }), 10000, "Email send");
-        } catch (err) {
-          console.warn("Fallback email send failed:", err);
-          continue;
-        }
+        await withTimeout(sendEmail(settings, { to: emp.email, subject: subj, body: html }), 10000, "Email send");
       }
-      sent++;
-    }
-    return sent;
+      return true;
+    }));
+    return results.filter(r => r.status === "fulfilled").length;
   };
   notifyEmployeesRef.current = notifyEmployees;
 
@@ -505,12 +518,21 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
       if (job.scheduledDate) {
         try {
           const { data: empRow } = await withTimeout<any>(
-            (supabase as any).from("employees").select("google_token, google_token_expires_at, autoSyncCalendar").eq("id", emp.id).maybeSingle(),
-            8000, "Employee lookup"
+            (supabase as any).from("employees").select("google_token, google_token_expires_at, google_refresh_token, autoSyncCalendar").eq("id", emp.id).maybeSingle(),
+            5000, "Employee lookup"
           );
-          const tok = empRow?.google_token;
+          let tok = empRow?.google_token;
           const validTok = tok && empRow?.google_token_expires_at && new Date(empRow.google_token_expires_at).getTime() > Date.now();
-          if (validTok && empRow?.autoSyncCalendar !== false) {
+          if (tok && !validTok && empRow?.google_refresh_token && settings?.googleBackendUrl) {
+            const refreshed = await refreshEmpGoogleToken(settings.googleBackendUrl, empRow.google_refresh_token);
+            if (refreshed) {
+              tok = refreshed.token;
+              (supabase as any).from("employees").update({ google_token: refreshed.token, google_token_expires_at: new Date(refreshed.expiresAt).toISOString() }).eq("id", emp.id).catch(() => {});
+            } else tok = null;
+          } else if (!validTok) {
+            tok = null;
+          }
+          if (tok && empRow?.autoSyncCalendar !== false) {
             const timeStr = job.scheduledTime || "09:00";
             const startDt = new Date(`${job.scheduledDate}T${timeStr}:00`);
             const endDt = new Date(startDt.getTime() + (Number(job.duration) || 2) * 3600000);

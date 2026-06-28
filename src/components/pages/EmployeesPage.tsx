@@ -477,17 +477,29 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setting
           <div><label className="text-xs text-white/60 mb-1 block">Emergency Contact</label><GInput value={f.emergencyContact} onChange={e => setF({ ...f, emergencyContact: e.target.value })} placeholder="Name — (717) 555-0000" /></div>
           <div><label className="text-xs text-white/60 mb-1 block">Notes</label><GTxt rows={2} value={f.notes} onChange={e => setF({ ...f, notes: e.target.value })} /></div>
 
-          {/* Pay — real hours pulled from this employee's completed jobs, split
-              into what's already been marked paid vs still pending. */}
+          {/* Pay — real hours pulled from this employee's completed jobs,
+              broken into individually-markable 14-day pay periods. A period
+              defaults to "unpaid" until the owner explicitly marks it paid;
+              paidPeriods is keyed by the period's start date. */}
           {f.id && (() => {
             const empJobs = jobs.filter((j: any) => (j.crew || []).includes(f.id) && j.status === "completed" && Number(j.loggedHours) > 0);
-            const lastPaidThrough = f.lastPaidThrough || "";
-            const paidJobs = lastPaidThrough ? empJobs.filter((j: any) => j.scheduledDate <= lastPaidThrough) : [];
-            const pendingJobs = lastPaidThrough ? empJobs.filter((j: any) => j.scheduledDate > lastPaidThrough) : empJobs;
-            const paidHours = paidJobs.reduce((s: number, j: any) => s + Number(j.loggedHours || 0), 0);
-            const pendingHours = pendingJobs.reduce((s: number, j: any) => s + Number(j.loggedHours || 0), 0);
-            const totalPaid = Math.round(paidHours * (Number(f.hourlyRate) || 0) * 100) / 100;
-            const pendingPay = Math.round(pendingHours * (Number(f.hourlyRate) || 0) * 100) / 100;
+            const paidPeriods: Record<string, "paid" | "unpaid"> = f.paidPeriods || {};
+            const now = new Date();
+            const periods = Array.from({ length: 6 }, (_, i) => {
+              const end = new Date(now); end.setDate(end.getDate() - i * 14);
+              const start = new Date(end); start.setDate(start.getDate() - 13);
+              const s = start.toISOString().slice(0, 10);
+              const e = end.toISOString().slice(0, 10);
+              const pJobs = empJobs.filter((j: any) => j.scheduledDate >= s && j.scheduledDate <= e);
+              const hrs = Math.round(pJobs.reduce((acc: number, j: any) => acc + Number(j.loggedHours || 0), 0) * 10) / 10;
+              return { start: s, end: e, label: i === 0 ? "Current" : `${start.toLocaleDateString("en-US", { month: "short", day: "numeric" })} – ${end.toLocaleDateString("en-US", { month: "short", day: "numeric" })}`, hours: hrs, pay: Math.round(hrs * (Number(f.hourlyRate) || 0) * 100) / 100, status: paidPeriods[s] || "unpaid" };
+            }).filter(p => p.hours > 0);
+            const totalPaid = periods.filter(p => p.status === "paid").reduce((s, p) => s + p.pay, 0);
+            const pendingPay = periods.filter(p => p.status === "unpaid").reduce((s, p) => s + p.pay, 0);
+            const togglePeriod = (start: string) => {
+              const next = { ...paidPeriods, [start]: paidPeriods[start] === "paid" ? "unpaid" as const : "paid" as const };
+              setF((p: any) => ({ ...p, paidPeriods: next }));
+            };
             return (
               <div className="border border-white/10 rounded-xl p-3 space-y-2">
                 <div className="text-xs font-semibold text-white/70 flex items-center gap-1.5 mb-1"><DollarSign size={12} />Pay</div>
@@ -501,10 +513,21 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setting
                     <div className="text-lg font-black text-yellow-400">{fmt(pendingPay)}</div>
                   </div>
                 </div>
-                <div className="flex items-center justify-between gap-2 pt-1">
-                  <div className="text-[10px] text-white/40">{lastPaidThrough ? `Paid through ${lastPaidThrough}` : "Never marked paid"}</div>
-                  <GBtn variant="ghost" onClick={() => setF((p: any) => ({ ...p, lastPaidThrough: today() }))} className="!text-xs !py-1">Mark Paid Through Today</GBtn>
-                </div>
+                {periods.length > 0 && (
+                  <div className="space-y-1.5 pt-1">
+                    {periods.map(p => (
+                      <div key={p.start} className="flex items-center justify-between gap-2 px-2.5 py-2 rounded-lg bg-black/30 border border-white/5">
+                        <div className="min-w-0">
+                          <div className="text-xs text-white/70">{p.label}</div>
+                          <div className="text-[10px] text-white/40">{p.hours}h · {fmt(p.pay)}</div>
+                        </div>
+                        <button onClick={() => togglePeriod(p.start)} className={"text-[10px] font-bold px-2.5 py-1 rounded-full flex-shrink-0 transition " + (p.status === "paid" ? "bg-green-700 text-white" : "bg-yellow-950/40 border border-yellow-700/40 text-yellow-300 hover:bg-yellow-900/40")}>
+                          {p.status === "paid" ? "✓ Paid" : "Mark Paid"}
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             );
           })()}

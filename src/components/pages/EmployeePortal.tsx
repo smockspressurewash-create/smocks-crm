@@ -3,7 +3,7 @@ import {
   Clock, Briefcase, Calendar, ChevronLeft, CheckSquare, Camera,
   LogOut, MapPin, Phone, User, Play, Square, Plus, X, Eye, DollarSign,
   ChevronRight, Home, List, CheckCircle, AlertCircle, Image, FileText,
-  Video, PenLine, Shield, Navigation, Database, Route, ToggleRight, ToggleLeft, Download
+  Video, PenLine, Shield, Navigation, Database, Route, ToggleRight, ToggleLeft, Download, Bell
 } from "lucide-react";
 import { supabase } from "../../lib/supabase";
 import { getEmpGoogleToken, isEmpGoogleTokenValid, saveEmpGoogleToken, refreshEmpGoogleToken, getValidEmpGoogleToken, createGCalEvent, updateGCalEvent } from "../../lib/googleApi";
@@ -2143,6 +2143,8 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   const [homeBaseAddress, setHomeBaseAddressState] = useState("");
   const [, setGoogleHydrateTick] = useState(0);
   const [showCanceledJobs, setShowCanceledJobs] = useState(false);
+  const [pastCollapsed, setPastCollapsed] = useState(true);
+  const [upcomingCollapsed, setUpcomingCollapsed] = useState(false);
   const saveHomeBaseAddress = async (addr: string) => {
     setHomeBaseAddressState(addr);
     try {
@@ -2690,6 +2692,13 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     return `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${title}&dates=${d}/${e}&location=${loc}&details=${notes}`;
   };
 
+  const notifyOwnerArrival = (job: Job, cust: Customer | undefined) => {
+    const ownerEmail = (settings as any)?.myEmail || (settings as any)?.companyEmail;
+    if (!ownerEmail) return;
+    const html = emailShell(settings?.companyName || "Smock's Pressure Washing", "Crew Arrived", `<p>${myEmployee.firstName} ${myEmployee.lastName} has arrived at a job:</p><ul><li><b>Address:</b> ${job.address}</li>${cust ? `<li><b>Customer:</b> ${cust.firstName} ${cust.lastName}</li>` : ""}<li><b>Time:</b> ${new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</li></ul>`);
+    sendEmail(settings, { to: ownerEmail, subject: `${myEmployee.firstName} arrived — ${job.address}`, body: html }).catch(() => {});
+  };
+
   const JobCard = ({ job }: { job: Job }) => {
     const customer = customers.find(c => c.id === job.customerId);
     const preItems = job.preChecklist?.length ? job.preChecklist : PRE_DEFAULTS;
@@ -2709,6 +2718,24 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
       const hrs = Math.round((Date.now() - job.clockInAt - lunchMs) / 36000) / 100;
       updateJob(job.id, { clockInAt: null, lunchStartAt: null, loggedHours: Math.round(((Number(job.loggedHours) || 0) + hrs) * 100) / 100 });
       toast(`+${hrs}h logged`);
+    };
+    const takeLunchCard = (e: React.MouseEvent) => {
+      e.stopPropagation();
+      if (job.lunchStartAt) {
+        const mins = Math.round((Date.now() - job.lunchStartAt) / 60000);
+        updateJob(job.id, { lunchStartAt: null, lunchMinutes: (Number(job.lunchMinutes) || 0) + mins });
+        toast(`Back from break — +${mins}m logged`);
+      } else {
+        updateJob(job.id, { lunchStartAt: Date.now() });
+        toast("Break started 🍽️");
+      }
+    };
+    const arriveCard = (e: React.MouseEvent) => {
+      e.stopPropagation();
+      updateJob(job.id, { arrivedAt: Date.now() });
+      toast("Marked as arrived ✓ — owner notified");
+      const cust = customers.find(c => c.id === job.customerId);
+      notifyOwnerArrival?.(job, cust);
     };
 
     const lunchMsCard = settings.paidLunchBreaks ? 0 : (job.lunchMinutes || 0) * 60000;
@@ -2738,7 +2765,16 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
           <div className="flex items-start justify-between gap-2 mb-1.5">
             <div className="flex-1 min-w-0">
               <div className="font-semibold text-sm truncate">{job.address}</div>
-              {customer && <div className="text-xs text-white/50">{customer.firstName} {customer.lastName}</div>}
+              {customer && (
+                <div className="text-xs text-white/50 flex items-center gap-2 flex-wrap">
+                  <span>{customer.firstName} {customer.lastName}</span>
+                  {customer.phone && (
+                    <a href={`tel:${customer.phone}`} onClick={(e: React.MouseEvent) => e.stopPropagation()} className="text-blue-400/80 hover:text-blue-300 flex items-center gap-0.5">
+                      <Phone size={9} />{customer.phone}
+                    </a>
+                  )}
+                </div>
+              )}
             </div>
             <div className={"text-[10px] px-2 py-0.5 rounded-full font-bold uppercase flex-shrink-0 " +
               (job.status === "completed" ? "bg-green-900/40 text-green-300" :
@@ -2773,10 +2809,27 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
           {driveTimes[job.id] && (
             <span className="text-[10px] text-white/40 flex-shrink-0">🚗 ~{driveTimes[job.id]}</span>
           )}
+          {!job.arrivedAt && job.status !== "completed" && (
+            <button onClick={arriveCard}
+              className="flex items-center gap-1 px-2.5 py-1.5 rounded-xl bg-blue-950/40 hover:bg-blue-900/50 border border-blue-700/40 text-blue-300 text-[10px] font-semibold transition flex-shrink-0">
+              <MapPin size={10} />I've Arrived
+            </button>
+          )}
           <div className="flex-1" />
           {perms.can_clock_in ? (
             job.clockInAt ? (
               <>
+                {job.lunchStartAt ? (
+                  <button onClick={takeLunchCard}
+                    className="flex items-center gap-1 px-2.5 py-1.5 rounded-xl bg-yellow-700 hover:bg-yellow-600 text-black text-[10px] font-bold transition">
+                    🍽️ End Break
+                  </button>
+                ) : (
+                  <button onClick={takeLunchCard}
+                    className="flex items-center gap-1 px-2.5 py-1.5 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-white/50 text-[10px] font-semibold transition">
+                    🍽️ Lunch
+                  </button>
+                )}
                 <div className="font-mono text-sm font-bold text-green-400 animate-pulse">{timerDisplay}</div>
                 <button onClick={clockOutCard}
                   className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-red-950/50 hover:bg-red-900/60 border border-red-700/40 text-red-300 text-xs font-semibold transition">
@@ -2924,6 +2977,66 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                 {new Date().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" })}
               </div>
             </div>
+
+            {/* Start My Day — overall work-hours clock, separate from clocking
+                into an individual job (job clock-in/out tracks time per stop;
+                this tracks the whole shift). */}
+            {(() => {
+              const dayClockInAt = (myEmployee as any)?.dayClockInAt;
+              const empId = (myEmployee as any)?.id;
+              const toggleDay = async () => {
+                if (!empId) return;
+                const patch = dayClockInAt ? { dayClockInAt: null } : { dayClockInAt: Date.now() };
+                try {
+                  await (supabase as any).from("employees").update(patch).eq("id", empId);
+                  refetchEmployees?.();
+                  toast(dayClockInAt ? "Day ended ✓" : "Day started — have a great shift!");
+                } catch { toast("Failed to save — try again", "red"); }
+              };
+              return (
+                <button onClick={toggleDay} className={"w-full flex items-center justify-center gap-2 py-3 rounded-2xl font-bold text-sm transition active:scale-95 " + (dayClockInAt ? "bg-green-900/40 border-2 border-green-500/60 text-green-300" : "bg-red-700/40 border-2 border-red-500/60 text-white hover:bg-red-700/60")}>
+                  <Clock size={16} />
+                  {dayClockInAt ? `On the clock since ${new Date(dayClockInAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })} · Tap to End My Day` : "Start My Day"}
+                </button>
+              );
+            })()}
+
+            {/* New Assignment banner — recently crew-assigned jobs the
+                employee hasn't acknowledged yet. */}
+            {(() => {
+              const empId = (myEmployee as any)?.id;
+              if (!empId) return null;
+              let dismissed: string[] = [];
+              try { dismissed = JSON.parse(localStorage.getItem("smocks.dismissedAssignments") || "[]"); } catch { /* ignore */ }
+              const newAssignments = myJobs.filter(j => {
+                const at = j.crewAssignedAt?.[empId];
+                return at && Date.now() - at < 24 * 3600000 && !dismissed.includes(`${j.id}:${at}`);
+              });
+              if (newAssignments.length === 0) return null;
+              const dismiss = (j: Job) => {
+                const key = `${j.id}:${j.crewAssignedAt?.[empId]}`;
+                const next = [...dismissed, key];
+                try { localStorage.setItem("smocks.dismissedAssignments", JSON.stringify(next)); } catch { /* ignore */ }
+                setCardTick(t => t + 1);
+              };
+              return (
+                <div className="space-y-2">
+                  {newAssignments.map(j => {
+                    const cust = customers.find(c => c.id === j.customerId);
+                    return (
+                      <div key={j.id} className="flex items-center gap-3 p-3 rounded-2xl bg-blue-950/30 border border-blue-600/40">
+                        <div className="w-8 h-8 rounded-full bg-blue-600/30 flex items-center justify-center flex-shrink-0"><Bell size={14} className="text-blue-300" /></div>
+                        <div className="flex-1 min-w-0">
+                          <div className="text-xs font-bold text-blue-200">New Assignment</div>
+                          <div className="text-xs text-white/60 truncate">{j.scheduledDate}{j.scheduledTime ? ` · ${j.scheduledTime}` : ""} — {cust ? `${cust.firstName} ${cust.lastName}` : j.address}</div>
+                        </div>
+                        <button onClick={() => dismiss(j)} className="text-[10px] px-2.5 py-1.5 rounded-lg bg-white/10 text-white/60 hover:text-white flex-shrink-0">Got it</button>
+                      </div>
+                    );
+                  })}
+                </div>
+              );
+            })()}
 
             {/* Weekly overview mini-calendar */}
             <div className="flex items-center justify-between gap-1.5">
@@ -3446,15 +3559,22 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
             const upcomingGrp = visibleJobs.filter(j => !j.clockInAt && j.scheduledDate > jwEnd);
             const earlierGrp = visibleJobs.filter(j => !j.clockInAt && j.scheduledDate < todayStr);
 
-            const Group = ({ label, jobs: grpJobs }: { label: string; jobs: typeof myJobs }) => grpJobs.length === 0 ? null : (
-              <div>
-                <div className="text-xs text-white/40 uppercase tracking-widest font-bold mb-2 flex items-center gap-2">
-                  <span>{label}</span>
-                  <span className="px-1.5 py-0.5 rounded-full bg-white/10 text-white/50 font-normal">{grpJobs.length}</span>
+            const Group = ({ label, jobs: grpJobs, collapsed, onToggle }: { label: string; jobs: typeof myJobs; collapsed?: boolean; onToggle?: () => void }) => {
+              if (grpJobs.length === 0) return null;
+              return (
+                <div>
+                  <button
+                    onClick={onToggle}
+                    className={"w-full text-xs text-white/40 uppercase tracking-widest font-bold mb-2 flex items-center gap-2 " + (onToggle ? "cursor-pointer hover:text-white/60" : "")}
+                  >
+                    <span>{label}</span>
+                    <span className="px-1.5 py-0.5 rounded-full bg-white/10 text-white/50 font-normal">{grpJobs.length}</span>
+                    {onToggle && <ChevronRight size={12} className={"transition-transform " + (collapsed ? "" : "rotate-90")} />}
+                  </button>
+                  {!collapsed && <div className="space-y-2">{grpJobs.map(j => <JobCard key={j.id} job={j} />)}</div>}
                 </div>
-                <div className="space-y-2">{grpJobs.map(j => <JobCard key={j.id} job={j} />)}</div>
-              </div>
-            );
+              );
+            };
 
             return (
               <div className="space-y-5">
@@ -3475,8 +3595,8 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                     <Group label="Active" jobs={activeGrp} />
                     <Group label="Today" jobs={todayGrp} />
                     <Group label="This Week" jobs={weekGrp.sort((a, b) => a.scheduledDate.localeCompare(b.scheduledDate))} />
-                    <Group label="Upcoming" jobs={upcomingGrp.sort((a, b) => a.scheduledDate.localeCompare(b.scheduledDate))} />
-                    <Group label="Past" jobs={earlierGrp.sort((a, b) => b.scheduledDate.localeCompare(a.scheduledDate))} />
+                    <Group label="Upcoming" jobs={upcomingGrp.sort((a, b) => a.scheduledDate.localeCompare(b.scheduledDate))} collapsed={upcomingCollapsed} onToggle={() => setUpcomingCollapsed(c => !c)} />
+                    <Group label="Past" jobs={earlierGrp.sort((a, b) => b.scheduledDate.localeCompare(a.scheduledDate))} collapsed={pastCollapsed} onToggle={() => setPastCollapsed(c => !c)} />
                   </>
                 )}
               </div>
@@ -3509,23 +3629,15 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
             const TAX_RATE = 0.20;
             const takeHome = Math.round(current.pay * (1 - TAX_RATE) * 100) / 100;
 
-            // Outstanding balance — without a connected payroll system there's no
-            // real "paid" flag, so the current (still-open) pay period is treated
-            // as pending/owed by default. If the owner has recorded a "paid
-            // through" date on this employee's record, anything logged after
-            // that date counts as outstanding too, even across closed periods.
-            const lastPaidThrough = (myEmployee as any)?.lastPaidThrough || "";
-            const completedJobs = myJobs.filter(j => j.status === "completed" && Number(j.loggedHours) > 0);
-            const paidJobs = lastPaidThrough ? completedJobs.filter(j => j.scheduledDate <= lastPaidThrough) : [];
-            const unpaidJobs = lastPaidThrough ? myJobs.filter(j => j.scheduledDate > lastPaidThrough) : current.jobs ? myJobs.filter(j => j.scheduledDate >= current.start) : [];
-            const pendingHours = lastPaidThrough
-              ? Math.round(unpaidJobs.reduce((s, j) => s + Number(j.loggedHours || 0), 0) * 10) / 10
-              : current.hours;
-            const pendingPay = lastPaidThrough
-              ? Math.round(pendingHours * (myEmployee?.hourlyRate || 0) * 100) / 100
-              : current.pay;
-            const totalPaidHours = Math.round(paidJobs.reduce((s, j) => s + Number(j.loggedHours || 0), 0) * 10) / 10;
-            const totalPaid = Math.round(totalPaidHours * (myEmployee?.hourlyRate || 0) * 100) / 100;
+            // Outstanding balance — the owner marks individual 14-day pay
+            // periods as paid/unpaid (Employees → Pay), keyed by each
+            // period's start date in paidPeriods. Anything not explicitly
+            // marked paid counts as pending.
+            const paidPeriodsMap: Record<string, "paid" | "unpaid"> = (myEmployee as any)?.paidPeriods || {};
+            const periodsWithStatus = periods.filter(p => p.pay > 0).map(p => ({ ...p, status: paidPeriodsMap[p.start] || "unpaid" }));
+            const totalPaid = Math.round(periodsWithStatus.filter(p => p.status === "paid").reduce((s, p) => s + p.pay, 0) * 100) / 100;
+            const pendingPay = Math.round(periodsWithStatus.filter(p => p.status === "unpaid").reduce((s, p) => s + p.pay, 0) * 100) / 100;
+            const pendingHours = Math.round(periodsWithStatus.filter(p => p.status === "unpaid").reduce((s, p) => s + p.hours, 0) * 10) / 10;
 
             // Year-to-date + prior-year earnings, bucketed by the calendar year
             // each job's logged hours fall in — same hrs × rate math as the pay
@@ -3631,13 +3743,21 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                     <div className="p-3 rounded-xl bg-yellow-950/20 border border-yellow-700/30">
                       <div className="text-[10px] text-yellow-400/70 uppercase">Pending Pay</div>
                       <div className="text-xl font-black text-yellow-400">{fmt(pendingPay)}</div>
-                      <div className="text-[10px] text-white/30 mt-0.5">{pendingHours}h not yet in a closed period</div>
+                      <div className="text-[10px] text-white/30 mt-0.5">{pendingHours}h across unpaid periods</div>
                     </div>
                     <div className="p-3 rounded-xl bg-green-950/20 border border-green-700/30">
                       <div className="text-[10px] text-green-400/70 uppercase">Total Paid</div>
                       <div className="text-xl font-black text-green-400">{fmt(totalPaid)}</div>
-                      <div className="text-[10px] text-white/30 mt-0.5">{lastPaidThrough ? `${totalPaidHours}h through ${lastPaidThrough}` : "Not marked paid yet"}</div>
+                      <div className="text-[10px] text-white/30 mt-0.5">{periodsWithStatus.some(p => p.status === "paid") ? `${periodsWithStatus.filter(p => p.status === "paid").length} period${periodsWithStatus.filter(p => p.status === "paid").length !== 1 ? "s" : ""} marked paid` : "Not marked paid yet"}</div>
                     </div>
+                  </div>
+                  <div className="space-y-1.5 mb-3">
+                    {periodsWithStatus.map(p => (
+                      <div key={p.start} className="flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg bg-white/5">
+                        <span className="text-[10px] text-white/50">{p.label}</span>
+                        <span className={"text-[10px] font-bold px-2 py-0.5 rounded-full " + (p.status === "paid" ? "bg-green-900/40 text-green-300" : "bg-yellow-900/30 text-yellow-300")}>{p.status === "paid" ? "Paid" : "Unpaid"}</span>
+                      </div>
+                    ))}
                   </div>
                   {lastClosed && lastClosed.pay > 0 && (
                     <div className="flex items-center justify-between p-2.5 rounded-xl bg-white/5 border border-white/10">

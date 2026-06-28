@@ -42,12 +42,17 @@ import { PBar } from "./PBar";
 import { PageFade } from "./PageFade";
 import { TimeframeSelector } from "./TimeframeSelector";
 
-// Records a voice note and transcribes it: Whisper API when an OpenAI key is
-// configured (more accurate, works on any browser), otherwise falls back to
-// the browser's built-in SpeechRecognition (works without any key, but only
-// in Chromium-based browsers). Either way, the transcript is handed to
-// onTranscript — no API key is required for this button to function at all.
-export function VoiceMicButton({ onTranscript, apiKey }: { onTranscript?: any; apiKey?: any }) {
+// Records and transcribes voice input — Whisper API when an OpenAI key is
+// configured (more accurate, works on any browser), otherwise the browser's
+// built-in SpeechRecognition (no key needed, Chromium-based browsers only).
+//
+// Two modes, click to start/stop (no more hold-and-release-to-send, which
+// made it impossible to fix a misheard word before it went out):
+// - "dictate" (STT): transcript lands in the input box for the user to read,
+//   edit, and send themselves via onTranscript(text, false).
+// - "note": transcript is sent immediately via onTranscript(text, true) once
+//   the recording is stopped — the voice note IS the message.
+export function VoiceMicButton({ onTranscript, apiKey, mode = "dictate" }: { onTranscript?: (text: string, autoSend: boolean) => void; apiKey?: any; mode?: "dictate" | "note" }) {
   const [recording, setRecording] = useState(false);
   const [processing, setProcessing] = useState(false);
   const mediaRef = useRef(null);
@@ -55,6 +60,7 @@ export function VoiceMicButton({ onTranscript, apiKey }: { onTranscript?: any; a
   const recognitionRef = useRef<any>(null);
 
   const SpeechRecognitionCtor = typeof window !== "undefined" ? ((window as any).SpeechRecognition || (window as any).webkitSpeechRecognition) : null;
+  const autoSend = mode === "note";
 
   const startWhisperRecording = async () => {
     try {
@@ -77,7 +83,7 @@ export function VoiceMicButton({ onTranscript, apiKey }: { onTranscript?: any; a
             body: fd
           });
           const data = await res.json();
-          if (data.text) onTranscript(data.text.trim());
+          if (data.text) onTranscript?.(data.text.trim(), autoSend);
           else if (data.error) console.warn("Whisper transcription failed:", data.error);
         } catch (e) {
           console.error("Whisper error:", e);
@@ -101,7 +107,7 @@ export function VoiceMicButton({ onTranscript, apiKey }: { onTranscript?: any; a
     rec.maxAlternatives = 1;
     rec.onresult = (e: any) => {
       const text = e.results?.[0]?.[0]?.transcript;
-      if (text) onTranscript(text.trim());
+      if (text) onTranscript?.(text.trim(), autoSend);
     };
     rec.onerror = () => { /* user cancelled or no speech — nothing to report */ };
     rec.onend = () => setRecording(false);
@@ -110,22 +116,22 @@ export function VoiceMicButton({ onTranscript, apiKey }: { onTranscript?: any; a
     setRecording(true);
   };
 
-  const startRecording = () => { apiKey ? startWhisperRecording() : startBrowserRecognition(); };
-  const stopRecording = () => {
-    if (apiKey) mediaRef.current?.stop();
-    else recognitionRef.current?.stop();
-    setRecording(false);
+  const toggleRecording = () => {
+    if (recording) {
+      if (apiKey) mediaRef.current?.stop();
+      else recognitionRef.current?.stop();
+      setRecording(false);
+    } else {
+      apiKey ? startWhisperRecording() : startBrowserRecognition();
+    }
   };
 
   if (processing) return <div className="p-2 text-white/40"><div className="w-4 h-4 border-2 border-purple-400 border-t-transparent rounded-full animate-spin" /></div>;
 
   return (
     <button
-      onMouseDown={startRecording}
-      onMouseUp={stopRecording}
-      onTouchStart={startRecording}
-      onTouchEnd={stopRecording}
-      title={apiKey ? "Hold to record voice message (Whisper)" : "Hold to record voice message (browser speech recognition)"}
+      onClick={toggleRecording}
+      title={recording ? "Click to stop recording" : mode === "note" ? "Record a voice note — sends automatically when stopped" : "Dictate — transcript lands in the text box to review before sending"}
       className={"p-2 rounded-xl transition flex-shrink-0 " + (recording ? "bg-red-600/40 text-red-300 animate-pulse" : "text-white/40 hover:text-white/70 hover:bg-white/5")}
     >
       <Mic size={16} />

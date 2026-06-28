@@ -80,6 +80,7 @@ import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 
 export function AlfredPage({ conversations, setConversations, activeConvId, setActiveConvId, memory = [], setMemory, personality, setPersonality, apiKey, openSettings, toast, jobs = [], setJobs, estimates = [], setEstimates, customers = [], setCustomers, employees = [], automations = [], setAutomations = () => {}, stats, setWins, goals = [], setGoals, setSettings, settings = {} as AppSettings, modelStatus = {}, setModelStatus = () => {}, onNav, expenses = [], entries = [] }: { conversations?: any; setConversations?: any; activeConvId?: any; setActiveConvId?: any; memory?: any; setMemory?: any; personality?: any; setPersonality?: any; apiKey?: any; openSettings?: any; toast?: any; jobs?: any; setJobs?: any; estimates?: any; setEstimates?: any; customers?: any; setCustomers?: any; employees?: any; automations?: any; setAutomations?: any; stats?: any; setWins?: any; goals?: any; setGoals?: any; setSettings?: any; settings?: AppSettings; modelStatus?: any; setModelStatus?: any; onNav?: any; expenses?: any[]; entries?: any[] }) {
   const [input, setInput] = useState("");
+  const [voiceMode, setVoiceMode] = useState<"dictate" | "note">("dictate");
   const [loading, setLoading] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [memoryOpen, setMemoryOpen] = useState(false);
@@ -736,6 +737,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           const newC = { id: uid(), firstName: inputs.firstName, lastName: inputs.lastName, email: inputs.email || "", phone: inputs.phone || "", address: inputs.address || "", totalSpent: 0, createdAt: today(), notes: inputs.notes || "", gateCode: "", hasDog: false, dogName: "", sensitivePlants: "" };
           setCustomers(prev => [...prev, newC]);
           toast("Alfred created customer: " + newC.firstName + " " + newC.lastName);
+          setTimeout(() => onNav("customers"), 1200);
           return { success: true, customer: newC };
         }
         case "create_estimate": {
@@ -753,6 +755,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           const newE = { id: uid(), customerId: c.id, lineItems: items, subtotal, discount: 0, depositRequired: 0, tax, total, status: "pending", createdAt: today(), validUntil: daysFromNow(30), viewed: false, viewedAt: null, terms: "Payment due upon completion.", notes: inputs.notes || "" };
           setEstimates(prev => [...prev, newE]);
           toast("Alfred created estimate #" + newE.id.toUpperCase() + " · " + fmt(total));
+          setTimeout(() => onNav("estimates"), 1200);
           return { success: true, estimateId: newE.id, total, customer: c.firstName + " " + c.lastName };
         }
         case "schedule_job": {
@@ -766,6 +769,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           const newJ = { id: uid(), customerId: c.id, scheduledDate: inputs.date || daysFromNow(3), status: "scheduled", pipelineStage: "scheduled", address: c.address, amount: inputs.amount || 0, photos: [], checklist: (inputs.checklist || ["Confirm water access"]).map(t => ({ label: t, done: false })), isRecurring: false, recurringFreq: "monthly", cancelReason: "", noShow: false, crew: [], duration: inputs.duration || 2, internalNotes: inputs.notes || "", chemicalsUsed: [], equipment: [], commLog: [], priority: inputs.priority || "normal", tags: inputs.tags || [], loggedHours: 0, clockInAt: null, attachments: [] };
           setJobs(prev => [...prev, newJ]);
           toast("Alfred scheduled job for " + c.firstName + " on " + newJ.scheduledDate);
+          setTimeout(() => onNav("jobs"), 1200);
           return { success: true, jobId: newJ.id, date: newJ.scheduledDate, customer: c.firstName + " " + c.lastName };
         }
         case "update_job_priority": {
@@ -1282,7 +1286,8 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
             // last in chain and not rate-limit — bubble up so outer catch shows a red error bubble
             throw err;
           } else {
-            toast((MODELS_MAP[mid]?.name || mid) + " failed — trying next", "error");
+            const overloaded = (err as any)?.status === 503 || /overloaded|503/i.test(err.message || "");
+            toast((MODELS_MAP[mid]?.name || mid) + (overloaded ? " overloaded — auto-switching to next model" : " failed — trying next"), "error");
           }
           // continue to next model
         }
@@ -1715,10 +1720,22 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
                 }} />
                 <Paperclip size={16} />
               </label>
-              {/* Voice notes — Whisper if an OpenAI key is set, browser
-                  SpeechRecognition otherwise; either way works with no key
-                  required. Sends straight to Alfred once transcribed. */}
-              <VoiceMicButton onTranscript={text => send(text)} apiKey={settings?.openAiKey || settings?.openaiKey || ""} />
+              {/* Voice input — two modes: "dictate" lands the transcript in
+                  the text box to review/edit before sending, "note" sends
+                  automatically once the recording stops. Click the small
+                  label to switch modes; click the mic to start/stop. */}
+              <button
+                onClick={() => setVoiceMode(m => m === "dictate" ? "note" : "dictate")}
+                title="Switch voice input mode"
+                className="text-[9px] px-1.5 py-2 text-white/30 hover:text-white/60 transition flex-shrink-0 uppercase tracking-wide"
+              >
+                {voiceMode === "dictate" ? "STT" : "Note"}
+              </button>
+              <VoiceMicButton
+                mode={voiceMode}
+                onTranscript={(text, autoSend) => { if (autoSend) send(text); else setInput(prev => prev + (prev ? " " : "") + text); }}
+                apiKey={settings?.openAiKey || settings?.openaiKey || ""}
+              />
               <textarea
                 ref={inputRef}
                 rows={1}

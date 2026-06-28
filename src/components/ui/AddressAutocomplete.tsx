@@ -14,7 +14,7 @@ export function loadMapsScript(key: string): Promise<void> {
     if (_loading) return;
     _loading = true;
     const s = document.createElement("script");
-    s.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(key)}&libraries=places`;
+    s.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(key)}&libraries=places&loading=async`;
     s.async = true;
     s.onload = () => { _ready = true; _queue.forEach(cb => cb()); _queue.length = 0; };
     s.onerror = () => { _loading = false; _queue.forEach(cb => cb()); _queue.length = 0; };
@@ -63,34 +63,49 @@ export function AddressAutocomplete({
   const [suggestions, setSuggestions] = useState<string[]>([]);
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
-  const svcRef = useRef<any>(null);
+  // New Places API: AutocompleteService is retired for new Cloud projects in
+  // favor of AutocompleteSuggestion (static, Promise-based). It lives in the
+  // "places" library loaded via google.maps.importLibrary, which is present
+  // on the global `google.maps` namespace once the base bootstrap script has
+  // loaded — no separate script URL change needed beyond loading=async above.
+  const placesLibRef = useRef<any>(null);
+  const sessionTokenRef = useRef<any>(null);
   const timer = useRef<any>(null);
 
   useEffect(() => {
     if (!mapsKey) return;
-    loadMapsScript(mapsKey).then(() => {
+    loadMapsScript(mapsKey).then(async () => {
       const g = (window as any).google;
-      if (g?.maps?.places?.AutocompleteService) {
-        svcRef.current = new g.maps.places.AutocompleteService();
+      if (!g?.maps?.importLibrary) return;
+      try {
+        const lib = await g.maps.importLibrary("places");
+        placesLibRef.current = lib;
+        sessionTokenRef.current = new lib.AutocompleteSessionToken();
+      } catch (e) {
+        console.warn("Failed to load Places library:", e);
       }
     });
   }, [mapsKey]);
 
-  const search = useCallback((q: string) => {
+  const search = useCallback(async (q: string) => {
     if (!q || q.length < 3) { setSuggestions([]); return; }
-    if (!svcRef.current) { setSuggestions([]); return; }
+    const lib = placesLibRef.current;
+    if (!lib?.AutocompleteSuggestion) { setSuggestions([]); return; }
     setLoading(true);
-    svcRef.current.getPlacePredictions(
-      { input: q, componentRestrictions: { country: "us" }, types: ["address"] },
-      (preds: any[] | null, status: string) => {
-        setLoading(false);
-        if (status === "OK" && preds) {
-          setSuggestions(preds.slice(0, 5).map((p: any) => p.description));
-        } else {
-          setSuggestions([]);
-        }
-      }
-    );
+    try {
+      const { suggestions: results } = await lib.AutocompleteSuggestion.fetchAutocompleteSuggestions({
+        input: q,
+        includedRegionCodes: ["us"],
+        includedPrimaryTypes: ["street_address", "premise", "subpremise"],
+        sessionToken: sessionTokenRef.current,
+      });
+      setSuggestions((results || []).slice(0, 5).map((s: any) => s.placePrediction?.text?.toString() || "").filter(Boolean));
+    } catch (e) {
+      console.warn("Address autocomplete failed:", e);
+      setSuggestions([]);
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -111,6 +126,9 @@ export function AddressAutocomplete({
     }
     setSuggestions([]);
     setOpen(false);
+    // A session ends once a selection is made (billing boundary for the new
+    // Places API) — start a fresh token for the next autocomplete session.
+    if (placesLibRef.current) sessionTokenRef.current = new placesLibRef.current.AutocompleteSessionToken();
   };
 
   return (

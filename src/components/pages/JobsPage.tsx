@@ -80,18 +80,28 @@ import { ChemicalModal } from "../ui/ChemicalModal";
 import { WeeklyBusinessReview } from "../ui/WeeklyBusinessReview";
 import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 
-export function JobsPage({ jobs = [], setJobs, customers = [], employees = [], estimates = [], setEstimates = () => {}, settings = {} as AppSettings, toast, posts = [], setPosts = () => {}, setTimeline = () => {}, initialDetailId = null, onInitialDetailIdConsumed = () => {}, onPortal = (_id: string) => {} }: { jobs?: any[]; setJobs?: any; customers?: any[]; employees?: any[]; estimates?: any[]; setEstimates?: any; settings?: AppSettings; toast?: any; posts?: any[]; setPosts?: any; setTimeline?: any; initialDetailId?: string | null; onInitialDetailIdConsumed?: () => void; onPortal?: (id: string) => void }) {
+export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = (() => {}) as any, employees = [], estimates = [], setEstimates = () => {}, settings = {} as AppSettings, toast, posts = [], setPosts = () => {}, setTimeline = () => {}, initialDetailId = null, onInitialDetailIdConsumed = () => {}, onPortal = (_id: string) => {} }: { jobs?: any[]; setJobs?: any; customers?: any[]; setCustomers?: any; employees?: any[]; estimates?: any[]; setEstimates?: any; settings?: AppSettings; toast?: any; posts?: any[]; setPosts?: any; setTimeline?: any; initialDetailId?: string | null; onInitialDetailIdConsumed?: () => void; onPortal?: (id: string) => void }) {
   const [tab, setTab] = useState("scheduled");
   const [cancelModal, setCancelModal] = useState(null);
   const [cancelReason, setCancelReason] = useState(cancelReasons[0]);
   const [deleteModal, setDeleteModal] = useState<string | null>(null);
-  const confirmDelete = () => {
+  const confirmDelete = async () => {
     if (!deleteModal) return;
-    setJobs((prev: any[]) => prev.filter((x: any) => x.id !== deleteModal));
-    if (deleteModal === detailId) setDetailId(null);
+    const jid = deleteModal;
+    setJobs((prev: any[]) => prev.filter((x: any) => x.id !== jid));
+    if (jid === detailId) setDetailId(null);
     // Must also delete server-side — otherwise the next cross-device sync
     // poll just re-fetches this row from Supabase and it reappears locally.
-    (supabase as any).from("jobs").delete().eq("id", deleteModal).catch(() => {});
+    // The query builder is thenable but not a real Promise, so calling
+    // .catch() directly on the chain throws "catch is not a function" —
+    // that thrown error was aborting this function before the modal closed,
+    // which is why it used to stay open after confirming. await + try/catch
+    // avoids relying on .catch() existing on the builder at all.
+    try {
+      await (supabase as any).from("jobs").delete().eq("id", jid);
+    } catch (err) {
+      console.warn("Job delete failed to save server-side:", err);
+    }
     setDeleteModal(null);
     toast("Job permanently deleted");
   };
@@ -192,6 +202,20 @@ export function JobsPage({ jobs = [], setJobs, customers = [], employees = [], e
       if (j && c) {
         setTimeline(prev => ({ ...prev, [c.id]: [{ id: uid(), type: "job", note: "Job completed — " + fmt(j.amount), date: today() }, ...(prev[c.id] || [])] }));
       }
+      // Referral credit — if this referred customer's FIRST completed job
+      // just happened, credit whoever referred them. Checked against jobs
+      // BEFORE this update lands, so it only fires once per referral.
+      if (j && c?.referredBy) {
+        const priorCompleted = jobs.filter(x => x.customerId === c.id && x.status === "completed" && x.id !== j.id);
+        if (priorCompleted.length === 0) {
+          const referrer = customers.find(x => x.id === c.referredBy);
+          if (referrer) {
+            const creditAmount = Number((settings as any)?.referralSettings?.referrerCredit) || 25;
+            setCustomers((prev: any[]) => prev.map(x => x.id === referrer.id ? { ...x, referralCreditOwed: (Number(x.referralCreditOwed) || 0) + creditAmount } : x));
+            toast?.(`${referrer.firstName} earned $${creditAmount} referral credit for referring ${c.firstName} ✓`, "green");
+          }
+        }
+      }
       // Auto-post if Social auto-post is enabled in settings
       if (settings?.autoPostCompletedJobs && j) {
         const area = j.address?.split(",")[1]?.trim() || "York, PA";
@@ -224,7 +248,9 @@ export function JobsPage({ jobs = [], setJobs, customers = [], employees = [], e
     }
     if (patch.crew !== undefined) {
       console.log("SAVING JOB — crew:", patch.crew, "full job:", { ...oldJob, ...patch });
-      (supabase as any).from("jobs").update({ crew: patch.crew }).eq("id", jid)
+      const crewPatch: any = { crew: patch.crew };
+      if (patch.crewAssignedAt !== undefined) crewPatch.crewAssignedAt = patch.crewAssignedAt;
+      (supabase as any).from("jobs").update(crewPatch).eq("id", jid)
         .then((result: any) => {
           console.log("SUPABASE SAVE RESULT:", result);
           if (result?.error) toast?.("Crew assignment failed to save — " + result.error.message, "red");

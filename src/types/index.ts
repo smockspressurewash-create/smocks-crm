@@ -44,6 +44,9 @@ export interface Customer {
   smsOptOut?: boolean;
   optOutDate?: string;
   customFields?: CustomField[];
+  referralCode?: string;
+  referralCreditOwed?: number;
+  referralCreditApplied?: number;
   birthday?: string;
   referredBy?: string;
   reviewRequested?: string;
@@ -179,6 +182,8 @@ export interface Job {
   estimatedDuration?: number;
   priority: "low" | "normal" | "high" | "urgent";
   crew: string[];
+  crewAssignedAt?: Record<string, number>;
+  arrivedAt?: number;
   checklist: ChecklistItem[];
   photos: Photo[];
   notes?: string;
@@ -250,6 +255,10 @@ export interface Employee {
   homeBaseAddress?: string;
   ratingScore?: number;
   lastPaidThrough?: string;
+  dayClockInAt?: number;
+  paidPeriods?: Record<string, "paid" | "unpaid">;
+  locationSharing?: boolean;
+  lastLocation?: { lat: number; lng: number; updatedAt: number };
 }
 
 // ─── Vehicle / Fleet ──────────────────────────────────────────────────────────

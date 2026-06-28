@@ -43,7 +43,7 @@ import { PageFade } from "./PageFade";
 import { TimeframeSelector } from "./TimeframeSelector";
 import { AddressAutocomplete } from "./AddressAutocomplete";
 
-export function CustomerModal({ open, onClose, data, onSave, mapsKey = "" }) {
+export function CustomerModal({ open, onClose, data, onSave, mapsKey = "", customers = [] }: { open?: any; onClose?: any; data?: any; onSave?: any; mapsKey?: string; customers?: any[] }) {
   const blank = { firstName: "", lastName: "", email: "", phone: "", address: "", notes: "", gateCode: "", hasDog: false, dogName: "", sensitivePlants: "", leadSource: "", tags: [], sqFootage: "", propertyNotes: "", customFields: [], addresses: [] as CustomerAddress[] };
   const [addAddr, setAddAddr] = useState(false);
   const [addrForm, setAddrForm] = useState<CustomerAddress>({ id: "", label: "", street: "", city: "", state: "", zip: "", propertyType: "residential", sqFootage: undefined, notes: "" });
@@ -88,6 +88,12 @@ export function CustomerModal({ open, onClose, data, onSave, mapsKey = "" }) {
             </GSel>
             {f.leadSource === "Other" && (
               <GInput value={customLeadSrc} onChange={e => setCustomLeadSrc(e.target.value)} placeholder="Specify source (e.g. Door hanger, Craigslist…)" className="!text-xs mt-1.5" autoFocus />
+            )}
+            {f.leadSource === "Referral" && customers.length > 0 && (
+              <GSel value={(f as any).referredBy || ""} onChange={e => setF({ ...(f as any), referredBy: e.target.value } as any)} className="!text-xs mt-1.5">
+                <option value="" className="bg-black">Referred by…</option>
+                {customers.filter((c: any) => c.id !== (f as any).id).map((c: any) => <option key={c.id} value={c.id} className="bg-black">{c.firstName} {c.lastName}</option>)}
+              </GSel>
             )}
           </div>
           <div>

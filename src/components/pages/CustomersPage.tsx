@@ -108,7 +108,13 @@ export function CustomersPage({ customers = [], setCustomers, estimates = [], jo
 
   const save = d => {
     if (d.id) setCustomers(customers.map(c => c.id === d.id ? d : c));
-    else setCustomers([...customers, { ...d, id: uid(), totalSpent: 0, createdAt: today() }]);
+    else {
+      const id = uid();
+      // A stable, real referral code generated once at creation — not derived
+      // on the fly from the id, so it survives independently and reads cleanly.
+      const referralCode = (d.firstName?.slice(0, 3) || "REF").toUpperCase() + id.slice(-4).toUpperCase();
+      setCustomers([...customers, { ...d, id, totalSpent: 0, createdAt: today(), referralCode }]);
+    }
     setModal({ open: false, data: null });
     toast("Customer saved");
   };
@@ -402,7 +408,7 @@ export function CustomersPage({ customers = [], setCustomers, estimates = [], jo
         </div>
       </Glass>
 
-      <CustomerModal open={modal.open} onClose={() => setModal({ open: false, data: null })} data={modal.data} onSave={save} mapsKey={settings.googleMapsKey || (settings as any).mapsKey || ""} />
+      <CustomerModal open={modal.open} onClose={() => setModal({ open: false, data: null })} data={modal.data} onSave={save} mapsKey={settings.googleMapsKey || (settings as any).mapsKey || ""} customers={customers} />
       <CustomerDetail customer={detail} onClose={() => setDetail(null)} estimates={estimates} jobs={jobs} timeline={timeline} setTimeline={setTimeline} settings={settings} />
       </>}
     </div>
