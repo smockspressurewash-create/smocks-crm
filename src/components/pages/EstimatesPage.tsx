@@ -82,9 +82,91 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
   const [viewing, setViewing] = useState(null);
   const [filter, setFilter] = useState("all");
   const [selected, setSelected] = useState([]);
+  const [sendModalEst, setSendModalEst] = useState<any>(null);
+  const [sendChannel, setSendChannel] = useState<"email" | "sms" | "both">("email");
+  const [sendTemplateId, setSendTemplateId] = useState<string>("");
+  const [sendPreviewOn, setSendPreviewOn] = useState(false);
+  const [sendBusy, setSendBusy] = useState(false);
+
+  const portalUrlFor = (estId: string) => `${window.location.origin}${window.location.pathname}#/portal/${estId}`;
+
+  const buildSendHtml = (est: any, cust: any) => {
+    const tpl = estimateTemplates.find((t: any) => t.id === sendTemplateId);
+    const link = portalUrlFor(est.id);
+    const headerColor = tpl?.colorHeader || "#dc2626";
+    const textColor = tpl?.colorText || "#111111";
+    const font = tpl?.font || "Arial";
+    const bodyInner = `
+      <div style="font-family:'${font}',sans-serif;color:${textColor}">
+        ${tpl?.logoUrl ? `<img src="${tpl.logoUrl}" style="max-height:48px;margin-bottom:12px" />` : ""}
+        <h2 style="margin:0 0 6px;color:${headerColor}">${tpl?.headerText || "Your Estimate"}</h2>
+        <p>Hi ${cust.firstName},</p>
+        <p>Your estimate of <strong>${fmt(est.total)}</strong> is ready to review${(tpl?.layout) ? "" : ""}.</p>
+        <p>Valid until ${est.validUntil}.</p>
+        ${(tpl?.photoSlots || []).filter(Boolean).length ? `<div style="display:flex;gap:8px;margin:12px 0">${tpl.photoSlots.filter(Boolean).map((p: string) => `<img src="${p}" style="width:70px;height:70px;object-fit:cover;border-radius:8px" />`).join("")}</div>` : ""}
+        <div style="text-align:center;margin:20px 0"><a href="${link}" style="display:inline-block;background:${headerColor};color:#fff;text-decoration:none;font-weight:700;padding:12px 28px;border-radius:10px">Review &amp; Sign</a></div>
+        ${tpl?.footerText ? `<p style="font-size:11px;color:#888;margin-top:16px">${tpl.footerText}</p>` : ""}
+      </div>`;
+    return bodyInner;
+  };
+
+  const buildSendSms = (est: any, cust: any) => {
+    const link = portalUrlFor(est.id);
+    return "Hi " + cust.firstName + "! Your estimate of " + fmt(est.total) + " from " + (settings?.companyName || "Smock's") + " is ready. Review and sign here: " + link + " — questions? Call " + (settings?.companyPhone || "(717) 555-0100");
+  };
+
+  const doSend = async () => {
+    if (!sendModalEst) return;
+    const cust = customers.find((c: any) => c.id === sendModalEst.customerId);
+    if (!cust) return;
+    setSendBusy(true);
+    try {
+      if ((sendChannel === "email" || sendChannel === "both")) {
+        if (!cust.email) { toast?.("No email on file for " + cust.firstName, "error"); }
+        else await sendEmail(settings, { to: cust.email, subject: "Your estimate from " + (settings?.companyName || "Smock's") + " — " + fmt(sendModalEst.total), body: buildSendHtml(sendModalEst, cust) });
+      }
+      if ((sendChannel === "sms" || sendChannel === "both")) {
+        if (!cust.phone) { toast?.("No phone on file for " + cust.firstName, "error"); }
+        else if (settings?.twilioSid) await twilioSend(settings, cust.phone, buildSendSms(sendModalEst, cust));
+        else { window.location.href = "sms:" + cust.phone.replace(/\D/g, "") + "?body=" + encodeURIComponent(buildSendSms(sendModalEst, cust)); }
+      }
+      setEstimates((prev: any[]) => prev.map((x: any) => x.id === sendModalEst.id ? { ...x, sentAt: today(), sendChannel, templateId: sendTemplateId || undefined } : x));
+      toast?.("Estimate sent to " + cust.firstName + " ✓");
+      setSendModalEst(null);
+      setSendPreviewOn(false);
+    } catch (err: any) {
+      toast?.(err?.message || "Failed to send", "error");
+    } finally {
+      setSendBusy(false);
+    }
+  };
 
   const setTimeline = (..._args: any[]) => {};
   const createGoogleCalendarEvent = (..._args: any[]) => Promise.resolve(null);
+
+  // An approved/signed estimate needs to show up somewhere the owner will
+  // actually see it and schedule it — without this it just sits in the
+  // Estimates list with status "approved" and nothing prompts scheduling.
+  // Creates an unscheduled job (scheduledDate: "", the existing convention
+  // this app already uses for "needs a date") tagged "Needs Scheduling".
+  // Guarded by estimateId so re-approving (or both the owner's "Approve"
+  // button and the client portal's own approve path) never double-creates.
+  const createJobFromApprovedEstimate = (estId: string) => {
+    setJobs((prev: any[]) => {
+      if (prev.some((j: any) => j.estimateId === estId)) return prev;
+      const est = estimates.find((x: any) => x.id === estId);
+      if (!est) return prev;
+      const cust = customers.find((c: any) => c.id === est.customerId);
+      return [...prev, {
+        id: uid(), customerId: est.customerId, address: cust?.address || "",
+        amount: est.total, status: "scheduled", scheduledDate: "", duration: 2,
+        priority: "normal", crew: [], checklist: [], photos: [], chemicalsUsed: [],
+        equipment: [], tags: ["Needs Scheduling"], commLog: [],
+        notes: "From approved estimate #" + estId.slice(-4).toUpperCase(),
+        createdAt: today(), estimateId: estId,
+      }];
+    });
+  };
   const cn = id => { const c = customers.find(x => x.id === id); return c ? c.firstName + " " + c.lastName : "Unknown"; };
   const filtered = filter === "all" ? estimates : estimates.filter(e => e.status === filter);
 
@@ -201,27 +283,7 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
               </div>
               <div className="flex gap-1 pt-3 mt-3 border-t border-red-900/20">
                 <button onClick={() => openPreview(e)} className="flex-1 p-1.5 rounded-lg hover:bg-white/10 text-white/60 hover:text-white text-[11px] transition flex items-center justify-center gap-1"><Eye size={11} />View</button>
-                <button onClick={async () => {
-                  const c = customers.find(x => x.id === e.customerId);
-                  if (!c) return;
-                  const portalUrl = "smocks.com/portal/" + e.id;
-                  const msg = "Hi " + c.firstName + "! Your estimate of " + fmt(e.total) + " from Smock's is ready. Review and sign here: " + portalUrl + " — questions? Call (717) 555-0100";
-                  if (settings?.twilioSid && c.phone) {
-                    await twilioSend(settings, c.phone, msg).then(() => { toast("Estimate texted to " + c.firstName + " ✓"); setEstimates(prev => prev.map(x => x.id === e.id ? { ...x, sentAt: today() } : x)); }).catch(er => toast(er.message, "error"));
-                  } else if (c.phone) {
-                    window.location.href = "sms:" + c.phone.replace(/\D/g,"") + "?body=" + encodeURIComponent(msg);
-                    toast("SMS app opened with estimate link");
-                  } else toast("No phone number for " + c.firstName, "error");
-                }} title="Text estimate to customer" className="flex-1 p-1.5 rounded-lg hover:bg-green-900/30 text-white/60 hover:text-green-400 text-[11px] transition flex items-center justify-center gap-1"><MessageSquare size={11} />SMS</button>
-                <button onClick={async () => {
-                  const c = customers.find(x => x.id === e.customerId);
-                  if (!c?.email) { toast("No email for " + (c?.firstName || "customer"), "error"); return; }
-                  const portalUrl = "smocks.com/portal/" + e.id;
-                  const subject = "Your estimate from Smock's Pressure Washing — " + fmt(e.total);
-                  const body = "Hi " + c.firstName + ",\n\nYour estimate is ready to review:\n\nTotal: " + fmt(e.total) + "\nValid until: " + e.validUntil + "\n\nSign and approve here: " + portalUrl + "\n\nQuestions? Call (717) 555-0100.\n\n— Smock's Pressure Washing";
-                  try { await sendEmail(settings, { to: c.email, subject, body }); toast("Estimate emailed to " + c.firstName + " ✓"); setEstimates(prev => prev.map(x => x.id === e.id ? { ...x, sentAt: today() } : x)); }
-                  catch(er) { toast(er.message, "error"); }
-                }} title="Email estimate to customer" className="flex-1 p-1.5 rounded-lg hover:bg-blue-900/30 text-white/60 hover:text-blue-400 text-[11px] transition flex items-center justify-center gap-1"><Mail size={11} />Email</button>
+                <button onClick={() => { setSendModalEst(e); setSendChannel(e.sendChannel || "email"); setSendTemplateId(e.templateId || ""); setSendPreviewOn(false); }} title="Send estimate to customer" className="flex-1 p-1.5 rounded-lg hover:bg-green-900/30 text-white/60 hover:text-green-400 text-[11px] transition flex items-center justify-center gap-1"><Send size={11} />Send</button>
                 <button onClick={() => onPortal(e.id)} className="flex-1 p-1.5 rounded-lg hover:bg-purple-900/30 text-white/60 hover:text-purple-400 text-[11px] transition flex items-center justify-center gap-1" title="Preview exactly what the customer sees — sign, pay, and account history"><Globe size={11} />Preview as Customer</button>
                 <button onClick={() => duplicate(e)} className="p-1.5 rounded-lg hover:bg-white/10 text-white/60 hover:text-white text-[11px] transition flex items-center justify-center"><Copy size={11} /></button>
               </div>
@@ -238,7 +300,12 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
         const c = customers.find(x => x.id === est.customerId);
         if (c) setTimeline(prev => ({ ...prev, [c.id]: [{ id: uid(), type: "estimate", note: "Estimate created — " + fmt(est.total), date: today() }, ...(prev[c.id] || [])] }));
       }} />
-      <EstimatePreview estimate={viewing} customers={customers} settings={settings} onClose={() => setViewing(null)} onApprove={id => { setEstimates(estimates.map(x => x.id === id ? { ...x, status: "approved", signedAt: today() } : x)); setViewing(null); toast("Approved!"); }} onConvert={id => { setEstimates(estimates.map(x => x.id === id ? { ...x, invoiced: true, invoicedAt: today() } : x)); setViewing(null); toast("Converted to invoice"); }} onSchedule={est => {
+      <EstimatePreview estimate={viewing} customers={customers} settings={settings} onClose={() => setViewing(null)} onApprove={id => {
+        setEstimates(estimates.map(x => x.id === id ? { ...x, status: "approved", signedAt: today() } : x));
+        createJobFromApprovedEstimate(id);
+        setViewing(null);
+        toast("Approved!");
+      }} onConvert={id => { setEstimates(estimates.map(x => x.id === id ? { ...x, invoiced: true, invoicedAt: today() } : x)); setViewing(null); toast("Converted to invoice"); }} onSchedule={est => {
         const c = customers.find(x => x.id === est.customerId);
         const newJob = { id: uid(), customerId: est.customerId, address: c?.address || "", amount: est.total, status: "scheduled", scheduledDate: today(), duration: 3, priority: "normal", checklist: [], photos: [], chemicalsUsed: [], crew: [], notes: "From estimate #" + (est.id || "").slice(-4), isRecurring: false, pipelineStage: "scheduled", createdAt: today() };
         setJobs(prev => [...prev, newJob]);
@@ -250,6 +317,50 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
         toast("Job scheduled from estimate ✓ — set date in Jobs");
         onNav("jobs");
       }} />
+
+      <Modal open={!!sendModalEst} onClose={() => { setSendModalEst(null); setSendPreviewOn(false); }} title="Send Estimate" maxW="max-w-md">
+        {sendModalEst && (() => {
+          const cust = customers.find((c: any) => c.id === sendModalEst.customerId);
+          return (
+            <div className="space-y-3">
+              <div className="text-sm text-white/70">To <strong className="text-white">{cust?.firstName} {cust?.lastName}</strong> — {fmt(sendModalEst.total)}</div>
+
+              <div>
+                <label className="text-xs text-white/60 mb-1.5 block">Send Via</label>
+                <div className="flex gap-1 p-1 bg-black/40 border border-white/10 rounded-xl">
+                  {(["email", "sms", "both"] as const).map(ch => (
+                    <button key={ch} onClick={() => setSendChannel(ch)} className={"flex-1 py-1.5 rounded-lg text-xs capitalize transition " + (sendChannel === ch ? "bg-red-700/40 text-white border border-red-700/50" : "text-white/50")}>{ch}</button>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <label className="text-xs text-white/60 mb-1.5 block">Template</label>
+                <GSel value={sendTemplateId} onChange={(e: any) => setSendTemplateId(e.target.value)} className="!text-xs">
+                  <option value="" className="bg-black">Default</option>
+                  {estimateTemplates.map((t: any) => <option key={t.id} value={t.id} className="bg-black">{t.name}</option>)}
+                </GSel>
+              </div>
+
+              <button onClick={() => setSendPreviewOn(p => !p)} className="text-xs text-purple-400 hover:text-purple-300 flex items-center gap-1"><Eye size={12} />{sendPreviewOn ? "Hide" : "Show"} preview</button>
+              {sendPreviewOn && cust && (
+                <div className="border border-white/10 rounded-xl overflow-hidden max-h-64 overflow-y-auto">
+                  {sendChannel === "sms" ? (
+                    <div className="p-3 bg-black/40 text-xs whitespace-pre-wrap">{buildSendSms(sendModalEst, cust)}</div>
+                  ) : (
+                    <div className="p-3 bg-white" dangerouslySetInnerHTML={{ __html: buildSendHtml(sendModalEst, cust) }} />
+                  )}
+                </div>
+              )}
+
+              <div className="flex gap-2 justify-end pt-2 border-t border-white/10">
+                <GBtn variant="ghost" onClick={() => setSendModalEst(null)}>Cancel</GBtn>
+                <GBtn onClick={doSend} disabled={sendBusy}><Send size={13} className="inline mr-1" />{sendBusy ? "Sending…" : "Send"}</GBtn>
+              </div>
+            </div>
+          );
+        })()}
+      </Modal>
     </div>
   );
 }

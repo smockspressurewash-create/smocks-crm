@@ -3,7 +3,7 @@ import {
   LayoutDashboard, Users, FileText, Receipt, Briefcase, GitBranch,
   Calendar, MessageSquare, Megaphone, Star, Zap, Share2, UserPlus,
   Bot, Database, Users2, Truck, DollarSign, FlaskConical, BarChart3,
-  TrendingUp, PiggyBank, Wallet, Heart, Gift, Monitor,
+  TrendingUp, PiggyBank, Wallet, Heart, Gift, Monitor, Tag,
   Bell, Settings, X, Lock, Globe, ChevronLeft, ChevronRight, Plus, Undo2, Redo2, CheckCircle
 } from "lucide-react";
 
@@ -42,9 +42,12 @@ import { BudgetPage } from "./components/pages/BudgetPage";
 import { PersonalBudgetPage } from "./components/pages/PersonalBudgetPage";
 import { AccountabilityPage } from "./components/pages/AccountabilityPage";
 import { ReferralsPage } from "./components/pages/ReferralsPage";
+import { PromotionsPage } from "./components/pages/PromotionsPage";
 import { CrewView } from "./components/pages/CrewView";
 import { SettingsModal } from "./components/pages/SettingsModal";
 import { ClientPortal } from "./components/pages/ClientPortal";
+import { ClientAuthPortal } from "./components/pages/ClientAuthPortal";
+import { ReferralLanding } from "./components/pages/ReferralLanding";
 import { EmployeePortal } from "./components/pages/EmployeePortal";
 import { saveEmpGoogleToken } from "./lib/googleApi";
 import { ResetPassword } from "./components/pages/ResetPassword";
@@ -118,7 +121,13 @@ const navGroups = [
       { id: "reviews",     label: "Reviews",     icon: Star      },
       { id: "automations", label: "Automations", icon: Zap       },
       { id: "social",      label: "Social",      icon: Share2    },
-      { id: "referrals",   label: "Referrals",   icon: Gift      },
+    ],
+  },
+  {
+    label: "Growth",
+    items: [
+      { id: "referrals",   label: "Referrals",   icon: Gift },
+      { id: "promotions",  label: "Promotions",  icon: Tag  },
     ],
   },
   {
@@ -342,7 +351,8 @@ export function App() {
     // EmployeePortal itself reads the sub-path to pick the initial tab.
     const hash = window.location.hash.replace(/^#\/?/, "").split("?")[0];
     if (hash === "portal" || hash.startsWith("portal/")) return "portal";
-    const valid = ["dashboard","alfred","inbox","customers","estimates","invoices","pipeline","intake","jobs","calendar","crew","campaigns","reviews","automations","social","referrals","expenses","reports","analytics","budget","personal","accountability","employees","fleet","chemicals","google","portal","reset-password"];
+    if (hash === "referral" || hash.startsWith("r/")) return "referral";
+    const valid = ["dashboard","alfred","inbox","customers","estimates","invoices","pipeline","intake","jobs","calendar","crew","campaigns","reviews","automations","social","referrals","promotions","expenses","reports","analytics","budget","personal","accountability","employees","fleet","chemicals","google","portal","reset-password","client","referral"];
     return valid.includes(hash) ? hash : "dashboard";
   });
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -397,10 +407,11 @@ export function App() {
 
   // Listen for browser back/forward
   useEffect(() => {
-    const valid = ["dashboard","alfred","inbox","customers","estimates","invoices","pipeline","intake","jobs","calendar","crew","campaigns","reviews","automations","social","referrals","expenses","reports","analytics","budget","personal","accountability","employees","fleet","chemicals","google","portal","reset-password"];
+    const valid = ["dashboard","alfred","inbox","customers","estimates","invoices","pipeline","intake","jobs","calendar","crew","campaigns","reviews","automations","social","referrals","promotions","expenses","reports","analytics","budget","personal","accountability","employees","fleet","chemicals","google","portal","reset-password","client","referral"];
     const handler = () => {
       const hash = window.location.hash.replace(/^#\/?/, "").split("?")[0];
       if (hash === "portal" || hash.startsWith("portal/")) { setPage("portal"); return; }
+      if (hash === "referral" || hash.startsWith("r/")) { setPage("referral"); return; }
       if (valid.includes(hash)) setPage(hash);
     };
     window.addEventListener("hashchange", handler);
@@ -450,6 +461,7 @@ export function App() {
   const [wins,            setWins]            = usePersistent<Win[]>("smocks.wins", []);
   const [negativeAlerts,  setNegativeAlerts]  = usePersistent<Review[]>("smocks.negativeAlerts", []);
   const [referrals,       setReferrals]       = usePersistent<typeof seedReferrals>("smocks.referrals", seedReferrals);
+  const [promotions,      setPromotions]      = usePersistent<import("./types").Promotion[]>("smocks.promotions", []);
   const [emailTemplates,    setEmailTemplates]    = usePersistent("smocks.emailTpls", seedEmailTemplates);
   const [smsTemplates,      setSmsTemplates]      = usePersistent("smocks.smsTpls", seedSmsTemplates);
   const [estimateTemplates, setEstimateTemplates] = usePersistent<any[]>("smocks.estimateTpls", []);
@@ -736,6 +748,12 @@ export function App() {
         // so Supabase can read and process the token before the router overwrites it.
         const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
           try {
+            // The client portal (#/client) signs in with the same shared Supabase auth
+            // client but manages its own session locally — it must never let this
+            // top-level listener reclassify a customer as an owner/employee and bounce
+            // them into the CRM or employee portal.
+            if (window.location.hash.replace(/^#\/?/, "").startsWith("client")) return;
+
             console.log("AUTH CHANGE in App.tsx:", event,
               "email:", session?.user?.email,
               "identities:", JSON.stringify(session?.user?.identities?.map((i: any) => i.provider)));
@@ -745,6 +763,18 @@ export function App() {
               setHasCrmSession(false);
               setCrmRole("owner");
               setOauthProcessing(false);
+              return;
+            }
+
+            // Supabase rotates the access token in the background roughly every
+            // hour; when it includes a fresh Google provider_token, capture it so
+            // sendEmail()'s Gmail path uses the current token on the very next
+            // send instead of only discovering it's stale after a 401.
+            if (event === "TOKEN_REFRESHED") {
+              const freshProviderToken = (session as any)?.provider_token;
+              if (freshProviderToken) {
+                setSettings((prev: any) => ({ ...prev, googleProviderToken: freshProviderToken }));
+              }
               return;
             }
 
@@ -789,7 +819,14 @@ export function App() {
         });
         sub = subscription;
 
-        // Resolve current session and determine owner vs employee
+        // Resolve current session and determine owner vs employee — skipped entirely
+        // on the client portal route for the same reason as the listener guard above.
+        if (window.location.hash.replace(/^#\/?/, "").startsWith("client")) {
+          setSessionChecked(true);
+          bootstrapDone = true;
+          clearTimeout(forceRenderTimer);
+          return;
+        }
         const { data: { session: initial } } = await supabase.auth.getSession();
         console.log("INITIAL SESSION resolved — email:", initial?.user?.email,
           "identities:", JSON.stringify(initial?.user?.identities?.map((i: any) => i.provider)));
@@ -934,6 +971,17 @@ export function App() {
         </div>
       </div>
     );
+  }
+
+  // ── Client portal — fully public route, its own Supabase auth, no PIN/owner gate ──
+  if (page === "client") {
+    return <ClientAuthPortal customers={customers} setCustomers={setCustomers} estimates={estimates} setEstimates={setEstimates} jobs={jobs} settings={settings} estimateTemplates={estimateTemplates} toast={toast} />;
+  }
+
+  // ── Referral landing — fully public, no auth/PIN gate. Handles both
+  // #/referral?ref=CODE and the shorthand #/r/CODE.
+  if (page === "referral") {
+    return <ReferralLanding customers={customers} setCustomers={setCustomers} settings={settings} toast={toast} />;
   }
 
   // ── Session loading guard — prevents CRM flashing before employee session restores ──
@@ -1424,7 +1472,7 @@ export function App() {
                 {page === "inbox"          && <InboxPage threads={inboxThreads} setThreads={setInboxThreads} customers={customers} settings={settings} toast={toast} />}
                 {page === "campaigns"      && <CampaignsPage campaigns={campaigns} setCampaigns={setCampaigns} customers={customers} estimates={estimates} jobs={jobs} settings={settings} inboxThreads={inboxThreads} setInboxThreads={setInboxThreads} toast={toast} />}
                 {page === "reviews"        && <ReviewsPage reviews={reviews} setReviews={setReviews} jobs={jobs} customers={customers} toast={toast} negativeAlerts={negativeAlerts} setNegativeAlerts={setNegativeAlerts} settings={settings} setSettings={setSettings} />}
-                {page === "automations"    && <AutomationsPage automations={automations} setAutomations={setAutomations} jobs={jobs} customers={customers} estimates={estimates} settings={settings} toast={toast} />}
+                {page === "automations"    && <AutomationsPage automations={automations} setAutomations={setAutomations} jobs={jobs} customers={customers} estimates={estimates} settings={settings} setSettings={setSettings} toast={toast} />}
                 {page === "social"         && <SocialPage posts={socialPosts} setPosts={setSocialPosts} toast={toast} settings={settings} />}
                 {page === "intake"         && <LeadIntakePage customers={customers} setCustomers={setCustomers} estimates={estimates} setEstimates={setEstimates} services={services} settings={settings} toast={toast} onNav={setPage} />}
                 {page === "alfred"         && <AlfredPage conversations={alfredConversations} setConversations={setAlfredConversations} activeConvId={activeConvId} setActiveConvId={setActiveConvId} memory={alfredMemory} setMemory={setAlfredMemory} personality={personality} setPersonality={setPersonality} apiKey={settings.anthropicKey ?? settings.geminiKey ?? ""} openSettings={() => setSettingsOpen(true)} toast={toast} jobs={jobs} setJobs={setJobs} estimates={estimates} setEstimates={setEstimates} customers={customers} setCustomers={setCustomers} employees={employees} automations={automations} setAutomations={setAutomations} stats={{ totalRev, activeJobs, pendingEst, closeRate, doneMonth }} setWins={setWins} goals={goalsList} setGoals={setGoalsList} setSettings={setSettings} settings={settings} modelStatus={modelStatus} setModelStatus={setModelStatus} onNav={setPage} />}
@@ -1439,6 +1487,7 @@ export function App() {
                 {page === "personal"       && <PersonalBudgetPage toast={toast} />}
                 {page === "accountability" && <AccountabilityPage entries={accountability} setEntries={setAccountability} goals={goalsList} setGoals={setGoalsList} wins={wins} setWins={setWins} toast={toast} settings={settings} />}
                 {page === "referrals"      && <ReferralsPage customers={customers} setCustomers={setCustomers} jobs={jobs} toast={toast} settings={settings} setSettings={setSettings} />}
+                {page === "promotions"     && <PromotionsPage promotions={promotions} setPromotions={setPromotions} customers={customers} services={services} settings={settings} toast={toast} />}
                 {page === "crew"           && <CrewView jobs={jobs} setJobs={setJobs} customers={customers} employees={employees} toast={toast} settings={settings} estimates={estimates} setEstimates={setEstimates} />}
               </SafePage>
             </PageFade>
@@ -1475,15 +1524,35 @@ export function App() {
           jobs={jobs}
           invoices={estimates.filter(e => e.invoiced)}
           settings={settings}
+          estimateTemplates={estimateTemplates}
           onClose={() => setPortalEstId(null)}
           onView={id => setEstimates(prev => prev.map(e => e.id === id && !e.viewed ? { ...e, viewed: true, viewedAt: new Date().toISOString() } : e))}
           onApprove={(id, data) => {
+            const paid = data.payChoice !== "later";
             setEstimates(prev => prev.map(e => e.id === id ? {
-              ...e, status: "approved", signedAt: data.signedAt || e.signedAt, sigData: data.sigData || e.sigData, paidAt: today(),
+              ...e, status: "approved", signedAt: data.signedAt || e.signedAt, sigData: data.sigData || e.sigData, payChoice: data.payChoice,
+              ...(paid ? { paidAt: today() } : {}),
               paidDeposit: data.payType === "deposit" ? data.totalPaid : (e.paidDeposit || 0),
               paidFull: data.payType === "full" ? data.totalPaid : data.payType === "remaining" ? (e.paidDeposit || 0) + data.totalPaid : (e.paidFull || 0),
             } : e));
-            toast("✓ Paid — " + fmt(data.totalPaid));
+            // Customer-side approval also needs to surface as a job needing
+            // scheduling — same convention (scheduledDate: "") as the owner's
+            // own "Approve Estimate" button in EstimatesPage.
+            setJobs(prev => {
+              if (prev.some(j => (j as any).estimateId === id)) return prev;
+              const est = estimates.find(e => e.id === id);
+              if (!est) return prev;
+              const cust = customers.find(c => c.id === est.customerId);
+              return [...prev, {
+                id: uid(), customerId: est.customerId, address: cust?.address || "",
+                amount: est.total, status: "scheduled", scheduledDate: "", duration: 2,
+                priority: "normal", crew: [], checklist: [], photos: [], chemicalsUsed: [],
+                equipment: [], tags: ["Needs Scheduling"], commLog: [],
+                notes: "From approved estimate #" + id.slice(-4).toUpperCase(),
+                createdAt: today(), estimateId: id,
+              } as any];
+            });
+            toast(paid ? "✓ Paid — " + fmt(data.totalPaid) : "✓ Signed — customer will pay later");
             setPortalEstId(null);
           }}
         />

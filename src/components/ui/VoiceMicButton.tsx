@@ -1,105 +1,50 @@
-// auto-extracted from Smock's OS monolith
-import React, { useState, useEffect, useRef, useCallback } from "react";
-import {
-  LayoutDashboard, Users, FileText, Briefcase, Bot, BarChart3,
-  Settings, Bell, Menu, X, Plus, Search, Edit, Trash2, Send,
-  DollarSign, TrendingUp, CheckCircle, Clock, MapPin, Phone, Mail,
-  Calendar, AlertTriangle, Truck, Receipt, FlaskConical, MessageSquare,
-  Sun, Moon, Download, Undo2, Redo2, Volume2, Play, Cloud, Star,
-  Award, Target, Shield, Key, Eye, EyeOff, Save, ChevronRight,
-  ChevronLeft, GripVertical, Tag, Copy, Ban, RefreshCw, Percent,
-  CreditCard, Repeat, XCircle, Activity, Zap, UserCheck, AlertCircle,
-  Clipboard, Heart, Dumbbell, Droplet, Smile, Flame, Wind, Snowflake,
-  Globe, Share2, Trophy, ExternalLink, Workflow, ToggleLeft, ToggleRight,
-  Navigation, TrendingDown, PieChart as PieIcon, Package, Wrench,
-  CheckSquare, Route, Users2, Layers, ArrowRight, BarChart2, Filter,
-  Paperclip, ImageIcon, FileImage, MoreVertical, Mic, Upload, Link, Lock, User
-} from "lucide-react";
-import {
-  BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid,
-  Tooltip, ResponsiveContainer, Area, AreaChart, LineChart, Line,
-  ComposedChart, Legend
-} from "recharts";
-import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE } from "../../lib/utils";
-import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
-import { twilioSend, sendEmail } from "../../lib/messaging";
-import { seedWeather } from "../../lib/weather";
-import { seedCustomers, seedEstimates, seedJobs, seedEmployees, seedVehicles, seedExpenses, seedChemicals, seedServices, seedAutomations, seedEmailTemplates, seedSmsTemplates, seedRewardTiers, seedReferrals, seedMaintenance, campaignTemplates, seedSocialPosts, seedTimeline, seedGoals, seedReminders, seedAccountabilityEntries, seedMileage, seedLeadSrc, STEP_TYPES, AUTOMATION_TEMPLATES } from "../../lib/seed";
-import { callModel, MODELS } from "../../lib/api";
-import { createCalendarEvent, updateCalendarEvent, deleteCalendarEvent, fetchDriveFiles, MOCK_GOOGLE_DATA, fmtSize, fmtDate, fileIcon } from "../../lib/google";
-import { usePersistent } from "../../hooks/usePersistent";
-import { usePersistentRaw } from "../../hooks/usePersistentRaw";
-import { Glass } from "./Glass";
-import { GBtn } from "./GBtn";
-import { GInput } from "./GInput";
-import { GDate } from "./GDate";
-import { GSel } from "./GSel";
-import { GTxt } from "./GTxt";
-import { Modal } from "./Modal";
-import { Badge } from "./Badge";
-import { Stat } from "./Stat";
-import { PBar } from "./PBar";
-import { PageFade } from "./PageFade";
-import { TimeframeSelector } from "./TimeframeSelector";
+import React, { useEffect, useRef, useState } from "react";
+import { Mic, Play, Pause, Send, Trash2 } from "lucide-react";
 
 // Records and transcribes voice input — Whisper API when an OpenAI key is
 // configured (more accurate, works on any browser), otherwise the browser's
 // built-in SpeechRecognition (no key needed, Chromium-based browsers only).
 //
-// Two modes, click to start/stop (no more hold-and-release-to-send, which
-// made it impossible to fix a misheard word before it went out):
+// Two modes:
 // - "dictate" (STT): transcript lands in the input box for the user to read,
-//   edit, and send themselves via onTranscript(text, false).
-// - "note": transcript is sent immediately via onTranscript(text, true) once
-//   the recording is stopped — the voice note IS the message.
+//   edit, and send themselves via onTranscript(text, false). No audio kept.
+// - "note": records actual audio for playback. On stop, nothing is sent yet —
+//   the user hears it back and explicitly presses Send (or Discard). Only on
+//   Send is the transcript produced and onTranscript(text, true) called.
 export function VoiceMicButton({ onTranscript, apiKey, mode = "dictate" }: { onTranscript?: (text: string, autoSend: boolean) => void; apiKey?: any; mode?: "dictate" | "note" }) {
   const [recording, setRecording] = useState(false);
   const [processing, setProcessing] = useState(false);
-  const mediaRef = useRef(null);
-  const chunksRef = useRef([]);
+  const [elapsed, setElapsed] = useState(0);
+  const [pendingAudioUrl, setPendingAudioUrl] = useState<string | null>(null);
+  const [playing, setPlaying] = useState(false);
+  const mediaRef = useRef<MediaRecorder | null>(null);
+  const chunksRef = useRef<Blob[]>([]);
   const recognitionRef = useRef<any>(null);
+  const liveTranscriptRef = useRef("");
+  const audioElRef = useRef<HTMLAudioElement | null>(null);
+  const timerRef = useRef<any>(null);
+  const streamRef = useRef<MediaStream | null>(null);
 
   const SpeechRecognitionCtor = typeof window !== "undefined" ? ((window as any).SpeechRecognition || (window as any).webkitSpeechRecognition) : null;
-  const autoSend = mode === "note";
 
-  const startWhisperRecording = async () => {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const mr = new MediaRecorder(stream, { mimeType: "audio/webm;codecs=opus" });
-      chunksRef.current = [];
-      mr.ondataavailable = e => chunksRef.current.push(e.data);
-      mr.onstop = async () => {
-        stream.getTracks().forEach(t => t.stop());
-        setProcessing(true);
-        try {
-          const blob = new Blob(chunksRef.current, { type: "audio/webm" });
-          const fd = new FormData();
-          fd.append("file", blob, "voice.webm");
-          fd.append("model", "whisper-1");
-          fd.append("language", "en");
-          const res = await fetch("https://api.openai.com/v1/audio/transcriptions", {
-            method: "POST",
-            headers: { Authorization: "Bearer " + apiKey },
-            body: fd
-          });
-          const data = await res.json();
-          if (data.text) onTranscript?.(data.text.trim(), autoSend);
-          else if (data.error) console.warn("Whisper transcription failed:", data.error);
-        } catch (e) {
-          console.error("Whisper error:", e);
-        } finally {
-          setProcessing(false);
-        }
-      };
-      mediaRef.current = mr;
-      mr.start();
-      setRecording(true);
-    } catch {
-      alert("Microphone access denied");
-    }
+  const transcribeWhisper = async (blob: Blob): Promise<string> => {
+    const fd = new FormData();
+    fd.append("file", blob, "voice.webm");
+    fd.append("model", "whisper-1");
+    fd.append("language", "en");
+    const res = await fetch("https://api.openai.com/v1/audio/transcriptions", {
+      method: "POST",
+      headers: { Authorization: "Bearer " + apiKey },
+      body: fd,
+    });
+    const data = await res.json();
+    if (data.error) throw new Error(data.error.message || "Transcription failed");
+    return (data.text || "").trim();
   };
 
-  const startBrowserRecognition = () => {
+  const stopTimer = () => { clearInterval(timerRef.current); timerRef.current = null; };
+
+  const startDictateRecognition = () => {
     if (!SpeechRecognitionCtor) { alert("Voice input isn't supported in this browser. Try Chrome, or add an OpenAI key in Settings for Whisper transcription."); return; }
     const rec = new SpeechRecognitionCtor();
     rec.lang = "en-US";
@@ -107,7 +52,7 @@ export function VoiceMicButton({ onTranscript, apiKey, mode = "dictate" }: { onT
     rec.maxAlternatives = 1;
     rec.onresult = (e: any) => {
       const text = e.results?.[0]?.[0]?.transcript;
-      if (text) onTranscript?.(text.trim(), autoSend);
+      if (text) onTranscript?.(text.trim(), false);
     };
     rec.onerror = () => { /* user cancelled or no speech — nothing to report */ };
     rec.onend = () => setRecording(false);
@@ -116,26 +61,129 @@ export function VoiceMicButton({ onTranscript, apiKey, mode = "dictate" }: { onT
     setRecording(true);
   };
 
-  const toggleRecording = () => {
-    if (recording) {
-      if (apiKey) mediaRef.current?.stop();
-      else recognitionRef.current?.stop();
-      setRecording(false);
-    } else {
-      apiKey ? startWhisperRecording() : startBrowserRecognition();
+  const startNoteRecording = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      streamRef.current = stream;
+      const mr = new MediaRecorder(stream, { mimeType: "audio/webm;codecs=opus" });
+      chunksRef.current = [];
+      liveTranscriptRef.current = "";
+      mr.ondataavailable = e => chunksRef.current.push(e.data);
+      mr.onstop = () => {
+        const blob = new Blob(chunksRef.current, { type: "audio/webm" });
+        setPendingAudioUrl(URL.createObjectURL(blob));
+      };
+      mediaRef.current = mr;
+      mr.start();
+
+      // No OpenAI key — run browser speech recognition alongside the recorder
+      // so a transcript is still available at Send time without a paid API.
+      if (!apiKey && SpeechRecognitionCtor) {
+        const rec = new SpeechRecognitionCtor();
+        rec.lang = "en-US";
+        rec.continuous = true;
+        rec.interimResults = false;
+        rec.onresult = (e: any) => {
+          let text = "";
+          for (let i = 0; i < e.results.length; i++) text += e.results[i][0].transcript + " ";
+          liveTranscriptRef.current = text.trim();
+        };
+        rec.onerror = () => {};
+        recognitionRef.current = rec;
+        rec.start();
+      }
+
+      setElapsed(0);
+      timerRef.current = setInterval(() => setElapsed(s => s + 1), 1000);
+      setRecording(true);
+    } catch {
+      alert("Microphone access denied");
     }
   };
 
+  const stopRecording = () => {
+    if (mode === "note") {
+      mediaRef.current?.stop();
+      streamRef.current?.getTracks().forEach(t => t.stop());
+      recognitionRef.current?.stop();
+      stopTimer();
+    } else {
+      recognitionRef.current?.stop();
+    }
+    setRecording(false);
+  };
+
+  const toggleRecording = () => {
+    if (recording) { stopRecording(); return; }
+    if (mode === "note") startNoteRecording();
+    else startDictateRecognition();
+  };
+
+  const discardNote = () => {
+    if (pendingAudioUrl) URL.revokeObjectURL(pendingAudioUrl);
+    setPendingAudioUrl(null);
+    setPlaying(false);
+    chunksRef.current = [];
+    liveTranscriptRef.current = "";
+  };
+
+  const sendNote = async () => {
+    setProcessing(true);
+    try {
+      let text = "";
+      if (apiKey) {
+        const blob = new Blob(chunksRef.current, { type: "audio/webm" });
+        text = await transcribeWhisper(blob);
+      } else {
+        text = liveTranscriptRef.current;
+      }
+      if (text) onTranscript?.(text, true);
+      else alert("Couldn't transcribe that — try again or type your message.");
+    } catch (e: any) {
+      alert(e?.message || "Transcription failed");
+    } finally {
+      setProcessing(false);
+      discardNote();
+    }
+  };
+
+  const togglePlayback = () => {
+    if (!audioElRef.current) return;
+    if (playing) { audioElRef.current.pause(); } else { audioElRef.current.play(); }
+  };
+
+  useEffect(() => () => { if (pendingAudioUrl) URL.revokeObjectURL(pendingAudioUrl); }, [pendingAudioUrl]);
+
   if (processing) return <div className="p-2 text-white/40"><div className="w-4 h-4 border-2 border-purple-400 border-t-transparent rounded-full animate-spin" /></div>;
+
+  // Pending voice note — playback + explicit Send/Discard, never auto-sent.
+  if (pendingAudioUrl) {
+    return (
+      <div className="flex items-center gap-1.5 bg-purple-950/30 border border-purple-700/40 rounded-xl px-2 py-1.5">
+        <audio ref={audioElRef} src={pendingAudioUrl} onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} onEnded={() => setPlaying(false)} className="hidden" />
+        <button onClick={togglePlayback} className="p-1.5 rounded-lg text-purple-300 hover:bg-purple-900/40">{playing ? <Pause size={14} /> : <Play size={14} />}</button>
+        <span className="text-[11px] text-purple-200">{elapsed}s voice note</span>
+        <button onClick={discardNote} title="Discard" className="p-1.5 rounded-lg text-white/40 hover:text-red-400 hover:bg-red-900/20"><Trash2 size={13} /></button>
+        <button onClick={sendNote} title="Send" className="p-1.5 rounded-lg text-white bg-purple-700/50 hover:bg-purple-700/70 flex items-center gap-1"><Send size={13} /></button>
+      </div>
+    );
+  }
+
+  if (recording && mode === "note") {
+    return (
+      <button onClick={toggleRecording} className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-red-600/40 text-red-300 animate-pulse" title="Click to stop recording">
+        <Mic size={14} /><span className="text-[11px] font-mono">{String(Math.floor(elapsed / 60)).padStart(2, "0")}:{String(elapsed % 60).padStart(2, "0")}</span>
+      </button>
+    );
+  }
 
   return (
     <button
       onClick={toggleRecording}
-      title={recording ? "Click to stop recording" : mode === "note" ? "Record a voice note — sends automatically when stopped" : "Dictate — transcript lands in the text box to review before sending"}
+      title={recording ? "Click to stop recording" : mode === "note" ? "Record a voice note — listen back before sending" : "Dictate — transcript lands in the text box to review before sending"}
       className={"p-2 rounded-xl transition flex-shrink-0 " + (recording ? "bg-red-600/40 text-red-300 animate-pulse" : "text-white/40 hover:text-white/70 hover:bg-white/5")}
     >
       <Mic size={16} />
     </button>
   );
 }
-

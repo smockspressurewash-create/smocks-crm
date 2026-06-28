@@ -111,7 +111,7 @@ export function ReferralsPage({ customers = [], setCustomers = (() => {}) as any
   };
 
   const copy = (code, channel = "link") => {
-    const url = `${window.location.origin}${window.location.pathname}#/intake?ref=${code}`;
+    const url = `${window.location.origin}${window.location.pathname}#/referral?ref=${code}`;
     const msg = "I use Smock's Pressure Washing for my home — they're great! Use my code " + code + " and get 10% off: " + url;
     if (channel === "link") {
       navigator.clipboard?.writeText(url).catch(() => {});

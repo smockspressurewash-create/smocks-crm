@@ -1309,6 +1309,12 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   const [availability, setAvailability] = useState<string[]>([]);
   const [autoSyncCalendar, setAutoSyncCalendar] = useState(true);
   const [showAvailability, setShowAvailability] = useState(false);
+  // Optimistic override for "Start/End My Day" — if the employees table is
+  // missing the dayClockInAt column (a 400 on the update), the button must
+  // still flip and stay flipped instead of silently reverting on the next
+  // refetch, since the underlying request never persisted. undefined means
+  // "trust the server value".
+  const [optimisticDayClockInAt, setOptimisticDayClockInAt] = useState<number | null | undefined>(undefined);
   // Login extras
   const [forgotSent, setForgotSent] = useState(false);
   // Incoming job requests on Today tab
@@ -1410,6 +1416,12 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
        localEmployee ||
        null)
     : null;
+
+  useEffect(() => {
+    if (optimisticDayClockInAt !== undefined && (myEmployee as any)?.dayClockInAt === optimisticDayClockInAt) {
+      setOptimisticDayClockInAt(undefined);
+    }
+  }, [(myEmployee as any)?.dayClockInAt]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Log whenever the lookup inputs change so we can see if employees is empty on first render.
   // Also auto-retries once against Supabase when myEmployee isn't found in the prop array.
@@ -1651,6 +1663,31 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     console.log("FILTERED MY JOBS — count:", myJobs.length);
     console.log("FILTERED MY JOBS — ids:", myJobs.map(j => j.id));
   }
+
+  // Real-time location sharing — only while opted in AND clocked in for the
+  // day; posts a GPS fix to Supabase every 30s so the owner's Crew View →
+  // Live Now map can plot it. Stops automatically the moment either flag
+  // flips off (interval is torn down by the effect cleanup on re-run).
+  useEffect(() => {
+    const empId = (myEmployee as any)?.id;
+    const sharing = (myEmployee as any)?.locationSharing;
+    const clockedIn = !!(myEmployee as any)?.dayClockInAt;
+    if (!empId || !sharing || !clockedIn || !navigator.geolocation) return;
+    const postLocation = () => {
+      navigator.geolocation.getCurrentPosition(
+        pos => {
+          (supabase as any).from("employees").update({
+            lastLocation: { lat: pos.coords.latitude, lng: pos.coords.longitude, updatedAt: Date.now() },
+          }).eq("id", empId).then(() => {}, () => {});
+        },
+        () => {},
+        { enableHighAccuracy: true, timeout: 10000 }
+      );
+    };
+    postLocation();
+    const interval = setInterval(postLocation, 30000);
+    return () => clearInterval(interval);
+  }, [(myEmployee as any)?.id, (myEmployee as any)?.locationSharing, (myEmployee as any)?.dayClockInAt]);
 
   // 24h job reminder — checks once on load (and hourly while the portal stays open)
   // for jobs starting within the next 24h, and emails the employee via their own
@@ -2143,8 +2180,22 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   const [homeBaseAddress, setHomeBaseAddressState] = useState("");
   const [, setGoogleHydrateTick] = useState(0);
   const [showCanceledJobs, setShowCanceledJobs] = useState(false);
-  const [pastCollapsed, setPastCollapsed] = useState(true);
-  const [upcomingCollapsed, setUpcomingCollapsed] = useState(false);
+  const [pastCollapsed, setPastCollapsedState] = useState(() => {
+    try { const v = localStorage.getItem("smocks.portal.pastCollapsed"); return v === null ? true : v === "1"; } catch { return true; }
+  });
+  const setPastCollapsed = (v: boolean | ((p: boolean) => boolean)) => setPastCollapsedState(prev => {
+    const next = typeof v === "function" ? v(prev) : v;
+    try { localStorage.setItem("smocks.portal.pastCollapsed", next ? "1" : "0"); } catch { /* ignore */ }
+    return next;
+  });
+  const [upcomingCollapsed, setUpcomingCollapsedState] = useState(() => {
+    try { return localStorage.getItem("smocks.portal.upcomingCollapsed") === "1"; } catch { return false; }
+  });
+  const setUpcomingCollapsed = (v: boolean | ((p: boolean) => boolean)) => setUpcomingCollapsedState(prev => {
+    const next = typeof v === "function" ? v(prev) : v;
+    try { localStorage.setItem("smocks.portal.upcomingCollapsed", next ? "1" : "0"); } catch { /* ignore */ }
+    return next;
+  });
   const saveHomeBaseAddress = async (addr: string) => {
     setHomeBaseAddressState(addr);
     try {
@@ -2746,10 +2797,16 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
 
     const isNextUp = job.id === completionNotif?.nextJobId;
     const isOverScheduleCard = !!(job.clockInAt && job.duration && (Date.now() - job.clockInAt) / 3600000 > Number(job.duration));
+    const isCompletedCard = job.status === "completed";
     return (
       <div
-        className={"rounded-2xl border transition " + (isOverScheduleCard ? "bg-yellow-950/15 border-yellow-700/40" : job.clockInAt ? "bg-green-950/10 border-green-700/30" : isNextUp ? "bg-blue-950/15 border-blue-600/40" : "bg-white/5 border-white/10 hover:bg-white/8 hover:border-red-600/20")}
+        className={"rounded-2xl border transition " + (isCompletedCard ? "bg-white/[0.02] border-white/5 opacity-60" : isOverScheduleCard ? "bg-yellow-950/15 border-yellow-700/40" : job.clockInAt ? "bg-green-950/10 border-green-700/30" : isNextUp ? "bg-blue-950/15 border-blue-600/40" : "bg-white/5 border-white/10 hover:bg-white/8 hover:border-red-600/20")}
       >
+        {isCompletedCard && (
+          <div className="px-4 pt-2.5 pb-0">
+            <span className="text-[10px] font-bold text-green-400 uppercase tracking-wide flex items-center gap-1"><CheckCircle size={11} />Completed</span>
+          </div>
+        )}
         {isOverScheduleCard && (
           <div className="px-4 pt-2.5 pb-0">
             <span className="text-[10px] font-bold text-yellow-400 uppercase tracking-wide flex items-center gap-1"><AlertCircle size={10} />Running over schedule</span>
@@ -2982,22 +3039,82 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                 into an individual job (job clock-in/out tracks time per stop;
                 this tracks the whole shift). */}
             {(() => {
-              const dayClockInAt = (myEmployee as any)?.dayClockInAt;
+              const dayClockInAt = optimisticDayClockInAt !== undefined ? optimisticDayClockInAt : (myEmployee as any)?.dayClockInAt;
               const empId = (myEmployee as any)?.id;
+              const sendEndOfDaySummary = async () => {
+                const todayStr = today();
+                const todaysJobs = myJobs.filter(j => j.scheduledDate === todayStr);
+                const completedToday = todaysJobs.filter(j => j.status === "completed");
+                const shiftHours = dayClockInAt ? Math.round(((Date.now() - dayClockInAt) / 3600000) * 100) / 100 : 0;
+                const loggedHoursToday = Math.round(todaysJobs.reduce((s, j) => s + (Number(j.loggedHours) || 0), 0) * 100) / 100;
+                const hours = loggedHoursToday > 0 ? loggedHoursToday : shiftHours;
+                const pay = Math.round(hours * (myEmployee?.hourlyRate || 0) * 100) / 100;
+                const allCk = todaysJobs.flatMap(j => [...(j.preChecklist || []), ...(j.duringChecklist || []), ...(j.postChecklist || []), ...(j.checklist || [])]);
+                const ckDone = allCk.filter((c: any) => c.done).length;
+                const ckRate = allCk.length > 0 ? Math.round((ckDone / allCk.length) * 100) : 100;
+                const revenueToday = completedToday.reduce((s, j) => s + (Number(j.amount) || 0), 0);
+
+                const empName = `${myEmployee.firstName} ${myEmployee.lastName || ""}`.trim();
+                const summaryRows = `
+                  <div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #eee"><span>Jobs completed</span><strong>${completedToday.length}</strong></div>
+                  <div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #eee"><span>Hours worked</span><strong>${hours}h</strong></div>
+                  <div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #eee"><span>Estimated pay</span><strong>${fmt(pay)}</strong></div>
+                  <div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #eee"><span>Checklist completion</span><strong>${ckRate}%</strong></div>
+                `;
+                const companyName = settings?.companyName || "Smock's Pressure Washing";
+
+                if (myEmployee?.email) {
+                  sendEmail(settings as any, { to: myEmployee.email, subject: `Your day summary — ${todayStr}`, body: emailShell(companyName, "End of Day Summary", `<p>Nice work today, ${myEmployee.firstName}!</p>${summaryRows}`) }).catch(() => {});
+                }
+                const ownerEmail = settings?.myEmail || settings?.companyEmail;
+                if (ownerEmail) {
+                  sendEmail(settings as any, { to: ownerEmail, subject: `Day summary — ${empName} — ${todayStr}`, body: emailShell(companyName, `Day Summary — ${empName}`, `${summaryRows}<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #eee"><span>Revenue today (this employee)</span><strong>${fmt(revenueToday)}</strong></div>`) }).catch(() => {});
+                }
+              };
               const toggleDay = async () => {
                 if (!empId) return;
-                const patch = dayClockInAt ? { dayClockInAt: null } : { dayClockInAt: Date.now() };
+                const endingDay = !!dayClockInAt;
+                const nextVal = endingDay ? null : Date.now();
+                // Flip immediately — a Supabase update() call resolves with an
+                // {error} object on a 400 rather than throwing, so a try/catch
+                // around it alone was silently swallowing real failures (the
+                // success toast fired and refetchEmployees() then reverted the
+                // UI right back since the row was never actually updated).
+                setOptimisticDayClockInAt(nextVal);
+                if (endingDay) sendEndOfDaySummary();
                 try {
-                  await (supabase as any).from("employees").update(patch).eq("id", empId);
+                  const result = await (supabase as any).from("employees").update({ dayClockInAt: nextVal }).eq("id", empId);
+                  if (result?.error) {
+                    toast("Saved locally, but couldn't sync to the server: " + result.error.message, "red");
+                  } else {
+                    refetchEmployees?.();
+                    toast(endingDay ? "Day ended ✓ — summary emailed" : "Day started — have a great shift!");
+                  }
+                } catch (e: any) {
+                  toast("Saved locally, but couldn't sync to the server: " + (e?.message || "unknown error"), "red");
+                }
+              };
+              const locationSharing = !!(myEmployee as any)?.locationSharing;
+              const toggleLocationSharing = async () => {
+                if (!empId) return;
+                try {
+                  const result = await (supabase as any).from("employees").update({ locationSharing: !locationSharing }).eq("id", empId);
+                  if (result?.error) { toast("Failed to save — " + result.error.message, "red"); return; }
                   refetchEmployees?.();
-                  toast(dayClockInAt ? "Day ended ✓" : "Day started — have a great shift!");
-                } catch { toast("Failed to save — try again", "red"); }
+                  toast(!locationSharing ? "Location sharing on — owner can see you while clocked in" : "Location sharing off");
+                } catch (e: any) { toast("Failed to save — " + (e?.message || "try again"), "red"); }
               };
               return (
-                <button onClick={toggleDay} className={"w-full flex items-center justify-center gap-2 py-3 rounded-2xl font-bold text-sm transition active:scale-95 " + (dayClockInAt ? "bg-green-900/40 border-2 border-green-500/60 text-green-300" : "bg-red-700/40 border-2 border-red-500/60 text-white hover:bg-red-700/60")}>
-                  <Clock size={16} />
-                  {dayClockInAt ? `On the clock since ${new Date(dayClockInAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })} · Tap to End My Day` : "Start My Day"}
-                </button>
+                <>
+                  <button onClick={toggleDay} className={"w-full flex items-center justify-center gap-2 py-3 rounded-2xl font-bold text-sm transition active:scale-95 " + (dayClockInAt ? "bg-green-900/40 border-2 border-green-500/60 text-green-300" : "bg-red-700/40 border-2 border-red-500/60 text-white hover:bg-red-700/60")}>
+                    <Clock size={16} />
+                    {dayClockInAt ? `On the clock since ${new Date(dayClockInAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })} · Tap to End My Day` : "Start My Day"}
+                  </button>
+                  <button onClick={toggleLocationSharing} className={"w-full flex items-center justify-center gap-2 py-2 rounded-xl text-xs font-medium transition " + (locationSharing ? "bg-blue-900/30 border border-blue-500/40 text-blue-300" : "bg-white/5 border border-white/10 text-white/50")}>
+                    <MapPin size={12} />
+                    {locationSharing ? "Sharing my location with owner" : "Share My Location (off)"}
+                  </button>
+                </>
               );
             })()}
 
@@ -3265,6 +3382,21 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                 <span>Today's Jobs</span>
                 <span className="px-2 py-0.5 rounded-full bg-white/10 text-white/60">{todayJobs.length}</span>
               </div>
+              {todayJobs.length > 0 && (() => {
+                const completedCount = todayJobs.filter(j => j.status === "completed").length;
+                const pct = Math.round((completedCount / todayJobs.length) * 100);
+                return (
+                  <div className="mb-3">
+                    <div className="flex items-center justify-between text-xs text-white/50 mb-1.5">
+                      <span>{completedCount} of {todayJobs.length} jobs completed</span>
+                      <span className="font-semibold text-white/70">{pct}%</span>
+                    </div>
+                    <div className="h-2 rounded-full bg-white/10 overflow-hidden">
+                      <div className="h-full bg-gradient-to-r from-green-500 to-green-400 transition-all" style={{ width: `${pct}%` }} />
+                    </div>
+                  </div>
+                );
+              })()}
               {todayJobs.length === 0 ? (
                 <div className="text-center py-10 text-white/30">
                   <CheckCircle size={32} className="mx-auto mb-2 opacity-30" />

@@ -165,14 +165,31 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setting
     setShowEditPerms(false);
   }, [modal]);
 
+  // Employee edits (pay rate, paidPeriods, permissions, etc.) have no bulk
+  // autosave the way `jobs` does — without an immediate Supabase write here,
+  // changes like marking a pay period Paid only ever lived in the owner's
+  // local React state and the employee's portal (which reads straight from
+  // Supabase) never saw them.
   const save = () => {
     if (!f.firstName.trim()) return;
-    if (f.id) setEmployees(prev => prev.map(e => e.id === f.id ? { ...f } : e));
-    else setEmployees(prev => [...prev, { ...f, id: uid() }]);
+    const id = f.id || uid();
+    const record = { ...f, id };
+    if (f.id) setEmployees(prev => prev.map(e => e.id === f.id ? record : e));
+    else setEmployees(prev => [...prev, record]);
+    if (f.id) {
+      (supabase as any).from("employees").update(record).eq("id", id)
+        .then((r: any) => { if (r?.error) toast?.("Saved locally, but failed to sync — " + r.error.message, "red"); })
+        .catch((e: any) => toast?.("Saved locally, but failed to sync — " + (e?.message || ""), "red"));
+    }
     setModal({ open: false, data: null });
   };
   const del = id => { if (confirm("Remove employee?")) setEmployees(prev => prev.filter(e => e.id !== id)); };
-  const toggle = id => setEmployees(prev => prev.map(e => e.id === id ? { ...e, status: e.status === "active" ? "inactive" : "active" } : e));
+  const toggle = id => {
+    setEmployees(prev => prev.map(e => e.id === id ? { ...e, status: e.status === "active" ? "inactive" : "active" } : e));
+    const emp = employees.find((e: any) => e.id === id);
+    const nextStatus = emp?.status === "active" ? "inactive" : "active";
+    (supabase as any).from("employees").update({ status: nextStatus }).eq("id", id).catch(() => {});
+  };
 
   const roles = ["Owner", "Manager", "Lead Technician", "Technician", "Helper", "Office", "Sales"];
 

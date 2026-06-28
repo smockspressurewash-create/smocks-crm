@@ -709,7 +709,7 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
                 </div>
                 <div className="text-right flex-shrink-0">
                   <div className="text-lg font-bold text-red-400">{fmt(j.amount)}</div>
-                  <div className="text-xs text-white/50">{j.scheduledDate}</div>
+                  {j.scheduledDate ? <div className="text-xs text-white/50">{j.scheduledDate}</div> : <div className="text-[10px] px-2 py-0.5 rounded-full bg-amber-900/40 border border-amber-600/50 text-amber-300 font-medium inline-block mt-0.5">Needs Scheduling</div>}
                   {j.isCash && <div className="text-[10px] text-green-400 font-semibold mt-0.5">💵 Cash</div>}
                   {jobMargin !== null && <div className={"text-[10px] font-semibold mt-0.5 " + (jobMargin >= 60 ? "text-green-400" : jobMargin >= 40 ? "text-yellow-400" : "text-red-400")}>{jobMargin}% margin</div>}
                 </div>

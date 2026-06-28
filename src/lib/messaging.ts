@@ -228,10 +228,21 @@ export const sendViaGmail = async (
 ): Promise<void> => {
   let res = await sendGmailRaw(googleProviderToken, fromEmail, to, subject, html);
   if (res.status === 401) {
-    const { data } = await supabase.auth.refreshSession();
-    const freshToken = (data.session as any)?.provider_token;
+    // refreshSession()'s own return value often omits provider_token even when
+    // the refresh succeeded (a known Supabase SDK quirk) — getSession() right
+    // after tends to reflect the token the SIGNED_IN/TOKEN_REFRESHED listener
+    // in App.tsx just wrote, so check both instead of trusting one.
+    const { data: refreshed } = await supabase.auth.refreshSession();
+    let freshToken = (refreshed.session as any)?.provider_token;
+    if (!freshToken) {
+      const { data: current } = await supabase.auth.getSession();
+      freshToken = (current.session as any)?.provider_token;
+    }
     if (freshToken) {
       res = await sendGmailRaw(freshToken, fromEmail, to, subject, html);
+    }
+    if (res.status === 401) {
+      throw new Error("Google sign-in expired — reconnect Gmail in Settings → Integrations.");
     }
   }
   if (!res.ok) {

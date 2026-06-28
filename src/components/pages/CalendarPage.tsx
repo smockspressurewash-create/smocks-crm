@@ -140,7 +140,9 @@ export function CalendarPage({ jobs = [], setJobs, customers = [], employees = [
     // 30s auto-save interval, since the employee portal polls Supabase directly.
     if (patch.crew !== undefined) {
       console.log("SAVING JOB — crew:", patch.crew, "job id:", jid);
-      (supabase as any).from("jobs").update({ crew: patch.crew }).eq("id", jid)
+      const crewPatch: any = { crew: patch.crew };
+      if (patch.crewAssignedAt !== undefined) crewPatch.crewAssignedAt = patch.crewAssignedAt;
+      (supabase as any).from("jobs").update(crewPatch).eq("id", jid)
         .then((result: any) => {
           console.log("SUPABASE SAVE RESULT:", result);
           if (result?.error) toast?.("Crew assignment failed to save — " + result.error.message, "red");

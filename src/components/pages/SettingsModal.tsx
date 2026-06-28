@@ -542,6 +542,100 @@ export function SettingsModal({ open, onClose, settings, setSettings, services, 
                     <div><label className="text-xs text-white/60 mb-1 block">Description</label><GInput placeholder="Short description (optional)" value={editingTpl.description || ""} onChange={(e: any) => setEditingTpl((t: any) => ({ ...t, description: e.target.value }))} /></div>
                   </div>
 
+                  {/* Visual design — applied to the customer-facing client portal when this template is selected at send time */}
+                  <Glass className="p-4 !bg-purple-950/10 !border-purple-700/20 space-y-3">
+                    <div className="text-xs font-semibold text-purple-300">Visual Design</div>
+
+                    <div className="flex items-center gap-3">
+                      {editingTpl.logoUrl ? (
+                        <div className="relative">
+                          <img src={editingTpl.logoUrl} alt="" className="w-14 h-14 rounded-lg object-contain bg-white/5 border border-white/10" />
+                          <button onClick={() => setEditingTpl((t: any) => ({ ...t, logoUrl: undefined }))} className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-red-600 text-white flex items-center justify-center"><X size={10} /></button>
+                        </div>
+                      ) : (
+                        <div className="w-14 h-14 rounded-lg bg-white/5 border border-dashed border-white/15 flex items-center justify-center text-white/20"><FileText size={18} /></div>
+                      )}
+                      <label className="text-xs px-3 py-2 rounded-lg border border-purple-700/40 text-purple-300 hover:bg-purple-900/30 cursor-pointer flex items-center gap-1.5">
+                        <Upload size={12} />Upload Logo
+                        <input type="file" accept="image/*" className="hidden" onChange={(e: any) => {
+                          const f = e.target.files?.[0]; if (!f) return;
+                          const reader = new FileReader();
+                          reader.onload = () => setEditingTpl((t: any) => ({ ...t, logoUrl: String(reader.result) }));
+                          reader.readAsDataURL(f);
+                          e.target.value = "";
+                        }} />
+                      </label>
+                    </div>
+
+                    <div className="grid md:grid-cols-2 gap-3">
+                      <div><label className="text-xs text-white/60 mb-1 block">Header Text</label><GInput placeholder="e.g. Your Estimate" value={editingTpl.headerText || ""} onChange={(e: any) => setEditingTpl((t: any) => ({ ...t, headerText: e.target.value }))} className="!text-xs" /></div>
+                      <div><label className="text-xs text-white/60 mb-1 block">Footer Text</label><GInput placeholder="e.g. Thank you for your business!" value={editingTpl.footerText || ""} onChange={(e: any) => setEditingTpl((t: any) => ({ ...t, footerText: e.target.value }))} className="!text-xs" /></div>
+                    </div>
+
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                      <div>
+                        <label className="text-xs text-white/60 mb-1 block">Font</label>
+                        <GSel value={editingTpl.font || "Arial"} onChange={(e: any) => setEditingTpl((t: any) => ({ ...t, font: e.target.value }))} className="!text-xs">
+                          {["Arial", "Georgia", "Times New Roman", "Courier New", "Verdana"].map(fn => <option key={fn} value={fn} className="bg-black">{fn}</option>)}
+                        </GSel>
+                      </div>
+                      <div>
+                        <label className="text-xs text-white/60 mb-1 block">Header Color</label>
+                        <input type="color" value={editingTpl.colorHeader || "#dc2626"} onChange={(e: any) => setEditingTpl((t: any) => ({ ...t, colorHeader: e.target.value }))} className="w-full h-8 rounded-lg border border-white/10 bg-black/40" />
+                      </div>
+                      <div>
+                        <label className="text-xs text-white/60 mb-1 block">Text Color</label>
+                        <input type="color" value={editingTpl.colorText || "#111111"} onChange={(e: any) => setEditingTpl((t: any) => ({ ...t, colorText: e.target.value }))} className="w-full h-8 rounded-lg border border-white/10 bg-black/40" />
+                      </div>
+                      <div>
+                        <label className="text-xs text-white/60 mb-1 block">Accent Color</label>
+                        <input type="color" value={editingTpl.colorAccent || "#dc2626"} onChange={(e: any) => setEditingTpl((t: any) => ({ ...t, colorAccent: e.target.value }))} className="w-full h-8 rounded-lg border border-white/10 bg-black/40" />
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="text-xs text-white/60 mb-1.5 block">Layout</label>
+                      <div className="flex gap-1 p-1 bg-black/40 border border-white/10 rounded-xl">
+                        {(["modern", "classic", "minimal"] as const).map(l => (
+                          <button key={l} onClick={() => setEditingTpl((t: any) => ({ ...t, layout: l }))} className={"flex-1 py-1.5 rounded-lg text-xs capitalize transition " + ((editingTpl.layout || "modern") === l ? "bg-purple-700/40 text-white border border-purple-700/50" : "text-white/50")}>{l}</button>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div>
+                      <div className="flex items-center justify-between mb-1.5">
+                        <label className="text-xs text-white/60">Photo Slots <span className="text-white/30">(up to 4)</span></label>
+                      </div>
+                      <div className="grid grid-cols-4 gap-2">
+                        {Array.from({ length: 4 }).map((_, i) => {
+                          const slots = editingTpl.photoSlots || [];
+                          const photo = slots[i];
+                          return (
+                            <label key={i} className="aspect-square rounded-lg border border-dashed border-white/15 bg-white/5 flex items-center justify-center cursor-pointer overflow-hidden relative">
+                              {photo ? (
+                                <>
+                                  <img src={photo} alt="" className="w-full h-full object-cover" />
+                                  <button onClick={(e: any) => { e.preventDefault(); setEditingTpl((t: any) => ({ ...t, photoSlots: (t.photoSlots || []).filter((_: any, idx: number) => idx !== i) })); }} className="absolute top-0.5 right-0.5 w-4 h-4 rounded-full bg-red-600 text-white flex items-center justify-center"><X size={9} /></button>
+                                </>
+                              ) : <Plus size={14} className="text-white/20" />}
+                              <input type="file" accept="image/*" className="hidden" onChange={(e: any) => {
+                                const f = e.target.files?.[0]; if (!f) return;
+                                const reader = new FileReader();
+                                reader.onload = () => setEditingTpl((t: any) => {
+                                  const next = [...(t.photoSlots || [])];
+                                  next[i] = String(reader.result);
+                                  return { ...t, photoSlots: next };
+                                });
+                                reader.readAsDataURL(f);
+                                e.target.value = "";
+                              }} />
+                            </label>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </Glass>
+
                   {/* Line items */}
                   <div>
                     <div className="flex items-center justify-between mb-2">

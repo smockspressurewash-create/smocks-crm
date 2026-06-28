@@ -63,6 +63,7 @@ export function AddressAutocomplete({
   const [suggestions, setSuggestions] = useState<string[]>([]);
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
   // New Places API: AutocompleteService is retired for new Cloud projects in
   // favor of AutocompleteSuggestion (static, Promise-based). It lives in the
   // "places" library loaded via google.maps.importLibrary, which is present
@@ -71,18 +72,28 @@ export function AddressAutocomplete({
   const placesLibRef = useRef<any>(null);
   const sessionTokenRef = useRef<any>(null);
   const timer = useRef<any>(null);
+  const reqIdRef = useRef(0);
 
   useEffect(() => {
-    if (!mapsKey) return;
+    if (!mapsKey) { setError("No Google Maps API key set in Settings → Integrations."); return; }
+    setError("");
     loadMapsScript(mapsKey).then(async () => {
       const g = (window as any).google;
-      if (!g?.maps?.importLibrary) return;
+      if (!g?.maps?.importLibrary) {
+        setError("Google Maps script failed to load — check the API key and that the Maps JavaScript API is enabled.");
+        return;
+      }
       try {
         const lib = await g.maps.importLibrary("places");
+        if (!lib?.AutocompleteSuggestion) {
+          setError("Places API (New) isn't available for this key — enable \"Places API (New)\" in Google Cloud Console.");
+          return;
+        }
         placesLibRef.current = lib;
         sessionTokenRef.current = new lib.AutocompleteSessionToken();
-      } catch (e) {
+      } catch (e: any) {
         console.warn("Failed to load Places library:", e);
+        setError("Couldn't load the Places library — check your Maps API key and enabled APIs.");
       }
     });
   }, [mapsKey]);
@@ -90,7 +101,12 @@ export function AddressAutocomplete({
   const search = useCallback(async (q: string) => {
     if (!q || q.length < 3) { setSuggestions([]); return; }
     const lib = placesLibRef.current;
-    if (!lib?.AutocompleteSuggestion) { setSuggestions([]); return; }
+    if (!lib?.AutocompleteSuggestion) {
+      setSuggestions([]);
+      if (!error) setError("Address autocomplete isn't ready yet — check your Google Maps API key in Settings.");
+      return;
+    }
+    const myReqId = ++reqIdRef.current;
     setLoading(true);
     try {
       const { suggestions: results } = await lib.AutocompleteSuggestion.fetchAutocompleteSuggestions({
@@ -99,21 +115,26 @@ export function AddressAutocomplete({
         includedPrimaryTypes: ["street_address", "premise", "subpremise"],
         sessionToken: sessionTokenRef.current,
       });
+      if (myReqId !== reqIdRef.current) return; // a newer keystroke superseded this request
       setSuggestions((results || []).slice(0, 5).map((s: any) => s.placePrediction?.text?.toString() || "").filter(Boolean));
-    } catch (e) {
+      setError("");
+    } catch (e: any) {
+      if (myReqId !== reqIdRef.current) return;
       console.warn("Address autocomplete failed:", e);
       setSuggestions([]);
+      const msg = e?.message || String(e);
+      setError(/denied|enable|permission/i.test(msg) ? `Google rejected the request: ${msg} — enable "Places API (New)" for this key in Google Cloud Console.` : `Address lookup failed: ${msg}`);
     } finally {
-      setLoading(false);
+      if (myReqId === reqIdRef.current) setLoading(false);
     }
-  }, []);
+  }, [error]);
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const v = e.target.value;
     onChange(v);
     setOpen(true);
     clearTimeout(timer.current);
-    timer.current = setTimeout(() => search(v), 350);
+    timer.current = setTimeout(() => search(v), 250);
   };
 
   const handleSelect = (s: string) => {
@@ -160,6 +181,11 @@ export function AddressAutocomplete({
               {s}
             </button>
           ))}
+        </div>
+      )}
+      {open && suggestions.length === 0 && !loading && error && value.length >= 3 && (
+        <div className="absolute z-50 left-0 right-0 top-full mt-1 px-3 py-2 bg-amber-950/90 border border-amber-700/40 rounded-xl text-[10px] text-amber-200 leading-relaxed">
+          {error}
         </div>
       )}
     </div>

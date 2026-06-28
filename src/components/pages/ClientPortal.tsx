@@ -78,7 +78,12 @@ import { ChemicalModal } from "../ui/ChemicalModal";
 import { WeeklyBusinessReview } from "../ui/WeeklyBusinessReview";
 import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 
-export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [], settings = {} as AppSettings, onClose, onApprove, onView = (_id: string) => {} }: { estimate?: any; customer?: any; jobs?: any[]; invoices?: any[]; settings?: AppSettings; onClose?: any; onApprove?: any; onView?: (id: string) => void }) {
+export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [], settings = {} as AppSettings, estimateTemplates = [], onClose, onApprove, onView = (_id: string) => {} }: { estimate?: any; customer?: any; jobs?: any[]; invoices?: any[]; settings?: AppSettings; estimateTemplates?: any[]; onClose?: any; onApprove?: any; onView?: (id: string) => void }) {
+  const tpl = estimateTemplates.find((t: any) => t.id === e?.templateId);
+  const headerColor = tpl?.colorHeader || "";
+  const textColor = tpl?.colorText || "";
+  const accentColor = tpl?.colorAccent || "";
+  const fontFamily = tpl?.font;
   const [showAccount, setShowAccount] = useState(false);
   const [payType, setPayType] = useState("full");
   const [showStripeModal, setShowStripeModal] = useState(false);
@@ -201,12 +206,19 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
     setSigData(null);
   };
 
-  const handleApprove = async (paymentIntentId?: string) => {
+  const handleApprove = async (paymentIntentId?: string, payChoice: "now" | "later" | "deposit" = "now") => {
     if (onApprove) onApprove(e.id, {
-      sigData, payType, tip, totalPaid: totalWithTip, signedAt: new Date().toISOString(),
+      sigData, payType, tip, totalPaid: paymentIntentId ? totalWithTip : 0, signedAt: new Date().toISOString(), payChoice,
       ...(paymentIntentId ? { stripePaymentIntentId: paymentIntentId, stripePaymentStatus: "paid" as const } : {}),
     });
     setStep("done");
+
+    if (!paymentIntentId) {
+      if (settings?.twilioSid && settings?.myPhone) {
+        twilioSend(settings, settings.myPhone, "✍️ ESTIMATE SIGNED (pay later): " + c.firstName + " " + c.lastName + " approved " + fmt(effectiveTotal) + " — will arrange payment after service.").catch(() => {});
+      }
+      return;
+    }
 
     // Payment confirmation SMS to customer
     if (settings?.twilioSid && c.phone) {
@@ -233,13 +245,16 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
 
   return (
     <Modal open={!!e} onClose={onClose} title="" maxW="max-w-2xl">
-      <div className="-mx-5 -mt-5">
+      <div className="-mx-5 -mt-5" style={fontFamily ? { fontFamily } : undefined}>
         {/* Portal header */}
-        <div className="bg-gradient-to-r from-red-600 to-red-800 px-6 py-4 rounded-t-2xl">
+        <div className={"px-6 py-4 rounded-t-2xl " + (headerColor ? "" : "bg-gradient-to-r from-red-600 to-red-800")} style={headerColor ? { background: headerColor } : undefined}>
           <div className="flex items-center justify-between">
-            <div>
-              <div className="text-white font-bold text-lg">{companyName}</div>
-              <div className="text-red-200 text-xs">{companyPhone} · York, PA</div>
+            <div className="flex items-center gap-2.5">
+              {tpl?.logoUrl && <img src={tpl.logoUrl} alt="" className="w-9 h-9 rounded-lg object-contain bg-white/90 p-1" />}
+              <div>
+                <div className="text-white font-bold text-lg">{tpl?.headerText || companyName}</div>
+                <div className="text-red-200 text-xs">{companyPhone} · York, PA</div>
+              </div>
             </div>
             <div className="text-right text-white/80 text-xs">
               {showAccount ? (
@@ -405,8 +420,14 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
                 </div>
               </Glass>
               {e.notes && <Glass className="p-3 !bg-blue-950/20 !border-blue-700/30"><div className="text-xs text-white/60 mb-1">Notes</div><div className="text-sm">{e.notes}</div></Glass>}
+              {(tpl?.photoSlots || []).filter(Boolean).length > 0 && (
+                <div className="flex gap-2">
+                  {tpl.photoSlots.filter(Boolean).map((p: string, i: number) => <img key={i} src={p} alt="" className="w-16 h-16 rounded-lg object-cover border border-white/10" />)}
+                </div>
+              )}
               {e.terms && <div className="text-[10px] text-white/40 leading-relaxed">{e.terms}</div>}
-              <GBtn onClick={() => setStep("sign")} className="w-full !py-3 text-base font-bold">
+              {tpl?.footerText && <div className="text-[10px] text-white/30 text-center italic">{tpl.footerText}</div>}
+              <GBtn onClick={() => setStep("sign")} className="w-full !py-3 text-base font-bold" style={accentColor ? { background: accentColor } : undefined}>
                 Review & Sign →
               </GBtn>
             </div>
@@ -479,6 +500,11 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
                   <div className="text-sm text-white/60">Online payments aren't set up yet.</div>
                   <div className="text-xs text-white/40">{companyName} hasn't connected Stripe — contact us directly to arrange payment.</div>
                 </div>
+              )}
+              {!hasRemainingBalance && (
+                <button onClick={() => handleApprove(undefined, "later")} className="w-full py-3 rounded-xl border border-white/15 text-white/70 hover:text-white hover:bg-white/5 transition text-sm font-medium">
+                  I'll Pay Later — just sign for now
+                </button>
               )}
               <GBtn variant="ghost" onClick={() => setStep("sign")} className="w-full">← Back to signature</GBtn>
 

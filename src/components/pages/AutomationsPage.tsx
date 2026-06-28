@@ -78,7 +78,7 @@ import { ChemicalModal } from "../ui/ChemicalModal";
 import { WeeklyBusinessReview } from "../ui/WeeklyBusinessReview";
 import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 
-export function AutomationsPage({ automations = [], setAutomations, jobs = [], customers = [], estimates = [], settings = {} as any, toast }: { automations?: any[]; setAutomations?: any; jobs?: any[]; customers?: any[]; estimates?: any[]; settings?: any; toast?: any }) {
+export function AutomationsPage({ automations = [], setAutomations, jobs = [], customers = [], estimates = [], settings = {} as any, setSettings = (() => {}) as any, toast }: { automations?: any[]; setAutomations?: any; jobs?: any[]; customers?: any[]; estimates?: any[]; settings?: any; setSettings?: any; toast?: any }) {
   const [builderOpen, setBuilderOpen] = useState<{ open: boolean; data: any }>({ open: false, data: null });
   const [templatesOpen, setTemplatesOpen] = useState(false);
   const [search, setSearch] = useState("");
@@ -204,6 +204,34 @@ export function AutomationsPage({ automations = [], setAutomations, jobs = [], c
           </GBtn>
         </div>
       </div>
+
+      {/* Late-employee auto-notifications — separate from the workflow builder
+          above since it reads live clock-in/job timing rather than firing on a
+          discrete event; surfaced as a banner+button on the affected job in
+          Crew View → Live Now when a crew member is running behind. */}
+      <Glass className="p-4 !bg-amber-950/10 !border-amber-700/20">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <div className="text-sm font-semibold flex items-center gap-1.5">⏰ Late Employee Auto-Notifications</div>
+            <div className="text-xs text-white/50 mt-0.5">When a crew member runs behind schedule, show a one-tap option in Crew View to text/email the next client a new ETA.</div>
+          </div>
+          <button onClick={() => setSettings((s: any) => ({ ...s, autoNotifyLate: !s.autoNotifyLate }))} className={"flex-shrink-0 w-12 h-7 rounded-full transition relative " + (settings?.autoNotifyLate ? "bg-amber-600" : "bg-white/10")}>
+            <div className={"absolute top-1 w-5 h-5 rounded-full bg-white transition " + (settings?.autoNotifyLate ? "left-6" : "left-1")} />
+          </button>
+        </div>
+        {settings?.autoNotifyLate && (
+          <div className="grid md:grid-cols-2 gap-3 mt-3 pt-3 border-t border-amber-700/20">
+            <div>
+              <label className="text-xs text-white/60 mb-1 block">Late threshold (minutes)</label>
+              <GInput type="number" value={settings?.lateThresholdMinutes ?? 15} onChange={(e: any) => setSettings((s: any) => ({ ...s, lateThresholdMinutes: Number(e.target.value) }))} className="!text-xs" />
+            </div>
+            <div>
+              <label className="text-xs text-white/60 mb-1 block">Message template</label>
+              <GInput value={settings?.lateNotifyTemplate || "Your technician is running slightly behind. New ETA: {{eta}}. We apologize for the delay."} onChange={(e: any) => setSettings((s: any) => ({ ...s, lateNotifyTemplate: e.target.value }))} className="!text-xs" placeholder="Use {{eta}} for the new estimated time" />
+            </div>
+          </div>
+        )}
+      </Glass>
 
       {/* Stats row */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">

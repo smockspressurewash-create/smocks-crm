@@ -52,6 +52,11 @@ export interface Customer {
   reviewRequested?: string;
   portalToken?: string;
   addresses?: CustomerAddress[];
+  isCommercial?: boolean;
+  recurringPayment?: { enabled: boolean; frequency: "monthly" | "quarterly"; amount?: number; nextDate?: string };
+  stripeCustomerId?: string;
+  savedPaymentMethodId?: string;
+  savedPaymentMethodLabel?: string;
 }
 
 // ─── Estimate ─────────────────────────────────────────────────────────────────
@@ -109,6 +114,9 @@ export interface Estimate {
   conversions?: number;
   stripePaymentIntentId?: string;
   stripePaymentStatus?: "unpaid" | "paid" | "refunded";
+  templateId?: string;
+  sendChannel?: "email" | "sms" | "both";
+  payChoice?: "now" | "later" | "deposit";
 }
 
 // ─── Job ──────────────────────────────────────────────────────────────────────
@@ -235,6 +243,7 @@ export interface Job {
   signOffTerms?: string;
   completedAt?: string;
   invoiceSentAt?: string;
+  estimateId?: string;
 }
 
 // ─── Employee ─────────────────────────────────────────────────────────────────
@@ -644,6 +653,12 @@ export interface AppSettings {
   minimaxGroupId?: string;
   googleCalendarSyncEnabled?: boolean;
   googleContacts?: boolean;
+
+  // Automations — late-employee auto-notify
+  autoNotifyLate?: boolean;
+  lateThresholdMinutes?: number;
+  lateNotifyTemplate?: string;
+
   [key: string]: any;
 }
 
@@ -666,6 +681,32 @@ export interface RewardTier {
   reward: string;
   icon: string;
   refs?: number;
+}
+
+// ─── Promotions ───────────────────────────────────────────────────────────────
+
+export interface Promotion {
+  id: string;
+  name: string;
+  description?: string;
+  discountType: "percent" | "fixed";
+  discountValue: number;
+  validFrom: string;
+  validTo: string;
+  serviceRestrictions?: string[];
+  usageLimit?: number;
+  audience: "all" | "tag" | "location" | "lastService" | "individual";
+  audienceTag?: string;
+  audienceCity?: string;
+  audienceLastServiceBefore?: number;
+  audienceCustomerIds?: string[];
+  channel?: "email" | "sms" | "both";
+  status: "draft" | "scheduled" | "sent" | "active" | "ended";
+  sentAt?: string;
+  sentCount?: number;
+  openedCount?: number;
+  redeemedCount?: number;
+  createdAt: string;
 }
 
 // ─── Mileage ─────────────────────────────────────────────────────────────────

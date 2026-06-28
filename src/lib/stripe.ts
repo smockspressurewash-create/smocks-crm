@@ -115,6 +115,69 @@ export const retrieveCheckoutSession = async (secretKey: string, sessionId: stri
   return res.json();
 };
 
+// ─── Customers + saved payment methods (for the client portal) ───────────────
+
+export interface StripeCustomerObj { id: string; email?: string; name?: string }
+
+export const createStripeCustomer = async (secretKey: string, email: string, name: string): Promise<StripeCustomerObj> => {
+  const body = new URLSearchParams({ email, name });
+  const res = await fetch("https://api.stripe.com/v1/customers", {
+    method: "POST",
+    headers: { Authorization: `Basic ${btoa(secretKey + ":")}`, "Content-Type": "application/x-www-form-urlencoded" },
+    body: body.toString(),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({})) as { error?: { message?: string } };
+    throw new Error(err.error?.message ?? `Stripe error ${res.status}`);
+  }
+  return res.json();
+};
+
+export interface StripeSetupIntent { id: string; client_secret: string; status: string }
+
+export const createSetupIntent = async (secretKey: string, customerId: string): Promise<StripeSetupIntent> => {
+  const body = new URLSearchParams({ customer: customerId, "payment_method_types[0]": "card" });
+  const res = await fetch("https://api.stripe.com/v1/setup_intents", {
+    method: "POST",
+    headers: { Authorization: `Basic ${btoa(secretKey + ":")}`, "Content-Type": "application/x-www-form-urlencoded" },
+    body: body.toString(),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({})) as { error?: { message?: string } };
+    throw new Error(err.error?.message ?? `Stripe error ${res.status}`);
+  }
+  return res.json();
+};
+
+export const chargeSavedPaymentMethod = async (
+  secretKey: string,
+  customerId: string,
+  paymentMethodId: string,
+  amountCents: number,
+  currency: string,
+  description: string
+): Promise<StripePaymentIntent> => {
+  const body = new URLSearchParams({
+    amount: String(Math.round(amountCents)),
+    currency,
+    description,
+    customer: customerId,
+    payment_method: paymentMethodId,
+    off_session: "true",
+    confirm: "true",
+  });
+  const res = await fetch("https://api.stripe.com/v1/payment_intents", {
+    method: "POST",
+    headers: { Authorization: `Basic ${btoa(secretKey + ":")}`, "Content-Type": "application/x-www-form-urlencoded" },
+    body: body.toString(),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({})) as { error?: { message?: string } };
+    throw new Error(err.error?.message ?? `Stripe error ${res.status}`);
+  }
+  return res.json();
+};
+
 export const refundPaymentIntent = async (secretKey: string, paymentIntentId: string): Promise<void> => {
   const res = await fetch("https://api.stripe.com/v1/refunds", {
     method: "POST",
