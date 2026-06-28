@@ -79,13 +79,23 @@ import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 import { LiveMap } from "../ui/LiveMap";
 import { supabase } from "../../lib/supabase";
 
-export function CrewView({ jobs = [], setJobs, customers = [], employees = [], toast, settings = {} as any, estimates = [], setEstimates = (() => {}) as any }) {
+export function CrewView({ jobs = [], setJobs, customers = [], employees = [], toast, settings = {} as any, estimates = [], setEstimates = (() => {}) as any, refetchEmployees = (() => {}) as any }) {
   const [empFilter, setEmpFilter] = useState("all");
   const [crewDate, setCrewDate] = useState(today());
   const [liveDetailId, setLiveDetailId] = useState<string | null>(null);
 
   const activeEmps = employees.filter(e => e.status === "active");
   const liveJobs = jobs.filter((j: any) => !!j.clockInAt && j.status !== "completed" && j.status !== "cancelled");
+
+  // Auto-refresh employee rows every 10s while anyone is sharing their
+  // location, so the Live Now map's pins move in real time rather than only
+  // updating whenever something else happens to trigger a refetch.
+  useEffect(() => {
+    const anySharing = activeEmps.some((e: any) => e.locationSharing);
+    if (!anySharing) return;
+    const interval = setInterval(() => { refetchEmployees(); }, 10000);
+    return () => clearInterval(interval);
+  }, [activeEmps.some((e: any) => e.locationSharing)]); // eslint-disable-line react-hooks/exhaustive-deps
   // Mirrors JobsPage/CalendarPage's updateJob — crew assignment and employee-owned
   // clock fields must reach Supabase immediately rather than waiting on the 30s
   // bulk autosave, since the employee portal polls Supabase directly. Without

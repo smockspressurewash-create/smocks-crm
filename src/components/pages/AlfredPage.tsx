@@ -778,6 +778,43 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           setJobs(prev => prev.map(x => x.id === inputs.jobId ? { ...x, priority: inputs.priority } : x));
           return { success: true, jobId: inputs.jobId, newPriority: inputs.priority };
         }
+        case "reschedule_job": {
+          const j = jobs.find(x => x.id === inputs.jobId);
+          if (!j) return { error: "Job not found" };
+          if (!inputs.date) return { error: "date is required" };
+          setJobs(prev => prev.map(x => x.id === inputs.jobId ? { ...x, scheduledDate: inputs.date, ...(inputs.time ? { scheduledTime: inputs.time } : {}) } : x));
+          toast("Alfred rescheduled job to " + inputs.date + (inputs.time ? " at " + inputs.time : ""));
+          setTimeout(() => onNav("jobs"), 1200);
+          return { success: true, jobId: inputs.jobId, newDate: inputs.date, newTime: inputs.time || j.scheduledTime };
+        }
+        case "cancel_job": {
+          const j = jobs.find(x => x.id === inputs.jobId);
+          if (!j) return { error: "Job not found" };
+          setJobs(prev => prev.map(x => x.id === inputs.jobId ? { ...x, status: "cancelled", cancelReason: inputs.reason || "" } : x));
+          toast("Alfred cancelled the " + (j.scheduledDate || "") + " job");
+          setTimeout(() => onNav("jobs"), 1200);
+          return { success: true, jobId: inputs.jobId, status: "cancelled" };
+        }
+        case "get_calendar_summary": {
+          const from = inputs.from || today();
+          const to = inputs.to || daysFromNow(7);
+          const inRange = jobs.filter(j => j.scheduledDate >= from && j.scheduledDate <= to && j.status !== "cancelled").map(j => {
+            const c = customers.find(x => x.id === j.customerId);
+            return { date: j.scheduledDate, time: j.scheduledTime, customer: c ? c.firstName + " " + c.lastName : "Unknown", address: j.address, status: j.status, amount: j.amount };
+          }).sort((a, b) => (a.date + (a.time || "")).localeCompare(b.date + (b.time || "")));
+          return { from, to, count: inRange.length, jobs: inRange };
+        }
+        case "get_employee_status": {
+          const list = employees.filter((e: any) => e.status === "active").map((e: any) => {
+            const activeJob = jobs.find((j: any) => !!j.clockInAt && (j.crew || []).includes(e.id) && j.status !== "completed" && j.status !== "cancelled");
+            return {
+              name: e.firstName + " " + e.lastName,
+              clockedInForDay: !!e.dayClockInAt,
+              onJob: activeJob ? { address: activeJob.address, elapsedMinutes: Math.round((Date.now() - activeJob.clockInAt) / 60000) } : null,
+            };
+          });
+          return { count: list.length, employees: list };
+        }
         case "assign_employee": {
           const j = jobs.find(x => x.id === inputs.jobId);
           if (!j) return { error: "Job not found" };
@@ -1039,6 +1076,26 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
       input_schema: { type: "object", properties: { jobId: { type: "string" }, priority: { type: "string", enum: ["low", "normal", "high", "urgent"] } }, required: ["jobId", "priority"] }
     },
     {
+      name: "reschedule_job",
+      description: "Move an existing job to a new date and/or time.",
+      input_schema: { type: "object", properties: { jobId: { type: "string" }, date: { type: "string", description: "YYYY-MM-DD" }, time: { type: "string", description: "HH:MM, optional" } }, required: ["jobId", "date"] }
+    },
+    {
+      name: "cancel_job",
+      description: "Cancel an existing job.",
+      input_schema: { type: "object", properties: { jobId: { type: "string" }, reason: { type: "string" } }, required: ["jobId"] }
+    },
+    {
+      name: "get_calendar_summary",
+      description: "Get what's scheduled for a date range — use for 'what's on the calendar today/this week' questions.",
+      input_schema: { type: "object", properties: { from: { type: "string", description: "YYYY-MM-DD, defaults to today" }, to: { type: "string", description: "YYYY-MM-DD, defaults to 7 days from 'from'" } } }
+    },
+    {
+      name: "get_employee_status",
+      description: "See which employees are currently clocked in, what job they're on, and elapsed time — use for 'who's working' / 'who's clocked in' questions.",
+      input_schema: { type: "object", properties: {} }
+    },
+    {
       name: "assign_employee",
       description: "Assign an employee to a job's crew directly — they're added immediately and emailed, no acceptance needed.",
       input_schema: { type: "object", properties: { jobId: { type: "string" }, employeeId: { type: "string" }, employeeName: { type: "string", description: "Full name like 'Jake Smith' as alternative to employeeId" } }, required: ["jobId"] }
@@ -1189,7 +1246,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
       const googleStatus = settings.googleConnected
         ? `\n\nGoogle Workspace: CONNECTED as ${settings.googleEmail}. Backend: ${settings.googleBackendUrl ? "configured ✓" : "NOT configured — calls will be queued until backend URL is added"}. Enabled scopes: ${Object.entries(settings.googleScopes || {}).filter(([k, v]) => v).map(([k]) => k).join(", ")}. You CAN use send_email_via_gmail, create_calendar_event, create_google_task, and upload_to_drive — they will call the real Google APIs if backend is configured, or stage for later if not.`
         : `\n\nGoogle Workspace: NOT CONNECTED. If the user asks to send email, create calendar events, or manage tasks, tell them to go to Settings → Integrations → Google and connect their backend.`;
-      const toolHint = `\n\nYou have tools available to READ and MODIFY the CRM. USE THEM AGGRESSIVELY — don't just describe what you would do, actually do it.\n\nKEY TOOL RULES:\n- Customer queries → USE search_customers or get_customer_details FIRST\n- Stats requests → USE get_business_stats\n- "Remember/note/don't forget" → USE remember_fact\n- Create estimates, customers, jobs → USE create_estimate/create_customer/schedule_job\n- Navigate somewhere → USE navigate_to\n- Preferences/facts shared → USE remember_fact automatically\n\nAUTOMATION TOOLS (VERY IMPORTANT):\n- When user describes ANY workflow, drip sequence, reminder, or "when X do Y" scenario → USE create_automation IMMEDIATELY. Build a proper n8n-style multi-step workflow with real step types: trigger (first), then delays, conditions, actions. NEVER just describe what you'd build — actually build it with create_automation.\n- "Send review request after job complete" → trigger: Job complete, delay: 2h, action: SMS review request\n- "Follow up on unpaid invoices" → trigger: Invoice unpaid 7 days, action: polite reminder email, delay: 4 days, condition: still unpaid, action: firm SMS\n- To check existing workflows → USE list_automations\n- To enable/disable a workflow → USE toggle_automation\n\nCurrent automations: ${automations.length} total, ${automations.filter(a => a.active).length} active\n\nNAME MATCHING: if a tool result comes back with "error": "Customer not found" or "Employee not found" and includes a "suggestions" array, ask the user "Do you mean [name], or [name]?" using those exact suggested names — never ask a generic clarifying question like "who do you mean?" when real candidate names are available.`;
+      const toolHint = `\n\nYou have tools available to READ and MODIFY the CRM. USE THEM AGGRESSIVELY — don't just describe what you would do, actually do it.\n\nVERIFY BEFORE CONFIRMING: every action tool returns either {"success": true, ...} or {"error": "..."}. NEVER say "Done" or "All set" without checking which one came back. If you see an "error" field, tell the user exactly what went wrong (the error text) and what they could try instead — do not pretend it worked, and do not retry silently. Only confirm success when the tool result actually contains "success": true.\n\nKEY TOOL RULES:\n- Customer queries → USE search_customers or get_customer_details FIRST\n- Stats requests → USE get_business_stats\n- "What's on the calendar" → USE get_calendar_summary\n- "Who's clocked in / who's working" → USE get_employee_status\n- "Remember/note/don't forget" → USE remember_fact\n- Create estimates, customers, jobs → USE create_estimate/create_customer/schedule_job\n- Move or cancel a job → USE reschedule_job/cancel_job\n- Navigate somewhere → USE navigate_to (the app already auto-navigates after schedule_job/create_customer/create_estimate, but call navigate_to yourself for anything else the user asks to see)\n- Preferences/facts shared → USE remember_fact automatically\n\nAUTOMATION TOOLS (VERY IMPORTANT):\n- When user describes ANY workflow, drip sequence, reminder, or "when X do Y" scenario → USE create_automation IMMEDIATELY. Build a proper n8n-style multi-step workflow with real step types: trigger (first), then delays, conditions, actions. NEVER just describe what you'd build — actually build it with create_automation.\n- "Send review request after job complete" → trigger: Job complete, delay: 2h, action: SMS review request\n- "Follow up on unpaid invoices" → trigger: Invoice unpaid 7 days, action: polite reminder email, delay: 4 days, condition: still unpaid, action: firm SMS\n- To check existing workflows → USE list_automations\n- To enable/disable a workflow → USE toggle_automation\n\nCurrent automations: ${automations.length} total, ${automations.filter(a => a.active).length} active\n\nNAME MATCHING: if a tool result comes back with "error": "Customer not found" or "Employee not found" and includes a "suggestions" array, ask the user "Do you mean [name], or [name]?" using those exact suggested names — never ask a generic clarifying question like "who do you mean?" when real candidate names are available.`;
       const systemPrompt = prompts[activePersonality] + memoryContext + businessContext + googleStatus + toolHint;
 
       // Build initial message list — allow multi-turn tool calls up to 5 rounds

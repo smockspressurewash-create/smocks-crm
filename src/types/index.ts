@@ -265,6 +265,10 @@ export interface Employee {
   ratingScore?: number;
   lastPaidThrough?: string;
   dayClockInAt?: number;
+  dayLunchStartAt?: number | null;
+  dayPausedMinutes?: number;
+  lastShiftHours?: number;
+  lastShiftDate?: string;
   paidPeriods?: Record<string, "paid" | "unpaid">;
   locationSharing?: boolean;
   lastLocation?: { lat: number; lng: number; updatedAt: number };

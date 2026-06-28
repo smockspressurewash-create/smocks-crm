@@ -285,8 +285,10 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setting
           <table className="w-full text-sm">
             <thead><tr className="border-b border-red-900/30 bg-black/40">
               <th className="text-left px-4 py-3 text-xs uppercase tracking-wider text-white/60">Employee</th>
+              <th className="text-right px-4 py-3 text-xs uppercase tracking-wider text-white/60">Today</th>
+              <th className="text-right px-4 py-3 text-xs uppercase tracking-wider text-white/60">This Week</th>
               <th className="text-right px-4 py-3 text-xs uppercase tracking-wider text-white/60">Jobs</th>
-              <th className="text-right px-4 py-3 text-xs uppercase tracking-wider text-white/60">Hours</th>
+              <th className="text-right px-4 py-3 text-xs uppercase tracking-wider text-white/60">Period Hours</th>
               <th className="text-right px-4 py-3 text-xs uppercase tracking-wider text-white/60">Rate</th>
               <th className="text-right px-4 py-3 text-xs uppercase tracking-wider text-white/60">Est. Pay</th>
             </tr></thead>
@@ -295,8 +297,15 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setting
                 const empJobs = jobs.filter(j => (j.crew||[]).includes(e.id) && j.status === "completed" && j.scheduledDate >= payPeriodStart && j.scheduledDate <= payPeriodEnd);
                 const hrs = empJobs.reduce((s,j) => s + Number(j.loggedHours||j.duration||0), 0);
                 const cost = hrs * e.hourlyRate;
+                const todayStr = today();
+                const weekStart = (() => { const d = new Date(); d.setDate(d.getDate() - d.getDay()); return d.toISOString().slice(0, 10); })();
+                const allCompleted = jobs.filter((j: any) => (j.crew || []).includes(e.id) && j.status === "completed");
+                const hoursToday = allCompleted.filter((j: any) => j.scheduledDate === todayStr).reduce((s: number, j: any) => s + Number(j.loggedHours || j.duration || 0), 0);
+                const hoursWeek = allCompleted.filter((j: any) => j.scheduledDate >= weekStart).reduce((s: number, j: any) => s + Number(j.loggedHours || j.duration || 0), 0);
                 return <tr key={e.id} className="border-b border-red-900/10 hover:bg-white/5">
-                  <td className="px-4 py-3"><div className="flex items-center gap-2"><div className="w-7 h-7 rounded-full bg-gradient-to-br from-red-600 to-red-900 flex items-center justify-center text-xs font-bold">{e.firstName[0]}</div>{e.firstName} {e.lastName}</div></td>
+                  <td className="px-4 py-3"><div className="flex items-center gap-2"><div className="w-7 h-7 rounded-full bg-gradient-to-br from-red-600 to-red-900 flex items-center justify-center text-xs font-bold">{e.firstName[0]}</div>{e.firstName} {e.lastName}{(e as any).dayClockInAt && <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" title="On the clock now" />}</div></td>
+                  <td className="px-4 py-3 text-right text-white/70">{hoursToday.toFixed(1)}h</td>
+                  <td className="px-4 py-3 text-right text-white/70">{hoursWeek.toFixed(1)}h</td>
                   <td className="px-4 py-3 text-right text-white/60">{empJobs.length}</td>
                   <td className="px-4 py-3 text-right text-white/80">{hrs.toFixed(1)}h</td>
                   <td className="px-4 py-3 text-right text-white/60">{fmt(e.hourlyRate)}/hr</td>
@@ -304,7 +313,7 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setting
                 </tr>;
               })}
               <tr className="bg-red-950/20 font-bold border-t border-red-900/30">
-                <td className="px-4 py-3" colSpan={4}>Total Payroll Est.</td>
+                <td className="px-4 py-3" colSpan={6}>Total Payroll Est.</td>
                 <td className="px-4 py-3 text-right text-red-400 text-base">{fmt(totalPayroll)}</td>
               </tr>
             </tbody>
@@ -493,6 +502,17 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setting
           </div>
           <div><label className="text-xs text-white/60 mb-1 block">Emergency Contact</label><GInput value={f.emergencyContact} onChange={e => setF({ ...f, emergencyContact: e.target.value })} placeholder="Name — (717) 555-0000" /></div>
           <div><label className="text-xs text-white/60 mb-1 block">Notes</label><GTxt rows={2} value={f.notes} onChange={e => setF({ ...f, notes: e.target.value })} /></div>
+
+          {/* Shift status — mirrors the employee's own "Start My Day" timer
+              so the owner can see it's running (and how long the last
+              completed shift was) without opening the employee portal. */}
+          {f.id && ((f as any).dayClockInAt || (f as any).lastShiftHours != null) && (
+            <div className={"p-3 rounded-xl border text-xs " + ((f as any).dayClockInAt ? "bg-green-950/20 border-green-700/40 text-green-300" : "bg-black/30 border-white/10 text-white/50")}>
+              {(f as any).dayClockInAt
+                ? `On the clock since ${new Date((f as any).dayClockInAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`
+                : (f as any).lastShiftHours != null && `Last shift: ${(f as any).lastShiftHours}h on ${(f as any).lastShiftDate || "—"}`}
+            </div>
+          )}
 
           {/* Pay — real hours pulled from this employee's completed jobs,
               broken into individually-markable 14-day pay periods. A period

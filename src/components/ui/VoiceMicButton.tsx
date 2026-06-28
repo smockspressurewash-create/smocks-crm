@@ -1,13 +1,17 @@
 import React, { useEffect, useRef, useState } from "react";
-import { Mic, Play, Pause, Send, Trash2 } from "lucide-react";
+import { Mic, Play, Pause, Send, Trash2, Square } from "lucide-react";
 
 // Records and transcribes voice input — Whisper API when an OpenAI key is
 // configured (more accurate, works on any browser), otherwise the browser's
 // built-in SpeechRecognition (no key needed, Chromium-based browsers only).
 //
 // Two modes:
-// - "dictate" (STT): transcript lands in the input box for the user to read,
-//   edit, and send themselves via onTranscript(text, false). No audio kept.
+// - "dictate" (STT): continuous listening with live interim transcription
+//   shown as the user speaks. Keeps listening (auto-restarting if the
+//   browser's recognizer times out on silence) until the user presses the
+//   button again — never stops on its own. On stop, the full text is pushed
+//   into the input box via onTranscript(text, false) for the user to edit
+//   and send themselves.
 // - "note": records actual audio for playback. On stop, nothing is sent yet —
 //   the user hears it back and explicitly presses Send (or Discard). Only on
 //   Send is the transcript produced and onTranscript(text, true) called.
@@ -17,10 +21,13 @@ export function VoiceMicButton({ onTranscript, apiKey, mode = "dictate" }: { onT
   const [elapsed, setElapsed] = useState(0);
   const [pendingAudioUrl, setPendingAudioUrl] = useState<string | null>(null);
   const [playing, setPlaying] = useState(false);
+  const [liveText, setLiveText] = useState("");
   const mediaRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
   const recognitionRef = useRef<any>(null);
   const liveTranscriptRef = useRef("");
+  const finalTextRef = useRef("");
+  const keepListeningRef = useRef(false);
   const audioElRef = useRef<HTMLAudioElement | null>(null);
   const timerRef = useRef<any>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -46,18 +53,33 @@ export function VoiceMicButton({ onTranscript, apiKey, mode = "dictate" }: { onT
 
   const startDictateRecognition = () => {
     if (!SpeechRecognitionCtor) { alert("Voice input isn't supported in this browser. Try Chrome, or add an OpenAI key in Settings for Whisper transcription."); return; }
-    const rec = new SpeechRecognitionCtor();
-    rec.lang = "en-US";
-    rec.interimResults = false;
-    rec.maxAlternatives = 1;
-    rec.onresult = (e: any) => {
-      const text = e.results?.[0]?.[0]?.transcript;
-      if (text) onTranscript?.(text.trim(), false);
+    finalTextRef.current = "";
+    setLiveText("");
+    keepListeningRef.current = true;
+    const startOne = () => {
+      const rec = new SpeechRecognitionCtor();
+      rec.lang = "en-US";
+      rec.continuous = true;
+      rec.interimResults = true;
+      rec.maxAlternatives = 1;
+      rec.onresult = (e: any) => {
+        let interim = "";
+        for (let i = e.resultIndex; i < e.results.length; i++) {
+          const t = e.results[i][0].transcript;
+          if (e.results[i].isFinal) finalTextRef.current += t + " ";
+          else interim += t;
+        }
+        setLiveText((finalTextRef.current + interim).trim());
+      };
+      rec.onerror = (e: any) => { if (e.error === "not-allowed" || e.error === "service-not-allowed") { keepListeningRef.current = false; alert("Microphone access denied"); } };
+      // The browser recognizer times out after a few seconds of silence even
+      // in continuous mode — restart it transparently so listening only ever
+      // stops when the user presses the button again, not on its own.
+      rec.onend = () => { if (keepListeningRef.current) startOne(); };
+      recognitionRef.current = rec;
+      rec.start();
     };
-    rec.onerror = () => { /* user cancelled or no speech — nothing to report */ };
-    rec.onend = () => setRecording(false);
-    recognitionRef.current = rec;
-    rec.start();
+    startOne();
     setRecording(true);
   };
 
@@ -107,10 +129,15 @@ export function VoiceMicButton({ onTranscript, apiKey, mode = "dictate" }: { onT
       streamRef.current?.getTracks().forEach(t => t.stop());
       recognitionRef.current?.stop();
       stopTimer();
+      setRecording(false);
     } else {
+      keepListeningRef.current = false;
       recognitionRef.current?.stop();
+      setRecording(false);
+      const text = finalTextRef.current.trim() || liveText.trim();
+      if (text) onTranscript?.(text, false);
+      setLiveText("");
     }
-    setRecording(false);
   };
 
   const toggleRecording = () => {
@@ -174,6 +201,20 @@ export function VoiceMicButton({ onTranscript, apiKey, mode = "dictate" }: { onT
       <button onClick={toggleRecording} className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-red-600/40 text-red-300 animate-pulse" title="Click to stop recording">
         <Mic size={14} /><span className="text-[11px] font-mono">{String(Math.floor(elapsed / 60)).padStart(2, "0")}:{String(elapsed % 60).padStart(2, "0")}</span>
       </button>
+    );
+  }
+
+  if (recording && mode === "dictate") {
+    return (
+      <div className="flex items-center gap-2 bg-red-950/30 border border-red-700/40 rounded-xl px-2.5 py-1.5 max-w-xs">
+        <div className="flex items-center gap-0.5 flex-shrink-0">
+          {[0, 1, 2, 3].map(i => (
+            <div key={i} className="w-0.5 bg-red-400 rounded-full animate-pulse" style={{ height: 8 + (i % 2) * 6, animationDelay: `${i * 120}ms` }} />
+          ))}
+        </div>
+        <span className="text-[11px] text-red-100/80 truncate flex-1">{liveText || "Listening…"}</span>
+        <button onClick={toggleRecording} title="Stop listening" className="p-1 rounded-lg text-red-300 hover:bg-red-900/40 flex-shrink-0"><Square size={12} /></button>
+      </div>
     );
   }
 

@@ -87,6 +87,7 @@ const STREET_VIEW_API_ENABLE_URL = "https://console.cloud.google.com/apis/librar
 // to the Cloud Console page that fixes it, instead of just hiding.
 function MiniStreetViewThumb({ address, mapsKey }: { address: string; mapsKey?: string }) {
   const [loadError, setLoadError] = useState(false);
+  const [diagnosis, setDiagnosis] = useState("");
   if (!mapsKey || !address) {
     return (
       <div className="w-14 h-14 rounded-lg bg-green-900/40 border border-green-600/40 flex items-center justify-center flex-shrink-0">
@@ -94,19 +95,34 @@ function MiniStreetViewThumb({ address, mapsKey }: { address: string; mapsKey?: 
       </div>
     );
   }
+  const thumbUrl = `https://maps.googleapis.com/maps/api/streetview?size=72x72&location=${encodeURIComponent(address)}&key=${mapsKey}`;
   if (loadError) {
     return (
-      <a href={STREET_VIEW_API_ENABLE_URL} target="_blank" rel="noopener noreferrer" title="Street View Static API not enabled for this key — click to enable it" className="w-14 h-14 rounded-lg bg-yellow-950/30 border border-yellow-700/40 flex items-center justify-center flex-shrink-0 hover:bg-yellow-900/40">
+      <div title={diagnosis || "Checking the exact error…"} className="w-14 h-14 rounded-lg bg-yellow-950/30 border border-yellow-700/40 flex items-center justify-center flex-shrink-0">
         <AlertTriangle size={16} className="text-yellow-400" />
-      </a>
+      </div>
     );
   }
   return (
     <img
-      src={`https://maps.googleapis.com/maps/api/streetview?size=72x72&location=${encodeURIComponent(address)}&key=${mapsKey}`}
+      src={thumbUrl}
       alt=""
       className="w-14 h-14 rounded-lg object-cover flex-shrink-0 border border-white/10"
-      onError={() => { console.warn("Street View image failed to load for", address, "— enable the Street View Static API:", STREET_VIEW_API_ENABLE_URL); setLoadError(true); }}
+      onError={async () => {
+        console.warn("Street View image failed to load for", address, "— request URL:", thumbUrl);
+        setLoadError(true);
+        try {
+          const res = await fetch(thumbUrl);
+          const ct = res.headers.get("content-type") || "";
+          if (res.ok && ct.startsWith("image/")) { setDiagnosis(`HTTP ${res.status} but <img> still failed — transient issue, try reloading.`); return; }
+          const body = await res.text().catch(() => "");
+          const d = `HTTP ${res.status} ${res.statusText} — ${body.slice(0, 200) || "(empty body)"}`;
+          console.warn("Street View diagnosis:", d);
+          setDiagnosis(d);
+        } catch (e: any) {
+          setDiagnosis(`Network/CORS error: ${e?.message || e}`);
+        }
+      }}
     />
   );
 }
@@ -501,12 +517,19 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
         </Glass>
       )}
 
-      {/* End-of-day summary — auto-generated from today's job/crew activity */}
+      {/* End-of-day summary — auto-generated from today's job/crew activity.
+          Recomputed on every render from live props, so it updates the moment
+          a job completes, an employee clocks in/out, a payment lands, or an
+          invoice goes out — no manual refresh or separate trigger needed. */}
       {(() => {
         const todaysJobs = jobs.filter(j => j.scheduledDate === todayStr);
         const completedToday = todaysJobs.filter(j => j.status === "completed");
         if (todaysJobs.length === 0) return null;
         const ratedEmployees = employees.filter((e: any) => typeof e.ratingScore === "number");
+        const invoicesSentToday = estimates.filter((e: any) => e.invoiced && e.invoicedAt === todayStr).length;
+        const paymentsToday = estimates.filter((e: any) => e.paidAt === todayStr);
+        const revenueToday = paymentsToday.reduce((s: number, e: any) => s + (Number(e.total) || 0), 0);
+        const clockedInNow = employees.filter((e: any) => !!e.dayClockInAt).length;
         return (
           <Glass className="p-4 !bg-black/40">
             <div className="flex items-center justify-between mb-3">
@@ -529,6 +552,18 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
               <div className="text-center p-2.5 rounded-xl bg-orange-950/20 border border-orange-700/20">
                 <div className="text-xl font-black text-orange-400">{todaysIssueNotes.length}</div>
                 <div className="text-[10px] text-white/40 uppercase mt-0.5">Field Notes</div>
+              </div>
+              <div className="text-center p-2.5 rounded-xl bg-blue-950/20 border border-blue-700/20">
+                <div className="text-xl font-black text-blue-400">{clockedInNow}</div>
+                <div className="text-[10px] text-white/40 uppercase mt-0.5">On Shift Now</div>
+              </div>
+              <div className="text-center p-2.5 rounded-xl bg-purple-950/20 border border-purple-700/20">
+                <div className="text-xl font-black text-purple-400">{invoicesSentToday}</div>
+                <div className="text-[10px] text-white/40 uppercase mt-0.5">Invoices Sent</div>
+              </div>
+              <div className="text-center p-2.5 rounded-xl bg-green-950/20 border border-green-700/20">
+                <div className="text-xl font-black text-green-400">{fmt(revenueToday)}</div>
+                <div className="text-[10px] text-white/40 uppercase mt-0.5">Collected Today</div>
               </div>
             </div>
             {ratedEmployees.length > 0 && (

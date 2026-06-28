@@ -251,3 +251,14 @@ export const IRS_RATE = 0.67; // 2024 rate per mile
 // names exactly (e.g. "customerId", "scheduledDate") — see the SQL in the
 // Supabase SQL editor that adds these camelCase columns. No code-side mapping
 // is needed; reads/writes pass Job objects straight through to Supabase.
+
+// ─── withTimeout ──────────────────────────────────────────────────────────────
+// Races a promise against a hard timeout so a hung await (no error, no
+// resolve — e.g. a stuck Supabase internal navigator-lock, or a dead network
+// request) can never block a button's loading state forever. A normal
+// rejection from the wrapped promise still propagates to the caller as usual.
+export const withTimeout = <T,>(p: Promise<T>, ms: number, label: string): Promise<T> =>
+  Promise.race([
+    p,
+    new Promise<T>((_, reject) => setTimeout(() => reject(new Error(label + " timed out")), ms)),
+  ]);

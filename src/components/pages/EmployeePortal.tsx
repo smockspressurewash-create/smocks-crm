@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import {
   Clock, Briefcase, Calendar, ChevronLeft, CheckSquare, Camera,
-  LogOut, MapPin, Phone, User, Play, Square, Plus, X, Eye, DollarSign,
+  LogOut, MapPin, Phone, User, Play, Pause, Square, Plus, X, Eye, DollarSign,
   ChevronRight, Home, List, CheckCircle, AlertCircle, Image, FileText,
   Video, PenLine, Shield, Navigation, Database, Route, ToggleRight, ToggleLeft, Download, Bell
 } from "lucide-react";
@@ -14,7 +14,7 @@ import { GInput } from "../ui/GInput";
 import { GTxt } from "../ui/GTxt";
 import { BeforeAfterSlider } from "../ui/BeforeAfterSlider";
 import { loadMapsScript, AddressAutocomplete } from "../ui/AddressAutocomplete";
-import { BarChart, Bar, XAxis, YAxis, ResponsiveContainer, Tooltip, CartesianGrid } from "recharts";
+import { BarChart, Bar, LineChart, Line, XAxis, YAxis, ResponsiveContainer, Tooltip, CartesianGrid } from "recharts";
 import { fmt, uid, today, daysFromNow, computeJobRatingScore } from "../../lib/utils";
 import type { Job, Employee, Customer, AppSettings, JobChecklistItem } from "../../types";
 
@@ -53,25 +53,42 @@ export function paymentStatusLabel(job: Job): string {
 // (it's billed/enabled separately from Maps JS/Places) — show the exact
 // Cloud Console URL to fix it instead of hiding the problem.
 const STREET_VIEW_API_ENABLE_URL = "https://console.cloud.google.com/apis/library/street-view-image-backend.googleapis.com";
+async function diagnoseStreetViewFailure(url: string): Promise<string> {
+  try {
+    const res = await fetch(url);
+    const ct = res.headers.get("content-type") || "";
+    if (res.ok && ct.startsWith("image/")) return `HTTP ${res.status} but the <img> tag still failed to render it (content-type: ${ct}) — likely a transient network/decode issue, try reloading.`;
+    const body = await res.text().catch(() => "");
+    return `HTTP ${res.status} ${res.statusText} — ${body.slice(0, 300) || "(empty response body)"}`;
+  } catch (e: any) {
+    return `Network/CORS error reaching the Street View endpoint directly: ${e?.message || e}`;
+  }
+}
+
 function StreetViewThumb({ address, apiKey }: { address: string; apiKey?: string }) {
   const [expanded, setExpanded] = useState(false);
   const [loadError, setLoadError] = useState(false);
+  const [diagnosis, setDiagnosis] = useState("");
+  const thumbUrl = `https://maps.googleapis.com/maps/api/streetview?size=600x300&location=${encodeURIComponent(address || "")}&key=${apiKey || ""}`;
+  const bigUrl = `https://maps.googleapis.com/maps/api/streetview?size=1200x600&location=${encodeURIComponent(address || "")}&key=${apiKey || ""}`;
   if (!address || !apiKey) return null;
   if (loadError) {
     return (
       <div className="w-full rounded-xl border border-yellow-700/40 bg-yellow-950/15 p-3 text-xs text-yellow-200">
         <div className="font-semibold mb-1">Street View image didn't load</div>
-        <div className="text-yellow-200/80 mb-2">Ask the owner to enable the <b>Street View Static API</b> for this key — it's billed and enabled separately from Maps JS/Places.</div>
-        <a href={STREET_VIEW_API_ENABLE_URL} target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:text-blue-300 underline break-all">{STREET_VIEW_API_ENABLE_URL}</a>
+        <div className="text-yellow-200/80 mb-2 break-all"><b>Request:</b> {thumbUrl}</div>
+        <div className="text-yellow-200/80 mb-2">{diagnosis || "Checking the exact error…"}</div>
       </div>
     );
   }
-  const thumbUrl = `https://maps.googleapis.com/maps/api/streetview?size=600x300&location=${encodeURIComponent(address)}&key=${apiKey}`;
-  const bigUrl = `https://maps.googleapis.com/maps/api/streetview?size=1200x600&location=${encodeURIComponent(address)}&key=${apiKey}`;
   return (
     <>
       <button onClick={() => setExpanded(true)} className="w-full rounded-xl overflow-hidden border border-white/10 relative group">
-        <img src={thumbUrl} alt="Street View" className="w-full h-32 object-cover" onError={() => { console.warn("Street View image failed to load for", address, "— enable the Street View Static API:", STREET_VIEW_API_ENABLE_URL); setLoadError(true); }} />
+        <img src={thumbUrl} alt="Street View" className="w-full h-32 object-cover" onError={() => {
+          console.warn("Street View image failed to load for", address, "— request URL:", thumbUrl);
+          setLoadError(true);
+          diagnoseStreetViewFailure(thumbUrl).then(d => { console.warn("Street View diagnosis:", d); setDiagnosis(d); });
+        }} />
         <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition flex items-center justify-center">
           <span className="opacity-0 group-hover:opacity-100 text-white text-xs font-semibold transition">Tap to expand</span>
         </div>
@@ -1105,7 +1122,7 @@ function OwnerTeamPortal({ jobs, employees, customers, onClose, googleMapsKey }:
   const visibleJobs = selectedEmpId === "all"
     ? jobs
     : jobs.filter(j => (j.crew || []).includes(selectedEmpId));
-  const todayJobs = visibleJobs.filter(j => j.scheduledDate === todayStr);
+  const todayJobs = visibleJobs.filter(j => j.scheduledDate === todayStr && j.status !== "cancelled");
 
   if (selectedJobId) {
     const job = jobs.find(j => j.id === selectedJobId);
@@ -1193,7 +1210,12 @@ function OwnerTeamPortal({ jobs, employees, customers, onClose, googleMapsKey }:
                     <div className="flex items-start justify-between gap-2">
                       <div className="flex-1 min-w-0">
                         <div className="font-semibold text-sm truncate">{j.address}</div>
-                        {c && <div className="text-xs text-white/50">{c.firstName} {c.lastName}</div>}
+                        {c && (
+                          <div className="text-xs text-white/50 flex items-center gap-2 flex-wrap">
+                            <span>{c.firstName} {c.lastName}</span>
+                            {c.phone && <a href={`tel:${c.phone}`} onClick={(e: React.MouseEvent) => e.stopPropagation()} className="text-blue-400/80 hover:text-blue-300 flex items-center gap-0.5"><Phone size={9} />{c.phone}</a>}
+                          </div>
+                        )}
                       </div>
                       <div className={"text-[10px] px-2 py-0.5 rounded-full font-bold uppercase " +
                         (j.status === "completed" ? "bg-green-900/40 text-green-300" :
@@ -1222,7 +1244,12 @@ function OwnerTeamPortal({ jobs, employees, customers, onClose, googleMapsKey }:
                     className="w-full text-left p-3 rounded-xl bg-white/5 border border-white/10 hover:bg-white/10 transition flex items-center gap-3">
                     <div className="flex-1 min-w-0">
                       <div className="text-sm font-medium truncate">{j.address}</div>
-                      {c && <div className="text-xs text-white/40">{c.firstName} {c.lastName}</div>}
+                      {c && (
+                        <div className="text-xs text-white/40 flex items-center gap-2 flex-wrap">
+                          <span>{c.firstName} {c.lastName}</span>
+                          {c.phone && <a href={`tel:${c.phone}`} onClick={(e: React.MouseEvent) => e.stopPropagation()} className="text-blue-400/70 hover:text-blue-300 flex items-center gap-0.5"><Phone size={9} />{c.phone}</a>}
+                        </div>
+                      )}
                     </div>
                     <div className="text-xs text-white/40 flex-shrink-0">{j.scheduledDate}</div>
                   </button>
@@ -1315,6 +1342,15 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   // refetch, since the underlying request never persisted. undefined means
   // "trust the server value".
   const [optimisticDayClockInAt, setOptimisticDayClockInAt] = useState<number | null | undefined>(undefined);
+  const [optimisticDayLunchStartAt, setOptimisticDayLunchStartAt] = useState<number | null | undefined>(undefined);
+  const [payChartRange, setPayChartRange] = useState<"7d" | "4wk" | "12mo">("7d");
+  // Forces a re-render every second so the shift timer reads HH:MM:SS live —
+  // the value itself is never read, only its change triggers the re-render.
+  const [, setShiftTick] = useState(0);
+  useEffect(() => {
+    const interval = setInterval(() => setShiftTick(t => t + 1), 1000);
+    return () => clearInterval(interval);
+  }, []);
   // Login extras
   const [forgotSent, setForgotSent] = useState(false);
   // Incoming job requests on Today tab
@@ -1423,6 +1459,12 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     }
   }, [(myEmployee as any)?.dayClockInAt]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  useEffect(() => {
+    if (optimisticDayLunchStartAt !== undefined && (myEmployee as any)?.dayLunchStartAt === optimisticDayLunchStartAt) {
+      setOptimisticDayLunchStartAt(undefined);
+    }
+  }, [(myEmployee as any)?.dayLunchStartAt]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Log whenever the lookup inputs change so we can see if employees is empty on first render.
   // Also auto-retries once against Supabase when myEmployee isn't found in the prop array.
   useEffect(() => {
@@ -1492,14 +1534,18 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     if (isEmpGoogleTokenValid(existing)) return;
     const dbToken = (myEmployee as any).google_token;
     const dbExpiresAt = (myEmployee as any).google_token_expires_at;
-    if (!dbToken || !dbExpiresAt) return;
-    const expiresAt = new Date(dbExpiresAt).getTime();
-    if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) return;
+    const dbRefreshToken = (myEmployee as any).google_refresh_token;
+    if (!dbToken && !dbRefreshToken) return;
+    // Hydrate even when the access token itself has already expired, as long
+    // as there's a refresh_token — otherwise the silent-refresh effect below
+    // never gets a chance to run on a device that's never connected before,
+    // and the employee sees a "reconnect" prompt for a self-healing state.
+    const expiresAt = dbExpiresAt ? new Date(dbExpiresAt).getTime() : 0;
     saveEmpGoogleToken(uid, {
-      token: dbToken,
-      refreshToken: (myEmployee as any).google_refresh_token || undefined,
+      token: dbToken || "",
+      refreshToken: dbRefreshToken || undefined,
       email: (myEmployee as any).google_email || empSession.user.email || "",
-      expiresAt,
+      expiresAt: Number.isFinite(expiresAt) ? expiresAt : 0,
     });
     setGoogleHydrateTick(t => t + 1);
   }, [(myEmployee as any)?.id, empSession?.user?.id]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -1646,6 +1692,17 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     };
   }, [(myEmployee as any)?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Periodically refetch the employees table so a Google connection (or any
+  // other field) made on a DIFFERENT device shows up here without requiring
+  // a full page reload — without this, each device's `employees` state was
+  // only ever fetched once at mount and never converged with what another
+  // device wrote to the same Supabase row.
+  useEffect(() => {
+    if (!empSession?.user?.id) return;
+    const interval = setInterval(() => { refetchEmployees?.(); }, 10000);
+    return () => clearInterval(interval);
+  }, [empSession?.user?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Merge owner-set permissions with defaults (all-on for existing employees with no permissions field)
   const perms: Record<string, boolean> = { ...DEFAULT_PERMISSIONS, ...((myEmployee as any)?.permissions || {}) };
 
@@ -1665,27 +1722,34 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   }
 
   // Real-time location sharing — only while opted in AND clocked in for the
-  // day; posts a GPS fix to Supabase every 30s so the owner's Crew View →
+  // day; posts a GPS fix to Supabase every 15s so the owner's Crew View →
   // Live Now map can plot it. Stops automatically the moment either flag
   // flips off (interval is torn down by the effect cleanup on re-run).
   useEffect(() => {
     const empId = (myEmployee as any)?.id;
     const sharing = (myEmployee as any)?.locationSharing;
     const clockedIn = !!(myEmployee as any)?.dayClockInAt;
-    if (!empId || !sharing || !clockedIn || !navigator.geolocation) return;
+    if (!empId || !sharing || !clockedIn) return;
+    if (!navigator.geolocation) { toast("This browser doesn't support location sharing", "red"); return; }
+    let deniedToastShown = false;
     const postLocation = () => {
       navigator.geolocation.getCurrentPosition(
         pos => {
           (supabase as any).from("employees").update({
             lastLocation: { lat: pos.coords.latitude, lng: pos.coords.longitude, updatedAt: Date.now() },
-          }).eq("id", empId).then(() => {}, () => {});
+          }).eq("id", empId).then((r: any) => {
+            if (r?.error) console.warn("Location post failed:", r.error.message);
+          });
         },
-        () => {},
+        (err) => {
+          if (!deniedToastShown) { deniedToastShown = true; toast("Location permission denied — location sharing paused", "red"); }
+          console.warn("Geolocation error:", err.message);
+        },
         { enableHighAccuracy: true, timeout: 10000 }
       );
     };
     postLocation();
-    const interval = setInterval(postLocation, 30000);
+    const interval = setInterval(postLocation, 15000);
     return () => clearInterval(interval);
   }, [(myEmployee as any)?.id, (myEmployee as any)?.locationSharing, (myEmployee as any)?.dayClockInAt]);
 
@@ -1723,7 +1787,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   }, [(myEmployee as any)?.id, myJobs.length]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const todayStr = today();
-  const todayJobs = myJobs.filter(j => j.scheduledDate === todayStr);
+  const todayJobs = myJobs.filter(j => j.scheduledDate === todayStr && j.status !== "cancelled");
 
   const weekStart = (() => {
     const d = new Date(); d.setDate(d.getDate() - d.getDay()); return d.toISOString().slice(0, 10);
@@ -3040,14 +3104,22 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                 this tracks the whole shift). */}
             {(() => {
               const dayClockInAt = optimisticDayClockInAt !== undefined ? optimisticDayClockInAt : (myEmployee as any)?.dayClockInAt;
+              const dayLunchStartAt = optimisticDayLunchStartAt !== undefined ? optimisticDayLunchStartAt : (myEmployee as any)?.dayLunchStartAt;
+              const dayPausedMinutes = Number((myEmployee as any)?.dayPausedMinutes) || 0;
               const empId = (myEmployee as any)?.id;
-              const sendEndOfDaySummary = async () => {
+              const onLunch = !!dayLunchStartAt;
+              const currentPauseMs = onLunch ? Date.now() - dayLunchStartAt : 0;
+              const netShiftHoursNow = dayClockInAt
+                ? Math.max(0, (Date.now() - dayClockInAt - dayPausedMinutes * 60000 - currentPauseMs) / 3600000)
+                : 0;
+              const shiftSecs = Math.floor(netShiftHoursNow * 3600);
+              const shiftHHMMSS = [Math.floor(shiftSecs / 3600), Math.floor((shiftSecs % 3600) / 60), shiftSecs % 60].map(n => String(n).padStart(2, "0")).join(":");
+              const sendEndOfDaySummary = async (finalHours: number) => {
                 const todayStr = today();
                 const todaysJobs = myJobs.filter(j => j.scheduledDate === todayStr);
                 const completedToday = todaysJobs.filter(j => j.status === "completed");
-                const shiftHours = dayClockInAt ? Math.round(((Date.now() - dayClockInAt) / 3600000) * 100) / 100 : 0;
                 const loggedHoursToday = Math.round(todaysJobs.reduce((s, j) => s + (Number(j.loggedHours) || 0), 0) * 100) / 100;
-                const hours = loggedHoursToday > 0 ? loggedHoursToday : shiftHours;
+                const hours = loggedHoursToday > 0 ? loggedHoursToday : finalHours;
                 const pay = Math.round(hours * (myEmployee?.hourlyRate || 0) * 100) / 100;
                 const allCk = todaysJobs.flatMap(j => [...(j.preChecklist || []), ...(j.duringChecklist || []), ...(j.postChecklist || []), ...(j.checklist || [])]);
                 const ckDone = allCk.filter((c: any) => c.done).length;
@@ -3075,41 +3147,94 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                 if (!empId) return;
                 const endingDay = !!dayClockInAt;
                 const nextVal = endingDay ? null : Date.now();
+                const finalHours = Math.round(netShiftHoursNow * 100) / 100;
                 // Flip immediately — a Supabase update() call resolves with an
                 // {error} object on a 400 rather than throwing, so a try/catch
                 // around it alone was silently swallowing real failures (the
                 // success toast fired and refetchEmployees() then reverted the
                 // UI right back since the row was never actually updated).
                 setOptimisticDayClockInAt(nextVal);
-                if (endingDay) sendEndOfDaySummary();
+                if (endingDay) { setOptimisticDayLunchStartAt(null); sendEndOfDaySummary(finalHours); }
+                const patch: any = endingDay
+                  ? { dayClockInAt: null, dayLunchStartAt: null, dayPausedMinutes: 0, lastShiftHours: finalHours, lastShiftDate: today() }
+                  : { dayClockInAt: nextVal, dayLunchStartAt: null, dayPausedMinutes: 0 };
                 try {
-                  const result = await (supabase as any).from("employees").update({ dayClockInAt: nextVal }).eq("id", empId);
+                  const result = await (supabase as any).from("employees").update(patch).eq("id", empId);
                   if (result?.error) {
                     toast("Saved locally, but couldn't sync to the server: " + result.error.message, "red");
                   } else {
                     refetchEmployees?.();
-                    toast(endingDay ? "Day ended ✓ — summary emailed" : "Day started — have a great shift!");
+                    toast(endingDay ? `Day ended ✓ — ${finalHours}h logged, summary emailed` : "Day started — have a great shift!");
                   }
                 } catch (e: any) {
                   toast("Saved locally, but couldn't sync to the server: " + (e?.message || "unknown error"), "red");
                 }
               };
+              const toggleLunchPause = async () => {
+                if (!empId || !dayClockInAt) return;
+                const turningOn = !onLunch;
+                if (turningOn) {
+                  setOptimisticDayLunchStartAt(Date.now());
+                } else {
+                  setOptimisticDayLunchStartAt(null);
+                }
+                const patch: any = turningOn
+                  ? { dayLunchStartAt: Date.now() }
+                  : { dayLunchStartAt: null, dayPausedMinutes: dayPausedMinutes + currentPauseMs / 60000 };
+                try {
+                  const result = await (supabase as any).from("employees").update(patch).eq("id", empId);
+                  if (result?.error) { toast("Failed to save — " + result.error.message, "red"); return; }
+                  refetchEmployees?.();
+                  toast(turningOn ? "Lunch started — timer paused 🍽️" : "Back from lunch — timer resumed");
+                } catch (e: any) {
+                  toast("Saved locally, but couldn't sync to the server: " + (e?.message || ""), "red");
+                }
+              };
               const locationSharing = !!(myEmployee as any)?.locationSharing;
               const toggleLocationSharing = async () => {
                 if (!empId) return;
+                const turningOn = !locationSharing;
+                // Request the permission prompt immediately on tap — previously
+                // this only flipped a DB flag and GPS posting silently waited
+                // for the employee to also be clocked in, so pressing the
+                // button while off-shift looked like it "did nothing" with no
+                // permission prompt and no feedback at all.
+                if (turningOn && navigator.geolocation) {
+                  navigator.geolocation.getCurrentPosition(
+                    () => toast("Location permission granted ✓" + (dayClockInAt ? "" : " — sharing starts once you Start My Day")),
+                    (err) => toast("Location permission denied: " + err.message, "red"),
+                    { enableHighAccuracy: true, timeout: 10000 }
+                  );
+                } else if (turningOn && !navigator.geolocation) {
+                  toast("This browser doesn't support location sharing", "red");
+                  return;
+                }
                 try {
-                  const result = await (supabase as any).from("employees").update({ locationSharing: !locationSharing }).eq("id", empId);
+                  const result = await (supabase as any).from("employees").update({ locationSharing: turningOn }).eq("id", empId);
                   if (result?.error) { toast("Failed to save — " + result.error.message, "red"); return; }
                   refetchEmployees?.();
-                  toast(!locationSharing ? "Location sharing on — owner can see you while clocked in" : "Location sharing off");
                 } catch (e: any) { toast("Failed to save — " + (e?.message || "try again"), "red"); }
               };
               return (
                 <>
-                  <button onClick={toggleDay} className={"w-full flex items-center justify-center gap-2 py-3 rounded-2xl font-bold text-sm transition active:scale-95 " + (dayClockInAt ? "bg-green-900/40 border-2 border-green-500/60 text-green-300" : "bg-red-700/40 border-2 border-red-500/60 text-white hover:bg-red-700/60")}>
-                    <Clock size={16} />
-                    {dayClockInAt ? `On the clock since ${new Date(dayClockInAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })} · Tap to End My Day` : "Start My Day"}
-                  </button>
+                  {dayClockInAt && (
+                    <div className={"text-center py-2 rounded-2xl font-mono text-2xl font-bold tracking-wider " + (onLunch ? "text-yellow-400" : "text-green-300")}>
+                      {shiftHHMMSS}
+                      {onLunch && <div className="text-[10px] font-sans font-normal text-yellow-400/70 -mt-1">On lunch — timer paused</div>}
+                    </div>
+                  )}
+                  <div className="flex gap-2">
+                    <button onClick={toggleDay} className={"flex-1 flex items-center justify-center gap-2 py-3 rounded-2xl font-bold text-sm transition active:scale-95 " + (dayClockInAt ? "bg-green-900/40 border-2 border-green-500/60 text-green-300" : "bg-red-700/40 border-2 border-red-500/60 text-white hover:bg-red-700/60")}>
+                      <Clock size={16} />
+                      {dayClockInAt ? "End My Day" : "Start My Day"}
+                    </button>
+                    {dayClockInAt && (
+                      <button onClick={toggleLunchPause} className={"flex-shrink-0 flex items-center justify-center gap-1.5 px-4 rounded-2xl font-semibold text-sm transition active:scale-95 " + (onLunch ? "bg-yellow-900/40 border-2 border-yellow-500/60 text-yellow-300" : "bg-white/5 border-2 border-white/10 text-white/60 hover:text-white")}>
+                        {onLunch ? <Play size={14} /> : <Pause size={14} />}
+                        {onLunch ? "Resume" : "Lunch"}
+                      </button>
+                    )}
+                  </div>
                   <button onClick={toggleLocationSharing} className={"w-full flex items-center justify-center gap-2 py-2 rounded-xl text-xs font-medium transition " + (locationSharing ? "bg-blue-900/30 border border-blue-500/40 text-blue-300" : "bg-white/5 border border-white/10 text-white/50")}>
                     <MapPin size={12} />
                     {locationSharing ? "Sharing my location with owner" : "Share My Location (off)"}
@@ -3463,7 +3588,13 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
             const calDaysInMonth = new Date(calMonthYear, calMonthMonth + 1, 0).getDate();
             const calFirstDay = new Date(calMonthYear, calMonthMonth, 1).getDay();
             const calMonthLabel = calMonthBase.toLocaleDateString("en-US", { month: "long", year: "numeric" });
-            const calDayJobs = myJobs.filter(j => j.scheduledDate === calSelectedDate);
+            // Cancelled jobs are hidden from the calendar by default — same
+            // "Show Cancelled" convention as the All Jobs tab — rather than
+            // the calendar showing every assigned job regardless of status
+            // with no way to filter cancellations out.
+            const calVisibleJobs = showCanceledJobs ? myJobs : myJobs.filter(j => j.status !== "cancelled");
+            const calCanceledCount = myJobs.filter(j => j.status === "cancelled").length;
+            const calDayJobs = calVisibleJobs.filter(j => j.scheduledDate === calSelectedDate);
 
             return (
               <>
@@ -3484,6 +3615,12 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                     <Eye size={12} />{showAvailability ? "Done" : "Availability"}
                   </button>
                 </div>
+                {calCanceledCount > 0 && (
+                  <button onClick={() => setShowCanceledJobs(v => !v)} className={"w-full flex items-center justify-center gap-1.5 py-1.5 mb-3 rounded-xl border text-xs font-medium transition " + (showCanceledJobs ? "bg-red-950/20 border-red-700/40 text-red-300" : "bg-black/30 border-white/10 text-white/40 hover:text-white/60")}>
+                    {showCanceledJobs ? <ToggleRight size={14} /> : <ToggleLeft size={14} />}
+                    {showCanceledJobs ? `Showing ${calCanceledCount} canceled job${calCanceledCount !== 1 ? "s" : ""}` : `Show Canceled (${calCanceledCount})`}
+                  </button>
+                )}
                 {showAvailability && (
                   <div className="mb-3 p-2.5 rounded-xl bg-orange-950/20 border border-orange-700/30 text-xs text-orange-200/70">
                     Tap dates to mark yourself <b>unavailable</b>. Gray dates = blocked. Owner will see these when scheduling.
@@ -3510,7 +3647,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                     <div className="grid grid-cols-7 gap-1 mb-4">
                       {calWeekDates.map(dateStr => {
                         const d = new Date(dateStr + "T12:00:00");
-                        const dayJobs = myJobs.filter(j => j.scheduledDate === dateStr);
+                        const dayJobs = calVisibleJobs.filter(j => j.scheduledDate === dateStr);
                         const isToday = dateStr === todayStr;
                         const isSelected = dateStr === calSelectedDate && !showAvailability;
                         const isUnavail = availability.includes(dateStr);
@@ -3553,7 +3690,12 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                                 <div className="flex items-start justify-between gap-2">
                                   <div className="flex-1 min-w-0">
                                     <div className="font-semibold text-sm truncate">{j.address}</div>
-                                    {c && <div className="text-xs text-white/50">{c.firstName} {c.lastName}</div>}
+                                    {c && (
+                          <div className="text-xs text-white/50 flex items-center gap-2 flex-wrap">
+                            <span>{c.firstName} {c.lastName}</span>
+                            {c.phone && <a href={`tel:${c.phone}`} onClick={(e: React.MouseEvent) => e.stopPropagation()} className="text-blue-400/80 hover:text-blue-300 flex items-center gap-0.5"><Phone size={9} />{c.phone}</a>}
+                          </div>
+                        )}
                                   </div>
                                   <div className={`text-[10px] px-2 py-0.5 rounded-full font-bold uppercase flex-shrink-0 ${
                                     j.status === "completed" ? "bg-green-900/40 text-green-300" :
@@ -3605,7 +3747,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                       {Array.from({ length: calDaysInMonth }, (_, i) => {
                         const day = i + 1;
                         const dateStr = `${calMonthYear}-${String(calMonthMonth + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
-                        const dayJobs = myJobs.filter(j => j.scheduledDate === dateStr);
+                        const dayJobs = calVisibleJobs.filter(j => j.scheduledDate === dateStr);
                         const isToday = dateStr === todayStr;
                         const isSelected = dateStr === calSelectedDate && !showAvailability;
                         const isUnavail = availability.includes(dateStr);
@@ -3648,7 +3790,12 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                                 <div className="flex items-start justify-between gap-2">
                                   <div className="flex-1 min-w-0">
                                     <div className="font-semibold text-sm truncate">{j.address}</div>
-                                    {c && <div className="text-xs text-white/50">{c.firstName} {c.lastName}</div>}
+                                    {c && (
+                          <div className="text-xs text-white/50 flex items-center gap-2 flex-wrap">
+                            <span>{c.firstName} {c.lastName}</span>
+                            {c.phone && <a href={`tel:${c.phone}`} onClick={(e: React.MouseEvent) => e.stopPropagation()} className="text-blue-400/80 hover:text-blue-300 flex items-center gap-0.5"><Phone size={9} />{c.phone}</a>}
+                          </div>
+                        )}
                                   </div>
                                   <div className={`text-[10px] px-2 py-0.5 rounded-full font-bold uppercase flex-shrink-0 ${
                                     j.status === "completed" ? "bg-green-900/40 text-green-300" :
@@ -3922,6 +4069,81 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                   </Glass>
                 )}
 
+                {/* Hours & Earnings breakdown — daily/weekly/monthly granularity,
+                    pulled from real loggedHours on completed jobs (same source
+                    of truth as the pay periods above). */}
+                {(() => {
+                  const rate = myEmployee?.hourlyRate || 0;
+                  const bucketHours = (dateKeys: string[]): { name: string; hours: number; earnings: number }[] =>
+                    dateKeys.map(key => {
+                      const hrs = myJobs.filter(j => (j.scheduledDate || "").startsWith(key)).reduce((s, j) => s + (Number(j.loggedHours) || 0), 0);
+                      return { name: key, hours: Math.round(hrs * 100) / 100, earnings: Math.round(hrs * rate * 100) / 100 };
+                    });
+                  let chartData: { name: string; hours: number; earnings: number }[];
+                  let ChartComp: any = BarChart;
+                  if (payChartRange === "7d") {
+                    const days = Array.from({ length: 7 }, (_, i) => { const d = new Date(); d.setDate(d.getDate() - (6 - i)); return d.toISOString().slice(0, 10); });
+                    chartData = bucketHours(days).map((d, i) => ({ ...d, name: new Date(days[i] + "T12:00:00").toLocaleDateString("en-US", { weekday: "short" }) }));
+                  } else if (payChartRange === "4wk") {
+                    chartData = Array.from({ length: 4 }, (_, i) => {
+                      const end = new Date(); end.setDate(end.getDate() - (3 - i) * 7);
+                      const start = new Date(end); start.setDate(start.getDate() - 6);
+                      const s = start.toISOString().slice(0, 10), e = end.toISOString().slice(0, 10);
+                      const hrs = myJobs.filter(j => j.scheduledDate >= s && j.scheduledDate <= e).reduce((acc, j) => acc + (Number(j.loggedHours) || 0), 0);
+                      return { name: `${start.getMonth() + 1}/${start.getDate()}`, hours: Math.round(hrs * 100) / 100, earnings: Math.round(hrs * rate * 100) / 100 };
+                    });
+                  } else {
+                    ChartComp = LineChart;
+                    chartData = Array.from({ length: 12 }, (_, i) => {
+                      const d = new Date(); d.setMonth(d.getMonth() - (11 - i)); d.setDate(1);
+                      const key = d.toISOString().slice(0, 7);
+                      const hrs = myJobs.filter(j => (j.scheduledDate || "").startsWith(key)).reduce((acc, j) => acc + (Number(j.loggedHours) || 0), 0);
+                      return { name: d.toLocaleDateString("en-US", { month: "short" }), hours: Math.round(hrs * 100) / 100, earnings: Math.round(hrs * rate * 100) / 100 };
+                    });
+                  }
+                  const DataComp: any = payChartRange === "12mo" ? Line : Bar;
+                  return (
+                    <Glass className="p-4 !bg-black/40 space-y-3">
+                      <div className="flex items-center justify-between">
+                        <div className="text-xs text-white/50 uppercase tracking-wider">Hours & Earnings</div>
+                        <div className="flex gap-1 p-0.5 bg-black/40 border border-white/10 rounded-lg">
+                          {([["7d", "7 Days"], ["4wk", "4 Weeks"], ["12mo", "12 Months"]] as const).map(([k, l]) => (
+                            <button key={k} onClick={() => setPayChartRange(k)} className={"px-2 py-1 rounded text-[10px] font-medium transition " + (payChartRange === k ? "bg-red-700/40 text-white" : "text-white/40")}>{l}</button>
+                          ))}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="text-[10px] text-white/40 mb-1">Hours</div>
+                        <div style={{ width: "100%", height: 130 }}>
+                          <ResponsiveContainer>
+                            <ChartComp data={chartData}>
+                              <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" vertical={false} />
+                              <XAxis dataKey="name" tick={{ fill: "rgba(255,255,255,0.4)", fontSize: 9 }} axisLine={false} tickLine={false} />
+                              <YAxis tick={{ fill: "rgba(255,255,255,0.4)", fontSize: 9 }} axisLine={false} tickLine={false} width={28} />
+                              <Tooltip contentStyle={{ background: "#111", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 8, fontSize: 11 }} formatter={(v: any) => `${v}h`} />
+                              <DataComp dataKey="hours" {...(payChartRange === "12mo" ? { stroke: "#60a5fa", strokeWidth: 2, dot: false } : { fill: "#60a5fa", radius: [4, 4, 0, 0] })} />
+                            </ChartComp>
+                          </ResponsiveContainer>
+                        </div>
+                      </div>
+                      <div>
+                        <div className="text-[10px] text-white/40 mb-1">Earnings</div>
+                        <div style={{ width: "100%", height: 130 }}>
+                          <ResponsiveContainer>
+                            <ChartComp data={chartData}>
+                              <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" vertical={false} />
+                              <XAxis dataKey="name" tick={{ fill: "rgba(255,255,255,0.4)", fontSize: 9 }} axisLine={false} tickLine={false} />
+                              <YAxis tick={{ fill: "rgba(255,255,255,0.4)", fontSize: 9 }} axisLine={false} tickLine={false} width={36} />
+                              <Tooltip contentStyle={{ background: "#111", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 8, fontSize: 11 }} formatter={(v: any) => fmt(v)} />
+                              <DataComp dataKey="earnings" {...(payChartRange === "12mo" ? { stroke: "#22c55e", strokeWidth: 2, dot: false } : { fill: "#22c55e", radius: [4, 4, 0, 0] })} />
+                            </ChartComp>
+                          </ResponsiveContainer>
+                        </div>
+                      </div>
+                    </Glass>
+                  );
+                })()}
+
                 <div className="text-xs text-white/50 uppercase tracking-wider font-semibold mb-2">Pay Period History</div>
                 <div className="space-y-2">
                   {periods.map((p, i) => (
@@ -4007,8 +4229,13 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
             const empGoogleIdentityLinked = empSession
               ? (empSession.user?.identities || []).some((i: any) => i.provider === "google")
               : false;
-            // Linked but no valid token (token never captured, or the ~1hr access token expired)
-            const empGoogleExpired = empGoogleIdentityLinked && !empGoogleValid;
+            // Linked but no valid token — only treat this as "needs reconnect" when
+            // there's also no refresh_token to silently fix it with (the 5-minute
+            // background refresh effect above handles that case automatically).
+            // Showing "reconnect" the instant the 1hr access token expires, even
+            // though a refresh_token exists and will fix it within seconds, was
+            // alarming employees over a transient, self-healing state.
+            const empGoogleExpired = empGoogleIdentityLinked && !empGoogleValid && !storedToken?.refreshToken;
             const empGoogleEmail = storedToken?.email
               || ((empSession?.user?.identities || []).find((i: any) => i.provider === "google")?.identity_data?.email || "");
             const upcomingForCal = myJobs
@@ -4148,7 +4375,12 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                             <div className="flex items-start justify-between gap-2">
                               <div className="flex-1 min-w-0">
                                 <div className="font-semibold text-sm truncate">{j.address}</div>
-                                {c && <div className="text-xs text-white/40">{c.firstName} {c.lastName}</div>}
+                                {c && (
+                                  <div className="text-xs text-white/40 flex items-center gap-2 flex-wrap">
+                                    <span>{c.firstName} {c.lastName}</span>
+                                    {c.phone && <a href={`tel:${c.phone}`} onClick={(e: React.MouseEvent) => e.stopPropagation()} className="text-blue-400/70 hover:text-blue-300 flex items-center gap-0.5"><Phone size={9} />{c.phone}</a>}
+                                  </div>
+                                )}
                                 <div className="text-xs text-white/30 mt-0.5">
                                   {j.scheduledDate}{j.scheduledTime ? " · " + j.scheduledTime : ""}
                                 </div>

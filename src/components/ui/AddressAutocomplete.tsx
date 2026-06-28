@@ -2,23 +2,58 @@ import React, { useState, useRef, useEffect, useCallback } from "react";
 import { MapPin } from "lucide-react";
 import { GInput } from "./GInput";
 
-// Singleton Google Maps JS loader — loads once per page, queues callbacks
+// Singleton Google Maps JS loader — loads once per page, queues callbacks.
+// Rejects (rather than always resolving) on failure so callers can tell a
+// real load error apart from success, retries once automatically, and logs
+// the exact failure — a script tag can fail to load for reasons that have
+// nothing to do with the key being invalid (e.g. the key's HTTP referrer
+// restrictions not including the current origin, which only affects the
+// Maps JavaScript API loader — Street View Static <img> requests and some
+// other API calls are checked differently, which is why "the key works for
+// other Maps features" and the JS loader failing aren't contradictory).
 let _ready = false;
 let _loading = false;
-const _queue: Array<() => void> = [];
+let _failed: Error | null = null;
+const _queue: Array<{ resolve: () => void; reject: (e: Error) => void }> = [];
+const GMAPS_CALLBACK = "__smocksGMapsLoaded";
+
+function injectScript(key: string, onDone: (err: Error | null) => void) {
+  const cbName = GMAPS_CALLBACK + Date.now();
+  (window as any)[cbName] = () => { delete (window as any)[cbName]; onDone(null); };
+  const s = document.createElement("script");
+  s.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(key)}&libraries=places&loading=async&callback=${cbName}`;
+  s.async = true;
+  s.onerror = (ev) => {
+    console.error("Google Maps script failed to load — check the key's API restrictions include \"Maps JavaScript API\" and its HTTP referrer restrictions include this origin:", window.location.origin, ev);
+    s.remove();
+    onDone(new Error(`Google Maps script failed to load from ${s.src.split("?")[0]} (origin: ${window.location.origin})`));
+  };
+  document.head.appendChild(s);
+}
 
 export function loadMapsScript(key: string): Promise<void> {
-  return new Promise(resolve => {
+  return new Promise((resolve, reject) => {
     if (_ready) { resolve(); return; }
-    _queue.push(resolve);
+    if ((window as any).google?.maps?.importLibrary) { _ready = true; resolve(); return; }
+    _queue.push({ resolve, reject });
     if (_loading) return;
     _loading = true;
-    const s = document.createElement("script");
-    s.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(key)}&libraries=places&loading=async`;
-    s.async = true;
-    s.onload = () => { _ready = true; _queue.forEach(cb => cb()); _queue.length = 0; };
-    s.onerror = () => { _loading = false; _queue.forEach(cb => cb()); _queue.length = 0; };
-    document.head.appendChild(s);
+    _failed = null;
+    const settle = (err: Error | null) => {
+      _loading = false;
+      if (err) { _ready = false; _failed = err; }
+      else { _ready = true; _failed = null; }
+      const q = _queue.splice(0, _queue.length);
+      q.forEach(p => err ? p.reject(err) : p.resolve());
+    };
+    injectScript(key, (err) => {
+      if (!err) { settle(null); return; }
+      console.warn("Google Maps script load failed — retrying once in 800ms:", err.message);
+      setTimeout(() => injectScript(key, (err2) => {
+        if (err2) console.error("Google Maps script load failed again on retry:", err2.message);
+        settle(err2);
+      }), 800);
+    });
   });
 }
 
@@ -77,25 +112,30 @@ export function AddressAutocomplete({
   useEffect(() => {
     if (!mapsKey) { setError("No Google Maps API key set in Settings → Integrations."); return; }
     setError("");
-    loadMapsScript(mapsKey).then(async () => {
-      const g = (window as any).google;
-      if (!g?.maps?.importLibrary) {
-        setError("Google Maps script failed to load — check the API key and that the Maps JavaScript API is enabled.");
-        return;
-      }
-      try {
-        const lib = await g.maps.importLibrary("places");
-        if (!lib?.AutocompleteSuggestion) {
-          setError("Places API (New) isn't available for this key — enable \"Places API (New)\" in Google Cloud Console.");
+    loadMapsScript(mapsKey)
+      .then(async () => {
+        const g = (window as any).google;
+        if (!g?.maps?.importLibrary) {
+          setError("Google Maps loaded but google.maps.importLibrary is missing — check the Maps JavaScript API is enabled for this key.");
           return;
         }
-        placesLibRef.current = lib;
-        sessionTokenRef.current = new lib.AutocompleteSessionToken();
-      } catch (e: any) {
-        console.warn("Failed to load Places library:", e);
-        setError("Couldn't load the Places library — check your Maps API key and enabled APIs.");
-      }
-    });
+        try {
+          const lib = await g.maps.importLibrary("places");
+          if (!lib?.AutocompleteSuggestion) {
+            setError("Places API (New) isn't available for this key — enable \"Places API (New)\" in Google Cloud Console.");
+            return;
+          }
+          placesLibRef.current = lib;
+          sessionTokenRef.current = new lib.AutocompleteSessionToken();
+        } catch (e: any) {
+          console.warn("Failed to load Places library:", e);
+          setError("Couldn't load the Places library — check your Maps API key and enabled APIs.");
+        }
+      })
+      .catch((e: Error) => {
+        console.error("AddressAutocomplete: Maps script load failed after retry —", e.message);
+        setError(`Google Maps script failed to load (${e.message}). This usually means the key's "Application restrictions → HTTP referrers" in Google Cloud Console doesn't include ${window.location.origin}, or "Maps JavaScript API" isn't enabled for this key — both checked separately from Street View/Places.`);
+      });
   }, [mapsKey]);
 
   const search = useCallback(async (q: string) => {

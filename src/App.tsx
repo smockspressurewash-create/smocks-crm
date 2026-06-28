@@ -1488,7 +1488,7 @@ export function App() {
                 {page === "accountability" && <AccountabilityPage entries={accountability} setEntries={setAccountability} goals={goalsList} setGoals={setGoalsList} wins={wins} setWins={setWins} toast={toast} settings={settings} />}
                 {page === "referrals"      && <ReferralsPage customers={customers} setCustomers={setCustomers} jobs={jobs} toast={toast} settings={settings} setSettings={setSettings} />}
                 {page === "promotions"     && <PromotionsPage promotions={promotions} setPromotions={setPromotions} customers={customers} services={services} settings={settings} toast={toast} />}
-                {page === "crew"           && <CrewView jobs={jobs} setJobs={setJobs} customers={customers} employees={employees} toast={toast} settings={settings} estimates={estimates} setEstimates={setEstimates} />}
+                {page === "crew"           && <CrewView jobs={jobs} setJobs={setJobs} customers={customers} employees={employees} toast={toast} settings={settings} estimates={estimates} setEstimates={setEstimates} refetchEmployees={refetchEmployees} />}
               </SafePage>
             </PageFade>
           </div>

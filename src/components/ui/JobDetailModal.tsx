@@ -27,7 +27,7 @@ import { seedWeather } from "../../lib/weather";
 import { seedCustomers, seedEstimates, seedJobs, seedEmployees, seedVehicles, seedExpenses, seedChemicals, seedServices, seedAutomations, seedEmailTemplates, seedSmsTemplates, seedRewardTiers, seedReferrals, seedMaintenance, campaignTemplates, seedSocialPosts, seedTimeline, seedGoals, seedReminders, seedAccountabilityEntries, seedMileage, seedLeadSrc, STEP_TYPES, AUTOMATION_TEMPLATES } from "../../lib/seed";
 import { callModel, MODELS } from "../../lib/api";
 import { createCalendarEvent, updateCalendarEvent, deleteCalendarEvent, fetchDriveFiles, MOCK_GOOGLE_DATA, fmtSize, fmtDate, fileIcon } from "../../lib/google";
-import { createGCalEvent as createGCalEventApi, updateGCalEvent as updateGCalEventApi, refreshEmpGoogleToken } from "../../lib/googleApi";
+import { createGCalEvent as createGCalEventApi, updateGCalEvent as updateGCalEventApi, deleteGCalEvent as deleteGCalEventApi, refreshEmpGoogleToken } from "../../lib/googleApi";
 import { usePersistent } from "../../hooks/usePersistent";
 import { usePersistentRaw } from "../../hooks/usePersistentRaw";
 import { supabase } from "../../lib/supabase";
@@ -154,25 +154,47 @@ function ChecklistSection({ title, emoji, items, onUpdate }: {
 // the separately-billed Street View Static API hasn't been enabled on it —
 // so show exactly which Cloud Console URL fixes it instead of hiding silently.
 const STREET_VIEW_API_ENABLE_URL = "https://console.cloud.google.com/apis/library/street-view-image-backend.googleapis.com";
+// img onError never exposes the HTTP status (browsers don't surface it for
+// failed image loads) — so on a failure this re-requests the exact same URL
+// via fetch() purely for diagnostics, to log the real status code and
+// whatever error body Google sent back instead of just guessing "API not
+// enabled" (which the owner says is wrong — it IS enabled).
+async function diagnoseStreetViewFailure(url: string, address: string): Promise<string> {
+  try {
+    const res = await fetch(url);
+    const ct = res.headers.get("content-type") || "";
+    if (res.ok && ct.startsWith("image/")) return `HTTP ${res.status} but the <img> tag still failed to render it (content-type: ${ct}) — likely a transient network/decode issue, try reloading.`;
+    const body = await res.text().catch(() => "");
+    return `HTTP ${res.status} ${res.statusText} — ${body.slice(0, 300) || "(empty response body)"}`;
+  } catch (e: any) {
+    return `Network/CORS error reaching the Street View endpoint directly: ${e?.message || e}`;
+  }
+}
+
 function StreetViewThumb({ address, apiKey }: { address: string; apiKey?: string }) {
   const [expanded, setExpanded] = useState(false);
   const [loadError, setLoadError] = useState(false);
+  const [diagnosis, setDiagnosis] = useState("");
+  const thumbUrl = `https://maps.googleapis.com/maps/api/streetview?size=600x300&location=${encodeURIComponent(address || "")}&key=${apiKey || ""}`;
+  const bigUrl = `https://maps.googleapis.com/maps/api/streetview?size=1200x600&location=${encodeURIComponent(address || "")}&key=${apiKey || ""}`;
   if (!address || !apiKey) return null;
   if (loadError) {
     return (
       <div className="w-full rounded-xl border border-yellow-700/40 bg-yellow-950/15 p-3 text-xs text-yellow-200">
         <div className="font-semibold mb-1">Street View image didn't load</div>
-        <div className="text-yellow-200/80 mb-2">Your key works for other Maps features, but the <b>Street View Static API</b> is billed and enabled separately — it likely isn't turned on yet for this key's project.</div>
-        <a href={STREET_VIEW_API_ENABLE_URL} target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:text-blue-300 underline break-all">{STREET_VIEW_API_ENABLE_URL}</a>
+        <div className="text-yellow-200/80 mb-2 break-all"><b>Request:</b> {thumbUrl}</div>
+        <div className="text-yellow-200/80 mb-2">{diagnosis || "Checking the exact error…"}</div>
       </div>
     );
   }
-  const thumbUrl = `https://maps.googleapis.com/maps/api/streetview?size=600x300&location=${encodeURIComponent(address)}&key=${apiKey}`;
-  const bigUrl = `https://maps.googleapis.com/maps/api/streetview?size=1200x600&location=${encodeURIComponent(address)}&key=${apiKey}`;
   return (
     <>
       <button onClick={() => setExpanded(true)} className="w-full rounded-xl overflow-hidden border border-white/10 relative group">
-        <img src={thumbUrl} alt="Street View" className="w-full h-32 object-cover" onError={() => { console.warn("Street View image failed to load for", address, "— enable the Street View Static API:", STREET_VIEW_API_ENABLE_URL); setLoadError(true); }} />
+        <img src={thumbUrl} alt="Street View" className="w-full h-32 object-cover" onError={() => {
+          console.warn("Street View image failed to load for", address, "— request URL:", thumbUrl);
+          setLoadError(true);
+          diagnoseStreetViewFailure(thumbUrl, address).then(d => { console.warn("Street View diagnosis:", d); setDiagnosis(d); });
+        }} />
         <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition flex items-center justify-center">
           <span className="opacity-0 group-hover:opacity-100 text-white text-xs font-semibold transition">Click to expand</span>
         </div>
@@ -261,14 +283,41 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
   // Must stay ABOVE the `if (!job) return null` below — hooks can never follow an
   // early return, or the hook count differs between renders where job is/isn't set
   // (React error #310, "rendered fewer hooks than expected").
-  const prevScheduleRef = useRef<{ jobId: string; date?: string; time?: string; address?: string }>({
-    jobId, date: job?.scheduledDate, time: job?.scheduledTime, address: job?.address,
+  const prevScheduleRef = useRef<{ jobId: string; date?: string; time?: string; address?: string; status?: string }>({
+    jobId, date: job?.scheduledDate, time: job?.scheduledTime, address: job?.address, status: job?.status,
   });
+  // Looks up the first crew member with a usable (or refreshable) Google
+  // token and autoSyncCalendar on — same selection the event was originally
+  // created under in scheduleAndNotify, so update/delete target the calendar
+  // that actually holds the event instead of the owner's own calendar (which
+  // was never where employee-assigned events live).
+  const findSyncableEmpToken = async (): Promise<string | null> => {
+    const crewEmps = (job!.crew || []).map((id: string) => employees.find(e => e.id === id)).filter(Boolean);
+    for (const emp of crewEmps) {
+      try {
+        const { data: empRow } = await withTimeout<any>(
+          (supabase as any).from("employees").select("google_token, google_token_expires_at, google_refresh_token, autoSyncCalendar").eq("id", (emp as any).id).maybeSingle(),
+          3000, "Employee lookup"
+        );
+        if (empRow?.autoSyncCalendar === false) continue;
+        let tok = empRow?.google_token;
+        const validTok = tok && empRow?.google_token_expires_at && new Date(empRow.google_token_expires_at).getTime() > Date.now();
+        if (tok && !validTok && empRow?.google_refresh_token && settings?.googleBackendUrl) {
+          const refreshed = await refreshEmpGoogleToken(settings.googleBackendUrl, empRow.google_refresh_token);
+          if (refreshed) tok = refreshed.token; else tok = null;
+        } else if (!validTok) {
+          tok = null;
+        }
+        if (tok) return tok;
+      } catch { /* try next crew member */ }
+    }
+    return null;
+  };
   useEffect(() => {
     if (!job) return;
     const prev = prevScheduleRef.current;
     if (prev.jobId !== jobId) {
-      prevScheduleRef.current = { jobId, date: job.scheduledDate, time: job.scheduledTime, address: job.address };
+      prevScheduleRef.current = { jobId, date: job.scheduledDate, time: job.scheduledTime, address: job.address, status: job.status };
       return;
     }
     const crewEmps = (job.crew || []).map((id: string) => employees.find(e => e.id === id)).filter(Boolean);
@@ -277,7 +326,8 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
     if (prev.date !== job.scheduledDate) changes.push(`date changed to ${job.scheduledDate}`);
     if (prev.time !== job.scheduledTime) changes.push(`time changed to ${job.scheduledTime || "unscheduled"}`);
     if (prev.address !== job.address) changes.push(`address changed to ${job.address}`);
-    prevScheduleRef.current = { jobId, date: job.scheduledDate, time: job.scheduledTime, address: job.address };
+    const justCancelled = prev.status !== "cancelled" && job.status === "cancelled";
+    prevScheduleRef.current = { jobId, date: job.scheduledDate, time: job.scheduledTime, address: job.address, status: job.status };
     if (changes.length > 0 && withEmail.length > 0) {
       notifyEmployeesRef.current(
         withEmail,
@@ -285,7 +335,21 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
         (emp: any) => emailShell(settings.companyName || "Smock's Pressure Washing", "Job Updated", `<p>Hi ${emp.firstName},</p><p>Your job has changed:</p><ul>${changes.map(c => `<li>${c}</li>`).join("")}</ul>`)
       ).then((sent: number) => { if (sent > 0) toast(`Notified ${sent} crew member${sent !== 1 ? "s" : ""} of the change`, "green"); });
     }
-  }, [job?.scheduledDate, job?.scheduledTime, job?.address, jobId]); // eslint-disable-line react-hooks/exhaustive-deps
+    // Calendar sync happens immediately on the same change, not on a timer.
+    if (job.googleEventId && justCancelled) {
+      findSyncableEmpToken().then(tok => {
+        if (!tok) return;
+        deleteGCalEventApi(tok, job.googleEventId!).then(() => updateJob(jobId, { googleEventId: undefined })).catch(() => {});
+      });
+    } else if (job.googleEventId && (changes.includes(`date changed to ${job.scheduledDate}`) || prev.time !== job.scheduledTime) && job.scheduledDate) {
+      findSyncableEmpToken().then(tok => {
+        if (!tok) return;
+        const startDt = new Date(`${job.scheduledDate}T${job.scheduledTime || "09:00"}:00`);
+        const endDt = new Date(startDt.getTime() + (Number(job.duration) || 2) * 3600000);
+        updateGCalEventApi(tok, job.googleEventId!, { start: startDt.toISOString(), end: endDt.toISOString(), location: job.address }).catch(() => {});
+      });
+    }
+  }, [job?.scheduledDate, job?.scheduledTime, job?.address, job?.status, jobId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!job) return null;
   const c = customers.find(x => x.id === job.customerId);
@@ -327,8 +391,8 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
     buildHtml: (emp: any) => string
   ): Promise<number> => {
     // Lookups run in parallel (not one-at-a-time) so a single slow row never
-    // delays everyone else's notification, and the timeout is short (5s, was
-    // 8s) so the owner-channel fallback kicks in fast instead of stalling.
+    // delays everyone else's notification, and the timeout is short (3s) so
+    // the owner-channel fallback kicks in fast instead of stalling.
     const results = await Promise.allSettled(emps.filter(e => e.email).map(async emp => {
       const subj = buildSubject(emp);
       const html = buildHtml(emp);
@@ -336,7 +400,7 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
       try {
         const { data: empRow } = await withTimeout<any>(
           (supabase as any).from("employees").select("google_token, google_token_expires_at, google_refresh_token, google_email").eq("id", emp.id).maybeSingle(),
-          5000, "Employee lookup"
+          3000, "Employee lookup"
         );
         let tok = empRow?.google_token;
         const validTok = tok && empRow?.google_token_expires_at && new Date(empRow.google_token_expires_at).getTime() > Date.now();
@@ -353,14 +417,14 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
           tok = null;
         }
         if (tok) {
-          await withTimeout(sendViaGmail(tok, empRow.google_email || emp.email, emp.email, subj, html), 10000, "Gmail send");
+          await withTimeout(sendViaGmail(tok, empRow.google_email || emp.email, emp.email, subj, html), 6000, "Gmail send");
           viaEmpGmail = true;
         }
       } catch (err) {
         console.warn("Employee Gmail send failed — falling back to owner channel:", err);
       }
       if (!viaEmpGmail) {
-        await withTimeout(sendEmail(settings, { to: emp.email, subject: subj, body: html }), 10000, "Email send");
+        await withTimeout(sendEmail(settings, { to: emp.email, subject: subj, body: html }), 6000, "Email send");
       }
       return true;
     }));
@@ -519,7 +583,7 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
         try {
           const { data: empRow } = await withTimeout<any>(
             (supabase as any).from("employees").select("google_token, google_token_expires_at, google_refresh_token, autoSyncCalendar").eq("id", emp.id).maybeSingle(),
-            5000, "Employee lookup"
+            3000, "Employee lookup"
           );
           let tok = empRow?.google_token;
           const validTok = tok && empRow?.google_token_expires_at && new Date(empRow.google_token_expires_at).getTime() > Date.now();

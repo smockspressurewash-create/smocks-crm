@@ -20,7 +20,7 @@ import {
   Tooltip, ResponsiveContainer, Area, AreaChart, LineChart, Line,
   ComposedChart, Legend
 } from "recharts";
-import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE } from "../../lib/utils";
+import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, withTimeout } from "../../lib/utils";
 const weatherRisk = (_dateStr: string): {icon: string; level: string; reason: string} | null => null;
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
 import { twilioSend, sendEmail, emailShell, emailButton } from "../../lib/messaging";
@@ -303,15 +303,21 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
     if (!emp) return;
     setQuickReqSending(true);
     try {
-      const { data: { session } } = await supabase.auth.getSession();
+      // Both calls raced against a hard timeout — a stuck Supabase internal
+      // lock or dead network request used to leave this button stuck on
+      // "Sending…" forever since nothing ever resolved or rejected it.
+      const { data: { session } } = await withTimeout<any>(supabase.auth.getSession(), 5000, "Get session");
       const portalUrl = `${window.location.origin}${window.location.pathname}`;
-      const { data: row, error } = await (supabase as any).from("job_requests").insert({
-        job_id: job.id,
-        employee_id: emp.id,
-        owner_id: session?.user?.id,
-        status: "pending",
-        message: quickReqMsg.trim() || null,
-      }).select("id").single();
+      const { data: row, error } = await withTimeout<any>(
+        (supabase as any).from("job_requests").insert({
+          job_id: job.id,
+          employee_id: emp.id,
+          owner_id: session?.user?.id,
+          status: "pending",
+          message: quickReqMsg.trim() || null,
+        }).select("id").single(),
+        8000, "Save request"
+      );
       if (!error && row?.id) {
         const requestUrl = `${portalUrl}#/portal?request=${row.id}`;
         const c = customers.find((x: any) => x.id === job.customerId);
@@ -322,19 +328,20 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
                 <li><b>Address:</b> ${job.address}</li>
                 ${c ? `<li><b>Customer:</b> ${c.firstName} ${c.lastName}</li>` : ""}
               </ul>` + emailButton("View Request — Accept or Decline", requestUrl));
-          sendEmail(settings, { to: emp.email, subject: `Job Request — ${job.scheduledDate}`, body: html }).catch(() => {});
+          withTimeout(sendEmail(settings, { to: emp.email, subject: `Job Request — ${job.scheduledDate}`, body: html }), 8000, "Email send").catch((e: any) => console.warn("Job request email failed — request still saved:", e?.message));
         }
         if (toast) toast(`Request sent to ${emp.firstName} ✓`, "green");
         setQuickReqJobId(null);
         setQuickReqEmpId("");
         setQuickReqMsg("");
       } else {
-        if (toast) toast("Request failed — run the job_requests SQL in Supabase first", "red");
+        if (toast) toast("Request failed — " + (error?.message || "run the job_requests SQL in Supabase first"), "red");
       }
-    } catch {
-      if (toast) toast("Error sending request", "red");
+    } catch (e: any) {
+      if (toast) toast(e?.message || "Error sending request", "red");
+    } finally {
+      setQuickReqSending(false);
     }
-    setQuickReqSending(false);
   };
 
   // Touch swipe handling
