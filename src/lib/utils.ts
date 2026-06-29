@@ -262,3 +262,40 @@ export const withTimeout = <T,>(p: Promise<T>, ms: number, label: string): Promi
     p,
     new Promise<T>((_, reject) => setTimeout(() => reject(new Error(label + " timed out")), ms)),
   ]);
+
+// ─── OAuth intent flag ─────────────────────────────────────────────────────────
+// Google sign-in is shared infrastructure between the owner's login page and
+// the employee portal's login page — the auth callback alone can't tell which
+// one initiated it. Set right before calling signInWithOAuth from the
+// EMPLOYEE login screen (consumed once in App.tsx's resolveUserRole) so a
+// Google sign-in with no matching employees row falls through to "employee"
+// (shows "Account Not Linked") instead of defaulting to "owner".
+const OAUTH_INTENT_KEY = "smocks.oauthIntent";
+export function setOAuthIntent(intent: "employee"): void {
+  try { sessionStorage.setItem(OAUTH_INTENT_KEY, intent); } catch { /* ignore */ }
+}
+export function consumeOAuthIntent(): "employee" | null {
+  try {
+    const v = sessionStorage.getItem(OAUTH_INTENT_KEY);
+    if (v === "employee") { sessionStorage.removeItem(OAUTH_INTENT_KEY); return "employee"; }
+  } catch { /* ignore */ }
+  return null;
+}
+
+// ─── Last-owner-session flag ──────────────────────────────────────────────────
+// Lets App.tsx seed hasCrmSession's initial state optimistically so a
+// returning owner with a still-valid Supabase session renders straight into
+// the dashboard instead of flashing the login form while the real session
+// check resolves. Must be cleared (see App.tsx) the instant a session check
+// comes back negative, or an expired/cleared session would leave the CRM
+// shell rendered with nothing real backing it.
+const LAST_OWNER_SESSION_KEY = "smocks.lastOwnerSession";
+export function getLastOwnerSessionFlag(): boolean {
+  try { return localStorage.getItem(LAST_OWNER_SESSION_KEY) === "1"; } catch { return false; }
+}
+export function setLastOwnerSessionFlag(active: boolean): void {
+  try {
+    if (active) localStorage.setItem(LAST_OWNER_SESSION_KEY, "1");
+    else localStorage.removeItem(LAST_OWNER_SESSION_KEY);
+  } catch { /* ignore */ }
+}

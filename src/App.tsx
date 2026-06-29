@@ -64,7 +64,7 @@ import {
 } from "./lib/seed";
 import { seedWeather } from "./lib/weather";
 import { fetchRealWeather } from "./lib/weather";
-import { fmt, uid, today, daysSince, daysFromNow } from "./lib/utils";
+import { fmt, uid, today, daysSince, daysFromNow, consumeOAuthIntent, getLastOwnerSessionFlag, setLastOwnerSessionFlag } from "./lib/utils";
 import { sendEmail, buildTomorrowJobsEmailHtml, buildDailyBriefingEmailHtml } from "./lib/messaging";
 import { exchangeSocialOAuthCode, type SocialPlatform } from "./lib/socialOAuth";
 import type {
@@ -220,6 +220,38 @@ async function resolveUserRole(session: any): Promise<"owner" | "manager" | "emp
     }
   } catch { /* employees table may not exist */ }
 
+  // No row matched by user_id — for a Google sign-in this is normal the
+  // FIRST time an employee uses Google (their employees row was created by
+  // the owner with just an email, never linked to an auth user_id yet). Try
+  // matching by email and link it so every future lookup hits the fast
+  // user_id path above.
+  const email = session.user.email;
+  if (email) {
+    try {
+      const { data: byEmail } = await (supabase as any)
+        .from("employees")
+        .select("id, role, user_id")
+        .ilike("email", email)
+        .maybeSingle();
+      if (byEmail) {
+        if (!byEmail.user_id) {
+          (supabase as any).from("employees").update({ user_id: session.user.id }).eq("id", byEmail.id).catch(() => {});
+        }
+        const role = (byEmail.role || "").toLowerCase();
+        if (role === "owner") return "owner";
+        if (role === "manager") { setCachedRole(session.user.id, "manager"); return "manager"; }
+        setCachedRole(session.user.id, "employee");
+        return "employee";
+      }
+    } catch { /* employees table may not exist or have no email column */ }
+  }
+
+  const oauthIntent = consumeOAuthIntent();
+  if (oauthIntent === "employee") {
+    console.log("resolveUserRole: Google sign-in from employee portal, no employee record found — returning employee (will show Account Not Linked)");
+    return "employee";
+  }
+
   const identities = session.user.identities || [];
   const hasGoogle = identities.some((i: any) => i.provider === "google");
   if (hasGoogle) {
@@ -248,13 +280,26 @@ function persistEmployeeGoogleToken(session: any): void {
   const googleEmail = googleId.identity_data?.email || session.user.email || "";
   const expiresAt = Date.now() + 55 * 60 * 1000; // Google access tokens last ~1hr
   console.log("GOOGLE LINK SUCCESS — employee:", session.user.id, googleEmail);
-  saveEmpGoogleToken(session.user.id, { token: providerToken, refreshToken: bridgedRefreshToken, email: googleEmail, expiresAt });
-  console.log("TOKEN SAVED — localStorage key smocks.empGoogle." + session.user.id);
+  // Supabase is the source of truth for cross-device sync — write there
+  // first and check the result explicitly (it resolves with {error} rather
+  // than throwing on failure, so a bare .catch() alone would miss a real
+  // failure and still log success). localStorage is only updated after a
+  // confirmed Supabase success, purely as an instant-read cache for this
+  // device — never the other way around, or a token saved here would show
+  // as "connected" on THIS device while never reaching the other one.
   (supabase as any).from("employees")
     .update({ google_token: providerToken, google_refresh_token: bridgedRefreshToken || null, google_email: googleEmail, google_token_expires_at: new Date(expiresAt).toISOString() })
     .eq("user_id", session.user.id)
-    .then(() => console.log("TOKEN SAVED — Supabase employees row for", session.user.id))
-    .catch((e: any) => console.warn("Could not persist employee Google token to Supabase (columns may not exist):", e?.message));
+    .then((result: any) => {
+      if (result?.error) {
+        console.error("Could not persist employee Google token to Supabase:", result.error.message);
+        return;
+      }
+      console.log("TOKEN SAVED — Supabase employees row for", session.user.id);
+      saveEmpGoogleToken(session.user.id, { token: providerToken, refreshToken: bridgedRefreshToken, email: googleEmail, expiresAt });
+      console.log("TOKEN CACHED — localStorage key smocks.empGoogle." + session.user.id);
+    })
+    .catch((e: any) => console.error("Could not persist employee Google token to Supabase:", e?.message));
 }
 
 // ─── App ──────────────────────────────────────────────────────────────────────
@@ -317,8 +362,12 @@ export function App() {
   // True once we've checked Supabase for an existing session on first load.
   // Prevents the CRM flashing briefly before the employee session is restored.
   const [sessionChecked, setSessionChecked] = useState(false);
-  // True once any owner session is confirmed — gates the CRM from unauthenticated access
-  const [hasCrmSession, setHasCrmSession] = useState(false);
+  // True once any owner session is confirmed — gates the CRM from unauthenticated access.
+  // Seeded from a cached flag so a returning owner with a still-valid session
+  // renders straight into the dashboard instead of flashing the login form —
+  // the auth bootstrap (below) actively clears the flag and flips this back
+  // to false the instant a real session check comes back negative.
+  const [hasCrmSession, setHasCrmSession] = useState(() => getLastOwnerSessionFlag());
   // "owner" or "manager" — both get the CRM, but managers get a restricted Settings modal
   // (profile tab only) and can't touch billing/Stripe or delete company data.
   const [crmRole, setCrmRole] = useState<"owner" | "manager">("owner");
@@ -778,6 +827,7 @@ export function App() {
             if (event === "SIGNED_OUT") {
               setEmpSession(null);
               setHasCrmSession(false);
+              setLastOwnerSessionFlag(false);
               setCrmRole("owner");
               setOauthProcessing(false);
               return;
@@ -808,8 +858,15 @@ export function App() {
               return;
             }
 
-            // Owner / manager path — both get the CRM, crmRole drives Settings restrictions
-            if (session) setHasCrmSession(true);
+            // Owner / manager path — both get the CRM, crmRole drives Settings restrictions.
+            // The explicit false branch matters: hasCrmSession's initial state is
+            // optimistically seeded from a cached "was logged in last time" flag (see
+            // below) so a returning owner skips straight to the dashboard instead of
+            // flashing the login form — but that means a confirmed-absent session
+            // must actively clear it, or a stale/expired cached flag would leave the
+            // CRM shell rendered with no real session backing it.
+            if (session) { setHasCrmSession(true); setLastOwnerSessionFlag(true); }
+            else { setHasCrmSession(false); setLastOwnerSessionFlag(false); }
             setCrmRole(userRole === "manager" ? "manager" : "owner");
             if (session?.user?.email) setCrmUserEmail(session.user.email);
             if (session?.user?.id) setCrmUserId(session.user.id);
@@ -859,7 +916,8 @@ export function App() {
           setOauthProcessing(false);
           persistEmployeeGoogleToken(initial);
         } else {
-          if (initial) setHasCrmSession(true);
+          if (initial) { setHasCrmSession(true); setLastOwnerSessionFlag(true); }
+          else { setHasCrmSession(false); setLastOwnerSessionFlag(false); }
           setCrmRole(initRole === "manager" ? "manager" : "owner");
           if (initial?.user?.id) setCrmUserId(initial.user.id);
           applyGoogleIdentity(initial);
@@ -983,20 +1041,14 @@ export function App() {
     }));
     setCrmUserEmail("");
     setHasCrmSession(false);
+    setLastOwnerSessionFlag(false);
     setProfileDropOpen(false);
   };
 
-  // ── OAuth loading screen ──────────────────────────────────────────────────
-  if (oauthProcessing) {
-    return (
-      <div className="min-h-screen bg-black flex items-center justify-center">
-        <div className="text-center space-y-3">
-          <div className="w-10 h-10 border-2 border-red-600 border-t-transparent rounded-full animate-spin mx-auto" />
-          <div className="text-sm text-white/50">Completing Google sign-in…</div>
-        </div>
-      </div>
-    );
-  }
+  // No OAuth loading gate either — oauthProcessing still flips false once the
+  // callback resolves and routes to the right page, but until then we just
+  // render whatever the normal gates below decide (typically the login
+  // screen) instead of blocking on a spinner.
 
   // ── Client portal — fully public route, its own Supabase auth, no PIN/owner gate ──
   if (page === "client") {
@@ -1009,28 +1061,14 @@ export function App() {
     return <ReferralLanding customers={customers} setCustomers={setCustomers} settings={settings} toast={toast} />;
   }
 
-  // ── Session loading guard — prevents CRM flashing before employee session restores ──
-  // This must resolve role BEFORE anything else renders: no sidebar, no nav, no
-  // dashboard — just this screen — until we know for certain whether the visitor
-  // is an owner or an employee.
-  if (!sessionChecked) {
-    return (
-      <div className="min-h-screen bg-black flex items-center justify-center">
-        <div className="text-center space-y-4">
-          <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-red-600 to-red-900 flex items-center justify-center mx-auto shadow-lg shadow-red-900/40">
-            <span className="text-2xl font-black text-white tracking-tight">CB</span>
-          </div>
-          <div className="space-y-2">
-            <div className="font-bold text-white tracking-tight">CrewBoss</div>
-            <div className="flex items-center justify-center gap-2 text-sm text-white/40">
-              <div className="w-3.5 h-3.5 border-2 border-red-600/50 border-t-transparent rounded-full animate-spin" />
-              Loading...
-            </div>
-          </div>
-        </div>
-      </div>
-    );
-  }
+  // No top-level loading gate — render immediately with whatever's already
+  // in localStorage (jobs/customers/settings load synchronously via
+  // usePersistent) rather than blocking on session resolution. The login
+  // gate just below already handles the "not authenticated yet" case, and
+  // it isn't a spinner — it's the real login form, so there's no flash of
+  // a fake loading state, just a (usually sub-second) render of the login
+  // screen for an already-authenticated visitor until the session bootstrap
+  // confirms their role and flips hasCrmSession/empSession.
 
   // ── PIN screen ────────────────────────────────────────────────────────────
   if (pinSet && !pinUnlocked) {
@@ -1092,6 +1130,7 @@ export function App() {
         setJobs={setJobs}
         employees={employees}
         customers={customers}
+        setCustomers={setCustomers}
         settings={settings}
         estimates={estimates}
         setEstimates={setEstimates}

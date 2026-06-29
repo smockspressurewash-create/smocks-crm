@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { Lock, CheckCircle, AlertCircle } from "lucide-react";
+import { Lock, CheckCircle, AlertCircle, Eye, EyeOff } from "lucide-react";
 import { supabase } from "../../lib/supabase";
 import { Glass } from "../ui/Glass";
 import { GBtn } from "../ui/GBtn";
@@ -8,6 +8,7 @@ import { GInput } from "../ui/GInput";
 export function ResetPassword() {
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState(false);
@@ -90,21 +91,28 @@ export function ResetPassword() {
 
               <div className="space-y-1">
                 <label className="text-xs text-white/50 font-medium">New Password</label>
-                <GInput
-                  type="password"
-                  placeholder="At least 6 characters"
-                  value={password}
-                  onChange={(e: React.ChangeEvent<HTMLInputElement>) => setPassword(e.target.value)}
-                  onKeyDown={(e: React.KeyboardEvent) => e.key === "Enter" && handleSubmit()}
-                  disabled={loading || !sessionReady}
-                  autoFocus
-                />
+                <div className="relative">
+                  <GInput
+                    type={showPassword ? "text" : "password"}
+                    placeholder="At least 6 characters"
+                    value={password}
+                    onChange={(e: React.ChangeEvent<HTMLInputElement>) => setPassword(e.target.value)}
+                    onKeyDown={(e: React.KeyboardEvent) => e.key === "Enter" && handleSubmit()}
+                    disabled={loading || !sessionReady}
+                    className="!pr-11"
+                    autoFocus
+                  />
+                  <button type="button" onClick={() => setShowPassword(s => !s)} aria-label={showPassword ? "Hide password" : "Show password"}
+                    className="absolute right-1 top-1/2 -translate-y-1/2 w-9 h-9 flex items-center justify-center text-white/40 hover:text-white/80">
+                    {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                  </button>
+                </div>
               </div>
 
               <div className="space-y-1">
                 <label className="text-xs text-white/50 font-medium">Confirm Password</label>
                 <GInput
-                  type="password"
+                  type={showPassword ? "text" : "password"}
                   placeholder="Repeat new password"
                   value={confirm}
                   onChange={(e: React.ChangeEvent<HTMLInputElement>) => setConfirm(e.target.value)}

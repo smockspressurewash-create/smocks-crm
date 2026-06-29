@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import {
   Clock, Briefcase, Calendar, ChevronLeft, CheckSquare, Camera,
-  LogOut, MapPin, Phone, User, Play, Pause, Square, Plus, X, Eye, DollarSign,
+  LogOut, MapPin, Phone, User, Play, Pause, Square, Plus, X, Eye, EyeOff, DollarSign,
   ChevronRight, Home, List, CheckCircle, AlertCircle, Image, FileText,
   Video, PenLine, Shield, Navigation, Database, Route, ToggleRight, ToggleLeft, Download, Bell
 } from "lucide-react";
@@ -15,8 +15,9 @@ import { GTxt } from "../ui/GTxt";
 import { BeforeAfterSlider } from "../ui/BeforeAfterSlider";
 import { loadMapsScript, AddressAutocomplete } from "../ui/AddressAutocomplete";
 import { LiveMap } from "../ui/LiveMap";
+import { PropertyMapEmbed } from "../ui/PropertyMapEmbed";
 import { BarChart, Bar, LineChart, Line, XAxis, YAxis, ResponsiveContainer, Tooltip, CartesianGrid } from "recharts";
-import { fmt, uid, today, daysFromNow, computeJobRatingScore } from "../../lib/utils";
+import { fmt, uid, today, daysFromNow, computeJobRatingScore, setOAuthIntent } from "../../lib/utils";
 import type { Job, Employee, Customer, AppSettings, JobChecklistItem } from "../../types";
 
 const PRE_DEFAULTS: JobChecklistItem[] = [
@@ -47,21 +48,10 @@ export function paymentStatusLabel(job: Job): string {
   return "Unpaid";
 }
 
-// Street View Static images proved unreliable across this key's
-// restrictions — link straight to Google Maps for the address instead.
+// Embedded map for a job address — see PropertyMapEmbed for why this
+// replaced the Street View Static API (403 key-restriction errors).
 function StreetViewThumb({ address }: { address: string; apiKey?: string }) {
-  if (!address) return null;
-  return (
-    <a
-      href={`https://www.google.com/maps?q=${encodeURIComponent(address)}`}
-      target="_blank"
-      rel="noopener noreferrer"
-      className="w-full rounded-xl border border-white/10 bg-white/5 hover:bg-white/10 transition flex items-center justify-center gap-2 h-12 text-xs text-white/70 hover:text-white"
-    >
-      <MapPin size={14} className="text-red-400" />
-      View Property on Google Maps
-    </a>
-  );
+  return <PropertyMapEmbed address={address} height={144} />;
 }
 // Formats a job's estimated duration (decimal hours) as "Est. 3 hours" /
 // "Est. 1 hour" / "Est. 2h 30m" for fractional values.
@@ -248,6 +238,8 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
   const [note, setNote] = useState("");
   const [delayNote, setDelayNote] = useState("");
   const [delayNoteOpen, setDelayNoteOpen] = useState(false);
+  const [runningLateOpen, setRunningLateOpen] = useState(false);
+  const [sendingRunningLate, setSendingRunningLate] = useState(false);
   const [, forceTick] = useState(0);
   const [showSignOff, setShowSignOff] = useState(false);
   const [signerName, setSignerName] = useState("");
@@ -285,6 +277,30 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
   const isOverSchedule = !!(job.clockInAt && job.duration && (Date.now() - job.clockInAt) / 3600000 > Number(job.duration));
 
   const hasRequiredGear = (job.equipment || []).length > 0 || (job.requiredChemicals || []).length > 0;
+  const sendRunningLate = async (minutes: number) => {
+    setSendingRunningLate(true);
+    const msg = `Your technician is running approximately ${minutes} minutes behind. We apologize for the delay.`;
+    try {
+      if (customer?.phone && settings?.twilioSid) {
+        await twilioSend(settings as any, customer.phone, `Hi ${customer.firstName}, ${msg}`);
+      } else if (customer?.email) {
+        const html = emailShell(companyName, "Running Late", `<p>Hi ${customer.firstName},</p><p>${msg}</p>`);
+        await sendEmail(settings as any, { to: customer.email, subject: "Your technician is running late", body: html });
+      }
+      const ownerEmail = (settings as any)?.myEmail || (settings as any)?.companyEmail;
+      if (ownerEmail) {
+        const ownerHtml = emailShell(companyName, "Crew Running Late", `<p>${customer ? customer.firstName + " " + customer.lastName : job.address} — running ~${minutes} min late.</p><p>Address: ${job.address}</p>`);
+        sendEmail(settings as any, { to: ownerEmail, subject: `Running late — ${job.address}`, body: ownerHtml }).catch(() => {});
+      }
+      onUpdateJob({ commLog: [...(job.commLog || []), { id: uid(), type: "note" as const, date: today(), note: `⏱ Running late — notified customer +${minutes}min` }] });
+      toast(`Customer notified — running ${minutes} min late`, "green");
+      setRunningLateOpen(false);
+    } catch (e: any) {
+      toast(e?.message || "Failed to send running-late notice", "red");
+    } finally {
+      setSendingRunningLate(false);
+    }
+  };
   const clockIn = () => {
     onUpdateJob({ clockInAt: Date.now(), lunchStartAt: null });
     if (hasRequiredGear && !job.equipmentChecked) {
@@ -814,6 +830,31 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
           </Glass>
         )}
 
+        {/* Running Late — proactively warn the customer (and owner), available
+            any time the job hasn't been completed/cancelled yet, not just
+            once already over schedule. */}
+        {job.status !== "completed" && job.status !== "cancelled" && (customer?.phone || customer?.email) && (
+          <Glass className="p-3 !bg-orange-950/15 !border-orange-700/30">
+            {runningLateOpen ? (
+              <div className="space-y-2">
+                <div className="text-xs text-white/60">How many minutes late?</div>
+                <div className="flex gap-1.5">
+                  {[5, 10, 15, 20, 30].map(m => (
+                    <button key={m} disabled={sendingRunningLate} onClick={() => sendRunningLate(m)} className="flex-1 py-2 rounded-lg bg-orange-900/30 border border-orange-700/40 text-orange-300 text-sm font-semibold hover:bg-orange-900/50 disabled:opacity-50 transition">
+                      {m}
+                    </button>
+                  ))}
+                </div>
+                <button onClick={() => setRunningLateOpen(false)} className="text-[11px] text-white/30 hover:text-white/60">Cancel</button>
+              </div>
+            ) : (
+              <button onClick={() => setRunningLateOpen(true)} className="w-full flex items-center justify-center gap-1.5 py-1.5 text-xs text-orange-300 hover:text-orange-200 transition">
+                <Clock size={12} />Running Late
+              </button>
+            )}
+          </Glass>
+        )}
+
         {/* Over-schedule warning — job has been clocked in longer than its estimate */}
         {isOverSchedule && (
           <Glass className="p-3 !bg-yellow-950/20 !border-yellow-700/40">
@@ -1224,10 +1265,10 @@ function OwnerTeamPortal({ jobs, employees, customers, onClose, googleMapsKey }:
   );
 }
 
-export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, employees, customers, settings, toast, isOwnerView = false, onClose = () => {}, refetchEmployees, estimates = [], setEstimates = (() => {}) as any }: {
+export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, employees, customers, setCustomers = (() => {}) as any, settings, toast, isOwnerView = false, onClose = () => {}, refetchEmployees, estimates = [], setEstimates = (() => {}) as any }: {
   empSession: any; setEmpSession: (s: any) => void;
   jobs: Job[]; setJobs: (fn: (prev: Job[]) => Job[]) => void;
-  employees: Employee[]; customers: Customer[];
+  employees: Employee[]; customers: Customer[]; setCustomers?: any;
   settings: AppSettings; toast: (msg: string, tone?: any) => void;
   isOwnerView?: boolean; onClose?: () => void;
   refetchEmployees?: () => Promise<void>;
@@ -1272,6 +1313,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   const userLocationRef = useRef<{ lat: number; lng: number } | null>(null);
   const [loginEmail, setLoginEmail] = useState("");
   const [loginPwd, setLoginPwd] = useState("");
+  const [showLoginPwd, setShowLoginPwd] = useState(false);
   const [loginFirst, setLoginFirst] = useState("");
   const [loginLast, setLoginLast] = useState("");
   const [loginMode, setLoginMode] = useState<"login" | "register">("login");
@@ -1483,8 +1525,20 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     const av = (myEmployee as any).availability;
     if (Array.isArray(av) && av.length > 0) setAvailability(av);
     if ((myEmployee as any).autoSyncCalendar === false) setAutoSyncCalendar(false);
-    if ((myEmployee as any).homeBaseAddress) setHomeBaseAddressState((myEmployee as any).homeBaseAddress);
   }, [(myEmployee as any)?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Home base specifically re-syncs whenever Supabase's value changes (not
+  // just once per login) — the periodic employees poll means a home base
+  // set on another device shows up here within a few seconds instead of
+  // requiring a fresh login on this device to ever see it. Guarded by a
+  // recent-local-edit window so a poll landing mid-keystroke (saveHomeBaseAddress
+  // fires on every change) never clobbers text the user is actively typing.
+  useEffect(() => {
+    const remote = (myEmployee as any)?.homeBaseAddress;
+    if (remote && remote !== homeBaseAddress && Date.now() - homeBaseLastEditRef.current > 5000) {
+      setHomeBaseAddressState(remote);
+    }
+  }, [(myEmployee as any)?.homeBaseAddress]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Hydrate the Google connection from Supabase if localStorage doesn't have it
   // (different browser/device, or localStorage cleared) — so a real, still-valid
@@ -1682,6 +1736,34 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     console.log("FILTERED MY JOBS — count:", myJobs.length);
     console.log("FILTERED MY JOBS — ids:", myJobs.map(j => j.id));
   }
+
+  // Customer name/phone on job cards depends on customers.find(j.customerId)
+  // finding a match in the customers prop array — if that array is stale
+  // (e.g. a customer was added after this portal session started and hasn't
+  // been picked up by the periodic sync yet), the lookup silently returns
+  // undefined and the card just shows no name/phone with no indication why.
+  // Fetch any referenced customer ids that are missing directly from
+  // Supabase as a fallback, and merge them into the shared customers state
+  // so every lookup site benefits without each one needing its own fetch.
+  const missingCustomerFetchRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (!empSession || myJobs.length === 0) return;
+    const knownIds = new Set(customers.map((c: any) => c.id));
+    const missingIds = Array.from(new Set(myJobs.map(j => j.customerId).filter(Boolean)))
+      .filter(id => !knownIds.has(id) && !missingCustomerFetchRef.current.has(id));
+    if (missingIds.length === 0) return;
+    missingIds.forEach(id => missingCustomerFetchRef.current.add(id));
+    (supabase as any).from("customers").select("*").in("id", missingIds).then((r: any) => {
+      if (r?.error) { console.warn("Customer fallback fetch failed:", r.error.message); return; }
+      const fetched = Array.isArray(r?.data) ? r.data : [];
+      if (fetched.length === 0) return;
+      setCustomers((prev: any[]) => {
+        const existingIds = new Set(prev.map(c => c.id));
+        const toAdd = fetched.filter((c: any) => !existingIds.has(c.id));
+        return toAdd.length > 0 ? [...prev, ...toAdd] : prev;
+      });
+    }).catch((e: any) => console.warn("Customer fallback fetch failed:", e?.message));
+  }, [empSession, myJobs.map(j => j.customerId).join(","), customers.length]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Real-time location sharing — runs the whole time the toggle is on (not
   // gated on being clocked in — the owner may want to see crew location
@@ -2230,15 +2312,27 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     try { localStorage.setItem("smocks.portal.upcomingCollapsed", next ? "1" : "0"); } catch { /* ignore */ }
     return next;
   });
+  const homeBaseLastEditRef = useRef(0);
   const saveHomeBaseAddress = async (addr: string) => {
+    homeBaseLastEditRef.current = Date.now();
     setHomeBaseAddressState(addr);
+    // Supabase is the source of truth for cross-device sync — write there
+    // first and check the result explicitly (Supabase resolves with {error}
+    // rather than throwing on failure, so a bare try/catch alone would miss
+    // a real failure). localStorage is only updated AFTER a confirmed
+    // success, purely as an instant-load cache for this device.
+    const empId = (myEmployee as any)?.id;
+    if (!empId) return;
+    try {
+      const result = await (supabase as any).from("employees").update({ homeBaseAddress: addr }).eq("id", empId);
+      if (result?.error) { toast("Failed to save home base — " + result.error.message, "red"); return; }
+    } catch (e: any) {
+      toast("Failed to save home base — " + (e?.message || "try again"), "red");
+      return;
+    }
     try {
       const uid = empSession?.user?.id;
       if (uid) localStorage.setItem("smocks.homeBase." + uid, addr);
-    } catch { /* ignore */ }
-    try {
-      const empId = (myEmployee as any)?.id;
-      if (empId) await (supabase as any).from("employees").update({ homeBaseAddress: addr }).eq("id", empId);
     } catch { /* ignore */ }
   };
 
@@ -2318,6 +2412,22 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
       setInlineDenyReason("");
       toast("Request declined.");
     } catch { toast("Error declining request", "red"); }
+  };
+
+  // Requests the same Calendar + Gmail scopes the owner's Google connect
+  // uses, so the provider_token this comes back with already has the
+  // permissions needed to auto-connect Calendar/Gmail — App.tsx's
+  // persistEmployeeGoogleToken (already wired for employee sessions) picks
+  // up that token from the auth callback with no further action needed here.
+  const handleEmployeeGoogleLogin = () => {
+    setOAuthIntent("employee");
+    supabase.auth.signInWithOAuth({
+      provider: "google",
+      options: {
+        redirectTo: window.location.origin + window.location.pathname,
+        scopes: "email profile https://www.googleapis.com/auth/calendar https://www.googleapis.com/auth/gmail.send",
+      },
+    });
   };
 
   const doLogin = async () => {
@@ -2547,8 +2657,14 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
             </div>
             <div>
               <label className="text-xs text-white/50 mb-1 block">Password</label>
-              <GInput type="password" value={loginPwd} onChange={e => setLoginPwd(e.target.value)}
-                placeholder="••••••••" onKeyDown={e => e.key === "Enter" && (loginMode === "login" ? doLogin() : doRegister())} />
+              <div className="relative">
+                <GInput type={showLoginPwd ? "text" : "password"} value={loginPwd} onChange={e => setLoginPwd(e.target.value)}
+                  placeholder="••••••••" className="!pr-11" onKeyDown={e => e.key === "Enter" && (loginMode === "login" ? doLogin() : doRegister())} />
+                <button type="button" onClick={() => setShowLoginPwd(s => !s)} aria-label={showLoginPwd ? "Hide password" : "Show password"}
+                  className="absolute right-1 top-1/2 -translate-y-1/2 w-9 h-9 flex items-center justify-center text-white/40 hover:text-white/80">
+                  {showLoginPwd ? <EyeOff size={16} /> : <Eye size={16} />}
+                </button>
+              </div>
             </div>
             {loginError && !(inviteCode && !inviteRecord) && (
               <div className="p-3 bg-red-950/40 border border-red-700/50 rounded-xl text-sm text-red-300">
@@ -2575,6 +2691,20 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
             <button onClick={() => { setLoginMode(m => m === "login" ? "register" : "login"); setLoginError(""); setForgotSent(false); }}
               className="w-full text-center text-sm text-white/40 hover:text-white/70 transition">
               {loginMode === "login" ? "New here? Create an account →" : "← Back to sign in"}
+            </button>
+
+            <div className="flex items-center gap-3 pt-1">
+              <div className="flex-1 h-px bg-white/10" />
+              <span className="text-xs text-white/30">or</span>
+              <div className="flex-1 h-px bg-white/10" />
+            </div>
+
+            <button
+              onClick={handleEmployeeGoogleLogin}
+              className="w-full flex items-center justify-center gap-3 py-3 rounded-2xl bg-white text-gray-900 font-semibold text-sm shadow-lg hover:bg-gray-50 active:scale-95 transition-all"
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/></svg>
+              Sign in with Google
             </button>
           </div>
           <div className="mt-8 text-center text-xs text-white/20">
@@ -2633,11 +2763,9 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
       );
     }
     if (requestLoading) {
-      return (
-        <div className="min-h-screen bg-black flex items-center justify-center">
-          <div className="w-8 h-8 border-2 border-red-600 border-t-transparent rounded-full animate-spin" />
-        </div>
-      );
+      // No spinner — just render nothing for the brief moment before the
+      // request details arrive, rather than blocking on a loading state.
+      return <div className="min-h-screen bg-black" />;
     }
     if (!requestData) {
       return (
@@ -3182,15 +3310,31 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                 // permission prompt and no feedback at all.
                 if (turningOn && navigator.geolocation) {
                   setLocationPermissionPending(true);
+                  // Belt-and-suspenders timeout: some mobile browsers/WebViews
+                  // don't reliably honor getCurrentPosition's own `timeout`
+                  // option and just never call either callback, which is what
+                  // left the button stuck on "Requesting location permission…"
+                  // forever. This guarantees the pending state always clears.
+                  let settled = false;
+                  const safety = setTimeout(() => {
+                    if (settled) return;
+                    settled = true;
+                    setLocationPermissionPending(false);
+                    toast("Location request timed out — try again", "red");
+                  }, 12000);
                   navigator.geolocation.getCurrentPosition(
                     (pos) => {
+                      if (settled) return;
+                      settled = true; clearTimeout(safety);
                       setLocationPermissionPending(false);
-                      toast("Location sharing active 🟢");
+                      toast("📍 Location sharing active");
                       (supabase as any).from("employees").update({ lastLocation: { lat: pos.coords.latitude, lng: pos.coords.longitude, updatedAt: Date.now() } }).eq("id", empId).then((r: any) => { if (r?.error) console.warn("Failed to save location:", r.error); else refetchEmployees?.(); });
                     },
                     (err) => {
+                      if (settled) return;
+                      settled = true; clearTimeout(safety);
                       setLocationPermissionPending(false);
-                      toast("Location sharing denied — enable location access for this site in your browser settings", "red");
+                      toast("Location permission denied — enable in browser settings", "red");
                     },
                     { enableHighAccuracy: true, timeout: 10000 }
                   );

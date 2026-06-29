@@ -140,6 +140,7 @@ export function AddressAutocomplete({
             onBlur={() => setTimeout(() => setOpen(false), 200)}
             placeholder={placeholder}
             className={className}
+            name="address"
             autoComplete="street-address"
           />
         </div>

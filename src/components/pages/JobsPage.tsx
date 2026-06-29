@@ -830,26 +830,36 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
                 {/* On My Way button — shows for scheduled/in_progress */}
                 {(tab === "scheduled" || tab === "in_progress") && (() => {
                   const c = customers.find(x => x.id === j.customerId);
-                  if (!c?.phone) return null;
+                  if (!c?.phone && !c?.email) return null;
                   return <button onClick={() => {
+                    if (j.scheduledDate && j.scheduledDate !== today()) {
+                      const ok = window.confirm(`This job is scheduled for ${j.scheduledDate}, not today. Send the "on my way" message anyway?`);
+                      if (!ok) return;
+                    }
+                    const eta = new Date(Date.now() + 17 * 60000).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
                     // Get live GPS location then include in message
-                    const sendOTW = (lat, lng) => {
-                      const locationLink = lat ? "https://maps.google.com/?q=" + lat + "," + lng : null;
-                      const omwMsg = "Hi " + c.firstName + "! I'm on my way to your property — ETA 15-20 min. 🚗" + (locationLink ? " Track me: " + locationLink : "") + " — Will @ Smock's";
-                      if (settings?.twilioSid) {
-                        twilioSend(settings, c.phone, omwMsg).then(() => toast("OTW text sent to " + c.firstName + " ✓")).catch(e => toast(e.message, "error"));
-                      } else {
-                        window.location.href = "sms:" + c.phone.replace(/\D/g,"") + "?body=" + encodeURIComponent(omwMsg);
+                    const sendOTW = (lat: number | null, lng: number | null) => {
+                      const locationLink = lat != null ? "https://maps.google.com/?q=" + lat + "," + lng : null;
+                      const omwMsg = `Hi ${c.firstName}! Your technician is on the way! ETA: ${eta}. 🚗` + (locationLink ? " Track me: " + locationLink : "") + " — Will @ Smock's";
+                      if (settings?.twilioSid && c.phone) {
+                        twilioSend(settings, c.phone, omwMsg).then(() => toast("OTW text sent to " + c.firstName + " ✓")).catch((e: any) => toast(e.message, "red"));
+                      } else if (c.email) {
+                        const html = emailShell(settings.companyName || "Smock's Pressure Washing", "On My Way", `<p>${omwMsg}</p>`);
+                        sendEmail(settings, { to: c.email, subject: "Your technician is on the way", body: html }).then(() => toast("OTW email sent to " + c.firstName + " ✓")).catch((e: any) => toast(e.message, "red"));
+                      } else if (c.phone) {
+                        // No Twilio configured and no email on file — last resort,
+                        // only useful on a device with an SMS app (e.g. employee's phone).
+                        window.location.href = "sms:" + c.phone.replace(/\D/g, "") + "?body=" + encodeURIComponent(omwMsg);
                       }
                     };
                     if (navigator.geolocation) {
                       navigator.geolocation.getCurrentPosition(
-                        pos => sendOTW(pos.coords.latitude.toFixed(5), pos.coords.longitude.toFixed(5)),
+                        pos => sendOTW(Number(pos.coords.latitude.toFixed(5)), Number(pos.coords.longitude.toFixed(5))),
                         () => sendOTW(null, null),
                         { timeout: 5000 }
                       );
                     } else { sendOTW(null, null); }
-                  }} className="px-2.5 py-1.5 rounded-lg border bg-blue-950/30 border-blue-700/40 text-blue-300 hover:bg-blue-900/40 text-xs transition flex items-center gap-1" title="Text customer: On My Way with live location">
+                  }} className="px-2.5 py-1.5 rounded-lg border bg-blue-950/30 border-blue-700/40 text-blue-300 hover:bg-blue-900/40 text-xs transition flex items-center gap-1" title="Notify customer: On My Way">
                     <Navigation size={10} />OTW
                   </button>;
                 })()}

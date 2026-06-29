@@ -87,7 +87,7 @@ export function ReferralLanding({ customers = [], setCustomers = (() => {}) as a
             </div>
             <GInput type="tel" placeholder="Phone" value={f.phone} onChange={(e: any) => setF({ ...f, phone: e.target.value })} className="!text-sm" />
             <GInput type="email" placeholder="Email" value={f.email} onChange={(e: any) => setF({ ...f, email: e.target.value })} className="!text-sm" />
-            <GInput placeholder="Property address" value={f.address} onChange={(e: any) => setF({ ...f, address: e.target.value })} className="!text-sm" />
+            <GInput placeholder="Property address" value={f.address} onChange={(e: any) => setF({ ...f, address: e.target.value })} className="!text-sm" name="address" autoComplete="street-address" />
             <GBtn onClick={submit} disabled={busy} className="w-full !py-3">{busy ? "Submitting…" : "Request My Quote"}</GBtn>
           </Glass>
         )}

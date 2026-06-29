@@ -45,6 +45,7 @@ import { PBar } from "./PBar";
 import { PageFade } from "./PageFade";
 import { TimeframeSelector } from "./TimeframeSelector";
 import { BeforeAfterSlider } from "./BeforeAfterSlider";
+import { PropertyMapEmbed } from "./PropertyMapEmbed";
 
 const PRE_DEFAULTS: JobChecklistItem[] = [
   { id: "pre1", label: "Take photos of existing damage", done: false },
@@ -147,28 +148,10 @@ function ChecklistSection({ title, emoji, items, onUpdate }: {
   );
 }
 
-// Small Street View thumbnail for a job address; click to expand full-size.
-// Renders nothing when there's no key at all (not yet configured — that's a
-// separate, unremarkable state). If a key IS set but the image still fails
-// to load, that almost always means the key is valid for Maps JS/Places but
-// the separately-billed Street View Static API hasn't been enabled on it —
-// Street View Static API images proved unreliable across this key's
-// restrictions in practice — rather than show a broken image or an error,
-// just link out to Google Maps for the address. Always works, no API key
-// quirks, no error states to maintain.
+// Small embedded map for a job address — see PropertyMapEmbed for why this
+// replaced the Street View Static API (403 key-restriction errors).
 function StreetViewThumb({ address }: { address: string; apiKey?: string }) {
-  if (!address) return null;
-  return (
-    <a
-      href={`https://www.google.com/maps?q=${encodeURIComponent(address)}`}
-      target="_blank"
-      rel="noopener noreferrer"
-      className="w-full rounded-xl border border-white/10 bg-white/5 hover:bg-white/10 transition flex items-center justify-center gap-2 h-12 text-xs text-white/70 hover:text-white"
-    >
-      <MapPin size={14} className="text-red-400" />
-      View Property on Google Maps
-    </a>
-  );
+  return <PropertyMapEmbed address={address} height={144} />;
 }
 
 // Small "type a name, hit Enter or click +" input used to add equipment or

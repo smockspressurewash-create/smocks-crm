@@ -328,11 +328,14 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
   }[t] || "bg-white/5 border-white/10 text-white/70");
 
   // Live team view — who's clocked in right now, on which job, and how far
-  // along their checklist is. Re-renders every 30s so elapsed time and any
-  // newly clocked-in/out crew show up without a manual refresh.
+  // along their checklist is. Re-renders every 5s so elapsed time and any
+  // newly clocked-in/out crew show up without a manual refresh (the
+  // underlying jobs data itself already syncs via App.tsx's realtime/3s
+  // poll — this tick is what makes the elapsed-time display itself update
+  // even on a render where the data hasn't changed).
   const [, liveTeamTick] = useState(0);
   useEffect(() => {
-    const interval = setInterval(() => liveTeamTick(t => t + 1), 30000);
+    const interval = setInterval(() => liveTeamTick(t => t + 1), 5000);
     return () => clearInterval(interval);
   }, []);
   const activeJobs = jobs.filter(j => j.clockInAt && j.status !== "completed" && j.status !== "cancelled");
@@ -479,9 +482,14 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
                         <div className="text-sm font-medium truncate">{cust ? `${cust.firstName} ${cust.lastName}` : j.address}</div>
                         <div className="text-xs text-white/40">{j.address} · {fmt(j.amount)}</div>
                       </div>
-                      <GBtn onClick={() => setPreviewInvoiceJob(j)} disabled={sendingDashInvoiceId === j.id} className="!text-xs !py-1.5 flex-shrink-0">
-                        {sendingDashInvoiceId === j.id ? "Sending…" : "Send Invoice"}
-                      </GBtn>
+                      <div className="flex gap-1.5 flex-shrink-0">
+                        <button onClick={() => { setJobs((prev: any[]) => prev.map(x => x.id === j.id ? { ...x, invoiceSentAt: today(), paymentType: x.paymentType || "Invoice" } : x)); toast?.("Marked as sent (outside the CRM)", "green"); }} title="Already sent this invoice outside the CRM" className="px-2 py-1.5 rounded-lg border border-white/10 bg-white/5 text-white/50 hover:text-white text-xs transition">
+                          Mark Sent
+                        </button>
+                        <GBtn onClick={() => setPreviewInvoiceJob(j)} disabled={sendingDashInvoiceId === j.id} className="!text-xs !py-1.5">
+                          {sendingDashInvoiceId === j.id ? "Sending…" : "Send Invoice"}
+                        </GBtn>
+                      </div>
                     </div>
                   );
                 })}

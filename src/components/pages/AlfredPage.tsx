@@ -755,7 +755,11 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           if (saveError || !saved) {
             return { error: "Failed to create customer — " + (saveError?.message || "Supabase write did not return a row") };
           }
-          setCustomers(prev => [...prev, saved]);
+          // No local setCustomers call — Supabase is the only source of truth.
+          // The existing 3s cross-device sync poll (App.tsx) picks this row up
+          // and merges it into local state on its own; Alfred never mutates
+          // local state directly, so there's no path where the UI shows a
+          // customer that doesn't actually exist in the database.
           toast("Alfred created customer: " + saved.firstName + " " + saved.lastName);
           setTimeout(() => onNav("customers"), 1200);
           return { success: true, customer: saved };
@@ -789,7 +793,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           if (saveErrorE || !savedE) {
             return { error: "Failed to create estimate — " + (saveErrorE?.message || "Supabase write did not return a row") };
           }
-          setEstimates(prev => [...prev, savedE]);
+          // No local setEstimates call — see create_customer above.
           toast("Alfred created estimate #" + savedE.id.toUpperCase() + " · " + fmt(total));
           setTimeout(() => onNav("estimates"), 1200);
           return { success: true, estimateId: savedE.id, total, customer: c.firstName + " " + c.lastName };
@@ -819,7 +823,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           if (saveErrorJ || !savedJ) {
             return { error: "Failed to schedule job — " + (saveErrorJ?.message || "Supabase write did not return a row") };
           }
-          setJobs(prev => [...prev, savedJ]);
+          // No local setJobs call — see create_customer above.
           toast("Alfred scheduled job for " + c.firstName + " on " + savedJ.scheduledDate);
           setTimeout(() => onNav("jobs"), 1200);
           return { success: true, jobId: savedJ.id, date: savedJ.scheduledDate, customer: c.firstName + " " + c.lastName };
@@ -1301,7 +1305,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
       const googleStatus = settings.googleConnected
         ? `\n\nGoogle Workspace: CONNECTED as ${settings.googleEmail}. Backend: ${settings.googleBackendUrl ? "configured ✓" : "NOT configured — calls will be queued until backend URL is added"}. Enabled scopes: ${Object.entries(settings.googleScopes || {}).filter(([k, v]) => v).map(([k]) => k).join(", ")}. You CAN use send_email_via_gmail, create_calendar_event, create_google_task, and upload_to_drive — they will call the real Google APIs if backend is configured, or stage for later if not.`
         : `\n\nGoogle Workspace: NOT CONNECTED. If the user asks to send email, create calendar events, or manage tasks, tell them to go to Settings → Integrations → Google and connect their backend.`;
-      const toolHint = `\n\nYou have tools available to READ and MODIFY the CRM. USE THEM AGGRESSIVELY — don't just describe what you would do, actually do it.\n\nVERIFY BEFORE CONFIRMING: every action tool returns either {"success": true, ...} or {"error": "..."}. NEVER say "Done" or "All set" without checking which one came back. If you see an "error" field, tell the user exactly what went wrong (the error text) and what they could try instead — do not pretend it worked, and do not retry silently. Only confirm success when the tool result actually contains "success": true.\n\nKEY TOOL RULES:\n- Customer queries → USE search_customers or get_customer_details FIRST\n- Stats requests → USE get_business_stats\n- "What's on the calendar" → USE get_calendar_summary\n- "Who's clocked in / who's working" → USE get_employee_status\n- "Remember/note/don't forget" → USE remember_fact\n- Create estimates, customers, jobs → USE create_estimate/create_customer/schedule_job\n- Move or cancel a job → USE reschedule_job/cancel_job\n- Navigate somewhere → USE navigate_to (the app already auto-navigates after schedule_job/create_customer/create_estimate, but call navigate_to yourself for anything else the user asks to see)\n- Preferences/facts shared → USE remember_fact automatically\n\nAUTOMATION TOOLS (VERY IMPORTANT):\n- When user describes ANY workflow, drip sequence, reminder, or "when X do Y" scenario → USE create_automation IMMEDIATELY. Build a proper n8n-style multi-step workflow with real step types: trigger (first), then delays, conditions, actions. NEVER just describe what you'd build — actually build it with create_automation.\n- "Send review request after job complete" → trigger: Job complete, delay: 2h, action: SMS review request\n- "Follow up on unpaid invoices" → trigger: Invoice unpaid 7 days, action: polite reminder email, delay: 4 days, condition: still unpaid, action: firm SMS\n- To check existing workflows → USE list_automations\n- To enable/disable a workflow → USE toggle_automation\n\nCurrent automations: ${automations.length} total, ${automations.filter(a => a.active).length} active\n\nNAME MATCHING: if a tool result comes back with "error": "Customer not found" or "Employee not found" and includes a "suggestions" array, ask the user "Do you mean [name], or [name]?" using those exact suggested names — never ask a generic clarifying question like "who do you mean?" when real candidate names are available.`;
+      const toolHint = `\n\nYou have tools available to READ and MODIFY the CRM. USE THEM AGGRESSIVELY — don't just describe what you would do, actually do it.\n\nRESPONSE STYLE: Do not narrate your reasoning, your plan, or which tool you're about to call ("Let me check...", "I'll create that now...", "First I need to..."). Just call the tool(s) silently and then give the user the final result in 1-3 short sentences. No step-by-step thinking out loud.\n\nVERIFY BEFORE CONFIRMING: every action tool returns either {"success": true, ...} or {"error": "..."}. NEVER say "Done" or "All set" without checking which one came back. If you see an "error" field, tell the user exactly what went wrong (the error text) and what they could try instead — do not pretend it worked, and do not retry silently. Only confirm success when the tool result actually contains "success": true.\n\nKEY TOOL RULES:\n- Customer queries → USE search_customers or get_customer_details FIRST\n- Stats requests → USE get_business_stats\n- "What's on the calendar" → USE get_calendar_summary\n- "Who's clocked in / who's working" → USE get_employee_status\n- "Remember/note/don't forget" → USE remember_fact\n- Create estimates, customers, jobs → USE create_estimate/create_customer/schedule_job\n- Move or cancel a job → USE reschedule_job/cancel_job\n- Navigate somewhere → USE navigate_to (the app already auto-navigates after schedule_job/create_customer/create_estimate, but call navigate_to yourself for anything else the user asks to see)\n- Preferences/facts shared → USE remember_fact automatically\n\nAUTOMATION TOOLS (VERY IMPORTANT):\n- When user describes ANY workflow, drip sequence, reminder, or "when X do Y" scenario → USE create_automation IMMEDIATELY. Build a proper n8n-style multi-step workflow with real step types: trigger (first), then delays, conditions, actions. NEVER just describe what you'd build — actually build it with create_automation.\n- "Send review request after job complete" → trigger: Job complete, delay: 2h, action: SMS review request\n- "Follow up on unpaid invoices" → trigger: Invoice unpaid 7 days, action: polite reminder email, delay: 4 days, condition: still unpaid, action: firm SMS\n- To check existing workflows → USE list_automations\n- To enable/disable a workflow → USE toggle_automation\n\nCurrent automations: ${automations.length} total, ${automations.filter(a => a.active).length} active\n\nNAME MATCHING: if a tool result comes back with "error": "Customer not found" or "Employee not found" and includes a "suggestions" array, ask the user "Do you mean [name], or [name]?" using those exact suggested names — never ask a generic clarifying question like "who do you mean?" when real candidate names are available.`;
       const systemPrompt = prompts[activePersonality] + memoryContext + businessContext + googleStatus + toolHint;
 
       // Build initial message list — allow multi-turn tool calls up to 5 rounds
@@ -1425,13 +1429,17 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
       }
 
       if (!finalText) finalText = "Done.";
-      // Append trace summary
+      // Only show the final answer — no self-identifying model footer (it was
+      // showing up redundantly) and no tool-trace text appended to the visible
+      // message. modelUsed/toolTraces/failoverChain are still stored as
+      // metadata on the message in case something else needs them later; they
+      // just aren't concatenated into the displayed text anymore. A failover
+      // is the one thing still worth surfacing, since it explains why the
+      // response might read differently than usual.
       let displayText = finalText;
-      const footerParts = [];
-      if (toolTraces.length > 0) footerParts.push("🛠 " + toolTraces.length + " tool" + (toolTraces.length > 1 ? "s" : "") + ": " + toolTraces.map(t => t.tool).join(", "));
-      if (modelUsed !== (settings.activeModel || "claude")) footerParts.push("⚡ Failed over to " + (MODELS_MAP[modelUsed]?.name || modelUsed));
-      else if (MODELS_MAP[modelUsed]) footerParts.push("✨ " + MODELS_MAP[modelUsed].label);
-      if (footerParts.length > 0) displayText += "\n\n---\n*" + footerParts.join(" · ") + "*";
+      if (modelUsed !== (settings.activeModel || "claude")) {
+        displayText += "\n\n*⚡ Failed over to " + (MODELS_MAP[modelUsed]?.name || modelUsed) + "*";
+      }
       appendMessage({ id: uid(), role: "alfred", content: displayText, timestamp: Date.now(), toolTraces, modelUsed, failoverChain });
 
       // ElevenLabs TTS — read response aloud if enabled and key set

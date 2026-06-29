@@ -83,7 +83,16 @@ import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 
 export function InvoicesPage({ estimates = [], setEstimates, customers = [], settings = {} as AppSettings, toast, jobs = [], setJobs = (() => {}) as any }: { estimates?: any[]; setEstimates?: any; customers?: any[]; settings?: AppSettings; toast?: any; jobs?: any[]; setJobs?: any }) {
   const [sendingJobInvoiceId, setSendingJobInvoiceId] = useState<string | null>(null);
+  const [showSentJobs, setShowSentJobs] = useState(false);
   const needsInvoiceJobs = jobs.filter((j: any) => j.status === "completed" && j.paymentStatus !== "Paid" && !j.invoiceSentAt);
+  const sentJobs = jobs.filter((j: any) => j.status === "completed" && !!j.invoiceSentAt).sort((a: any, b: any) => (b.invoiceSentAt || "").localeCompare(a.invoiceSentAt || ""));
+  // For invoices sent outside the CRM (texted, handed over on paper, etc.) —
+  // marks the job as invoiced without creating an estimate or sending any
+  // email/SMS, so it drops out of "Needs Invoice" without a duplicate send.
+  const markInvoiceSentManually = (job: any) => {
+    setJobs((prev: any[]) => prev.map(j => j.id === job.id ? { ...j, invoiceSentAt: today(), paymentType: j.paymentType || "Invoice" } : j));
+    toast?.("Marked as sent (outside the CRM)", "green");
+  };
 
   const [previewInvoiceJob, setPreviewInvoiceJob] = useState<any>(null);
   const sendInvoiceForJob = async (job: any, subject: string, bodyHtml: string) => {
@@ -314,12 +323,18 @@ export function InvoicesPage({ estimates = [], setEstimates, customers = [], set
       </div>
 
       {/* Completed jobs that haven't been invoiced or marked paid yet */}
-      {needsInvoiceJobs.length > 0 && (
+      {(needsInvoiceJobs.length > 0 || sentJobs.length > 0) && (
         <Glass className="p-4 !bg-yellow-950/15 !border-yellow-700/30">
           <div className="flex items-center gap-2 mb-3">
             <AlertTriangle size={14} className="text-yellow-400" />
-            <h3 className="font-semibold text-sm">Completed — Needs Invoice</h3>
+            <h3 className="font-semibold text-sm flex-1">Completed — Needs Invoice</h3>
             <Badge tone="yellow">{needsInvoiceJobs.length}</Badge>
+            {sentJobs.length > 0 && (
+              <button onClick={() => setShowSentJobs(v => !v)} className="text-[10px] px-2 py-1 rounded-lg border border-white/10 text-white/40 hover:text-white/70 transition flex items-center gap-1">
+                {showSentJobs ? <ToggleRight size={12} /> : <ToggleLeft size={12} />}
+                {showSentJobs ? `Showing ${sentJobs.length} sent` : `Show ${sentJobs.length} sent`}
+              </button>
+            )}
           </div>
           <div className="space-y-2">
             {needsInvoiceJobs.map((j: any) => {
@@ -330,9 +345,26 @@ export function InvoicesPage({ estimates = [], setEstimates, customers = [], set
                     <div className="text-sm font-medium truncate">{cust ? `${cust.firstName} ${cust.lastName}` : j.address}</div>
                     <div className="text-xs text-white/40">{j.address} · {fmt(j.amount)} · completed {j.completedAt ? new Date(j.completedAt).toLocaleDateString() : j.scheduledDate}</div>
                   </div>
-                  <GBtn onClick={() => setPreviewInvoiceJob(j)} disabled={sendingJobInvoiceId === j.id} className="!text-xs !py-1.5 flex-shrink-0">
-                    {sendingJobInvoiceId === j.id ? "Sending…" : <><Send size={11} className="inline mr-1" />Send Invoice</>}
-                  </GBtn>
+                  <div className="flex gap-1.5 flex-shrink-0">
+                    <button onClick={() => markInvoiceSentManually(j)} title="Already sent this invoice outside the CRM (text, paper, etc.)" className="px-2.5 py-1.5 rounded-lg border border-white/10 bg-white/5 text-white/50 hover:text-white text-xs transition">
+                      Mark as Sent
+                    </button>
+                    <GBtn onClick={() => setPreviewInvoiceJob(j)} disabled={sendingJobInvoiceId === j.id} className="!text-xs !py-1.5">
+                      {sendingJobInvoiceId === j.id ? "Sending…" : <><Send size={11} className="inline mr-1" />Send Invoice</>}
+                    </GBtn>
+                  </div>
+                </div>
+              );
+            })}
+            {showSentJobs && sentJobs.map((j: any) => {
+              const cust = customers.find(c => c.id === j.customerId);
+              return (
+                <div key={j.id} className="flex items-center justify-between gap-3 p-3 rounded-xl bg-black/15 border border-white/5">
+                  <div className="min-w-0 flex-1">
+                    <div className="text-sm font-medium truncate text-white/70">{cust ? `${cust.firstName} ${cust.lastName}` : j.address}</div>
+                    <div className="text-xs text-white/30">{j.address} · {fmt(j.amount)}</div>
+                  </div>
+                  <span className="text-[10px] px-2 py-1 rounded-lg bg-green-950/30 border border-green-700/30 text-green-400 flex-shrink-0">✓ Sent {j.invoiceSentAt}</span>
                 </div>
               );
             })}

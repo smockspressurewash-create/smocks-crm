@@ -46,7 +46,7 @@ export const MODELS: Record<string, ModelDef> = {
     contextWindow: 128000,
     color: "from-green-500 to-green-700",
     needsKey: true,
-    supportsTools: false,
+    supportsTools: true,
     keyUrl: "https://platform.openai.com/api-keys",
     apiLabel: "OpenAI API Key",
   },
@@ -61,7 +61,7 @@ export const MODELS: Record<string, ModelDef> = {
     contextWindow: 1000000,
     color: "from-blue-500 to-blue-700",
     needsKey: true,
-    supportsTools: false,
+    supportsTools: true,
     keyUrl: "https://aistudio.google.com/app/apikey",
     apiLabel: "Google AI API Key",
   },
@@ -76,7 +76,7 @@ export const MODELS: Record<string, ModelDef> = {
     contextWindow: 128000,
     color: "from-purple-500 to-purple-700",
     needsKey: true,
-    supportsTools: false,
+    supportsTools: true,
     keyUrl: "https://console.groq.com/keys",
     apiLabel: "Groq API Key",
   },
@@ -91,7 +91,7 @@ export const MODELS: Record<string, ModelDef> = {
     contextWindow: 128000,
     color: "from-red-500 to-pink-700",
     needsKey: true,
-    supportsTools: false,
+    supportsTools: true,
     keyUrl: "https://console.mistral.ai/api-keys/",
     apiLabel: "Mistral API Key",
   },
@@ -201,17 +201,48 @@ export const callModel = async (opts: {
   }
 
   // ── Google Gemini ──────────────────────────────────────────────────────────
+  // Tool definitions arrive in Anthropic's shape ({name, description,
+  // input_schema}) — input_schema is already plain JSON Schema, which is
+  // exactly what Gemini's functionDeclarations.parameters expects too, so no
+  // restructuring is needed beyond the key rename.
   if (def.provider === "google") {
     if (!apiKey) throw new Error("No Google AI API key — add one in Settings → AI Models.");
 
+    // Within one model's attempt (see AlfredPage's tool loop), a message's
+    // content is always one of: a plain string (the original chat history),
+    // the generic {type:"tool_result", tool_use_id, content}[] array
+    // AlfredPage builds after running tools, or this SAME branch's own
+    // previously-returned `raw` parts array pushed back verbatim as the
+    // model's turn — never a shape from a different provider, since each
+    // failover attempt resets the conversation from scratch.
     const contents = opts.messages
       .filter(m => m.role === "user" || m.role === "assistant")
-      .map(m => ({
-        role: m.role === "assistant" ? "model" : "user",
-        parts: typeof m.content === "string"
-          ? [{ text: m.content }]
-          : [{ text: String(m.content) }],
-      }));
+      .map(m => {
+        if (typeof m.content === "string") {
+          return { role: m.role === "assistant" ? "model" : "user", parts: [{ text: m.content }] };
+        }
+        if (Array.isArray(m.content) && (m.content as any[])[0]?.type === "tool_result") {
+          // Gemini correlates function responses by name, not a call id, so
+          // the toolUses below uses the function name as its "id" — read
+          // it back here as the functionResponse's name.
+          const parts = (m.content as Array<{ tool_use_id: string; content: string }>).map(tr => ({
+            functionResponse: {
+              name: tr.tool_use_id,
+              response: (() => { try { return JSON.parse(tr.content); } catch { return { result: tr.content }; } })(),
+            },
+          }));
+          return { role: "user", parts };
+        }
+        if (Array.isArray(m.content)) {
+          // Our own previously-returned parts array (text and/or functionCall).
+          return { role: "model", parts: m.content };
+        }
+        return { role: m.role === "assistant" ? "model" : "user", parts: [{ text: String(m.content) }] };
+      });
+
+    const geminiTools = opts.tools?.length
+      ? [{ functionDeclarations: (opts.tools as Array<{ name: string; description: string; input_schema: unknown }>).map(t => ({ name: t.name, description: t.description, parameters: t.input_schema })) }]
+      : undefined;
 
     const url = `${def.endpoint}?key=${apiKey}`;
     const data = await safeFetch(url, {
@@ -219,34 +250,55 @@ export const callModel = async (opts: {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         contents,
+        ...(geminiTools ? { tools: geminiTools } : {}),
         generationConfig: { maxOutputTokens: maxTokens },
         ...(opts.systemPrompt ? { systemInstruction: { parts: [{ text: opts.systemPrompt }] } } : {}),
       }),
-    }) as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> };
+    }) as { candidates?: Array<{ content?: { parts?: Array<{ text?: string; functionCall?: { name: string; args?: Record<string, unknown> } }> } }> };
 
-    const text = data.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
-    return { text, toolUses: [], stopReason: "end_turn", raw: data };
+    const parts = data.candidates?.[0]?.content?.parts ?? [];
+    const text = parts.filter(p => p.text).map(p => p.text).join("");
+    const toolUses = parts
+      .filter(p => p.functionCall)
+      .map(p => ({ id: p.functionCall!.name, name: p.functionCall!.name, input: p.functionCall!.args ?? {} }));
+    const stopReason = toolUses.length > 0 ? "tool_use" : "end_turn";
+    // raw must be non-empty parts so pushing it back as the next model turn
+    // is valid — Gemini rejects a content object with an empty parts array.
+    return { text, toolUses, stopReason, raw: parts.length ? parts : [{ text }] };
   }
 
   // ── OpenAI-compatible (OpenAI, Groq, Mistral) ──────────────────────────────
+  // Standard OpenAI tools/tool_calls format, shared verbatim by Groq and
+  // Mistral since both mirror OpenAI's chat completions API.
   if (!apiKey) throw new Error(`No ${def.name} API key — add one in Settings → AI Models.`);
 
-  const openAiMessages = [
+  const openAiMessages: Array<Record<string, unknown>> = [
     ...(opts.systemPrompt ? [{ role: "system", content: opts.systemPrompt }] : []),
-    ...opts.messages
-      .filter(m => m.role === "user" || m.role === "assistant")
-      .map(m => ({
-        role: m.role as string,
-        content: typeof m.content === "string"
-          ? m.content
-          : Array.isArray(m.content)
-            ? (m.content as Array<{ type: string; text?: string }>)
-                .filter(b => b.type === "text")
-                .map(b => b.text ?? "")
-                .join("")
-            : String(m.content),
-      })),
   ];
+  for (const m of opts.messages) {
+    if (m.role !== "user" && m.role !== "assistant") continue;
+    if (typeof m.content === "string") {
+      openAiMessages.push({ role: m.role, content: m.content });
+    } else if (Array.isArray(m.content) && (m.content as any[])[0]?.type === "tool_result") {
+      // OpenAI wants one "tool" message per result, keyed by tool_call_id —
+      // unlike Gemini, which batches them into one functionResponse turn.
+      for (const tr of m.content as Array<{ tool_use_id: string; content: string }>) {
+        openAiMessages.push({ role: "tool", tool_call_id: tr.tool_use_id, content: tr.content });
+      }
+    } else if (m.role === "assistant" && m.content && typeof m.content === "object" && !Array.isArray(m.content)) {
+      // Our own previously-returned raw assistant message (content + tool_calls).
+      openAiMessages.push(m.content as Record<string, unknown>);
+    } else if (Array.isArray(m.content)) {
+      const text = (m.content as Array<{ type: string; text?: string }>).filter(b => b.type === "text").map(b => b.text ?? "").join("");
+      openAiMessages.push({ role: m.role, content: text });
+    } else {
+      openAiMessages.push({ role: m.role, content: String(m.content) });
+    }
+  }
+
+  const openAiTools = opts.tools?.length
+    ? (opts.tools as Array<{ name: string; description: string; input_schema: unknown }>).map(t => ({ type: "function", function: { name: t.name, description: t.description, parameters: t.input_schema } }))
+    : undefined;
 
   const data = await safeFetch(def.endpoint, {
     method: "POST",
@@ -258,9 +310,17 @@ export const callModel = async (opts: {
       model: def.modelId,
       max_tokens: maxTokens,
       messages: openAiMessages,
+      ...(openAiTools ? { tools: openAiTools } : {}),
     }),
-  }) as { choices?: Array<{ message?: { content?: string } }> };
+  }) as { choices?: Array<{ message?: { content?: string | null; tool_calls?: Array<{ id: string; function?: { name: string; arguments?: string } }> } }> };
 
-  const text = data.choices?.[0]?.message?.content ?? "";
-  return { text, toolUses: [], stopReason: "end_turn", raw: data };
+  const choice = data.choices?.[0]?.message;
+  const text = choice?.content ?? "";
+  const toolUses = (choice?.tool_calls ?? []).map(tc => ({
+    id: tc.id,
+    name: tc.function?.name ?? "",
+    input: (() => { try { return JSON.parse(tc.function?.arguments || "{}"); } catch { return {}; } })(),
+  }));
+  const stopReason = toolUses.length > 0 ? "tool_use" : "end_turn";
+  return { text, toolUses, stopReason, raw: choice ?? { role: "assistant", content: text } };
 };

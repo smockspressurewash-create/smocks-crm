@@ -22,7 +22,7 @@ import {
 } from "recharts";
 import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE } from "../../lib/utils";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
-import { twilioSend, sendEmail } from "../../lib/messaging";
+import { twilioSend, sendEmail, emailShell } from "../../lib/messaging";
 import { seedWeather } from "../../lib/weather";
 import { seedCustomers, seedEstimates, seedJobs, seedEmployees, seedVehicles, seedExpenses, seedChemicals, seedServices, seedAutomations, seedEmailTemplates, seedSmsTemplates, seedRewardTiers, seedReferrals, seedMaintenance, campaignTemplates, seedSocialPosts, seedTimeline, seedGoals, seedReminders, seedAccountabilityEntries, seedMileage, seedLeadSrc, STEP_TYPES, AUTOMATION_TEMPLATES } from "../../lib/seed";
 import { callModel, MODELS } from "../../lib/api";
@@ -362,14 +362,27 @@ export function CrewView({ jobs = [], setJobs, customers = [], employees = [], t
               <a href={"https://maps.google.com/?q=" + encodeURIComponent(j.address || "")} target="_blank" rel="noopener noreferrer" className="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-xl bg-blue-950/30 border border-blue-700/40 text-blue-300 text-xs font-medium hover:bg-blue-900/40 active:scale-95 transition">
                 <Navigation size={12} />Directions
               </a>
-              {c?.phone && <button onClick={async () => {
-                const msg = "Hi " + c.firstName + "! We're on our way to your property. ETA ~15 min. — Smock's";
-                if ((window as any).__settings?.twilioSid) {
-                  try { await twilioSend((window as any).__settings, c.phone, msg); toast("OTW text sent to " + c.firstName + " ✓"); }
-                  catch { window.location.href = "sms:" + c.phone.replace(/\D/g,"") + "?body=" + encodeURIComponent(msg); }
-                } else { window.location.href = "sms:" + c.phone.replace(/\D/g,"") + "?body=" + encodeURIComponent(msg); }
+              {(c?.phone || c?.email) && <button onClick={async () => {
+                if (j.scheduledDate && j.scheduledDate !== today()) {
+                  const ok = window.confirm(`This job is scheduled for ${j.scheduledDate}, not today. Send the "on my way" message anyway?`);
+                  if (!ok) return;
+                }
+                const eta = new Date(Date.now() + 17 * 60000).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+                const msg = `Hi ${c.firstName}! Your technician is on the way! ETA: ${eta}. — Smock's`;
+                if (settings?.twilioSid && c.phone) {
+                  try { await twilioSend(settings, c.phone, msg); toast("OTW text sent to " + c.firstName + " ✓"); }
+                  catch (e: any) { toast(e?.message || "Failed to send OTW text", "red"); }
+                } else if (c.email) {
+                  try {
+                    const html = emailShell(settings.companyName || "Smock's Pressure Washing", "On My Way", `<p>${msg}</p>`);
+                    await sendEmail(settings, { to: c.email, subject: "Your technician is on the way", body: html });
+                    toast("OTW email sent to " + c.firstName + " ✓");
+                  } catch (e: any) { toast(e?.message || "Failed to send OTW email", "red"); }
+                } else if (c.phone) {
+                  window.location.href = "sms:" + c.phone.replace(/\D/g, "") + "?body=" + encodeURIComponent(msg);
+                }
               }} className="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-xl bg-orange-950/30 border border-orange-700/40 text-orange-300 text-xs font-medium hover:bg-orange-900/40 active:scale-95 transition">
-                <Send size={12} />OTW Text
+                <Send size={12} />OTW
               </button>}
               {c?.phone && <a href={"tel:" + c.phone} className="px-3 flex items-center justify-center py-2 rounded-xl bg-green-950/30 border border-green-700/40 text-green-300 hover:bg-green-900/40 active:scale-95 transition">
                 <Phone size={12} />
