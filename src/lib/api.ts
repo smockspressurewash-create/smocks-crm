@@ -374,19 +374,29 @@ export const callModel = async (opts: {
     ? (opts.tools as Array<{ name: string; description: string; input_schema: unknown }>).map(t => ({ type: "function", function: { name: t.name, description: t.description, parameters: t.input_schema } }))
     : undefined;
 
-  const data = await safeFetch(def.endpoint, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Authorization": `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
-      model: def.modelId,
-      max_tokens: maxTokens,
-      messages: openAiMessages,
-      ...(openAiTools ? { tools: openAiTools } : {}),
-    }),
-  }) as { choices?: Array<{ message?: { content?: string | null; tool_calls?: Array<{ id: string; function?: { name: string; arguments?: string } }> } }> };
+  const openAiBody = JSON.stringify({
+    model: def.modelId,
+    max_tokens: maxTokens,
+    messages: openAiMessages,
+    ...(openAiTools ? { tools: openAiTools } : {}),
+  });
+  const openAiHeaders = {
+    "Content-Type": "application/json",
+    "Authorization": `Bearer ${apiKey}`,
+  };
+
+  let data: { choices?: Array<{ message?: { content?: string | null; tool_calls?: Array<{ id: string; function?: { name: string; arguments?: string } }> } }> };
+  try {
+    data = await safeFetch(def.endpoint, { method: "POST", headers: openAiHeaders, body: openAiBody }) as typeof data;
+  } catch (err) {
+    // On a network/CORS error (TypeError: Failed to fetch), retry through a public CORS proxy.
+    if (err instanceof TypeError) {
+      const proxied = "https://corsproxy.io/?" + encodeURIComponent(def.endpoint);
+      data = await safeFetch(proxied, { method: "POST", headers: openAiHeaders, body: openAiBody }) as typeof data;
+    } else {
+      throw err;
+    }
+  }
 
   const choice = data.choices?.[0]?.message;
   const text = choice?.content ?? "";
