@@ -79,7 +79,7 @@ import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 import { LiveMap } from "../ui/LiveMap";
 import { supabase } from "../../lib/supabase";
 
-export function CrewView({ jobs = [], setJobs, customers = [], employees = [], toast, settings = {} as any, estimates = [], setEstimates = (() => {}) as any, refetchEmployees = (() => {}) as any }) {
+export function CrewView({ jobs = [], setJobs, customers = [], employees = [], toast, settings = {} as any, estimates = [], setEstimates = (() => {}) as any, refetchEmployees = (() => {}) as any, ownerId = "" }: { jobs?: any[]; setJobs?: any; customers?: any[]; employees?: any[]; toast?: any; settings?: any; estimates?: any[]; setEstimates?: any; refetchEmployees?: any; ownerId?: string }) {
   const [empFilter, setEmpFilter] = useState("all");
   const [crewDate, setCrewDate] = useState(today());
   const [liveDetailId, setLiveDetailId] = useState<string | null>(null);
@@ -160,7 +160,13 @@ export function CrewView({ jobs = [], setJobs, customers = [], employees = [], t
           const pins = activeEmps
             .filter((e: any) => e.locationSharing && e.lastLocation && Date.now() - (e.lastLocation.updatedAt || 0) < 10 * 60000)
             .map((e: any) => ({ id: e.id, label: e.firstName, lat: e.lastLocation.lat, lng: e.lastLocation.lng, updatedAt: e.lastLocation.updatedAt }));
-          if (pins.length === 0) return null;
+          if (pins.length === 0) {
+            return (
+              <div className="mb-3 h-20 rounded-xl bg-black/20 border border-white/10 flex items-center justify-center text-xs text-white/30">
+                No employees sharing location
+              </div>
+            );
+          }
           return (
             <div className="mb-3 space-y-1.5">
               <LiveMap apiKey={settings?.mapsKey || settings?.googleMapsKey || ""} pins={pins} />
@@ -258,6 +264,7 @@ export function CrewView({ jobs = [], setJobs, customers = [], employees = [], t
         settings={settings}
         estimates={estimates}
         setEstimates={setEstimates}
+        ownerId={ownerId}
       />
 
       {/* GPS Route for crew */}

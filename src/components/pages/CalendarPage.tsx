@@ -79,7 +79,7 @@ import { ChemicalModal } from "../ui/ChemicalModal";
 import { WeeklyBusinessReview } from "../ui/WeeklyBusinessReview";
 import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 
-export function CalendarPage({ jobs = [], setJobs, customers = [], employees = [], toast, settings = {} as AppSettings }: { jobs?: any[]; setJobs?: any; customers?: any[]; employees?: any[]; toast?: any; settings?: AppSettings }) {
+export function CalendarPage({ jobs = [], setJobs, customers = [], employees = [], toast, settings = {} as AppSettings, ownerId = "" }: { jobs?: any[]; setJobs?: any; customers?: any[]; employees?: any[]; toast?: any; settings?: AppSettings; ownerId?: string }) {
   const [view, setView] = useState("month");
   const [off, setOff] = useState(0);
   const [dragId, setDragId] = useState(null);
@@ -480,6 +480,8 @@ export function CalendarPage({ jobs = [], setJobs, customers = [], employees = [
         updateJob={updateJob}
         toast={toast}
         gToken={gToken}
+        settings={settings}
+        ownerId={ownerId}
       />
 
       {/* New Google Calendar Event Modal */}

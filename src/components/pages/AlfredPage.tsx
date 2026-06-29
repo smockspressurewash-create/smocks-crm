@@ -20,7 +20,7 @@ import {
   Tooltip, ResponsiveContainer, Area, AreaChart, LineChart, Line,
   ComposedChart, Legend
 } from "recharts";
-import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE } from "../../lib/utils";
+import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, withTimeout } from "../../lib/utils";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
 import { twilioSend, sendEmail, emailShell, emailButton } from "../../lib/messaging";
 import { seedWeather } from "../../lib/weather";
@@ -78,7 +78,7 @@ import { ChemicalModal } from "../ui/ChemicalModal";
 import { WeeklyBusinessReview } from "../ui/WeeklyBusinessReview";
 import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 
-export function AlfredPage({ conversations, setConversations, activeConvId, setActiveConvId, memory = [], setMemory, personality, setPersonality, apiKey, openSettings, toast, jobs = [], setJobs, estimates = [], setEstimates, customers = [], setCustomers, employees = [], automations = [], setAutomations = () => {}, stats, setWins, goals = [], setGoals, setSettings, settings = {} as AppSettings, modelStatus = {}, setModelStatus = () => {}, onNav, expenses = [], entries = [] }: { conversations?: any; setConversations?: any; activeConvId?: any; setActiveConvId?: any; memory?: any; setMemory?: any; personality?: any; setPersonality?: any; apiKey?: any; openSettings?: any; toast?: any; jobs?: any; setJobs?: any; estimates?: any; setEstimates?: any; customers?: any; setCustomers?: any; employees?: any; automations?: any; setAutomations?: any; stats?: any; setWins?: any; goals?: any; setGoals?: any; setSettings?: any; settings?: AppSettings; modelStatus?: any; setModelStatus?: any; onNav?: any; expenses?: any[]; entries?: any[] }) {
+export function AlfredPage({ conversations, setConversations, activeConvId, setActiveConvId, memory = [], setMemory, personality, setPersonality, apiKey, openSettings, toast, jobs = [], setJobs, estimates = [], setEstimates, customers = [], setCustomers, employees = [], automations = [], setAutomations = () => {}, stats, setWins, goals = [], setGoals, setSettings, settings = {} as AppSettings, modelStatus = {}, setModelStatus = () => {}, onNav, expenses = [], entries = [], ownerId = "" }: { conversations?: any; setConversations?: any; activeConvId?: any; setActiveConvId?: any; memory?: any; setMemory?: any; personality?: any; setPersonality?: any; apiKey?: any; openSettings?: any; toast?: any; jobs?: any; setJobs?: any; estimates?: any; setEstimates?: any; customers?: any; setCustomers?: any; employees?: any; automations?: any; setAutomations?: any; stats?: any; setWins?: any; goals?: any; setGoals?: any; setSettings?: any; settings?: AppSettings; modelStatus?: any; setModelStatus?: any; onNav?: any; expenses?: any[]; entries?: any[]; ownerId?: string }) {
   const [input, setInput] = useState("");
   const [voiceMode, setVoiceMode] = useState<"dictate" | "note">("dictate");
   const [loading, setLoading] = useState(false);
@@ -847,16 +847,23 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
               : { error: "Employee not found" };
           }
           try {
-            const { data: { session } } = await supabase.auth.getSession();
-            const { data, error } = await (supabase as any).from("job_requests").insert({
-              job_id: j.id, employee_id: emp.id, owner_id: session?.user?.id, status: "pending", message: inputs.message || null,
-            }).select("id").single();
-            if (error || !data) return { error: "Could not save request — run the job_requests SQL in Supabase first" };
+            let ownerUserId = ownerId;
+            if (!ownerUserId) {
+              const { data: { session } } = await withTimeout<any>(supabase.auth.getSession(), 5000, "Get session");
+              ownerUserId = session?.user?.id || "";
+            }
+            const { data, error } = await withTimeout<any>(
+              (supabase as any).from("job_requests").insert({
+                job_id: j.id, employee_id: emp.id, owner_id: ownerUserId, status: "pending", message: inputs.message || null,
+              }).select("id").single(),
+              8000, "Save request"
+            );
+            if (error || !data) return { error: "Could not save request — " + (error?.message || "run the job_requests SQL in Supabase first") };
             if (emp.email) {
               const c = customers.find(x => x.id === j.customerId);
               const reqUrl = `${window.location.origin}${window.location.pathname}#/portal?request=${data.id}`;
               const html = emailShell(settings.companyName || "Smock's Pressure Washing", "Job Request", `<p>Hi ${emp.firstName},</p><p>${inputs.message || "You have a new job request:"}</p><ul><li><b>Date:</b> ${j.scheduledDate}${j.scheduledTime ? " at " + j.scheduledTime : ""}</li><li><b>Address:</b> ${j.address}</li>${c ? `<li><b>Customer:</b> ${c.firstName} ${c.lastName}</li>` : ""}</ul><div style="text-align:center;margin:22px 0 4px"><a href="${reqUrl}" style="display:inline-block;background:#16a34a;color:#fff;text-decoration:none;font-weight:700;font-size:14px;padding:13px 24px;border-radius:10px;margin-right:8px">✓ Accept Job</a><a href="${reqUrl}&action=deny" style="display:inline-block;background:#dc2626;color:#fff;text-decoration:none;font-weight:700;font-size:14px;padding:13px 24px;border-radius:10px">✗ Decline</a></div>`);
-              sendEmail(settings, { to: emp.email, subject: `Job Request — ${j.scheduledDate}`, body: html }).catch(() => {});
+              withTimeout(sendEmail(settings, { to: emp.email, subject: `Job Request — ${j.scheduledDate}`, body: html }), 8000, "Email send").catch((e: any) => console.warn("Alfred job request email failed — request still saved:", e?.message));
             }
             toast("Alfred sent a job request to " + emp.firstName);
             return { success: true, jobId: j.id, employeeId: emp.id, requestId: data.id, employee: emp.firstName + " " + emp.lastName };
@@ -1317,6 +1324,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
               localConv.push({ role: "assistant", content: result.raw });
               const toolResults = await Promise.all(result.toolUses.map(async tu => {
                 const r = await executeTool(tu.name, tu.input || {});
+                console.log("ALFRED TOOL CALL —", tu.name, "input:", tu.input, "→ result:", r, r?.error ? "(FAILED)" : "(ok)");
                 localTraces.push({ tool: tu.name, input: tu.input, result: r });
                 return { type: "tool_result", tool_use_id: tu.id, content: JSON.stringify(r) };
               }));

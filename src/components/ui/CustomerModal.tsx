@@ -77,7 +77,7 @@ export function CustomerModal({ open, onClose, data, onSave, mapsKey = "", custo
         </div>
         <div><label className="text-xs text-white/60 mb-1 block">Email</label><GInput type="email" value={f.email} onChange={e => setF({ ...f, email: e.target.value })} /></div>
         <div><label className="text-xs text-white/60 mb-1 block">Phone</label><GInput value={f.phone} onChange={e => setF({ ...f, phone: e.target.value })} /></div>
-        <div><label className="text-xs text-white/60 mb-1 block">Address</label><AddressAutocomplete value={f.address} onChange={v => setF({ ...f, address: v })} onPlaceSelect={place => setF(p => ({ ...p, address: place.street, city: place.city, state: place.state, zip: place.zip }))} mapsKey={mapsKey} placeholder="412 Oak Ridge Ln, York PA" /></div>
+        <div><label className="text-xs text-white/60 mb-1 block">Address</label><AddressAutocomplete value={f.address} onChange={v => setF({ ...f, address: v })} onPlaceSelect={place => setF(p => ({ ...p, address: place.street, city: place.city, state: place.state, zip: place.zip }))} mapsKey={mapsKey} placeholder="412 Oak Ridge Ln, York PA" knownAddresses={customers.map((c: any) => c.address).filter(Boolean)} /></div>
 
         <div className="grid grid-cols-2 gap-3">
           <div>
@@ -152,7 +152,7 @@ export function CustomerModal({ open, onClose, data, onSave, mapsKey = "", custo
                   </GSel>
                 </div>
               </div>
-              <div><label className="text-[10px] text-white/50 mb-0.5 block">Street *</label><AddressAutocomplete value={addrForm.street} onChange={v => setAddrForm(p => ({ ...p, street: v }))} onPlaceSelect={place => setAddrForm(p => ({ ...p, street: place.street, city: place.city, state: place.state, zip: place.zip }))} mapsKey={mapsKey} placeholder="456 Pine St" /></div>
+              <div><label className="text-[10px] text-white/50 mb-0.5 block">Street *</label><AddressAutocomplete value={addrForm.street} onChange={v => setAddrForm(p => ({ ...p, street: v }))} onPlaceSelect={place => setAddrForm(p => ({ ...p, street: place.street, city: place.city, state: place.state, zip: place.zip }))} mapsKey={mapsKey} placeholder="456 Pine St" knownAddresses={customers.map((c: any) => c.address).filter(Boolean)} /></div>
               <div className="grid grid-cols-3 gap-2">
                 <div><label className="text-[10px] text-white/50 mb-0.5 block">City</label><GInput value={addrForm.city || ""} onChange={e => setAddrForm(p => ({ ...p, city: e.target.value }))} className="!text-xs" /></div>
                 <div><label className="text-[10px] text-white/50 mb-0.5 block">State</label><GInput value={addrForm.state || ""} onChange={e => setAddrForm(p => ({ ...p, state: e.target.value }))} className="!text-xs" /></div>

@@ -80,6 +80,41 @@ function parseDesc(desc: string): PlaceResult {
   };
 }
 
+// Local fallback — string-match against addresses already in the CRM so the
+// user always gets SOME suggestions even when every Google address API is
+// blocked by key restrictions.
+function matchKnownAddresses(q: string, knownAddresses: string[]): string[] {
+  const needle = q.trim().toLowerCase();
+  if (!needle) return [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const addr of knownAddresses) {
+    if (!addr) continue;
+    if (addr.toLowerCase().includes(needle) && !seen.has(addr)) {
+      seen.add(addr);
+      out.push(addr);
+      if (out.length >= 5) break;
+    }
+  }
+  return out;
+}
+
+// Fallback when Places (New) Autocomplete is blocked (key API-restrictions
+// commonly allow "Maps JavaScript API" but not "Places API (New)") — the
+// plain Geocoding API is a separate REST endpoint with its own restriction
+// check, so it often still works even when Places does not.
+async function geocodeFallback(q: string, key: string): Promise<string[]> {
+  if (!key) return [];
+  const url = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(q)}&key=${encodeURIComponent(key)}`;
+  const res = await fetch(url);
+  const data = await res.json();
+  if (data.status !== "OK") {
+    console.warn("Geocoding fallback failed:", data.status, data.error_message);
+    return [];
+  }
+  return (data.results || []).slice(0, 5).map((r: any) => r.formatted_address).filter(Boolean);
+}
+
 export function AddressAutocomplete({
   value = "",
   onChange,
@@ -87,6 +122,7 @@ export function AddressAutocomplete({
   placeholder = "Start typing an address...",
   mapsKey = "",
   className = "",
+  knownAddresses = [],
 }: {
   value?: string;
   onChange: (v: string) => void;
@@ -94,11 +130,13 @@ export function AddressAutocomplete({
   placeholder?: string;
   mapsKey?: string;
   className?: string;
+  knownAddresses?: string[];
 }) {
   const [suggestions, setSuggestions] = useState<string[]>([]);
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [usingFallback, setUsingFallback] = useState(false);
   // New Places API: AutocompleteService is retired for new Cloud projects in
   // favor of AutocompleteSuggestion (static, Promise-based). It lives in the
   // "places" library loaded via google.maps.importLibrary, which is present
@@ -140,13 +178,15 @@ export function AddressAutocomplete({
 
   const search = useCallback(async (q: string) => {
     if (!q || q.length < 3) { setSuggestions([]); return; }
+    const myReqId = ++reqIdRef.current;
+    const localMatches = matchKnownAddresses(q, knownAddresses);
     const lib = placesLibRef.current;
     if (!lib?.AutocompleteSuggestion) {
-      setSuggestions([]);
-      if (!error) setError("Address autocomplete isn't ready yet — check your Google Maps API key in Settings.");
+      setSuggestions(localMatches);
+      setUsingFallback(localMatches.length > 0);
+      if (!localMatches.length && !error) setError("Address autocomplete isn't ready yet — check your Google Maps API key in Settings.");
       return;
     }
-    const myReqId = ++reqIdRef.current;
     setLoading(true);
     try {
       const { suggestions: results } = await lib.AutocompleteSuggestion.fetchAutocompleteSuggestions({
@@ -156,18 +196,36 @@ export function AddressAutocomplete({
         sessionToken: sessionTokenRef.current,
       });
       if (myReqId !== reqIdRef.current) return; // a newer keystroke superseded this request
-      setSuggestions((results || []).slice(0, 5).map((s: any) => s.placePrediction?.text?.toString() || "").filter(Boolean));
-      setError("");
+      const apiResults = (results || []).slice(0, 5).map((s: any) => s.placePrediction?.text?.toString() || "").filter(Boolean);
+      if (apiResults.length) {
+        setSuggestions(apiResults);
+        setUsingFallback(false);
+        setError("");
+      } else {
+        setSuggestions(localMatches);
+        setUsingFallback(localMatches.length > 0);
+      }
     } catch (e: any) {
       if (myReqId !== reqIdRef.current) return;
-      console.warn("Address autocomplete failed:", e);
-      setSuggestions([]);
-      const msg = e?.message || String(e);
-      setError(/denied|enable|permission/i.test(msg) ? `Google rejected the request: ${msg} — enable "Places API (New)" for this key in Google Cloud Console.` : `Address lookup failed: ${msg}`);
+      console.error("Places (New) autocomplete blocked/failed — falling back to Geocoding API and local matches:", e);
+      const geo = await geocodeFallback(q, mapsKey).catch((ge) => { console.warn("Geocoding fallback also failed:", ge); return []; });
+      if (myReqId !== reqIdRef.current) return;
+      const combined = Array.from(new Set([...geo, ...localMatches])).slice(0, 5);
+      setSuggestions(combined);
+      setUsingFallback(combined.length > 0);
+      if (!combined.length) {
+        const msg = e?.message || String(e);
+        const consoleUrl = "https://console.cloud.google.com/google/maps-apis/api-list";
+        setError(/denied|enable|permission|blocked/i.test(msg)
+          ? `Google blocked this request (Places API (New) likely isn't checked under this API key's "API restrictions" in Google Cloud Console — ${consoleUrl}). Type the full address manually for now.`
+          : `Address lookup failed: ${msg}. Type the full address manually.`);
+      } else {
+        setError("");
+      }
     } finally {
       if (myReqId === reqIdRef.current) setLoading(false);
     }
-  }, [error]);
+  }, [error, knownAddresses, mapsKey]);
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const v = e.target.value;
@@ -211,6 +269,11 @@ export function AddressAutocomplete({
       </div>
       {open && suggestions.length > 0 && (
         <div className="absolute z-50 left-0 right-0 top-full mt-1 bg-black/95 border border-red-900/40 rounded-xl shadow-2xl overflow-hidden">
+          {usingFallback && (
+            <div className="px-3 py-1.5 text-[9px] text-amber-300/80 bg-amber-950/40 border-b border-amber-900/30">
+              Google address lookup unavailable — showing matches from saved addresses
+            </div>
+          )}
           {suggestions.map((s, i) => (
             <button
               key={i}

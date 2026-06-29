@@ -2,10 +2,12 @@
 import React, { useState, useEffect } from "react";
 import { createPortal } from "react-dom";
 import { X } from "lucide-react";
+import { useIsMobile } from "../../hooks/useIsMobile";
 
 export const Modal = ({ open, onClose, title, children, maxW = "max-w-lg", noBodyScroll = false }) => {
   const [visible, setVisible] = useState(false);
   const [mounted, setMounted] = useState(false);
+  const isMobile = useIsMobile();
 
   useEffect(() => {
     if (open) {
@@ -40,14 +42,16 @@ export const Modal = ({ open, onClose, title, children, maxW = "max-w-lg", noBod
     transition: "background 0.25s ease, backdrop-filter 0.25s ease",
   };
 
-  const isMobile = typeof window !== "undefined" && window.innerWidth < 640;
-  const fullScreenMode = noBodyScroll && isMobile;
+  // Every modal goes edge-to-edge full-screen on mobile, not just ones that
+  // opt into noBodyScroll — a centered card with side padding wastes most of
+  // a phone screen and makes long forms fiddly to scroll.
+  const fullScreenMode = isMobile;
 
   const scrollWrapStyle: React.CSSProperties = {
     position: "fixed",
     inset: 0,
     zIndex: 301,
-    overflowY: fullScreenMode ? "hidden" : "auto",
+    overflowY: fullScreenMode && noBodyScroll ? "hidden" : "auto",
     padding: fullScreenMode ? "0" : "24px 16px",
   };
 
@@ -56,7 +60,9 @@ export const Modal = ({ open, onClose, title, children, maxW = "max-w-lg", noBod
     opacity: visible ? 1 : 0,
     transition: "transform 0.26s cubic-bezier(0.16,1,0.3,1), opacity 0.2s ease",
     boxShadow: "0 32px 96px rgba(0,0,0,0.9), 0 0 0 1px rgba(220,38,38,0.2)",
-    ...(noBodyScroll ? (fullScreenMode ? { height: "100dvh", maxHeight: "100dvh", borderRadius: 0 } : { height: "85vh" }) : { maxHeight: "90vh" }),
+    ...(fullScreenMode
+      ? { height: "100dvh", maxHeight: "100dvh", borderRadius: 0 }
+      : noBodyScroll ? { height: "85vh" } : { maxHeight: "90vh" }),
   };
 
   const modal = (

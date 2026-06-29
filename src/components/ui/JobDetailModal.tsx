@@ -152,62 +152,22 @@ function ChecklistSection({ title, emoji, items, onUpdate }: {
 // separate, unremarkable state). If a key IS set but the image still fails
 // to load, that almost always means the key is valid for Maps JS/Places but
 // the separately-billed Street View Static API hasn't been enabled on it —
-// so show exactly which Cloud Console URL fixes it instead of hiding silently.
-const STREET_VIEW_API_ENABLE_URL = "https://console.cloud.google.com/apis/library/street-view-image-backend.googleapis.com";
-// img onError never exposes the HTTP status (browsers don't surface it for
-// failed image loads) — so on a failure this re-requests the exact same URL
-// via fetch() purely for diagnostics, to log the real status code and
-// whatever error body Google sent back instead of just guessing "API not
-// enabled" (which the owner says is wrong — it IS enabled).
-async function diagnoseStreetViewFailure(url: string, address: string): Promise<string> {
-  try {
-    const res = await fetch(url);
-    const ct = res.headers.get("content-type") || "";
-    if (res.ok && ct.startsWith("image/")) return `HTTP ${res.status} but the <img> tag still failed to render it (content-type: ${ct}) — likely a transient network/decode issue, try reloading.`;
-    const body = await res.text().catch(() => "");
-    return `HTTP ${res.status} ${res.statusText} — ${body.slice(0, 300) || "(empty response body)"}`;
-  } catch (e: any) {
-    return `Network/CORS error reaching the Street View endpoint directly: ${e?.message || e}`;
-  }
-}
-
-function StreetViewThumb({ address, apiKey }: { address: string; apiKey?: string }) {
-  const [expanded, setExpanded] = useState(false);
-  const [loadError, setLoadError] = useState(false);
-  const [diagnosis, setDiagnosis] = useState("");
-  const thumbUrl = `https://maps.googleapis.com/maps/api/streetview?size=600x300&location=${encodeURIComponent(address || "")}&key=${apiKey || ""}`;
-  const bigUrl = `https://maps.googleapis.com/maps/api/streetview?size=1200x600&location=${encodeURIComponent(address || "")}&key=${apiKey || ""}`;
-  if (!address || !apiKey) return null;
-  if (loadError) {
-    return (
-      <div className="w-full rounded-xl border border-yellow-700/40 bg-yellow-950/15 p-3 text-xs text-yellow-200">
-        <div className="font-semibold mb-1">Street View image didn't load</div>
-        <div className="text-yellow-200/80 mb-2 break-all"><b>Request:</b> {thumbUrl}</div>
-        <div className="text-yellow-200/80 mb-2">{diagnosis || "Checking the exact error…"}</div>
-      </div>
-    );
-  }
+// Street View Static API images proved unreliable across this key's
+// restrictions in practice — rather than show a broken image or an error,
+// just link out to Google Maps for the address. Always works, no API key
+// quirks, no error states to maintain.
+function StreetViewThumb({ address }: { address: string; apiKey?: string }) {
+  if (!address) return null;
   return (
-    <>
-      <button onClick={() => setExpanded(true)} className="w-full rounded-xl overflow-hidden border border-white/10 relative group">
-        <img src={thumbUrl} alt="Street View" className="w-full h-32 object-cover" onError={() => {
-          console.warn("Street View image failed to load for", address, "— request URL:", thumbUrl);
-          setLoadError(true);
-          diagnoseStreetViewFailure(thumbUrl, address).then(d => { console.warn("Street View diagnosis:", d); setDiagnosis(d); });
-        }} />
-        <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition flex items-center justify-center">
-          <span className="opacity-0 group-hover:opacity-100 text-white text-xs font-semibold transition">Click to expand</span>
-        </div>
-      </button>
-      {expanded && (
-        <div className="fixed inset-0 z-50 bg-black/90 flex items-center justify-center p-4" onClick={() => setExpanded(false)}>
-          <img src={bigUrl} alt="Street View" className="max-w-full max-h-full rounded-xl" />
-          <button onClick={() => setExpanded(false)} className="absolute top-4 right-4 p-2 rounded-full bg-white/10 text-white hover:bg-white/20">
-            <X size={20} />
-          </button>
-        </div>
-      )}
-    </>
+    <a
+      href={`https://www.google.com/maps?q=${encodeURIComponent(address)}`}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="w-full rounded-xl border border-white/10 bg-white/5 hover:bg-white/10 transition flex items-center justify-center gap-2 h-12 text-xs text-white/70 hover:text-white"
+    >
+      <MapPin size={14} className="text-red-400" />
+      View Property on Google Maps
+    </a>
   );
 }
 
@@ -245,7 +205,7 @@ const withTimeout = <T,>(p: Promise<T>, ms: number, label: string): Promise<T> =
     new Promise<T>((_, reject) => setTimeout(() => reject(new Error(label + " timed out")), ms)),
   ]);
 
-export function JobDetailModal({ jobId, job, onClose, customers = [], employees = [], updateJob, toast, gToken = "", settings = {} as any, estimates = [], setEstimates = (() => {}) as any, onPortal = (_id: string) => {} }: { jobId: any; job: any; onClose: any; customers?: any[]; employees?: any[]; updateJob: any; toast: any; gToken?: string; settings?: any; estimates?: any[]; setEstimates?: any; onPortal?: (id: string) => void }) {
+export function JobDetailModal({ jobId, job, onClose, customers = [], employees = [], updateJob, toast, gToken = "", settings = {} as any, estimates = [], setEstimates = (() => {}) as any, onPortal = (_id: string) => {}, ownerId = "" }: { jobId: any; job: any; onClose: any; customers?: any[]; employees?: any[]; updateJob: any; toast: any; gToken?: string; settings?: any; estimates?: any[]; setEstimates?: any; onPortal?: (id: string) => void; ownerId?: string }) {
   const [commNote, setCommNote] = useState("");
   const [sendingInvoice, setSendingInvoice] = useState(false);
   const [showInvoicePreview, setShowInvoicePreview] = useState(false);
@@ -508,12 +468,16 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
     if (!emp) return;
     setRequestSending(true);
     try {
-      const { data: { session } } = await withTimeout<any>(supabase.auth.getSession(), 8000, "Get session");
+      let ownerUserId = ownerId;
+      if (!ownerUserId) {
+        const { data: { session } } = await withTimeout<any>(supabase.auth.getSession(), 5000, "Get session");
+        ownerUserId = session?.user?.id || "";
+      }
       const { data, error } = await withTimeout<any>(
         (supabase as any).from("job_requests").insert({
           job_id: jobId,
           employee_id: requestEmpId,
-          owner_id: session?.user?.id,
+          owner_id: ownerUserId,
           status: "pending",
           message: requestMsg.trim() || null,
         }).select("id").single(),

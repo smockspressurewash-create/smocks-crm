@@ -14,6 +14,7 @@ import { GInput } from "../ui/GInput";
 import { GTxt } from "../ui/GTxt";
 import { BeforeAfterSlider } from "../ui/BeforeAfterSlider";
 import { loadMapsScript, AddressAutocomplete } from "../ui/AddressAutocomplete";
+import { LiveMap } from "../ui/LiveMap";
 import { BarChart, Bar, LineChart, Line, XAxis, YAxis, ResponsiveContainer, Tooltip, CartesianGrid } from "recharts";
 import { fmt, uid, today, daysFromNow, computeJobRatingScore } from "../../lib/utils";
 import type { Job, Employee, Customer, AppSettings, JobChecklistItem } from "../../types";
@@ -46,65 +47,22 @@ export function paymentStatusLabel(job: Job): string {
   return "Unpaid";
 }
 
-// Small Street View thumbnail for a job address; tap to expand full-size.
-// Renders nothing when no key is set at all (unremarkable — not yet
-// configured). If a key IS set but the image still fails, that almost
-// always means Street View Static API specifically isn't enabled on it
-// (it's billed/enabled separately from Maps JS/Places) — show the exact
-// Cloud Console URL to fix it instead of hiding the problem.
-const STREET_VIEW_API_ENABLE_URL = "https://console.cloud.google.com/apis/library/street-view-image-backend.googleapis.com";
-async function diagnoseStreetViewFailure(url: string): Promise<string> {
-  try {
-    const res = await fetch(url);
-    const ct = res.headers.get("content-type") || "";
-    if (res.ok && ct.startsWith("image/")) return `HTTP ${res.status} but the <img> tag still failed to render it (content-type: ${ct}) — likely a transient network/decode issue, try reloading.`;
-    const body = await res.text().catch(() => "");
-    return `HTTP ${res.status} ${res.statusText} — ${body.slice(0, 300) || "(empty response body)"}`;
-  } catch (e: any) {
-    return `Network/CORS error reaching the Street View endpoint directly: ${e?.message || e}`;
-  }
-}
-
-function StreetViewThumb({ address, apiKey }: { address: string; apiKey?: string }) {
-  const [expanded, setExpanded] = useState(false);
-  const [loadError, setLoadError] = useState(false);
-  const [diagnosis, setDiagnosis] = useState("");
-  const thumbUrl = `https://maps.googleapis.com/maps/api/streetview?size=600x300&location=${encodeURIComponent(address || "")}&key=${apiKey || ""}`;
-  const bigUrl = `https://maps.googleapis.com/maps/api/streetview?size=1200x600&location=${encodeURIComponent(address || "")}&key=${apiKey || ""}`;
-  if (!address || !apiKey) return null;
-  if (loadError) {
-    return (
-      <div className="w-full rounded-xl border border-yellow-700/40 bg-yellow-950/15 p-3 text-xs text-yellow-200">
-        <div className="font-semibold mb-1">Street View image didn't load</div>
-        <div className="text-yellow-200/80 mb-2 break-all"><b>Request:</b> {thumbUrl}</div>
-        <div className="text-yellow-200/80 mb-2">{diagnosis || "Checking the exact error…"}</div>
-      </div>
-    );
-  }
+// Street View Static images proved unreliable across this key's
+// restrictions — link straight to Google Maps for the address instead.
+function StreetViewThumb({ address }: { address: string; apiKey?: string }) {
+  if (!address) return null;
   return (
-    <>
-      <button onClick={() => setExpanded(true)} className="w-full rounded-xl overflow-hidden border border-white/10 relative group">
-        <img src={thumbUrl} alt="Street View" className="w-full h-32 object-cover" onError={() => {
-          console.warn("Street View image failed to load for", address, "— request URL:", thumbUrl);
-          setLoadError(true);
-          diagnoseStreetViewFailure(thumbUrl).then(d => { console.warn("Street View diagnosis:", d); setDiagnosis(d); });
-        }} />
-        <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition flex items-center justify-center">
-          <span className="opacity-0 group-hover:opacity-100 text-white text-xs font-semibold transition">Tap to expand</span>
-        </div>
-      </button>
-      {expanded && (
-        <div className="fixed inset-0 z-50 bg-black/90 flex items-center justify-center p-4" onClick={() => setExpanded(false)}>
-          <img src={bigUrl} alt="Street View" className="max-w-full max-h-full rounded-xl" />
-          <button onClick={() => setExpanded(false)} className="absolute top-4 right-4 p-2 rounded-full bg-white/10 text-white hover:bg-white/20">
-            <X size={20} />
-          </button>
-        </div>
-      )}
-    </>
+    <a
+      href={`https://www.google.com/maps?q=${encodeURIComponent(address)}`}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="w-full rounded-xl border border-white/10 bg-white/5 hover:bg-white/10 transition flex items-center justify-center gap-2 h-12 text-xs text-white/70 hover:text-white"
+    >
+      <MapPin size={14} className="text-red-400" />
+      View Property on Google Maps
+    </a>
   );
 }
-
 // Formats a job's estimated duration (decimal hours) as "Est. 3 hours" /
 // "Est. 1 hour" / "Est. 2h 30m" for fractional values.
 const formatEstDuration = (hours: number): string => {
@@ -1721,15 +1679,15 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     console.log("FILTERED MY JOBS — ids:", myJobs.map(j => j.id));
   }
 
-  // Real-time location sharing — only while opted in AND clocked in for the
-  // day; posts a GPS fix to Supabase every 15s so the owner's Crew View →
-  // Live Now map can plot it. Stops automatically the moment either flag
-  // flips off (interval is torn down by the effect cleanup on re-run).
+  // Real-time location sharing — runs the whole time the toggle is on (not
+  // gated on being clocked in — the owner may want to see crew location
+  // before/after a shift too), posting a GPS fix to Supabase every 15s so the
+  // owner's Crew View → Live Now map can plot it. Stops automatically the
+  // moment the toggle flips off (interval is torn down by the effect cleanup).
   useEffect(() => {
     const empId = (myEmployee as any)?.id;
     const sharing = (myEmployee as any)?.locationSharing;
-    const clockedIn = !!(myEmployee as any)?.dayClockInAt;
-    if (!empId || !sharing || !clockedIn) return;
+    if (!empId || !sharing) return;
     if (!navigator.geolocation) { toast("This browser doesn't support location sharing", "red"); return; }
     let deniedToastShown = false;
     const postLocation = () => {
@@ -1739,6 +1697,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
             lastLocation: { lat: pos.coords.latitude, lng: pos.coords.longitude, updatedAt: Date.now() },
           }).eq("id", empId).then((r: any) => {
             if (r?.error) console.warn("Location post failed:", r.error.message);
+            else refetchEmployees?.();
           });
         },
         (err) => {
@@ -1751,7 +1710,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     postLocation();
     const interval = setInterval(postLocation, 15000);
     return () => clearInterval(interval);
-  }, [(myEmployee as any)?.id, (myEmployee as any)?.locationSharing, (myEmployee as any)?.dayClockInAt]);
+  }, [(myEmployee as any)?.id, (myEmployee as any)?.locationSharing]);
 
   // 24h job reminder — checks once on load (and hourly while the portal stays open)
   // for jobs starting within the next 24h, and emails the employee via their own
@@ -3201,7 +3160,10 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                 // permission prompt and no feedback at all.
                 if (turningOn && navigator.geolocation) {
                   navigator.geolocation.getCurrentPosition(
-                    () => toast("Location permission granted ✓" + (dayClockInAt ? "" : " — sharing starts once you Start My Day")),
+                    (pos) => {
+                      toast("Location sharing active 🟢");
+                      (supabase as any).from("employees").update({ lastLocation: { lat: pos.coords.latitude, lng: pos.coords.longitude, updatedAt: Date.now() } }).eq("id", empId).then((r: any) => { if (r?.error) console.warn("Failed to save location:", r.error); else refetchEmployees?.(); });
+                    },
                     (err) => toast("Location permission denied: " + err.message, "red"),
                     { enableHighAccuracy: true, timeout: 10000 }
                   );
@@ -3237,8 +3199,14 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                   </div>
                   <button onClick={toggleLocationSharing} className={"w-full flex items-center justify-center gap-2 py-2 rounded-xl text-xs font-medium transition " + (locationSharing ? "bg-blue-900/30 border border-blue-500/40 text-blue-300" : "bg-white/5 border border-white/10 text-white/50")}>
                     <MapPin size={12} />
-                    {locationSharing ? "Sharing my location with owner" : "Share My Location (off)"}
+                    {locationSharing ? "Sharing my location with owner 🟢" : "Share My Location (off)"}
                   </button>
+                  {locationSharing && (myEmployee as any)?.lastLocation?.lat != null && (
+                    <LiveMap
+                      apiKey={settings.googleMapsKey || settings.mapsKey || ""}
+                      pins={[{ id: empId, label: (myEmployee as any).firstName || "Me", lat: (myEmployee as any).lastLocation.lat, lng: (myEmployee as any).lastLocation.lng, updatedAt: (myEmployee as any).lastLocation.updatedAt }]}
+                    />
+                  )}
                 </>
               );
             })()}

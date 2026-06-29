@@ -80,7 +80,7 @@ import { ChemicalModal } from "../ui/ChemicalModal";
 import { WeeklyBusinessReview } from "../ui/WeeklyBusinessReview";
 import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 
-export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = (() => {}) as any, employees = [], estimates = [], setEstimates = () => {}, settings = {} as AppSettings, toast, posts = [], setPosts = () => {}, setTimeline = () => {}, initialDetailId = null, onInitialDetailIdConsumed = () => {}, onPortal = (_id: string) => {} }: { jobs?: any[]; setJobs?: any; customers?: any[]; setCustomers?: any; employees?: any[]; estimates?: any[]; setEstimates?: any; settings?: AppSettings; toast?: any; posts?: any[]; setPosts?: any; setTimeline?: any; initialDetailId?: string | null; onInitialDetailIdConsumed?: () => void; onPortal?: (id: string) => void }) {
+export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = (() => {}) as any, employees = [], estimates = [], setEstimates = () => {}, settings = {} as AppSettings, toast, posts = [], setPosts = () => {}, setTimeline = () => {}, initialDetailId = null, onInitialDetailIdConsumed = () => {}, onPortal = (_id: string) => {}, ownerId = "" }: { jobs?: any[]; setJobs?: any; customers?: any[]; setCustomers?: any; employees?: any[]; estimates?: any[]; setEstimates?: any; settings?: AppSettings; toast?: any; posts?: any[]; setPosts?: any; setTimeline?: any; initialDetailId?: string | null; onInitialDetailIdConsumed?: () => void; onPortal?: (id: string) => void; ownerId?: string }) {
   const [tab, setTab] = useState("scheduled");
   const [cancelModal, setCancelModal] = useState(null);
   const [cancelReason, setCancelReason] = useState(cancelReasons[0]);
@@ -303,16 +303,23 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
     if (!emp) return;
     setQuickReqSending(true);
     try {
-      // Both calls raced against a hard timeout — a stuck Supabase internal
-      // lock or dead network request used to leave this button stuck on
-      // "Sending…" forever since nothing ever resolved or rejected it.
-      const { data: { session } } = await withTimeout<any>(supabase.auth.getSession(), 5000, "Get session");
+      // ownerId is captured once at app auth-bootstrap (App.tsx) instead of
+      // calling supabase.auth.getSession() here — that call is known to hang
+      // indefinitely under Supabase internal navigator-lock contention, which
+      // is exactly what left this button stuck on "Sending…" forever. Only
+      // fall back to a (timeout-guarded) getSession() call if the prop somehow
+      // never made it down.
+      let ownerUserId = ownerId;
+      if (!ownerUserId) {
+        const { data: { session } } = await withTimeout<any>(supabase.auth.getSession(), 5000, "Get session");
+        ownerUserId = session?.user?.id || "";
+      }
       const portalUrl = `${window.location.origin}${window.location.pathname}`;
       const { data: row, error } = await withTimeout<any>(
         (supabase as any).from("job_requests").insert({
           job_id: job.id,
           employee_id: emp.id,
-          owner_id: session?.user?.id,
+          owner_id: ownerUserId,
           status: "pending",
           message: quickReqMsg.trim() || null,
         }).select("id").single(),
@@ -448,12 +455,12 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
                       ))}
                     </GSel>
                     {selectedId === "__custom__" && (
-                      <AddressAutocomplete value={newJobForm.address} onChange={v => setNewJobForm(f => ({ ...f, address: v }))} mapsKey={settings.googleMapsKey || settings.mapsKey || ""} placeholder="123 Main St, York PA" />
+                      <AddressAutocomplete value={newJobForm.address} onChange={v => setNewJobForm(f => ({ ...f, address: v }))} mapsKey={settings.googleMapsKey || settings.mapsKey || ""} placeholder="123 Main St, York PA" knownAddresses={customers.map((c: any) => c.address).filter(Boolean)} />
                     )}
                   </div>
                 );
               }
-              return <AddressAutocomplete value={newJobForm.address} onChange={v => setNewJobForm(f => ({ ...f, address: v }))} mapsKey={settings.googleMapsKey || settings.mapsKey || ""} placeholder="123 Main St, York PA" />;
+              return <AddressAutocomplete value={newJobForm.address} onChange={v => setNewJobForm(f => ({ ...f, address: v }))} mapsKey={settings.googleMapsKey || settings.mapsKey || ""} placeholder="123 Main St, York PA" knownAddresses={customers.map((c: any) => c.address).filter(Boolean)} />;
             })()}
           </div>
           <div className="grid grid-cols-2 gap-3">
@@ -529,6 +536,12 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
                 loggedHours: 0, createdAt: today(),
               };
               setJobs(prev => [...prev, job]);
+              // Close the modal immediately — none of the follow-up work below
+              // (Google Calendar, crew email/request) should be able to block
+              // the UI if a network call hangs.
+              setNewJobOpen(false);
+              setNewJobForm(f => ({ ...f, crewEmpId: "" }));
+              toast("Job scheduled for " + newJobForm.scheduledDate);
               // Create Google Calendar event if Google is connected
               if (settings?.googleConnected && (settings as any)?.googleToken && job.scheduledDate) {
                 const c = customers.find(x => x.id === job.customerId);
@@ -551,24 +564,36 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
                 if (directAssign) {
                   const portalLink = `${window.location.origin}${window.location.pathname}#/portal`;
                   const html = emailShell(settings.companyName || "Smock's Pressure Washing", "Job Assignment", `<p>Hi ${assignedEmp.firstName},</p><p>You've been assigned to a new job:</p><ul><li><b>Date:</b> ${job.scheduledDate}${job.scheduledTime ? " at " + job.scheduledTime : ""}</li><li><b>Address:</b> ${job.address}</li>${custLine}</ul>` + emailButton("Open Crew Portal", portalLink));
-                  sendEmail(settings, { to: assignedEmp.email, subject: `You've Been Assigned — ${job.scheduledDate}`, body: html }).catch(() => {});
+                  withTimeout(sendEmail(settings, { to: assignedEmp.email, subject: `You've Been Assigned — ${job.scheduledDate}`, body: html }), 8000, "Email send").catch((e: any) => { console.warn("Assignment email failed — job still assigned:", e?.message); toast?.("Assigned, but the notification email failed to send", "red"); });
                 } else {
-                  try {
-                    const { data: { session } } = await supabase.auth.getSession();
-                    const { data } = await (supabase as any).from("job_requests").insert({
-                      job_id: job.id, employee_id: assignedEmp.id, owner_id: session?.user?.id, status: "pending",
-                    }).select("id").single();
-                    if (data?.id) {
+                  (async () => {
+                    try {
+                      let ownerUserId = ownerId;
+                      if (!ownerUserId) {
+                        const { data: { session } } = await withTimeout<any>(supabase.auth.getSession(), 5000, "Get session");
+                        ownerUserId = session?.user?.id || "";
+                      }
+                      const { data, error } = await withTimeout<any>(
+                        (supabase as any).from("job_requests").insert({
+                          job_id: job.id, employee_id: assignedEmp.id, owner_id: ownerUserId, status: "pending",
+                        }).select("id").single(),
+                        8000, "Save request"
+                      );
+                      if (error || !data?.id) {
+                        console.error("Failed to create job_request:", error);
+                        toast?.("Job saved, but the crew request failed — " + (error?.message || "run the job_requests SQL in Supabase first"), "red");
+                        return;
+                      }
                       const reqUrl = `${window.location.origin}${window.location.pathname}#/portal?request=${data.id}`;
                       const html = emailShell(settings.companyName || "Smock's Pressure Washing", "Job Request", `<p>Hi ${assignedEmp.firstName},</p><p>You have a new job request:</p><ul><li><b>Date:</b> ${job.scheduledDate}${job.scheduledTime ? " at " + job.scheduledTime : ""}</li><li><b>Address:</b> ${job.address}</li>${custLine}</ul><div style="text-align:center;margin:22px 0 4px"><a href="${reqUrl}" style="display:inline-block;background:#16a34a;color:#fff;text-decoration:none;font-weight:700;font-size:14px;padding:13px 24px;border-radius:10px;margin-right:8px">✓ Accept Job</a><a href="${reqUrl}&action=deny" style="display:inline-block;background:#dc2626;color:#fff;text-decoration:none;font-weight:700;font-size:14px;padding:13px 24px;border-radius:10px">✗ Decline</a></div>`);
-                      sendEmail(settings, { to: assignedEmp.email, subject: `Job Request — ${job.scheduledDate}`, body: html }).catch(() => {});
+                      withTimeout(sendEmail(settings, { to: assignedEmp.email, subject: `Job Request — ${job.scheduledDate}`, body: html }), 8000, "Email send").catch((e: any) => console.warn("Job request email failed — request still saved:", e?.message));
+                    } catch (e: any) {
+                      console.error("Crew request failed:", e);
+                      toast?.("Job saved, but the crew request failed — " + (e?.message || "try again"), "red");
                     }
-                  } catch { /* job_requests table may not exist yet */ }
+                  })();
                 }
               }
-              setNewJobOpen(false);
-              setNewJobForm(f => ({ ...f, crewEmpId: "" }));
-              toast("Job scheduled for " + newJobForm.scheduledDate);
             }}>Schedule Job</GBtn>
           </div>
         </div>
@@ -902,7 +927,7 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
         {filtered.length === 0 && <div className="md:col-span-2 text-center py-12 text-white/40">No {tabs[tab].toLowerCase()} jobs</div>}
       </div>
 
-      <JobDetailModal jobId={detailId} job={jobs.find(j => j.id === detailId)} onClose={() => setDetailId(null)} customers={customers} employees={employees} updateJob={updateJob} toast={toast} settings={settings} estimates={estimates} setEstimates={setEstimates} onPortal={onPortal} />
+      <JobDetailModal jobId={detailId} job={jobs.find(j => j.id === detailId)} onClose={() => setDetailId(null)} customers={customers} employees={employees} updateJob={updateJob} toast={toast} settings={settings} estimates={estimates} setEstimates={setEstimates} onPortal={onPortal} ownerId={ownerId} />
 
       <Modal open={!!cancelModal} onClose={() => setCancelModal(null)} title="Cancel Job">
         <div className="space-y-3">

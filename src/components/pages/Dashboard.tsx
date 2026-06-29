@@ -78,52 +78,26 @@ import { ChemicalModal } from "../ui/ChemicalModal";
 import { WeeklyBusinessReview } from "../ui/WeeklyBusinessReview";
 import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 
-const STREET_VIEW_API_ENABLE_URL = "https://console.cloud.google.com/apis/library/street-view-image-backend.googleapis.com";
-
-// Mini 56px Street View thumbnail for the Live Team View row. If the image
-// fails to load with a key present, that's almost always because the
-// Street View Static API (billed/enabled separately from Maps JS/Places)
-// isn't turned on for this key — show a small warning icon linking straight
-// to the Cloud Console page that fixes it, instead of just hiding.
+// Street View Static images proved unreliable across this key's
+// restrictions — link straight to Google Maps for the address instead.
 function MiniStreetViewThumb({ address, mapsKey }: { address: string; mapsKey?: string }) {
-  const [loadError, setLoadError] = useState(false);
-  const [diagnosis, setDiagnosis] = useState("");
-  if (!mapsKey || !address) {
+  if (!address) {
     return (
       <div className="w-14 h-14 rounded-lg bg-green-900/40 border border-green-600/40 flex items-center justify-center flex-shrink-0">
         <Clock size={16} className="text-green-400" />
       </div>
     );
   }
-  const thumbUrl = `https://maps.googleapis.com/maps/api/streetview?size=72x72&location=${encodeURIComponent(address)}&key=${mapsKey}`;
-  if (loadError) {
-    return (
-      <div title={diagnosis || "Checking the exact error…"} className="w-14 h-14 rounded-lg bg-yellow-950/30 border border-yellow-700/40 flex items-center justify-center flex-shrink-0">
-        <AlertTriangle size={16} className="text-yellow-400" />
-      </div>
-    );
-  }
   return (
-    <img
-      src={thumbUrl}
-      alt=""
-      className="w-14 h-14 rounded-lg object-cover flex-shrink-0 border border-white/10"
-      onError={async () => {
-        console.warn("Street View image failed to load for", address, "— request URL:", thumbUrl);
-        setLoadError(true);
-        try {
-          const res = await fetch(thumbUrl);
-          const ct = res.headers.get("content-type") || "";
-          if (res.ok && ct.startsWith("image/")) { setDiagnosis(`HTTP ${res.status} but <img> still failed — transient issue, try reloading.`); return; }
-          const body = await res.text().catch(() => "");
-          const d = `HTTP ${res.status} ${res.statusText} — ${body.slice(0, 200) || "(empty body)"}`;
-          console.warn("Street View diagnosis:", d);
-          setDiagnosis(d);
-        } catch (e: any) {
-          setDiagnosis(`Network/CORS error: ${e?.message || e}`);
-        }
-      }}
-    />
+    <a
+      href={`https://www.google.com/maps?q=${encodeURIComponent(address)}`}
+      target="_blank"
+      rel="noopener noreferrer"
+      title="View property on Google Maps"
+      className="w-14 h-14 rounded-lg bg-white/5 border border-white/10 hover:bg-white/10 flex items-center justify-center flex-shrink-0"
+    >
+      <MapPin size={16} className="text-red-400" />
+    </a>
   );
 }
 
