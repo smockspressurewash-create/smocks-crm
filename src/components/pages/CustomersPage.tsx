@@ -23,6 +23,7 @@ import {
 import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE } from "../../lib/utils";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
 import { twilioSend, sendEmail } from "../../lib/messaging";
+import { supabase } from "../../lib/supabase";
 import { seedWeather } from "../../lib/weather";
 import { seedCustomers, seedEstimates, seedJobs, seedEmployees, seedVehicles, seedExpenses, seedChemicals, seedServices, seedAutomations, seedEmailTemplates, seedSmsTemplates, seedRewardTiers, seedReferrals, seedMaintenance, campaignTemplates, seedSocialPosts, seedTimeline, seedGoals, seedReminders, seedAccountabilityEntries, seedMileage, seedLeadSrc, STEP_TYPES, AUTOMATION_TEMPLATES } from "../../lib/seed";
 import { callModel, MODELS } from "../../lib/api";
@@ -117,6 +118,14 @@ export function CustomersPage({ customers = [], setCustomers, estimates = [], jo
     }
     setModal({ open: false, data: null });
     toast("Customer saved");
+  };
+
+  const deleteCustomer = (c: any) => {
+    setCustomers(customers.filter(x => x.id !== c.id));
+    setDetail(null);
+    (supabase as any).from("customers").delete().eq("id", c.id)
+      .then((result: any) => { if (result?.error) toast("Deleted locally, but failed to delete from server — " + result.error.message, "red"); else toast("Customer deleted"); })
+      .catch((e: any) => toast("Deleted locally, but failed to delete from server — " + (e?.message || ""), "red"));
   };
 
   // Scan for duplicates by name similarity, phone, or email
@@ -409,7 +418,7 @@ export function CustomersPage({ customers = [], setCustomers, estimates = [], jo
       </Glass>
 
       <CustomerModal open={modal.open} onClose={() => setModal({ open: false, data: null })} data={modal.data} onSave={save} mapsKey={settings.googleMapsKey || (settings as any).mapsKey || ""} customers={customers} />
-      <CustomerDetail customer={detail} onClose={() => setDetail(null)} estimates={estimates} jobs={jobs} timeline={timeline} setTimeline={setTimeline} settings={settings} />
+      <CustomerDetail customer={detail} onClose={() => setDetail(null)} onDelete={deleteCustomer} estimates={estimates} jobs={jobs} timeline={timeline} setTimeline={setTimeline} settings={settings} />
       </>}
     </div>
   );

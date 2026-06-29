@@ -85,7 +85,7 @@ export function CrewView({ jobs = [], setJobs, customers = [], employees = [], t
   const [liveDetailId, setLiveDetailId] = useState<string | null>(null);
 
   const activeEmps = employees.filter(e => e.status === "active");
-  const liveJobs = jobs.filter((j: any) => !!j.clockInAt && j.status !== "completed" && j.status !== "cancelled");
+  const liveJobs = jobs.filter((j: any) => j.status === "in_progress" && !!j.clockInAt);
 
   // Auto-refresh employee rows every 10s while anyone is sharing their
   // location, so the Live Now map's pins move in real time rather than only

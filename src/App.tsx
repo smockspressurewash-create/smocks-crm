@@ -665,9 +665,10 @@ export function App() {
   const refetchData = async () => {
     setIsSyncing(true);
     try {
-      const [{ data: sbJobs }, { data: sbCustomers }] = await Promise.all([
+      const [{ data: sbJobs }, { data: sbCustomers }, { data: sbEstimates }] = await Promise.all([
         (supabase as any).from("jobs").select("*"),
         (supabase as any).from("customers").select("*"),
+        (supabase as any).from("estimates").select("*"),
       ]);
       if (Array.isArray(sbJobs) && sbJobs.length > 0) {
         setJobs(prev => {
@@ -684,6 +685,15 @@ export function App() {
           const merged = prev.map(c => sbMap.has(c.id) ? { ...c, ...sbMap.get(c.id) } : c);
           const existingIds = new Set(prev.map(c => c.id));
           const added = sbCustomers.filter((c: any) => !existingIds.has(c.id));
+          return [...merged, ...added];
+        });
+      }
+      if (Array.isArray(sbEstimates) && sbEstimates.length > 0) {
+        setEstimates(prev => {
+          const sbMap = new Map(sbEstimates.map((e: any) => [e.id, e]));
+          const merged = prev.map(e => sbMap.has(e.id) ? { ...e, ...sbMap.get(e.id) } : e);
+          const existingIds = new Set(prev.map(e => e.id));
+          const added = sbEstimates.filter((e: any) => !existingIds.has(e.id));
           return [...merged, ...added];
         });
       }
@@ -731,6 +741,32 @@ export function App() {
     return () => clearInterval(interval);
   }, [jobs]);
 
+  // Auto-save customers + estimates to Supabase every 30 seconds (upsert on id).
+  // The manual CustomerModal/EstimatesPage forms only ever called setCustomers/
+  // setEstimates (local React state + localStorage via usePersistent) — there
+  // was NO write path to Supabase at all for either table outside of Alfred's
+  // direct insert calls and the one-time seed. That's why "the manual form
+  // works" only looked true on the single device that created the record: it
+  // never reached Supabase, so it could never reach a second device, and
+  // Alfred-created rows were the only ones the cross-device poll ever saw.
+  useEffect(() => {
+    const interval = setInterval(async () => {
+      if (customers.length > 0) {
+        try {
+          const { error } = await (supabase as any).from("customers").upsert(customers, { onConflict: "id" });
+          if (error) console.warn("Customer auto-save failed:", error.message);
+        } catch (err: any) { console.warn("Customer auto-save failed:", err?.message); }
+      }
+      if (estimates.length > 0) {
+        try {
+          const { error } = await (supabase as any).from("estimates").upsert(estimates, { onConflict: "id" });
+          if (error) console.warn("Estimate auto-save failed:", error.message);
+        } catch (err: any) { console.warn("Estimate auto-save failed:", err?.message); }
+      }
+    }, 30000);
+    return () => clearInterval(interval);
+  }, [customers, estimates]);
+
   // ── Cross-device sync ────────────────────────────────────────────────────
   // refetchData() previously only ran once at session bootstrap, so a change
   // an employee made on their phone never reached an owner's already-open
@@ -749,6 +785,8 @@ export function App() {
       channel = (supabase as any)
         .channel("jobs-sync")
         .on("postgres_changes", { event: "*", schema: "public", table: "jobs" }, () => { refetchData(); })
+        .on("postgres_changes", { event: "*", schema: "public", table: "customers" }, () => { refetchData(); })
+        .on("postgres_changes", { event: "*", schema: "public", table: "estimates" }, () => { refetchData(); })
         .subscribe();
     } catch { /* realtime may not be enabled on this project */ }
     const interval = setInterval(refetchData, 3000);

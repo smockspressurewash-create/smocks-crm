@@ -771,7 +771,7 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
         )}
 
         {/* Customer info */}
-        {customer && (
+        {customer ? (
           <Glass className="p-4 !bg-black/40">
             <div className="flex items-center gap-3">
               <div className="w-10 h-10 rounded-full bg-gradient-to-br from-red-600 to-red-900 flex items-center justify-center font-bold flex-shrink-0">
@@ -795,7 +795,11 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
             {customer.gateCode && <div className="mt-2 text-xs text-yellow-400/80">🔐 Gate code: {customer.gateCode}</div>}
             {customer.hasDog && <div className="mt-0.5 text-xs text-orange-400/80">🐕 Dog on property{customer.dogName ? ` — ${customer.dogName}` : ""}</div>}
           </Glass>
-        )}
+        ) : job.customerId ? (
+          <Glass className="p-4 !bg-black/40">
+            <div className="text-sm text-white/40 italic">Customer info loading...</div>
+          </Glass>
+        ) : null}
 
         <StreetViewThumb address={job.address} apiKey={googleMapsKey} />
 
@@ -830,10 +834,9 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
           </Glass>
         )}
 
-        {/* Running Late — proactively warn the customer (and owner), available
-            any time the job hasn't been completed/cancelled yet, not just
-            once already over schedule. */}
-        {job.status !== "completed" && job.status !== "cancelled" && (customer?.phone || customer?.email) && (
+        {/* Running Late — proactively warn the customer (and owner) while
+            actively on the job (clocked in / in_progress). */}
+        {job.status === "in_progress" && (customer?.phone || customer?.email) && (
           <Glass className="p-3 !bg-orange-950/15 !border-orange-700/30">
             {runningLateOpen ? (
               <div className="space-y-2">
@@ -2144,14 +2147,29 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     });
   };
 
-  const messageNextJobCustomer = (job: Job, lateMinutes: number) => {
+  const messageNextJobCustomer = async (job: Job, lateMinutes: number) => {
     const cust = customers.find(c => c.id === job.customerId);
-    if (!cust?.phone) { toast("No phone number on file for this customer", "yellow"); return; }
+    if (!cust?.phone && !cust?.email) { toast("No phone or email on file for this customer", "yellow"); return; }
+    if (job.scheduledDate && job.scheduledDate !== today()) {
+      const ok = window.confirm(`This job is scheduled for ${job.scheduledDate}, not today. Send the "on my way" message anyway?`);
+      if (!ok) return;
+    }
     const eta = nextJobEta?.etaTime || "shortly";
     const msg = lateMinutes > 0
-      ? `Hi ${cust.firstName}, running a few minutes behind — ETA ${eta}. Sorry for the delay!`
-      : `Hi ${cust.firstName}, on my way — ETA ${eta}. See you soon!`;
-    window.location.href = "sms:" + cust.phone.replace(/\D/g, "") + "?body=" + encodeURIComponent(msg);
+      ? `Hi ${cust!.firstName}, running a few minutes behind — ETA ${eta}. Sorry for the delay!`
+      : `Hi ${cust!.firstName}, on my way — ETA ${eta}. See you soon!`;
+    if (settings?.twilioSid && cust!.phone) {
+      try { await twilioSend(settings as any, cust!.phone, msg); toast("OTW text sent to " + cust!.firstName + " ✓"); }
+      catch (e: any) { toast(e?.message || "Failed to send OTW text", "red"); }
+    } else if (cust!.email) {
+      try {
+        const html = emailShell(settings?.companyName || "Smock's Pressure Washing", "On My Way", `<p>${msg}</p>`);
+        await sendEmail(settings as any, { to: cust!.email, subject: "Your technician is on the way", body: html });
+        toast("OTW email sent to " + cust!.firstName + " ✓");
+      } catch (e: any) { toast(e?.message || "Failed to send OTW email", "red"); }
+    } else if (cust!.phone) {
+      window.location.href = "sms:" + cust!.phone.replace(/\D/g, "") + "?body=" + encodeURIComponent(msg);
+    }
   };
 
   const doSignOut = async () => {
@@ -2995,7 +3013,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
           <div className="flex items-start justify-between gap-2 mb-1.5">
             <div className="flex-1 min-w-0">
               <div className="font-semibold text-sm truncate">{job.address}</div>
-              {customer && (
+              {customer ? (
                 <div className="text-xs text-white/50 flex items-center gap-2 flex-wrap">
                   <span>{customer.firstName} {customer.lastName}</span>
                   {customer.phone && (
@@ -3004,7 +3022,9 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                     </a>
                   )}
                 </div>
-              )}
+              ) : job.customerId ? (
+                <div className="text-xs text-white/30 italic">Customer info loading...</div>
+              ) : null}
             </div>
             <div className={"text-[10px] px-2 py-0.5 rounded-full font-bold uppercase flex-shrink-0 " +
               (job.status === "completed" ? "bg-green-900/40 text-green-300" :

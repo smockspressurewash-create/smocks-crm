@@ -338,7 +338,7 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
     const interval = setInterval(() => liveTeamTick(t => t + 1), 5000);
     return () => clearInterval(interval);
   }, []);
-  const activeJobs = jobs.filter(j => j.clockInAt && j.status !== "completed" && j.status !== "cancelled");
+  const activeJobs = jobs.filter(j => j.status === "in_progress" && j.clockInAt);
   const checklistProgress = (j: any) => {
     const items = [...(j.preChecklist || []), ...(j.duringChecklist || []), ...(j.postChecklist || []), ...(j.checklist || [])];
     if (items.length === 0) return null;

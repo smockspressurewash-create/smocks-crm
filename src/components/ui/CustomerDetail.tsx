@@ -43,7 +43,7 @@ import { PageFade } from "./PageFade";
 import { TimeframeSelector } from "./TimeframeSelector";
 import { DocumentVault } from "./DocumentVault";
 
-export function CustomerDetail({ customer: c, onClose, estimates = [], jobs = [], timeline = {}, setTimeline = (..._args: any[]) => {}, settings = {} as any, toast = (..._args: any[]) => {} }) {
+export function CustomerDetail({ customer: c, onClose, onDelete, estimates = [], jobs = [], timeline = {}, setTimeline = (..._args: any[]) => {}, settings = {} as any, toast = (..._args: any[]) => {} }) {
   const [tab, setTab] = useState("info");
   const [note, setNote] = useState("");
   const [noteType, setNoteType] = useState("note");
@@ -89,6 +89,19 @@ export function CustomerDetail({ customer: c, onClose, estimates = [], jobs = []
             <div className="text-right">
               <div className="text-xs text-white/50 uppercase tracking-wider">Lifetime</div>
               <div className="text-2xl font-bold text-red-400">{fmt(c.totalSpent)}</div>
+              {onDelete && (
+                <button
+                  onClick={() => {
+                    if (window.confirm(`Delete ${c.firstName} ${c.lastName}? This cannot be undone.`)) {
+                      onDelete(c);
+                    }
+                  }}
+                  title="Delete customer"
+                  className="mt-2 p-1.5 rounded-lg border border-red-900/40 bg-red-950/20 text-red-400/70 hover:text-red-300 hover:bg-red-950/40 transition"
+                >
+                  <Trash2 size={13} />
+                </button>
+              )}
             </div>
           </div>
 
