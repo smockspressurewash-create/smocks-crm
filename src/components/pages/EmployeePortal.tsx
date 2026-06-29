@@ -1119,7 +1119,7 @@ function OwnerTeamPortal({ jobs, employees, customers, onClose, googleMapsKey }:
             active on this browser. An employee sharing the device needs a way to reach
             their own login instead of being stuck looking at the owner's team preview. */}
         <button
-          onClick={async () => { await supabase.auth.signOut(); }}
+          onClick={async () => { await supabase.auth.signOut({ scope: "local" }); }}
           className="text-[10px] text-white/40 hover:text-white/70 underline whitespace-nowrap"
         >
           Not you? Sign in
@@ -1302,6 +1302,10 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   const [optimisticDayClockInAt, setOptimisticDayClockInAt] = useState<number | null | undefined>(undefined);
   const [optimisticDayLunchStartAt, setOptimisticDayLunchStartAt] = useState<number | null | undefined>(undefined);
   const [payChartRange, setPayChartRange] = useState<"7d" | "4wk" | "12mo">("7d");
+  // Drives a spinner on the "Share My Location" button for the window between
+  // tapping it and the browser's permission prompt resolving — previously the
+  // button gave zero feedback during that gap, which read as "does nothing".
+  const [locationPermissionPending, setLocationPermissionPending] = useState(false);
   // Forces a re-render every second so the shift timer reads HH:MM:SS live —
   // the value itself is never read, only its change triggers the re-render.
   const [, setShiftTick] = useState(0);
@@ -1556,7 +1560,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
       if (incomingFirstLoadRef.current) { setIncomingLoading(false); incomingFirstLoadRef.current = false; }
     };
     load();
-    const interval = setInterval(load, 10000);
+    const interval = setInterval(load, 5000);
     return () => clearInterval(interval);
   }, [(myEmployee as any)?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -2069,7 +2073,10 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   };
 
   const doSignOut = async () => {
-    await supabase.auth.signOut();
+    // scope: "local" — sign out only this device. The default ("global")
+    // revokes the refresh token everywhere, which would also sign this
+    // employee out of any other device/browser they're logged into.
+    await supabase.auth.signOut({ scope: "local" });
     setEmpSession(null);
     window.location.hash = "/portal";
   };
@@ -2106,11 +2113,15 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   const doForgotPassword = async () => {
     if (!loginEmail.trim()) { setLoginError("Enter your email first"); return; }
     try {
-      await supabase.auth.resetPasswordForEmail(loginEmail.trim(), {
+      // resetPasswordForEmail resolves with {error} rather than throwing on
+      // failure — a bare try/catch alone would show "sent ✓" even when it
+      // failed (rate limit, malformed email, etc).
+      const { error } = await supabase.auth.resetPasswordForEmail(loginEmail.trim(), {
         redirectTo: `${window.location.origin}${window.location.pathname}#/reset-password`,
       });
+      if (error) { setLoginError("Could not send reset email — " + error.message); return; }
       setForgotSent(true);
-    } catch { setLoginError("Could not send reset email"); }
+    } catch (e: any) { setLoginError("Could not send reset email — " + (e?.message || "try again")); }
   };
 
   // Create or update a Google Calendar event on the EMPLOYEE'S OWN calendar
@@ -2487,13 +2498,24 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     return (
       <div className="min-h-screen bg-black text-white flex flex-col items-center justify-center p-6">
         <div className="w-full max-w-sm">
-          <div className="text-center mb-8">
+          <div className="text-center mb-6">
             <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-red-600 to-red-900 flex items-center justify-center mx-auto mb-4 shadow-lg">
               <span className="text-2xl font-black">S</span>
             </div>
             <div className="text-xl font-bold">{settings.companyName || "Smock's OS"}</div>
             <div className="text-sm text-white/50 mt-1">{inviteRecord ? "Create Your Crew Account" : "Employee Portal"}</div>
           </div>
+
+          {!inviteRecord && (
+            <div className="flex gap-1 p-1 mb-5 rounded-xl bg-white/5 border border-white/10">
+              <button onClick={onClose} className="flex-1 py-2 rounded-lg text-xs font-medium text-white/40 hover:text-white/70 transition">
+                Owner / Manager
+              </button>
+              <button className="flex-1 py-2 rounded-lg text-xs font-medium bg-red-600/30 border border-red-500/40 text-white transition">
+                Employee Portal
+              </button>
+            </div>
+          )}
 
           <div className="space-y-3">
             {/* Invite banner */}
@@ -3159,12 +3181,17 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                 // button while off-shift looked like it "did nothing" with no
                 // permission prompt and no feedback at all.
                 if (turningOn && navigator.geolocation) {
+                  setLocationPermissionPending(true);
                   navigator.geolocation.getCurrentPosition(
                     (pos) => {
+                      setLocationPermissionPending(false);
                       toast("Location sharing active 🟢");
                       (supabase as any).from("employees").update({ lastLocation: { lat: pos.coords.latitude, lng: pos.coords.longitude, updatedAt: Date.now() } }).eq("id", empId).then((r: any) => { if (r?.error) console.warn("Failed to save location:", r.error); else refetchEmployees?.(); });
                     },
-                    (err) => toast("Location permission denied: " + err.message, "red"),
+                    (err) => {
+                      setLocationPermissionPending(false);
+                      toast("Location sharing denied — enable location access for this site in your browser settings", "red");
+                    },
                     { enableHighAccuracy: true, timeout: 10000 }
                   );
                 } else if (turningOn && !navigator.geolocation) {
@@ -3197,9 +3224,11 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                       </button>
                     )}
                   </div>
-                  <button onClick={toggleLocationSharing} className={"w-full flex items-center justify-center gap-2 py-2 rounded-xl text-xs font-medium transition " + (locationSharing ? "bg-blue-900/30 border border-blue-500/40 text-blue-300" : "bg-white/5 border border-white/10 text-white/50")}>
-                    <MapPin size={12} />
-                    {locationSharing ? "Sharing my location with owner 🟢" : "Share My Location (off)"}
+                  <button onClick={toggleLocationSharing} disabled={locationPermissionPending} className={"w-full flex items-center justify-center gap-2 py-2 rounded-xl text-xs font-medium transition disabled:opacity-60 " + (locationSharing ? "bg-blue-900/30 border border-blue-500/40 text-blue-300" : "bg-white/5 border border-white/10 text-white/50")}>
+                    {locationPermissionPending
+                      ? <div className="w-3 h-3 border-2 border-white/40 border-t-transparent rounded-full animate-spin" />
+                      : <MapPin size={12} />}
+                    {locationPermissionPending ? "Requesting location permission…" : locationSharing ? "Sharing my location with owner 🟢" : "Share My Location (off)"}
                   </button>
                   {locationSharing && (myEmployee as any)?.lastLocation?.lat != null && (
                     <LiveMap

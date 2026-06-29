@@ -417,15 +417,18 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
         </div>
       )}
 
-      {/* Live team view — only rendered while someone is actually clocked in;
-          auto-refreshes every 30s via the liveTeamTick interval above. */}
-      {activeJobs.length > 0 && (
+      {/* Live team view — always rendered (shows an explicit empty state when
+          no one is clocked in, rather than vanishing entirely); auto-refreshes
+          every 30s via the liveTeamTick interval above. */}
       <Glass className="p-4">
         <div className="flex items-center gap-2 mb-3">
           <Users2 size={15} className="text-green-400" />
           <h3 className="font-semibold text-sm">Live Team View</h3>
-          <Badge tone="green">{activeJobs.length} active</Badge>
+          {activeJobs.length > 0 && <Badge tone="green">{activeJobs.length} active</Badge>}
         </div>
+        {activeJobs.length === 0 ? (
+          <div className="text-center py-6 text-sm text-white/40">No active jobs — waiting for crew to clock in</div>
+        ) : (
           <div className="space-y-2">
             {activeJobs.map(j => {
               const c = customers.find(x => x.id === j.customerId);
@@ -453,8 +456,8 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
               );
             })}
           </div>
+        )}
       </Glass>
-      )}
 
       {/* Completed jobs that haven't been invoiced or marked paid yet */}
       {needsInvoiceJobs.length > 0 && (

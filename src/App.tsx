@@ -689,7 +689,12 @@ export function App() {
   // a Supabase realtime subscription for instant updates when the table has
   // realtime enabled, plus a 5s poll as a fallback that works regardless.
   useEffect(() => {
-    if (!hasCrmSession) return;
+    // Was gated on hasCrmSession (owner) only — an employee staying logged in
+    // for a full shift never got customers refreshed after the one-time
+    // bootstrap fetch, so any customer added/edited after they clocked in
+    // silently showed no name/phone on their job cards. Both session types
+    // need this.
+    if (!hasCrmSession && !empSession) return;
     let channel: any = null;
     try {
       channel = (supabase as any)
@@ -702,7 +707,7 @@ export function App() {
       clearInterval(interval);
       try { channel?.unsubscribe(); } catch { /* ignore */ }
     };
-  }, [hasCrmSession]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [hasCrmSession, !!empSession]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Supabase Google OAuth / identity-link capture ────────────────────────
   useEffect(() => {
@@ -962,9 +967,13 @@ export function App() {
   // Automation engine
   useAutomationEngine({ automations, setAutomations, jobs, customers, estimates, settings, toast });
 
-  // Sign out — clears Supabase session and forces login page
+  // Sign out — clears Supabase session and forces login page.
+  // signOut() defaults to scope: "global", which revokes the refresh token
+  // server-side and signs the account out of EVERY device, not just this
+  // one — that's what made signing out on one device log out the other.
+  // scope: "local" only clears this browser's session.
   const handleSignOut = async () => {
-    await supabase.auth.signOut();
+    await supabase.auth.signOut({ scope: "local" });
     setSettings((prev: any) => ({
       ...prev,
       googleConnected: false,
@@ -1173,6 +1182,15 @@ export function App() {
             <div className="text-sm text-white/40 mt-1">{settings.companyName || "Business Management"}</div>
           </div>
 
+          <div className="w-full flex gap-1 p-1 rounded-xl bg-white/5 border border-white/10">
+            <button className="flex-1 py-2 rounded-lg text-xs font-medium bg-red-600/30 border border-red-500/40 text-white transition">
+              Owner / Manager
+            </button>
+            <button onClick={() => setPage("portal")} className="flex-1 py-2 rounded-lg text-xs font-medium text-white/40 hover:text-white/70 transition">
+              Employee Portal
+            </button>
+          </div>
+
           <div className="w-full space-y-3">
             {/* Email/password owner login */}
             <div className="space-y-2.5">
@@ -1267,18 +1285,6 @@ export function App() {
               {ownerLoginMode === "login" ? "Create account" : "← Back to sign in"}
             </button>
 
-            <div className="flex items-center gap-3">
-              <div className="flex-1 h-px bg-white/10" />
-              <span className="text-xs text-white/30">or</span>
-              <div className="flex-1 h-px bg-white/10" />
-            </div>
-
-            <button
-              onClick={() => setPage("portal")}
-              className="w-full min-h-[52px] py-4 rounded-2xl bg-white/5 border border-white/10 text-white font-semibold text-base hover:bg-white/10 active:scale-95 transition-all"
-            >
-              Employee Portal →
-            </button>
           </div>
 
           <button

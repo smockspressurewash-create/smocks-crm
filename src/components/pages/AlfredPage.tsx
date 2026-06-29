@@ -735,10 +735,30 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
         case "create_customer": {
           if (!inputs.firstName || !inputs.lastName) return { error: "firstName and lastName required" };
           const newC = { id: uid(), firstName: inputs.firstName, lastName: inputs.lastName, email: inputs.email || "", phone: inputs.phone || "", address: inputs.address || "", totalSpent: 0, createdAt: today(), notes: inputs.notes || "", gateCode: "", hasDog: false, dogName: "", sensitivePlants: "" };
-          setCustomers(prev => [...prev, newC]);
-          toast("Alfred created customer: " + newC.firstName + " " + newC.lastName);
+          // Alfred must never claim a customer was created unless the Supabase
+          // write actually succeeded — local setState always "succeeds" (it's
+          // just a React render), so that alone was the literal cause of
+          // Alfred reporting success for customers that never existed.
+          let saved: any = null;
+          let saveError: any = null;
+          try {
+            const { data, error } = await withTimeout<any>(
+              (supabase as any).from("customers").insert(newC).select().single(),
+              8000, "Save customer"
+            );
+            saved = data;
+            saveError = error;
+          } catch (e: any) {
+            saveError = e;
+          }
+          console.log("TOOL CALL: create_customer — result:", { saved, error: saveError });
+          if (saveError || !saved) {
+            return { error: "Failed to create customer — " + (saveError?.message || "Supabase write did not return a row") };
+          }
+          setCustomers(prev => [...prev, saved]);
+          toast("Alfred created customer: " + saved.firstName + " " + saved.lastName);
           setTimeout(() => onNav("customers"), 1200);
-          return { success: true, customer: newC };
+          return { success: true, customer: saved };
         }
         case "create_estimate": {
           const c = customers.find(x => x.id === inputs.customerId || (x.firstName + " " + x.lastName).toLowerCase() === (inputs.customerName || "").toLowerCase());
@@ -753,10 +773,26 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           const tax = subtotal * ((Number(settings.taxRate) || 6) / 100);
           const total = subtotal + tax;
           const newE = { id: uid(), customerId: c.id, lineItems: items, subtotal, discount: 0, depositRequired: 0, tax, total, status: "pending", createdAt: today(), validUntil: daysFromNow(30), viewed: false, viewedAt: null, terms: "Payment due upon completion.", notes: inputs.notes || "" };
-          setEstimates(prev => [...prev, newE]);
-          toast("Alfred created estimate #" + newE.id.toUpperCase() + " · " + fmt(total));
+          let savedE: any = null;
+          let saveErrorE: any = null;
+          try {
+            const { data, error } = await withTimeout<any>(
+              (supabase as any).from("estimates").insert(newE).select().single(),
+              8000, "Save estimate"
+            );
+            savedE = data;
+            saveErrorE = error;
+          } catch (e: any) {
+            saveErrorE = e;
+          }
+          console.log("TOOL CALL: create_estimate — result:", { saved: savedE, error: saveErrorE });
+          if (saveErrorE || !savedE) {
+            return { error: "Failed to create estimate — " + (saveErrorE?.message || "Supabase write did not return a row") };
+          }
+          setEstimates(prev => [...prev, savedE]);
+          toast("Alfred created estimate #" + savedE.id.toUpperCase() + " · " + fmt(total));
           setTimeout(() => onNav("estimates"), 1200);
-          return { success: true, estimateId: newE.id, total, customer: c.firstName + " " + c.lastName };
+          return { success: true, estimateId: savedE.id, total, customer: c.firstName + " " + c.lastName };
         }
         case "schedule_job": {
           const c = customers.find(x => x.id === inputs.customerId || (x.firstName + " " + x.lastName).toLowerCase() === (inputs.customerName || "").toLowerCase());
@@ -767,10 +803,26 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
               : { error: "Customer not found" };
           }
           const newJ = { id: uid(), customerId: c.id, scheduledDate: inputs.date || daysFromNow(3), status: "scheduled", pipelineStage: "scheduled", address: c.address, amount: inputs.amount || 0, photos: [], checklist: (inputs.checklist || ["Confirm water access"]).map(t => ({ label: t, done: false })), isRecurring: false, recurringFreq: "monthly", cancelReason: "", noShow: false, crew: [], duration: inputs.duration || 2, internalNotes: inputs.notes || "", chemicalsUsed: [], equipment: [], commLog: [], priority: inputs.priority || "normal", tags: inputs.tags || [], loggedHours: 0, clockInAt: null, attachments: [] };
-          setJobs(prev => [...prev, newJ]);
-          toast("Alfred scheduled job for " + c.firstName + " on " + newJ.scheduledDate);
+          let savedJ: any = null;
+          let saveErrorJ: any = null;
+          try {
+            const { data, error } = await withTimeout<any>(
+              (supabase as any).from("jobs").insert(newJ).select().single(),
+              8000, "Save job"
+            );
+            savedJ = data;
+            saveErrorJ = error;
+          } catch (e: any) {
+            saveErrorJ = e;
+          }
+          console.log("TOOL CALL: schedule_job — result:", { saved: savedJ, error: saveErrorJ });
+          if (saveErrorJ || !savedJ) {
+            return { error: "Failed to schedule job — " + (saveErrorJ?.message || "Supabase write did not return a row") };
+          }
+          setJobs(prev => [...prev, savedJ]);
+          toast("Alfred scheduled job for " + c.firstName + " on " + savedJ.scheduledDate);
           setTimeout(() => onNav("jobs"), 1200);
-          return { success: true, jobId: newJ.id, date: newJ.scheduledDate, customer: c.firstName + " " + c.lastName };
+          return { success: true, jobId: savedJ.id, date: savedJ.scheduledDate, customer: c.firstName + " " + c.lastName };
         }
         case "update_job_priority": {
           const j = jobs.find(x => x.id === inputs.jobId);
@@ -847,14 +899,10 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
               : { error: "Employee not found" };
           }
           try {
-            let ownerUserId = ownerId;
-            if (!ownerUserId) {
-              const { data: { session } } = await withTimeout<any>(supabase.auth.getSession(), 5000, "Get session");
-              ownerUserId = session?.user?.id || "";
-            }
+            if (!ownerId) return { error: "Still finishing sign-in — try again in a moment" };
             const { data, error } = await withTimeout<any>(
               (supabase as any).from("job_requests").insert({
-                job_id: j.id, employee_id: emp.id, owner_id: ownerUserId, status: "pending", message: inputs.message || null,
+                job_id: j.id, employee_id: emp.id, owner_id: ownerId, status: "pending", message: inputs.message || null,
               }).select("id").single(),
               8000, "Save request"
             );

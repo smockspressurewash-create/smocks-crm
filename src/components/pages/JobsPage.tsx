@@ -303,23 +303,21 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
     if (!emp) return;
     setQuickReqSending(true);
     try {
-      // ownerId is captured once at app auth-bootstrap (App.tsx) instead of
-      // calling supabase.auth.getSession() here — that call is known to hang
+      // ownerId is captured once at app auth-bootstrap (App.tsx) and passed
+      // down as a prop — this component must never call
+      // supabase.auth.getSession() itself, since that call is known to hang
       // indefinitely under Supabase internal navigator-lock contention, which
-      // is exactly what left this button stuck on "Sending…" forever. Only
-      // fall back to a (timeout-guarded) getSession() call if the prop somehow
-      // never made it down.
-      let ownerUserId = ownerId;
-      if (!ownerUserId) {
-        const { data: { session } } = await withTimeout<any>(supabase.auth.getSession(), 5000, "Get session");
-        ownerUserId = session?.user?.id || "";
+      // is exactly what left this button stuck on "Sending…" forever.
+      if (!ownerId) {
+        toast?.("Still finishing sign-in — wait a moment and try again", "red");
+        return;
       }
       const portalUrl = `${window.location.origin}${window.location.pathname}`;
       const { data: row, error } = await withTimeout<any>(
         (supabase as any).from("job_requests").insert({
           job_id: job.id,
           employee_id: emp.id,
-          owner_id: ownerUserId,
+          owner_id: ownerId,
           status: "pending",
           message: quickReqMsg.trim() || null,
         }).select("id").single(),
@@ -534,6 +532,7 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
                 duration: newJobForm.duration ? Number(newJobForm.duration) : undefined,
                 crew: directAssign ? [assignedEmp.id] : [], checklist: [], photos: [], commLog: [], chemicalsUsed: [], equipment: [], tags: [],
                 loggedHours: 0, createdAt: today(),
+                ...(directAssign ? { crewAssignedAt: { [assignedEmp.id]: Date.now() } } : {}),
               };
               setJobs(prev => [...prev, job]);
               // Close the modal immediately — none of the follow-up work below
@@ -542,6 +541,25 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
               setNewJobOpen(false);
               setNewJobForm(f => ({ ...f, crewEmpId: "" }));
               toast("Job scheduled for " + newJobForm.scheduledDate);
+              // A brand-new job previously only reached Supabase via the
+              // 30s app-level auto-save batch — the employee's portal polls
+              // Supabase directly every 3s, so a same-day crew assignment
+              // looked like it "did nothing" for up to 30s. Insert it
+              // immediately instead, and verify with a re-fetch so a failed
+              // write surfaces as a visible error rather than silent data loss.
+              (async () => {
+                const { error } = await withTimeout<any>((supabase as any).from("jobs").insert(job), 8000, "Save job");
+                if (error) {
+                  console.error("New job failed to save to Supabase:", error);
+                  toast?.("Job created locally, but failed to save to the server — " + error.message, "red");
+                  return;
+                }
+                const verify = await (supabase as any).from("jobs").select("id, crew").eq("id", job.id).maybeSingle();
+                console.log("VERIFY NEW JOB SAVED:", verify?.data);
+                if (!verify?.data) {
+                  toast?.("Job save could not be verified — refresh and check", "red");
+                }
+              })();
               // Create Google Calendar event if Google is connected
               if (settings?.googleConnected && (settings as any)?.googleToken && job.scheduledDate) {
                 const c = customers.find(x => x.id === job.customerId);
@@ -568,14 +586,13 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
                 } else {
                   (async () => {
                     try {
-                      let ownerUserId = ownerId;
-                      if (!ownerUserId) {
-                        const { data: { session } } = await withTimeout<any>(supabase.auth.getSession(), 5000, "Get session");
-                        ownerUserId = session?.user?.id || "";
+                      if (!ownerId) {
+                        toast?.("Job saved, but the crew request failed — still finishing sign-in, try again in a moment", "red");
+                        return;
                       }
                       const { data, error } = await withTimeout<any>(
                         (supabase as any).from("job_requests").insert({
-                          job_id: job.id, employee_id: assignedEmp.id, owner_id: ownerUserId, status: "pending",
+                          job_id: job.id, employee_id: assignedEmp.id, owner_id: ownerId, status: "pending",
                         }).select("id").single(),
                         8000, "Save request"
                       );

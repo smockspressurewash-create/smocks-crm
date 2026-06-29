@@ -468,16 +468,16 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
     if (!emp) return;
     setRequestSending(true);
     try {
-      let ownerUserId = ownerId;
-      if (!ownerUserId) {
-        const { data: { session } } = await withTimeout<any>(supabase.auth.getSession(), 5000, "Get session");
-        ownerUserId = session?.user?.id || "";
+      if (!ownerId) {
+        toast("Still finishing sign-in — wait a moment and try again", "red");
+        setRequestSending(false);
+        return;
       }
       const { data, error } = await withTimeout<any>(
         (supabase as any).from("job_requests").insert({
           job_id: jobId,
           employee_id: requestEmpId,
-          owner_id: ownerUserId,
+          owner_id: ownerId,
           status: "pending",
           message: requestMsg.trim() || null,
         }).select("id").single(),

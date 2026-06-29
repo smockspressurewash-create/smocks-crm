@@ -144,6 +144,34 @@ export function CrewView({ jobs = [], setJobs, customers = [], employees = [], t
         </div>
       </Glass>
 
+      {/* Hours this week per crew member — sums loggedHours directly off
+          completed jobs, the same source of truth the Employees tab uses, so
+          the owner can see total time without leaving Crew View. */}
+      <Glass className="p-4">
+        <div className="flex items-center gap-2 mb-3">
+          <Clock size={15} className="text-blue-400" />
+          <h3 className="font-semibold text-sm">Hours This Week</h3>
+        </div>
+        <div className="space-y-1.5">
+          {activeEmps.map((e: any) => {
+            const weekStart = (() => { const d = new Date(); d.setDate(d.getDate() - d.getDay()); return d.toISOString().slice(0, 10); })();
+            const hrs = jobs
+              .filter((j: any) => (j.crew || []).includes(e.id) && j.status === "completed" && j.scheduledDate >= weekStart)
+              .reduce((s: number, j: any) => s + Number(j.loggedHours || 0), 0);
+            return (
+              <div key={e.id} className="flex items-center justify-between text-xs px-1">
+                <span className="text-white/70 flex items-center gap-1.5">
+                  {e.firstName} {e.lastName}
+                  {e.dayClockInAt && <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" title="On the clock now" />}
+                </span>
+                <span className="text-white/50 font-mono">{hrs.toFixed(1)}h</span>
+              </div>
+            );
+          })}
+          {activeEmps.length === 0 && <div className="text-center py-2 text-xs text-white/30">No active crew members</div>}
+        </div>
+      </Glass>
+
       {/* Live Now — every job currently clocked in, across all employees and
           dates; click one to see clock-in time, checklist progress, photos,
           notes, and Street View, plus add a note for the employee. */}

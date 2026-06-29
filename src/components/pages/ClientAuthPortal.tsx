@@ -83,7 +83,7 @@ export function ClientAuthPortal({
     }
   };
 
-  const signOut = async () => { await supabase.auth.signOut(); setSession(null); };
+  const signOut = async () => { await supabase.auth.signOut({ scope: "local" }); setSession(null); };
 
   const companyName = settings?.companyName || "Smock's Pressure Washing";
 
