@@ -1329,6 +1329,16 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   const [retrying, setRetrying] = useState(false);
   const autoRetryDoneRef = useRef(false);
   // Job request system
+  // Local customer cache — populated by direct Supabase fetches when a job's
+  // customerId is not found in the customers prop (e.g. RLS delay, stale parent
+  // state). Keyed by customer id so lookups are O(1).
+  const [localCustomerCache, setLocalCustomerCache] = useState<Record<string, Customer>>({});
+  // findCustomer: checks prop array first (fast path), then local cache.
+  const findCustomer = (id?: string | null): Customer | undefined => {
+    if (!id) return undefined;
+    return customers.find(c => c.id === id) ?? localCustomerCache[id];
+  };
+
   const [requestId, setRequestId] = useState<string | null>(null);
   const [requestData, setRequestData] = useState<any>(null);
   const [requestLoading, setRequestLoading] = useState(false);
@@ -1740,33 +1750,40 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     console.log("FILTERED MY JOBS — ids:", myJobs.map(j => j.id));
   }
 
-  // Customer name/phone on job cards depends on customers.find(j.customerId)
-  // finding a match in the customers prop array — if that array is stale
-  // (e.g. a customer was added after this portal session started and hasn't
-  // been picked up by the periodic sync yet), the lookup silently returns
-  // undefined and the card just shows no name/phone with no indication why.
-  // Fetch any referenced customer ids that are missing directly from
-  // Supabase as a fallback, and merge them into the shared customers state
-  // so every lookup site benefits without each one needing its own fetch.
+  // Fetch any job's customer directly from Supabase when it isn't found in the
+  // customers prop. Results go into localCustomerCache (local state, always
+  // reliable) AND into setCustomers (shared state, best-effort — may be a no-op
+  // if the caller didn't wire it up). missingCustomerFetchRef prevents duplicate
+  // in-flight fetches for the same id across renders.
   const missingCustomerFetchRef = useRef<Set<string>>(new Set());
   useEffect(() => {
     if (!empSession || myJobs.length === 0) return;
-    const knownIds = new Set(customers.map((c: any) => c.id));
+    const knownIds = new Set([
+      ...customers.map((c: any) => c.id),
+      ...Object.keys(localCustomerCache),
+    ]);
     const missingIds = Array.from(new Set(myJobs.map(j => j.customerId).filter(Boolean)))
       .filter(id => !knownIds.has(id) && !missingCustomerFetchRef.current.has(id));
     if (missingIds.length === 0) return;
     missingIds.forEach(id => missingCustomerFetchRef.current.add(id));
     (supabase as any).from("customers").select("*").in("id", missingIds).then((r: any) => {
-      if (r?.error) { console.warn("Customer fallback fetch failed:", r.error.message); return; }
-      const fetched = Array.isArray(r?.data) ? r.data : [];
+      if (r?.error) { console.warn("Customer fetch failed:", r.error.message); return; }
+      const fetched: Customer[] = Array.isArray(r?.data) ? r.data : [];
       if (fetched.length === 0) return;
+      // Store in local cache immediately — this is always reliable.
+      setLocalCustomerCache(prev => {
+        const next = { ...prev };
+        fetched.forEach(c => { next[c.id] = c; });
+        return next;
+      });
+      // Also try to push into shared parent state (best-effort).
       setCustomers((prev: any[]) => {
         const existingIds = new Set(prev.map(c => c.id));
         const toAdd = fetched.filter((c: any) => !existingIds.has(c.id));
         return toAdd.length > 0 ? [...prev, ...toAdd] : prev;
       });
-    }).catch((e: any) => console.warn("Customer fallback fetch failed:", e?.message));
-  }, [empSession, myJobs.map(j => j.customerId).join(","), customers.length]); // eslint-disable-line react-hooks/exhaustive-deps
+    }).catch((e: any) => console.warn("Customer fetch failed:", e?.message));
+  }, [empSession, myJobs.map(j => j.customerId).join(","), customers.length, Object.keys(localCustomerCache).join(",")]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Real-time location sharing — runs the whole time the toggle is on (not
   // gated on being clocked in — the owner may want to see crew location
@@ -1856,7 +1873,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
       const db = b.scheduledDate + (b.scheduledTime || "23:59");
       return da.localeCompare(db);
     })[0] ?? null;
-  const upNextCustomer = upNextJob ? customers.find(c => c.id === upNextJob.customerId) : null;
+  const upNextCustomer = upNextJob ? findCustomer(upNextJob.customerId) : null;
 
   const payStart = (() => { const d = new Date(); d.setDate(d.getDate() - 14); return d.toISOString().slice(0, 10); })();
   const periodJobs = myJobs.filter(j => j.status === "completed" && j.scheduledDate >= payStart);
@@ -2148,7 +2165,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   };
 
   const messageNextJobCustomer = async (job: Job, lateMinutes: number) => {
-    const cust = customers.find(c => c.id === job.customerId);
+    const cust = findCustomer(job.customerId);
     if (!cust?.phone && !cust?.email) { toast("No phone or email on file for this customer", "yellow"); return; }
     if (job.scheduledDate && job.scheduledDate !== today()) {
       const ok = window.confirm(`This job is scheduled for ${job.scheduledDate}, not today. Send the "on my way" message anyway?`);
@@ -2890,13 +2907,13 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   if (selectedJobId) {
     const job = jobs.find(j => j.id === selectedJobId);
     if (!job) { setSelectedJobId(null); return null; }
-    const customer = customers.find(c => c.id === job.customerId);
+    const customer = findCustomer(job.customerId);
     // Next job today (or soonest after) that isn't this one, completed, or
     // cancelled — shown on the post-completion summary with directions.
     const nextJob = myJobs
       .filter(j => j.id !== job.id && j.status !== "completed" && j.status !== "cancelled" && j.scheduledDate >= todayStr)
       .sort((a, b) => (a.scheduledDate + (a.scheduledTime || "23:59")).localeCompare(b.scheduledDate + (b.scheduledTime || "23:59")))[0] || null;
-    const nextJobCustomer = nextJob ? customers.find(c => c.id === nextJob.customerId) || null : null;
+    const nextJobCustomer = nextJob ? findCustomer(nextJob.customerId) || null : null;
     return (
       <JobDetailView
         job={job}
@@ -2942,7 +2959,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   };
 
   const JobCard = ({ job }: { job: Job }) => {
-    const customer = customers.find(c => c.id === job.customerId);
+    const customer = findCustomer(job.customerId);
     const preItems = job.preChecklist?.length ? job.preChecklist : PRE_DEFAULTS;
     const postItems = job.postChecklist?.length ? job.postChecklist : POST_DEFAULTS;
     const allItems = [...preItems, ...(job.duringChecklist?.length ? job.duringChecklist : DURING_DEFAULTS), ...postItems];
