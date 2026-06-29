@@ -8,7 +8,7 @@ export interface ModelDef {
   modelId: string;      // Actual API model ID: "claude-sonnet-4-20250514"
   name: string;
   label: string;
-  provider: "anthropic" | "openai" | "google" | "groq" | "mistral";
+  provider: "anthropic" | "openai" | "google" | "groq" | "mistral" | "nvidia";
   endpoint: string;
   maxTokens: number;
   contextWindow: number;
@@ -17,6 +17,7 @@ export interface ModelDef {
   supportsTools: boolean;
   keyUrl: string;
   apiLabel: string;
+  free?: boolean;        // true = no cost to the user (shown with a "Free" badge)
 }
 
 export const MODELS: Record<string, ModelDef> = {
@@ -94,6 +95,70 @@ export const MODELS: Record<string, ModelDef> = {
     supportsTools: true,
     keyUrl: "https://console.mistral.ai/api-keys/",
     apiLabel: "Mistral API Key",
+  },
+  nvidia_kimi: {
+    id: "nvidia_kimi",
+    modelId: "moonshotai/kimi-k2.6",
+    name: "Kimi K2.6",
+    label: "Kimi K2.6 (NVIDIA — Free)",
+    provider: "nvidia",
+    endpoint: "https://integrate.api.nvidia.com/v1/chat/completions",
+    maxTokens: 16384,
+    contextWindow: 1000000,
+    color: "from-green-500 to-emerald-700",
+    needsKey: true,
+    supportsTools: true,
+    keyUrl: "https://build.nvidia.com/moonshotai/kimi-k2.6",
+    apiLabel: "NVIDIA API Key",
+    free: true,
+  },
+  nvidia_nemotron: {
+    id: "nvidia_nemotron",
+    modelId: "nvidia/llama-3.1-nemotron-70b-instruct",
+    name: "Nemotron 70B",
+    label: "Llama 3.1 Nemotron 70B (NVIDIA — Free)",
+    provider: "nvidia",
+    endpoint: "https://integrate.api.nvidia.com/v1/chat/completions",
+    maxTokens: 4096,
+    contextWindow: 128000,
+    color: "from-green-500 to-emerald-700",
+    needsKey: true,
+    supportsTools: true,
+    keyUrl: "https://build.nvidia.com/nvidia/llama-3_1-nemotron-70b-instruct",
+    apiLabel: "NVIDIA API Key",
+    free: true,
+  },
+  nvidia_deepseek_r1: {
+    id: "nvidia_deepseek_r1",
+    modelId: "deepseek-ai/deepseek-r1",
+    name: "DeepSeek R1",
+    label: "DeepSeek R1 (NVIDIA — Free)",
+    provider: "nvidia",
+    endpoint: "https://integrate.api.nvidia.com/v1/chat/completions",
+    maxTokens: 8192,
+    contextWindow: 128000,
+    color: "from-green-500 to-emerald-700",
+    needsKey: true,
+    supportsTools: true,
+    keyUrl: "https://build.nvidia.com/deepseek-ai/deepseek-r1",
+    apiLabel: "NVIDIA API Key",
+    free: true,
+  },
+  nvidia_qwen: {
+    id: "nvidia_qwen",
+    modelId: "qwen/qwen2.5-7b-instruct",
+    name: "Qwen 2.5 7B",
+    label: "Qwen 2.5 7B (NVIDIA — Free)",
+    provider: "nvidia",
+    endpoint: "https://integrate.api.nvidia.com/v1/chat/completions",
+    maxTokens: 4096,
+    contextWindow: 32000,
+    color: "from-green-500 to-emerald-700",
+    needsKey: true,
+    supportsTools: true,
+    keyUrl: "https://build.nvidia.com/qwen/qwen2_5-7b-instruct",
+    apiLabel: "NVIDIA API Key",
+    free: true,
   },
 };
 
@@ -267,10 +332,19 @@ export const callModel = async (opts: {
     return { text, toolUses, stopReason, raw: parts.length ? parts : [{ text }] };
   }
 
-  // ── OpenAI-compatible (OpenAI, Groq, Mistral) ──────────────────────────────
-  // Standard OpenAI tools/tool_calls format, shared verbatim by Groq and
-  // Mistral since both mirror OpenAI's chat completions API.
-  if (!apiKey) throw new Error(`No ${def.name} API key — add one in Settings → AI Models.`);
+  // ── OpenAI-compatible (OpenAI, Groq, Mistral, NVIDIA) ──────────────────────
+  // Standard OpenAI tools/tool_calls format, shared verbatim by Groq, Mistral,
+  // and NVIDIA's NIM endpoint (integrate.api.nvidia.com) since all three mirror
+  // OpenAI's chat completions API. NVIDIA keys are issued already prefixed
+  // ("nvapi-...") — that prefix is part of the key string itself, so sending
+  // `Authorization: Bearer ${apiKey}` (same as every other provider here)
+  // produces the correct "Bearer nvapi-..." header with no special-casing.
+  if (!apiKey) {
+    const hint = def.provider === "nvidia"
+      ? ` Get a free key at ${def.keyUrl} — it should start with "nvapi-".`
+      : "";
+    throw new Error(`No ${def.name} API key — add one in Settings → AI Models.${hint}`);
+  }
 
   const openAiMessages: Array<Record<string, unknown>> = [
     ...(opts.systemPrompt ? [{ role: "system", content: opts.systemPrompt }] : []),

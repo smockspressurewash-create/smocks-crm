@@ -122,8 +122,11 @@ export function AIModelsSection({ f, setF, modelStatus, setModelStatus, toast })
             const isActive = activeModel === m.id;
             const locked = (ms[m.id] as any)?.lockedUntil > Date.now();
             return <button key={m.id} onClick={() => { if (hasKey) setF({ ...f, activeModel: m.id }); else toast("Add " + m.name + " API key first"); }} className={"p-3 rounded-xl border text-left transition " + (isActive ? "bg-gradient-to-br " + m.color + " border-white/30 text-white" : hasKey ? "bg-black/40 border-red-900/30 hover:border-red-600/50" : "bg-white/5 border-white/10 opacity-50")}>
-              <div className="flex items-center justify-between">
-                <div className="text-xs font-semibold">{m.name}</div>
+              <div className="flex items-center justify-between gap-1">
+                <div className="text-xs font-semibold flex items-center gap-1.5">
+                  {m.name}
+                  {m.free && <span className="text-[8px] px-1 py-0.5 rounded bg-green-900/40 border border-green-600/40 text-green-300 font-bold uppercase tracking-wide">Free</span>}
+                </div>
                 {isActive && <CheckCircle size={12} />}
                 {locked && !isActive && <Clock size={11} className="text-yellow-400" />}
               </div>
@@ -159,6 +162,7 @@ export function AIModelsSection({ f, setF, modelStatus, setModelStatus, toast })
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 flex-wrap">
                     <div className="font-semibold text-sm">{m.name}</div>
+                    {m.free && <span className="text-[9px] px-1.5 py-0.5 rounded bg-green-900/40 border border-green-600/40 text-green-300 font-bold uppercase tracking-wide">Free</span>}
                     <Badge tone={locked ? "yellow" : hasKey ? "green" : "gray"}>{locked ? "Rate-limited" : hasKey ? "Ready" : "No key"}</Badge>
                     {m.supportsTools && <span className="text-[9px] px-1.5 py-0.5 rounded bg-purple-900/30 border border-purple-700/40 text-purple-300">tools</span>}
                   </div>
