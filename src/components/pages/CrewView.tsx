@@ -85,7 +85,7 @@ export function CrewView({ jobs = [], setJobs, customers = [], employees = [], t
   const [liveDetailId, setLiveDetailId] = useState<string | null>(null);
 
   const activeEmps = employees.filter(e => e.status === "active");
-  const liveJobs = jobs.filter((j: any) => j.status === "in_progress" && !!j.clockInAt);
+  const liveEmps = employees.filter((e: any) => e.status === "active" && !!e.dayClockInAt);
 
   // Auto-refresh employee rows every 10s while anyone is sharing their
   // location, so the Live Now map's pins move in real time rather than only
@@ -179,7 +179,7 @@ export function CrewView({ jobs = [], setJobs, customers = [], employees = [], t
         <div className="flex items-center gap-2 mb-3">
           <Users2 size={15} className="text-green-400" />
           <h3 className="font-semibold text-sm">Live Now</h3>
-          {liveJobs.length > 0 && <Badge tone="green">{liveJobs.length} active</Badge>}
+          {liveEmps.length > 0 && <Badge tone="green">{liveEmps.length} on shift</Badge>}
         </div>
 
         {/* Live employee locations — only employees who opted in (locationSharing)
@@ -203,78 +203,42 @@ export function CrewView({ jobs = [], setJobs, customers = [], employees = [], t
           );
         })()}
 
-        {liveJobs.length === 0 ? (
+        {liveEmps.length === 0 ? (
           <div className="text-center py-6 text-white/30 text-sm">
             <Clock size={20} className="mx-auto mb-2 opacity-30" />
-            No one is clocked in right now
+            No one has started their shift yet
           </div>
         ) : (
           <div className="space-y-2">
-            {liveJobs.map((j: any) => {
-              const c = customers.find((x: any) => x.id === j.customerId);
-              const crewNames = (j.crew || []).map((eid: string) => employees.find((e: any) => e.id === eid)).filter(Boolean).map((e: any) => e.firstName).join(", ") || "Unassigned";
-              const allCk = [...(j.preChecklist || []), ...(j.duringChecklist || []), ...(j.postChecklist || []), ...(j.checklist || [])];
-              const done = allCk.filter((i: any) => i.done).length;
-              const photoCount = (j.photos || []).length;
-
-              // Lateness check — estimated job duration + a flat 15min drive-time
-              // buffer projected against the next scheduled stop for the same crew.
-              let lateInfo: { nextJob: any; nextCust: any; etaMs: number; lateMinutes: number } | null = null;
-              if (settings?.autoNotifyLate) {
-                const todayStr = today();
-                const candidates = jobs.filter((x: any) =>
-                  x.id !== j.id && x.scheduledDate === todayStr && x.status === "scheduled" && x.scheduledTime &&
-                  (x.crew || []).some((eid: string) => (j.crew || []).includes(eid))
-                ).sort((a: any, b: any) => (a.scheduledTime || "").localeCompare(b.scheduledTime || ""));
-                const nextJob = candidates[0];
-                if (nextJob) {
-                  const estHrs = Number(j.estimatedDuration || j.duration || 1);
-                  const finishEst = Number(j.clockInAt) + estHrs * 3600000;
-                  const driveMs = 15 * 60000;
-                  const etaMs = Math.max(Date.now(), finishEst) + driveMs;
-                  const [hh, mm] = String(nextJob.scheduledTime).split(":").map(Number);
-                  const nextScheduledMs = new Date(nextJob.scheduledDate + "T00:00:00").getTime() + (hh * 60 + (mm || 0)) * 60000;
-                  const lateMinutes = Math.round((etaMs - nextScheduledMs) / 60000);
-                  const threshold = Number(settings?.lateThresholdMinutes ?? 15);
-                  if (lateMinutes > threshold) {
-                    lateInfo = { nextJob, nextCust: customers.find((x: any) => x.id === nextJob.customerId), etaMs, lateMinutes };
-                  }
-                }
-              }
-
+            {liveEmps.map((e: any) => {
+              const todayStr = today();
+              const empJobs = jobs.filter((j: any) => (j.crew || []).includes(e.id) && j.scheduledDate === todayStr);
+              const currentJob = empJobs.find((j: any) => j.status === "in_progress") || empJobs.find((j: any) => j.arrivedAt && j.status !== "completed") || null;
+              const cust = currentJob ? customers.find((x: any) => x.id === currentJob.customerId) : null;
+              const pausedMs = (Number(e.dayPausedMinutes) || 0) * 60000;
+              const onLunch = !!e.dayLunchStartAt;
+              const lunchMs = onLunch ? Math.max(0, Date.now() - Number(e.dayLunchStartAt)) : 0;
+              const netMs = Math.max(0, Date.now() - Number(e.dayClockInAt) - pausedMs - lunchMs);
+              const shiftH = Math.floor(netMs / 3600000);
+              const shiftM = Math.floor((netMs % 3600000) / 60000);
+              const shiftDisplay = `${shiftH}h ${String(shiftM).padStart(2, "0")}m`;
               return (
-                <div key={j.id} className="space-y-1.5">
-                  <button onClick={() => setLiveDetailId(j.id)} className="w-full flex items-center gap-3 p-3 rounded-xl border bg-black/30 border-white/10 hover:border-green-600/40 transition text-left">
-                    <div className="w-10 h-10 rounded-lg bg-green-900/40 border border-green-600/40 flex items-center justify-center flex-shrink-0">
-                      <Clock size={14} className="text-green-400" />
+                <button key={e.id} onClick={() => currentJob && setLiveDetailId(currentJob.id)}
+                  className={"w-full flex items-center gap-3 p-3 rounded-xl border transition text-left " + (currentJob ? "bg-black/30 border-white/10 hover:border-green-600/40 cursor-pointer" : "bg-black/20 border-white/5 cursor-default")}>
+                  <div className="w-10 h-10 rounded-lg bg-green-900/40 border border-green-600/40 flex items-center justify-center flex-shrink-0 font-bold text-green-400 text-sm">
+                    {(e.firstName?.[0] || "?")}{(e.lastName?.[0] || "")}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-medium">{e.firstName} {e.lastName}</div>
+                    <div className="text-xs text-white/40 flex items-center gap-2 flex-wrap mt-0.5">
+                      <span className={"font-mono " + (onLunch ? "text-yellow-400" : "text-green-400")}>{onLunch ? "⏸ " : "⏱ "}{shiftDisplay}</span>
+                      {onLunch && <span className="text-yellow-400/70">on lunch</span>}
+                      {currentJob && <span className="truncate max-w-[130px]">{cust ? `${cust.firstName} ${cust.lastName}` : currentJob.address}</span>}
+                      {currentJob?.arrivedAt && <span className="text-green-400">✓ on site</span>}
                     </div>
-                    <div className="flex-1 min-w-0">
-                      <div className="text-sm font-medium truncate">{crewNames} — {c ? c.firstName + " " + c.lastName : j.address}</div>
-                      <div className="text-xs text-white/40 flex items-center gap-2 flex-wrap mt-0.5">
-                        <span>Clocked in {new Date(Number(j.clockInAt)).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</span>
-                        {allCk.length > 0 && <span className="flex items-center gap-1"><CheckSquare size={10} />{done}/{allCk.length}</span>}
-                        {photoCount > 0 && <span className="flex items-center gap-1"><ImageIcon size={10} />{photoCount}</span>}
-                      </div>
-                    </div>
-                    <ChevronRight size={14} className="text-white/30 flex-shrink-0" />
-                  </button>
-                  {lateInfo && (
-                    <div className="flex items-center justify-between gap-2 p-2.5 rounded-xl bg-amber-950/30 border border-amber-700/40 text-amber-200 text-xs">
-                      <span>⏰ Running ~{lateInfo.lateMinutes}min behind for next stop{lateInfo.nextCust ? ` (${lateInfo.nextCust.firstName})` : ""}</span>
-                      <button onClick={async () => {
-                        const eta = new Date(lateInfo!.etaMs).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-                        const msg = (settings?.lateNotifyTemplate || "Your technician is running slightly behind. New ETA: {{eta}}. We apologize for the delay.").replace("{{eta}}", eta);
-                        const cust = lateInfo!.nextCust;
-                        if (!cust) return;
-                        try {
-                          if (cust.phone && settings?.twilioSid) await twilioSend(settings, cust.phone, msg);
-                          if (cust.email) await sendEmail(settings, { to: cust.email, subject: "Updated ETA — " + (settings?.companyName || "Smock's"), body: msg });
-                          toast?.("Client notified of new ETA ✓", "green");
-                        } catch (err: any) { toast?.(err?.message || "Failed to notify", "error"); }
-                      }} className="flex-shrink-0 px-2.5 py-1 rounded-lg bg-amber-700/40 hover:bg-amber-700/60 text-white font-medium">Notify next client?</button>
-                    </div>
-                  )}
-                </div>
+                  </div>
+                  {currentJob && <ChevronRight size={14} className="text-white/30 flex-shrink-0" />}
+                </button>
               );
             })}
           </div>

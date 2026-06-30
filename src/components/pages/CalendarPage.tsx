@@ -87,6 +87,22 @@ export function CalendarPage({ jobs = [], setJobs, customers = [], employees = [
   const [calSource, setCalSource] = useState<"crm" | "google" | "both">("crm");
   const [gEvents, setGEvents] = useState<GCalEvent[]>([]);
   const [gLoading, setGLoading] = useState(false);
+  const [dragHoverArrow, setDragHoverArrow] = useState<"prev" | "next" | null>(null);
+  const dragArrowTimer = useRef<any>(null);
+
+  const onDragEnterArrow = (dir: "prev" | "next") => {
+    if (!dragId) return;
+    setDragHoverArrow(dir);
+    clearTimeout(dragArrowTimer.current);
+    dragArrowTimer.current = setTimeout(() => {
+      setOff(o => o + (dir === "next" ? 1 : -1));
+      setDragHoverArrow(null);
+    }, 500);
+  };
+  const onDragLeaveArrow = () => {
+    clearTimeout(dragArrowTimer.current);
+    setDragHoverArrow(null);
+  };
 
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
   const [jobContextMenu, setJobContextMenu] = useState<{ jobId: string; x: number; y: number } | null>(null);
@@ -311,9 +327,21 @@ export function CalendarPage({ jobs = [], setJobs, customers = [], employees = [
         <div className="grid lg:grid-cols-[1fr_220px] gap-4">
           <Glass className="p-4">
           <div className="flex items-center justify-between mb-4">
-            <button onClick={() => setOff(off - 1)} className="p-2 rounded-lg hover:bg-white/5"><ChevronLeft size={16} /></button>
+            <button
+              onClick={() => setOff(off - 1)}
+              onDragEnter={() => onDragEnterArrow("prev")}
+              onDragOver={e => { e.preventDefault(); }}
+              onDragLeave={onDragLeaveArrow}
+              className={"p-2 rounded-lg transition " + (dragHoverArrow === "prev" ? "bg-red-700/60 scale-110" : "hover:bg-white/5")}
+            ><ChevronLeft size={16} /></button>
             <div className="font-semibold">{vd.toLocaleString("default", { month: "long", year: "numeric" })}</div>
-            <button onClick={() => setOff(off + 1)} className="p-2 rounded-lg hover:bg-white/5"><ChevronRight size={16} /></button>
+            <button
+              onClick={() => setOff(off + 1)}
+              onDragEnter={() => onDragEnterArrow("next")}
+              onDragOver={e => { e.preventDefault(); }}
+              onDragLeave={onDragLeaveArrow}
+              className={"p-2 rounded-lg transition " + (dragHoverArrow === "next" ? "bg-red-700/60 scale-110" : "hover:bg-white/5")}
+            ><ChevronRight size={16} /></button>
           </div>
           <div className="grid grid-cols-7 gap-1 mb-2">{["S", "M", "T", "W", "T", "F", "S"].map((d, i) => <div key={i} className="text-center text-[10px] uppercase text-white/40 py-2">{d}</div>)}</div>
           <div className="grid grid-cols-7 gap-1">

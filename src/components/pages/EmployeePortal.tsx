@@ -245,37 +245,14 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
   const [showSignOff, setShowSignOff] = useState(false);
   const [signerName, setSignerName] = useState("");
   // "Complete Job" flow: review (checklist/sign-off status) → payment → summary
-  const [completeStep, setCompleteStep] = useState<"" | "review" | "payment" | "method" | "invoice" | "summary">("");
+  const [completeStep, setCompleteStep] = useState<"" | "review" | "payment" | "method" | "invoice" | "invoice-preview" | "summary">("");
   const [paidChoice, setPaidChoice] = useState<"yes" | "no" | "">("");
   const [paymentMethod, setPaymentMethod] = useState("");
   const [sendingCompleteInvoice, setSendingCompleteInvoice] = useState(false);
   const [completeSummary, setCompleteSummary] = useState<{ hours: number; amount: number; paymentStatus: string } | null>(null);
+  const [invoiceEditSubject, setInvoiceEditSubject] = useState("");
+  const [invoiceEditNote, setInvoiceEditNote] = useState("");
 
-  useEffect(() => {
-    if (!job.clockInAt) return;
-    const h = setInterval(() => forceTick(t => t + 1), 1000);
-    return () => clearInterval(h);
-  }, [job.clockInAt]);
-
-  const secsToHms = (total: number) => {
-    const h = Math.floor(total / 3600);
-    const m = Math.floor((total % 3600) / 60);
-    const s = total % 60;
-    return [h, m, s].map(n => String(n).padStart(2, "0")).join(":");
-  };
-
-  // Work timer excludes lunch: frozen at the moment lunch starts, and the
-  // accumulated lunch time is subtracted once lunch ends.
-  const liveDisplay = (() => {
-    if (!job.clockInAt) return null;
-    const lunchMs = paidLunchBreaks ? 0 : (job.lunchMinutes || 0) * 60000;
-    const endpoint = job.lunchStartAt || Date.now();
-    const total = Math.max(0, Math.floor((endpoint - job.clockInAt - lunchMs) / 1000));
-    return secsToHms(total);
-  })();
-
-  const lunchDisplay = job.lunchStartAt ? secsToHms(Math.max(0, Math.floor((Date.now() - job.lunchStartAt) / 1000))) : null;
-  const isOverSchedule = !!(job.clockInAt && job.duration && (Date.now() - job.clockInAt) / 3600000 > Number(job.duration));
 
   const hasRequiredGear = (job.equipment || []).length > 0 || (job.requiredChemicals || []).length > 0;
   const sendRunningLate = async (minutes: number) => {
@@ -305,34 +282,6 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
     } finally {
       setSendingRunningLate(false);
     }
-  };
-  const clockIn = () => {
-    onUpdateJob({ clockInAt: Date.now(), lunchStartAt: null });
-    if (hasRequiredGear && !job.equipmentChecked) {
-      toast("⚠️ Clocked in without confirming required equipment/chemicals", "yellow");
-    } else {
-      toast("Clocked in ✓");
-    }
-  };
-  const clockOut = () => {
-    if (!job.clockInAt) return;
-    const lunchMs = paidLunchBreaks ? 0 : (job.lunchMinutes || 0) * 60000;
-    const hrs = Math.round((Date.now() - job.clockInAt - lunchMs) / 36000) / 100;
-    onUpdateJob({ clockInAt: null, lunchStartAt: null, loggedHours: Math.round(((Number(job.loggedHours) || 0) + hrs) * 100) / 100 });
-    toast(`+${hrs}h logged`);
-  };
-
-  const takeLunch = () => { onUpdateJob({ lunchStartAt: Date.now() }); toast("Lunch started 🍽️"); };
-  const endLunch = () => {
-    if (!job.lunchStartAt) return;
-    const lunchMinsThisBreak = Math.round((Date.now() - job.lunchStartAt) / 60000);
-    const exceeded = lunchMinsThisBreak > maxLunchMinutes;
-    onUpdateJob({
-      lunchStartAt: null,
-      lunchMinutes: (job.lunchMinutes || 0) + lunchMinsThisBreak,
-      ...(exceeded ? { lunchExceeded: true } : {}),
-    });
-    toast(exceeded ? `Lunch ended — ${lunchMinsThisBreak}m (exceeded ${maxLunchMinutes}m limit)` : `Lunch ended — ${lunchMinsThisBreak}m`, exceeded ? "yellow" : "green");
   };
 
   const addPhoto = (type: "before" | "after", dataUrl: string) => {
@@ -446,7 +395,7 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
   const checklistRemaining = allItems.filter(i => !i.done).length;
   const startCompleteFlow = () => { setCompleteStep("review"); setPaidChoice(""); setPaymentMethod(""); };
 
-  const sendInvoiceFromPortal = async () => {
+  const sendInvoiceFromPortal = async (customSubject?: string, customNote?: string) => {
     if (!customer?.email && !customer?.phone) {
       toast("No contact info for this customer. Add email or phone first.", "red");
       return false;
@@ -461,16 +410,19 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
       };
       setEstimates((prev: any[]) => [...prev, newInv]);
       const payLink = `${window.location.origin}${window.location.pathname}#/portal/${newInv.id}`;
+      const subject = customSubject?.trim() || `Invoice — ${companyName}`;
+      const noteHtml = customNote?.trim() ? `<p style="font-style:italic;color:rgba(255,255,255,0.6)">${customNote.trim()}</p>` : "";
       if (customer.email) {
-        const html = emailShell(companyName, "Invoice", `<p>Hi ${customer.firstName},</p><p>Thanks for choosing us! Your service at <b>${job.address}</b> is complete.</p><p><b>Amount due:</b> $${(Number(job.amount) || 0).toFixed(2)}</p>` + emailButton("View & Pay Invoice", payLink));
-        await sendEmail(settings, { to: customer.email, subject: `Invoice — ${companyName}`, body: html });
+        const html = emailShell(companyName, "Invoice", `<p>Hi ${customer.firstName},</p>${noteHtml}<p>Thanks for choosing us! Your service at <b>${job.address}</b> is complete.</p><p><b>Amount due:</b> $${(Number(job.amount) || 0).toFixed(2)}</p>` + emailButton("View & Pay Invoice", payLink));
+        await sendEmail(settings, { to: customer.email, subject, body: html });
+        toast(`Invoice sent to ${customer.firstName} ✓`, "green");
       } else {
         await twilioSend(settings as any, customer.phone!, `Hi ${customer.firstName}, your invoice for ${fmt(Number(job.amount) || 0)} is ready: ${payLink}`);
+        toast(`Invoice sent to ${customer.firstName} ✓`, "green");
       }
-      toast(`Invoice sent to ${customer.firstName} ✓`, "green");
       return true;
     } catch (err: any) {
-      toast(err?.message || "Failed to send invoice", "red");
+      toast(`Failed to send invoice — ${err?.message || "unknown error"}`, "red");
       return false;
     } finally {
       setSendingCompleteInvoice(false);
@@ -687,13 +639,61 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
           {completeStep === "invoice" && (
             <>
               <div className="text-lg font-bold">Send invoice to customer?</div>
-              <div className="text-sm text-white/50">We'll email them a payment link for {fmt(job.amount)}.</div>
+              <div className="text-sm text-white/50">Email {customer?.firstName || "the customer"} a payment link for <span className="text-green-400 font-semibold">{fmt(job.amount)}</span>.</div>
               <div className="grid grid-cols-2 gap-3">
-                <GBtn onClick={async () => { const sent = await sendInvoiceFromPortal(); if (sent) finalizeCompletion("Pending", undefined, true); }} disabled={sendingCompleteInvoice} className="!py-3 !justify-center">
-                  {sendingCompleteInvoice ? "Sending…" : "Yes, Send Invoice"}
+                <GBtn onClick={() => {
+                  setInvoiceEditSubject(`Invoice — ${companyName}`);
+                  setInvoiceEditNote("");
+                  setCompleteStep("invoice-preview");
+                }} className="!py-3 !justify-center">
+                  Yes — Preview First
                 </GBtn>
                 <GBtn variant="ghost" onClick={() => finalizeCompletion("Pending", undefined, false)} className="!py-3 !justify-center">
                   No, Skip
+                </GBtn>
+              </div>
+            </>
+          )}
+
+          {completeStep === "invoice-preview" && (
+            <>
+              <div className="text-lg font-bold">Invoice Preview</div>
+              <Glass className="p-4 !bg-black/40 space-y-3">
+                <div>
+                  <div className="text-xs text-white/40 uppercase tracking-wider mb-0.5">To</div>
+                  <div className="text-sm font-semibold">{customer?.firstName} {customer?.lastName}</div>
+                  <div className="text-xs text-white/40">{customer?.email || customer?.phone || "No contact on file"}</div>
+                </div>
+                <div>
+                  <div className="text-xs text-white/40 uppercase tracking-wider mb-1">Subject</div>
+                  <input value={invoiceEditSubject} onChange={e => setInvoiceEditSubject(e.target.value)}
+                    className="w-full bg-white/5 border border-white/15 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-red-500/50" />
+                </div>
+                <div className="flex items-center justify-between">
+                  <div className="text-xs text-white/40 uppercase tracking-wider">Amount Due</div>
+                  <div className="text-2xl font-black text-green-400">{fmt(job.amount)}</div>
+                </div>
+                <div>
+                  <div className="text-xs text-white/40 uppercase tracking-wider mb-0.5">Job</div>
+                  <div className="text-sm text-white/70">{job.address}</div>
+                  {job.notes && <div className="text-xs text-white/40 mt-1 italic">{job.notes}</div>}
+                </div>
+                <div>
+                  <div className="text-xs text-white/40 uppercase tracking-wider mb-1">Note to customer (optional)</div>
+                  <textarea value={invoiceEditNote} onChange={e => setInvoiceEditNote(e.target.value)}
+                    rows={2} placeholder="Thank you for your business! Let us know if you have any questions."
+                    className="w-full bg-white/5 border border-white/15 rounded-xl px-3 py-2 text-xs text-white placeholder-white/20 resize-none focus:outline-none focus:border-red-500/50" />
+                </div>
+              </Glass>
+              <div className="grid grid-cols-2 gap-3">
+                <GBtn onClick={async () => {
+                  const sent = await sendInvoiceFromPortal(invoiceEditSubject, invoiceEditNote);
+                  if (sent) finalizeCompletion("Pending", undefined, true);
+                }} disabled={sendingCompleteInvoice} className="!py-3 !justify-center !bg-gradient-to-r !from-green-700 !to-green-900 !border-green-600/50">
+                  {sendingCompleteInvoice ? "Sending…" : "Send Invoice ✓"}
+                </GBtn>
+                <GBtn variant="ghost" onClick={() => setCompleteStep("invoice")} className="!py-3 !justify-center">
+                  Back
                 </GBtn>
               </div>
             </>
@@ -886,81 +886,34 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
           </Glass>
         )}
 
-        {/* Over-schedule warning — job has been clocked in longer than its estimate */}
-        {isOverSchedule && (
-          <Glass className="p-3 !bg-yellow-950/20 !border-yellow-700/40">
-            <div className="flex items-center gap-2 mb-2">
-              <AlertCircle size={15} className="text-yellow-400 flex-shrink-0" />
-              <div className="text-sm font-semibold text-yellow-300 flex-1">Running over schedule</div>
-            </div>
-            <div className="text-xs text-white/50 mb-2">
-              This job has run longer than its {formatEstDuration(job.duration!)} estimate. Let the owner know what's holding things up.
-            </div>
-            {delayNoteOpen ? (
-              <div className="flex gap-2">
-                <GInput value={delayNote} onChange={e => setDelayNote(e.target.value)} placeholder="What's causing the delay?" className="flex-1 !text-xs" />
-                <GBtn className="!text-xs !py-1.5" onClick={() => {
-                  if (!delayNote.trim()) return;
-                  onUpdateJob({ commLog: [...(job.commLog || []), { id: uid(), type: "note" as const, date: today(), note: "⚠ Delay: " + delayNote.trim() }] });
-                  setDelayNote(""); setDelayNoteOpen(false);
-                  toast("Delay note added");
-                }}>Send</GBtn>
+        {/* I'm Here — mark arrival at this job location (active/today jobs only) */}
+        {job.status !== "completed" && (
+          <Glass className={"p-4 " + (job.arrivedAt ? "!bg-green-950/20 !border-green-700/40" : "!bg-black/40")}>
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="text-xs text-white/50 uppercase tracking-wider mb-1">Location Status</div>
+                {job.arrivedAt ? (
+                  <div className="text-sm font-semibold text-green-400">
+                    ✓ Arrived — {new Date(job.arrivedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}
+                  </div>
+                ) : (
+                  <div className="text-sm text-white/60">
+                    {job.loggedHours ? `${job.loggedHours}h logged` : "Not arrived yet"}
+                    {job.duration ? ` · Est. ${formatEstDuration(job.duration)}` : ""}
+                  </div>
+                )}
               </div>
-            ) : (
-              <button onClick={() => setDelayNoteOpen(true)} className="text-xs text-yellow-300 underline">Explain delay →</button>
-            )}
+              {!job.arrivedAt && (
+                <GBtn onClick={() => {
+                  onUpdateJob({ arrivedAt: Date.now(), status: job.status === "scheduled" ? "in_progress" : job.status });
+                  toast("Marked as arrived ✓ — owner notified");
+                }} className="!gap-2">
+                  <MapPin size={14} />I'm Here
+                </GBtn>
+              )}
+            </div>
           </Glass>
         )}
-
-        {/* Clock in/out */}
-        <Glass className={"p-4 " + (job.clockInAt ? "!bg-green-950/20 !border-green-700/40" : "!bg-black/40")}>
-          <div className="flex items-center justify-between">
-            <div>
-              <div className="text-xs text-white/50 uppercase tracking-wider mb-1">Time Tracking</div>
-              {job.clockInAt ? (
-                <div className="font-mono text-2xl font-bold text-green-400">{liveDisplay}</div>
-              ) : (
-                <div className="text-sm text-white/60">
-                  Logged: <span className="text-white font-semibold">{job.loggedHours || 0}h</span>
-                  {job.duration ? ` · ${formatEstDuration(job.duration)}` : ""}
-                </div>
-              )}
-            </div>
-            {effPerms.can_clock_in && (
-              job.clockInAt ? (
-                <GBtn variant="danger" onClick={clockOut} className="!gap-2">
-                  <Square size={14} />Clock Out
-                </GBtn>
-              ) : (
-                <GBtn onClick={clockIn} className="!gap-2">
-                  <Play size={14} />Clock In
-                </GBtn>
-              )
-            )}
-          </div>
-          {effPerms.can_clock_in && job.clockInAt && (
-            <div className="mt-3 pt-3 border-t border-white/10 flex items-center justify-between">
-              {job.lunchStartAt ? (
-                <>
-                  <div>
-                    <div className="text-[10px] text-yellow-400/70 uppercase tracking-wider">On Lunch</div>
-                    <div className="font-mono text-lg font-bold text-yellow-400">{lunchDisplay}</div>
-                  </div>
-                  <GBtn onClick={endLunch} className="!gap-2 !bg-yellow-700 hover:!bg-yellow-600 !border-yellow-600/50">
-                    <Square size={12} />End Lunch
-                  </GBtn>
-                </>
-              ) : (
-                <>
-                  <div className="text-xs text-white/40">{job.lunchMinutes ? `${job.lunchMinutes}m lunch logged${job.lunchExceeded ? " ⚠️ exceeded limit" : ""}` : "No lunch taken yet"}</div>
-                  <GBtn onClick={takeLunch} className="!gap-2 !bg-white/10 hover:!bg-white/15 !border-white/20 !text-white/80">
-                    🍽️ Take Lunch
-                  </GBtn>
-                </>
-              )}
-            </div>
-          )}
-        </Glass>
 
         {/* Photos & Videos */}
         <Glass className="p-4 !bg-black/40">
@@ -1392,6 +1345,16 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   // tapping it and the browser's permission prompt resolving — previously the
   // button gave zero feedback during that gap, which read as "does nothing".
   const [locationPermissionPending, setLocationPermissionPending] = useState(false);
+  // Tracks whether the current pause is a lunch break (shows countdown) or a general pause.
+  // Stored in localStorage so it survives re-renders but not page reloads intentionally —
+  // on reload the type resets to "pause", which is fine since the countdown state resets too.
+  const [pauseIsLunch, setPauseIsLunch] = useState<boolean>(() => {
+    try { return localStorage.getItem("smocks.pauseIsLunch") === "1"; } catch { return false; }
+  });
+  const setPauseMode = (isLunch: boolean) => {
+    setPauseIsLunch(isLunch);
+    try { localStorage.setItem("smocks.pauseIsLunch", isLunch ? "1" : "0"); } catch {}
+  };
   // Forces a re-render every second so the shift timer reads HH:MM:SS live —
   // the value itself is never read, only its change triggers the re-render.
   const [, setShiftTick] = useState(0);
@@ -3418,13 +3381,15 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                   toast("Saved locally, but couldn't sync to the server: " + (e?.message || "unknown error"), "red");
                 }
               };
-              const toggleLunchPause = async () => {
+              const toggleLunchPause = async (isLunch?: boolean) => {
                 if (!empId || !dayClockInAt) return;
                 const turningOn = !onLunch;
                 if (turningOn) {
                   setOptimisticDayLunchStartAt(Date.now());
+                  if (isLunch !== undefined) setPauseMode(isLunch);
                 } else {
                   setOptimisticDayLunchStartAt(null);
+                  setPauseMode(false);
                 }
                 const patch: any = turningOn
                   ? { dayLunchStartAt: Date.now() }
@@ -3433,11 +3398,20 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                   const result = await (supabase as any).from("employees").update(patch).eq("id", empId);
                   if (result?.error) { toast("Failed to save — " + result.error.message, "red"); return; }
                   refetchEmployees?.();
-                  toast(turningOn ? "Lunch started — timer paused 🍽️" : "Back from lunch — timer resumed");
+                  if (turningOn) {
+                    toast(isLunch ? "Lunch started — timer paused 🍽️" : "Timer paused ⏸");
+                  } else {
+                    toast("Timer resumed ▶");
+                  }
                 } catch (e: any) {
                   toast("Saved locally, but couldn't sync to the server: " + (e?.message || ""), "red");
                 }
               };
+              const maxLunchMins = Number((settings as any)?.maxLunchMinutes ?? 30);
+              const lunchElapsedSecs = onLunch ? Math.floor(currentPauseMs / 1000) : 0;
+              const lunchRemainSecs = Math.max(0, maxLunchMins * 60 - lunchElapsedSecs);
+              const lunchOverSecs = Math.max(0, lunchElapsedSecs - maxLunchMins * 60);
+              const lunchCountdownHHMMSS = [Math.floor(lunchRemainSecs / 3600), Math.floor((lunchRemainSecs % 3600) / 60), lunchRemainSecs % 60].map(n => String(n).padStart(2, "0")).join(":");
               const locationSharing = !!(myEmployee as any)?.locationSharing;
               const toggleLocationSharing = async () => {
                 if (!empId) return;
@@ -3490,9 +3464,25 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
               return (
                 <>
                   {dayClockInAt && (
-                    <div className={"text-center py-2 rounded-2xl font-mono text-2xl font-bold tracking-wider " + (onLunch ? "text-yellow-400" : "text-green-300")}>
-                      {shiftHHMMSS}
-                      {onLunch && <div className="text-[10px] font-sans font-normal text-yellow-400/70 -mt-1">On lunch — timer paused</div>}
+                    <div className="text-center py-2 rounded-2xl">
+                      <div className={"font-mono text-2xl font-bold tracking-wider " + (onLunch ? "text-yellow-400" : "text-green-300")}>
+                        {shiftHHMMSS}
+                      </div>
+                      {onLunch && (
+                        pauseIsLunch ? (
+                          lunchOverSecs > 0 ? (
+                            <div className="text-[10px] font-sans font-normal text-red-400/80 mt-0.5">
+                              🍽️ Lunch over by {Math.ceil(lunchOverSecs / 60)}m — tap Resume when back
+                            </div>
+                          ) : (
+                            <div className="text-xs font-sans font-semibold text-yellow-400 mt-0.5">
+                              🍽️ {lunchCountdownHHMMSS} remaining
+                            </div>
+                          )
+                        ) : (
+                          <div className="text-[10px] font-sans font-normal text-yellow-400/70 mt-0.5">⏸ Timer paused</div>
+                        )
+                      )}
                     </div>
                   )}
                   <div className="flex gap-2">
@@ -3500,10 +3490,19 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                       <Clock size={16} />
                       {dayClockInAt ? "End My Day" : "Start My Day"}
                     </button>
-                    {dayClockInAt && (
-                      <button onClick={toggleLunchPause} className={"flex-shrink-0 flex items-center justify-center gap-1.5 px-4 rounded-2xl font-semibold text-sm transition active:scale-95 " + (onLunch ? "bg-yellow-900/40 border-2 border-yellow-500/60 text-yellow-300" : "bg-white/5 border-2 border-white/10 text-white/60 hover:text-white")}>
-                        {onLunch ? <Play size={14} /> : <Pause size={14} />}
-                        {onLunch ? "Resume" : "Pause"}
+                    {dayClockInAt && onLunch && (
+                      <button onClick={() => toggleLunchPause()} className="flex-shrink-0 flex items-center justify-center gap-1.5 px-4 rounded-2xl font-semibold text-sm transition active:scale-95 bg-yellow-900/40 border-2 border-yellow-500/60 text-yellow-300">
+                        <Play size={14} />Resume
+                      </button>
+                    )}
+                    {dayClockInAt && !onLunch && (
+                      <button onClick={() => toggleLunchPause(false)} className="flex-shrink-0 flex items-center justify-center gap-1.5 px-3 rounded-2xl font-semibold text-xs transition active:scale-95 bg-white/5 border-2 border-white/10 text-white/60 hover:text-white">
+                        <Pause size={13} />Pause
+                      </button>
+                    )}
+                    {dayClockInAt && !onLunch && (
+                      <button onClick={() => toggleLunchPause(true)} className="flex-shrink-0 flex items-center justify-center gap-1.5 px-3 rounded-2xl font-semibold text-xs transition active:scale-95 bg-yellow-950/40 border-2 border-yellow-700/40 text-yellow-400 hover:bg-yellow-900/30">
+                        🍽️ Lunch
                       </button>
                     )}
                   </div>
