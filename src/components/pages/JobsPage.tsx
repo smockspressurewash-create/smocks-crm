@@ -838,18 +838,29 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
                     }
                     const eta = new Date(Date.now() + 17 * 60000).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
                     // Get live GPS location then include in message
-                    const sendOTW = (lat: number | null, lng: number | null) => {
+                    const sendOTW = async (lat: number | null, lng: number | null) => {
                       const locationLink = lat != null ? "https://maps.google.com/?q=" + lat + "," + lng : null;
                       const omwMsg = `Hi ${c.firstName}! Your technician is on the way! ETA: ${eta}. 🚗` + (locationLink ? " Track me: " + locationLink : "") + " — Will @ Smock's";
                       if (settings?.twilioSid && c.phone) {
-                        twilioSend(settings, c.phone, omwMsg).then(() => toast("OTW text sent to " + c.firstName + " ✓")).catch((e: any) => toast(e.message, "red"));
+                        try { await twilioSend(settings, c.phone, omwMsg); toast("OTW text sent to " + c.firstName + " ✓"); }
+                        catch (e: any) { toast(e?.message || "Failed to send OTW text", "red"); }
                       } else if (c.email) {
                         const html = emailShell(settings.companyName || "Smock's Pressure Washing", "On My Way", `<p>${omwMsg}</p>`);
-                        sendEmail(settings, { to: c.email, subject: "Your technician is on the way", body: html }).then(() => toast("OTW email sent to " + c.firstName + " ✓")).catch((e: any) => toast(e.message, "red"));
+                        try {
+                          await sendEmail(settings, { to: c.email, subject: "Your technician is on the way", body: html });
+                          toast("OTW email sent to " + c.firstName + " ✓");
+                        } catch (e: any) {
+                          const msg = e?.message || "";
+                          if (/401|expired|reconnect/i.test(msg)) {
+                            toast("Cannot send email — Google token expired. Reconnect Google in Settings → Integrations.", "red");
+                          } else {
+                            toast(msg || "Failed to send OTW email", "red");
+                          }
+                        }
                       } else if (c.phone) {
-                        // No Twilio configured and no email on file — last resort,
-                        // only useful on a device with an SMS app (e.g. employee's phone).
                         window.location.href = "sms:" + c.phone.replace(/\D/g, "") + "?body=" + encodeURIComponent(omwMsg);
+                      } else {
+                        toast("No phone or email on file for " + c.firstName, "yellow");
                       }
                     };
                     if (navigator.geolocation) {

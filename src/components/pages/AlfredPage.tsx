@@ -1415,15 +1415,21 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
         const lockedModels = Object.entries(modelStatus).filter(([_, s]) => (s as any)?.lockedUntil > Date.now());
         const allCorsBlocked = failoverChain.length > 0 && failoverChain.every(f => /failed to fetch|cors|network/i.test(f.error));
 
+        const geminiLocked = lockedModels.some(([mid]) => mid === "gemini");
         let errorMsg;
         if (allCorsBlocked) {
           errorMsg = "All third-party AI providers blocked your browser request (CORS).\n\n💡 Fix: Use Claude (the only built-in model) — it works without a backend.\n\nThe other providers (OpenAI, Gemini, Groq, Mistral, MiniMax) need a backend proxy to work in a browser. Their API keys are stored, but the calls fail at the network layer.";
         } else if (lockedModels.length === priority.length) {
           const soonest = lockedModels.map(([_, s]) => (s as any).lockedUntil).sort()[0];
           const wait = Math.ceil((soonest - Date.now()) / 60000);
-          errorMsg = "All models are rate-limited.\n\n⏱ Soonest reset: ~" + wait + " min\n\nYou can wait, or unlock a model manually in Settings → AI Models → Reset now.";
+          if (geminiLocked && lockedModels.length === 1) {
+            errorMsg = "Gemini's daily quota is exhausted.\n\n⏱ Resets in ~" + wait + " min (Google resets at midnight Pacific)\n\n💡 Options:\n• Wait for the quota to reset\n• Add a Claude API key (console.anthropic.com) — no quota issues\n• Add an OpenRouter key for access to many free models\n• Use slash commands (/status, /route, /rollcall) — they work without any AI key";
+          } else {
+            errorMsg = "All models are rate-limited.\n\n⏱ Soonest reset: ~" + wait + " min\n\n💡 Options:\n• Wait for quota to reset\n• Add a Claude API key in Settings → AI Models\n• Use slash commands (/status, /route, /rollcall) — they work without any AI key\n• Unlock a model manually in Settings → AI Models → Reset now";
+          }
         } else {
           errorMsg = "Tried " + chain.length + " model(s):\n" + failoverChain.slice(-5).map(f => "• " + (MODELS_MAP[f.model]?.name || f.model) + ": " + f.error).join("\n");
+          if (geminiLocked) errorMsg += "\n\n💡 Gemini's daily quota is exhausted. Add a Claude or OpenRouter key in Settings → AI Models, or wait for Gemini to reset (midnight Pacific).";
         }
         throw new Error(errorMsg);
       }

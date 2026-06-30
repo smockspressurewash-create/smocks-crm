@@ -1811,6 +1811,14 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     }
   }, [empSession, myJobs.map(j => j.customerId).join(","), customers.length, Object.keys(localCustomerCache).join(",")]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // FIX 1: When the jobs array changes (3s Supabase poll), snap calSelectedDate
+  // back to today so newly-assigned jobs that are scheduled today are visible
+  // immediately without the employee having to navigate the calendar manually.
+  // Cancelled jobs are already excluded from calVisibleJobs (see render below).
+  useEffect(() => {
+    setCalSelectedDate(today());
+  }, [jobs.map(j => j.id + j.status).join(",")]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Real-time location sharing — runs the whole time the toggle is on (not
   // gated on being clocked in — the owner may want to see crew location
   // before/after a shift too), posting a GPS fix to Supabase every 15s so the
@@ -2990,6 +2998,45 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     const postItems = job.postChecklist?.length ? job.postChecklist : POST_DEFAULTS;
     const allItems = [...preItems, ...(job.duringChecklist?.length ? job.duringChecklist : DURING_DEFAULTS), ...postItems];
     const doneCount = allItems.filter(i => i.done).length;
+    const [latePickerOpen, setLatePickerOpen] = React.useState(false);
+    const [sendingLate, setSendingLate] = React.useState(false);
+
+    const sendOTW = async (e: React.MouseEvent) => {
+      e.stopPropagation();
+      await messageNextJobCustomer(job, 0);
+    };
+    const sendRunningLateCard = async (e: React.MouseEvent, minutes: number) => {
+      e.stopPropagation();
+      if (!customer) { toast("No customer info for this job", "yellow"); return; }
+      if (!customer.phone && !customer.email) { toast("No contact info for this customer", "yellow"); return; }
+      setSendingLate(true);
+      const nowMs = Date.now() + minutes * 60000;
+      const newEta = new Date(nowMs).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+      const msg = `Your CrewBoss technician is running approximately ${minutes} minutes behind. New ETA: ${newEta}. We apologize for the delay.`;
+      try {
+        if (settings?.twilioSid && customer.phone) {
+          await twilioSend(settings as any, customer.phone, `Hi ${customer.firstName}, ${msg}`);
+          toast(`Running late notice sent to ${customer.firstName} ✓`);
+        } else if (customer.email) {
+          const html = emailShell(settings?.companyName || "Smock's Pressure Washing", "Running Late", `<p>Hi ${customer.firstName},</p><p>${msg}</p>`);
+          await sendEmail(settings as any, { to: customer.email, subject: "Your technician is running late", body: html });
+          toast(`Running late email sent to ${customer.firstName} ✓`);
+        }
+        const ownerEmail = (settings as any)?.myEmail || (settings as any)?.companyEmail;
+        if (ownerEmail) {
+          const ownerMsg = emailShell(settings?.companyName || "Smock's Pressure Washing", "Crew Running Late", `<p>${myEmployee.firstName} ${myEmployee.lastName} is running ~${minutes} min late to ${job.address}.</p>`);
+          sendEmail(settings as any, { to: ownerEmail, subject: `Running late — ${job.address}`, body: ownerMsg }).catch(() => {});
+        }
+        updateJob(job.id, { commLog: [...(job.commLog || []), { id: uid(), type: "note" as const, date: today(), note: `⏱ Running late — notified customer +${minutes}min` }] });
+      } catch (e: any) {
+        const errMsg = e?.message || "";
+        if (/401|expired|reconnect/i.test(errMsg)) toast("Google token expired. Reconnect Google in Settings.", "red");
+        else toast(errMsg || "Failed to send running-late notice", "red");
+      } finally {
+        setSendingLate(false);
+        setLatePickerOpen(false);
+      }
+    };
 
     const clockInCard = (e: React.MouseEvent) => {
       e.stopPropagation();
@@ -3145,6 +3192,43 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
               : <div className="text-xs text-white/30">{job.loggedHours ? `${job.loggedHours}h logged` : ""}</div>
           )}
         </div>
+        {/* OTW + Running Late — only on active in_progress jobs with a customer */}
+        {job.status === "in_progress" && (
+          <div className="px-4 pb-2 space-y-2" onClick={e => e.stopPropagation()}>
+            {latePickerOpen ? (
+              <div className="p-2 rounded-xl bg-orange-950/20 border border-orange-700/30 space-y-2">
+                <div className="text-[10px] text-orange-300/70">How many minutes late?</div>
+                <div className="flex gap-1">
+                  {[5, 10, 15, 20, 30].map(m => (
+                    <button key={m} disabled={sendingLate} onClick={e => sendRunningLateCard(e, m)}
+                      className="flex-1 py-1.5 rounded-lg bg-orange-900/40 border border-orange-700/40 text-orange-300 text-xs font-bold disabled:opacity-50 hover:bg-orange-900/60 transition">
+                      {m}
+                    </button>
+                  ))}
+                </div>
+                <button onClick={e => { e.stopPropagation(); setLatePickerOpen(false); }} className="text-[10px] text-white/30 hover:text-white/60">Cancel</button>
+              </div>
+            ) : (
+              <div className="flex gap-2">
+                {(customer?.phone || customer?.email) && (
+                  <button onClick={sendOTW}
+                    className="flex-1 flex items-center justify-center gap-1 py-1.5 rounded-xl bg-blue-950/30 border border-blue-700/40 text-blue-300 text-[10px] font-semibold hover:bg-blue-900/40 transition">
+                    <Navigation size={10} />OTW
+                  </button>
+                )}
+                {(customer?.phone || customer?.email) && (
+                  <button onClick={e => { e.stopPropagation(); setLatePickerOpen(true); }}
+                    className="flex-1 flex items-center justify-center gap-1 py-1.5 rounded-xl bg-orange-950/30 border border-orange-700/40 text-orange-300 text-[10px] font-semibold hover:bg-orange-900/40 transition">
+                    <Clock size={10} />Running Late
+                  </button>
+                )}
+                {!customer?.phone && !customer?.email && job.customerId && (
+                  <div className="text-[10px] text-white/30 italic py-1.5">No contact info for this customer</div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
         <div className="px-4 pb-3">
           <button onClick={() => setSelectedJobId(job.id)}
             className="w-full flex items-center justify-center gap-1.5 py-2 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-white/60 text-xs font-semibold transition">
