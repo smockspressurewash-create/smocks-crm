@@ -240,6 +240,7 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
   const [delayNoteOpen, setDelayNoteOpen] = useState(false);
   const [runningLateOpen, setRunningLateOpen] = useState(false);
   const [sendingRunningLate, setSendingRunningLate] = useState(false);
+  const [lateReasonNote, setLateReasonNote] = useState("");
   const [, forceTick] = useState(0);
   const [showSignOff, setShowSignOff] = useState(false);
   const [signerName, setSignerName] = useState("");
@@ -279,7 +280,10 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
   const hasRequiredGear = (job.equipment || []).length > 0 || (job.requiredChemicals || []).length > 0;
   const sendRunningLate = async (minutes: number) => {
     setSendingRunningLate(true);
-    const msg = `Your technician is running approximately ${minutes} minutes behind. We apologize for the delay.`;
+    const nowMs = Date.now() + minutes * 60000;
+    const newEta = new Date(nowMs).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    const noteStr = lateReasonNote.trim() ? ` Reason: ${lateReasonNote.trim()}.` : "";
+    const msg = `Your CrewBoss technician is running approximately ${minutes} minutes behind.${noteStr} New ETA: ${newEta}. We apologize for the delay.`;
     try {
       if (customer?.phone && settings?.twilioSid) {
         await twilioSend(settings as any, customer.phone, `Hi ${customer.firstName}, ${msg}`);
@@ -289,12 +293,13 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
       }
       const ownerEmail = (settings as any)?.myEmail || (settings as any)?.companyEmail;
       if (ownerEmail) {
-        const ownerHtml = emailShell(companyName, "Crew Running Late", `<p>${customer ? customer.firstName + " " + customer.lastName : job.address} — running ~${minutes} min late.</p><p>Address: ${job.address}</p>`);
+        const ownerHtml = emailShell(companyName, "Crew Running Late", `<p>${customer ? customer.firstName + " " + customer.lastName : job.address} — running ~${minutes} min late${lateReasonNote.trim() ? ` (${lateReasonNote.trim()})` : ""}.</p><p>Address: ${job.address}</p>`);
         sendEmail(settings as any, { to: ownerEmail, subject: `Running late — ${job.address}`, body: ownerHtml }).catch(() => {});
       }
-      onUpdateJob({ commLog: [...(job.commLog || []), { id: uid(), type: "note" as const, date: today(), note: `⏱ Running late — notified customer +${minutes}min` }] });
+      onUpdateJob({ commLog: [...(job.commLog || []), { id: uid(), type: "note" as const, date: today(), note: `⏱ Running late +${minutes}min — notified customer${lateReasonNote.trim() ? ` (${lateReasonNote.trim()})` : ""}` }] });
       toast(`Customer notified — running ${minutes} min late`, "green");
       setRunningLateOpen(false);
+      setLateReasonNote("");
     } catch (e: any) {
       toast(e?.message || "Failed to send running-late notice", "red");
     } finally {
@@ -839,16 +844,39 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
         {job.status === "in_progress" && (customer?.phone || customer?.email) && (
           <Glass className="p-3 !bg-orange-950/15 !border-orange-700/30">
             {runningLateOpen ? (
-              <div className="space-y-2">
-                <div className="text-xs text-white/60">How many minutes late?</div>
-                <div className="flex gap-1.5">
-                  {[5, 10, 15, 20, 30].map(m => (
-                    <button key={m} disabled={sendingRunningLate} onClick={() => sendRunningLate(m)} className="flex-1 py-2 rounded-lg bg-orange-900/30 border border-orange-700/40 text-orange-300 text-sm font-semibold hover:bg-orange-900/50 disabled:opacity-50 transition">
-                      {m}
-                    </button>
-                  ))}
+              <div className="space-y-3">
+                <div className="text-xs font-semibold text-orange-300">Running Late — notify customer</div>
+                {/* Reason templates */}
+                <div>
+                  <div className="text-[10px] text-white/50 mb-1.5">Reason (optional)</div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {["Stuck in traffic", "Previous job ran over", "Equipment issue", "Weather delay"].map(t => (
+                      <button key={t} onClick={() => setLateReasonNote(lateReasonNote === t ? "" : t)}
+                        className={"text-[10px] px-2.5 py-1 rounded-lg border transition " + (lateReasonNote === t ? "bg-orange-800/50 border-orange-500/60 text-orange-200" : "bg-white/5 border-white/15 text-white/60 hover:border-orange-700/40 hover:text-orange-300")}>
+                        {t}
+                      </button>
+                    ))}
+                  </div>
+                  <input
+                    type="text"
+                    value={lateReasonNote}
+                    onChange={e => setLateReasonNote(e.target.value)}
+                    placeholder="Custom note…"
+                    className="mt-2 w-full bg-white/5 border border-white/10 rounded-lg px-3 py-1.5 text-xs text-white placeholder-white/30 focus:outline-none focus:border-orange-700/60"
+                  />
                 </div>
-                <button onClick={() => setRunningLateOpen(false)} className="text-[11px] text-white/30 hover:text-white/60">Cancel</button>
+                {/* Time picker */}
+                <div>
+                  <div className="text-[10px] text-white/50 mb-1.5">How many minutes late?</div>
+                  <div className="flex gap-1.5">
+                    {[5, 10, 15, 20, 30].map(m => (
+                      <button key={m} disabled={sendingRunningLate} onClick={() => sendRunningLate(m)} className="flex-1 py-2 rounded-lg bg-orange-900/30 border border-orange-700/40 text-orange-300 text-sm font-semibold hover:bg-orange-900/50 disabled:opacity-50 transition">
+                        {m}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <button onClick={() => { setRunningLateOpen(false); setLateReasonNote(""); }} className="text-[11px] text-white/30 hover:text-white/60">Cancel</button>
               </div>
             ) : (
               <button onClick={() => setRunningLateOpen(true)} className="w-full flex items-center justify-center gap-1.5 py-1.5 text-xs text-orange-300 hover:text-orange-200 transition">
@@ -1306,6 +1334,9 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   const [calSelectedDate, setCalSelectedDate] = useState(today());
   const [calWeekOffset, setCalWeekOffset] = useState(0);
   const [calMonthOffset, setCalMonthOffset] = useState(0);
+  const [calDragJobId, setCalDragJobId] = useState<string | null>(null);
+  const [calCtxMenu, setCalCtxMenu] = useState<{ jobId: string; x: number; y: number } | null>(null);
+  const calMonthEdgeTimerRef = useRef<any>(null);
   const [driveTimes, setDriveTimes] = useState<Record<string, string>>({});
   const [completionNotif, setCompletionNotif] = useState<{ message: string; nextJobId?: string } | null>(null);
   const [nextJobEta, setNextJobEta] = useState<{ jobId: string; etaTime: string; lateMinutes: number } | null>(null);
@@ -3000,6 +3031,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     const doneCount = allItems.filter(i => i.done).length;
     const [latePickerOpen, setLatePickerOpen] = React.useState(false);
     const [sendingLate, setSendingLate] = React.useState(false);
+    const [lateNote, setLateNote] = React.useState("");
 
     const sendOTW = async (e: React.MouseEvent) => {
       e.stopPropagation();
@@ -3012,7 +3044,8 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
       setSendingLate(true);
       const nowMs = Date.now() + minutes * 60000;
       const newEta = new Date(nowMs).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-      const msg = `Your CrewBoss technician is running approximately ${minutes} minutes behind. New ETA: ${newEta}. We apologize for the delay.`;
+      const noteStr = lateNote.trim() ? ` Reason: ${lateNote.trim()}.` : "";
+      const msg = `Your CrewBoss technician is running approximately ${minutes} minutes behind.${noteStr} New ETA: ${newEta}. We apologize for the delay.`;
       try {
         if (settings?.twilioSid && customer.phone) {
           await twilioSend(settings as any, customer.phone, `Hi ${customer.firstName}, ${msg}`);
@@ -3024,10 +3057,10 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
         }
         const ownerEmail = (settings as any)?.myEmail || (settings as any)?.companyEmail;
         if (ownerEmail) {
-          const ownerMsg = emailShell(settings?.companyName || "Smock's Pressure Washing", "Crew Running Late", `<p>${myEmployee.firstName} ${myEmployee.lastName} is running ~${minutes} min late to ${job.address}.</p>`);
+          const ownerMsg = emailShell(settings?.companyName || "Smock's Pressure Washing", "Crew Running Late", `<p>${myEmployee.firstName} ${myEmployee.lastName} is running ~${minutes} min late to ${job.address}${lateNote.trim() ? ` (${lateNote.trim()})` : ""}.</p>`);
           sendEmail(settings as any, { to: ownerEmail, subject: `Running late — ${job.address}`, body: ownerMsg }).catch(() => {});
         }
-        updateJob(job.id, { commLog: [...(job.commLog || []), { id: uid(), type: "note" as const, date: today(), note: `⏱ Running late — notified customer +${minutes}min` }] });
+        updateJob(job.id, { commLog: [...(job.commLog || []), { id: uid(), type: "note" as const, date: today(), note: `⏱ Running late +${minutes}min${lateNote.trim() ? ` (${lateNote.trim()})` : ""} — customer notified` }] });
       } catch (e: any) {
         const errMsg = e?.message || "";
         if (/401|expired|reconnect/i.test(errMsg)) toast("Google token expired. Reconnect Google in Settings.", "red");
@@ -3035,33 +3068,10 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
       } finally {
         setSendingLate(false);
         setLatePickerOpen(false);
+        setLateNote("");
       }
     };
 
-    const clockInCard = (e: React.MouseEvent) => {
-      e.stopPropagation();
-      updateJob(job.id, { clockInAt: Date.now(), status: "in_progress" });
-      toast("Clocked in ✓");
-    };
-    const clockOutCard = (e: React.MouseEvent) => {
-      e.stopPropagation();
-      if (!job.clockInAt) return;
-      const lunchMs = settings.paidLunchBreaks ? 0 : (job.lunchMinutes || 0) * 60000;
-      const hrs = Math.round((Date.now() - job.clockInAt - lunchMs) / 36000) / 100;
-      updateJob(job.id, { clockInAt: null, lunchStartAt: null, loggedHours: Math.round(((Number(job.loggedHours) || 0) + hrs) * 100) / 100 });
-      toast(`+${hrs}h logged`);
-    };
-    const takeLunchCard = (e: React.MouseEvent) => {
-      e.stopPropagation();
-      if (job.lunchStartAt) {
-        const mins = Math.round((Date.now() - job.lunchStartAt) / 60000);
-        updateJob(job.id, { lunchStartAt: null, lunchMinutes: (Number(job.lunchMinutes) || 0) + mins });
-        toast(`Back from break — +${mins}m logged`);
-      } else {
-        updateJob(job.id, { lunchStartAt: Date.now() });
-        toast("Break started 🍽️");
-      }
-    };
     const arriveCard = (e: React.MouseEvent) => {
       e.stopPropagation();
       updateJob(job.id, { arrivedAt: Date.now() });
@@ -3069,12 +3079,6 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
       const cust = customers.find(c => c.id === job.customerId);
       notifyOwnerArrival?.(job, cust);
     };
-
-    const lunchMsCard = settings.paidLunchBreaks ? 0 : (job.lunchMinutes || 0) * 60000;
-    const elapsedSec = job.clockInAt ? Math.max(0, Math.floor(((job.lunchStartAt || Date.now()) - job.clockInAt - lunchMsCard) / 1000)) : 0;
-    const timerDisplay = job.clockInAt
-      ? [Math.floor(elapsedSec / 3600), Math.floor((elapsedSec % 3600) / 60), elapsedSec % 60].map(n => String(n).padStart(2, "0")).join(":")
-      : null;
 
     const isNextUp = job.id === completionNotif?.nextJobId;
     const isOverScheduleCard = !!(job.clockInAt && job.duration && (Date.now() - job.clockInAt) / 3600000 > Number(job.duration));
@@ -3156,48 +3160,36 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
             </button>
           )}
           <div className="flex-1" />
-          {perms.can_clock_in ? (
-            job.clockInAt ? (
-              <>
-                {job.lunchStartAt ? (
-                  <button onClick={takeLunchCard}
-                    className="flex items-center gap-1 px-2.5 py-1.5 rounded-xl bg-yellow-700 hover:bg-yellow-600 text-black text-[10px] font-bold transition">
-                    🍽️ End Break
-                  </button>
-                ) : (
-                  <button onClick={takeLunchCard}
-                    className="flex items-center gap-1 px-2.5 py-1.5 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-white/50 text-[10px] font-semibold transition">
-                    🍽️ Lunch
-                  </button>
-                )}
-                <div className="font-mono text-sm font-bold text-green-400 animate-pulse">{timerDisplay}</div>
-                <button onClick={clockOutCard}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-red-950/50 hover:bg-red-900/60 border border-red-700/40 text-red-300 text-xs font-semibold transition">
-                  <Square size={11} />Clock Out
-                </button>
-              </>
-            ) : (
-              job.status === "completed"
-                ? <div className="text-xs text-white/30">Job complete</div>
-                : (
-                  <button onClick={clockInCard}
-                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-green-950/50 hover:bg-green-900/60 border border-green-700/40 text-green-300 text-xs font-semibold transition">
-                    <Play size={11} />Clock In
-                  </button>
-                )
-            )
-          ) : (
-            job.status === "completed"
-              ? <div className="text-xs text-white/30">Job complete</div>
-              : <div className="text-xs text-white/30">{job.loggedHours ? `${job.loggedHours}h logged` : ""}</div>
-          )}
+          {job.status === "completed"
+            ? <div className="text-xs text-white/30">Done ✓</div>
+            : job.loggedHours ? <div className="text-xs text-white/30">{job.loggedHours}h logged</div>
+            : null
+          }
         </div>
         {/* OTW + Running Late — only on active in_progress jobs with a customer */}
         {job.status === "in_progress" && (
           <div className="px-4 pb-2 space-y-2" onClick={e => e.stopPropagation()}>
             {latePickerOpen ? (
               <div className="p-2 rounded-xl bg-orange-950/20 border border-orange-700/30 space-y-2">
-                <div className="text-[10px] text-orange-300/70">How many minutes late?</div>
+                <div className="text-[10px] text-orange-300 font-semibold">Running Late</div>
+                {/* Reason templates */}
+                <div className="flex flex-wrap gap-1">
+                  {["Stuck in traffic", "Previous job ran over", "Equipment issue", "Weather delay"].map(t => (
+                    <button key={t} onClick={e => { e.stopPropagation(); setLateNote(lateNote === t ? "" : t); }}
+                      className={"text-[9px] px-2 py-1 rounded-lg border transition " + (lateNote === t ? "bg-orange-800/50 border-orange-500/60 text-orange-200" : "bg-white/5 border-white/15 text-white/50 hover:border-orange-700/40 hover:text-orange-300")}>
+                      {t}
+                    </button>
+                  ))}
+                </div>
+                <input
+                  type="text"
+                  value={lateNote}
+                  onChange={e => { e.stopPropagation(); setLateNote(e.target.value); }}
+                  onClick={e => e.stopPropagation()}
+                  placeholder="Custom note (optional)…"
+                  className="w-full bg-white/5 border border-white/10 rounded-lg px-2.5 py-1 text-[10px] text-white placeholder-white/30 focus:outline-none focus:border-orange-700/60"
+                />
+                <div className="text-[10px] text-white/50">Minutes late:</div>
                 <div className="flex gap-1">
                   {[5, 10, 15, 20, 30].map(m => (
                     <button key={m} disabled={sendingLate} onClick={e => sendRunningLateCard(e, m)}
@@ -3206,7 +3198,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                     </button>
                   ))}
                 </div>
-                <button onClick={e => { e.stopPropagation(); setLatePickerOpen(false); }} className="text-[10px] text-white/30 hover:text-white/60">Cancel</button>
+                <button onClick={e => { e.stopPropagation(); setLatePickerOpen(false); setLateNote(""); }} className="text-[10px] text-white/30 hover:text-white/60">Cancel</button>
               </div>
             ) : (
               <div className="flex gap-2">
@@ -3511,7 +3503,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                     {dayClockInAt && (
                       <button onClick={toggleLunchPause} className={"flex-shrink-0 flex items-center justify-center gap-1.5 px-4 rounded-2xl font-semibold text-sm transition active:scale-95 " + (onLunch ? "bg-yellow-900/40 border-2 border-yellow-500/60 text-yellow-300" : "bg-white/5 border-2 border-white/10 text-white/60 hover:text-white")}>
                         {onLunch ? <Play size={14} /> : <Pause size={14} />}
-                        {onLunch ? "Resume" : "Lunch"}
+                        {onLunch ? "Resume" : "Pause"}
                       </button>
                     )}
                   </div>
@@ -4014,12 +4006,42 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
 
                 {calMode === "month" && (
                   <>
+                    {/* Month navigation — prev/next buttons are also drag targets:
+                        hovering while dragging a job for 500ms auto-advances the month */}
                     <div className="flex items-center justify-between mb-3">
-                      <button onClick={() => setCalMonthOffset(o => o - 1)} className="p-2 rounded-lg hover:bg-white/10 text-white/50 hover:text-white transition">
+                      <button
+                        onClick={() => setCalMonthOffset(o => o - 1)}
+                        onDragOver={e => {
+                          e.preventDefault();
+                          if (!calDragJobId) return;
+                          if (!calMonthEdgeTimerRef.current) {
+                            calMonthEdgeTimerRef.current = setTimeout(() => {
+                              setCalMonthOffset(o => o - 1);
+                              calMonthEdgeTimerRef.current = null;
+                            }, 500);
+                          }
+                        }}
+                        onDragLeave={() => { clearTimeout(calMonthEdgeTimerRef.current); calMonthEdgeTimerRef.current = null; }}
+                        onDrop={() => { clearTimeout(calMonthEdgeTimerRef.current); calMonthEdgeTimerRef.current = null; }}
+                        className={"p-2 rounded-lg text-white/50 hover:text-white transition " + (calDragJobId ? "hover:bg-blue-900/40 border border-dashed border-blue-700/40" : "hover:bg-white/10")}>
                         <ChevronLeft size={16} />
                       </button>
                       <div className="text-sm font-semibold">{calMonthLabel}</div>
-                      <button onClick={() => setCalMonthOffset(o => o + 1)} className="p-2 rounded-lg hover:bg-white/10 text-white/50 hover:text-white transition">
+                      <button
+                        onClick={() => setCalMonthOffset(o => o + 1)}
+                        onDragOver={e => {
+                          e.preventDefault();
+                          if (!calDragJobId) return;
+                          if (!calMonthEdgeTimerRef.current) {
+                            calMonthEdgeTimerRef.current = setTimeout(() => {
+                              setCalMonthOffset(o => o + 1);
+                              calMonthEdgeTimerRef.current = null;
+                            }, 500);
+                          }
+                        }}
+                        onDragLeave={() => { clearTimeout(calMonthEdgeTimerRef.current); calMonthEdgeTimerRef.current = null; }}
+                        onDrop={() => { clearTimeout(calMonthEdgeTimerRef.current); calMonthEdgeTimerRef.current = null; }}
+                        className={"p-2 rounded-lg text-white/50 hover:text-white transition " + (calDragJobId ? "hover:bg-blue-900/40 border border-dashed border-blue-700/40" : "hover:bg-white/10")}>
                         <ChevronRight size={16} />
                       </button>
                     </div>
@@ -4029,7 +4051,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                         <div key={i} className="text-center text-[10px] text-white/30 font-semibold py-1">{d}</div>
                       ))}
                     </div>
-                    {/* Month grid */}
+                    {/* Month grid — day cells are drop targets when dragging a job */}
                     <div className="grid grid-cols-7 gap-0.5 mb-4">
                       {Array.from({ length: calFirstDay }, (_, i) => <div key={"e" + i} />)}
                       {Array.from({ length: calDaysInMonth }, (_, i) => {
@@ -4042,7 +4064,18 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                         return (
                           <button key={day}
                             onClick={() => showAvailability ? toggleAvailability(dateStr) : setCalSelectedDate(dateStr)}
+                            onDragOver={e => { if (calDragJobId) e.preventDefault(); }}
+                            onDrop={e => {
+                              e.preventDefault();
+                              if (!calDragJobId) return;
+                              updateJob(calDragJobId, { scheduledDate: dateStr });
+                              setCalDragJobId(null);
+                              setCalSelectedDate(dateStr);
+                              toast("Job moved to " + new Date(dateStr + "T12:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric" }));
+                            }}
                             className={`flex flex-col items-center py-1.5 rounded-lg transition min-h-[44px] ${
+                              calDragJobId ? "cursor-copy" : ""
+                            } ${
                               isUnavail ? "bg-gray-800/60 border border-gray-600/30" :
                               isSelected ? "bg-red-600" :
                               isToday ? "bg-red-950/50 border border-red-700/30" : "hover:bg-white/8"
@@ -4061,10 +4094,11 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                         );
                       })}
                     </div>
-                    {/* Jobs for selected day */}
+                    {/* Jobs for selected day — draggable + right-click context menu */}
                     <div className="text-xs text-white/50 uppercase tracking-wider font-semibold mb-2 flex items-center gap-2">
                       <span>{new Date(calSelectedDate + "T12:00:00").toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric" })}</span>
                       {calDayJobs.length > 0 && <span className="px-2 py-0.5 rounded-full bg-white/10 text-white/60">{calDayJobs.length}</span>}
+                      {calDragJobId && <span className="text-[10px] text-blue-300 animate-pulse">Drop on a date to reschedule</span>}
                     </div>
                     {calDayJobs.length === 0 ? (
                       <div className="text-center py-6 text-white/30 text-sm">No jobs this day</div>
@@ -4073,17 +4107,25 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                         {calDayJobs.map(j => {
                           const c = customers.find(x => x.id === j.customerId);
                           return (
-                            <div key={j.id} className="rounded-xl bg-white/5 border border-white/10 overflow-hidden">
+                            <div key={j.id}
+                              draggable
+                              onDragStart={() => setCalDragJobId(j.id)}
+                              onDragEnd={() => setCalDragJobId(null)}
+                              onContextMenu={e => {
+                                e.preventDefault();
+                                setCalCtxMenu({ jobId: j.id, x: e.clientX, y: e.clientY });
+                              }}
+                              className={"rounded-xl border overflow-hidden transition cursor-grab active:cursor-grabbing " + (calDragJobId === j.id ? "opacity-50 border-blue-600/60 bg-blue-950/20" : "bg-white/5 border-white/10")}>
                               <button onClick={() => setSelectedJobId(j.id)} className="w-full text-left p-3">
                                 <div className="flex items-start justify-between gap-2">
                                   <div className="flex-1 min-w-0">
                                     <div className="font-semibold text-sm truncate">{j.address}</div>
                                     {c && (
-                          <div className="text-xs text-white/50 flex items-center gap-2 flex-wrap">
-                            <span>{c.firstName} {c.lastName}</span>
-                            {c.phone && <a href={`tel:${c.phone}`} onClick={(e: React.MouseEvent) => e.stopPropagation()} className="text-blue-400/80 hover:text-blue-300 flex items-center gap-0.5"><Phone size={9} />{c.phone}</a>}
-                          </div>
-                        )}
+                                      <div className="text-xs text-white/50 flex items-center gap-2 flex-wrap">
+                                        <span>{c.firstName} {c.lastName}</span>
+                                        {c.phone && <a href={`tel:${c.phone}`} onClick={(e: React.MouseEvent) => e.stopPropagation()} className="text-blue-400/80 hover:text-blue-300 flex items-center gap-0.5"><Phone size={9} />{c.phone}</a>}
+                                      </div>
+                                    )}
                                   </div>
                                   <div className={`text-[10px] px-2 py-0.5 rounded-full font-bold uppercase flex-shrink-0 ${
                                     j.status === "completed" ? "bg-green-900/40 text-green-300" :
@@ -4103,12 +4145,55 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                                   className="text-[10px] text-green-400/70 hover:text-green-300 flex items-center gap-1 transition">
                                   <Calendar size={9} />Add to Google Cal
                                 </a>
+                                <span className="text-[10px] text-white/20 ml-auto">drag to reschedule</span>
                               </div>
                             </div>
                           );
                         })}
                       </div>
                     )}
+                    {/* Right-click context menu — positioned at click coords, not at bottom of page */}
+                    {calCtxMenu && (() => {
+                      const ctxJob = myJobs.find(j => j.id === calCtxMenu.jobId);
+                      if (!ctxJob) return null;
+                      return (
+                        <>
+                          <div className="fixed inset-0 z-40" onClick={() => setCalCtxMenu(null)} />
+                          <div
+                            className="fixed z-50 w-48 rounded-xl bg-black/95 border border-white/15 shadow-2xl overflow-hidden"
+                            style={{ left: Math.min(calCtxMenu.x, window.innerWidth - 200), top: Math.min(calCtxMenu.y, window.innerHeight - 200) }}>
+                            <div className="px-3 py-2 border-b border-white/10">
+                              <div className="text-[11px] font-semibold text-white/80 truncate">{ctxJob.address}</div>
+                              <div className="text-[10px] text-white/40">{ctxJob.scheduledDate}</div>
+                            </div>
+                            <button onClick={() => { setSelectedJobId(calCtxMenu.jobId); setCalCtxMenu(null); }}
+                              className="w-full text-left px-3 py-2 text-xs text-white/70 hover:bg-white/10 hover:text-white transition flex items-center gap-2">
+                              <ChevronRight size={12} />View Details
+                            </button>
+                            <a href={`https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(ctxJob.address)}`}
+                              target="_blank" rel="noreferrer"
+                              onClick={() => setCalCtxMenu(null)}
+                              className="block px-3 py-2 text-xs text-white/70 hover:bg-white/10 hover:text-white transition flex items-center gap-2">
+                              <Navigation size={12} />Navigate
+                            </a>
+                            <a href={toGCalUrl(ctxJob)} target="_blank" rel="noreferrer"
+                              onClick={() => setCalCtxMenu(null)}
+                              className="block px-3 py-2 text-xs text-white/70 hover:bg-white/10 hover:text-white transition flex items-center gap-2">
+                              <Calendar size={12} />Add to Google Cal
+                            </a>
+                            {!ctxJob.arrivedAt && ctxJob.status !== "completed" && (
+                              <button onClick={() => {
+                                updateJob(calCtxMenu.jobId, { arrivedAt: Date.now() });
+                                toast("Marked as arrived ✓");
+                                setCalCtxMenu(null);
+                              }} className="w-full text-left px-3 py-2 text-xs text-white/70 hover:bg-white/10 hover:text-white transition flex items-center gap-2">
+                                <MapPin size={12} />Mark Arrived
+                              </button>
+                            )}
+                          </div>
+                        </>
+                      );
+                    })()}
                   </>
                 )}
               </>

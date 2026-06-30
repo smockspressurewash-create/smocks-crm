@@ -1319,9 +1319,15 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
       // Build the ordered list of candidates: try active model first, then priority chain (skipping missing keys).
       // Locked (rate-limited) models are excluded from the initial list but will be detected mid-chain.
       const priority = settings.modelPriority || ["claude", "openai", "gemini", "groq", "mistral"];
-      const tryOrder = [modelUsed, ...priority.filter(m => m !== modelUsed)];
       const now = Date.now();
       const MODELS_MAP: any = MODELS;
+      // Also include any model with a valid key not in the priority list (e.g. OpenRouter, NVIDIA models)
+      const extraModels = Object.keys(MODELS_MAP).filter(mid => {
+        if (priority.includes(mid) || mid === modelUsed) return false;
+        const m = MODELS_MAP[mid];
+        return m && m.needsKey && !!(settings.modelKeys || {})[mid];
+      });
+      const tryOrder = [modelUsed, ...priority.filter(m => m !== modelUsed), ...extraModels];
       const viableModels = tryOrder.filter(mid => {
         const m = MODELS_MAP[mid];
         if (!m) return false;
@@ -1428,8 +1434,11 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
             errorMsg = "All models are rate-limited.\n\n⏱ Soonest reset: ~" + wait + " min\n\n💡 Options:\n• Wait for quota to reset\n• Add a Claude API key in Settings → AI Models\n• Use slash commands (/status, /route, /rollcall) — they work without any AI key\n• Unlock a model manually in Settings → AI Models → Reset now";
           }
         } else {
-          errorMsg = "Tried " + chain.length + " model(s):\n" + failoverChain.slice(-5).map(f => "• " + (MODELS_MAP[f.model]?.name || f.model) + ": " + f.error).join("\n");
+          errorMsg = "Tried " + failoverChain.length + " model(s):\n" + failoverChain.map(f => "• " + (MODELS_MAP[f.model]?.name || f.model) + ": " + f.error).join("\n");
           if (geminiLocked) errorMsg += "\n\n💡 Gemini's daily quota is exhausted. Add a Claude or OpenRouter key in Settings → AI Models, or wait for Gemini to reset (midnight Pacific).";
+          if (!Object.values(MODELS_MAP).some((m: any) => m.needsKey && !!(settings.modelKeys || {})[m.id])) {
+            errorMsg += "\n\n💡 No API keys set. Add a Claude, Gemini, or OpenRouter key in Settings → AI Models.";
+          }
         }
         throw new Error(errorMsg);
       }

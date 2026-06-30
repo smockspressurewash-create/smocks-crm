@@ -976,7 +976,7 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
 
       <Modal open={!!deleteModal} onClose={() => setDeleteModal(null)} title="Delete Job">
         <div className="space-y-4">
-          <div className="text-sm text-white/80">Are you sure you want to permanently delete this job? This cannot be undone.</div>
+          <div className="text-sm text-white/80">Permanently delete this job? This cannot be undone.</div>
           <div className="flex gap-2 justify-end">
             <GBtn variant="ghost" onClick={() => setDeleteModal(null)}>Cancel</GBtn>
             <GBtn variant="danger" onClick={confirmDelete}><Trash2 size={12} className="inline mr-1.5" />Delete Permanently</GBtn>

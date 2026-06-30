@@ -8,7 +8,7 @@ export interface ModelDef {
   modelId: string;      // Actual API model ID: "claude-sonnet-4-20250514"
   name: string;
   label: string;
-  provider: "anthropic" | "openai" | "google" | "groq" | "mistral" | "nvidia";
+  provider: "anthropic" | "openai" | "google" | "groq" | "mistral" | "nvidia" | "openrouter";
   endpoint: string;
   maxTokens: number;
   contextWindow: number;
@@ -158,6 +158,22 @@ export const MODELS: Record<string, ModelDef> = {
     supportsTools: true,
     keyUrl: "https://build.nvidia.com/qwen/qwen2_5-7b-instruct",
     apiLabel: "NVIDIA API Key",
+    free: true,
+  },
+  openrouter: {
+    id: "openrouter",
+    modelId: "google/gemini-2.0-flash-exp:free",
+    name: "OpenRouter",
+    label: "OpenRouter (Gemini Flash — Free via openrouter.ai)",
+    provider: "openrouter",
+    endpoint: "https://openrouter.ai/api/v1/chat/completions",
+    maxTokens: 4096,
+    contextWindow: 1000000,
+    color: "from-violet-500 to-purple-700",
+    needsKey: true,
+    supportsTools: true,
+    keyUrl: "https://openrouter.ai/keys",
+    apiLabel: "OpenRouter API Key",
     free: true,
   },
 };
