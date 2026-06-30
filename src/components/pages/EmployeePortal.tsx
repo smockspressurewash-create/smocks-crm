@@ -1751,10 +1751,11 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   }
 
   // Fetch any job's customer directly from Supabase when it isn't found in the
-  // customers prop. Results go into localCustomerCache (local state, always
-  // reliable) AND into setCustomers (shared state, best-effort — may be a no-op
-  // if the caller didn't wire it up). missingCustomerFetchRef prevents duplicate
-  // in-flight fetches for the same id across renders.
+  // customers prop. Each missing ID gets its own .single() query so a bad ID
+  // doesn't poison the whole batch. Results land in localCustomerCache (local
+  // state — always reliable). Failed or timed-out IDs also get a sentinel entry
+  // so the card stops showing "loading..." and shows "Unknown Customer" instead.
+  // missingCustomerFetchRef prevents duplicate in-flight requests.
   const missingCustomerFetchRef = useRef<Set<string>>(new Set());
   useEffect(() => {
     if (!empSession || myJobs.length === 0) return;
@@ -1765,24 +1766,37 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     const missingIds = Array.from(new Set(myJobs.map(j => j.customerId).filter(Boolean)))
       .filter(id => !knownIds.has(id) && !missingCustomerFetchRef.current.has(id));
     if (missingIds.length === 0) return;
-    missingIds.forEach(id => missingCustomerFetchRef.current.add(id));
-    (supabase as any).from("customers").select("*").in("id", missingIds).then((r: any) => {
-      if (r?.error) { console.warn("Customer fetch failed:", r.error.message); return; }
-      const fetched: Customer[] = Array.isArray(r?.data) ? r.data : [];
-      if (fetched.length === 0) return;
-      // Store in local cache immediately — this is always reliable.
-      setLocalCustomerCache(prev => {
-        const next = { ...prev };
-        fetched.forEach(c => { next[c.id] = c; });
-        return next;
-      });
-      // Also try to push into shared parent state (best-effort).
-      setCustomers((prev: any[]) => {
-        const existingIds = new Set(prev.map(c => c.id));
-        const toAdd = fetched.filter((c: any) => !existingIds.has(c.id));
-        return toAdd.length > 0 ? [...prev, ...toAdd] : prev;
-      });
-    }).catch((e: any) => console.warn("Customer fetch failed:", e?.message));
+
+    const storeSentinel = (id: string) => {
+      setLocalCustomerCache(prev => ({ ...prev, [id]: { id, firstName: "Unknown", lastName: "Customer" } as any }));
+    };
+
+    for (const id of missingIds) {
+      missingCustomerFetchRef.current.add(id);
+      const timeout = new Promise<null>(resolve => setTimeout(() => resolve(null), 3000));
+      const query = (supabase as any).from("customers").select("*").eq("id", id).single();
+      Promise.race([query, timeout])
+        .then((r: any) => {
+          if (r === null) {
+            console.error("CUSTOMER FETCH ERROR: timed out for customerId", id);
+            storeSentinel(id);
+            return;
+          }
+          if (r?.error) {
+            console.error("CUSTOMER FETCH ERROR:", r.error, "| customerId:", id);
+            storeSentinel(id);
+            return;
+          }
+          const c: Customer = r.data;
+          if (!c) { storeSentinel(id); return; }
+          setLocalCustomerCache(prev => ({ ...prev, [c.id]: c }));
+          setCustomers((prev: any[]) => prev.find(x => x.id === c.id) ? prev : [...prev, c]);
+        })
+        .catch((e: any) => {
+          console.error("CUSTOMER FETCH ERROR:", e, "| customerId:", id);
+          storeSentinel(id);
+        });
+    }
   }, [empSession, myJobs.map(j => j.customerId).join(","), customers.length, Object.keys(localCustomerCache).join(",")]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Real-time location sharing — runs the whole time the toggle is on (not
