@@ -767,6 +767,31 @@ export function App() {
     return () => clearInterval(interval);
   }, [customers, estimates]);
 
+  // On first load, immediately push any localStorage customers + estimates to
+  // Supabase so employees (and any other device) can read them right away,
+  // without waiting up to 30s for the auto-save interval to fire.
+  useEffect(() => {
+    const syncLocalToSupabase = async () => {
+      const stored = customers;
+      if (stored.length > 0) {
+        try {
+          const { error } = await (supabase as any).from("customers").upsert(stored, { onConflict: "id" });
+          if (error) console.warn("Initial customer sync failed:", error.message);
+          else console.log("Synced", stored.length, "customers to Supabase");
+        } catch (err: any) { console.warn("Initial customer sync failed:", err?.message); }
+      }
+      const storedEst = estimates;
+      if (storedEst.length > 0) {
+        try {
+          const { error } = await (supabase as any).from("estimates").upsert(storedEst, { onConflict: "id" });
+          if (error) console.warn("Initial estimate sync failed:", error.message);
+          else console.log("Synced", storedEst.length, "estimates to Supabase");
+        } catch (err: any) { console.warn("Initial estimate sync failed:", err?.message); }
+      }
+    };
+    syncLocalToSupabase();
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
   // ── Cross-device sync ────────────────────────────────────────────────────
   // refetchData() previously only ran once at session bootstrap, so a change
   // an employee made on their phone never reached an owner's already-open
