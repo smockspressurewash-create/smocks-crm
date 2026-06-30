@@ -1783,17 +1783,29 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
             return;
           }
           if (r?.error) {
-            console.error("CUSTOMER FETCH ERROR:", r.error, "| customerId:", id);
+            const err = r.error;
+            console.error("CUSTOMER FETCH ERROR | customerId:", id,
+              "\n  status:", err?.status,
+              "\n  message:", err?.message,
+              "\n  details:", err?.details,
+              "\n  hint:", err?.hint,
+              "\n  full:", JSON.stringify(err));
             storeSentinel(id);
             return;
           }
           const c: Customer = r.data;
-          if (!c) { storeSentinel(id); return; }
+          if (!c) {
+            console.error("CUSTOMER FETCH ERROR: no data returned | customerId:", id, "| full response:", JSON.stringify(r));
+            storeSentinel(id);
+            return;
+          }
           setLocalCustomerCache(prev => ({ ...prev, [c.id]: c }));
           setCustomers((prev: any[]) => prev.find(x => x.id === c.id) ? prev : [...prev, c]);
         })
         .catch((e: any) => {
-          console.error("CUSTOMER FETCH ERROR:", e, "| customerId:", id);
+          console.error("CUSTOMER FETCH ERROR (thrown) | customerId:", id,
+            "\n  message:", e?.message,
+            "\n  full:", JSON.stringify(e));
           storeSentinel(id);
         });
     }
