@@ -1,4 +1,4 @@
-// auto-extracted from Smock's OS monolith
+// auto-extracted from Crew Boss OS monolith
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
   LayoutDashboard, Users, FileText, Briefcase, Bot, BarChart3,
@@ -152,7 +152,7 @@ export function BudgetPage({ jobs = [], estimates = [], expenses = [], settings 
   const exportTaxPDF = () => {
     const expRows = tfExp.filter(e => e.taxDeductible).map(e => `<tr><td>${e.date}</td><td>${e.category}</td><td>${e.vendor || "—"}</td><td>${e.description}</td><td class="r">${e.isCash ? "💵" : "💳"}</td><td class="r">$${Number(e.amount).toFixed(2)}</td></tr>`).join("");
     const mileRows = tfMileage.map(m => `<tr><td>${m.date}</td><td>${m.from} → ${m.to}</td><td class="r">${m.miles}</td><td class="r">$${(m.deduction||0).toFixed(2)}</td><td>${m.purpose}</td></tr>`).join("");
-    const html = `<!DOCTYPE html><html><head><title>Tax Report — Smock's Pressure Washing</title>
+    const html = `<!DOCTYPE html><html><head><title>Tax Report — Crew Boss</title>
     <style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:Arial,sans-serif;padding:40px;color:#111;max-width:900px;margin:auto;font-size:13px}
     h1{color:#dc2626;font-size:24px}h2{color:#333;font-size:16px;border-bottom:2px solid #dc2626;padding-bottom:6px;margin:24px 0 12px}
     .header{display:flex;justify-content:space-between;align-items:start;border-bottom:3px solid #dc2626;padding-bottom:16px;margin-bottom:24px}
@@ -167,7 +167,7 @@ export function BudgetPage({ jobs = [], estimates = [], expenses = [], settings 
     .disclaimer{margin-top:32px;padding:12px;background:#fffbf0;border:1px solid #f0c040;border-radius:6px;font-size:11px;color:#555}
     @media print{body{padding:20px}}</style></head><body>
     <div class="header">
-      <div><h1>Smock's Pressure Washing</h1><p style="color:#666;margin-top:4px">Tax Deduction Summary · ${tfLabel} · Generated ${today()}</p></div>
+      <div><h1>Crew Boss</h1><p style="color:#666;margin-top:4px">Tax Deduction Summary · ${tfLabel} · Generated ${today()}</p></div>
       <div style="text-align:right;color:#666;font-size:12px">York, PA<br>(717) 555-0100</div>
     </div>
     <div class="kpis">
@@ -307,7 +307,7 @@ export function BudgetPage({ jobs = [], estimates = [], expenses = [], settings 
       {budgetTab === "spreadsheet" && <div className="space-y-4">
         <Glass className="p-5 !bg-gradient-to-br !from-blue-950/20 !to-black/60 !border-blue-700/30">
           <div className="flex items-center justify-between mb-1">
-            <div className="font-semibold flex items-center gap-2">📋 Smock's Budget Tracker <span className="text-[10px] text-white/40">— matches your Google Sheet structure</span></div>
+            <div className="font-semibold flex items-center gap-2">📋 Crew Boss Budget Tracker <span className="text-[10px] text-white/40">— matches your Google Sheet structure</span></div>
             <a href="https://docs.google.com/spreadsheets/d/1Zrj9CO2luJJy6OUrBDyFA9unpmv09KKbCgt_RTvrDn0/edit" target="_blank" rel="noopener noreferrer" className="text-[10px] text-blue-400 hover:text-blue-300 flex items-center gap-1"><ExternalLink size={10} />Open in Google Sheets</a>
           </div>
           <div className="text-xs text-white/50">{tfLabel} · Auto-populated from your CRM data</div>

@@ -51,7 +51,7 @@ export const seedEstimates: Estimate[] = [
     subtotal: 399, discount: 0, depositRequired: 100, tax: 23.94, total: 422.94,
     status: "approved", createdAt: daysFromNow(-14), validUntil: daysFromNow(16),
     sentAt: daysFromNow(-13), signedAt: daysFromNow(-12), paidAt: daysFromNow(-12),
-    notes: "Thank you for choosing Smock's!", internalNote: "VIP — priority scheduling",
+    notes: "Thank you for choosing Crew Boss!", internalNote: "VIP — priority scheduling",
     viewed: true, invoiced: true, invoicedAt: daysFromNow(-12),
   },
   {
@@ -220,38 +220,38 @@ export const seedServices: Service[] = [
 
 export const seedEmailTemplates = [
   {
-    id: "et1", name: "Estimate Ready", subject: "Your Estimate from Smock's Pressure Washing",
-    body: "Hi {{first_name}},\n\nYour estimate is ready. Click below to view, approve, and sign.\n\n{{estimate_link}}\n\nValid for {{valid_days}} days. Questions? Call (717) 555-0100.\n\n— Will @ Smock's",
+    id: "et1", name: "Estimate Ready", subject: "Your Estimate from Crew Boss",
+    body: "Hi {{first_name}},\n\nYour estimate is ready. Click below to view, approve, and sign.\n\n{{estimate_link}}\n\nValid for {{valid_days}} days. Questions? Call (717) 555-0100.\n\n— Will @ Crew Boss",
   },
   {
-    id: "et2", name: "Job Confirmation", subject: "✅ Job Confirmed — Smock's Pressure Washing",
-    body: "Hi {{first_name}},\n\nYour service is confirmed for {{date}} at approximately {{time}}.\n\nAddress: {{address}}\n\nWe'll text you when we're on the way. See you then!\n\n— Will @ Smock's",
+    id: "et2", name: "Job Confirmation", subject: "✅ Job Confirmed — Crew Boss",
+    body: "Hi {{first_name}},\n\nYour service is confirmed for {{date}} at approximately {{time}}.\n\nAddress: {{address}}\n\nWe'll text you when we're on the way. See you then!\n\n— Will @ Crew Boss",
   },
   {
     id: "et3", name: "Review Request", subject: "Quick favor? Leave us a review 🌟",
-    body: "Hi {{first_name}},\n\nThank you for choosing Smock's! We hope your property is looking great.\n\nWould you mind leaving us a quick Google review? It only takes 60 seconds and means the world to us.\n\n{{review_link}}\n\nThank you! — Will @ Smock's",
+    body: "Hi {{first_name}},\n\nThank you for choosing Crew Boss! We hope your property is looking great.\n\nWould you mind leaving us a quick Google review? It only takes 60 seconds and means the world to us.\n\n{{review_link}}\n\nThank you! — Will @ Crew Boss",
   },
   {
-    id: "et4", name: "Payment Receipt", subject: "Payment Received — Smock's Pressure Washing",
-    body: "Hi {{first_name}},\n\nWe received your payment of {{amount}}. Thank you!\n\nReceipt: {{receipt_link}}\n\n— Will @ Smock's",
+    id: "et4", name: "Payment Receipt", subject: "Payment Received — Crew Boss",
+    body: "Hi {{first_name}},\n\nWe received your payment of {{amount}}. Thank you!\n\nReceipt: {{receipt_link}}\n\n— Will @ Crew Boss",
   },
   {
-    id: "et5", name: "Birthday Message", subject: "Happy Birthday from Smock's!",
-    body: "Hi {{first_name}},\n\nHappy birthday! Enjoy 10% off any service this month — code BDAY10.\n\n— Smock's",
+    id: "et5", name: "Birthday Message", subject: "Happy Birthday from Crew Boss!",
+    body: "Hi {{first_name}},\n\nHappy birthday! Enjoy 10% off any service this month — code BDAY10.\n\n— Crew Boss",
   },
 ];
 
 // ─── Seed SMS templates ───────────────────────────────────────────────────────
 
 export const seedSmsTemplates = [
-  { id: "st1", name: "New Lead Response",   body: "Hi {{first_name}}! Thanks for reaching out to Smock's. I'll send your estimate within the hour. Questions? Call/text (717) 555-0100. — Will" },
-  { id: "st2", name: "Job Reminder",        body: "Hi {{first_name}}, reminder: your Smock's service is tomorrow at {{time}}. We'll text when on the way. Reply STOP to unsubscribe." },
-  { id: "st3", name: "On My Way",           body: "Hi {{first_name}}, Will from Smock's — heading your way now! ETA: {{eta}}. Live location: {{location_link}}" },
-  { id: "st4", name: "Job Complete",        body: "Hi {{first_name}}, all done! Your property is looking great 🙌 Thank you for choosing Smock's. — Will" },
-  { id: "st5", name: "Review Request",      body: "Hi {{first_name}}, loved your service today? A quick Google review means the world: {{review_link}} — Will @ Smock's" },
+  { id: "st1", name: "New Lead Response",   body: "Hi {{first_name}}! Thanks for reaching out to Crew Boss. I'll send your estimate within the hour. Questions? Call/text (717) 555-0100. — Will" },
+  { id: "st2", name: "Job Reminder",        body: "Hi {{first_name}}, reminder: your Crew Boss service is tomorrow at {{time}}. We'll text when on the way. Reply STOP to unsubscribe." },
+  { id: "st3", name: "On My Way",           body: "Hi {{first_name}}, Will from Crew Boss — heading your way now! ETA: {{eta}}. Live location: {{location_link}}" },
+  { id: "st4", name: "Job Complete",        body: "Hi {{first_name}}, all done! Your property is looking great 🙌 Thank you for choosing Crew Boss. — Will" },
+  { id: "st5", name: "Review Request",      body: "Hi {{first_name}}, loved your service today? A quick Google review means the world: {{review_link}} — Will @ Crew Boss" },
   { id: "st6", name: "Payment Overdue",     body: "Hi {{first_name}}, just a reminder that your invoice for {{amount}} is past due. Pay here: {{payment_link}} Questions? (717) 555-0100." },
-  { id: "st7", name: "Estimate Follow-Up",  body: "Hi {{first_name}}, just checking in on your estimate for {{amount}}. Any questions? Ready to schedule? — Will @ Smock's" },
-  { id: "st8", name: "Weather Reschedule",  body: "Hi {{first_name}}, due to rain in the forecast we're rescheduling your service. We'll reach out with new options. Sorry for any inconvenience! — Smock's" },
+  { id: "st7", name: "Estimate Follow-Up",  body: "Hi {{first_name}}, just checking in on your estimate for {{amount}}. Any questions? Ready to schedule? — Will @ Crew Boss" },
+  { id: "st8", name: "Weather Reschedule",  body: "Hi {{first_name}}, due to rain in the forecast we're rescheduling your service. We'll reach out with new options. Sorry for any inconvenience! — Crew Boss" },
 ];
 
 // ─── Seed automations ─────────────────────────────────────────────────────────
@@ -381,12 +381,12 @@ export const seedTimeline: Record<string, Array<{ id: string; type: string; note
 // ─── Campaign templates ───────────────────────────────────────────────────────
 
 export const campaignTemplates = [
-  { id: "ct1", name: "Spring Special",   subject: "Spring Cleaning Deal — Smock's", body: "Hi {{first_name}}, spring special — 15% off house soft washes this month. Reply BOOK or call (717) 555-0100. — Smock's" },
-  { id: "ct2", name: "Pre-Winter Roof",  subject: "Protect your roof before winter — Smock's", body: "Hi {{first_name}}, algae and moss freeze and damage shingles. Get a roof soft wash before cold hits. Reply ROOF or call (717) 555-0100. — Smock's" },
-  { id: "ct3", name: "Referral Program", subject: "Refer a friend, get $25 — Smock's", body: "Hi {{first_name}}, refer a friend and get $25 off your next service when they book. Reply REFER or call (717) 555-0100. — Smock's" },
-  { id: "ct4", name: "Holiday Greeting", subject: "Happy Holidays from Smock's!", body: "Hi {{first_name}}, wishing you a wonderful holiday season! Book early for spring — slots fill fast. — Will @ Smock's" },
-  { id: "ct5", name: "New Year Offer",   subject: "New year, clean home — Smock's", body: "Hi {{first_name}}, 10% off any service booked in January. Reply NEWYEAR or call (717) 555-0100. — Smock's" },
-  { id: "ct6", name: "Win-Back",         subject: "We miss you — Smock's", body: "Hi {{first_name}}, it's been a while! Reply BACK for a special returning customer discount. — Will @ Smock's" },
+  { id: "ct1", name: "Spring Special",   subject: "Spring Cleaning Deal — Crew Boss", body: "Hi {{first_name}}, spring special — 15% off house soft washes this month. Reply BOOK or call (717) 555-0100. — Crew Boss" },
+  { id: "ct2", name: "Pre-Winter Roof",  subject: "Protect your roof before winter — Crew Boss", body: "Hi {{first_name}}, algae and moss freeze and damage shingles. Get a roof soft wash before cold hits. Reply ROOF or call (717) 555-0100. — Crew Boss" },
+  { id: "ct3", name: "Referral Program", subject: "Refer a friend, get $25 — Crew Boss", body: "Hi {{first_name}}, refer a friend and get $25 off your next service when they book. Reply REFER or call (717) 555-0100. — Crew Boss" },
+  { id: "ct4", name: "Holiday Greeting", subject: "Happy Holidays from Crew Boss!", body: "Hi {{first_name}}, wishing you a wonderful holiday season! Book early for spring — slots fill fast. — Will @ Crew Boss" },
+  { id: "ct5", name: "New Year Offer",   subject: "New year, clean home — Crew Boss", body: "Hi {{first_name}}, 10% off any service booked in January. Reply NEWYEAR or call (717) 555-0100. — Crew Boss" },
+  { id: "ct6", name: "Win-Back",         subject: "We miss you — Crew Boss", body: "Hi {{first_name}}, it's been a while! Reply BACK for a special returning customer discount. — Will @ Crew Boss" },
 ];
 
 // ─── Step types ───────────────────────────────────────────────────────────────

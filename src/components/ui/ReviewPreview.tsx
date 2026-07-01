@@ -1,4 +1,4 @@
-// auto-extracted from Smock's OS monolith
+// auto-extracted from Crew Boss OS monolith
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
   LayoutDashboard, Users, FileText, Briefcase, Bot, BarChart3,
@@ -42,7 +42,7 @@ import { PBar } from "./PBar";
 import { PageFade } from "./PageFade";
 import { TimeframeSelector } from "./TimeframeSelector";
 
-export function ReviewPreview({ review: r, onClose, customer: c, onUpdate, onSubmit, apiKey, companyName = "Smock's", toast = (..._args: any[]) => {} }) {
+export function ReviewPreview({ review: r, onClose, customer: c, onUpdate, onSubmit, apiKey, companyName = "Crew Boss", toast = (..._args: any[]) => {} }) {
   const [lr, setLr] = useState(0);
   const [lf, setLf] = useState("");
   const [aiDraft, setAiDraft] = useState("");
@@ -453,9 +453,9 @@ const executeAction = async (step, ctx, toast, settings) => {
     .replace(/{{company_phone}}/gi, settings?.companyPhone || "(717) 555-0100");
 
   // Use messageBody if set, otherwise fall back to label
-  const rawBody = step.messageBody || step.label || "Notification from Smock's Pressure Washing";
+  const rawBody = step.messageBody || step.label || "Notification from Crew Boss";
   const body = merge(rawBody);
-  const subject = merge(step.subject || step.label || "Message from Smock's");
+  const subject = merge(step.subject || step.label || "Message from Crew Boss");
 
   // Send real messages when credentials available
   let sent = false;

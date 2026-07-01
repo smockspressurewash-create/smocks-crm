@@ -1,4 +1,4 @@
-// auto-extracted from Smock's OS monolith
+// auto-extracted from Crew Boss OS monolith
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
   LayoutDashboard, Users, FileText, Briefcase, Bot, BarChart3,
@@ -43,8 +43,8 @@ import { PageFade } from "./PageFade";
 import { TimeframeSelector } from "./TimeframeSelector";
 
 export function ABTestPanel({ matches = [], toast }) {
-  const [varA, setVarA] = useState("Hi {{first_name}}, spring is here! 15% off house washes this month. Book at (717) 555-0100 — Smock's");
-  const [varB, setVarB] = useState("{{first_name}} — your neighbors are getting their homes washed. Don't be the last one 😅 Call us! — Smock's");
+  const [varA, setVarA] = useState("Hi {{first_name}}, spring is here! 15% off house washes this month. Book at (717) 555-0100 — Crew Boss");
+  const [varB, setVarB] = useState("{{first_name}} — your neighbors are getting their homes washed. Don't be the last one 😅 Call us! — Crew Boss");
   const [splitPct, setSplitPct] = useState(50);
   const [running, setRunning] = useState(false);
   const [results, setResults] = useState(null);

@@ -1,4 +1,4 @@
-// auto-extracted from Smock's OS monolith
+// auto-extracted from Crew Boss OS monolith
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
   LayoutDashboard, Users, FileText, Briefcase, Bot, BarChart3,
@@ -45,7 +45,7 @@ import { TimeframeSelector } from "./TimeframeSelector";
 export function EstimatePreview({ estimate: e, customers = [], settings = {} as any, onClose, onApprove, onConvert, onSchedule = null, toast = (..._args: any[]) => {} }) {
   if (!e) return null;
   const c = customers.find(x => x.id === e.customerId);
-  const companyName = settings?.companyName || "Smock's Pressure Washing";
+  const companyName = settings?.companyName || "Crew Boss";
 
   return (
     <Modal open={!!e} onClose={onClose} title={"Estimate #" + e.id.toUpperCase()} maxW="max-w-2xl">
@@ -113,6 +113,11 @@ export function EstimatePreview({ estimate: e, customers = [], settings = {} as 
         {e.invoiced && e.paidAt && <div className="flex-1 text-center py-2.5 rounded-xl bg-green-950/30 border border-green-700/40 text-green-300 text-sm flex items-center justify-center gap-1.5"><CheckCircle size={14} />Paid {e.paidAt}</div>}
         {e.invoiced && !e.paidAt && <div className="flex-1 text-center py-2.5 rounded-xl bg-yellow-950/30 border border-yellow-700/40 text-yellow-300 text-sm flex items-center justify-center gap-1.5"><Clock size={14} />Invoiced — awaiting payment</div>}
       </div>
+      {/* Explicit close — always visible full-width so mobile users have an
+          obvious way out even if the header X is easy to miss. */}
+      <button onClick={onClose} className="mt-3 w-full py-3 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-white/70 text-sm font-semibold flex items-center justify-center gap-1.5 transition">
+        <X size={15} />Close Preview
+      </button>
     </Modal>
   );
 }

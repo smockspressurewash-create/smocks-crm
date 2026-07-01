@@ -1,4 +1,4 @@
-// auto-extracted from Smock's OS monolith
+// auto-extracted from Crew Boss OS monolith
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
   LayoutDashboard, Users, FileText, Briefcase, Bot, BarChart3,
@@ -112,7 +112,7 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
 
   const buildSendSms = (est: any, cust: any) => {
     const link = portalUrlFor(est.id);
-    return "Hi " + cust.firstName + "! Your estimate of " + fmt(est.total) + " from " + (settings?.companyName || "Smock's") + " is ready. Review and sign here: " + link + " — questions? Call " + (settings?.companyPhone || "(717) 555-0100");
+    return "Hi " + cust.firstName + "! Your estimate of " + fmt(est.total) + " from " + (settings?.companyName || "Crew Boss") + " is ready. Review and sign here: " + link + " — questions? Call " + (settings?.companyPhone || "(717) 555-0100");
   };
 
   const doSend = async () => {
@@ -123,7 +123,7 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
     try {
       if ((sendChannel === "email" || sendChannel === "both")) {
         if (!cust.email) { toast?.("No email on file for " + cust.firstName, "error"); }
-        else await sendEmail(settings, { to: cust.email, subject: "Your estimate from " + (settings?.companyName || "Smock's") + " — " + fmt(sendModalEst.total), body: buildSendHtml(sendModalEst, cust) });
+        else await sendEmail(settings, { to: cust.email, subject: "Your estimate from " + (settings?.companyName || "Crew Boss") + " — " + fmt(sendModalEst.total), body: buildSendHtml(sendModalEst, cust) });
       }
       if ((sendChannel === "sms" || sendChannel === "both")) {
         if (!cust.phone) { toast?.("No phone on file for " + cust.firstName, "error"); }
@@ -180,7 +180,7 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
 
   const exportPDF = e => {
     const c = customers.find(x => x.id === e.customerId);
-    const html = `<!DOCTYPE html><html><head><title>Estimate ${e.id}</title><style>body{font-family:Arial,sans-serif;padding:40px;max-width:700px;margin:auto}h1{color:#e11d48}table{width:100%;border-collapse:collapse;margin:20px 0}th,td{padding:8px;text-align:left;border-bottom:1px solid #ddd}.total{font-size:20px;color:#e11d48;font-weight:bold}</style></head><body><h1>Smock's Pressure Washing</h1><h2>Estimate #${e.id.toUpperCase()}</h2><p><strong>Bill to:</strong> ${c?.firstName} ${c?.lastName}<br>${c?.address || ''}</p><table><tr><th>Description</th><th>Qty</th><th>Price</th><th>Amount</th></tr>${e.lineItems.map(li => `<tr><td>${li.description}</td><td>${li.quantity}</td><td>${fmt(li.unitPrice)}</td><td>${fmt(li.quantity * li.unitPrice)}</td></tr>`).join('')}</table><p>Subtotal: ${fmt(e.subtotal)}<br>Tax: ${fmt(e.tax)}<br><span class="total">Total: ${fmt(e.total)}</span></p></body></html>`;
+    const html = `<!DOCTYPE html><html><head><title>Estimate ${e.id}</title><style>body{font-family:Arial,sans-serif;padding:40px;max-width:700px;margin:auto}h1{color:#e11d48}table{width:100%;border-collapse:collapse;margin:20px 0}th,td{padding:8px;text-align:left;border-bottom:1px solid #ddd}.total{font-size:20px;color:#e11d48;font-weight:bold}</style></head><body><h1>Crew Boss</h1><h2>Estimate #${e.id.toUpperCase()}</h2><p><strong>Bill to:</strong> ${c?.firstName} ${c?.lastName}<br>${c?.address || ''}</p><table><tr><th>Description</th><th>Qty</th><th>Price</th><th>Amount</th></tr>${e.lineItems.map(li => `<tr><td>${li.description}</td><td>${li.quantity}</td><td>${fmt(li.unitPrice)}</td><td>${fmt(li.quantity * li.unitPrice)}</td></tr>`).join('')}</table><p>Subtotal: ${fmt(e.subtotal)}<br>Tax: ${fmt(e.tax)}<br><span class="total">Total: ${fmt(e.total)}</span></p></body></html>`;
     const blob = new Blob([html], { type: "text/html" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -227,7 +227,7 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
                 const est = estimates.find(x => x.id === id);
                 const c = est && customers.find(x => x.id === est.customerId);
                 if (!c?.phone || !settings?.twilioSid) continue;
-                const msg = "Hi " + c.firstName + "! Your estimate of " + fmt(est.total) + " from Smock's is ready. View it here: smocks.com/portal/" + est.id + " — Questions? Call (717) 555-0100.";
+                const msg = "Hi " + c.firstName + "! Your estimate of " + fmt(est.total) + " from Crew Boss is ready. View it here: smocks.com/portal/" + est.id + " — Questions? Call (717) 555-0100.";
                 await twilioSend(settings, c.phone, msg).catch(() => {});
                 setEstimates(prev => prev.map(e => e.id === id ? { ...e, sentAt: today() } : e));
                 sent++;
@@ -240,7 +240,7 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
                 const est = estimates.find(x => x.id === id);
                 const c = est && customers.find(x => x.id === est.customerId);
                 if (!c?.email) continue;
-                await sendEmail(settings, { to: c.email, subject: "Your estimate from Smock's Pressure Washing — " + fmt(est.total), body: "Hi " + c.firstName + ",\n\nYour estimate of " + fmt(est.total) + " is ready to review and sign.\n\nView estimate: smocks.com/portal/" + est.id + "\n\nQuestions? Call (717) 555-0100.\n\n— Smock's Pressure Washing" }).catch(() => {});
+                await sendEmail(settings, { to: c.email, subject: "Your estimate from Crew Boss — " + fmt(est.total), body: "Hi " + c.firstName + ",\n\nYour estimate of " + fmt(est.total) + " is ready to review and sign.\n\nView estimate: smocks.com/portal/" + est.id + "\n\nQuestions? Call (717) 555-0100.\n\n— Crew Boss" }).catch(() => {});
                 setEstimates(prev => prev.map(e => e.id === id ? { ...e, sentAt: today() } : e));
                 sent++;
               }

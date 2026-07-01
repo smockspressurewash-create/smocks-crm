@@ -1,4 +1,4 @@
-// auto-extracted from Smock's OS monolith
+// auto-extracted from Crew Boss OS monolith
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
   LayoutDashboard, Users, FileText, Briefcase, Bot, BarChart3,
@@ -90,6 +90,20 @@ export function PipelinePage({ jobs = [], setJobs, customers = [], toast }) {
     setJobs(jobs.map(j => j.id === jid ? { ...j, pipelineStage: stg, stageChangedAt: today() } : j));
   };
 
+  // BUG 19 — auto-track jobs into the right column. Terminal job states always
+  // win (a completed/paid/cancelled job can never be stranded in an earlier
+  // column even if its pipelineStage was left behind); otherwise a manually-set
+  // pipelineStage (owner drag) is respected, falling back to a sensible default
+  // derived from the job's status/schedule so brand-new jobs still appear.
+  const effStage = (j: any): string => {
+    if (j.status === "cancelled") return "lost";
+    if (j.status === "completed") return j.paymentStatus === "Paid" || j.pipelineStage === "paid" ? "paid" : "completed";
+    if (j.pipelineStage) return j.pipelineStage;
+    if (j.status === "in_progress") return "scheduled";
+    if (j.scheduledDate) return "scheduled";
+    return "lead";
+  };
+
   const confirmLost = () => {
     setJobs(jobs.map(j => j.id === lostJob ? { ...j, pipelineStage: "lost", stageChangedAt: today(), lostReason } : j));
     setLostJob(null);
@@ -109,7 +123,7 @@ export function PipelinePage({ jobs = [], setJobs, customers = [], toast }) {
 
   // Pipeline health — avg days in each stage within timeframe
   const avgDays = pipelineStages.map(stg => {
-    const sj = filtered.filter(j => j.pipelineStage === stg.key);
+    const sj = filtered.filter(j => effStage(j) === stg.key);
     if (!sj.length) return { stage: stg.label, avg: 0, count: 0 };
     const days = sj.map(j => daysSince(j.stageChangedAt || j.scheduledDate));
     return { stage: stg.label, avg: Math.round(days.reduce((s, d) => s + d, 0) / days.length), count: sj.length };
@@ -118,8 +132,8 @@ export function PipelinePage({ jobs = [], setJobs, customers = [], toast }) {
   const tfLabel = TIMEFRAMES.find(t => t.key === timeframe)?.label || "All";
 
   // Win rate in timeframe
-  const closedJobs = filtered.filter(j => j.pipelineStage === "paid" || j.pipelineStage === "completed");
-  const lostJobs = filtered.filter(j => j.pipelineStage === "lost");
+  const closedJobs = filtered.filter(j => effStage(j) === "paid" || effStage(j) === "completed");
+  const lostJobs = filtered.filter(j => effStage(j) === "lost");
   const winRate = (closedJobs.length + lostJobs.length) > 0 ? Math.round(closedJobs.length / (closedJobs.length + lostJobs.length) * 100) : null;
 
   return (
@@ -169,7 +183,7 @@ export function PipelinePage({ jobs = [], setJobs, customers = [], toast }) {
       {(() => {
         const staleThreshold = 14;
         const activeStages = ["lead","contacted","estimate_sent"];
-        const stale = filtered.filter(j => activeStages.includes(j.pipelineStage) && daysSince(j.stageChangedAt || j.scheduledDate || j.createdAt) >= staleThreshold);
+        const stale = filtered.filter(j => activeStages.includes(effStage(j)) && daysSince(j.stageChangedAt || j.scheduledDate || j.createdAt) >= staleThreshold);
         if (stale.length === 0) return null;
         return (
           <Glass className="p-4 !bg-orange-950/20 !border-orange-700/40">
@@ -195,7 +209,7 @@ export function PipelinePage({ jobs = [], setJobs, customers = [], toast }) {
                     const age = daysSince(j.stageChangedAt || j.scheduledDate || j.createdAt);
                     return <tr key={j.id} className="border-b border-orange-900/20 hover:bg-orange-950/10">
                       <td className="py-2"><div className="font-medium text-white/80">{j.address?.split(",")[0] || "Unknown"}</div>{cu && <div className="text-orange-300/60">{cu.firstName} {cu.lastName}</div>}</td>
-                      <td className="py-2 text-center"><Badge tone="orange">{pipelineStages.find(s => s.key === j.pipelineStage)?.label || j.pipelineStage}</Badge></td>
+                      <td className="py-2 text-center"><Badge tone="orange">{pipelineStages.find(s => s.key === effStage(j))?.label || effStage(j)}</Badge></td>
                       <td className="py-2 text-right font-semibold text-white/80">{fmt(j.amount)}</td>
                       <td className="py-2 text-right"><span className={age >= 30 ? "text-red-400 font-bold" : "text-orange-300"}>{age}d</span></td>
                       <td className="py-2 text-right">
@@ -214,7 +228,7 @@ export function PipelinePage({ jobs = [], setJobs, customers = [], toast }) {
       <PipelineScrollContainer>
         <div className="flex gap-3 min-w-max px-1 pb-1">
           {pipelineStages.map(stg => {
-            const sj = filtered.filter(j => j.pipelineStage === stg.key);
+            const sj = filtered.filter(j => effStage(j) === stg.key);
             const stgAvg = avgDays.find(a => a.stage === stg.label)?.avg || 0;
             return (
               <div key={stg.key} onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); if (dragId) moveStg(dragId, stg.key); setDragId(null); }} className={"w-72 flex-shrink-0 bg-black/30 border rounded-2xl " + stg.border}>
@@ -238,7 +252,7 @@ export function PipelinePage({ jobs = [], setJobs, customers = [], toast }) {
                     const cu = customers.find(c => c.id === j.customerId);
                     const prio = priorityLevels.find(p => p.key === (j.priority || "normal")) || priorityLevels[1];
                     return (
-                      <SwipeableCard key={j.id} job={j} stages={pipelineStages} onMove={moveStg}>
+                      <SwipeableCard key={j.id} job={j} stages={pipelineStages} onMove={moveStg} currentStage={stg.key}>
                       <div draggable onDragStart={() => setDragId(j.id)} className={"p-3 bg-black/60 rounded-xl cursor-grab hover:border active:cursor-grabbing select-none border " + stg.border + " hover:" + stg.border}>
                         <div className="flex items-start gap-2">
                           <div className={"w-1 h-full min-h-[40px] rounded-full flex-shrink-0 " + prio.color} />

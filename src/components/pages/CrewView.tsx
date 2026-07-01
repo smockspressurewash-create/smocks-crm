@@ -1,4 +1,4 @@
-// auto-extracted from Smock's OS monolith
+// auto-extracted from Crew Boss OS monolith
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
   LayoutDashboard, Users, FileText, Briefcase, Bot, BarChart3,
@@ -332,13 +332,13 @@ export function CrewView({ jobs = [], setJobs, customers = [], employees = [], t
                   if (!ok) return;
                 }
                 const eta = new Date(Date.now() + 17 * 60000).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-                const msg = `Hi ${c.firstName}! Your technician is on the way! ETA: ${eta}. — Smock's`;
+                const msg = `Hi ${c.firstName}! Your technician is on the way! ETA: ${eta}. — Crew Boss`;
                 if (settings?.twilioSid && c.phone) {
                   try { await twilioSend(settings, c.phone, msg); toast("OTW text sent to " + c.firstName + " ✓"); }
                   catch (e: any) { toast(e?.message || "Failed to send OTW text", "red"); }
                 } else if (c.email) {
                   try {
-                    const html = emailShell(settings.companyName || "Smock's Pressure Washing", "On My Way", `<p>${msg}</p>`);
+                    const html = emailShell(settings.companyName || "Crew Boss", "On My Way", `<p>${msg}</p>`);
                     await sendEmail(settings, { to: c.email, subject: "Your technician is on the way", body: html });
                     toast("OTW email sent to " + c.firstName + " ✓");
                   } catch (e: any) { toast(e?.message || "Failed to send OTW email", "red"); }

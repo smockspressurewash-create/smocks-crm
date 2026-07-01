@@ -1,4 +1,4 @@
-// auto-extracted from Smock's OS monolith
+// auto-extracted from Crew Boss OS monolith
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
   LayoutDashboard, Users, FileText, Briefcase, Bot, BarChart3,
@@ -109,7 +109,7 @@ export function ReviewsPage({ reviews = [], setReviews, jobs = [], customers = [
     // Build review URL with token
     const reviewUrl = "smocks.com/r/" + r.token;
     const unsubUrl = "smocks.com/unsub/" + btoa(c.phone || c.email || c.id).slice(0, 12);
-    const msg = "Hi " + c.firstName + "! Thanks for choosing Smock's Pressure Washing 🙌 How'd we do? Leave us a quick review — it means the world to a small business: " + reviewUrl + "\n\nReply STOP to opt out.";
+    const msg = "Hi " + c.firstName + "! Thanks for choosing Crew Boss 🙌 How'd we do? Leave us a quick review — it means the world to a small business: " + reviewUrl + "\n\nReply STOP to opt out.";
 
     let sent = false;
     if (settings?.twilioSid && c.phone) {

@@ -1,4 +1,4 @@
-// auto-extracted from Smock's OS monolith
+// auto-extracted from Crew Boss OS monolith
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
   LayoutDashboard, Users, FileText, Briefcase, Bot, BarChart3,
@@ -429,7 +429,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
         const slotsText = slots.map((s, i) => (i + 1) + ". " + s.day + (s.existing > 0 ? " (" + s.existing + " jobs that day)" : " (open day ✅)")).join("\n");
 
         if (matchedCustomer?.phone) {
-          const offerMsg = "Hi " + matchedCustomer.firstName + "! This is Will from Smock's. I have a few openings coming up — which works for you?\n\n" + slotsText + "\n\nReply 1, 2, or 3 to confirm. Thanks!";
+          const offerMsg = "Hi " + matchedCustomer.firstName + "! This is Will from Crew Boss. I have a few openings coming up — which works for you?\n\n" + slotsText + "\n\nReply 1, 2, or 3 to confirm. Thanks!";
           if (settings?.twilioSid) {
             try {
               await twilioSend(settings, matchedCustomer.phone, offerMsg);
@@ -438,7 +438,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
               return "Found customer but SMS failed: " + e.message + "\n\nSlot options:\n" + slotsText + "\n\nManually text: " + matchedCustomer.phone;
             }
           } else {
-            window.location.href = "sms:" + matchedCustomer.phone.replace(/\D/g,"") + "?body=" + encodeURIComponent("Hi " + matchedCustomer.firstName + "! Openings:\n" + slotsText + "\nReply 1/2/3 — Smock's");
+            window.location.href = "sms:" + matchedCustomer.phone.replace(/\D/g,"") + "?body=" + encodeURIComponent("Hi " + matchedCustomer.firstName + "! Openings:\n" + slotsText + "\nReply 1/2/3 — Crew Boss");
             return "📅 Scheduling for " + matchedCustomer.firstName + "\n\nOpened SMS with slot options. Connect Twilio in Settings for automatic sending. Alfred out.";
           }
         }
@@ -573,7 +573,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
         if (!rc) return "Customer \"" + name + "\" not found. Check spelling. Alfred out.";
         const lastJob = jobs.filter(j => j.customerId === rc.id && j.status === "completed").slice(-1)[0];
         if (!lastJob) return rc.firstName + " has no completed jobs. Can't send review request yet. Alfred out.";
-        return "📨 REVIEW REQUEST QUEUED\n\nCustomer: " + rc.firstName + " " + rc.lastName + "\nPhone: " + (rc.phone || "none on file") + "\nLast job: " + (lastJob.scheduledDate || "unknown") + "\n\nText will go: \"Hi " + rc.firstName + ", thanks for choosing Smock's! Got 30 seconds? Leave us a review: [link]. We appreciate it!\"\n\nGo to Reviews page to send. Alfred out.";
+        return "📨 REVIEW REQUEST QUEUED\n\nCustomer: " + rc.firstName + " " + rc.lastName + "\nPhone: " + (rc.phone || "none on file") + "\nLast job: " + (lastJob.scheduledDate || "unknown") + "\n\nText will go: \"Hi " + rc.firstName + ", thanks for choosing Crew Boss! Got 30 seconds? Leave us a review: [link]. We appreciate it!\"\n\nGo to Reviews page to send. Alfred out.";
       }
       case "/reflect": {
         const last7 = entries.slice().sort((a,b) => b.date.localeCompare(a.date)).slice(0, 7);
@@ -584,7 +584,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
         const gymDays = last7.filter(e => (e.gymMinutes||0) > 0).length;
         const avgMood = (last7.reduce((s,e) => s + Number(e.mood||3), 0) / last7.length).toFixed(1);
         const weekRev = jobs.filter(j => j.status === "completed" && daysSince(j.scheduledDate) <= 7).reduce((s,j) => s+j.amount, 0);
-        const prompt = `You are Alfred, Will Smock's no-BS AI business and accountability coach. Will runs Smock's Pressure Washing in York PA. Here's his last 7 days:\n\nBusiness: ${weekRev > 0 ? '$' + weekRev.toFixed(0) + ' revenue' : 'no completed jobs'} this week\nHealth: ${avgSleep}h sleep avg, ${avgWater}oz water avg, ${Math.round(avgSteps/1000*10)/10}k steps avg, ${gymDays}/7 gym days\nMood: ${avgMood}/5 avg\n\nWrite a SHORT (150 words max), honest, direct weekly reflection. Alfred's personality: like a drill sergeant crossed with a mentor — no fluff, real talk. Point out what's good, what needs work. End with one specific action for next week.`;
+        const prompt = `You are Alfred, Will Crew Boss no-BS AI business and accountability coach. Will runs Crew Boss in York PA. Here's his last 7 days:\n\nBusiness: ${weekRev > 0 ? '$' + weekRev.toFixed(0) + ' revenue' : 'no completed jobs'} this week\nHealth: ${avgSleep}h sleep avg, ${avgWater}oz water avg, ${Math.round(avgSteps/1000*10)/10}k steps avg, ${gymDays}/7 gym days\nMood: ${avgMood}/5 avg\n\nWrite a SHORT (150 words max), honest, direct weekly reflection. Alfred's personality: like a drill sergeant crossed with a mentor — no fluff, real talk. Point out what's good, what needs work. End with one specific action for next week.`;
         try {
           const res = await fetch("https://api.anthropic.com/v1/messages", {
             method: "POST",
@@ -608,7 +608,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           : jobs.find(j => j.status === "scheduled" && (j.address || "").toLowerCase().includes(searchR));
         const rc = rjob ? (rcust || customers.find(c => c.id === rjob.customerId)) : rcust;
         if (!rjob || !rc) return "No scheduled job found matching \"" + args + "\". Check the name or address. Alfred out.";
-        const clientMsg = "Hi " + rc.firstName + "! This is Will from Smock's Pressure Washing. Unfortunately we need to reschedule your " + (rjob.scheduledDate || "upcoming") + " appointment. What day works best for you? Just reply with a date and we'll confirm. Sorry for any inconvenience!";
+        const clientMsg = "Hi " + rc.firstName + "! This is Will from Crew Boss. Unfortunately we need to reschedule your " + (rjob.scheduledDate || "upcoming") + " appointment. What day works best for you? Just reply with a date and we'll confirm. Sorry for any inconvenience!";
         const willFollowUp = settings.twilioSid && settings.myPhone
           ? "\n\nI'll text you at " + settings.myPhone + " if they don't confirm within 24h or if they say a day doesn't work."
           : "\n\nConnect Twilio and set your mobile # in Settings → Company for automatic follow-up.";
@@ -810,12 +810,18 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           let savedJ: any = null;
           let saveErrorJ: any = null;
           try {
-            const { data, error } = await withTimeout<any>(
-              (supabase as any).from("jobs").insert(newJ).select().single(),
-              8000, "Save job"
+            // Insert WITHOUT a chained .select().single() — that requires a
+            // post-insert SELECT RLS policy which, when missing, makes the call
+            // hang until the timeout fires (the "Save job timed out" symptom).
+            // create_customer only appears more reliable because its table has
+            // that SELECT policy. Insert alone just needs INSERT permission; on
+            // no error we treat the locally-built row as the saved job.
+            const { error } = await withTimeout<any>(
+              (supabase as any).from("jobs").insert(newJ),
+              15000, "Save job"
             );
-            savedJ = data;
             saveErrorJ = error;
+            if (!error) savedJ = newJ;
           } catch (e: any) {
             saveErrorJ = e;
           }
@@ -823,7 +829,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           if (saveErrorJ || !savedJ) {
             return { error: "Failed to schedule job — " + (saveErrorJ?.message || "Supabase write did not return a row") };
           }
-          // No local setJobs call — see create_customer above.
+          // No local setJobs call — the 3s cross-device poll picks the row up.
           toast("Alfred scheduled job for " + c.firstName + " on " + savedJ.scheduledDate);
           setTimeout(() => onNav("jobs"), 1200);
           return { success: true, jobId: savedJ.id, date: savedJ.scheduledDate, customer: c.firstName + " " + c.lastName };
@@ -886,7 +892,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           if (emp.email) {
             const c = customers.find(x => x.id === j.customerId);
             const portalLink = `${window.location.origin}${window.location.pathname}#/portal`;
-            const html = emailShell(settings.companyName || "Smock's Pressure Washing", "Job Assignment", `<p>Hi ${emp.firstName},</p><p>You've been assigned to a job:</p><ul><li><b>Date:</b> ${j.scheduledDate}${j.scheduledTime ? " at " + j.scheduledTime : ""}</li><li><b>Address:</b> ${j.address}</li>${c ? `<li><b>Customer:</b> ${c.firstName} ${c.lastName}</li>` : ""}</ul>` + emailButton("Open Crew Portal", portalLink));
+            const html = emailShell(settings.companyName || "Crew Boss", "Job Assignment", `<p>Hi ${emp.firstName},</p><p>You've been assigned to a job:</p><ul><li><b>Date:</b> ${j.scheduledDate}${j.scheduledTime ? " at " + j.scheduledTime : ""}</li><li><b>Address:</b> ${j.address}</li>${c ? `<li><b>Customer:</b> ${c.firstName} ${c.lastName}</li>` : ""}</ul>` + emailButton("Open Crew Portal", portalLink));
             sendEmail(settings, { to: emp.email, subject: `You've Been Assigned — ${j.scheduledDate}`, body: html }).catch(() => {});
           }
           toast("Alfred assigned " + emp.firstName + " to the " + j.scheduledDate + " job");
@@ -908,13 +914,13 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
               (supabase as any).from("job_requests").insert({
                 job_id: j.id, employee_id: emp.id, owner_id: ownerId, status: "pending", message: inputs.message || null,
               }).select("id").single(),
-              8000, "Save request"
+              15000, "Save request"
             );
             if (error || !data) return { error: "Could not save request — " + (error?.message || "run the job_requests SQL in Supabase first") };
             if (emp.email) {
               const c = customers.find(x => x.id === j.customerId);
               const reqUrl = `${window.location.origin}${window.location.pathname}#/portal?request=${data.id}`;
-              const html = emailShell(settings.companyName || "Smock's Pressure Washing", "Job Request", `<p>Hi ${emp.firstName},</p><p>${inputs.message || "You have a new job request:"}</p><ul><li><b>Date:</b> ${j.scheduledDate}${j.scheduledTime ? " at " + j.scheduledTime : ""}</li><li><b>Address:</b> ${j.address}</li>${c ? `<li><b>Customer:</b> ${c.firstName} ${c.lastName}</li>` : ""}</ul><div style="text-align:center;margin:22px 0 4px"><a href="${reqUrl}" style="display:inline-block;background:#16a34a;color:#fff;text-decoration:none;font-weight:700;font-size:14px;padding:13px 24px;border-radius:10px;margin-right:8px">✓ Accept Job</a><a href="${reqUrl}&action=deny" style="display:inline-block;background:#dc2626;color:#fff;text-decoration:none;font-weight:700;font-size:14px;padding:13px 24px;border-radius:10px">✗ Decline</a></div>`);
+              const html = emailShell(settings.companyName || "Crew Boss", "Job Request", `<p>Hi ${emp.firstName},</p><p>${inputs.message || "You have a new job request:"}</p><ul><li><b>Date:</b> ${j.scheduledDate}${j.scheduledTime ? " at " + j.scheduledTime : ""}</li><li><b>Address:</b> ${j.address}</li>${c ? `<li><b>Customer:</b> ${c.firstName} ${c.lastName}</li>` : ""}</ul><div style="text-align:center;margin:22px 0 4px"><a href="${reqUrl}" style="display:inline-block;background:#16a34a;color:#fff;text-decoration:none;font-weight:700;font-size:14px;padding:13px 24px;border-radius:10px;margin-right:8px">✓ Accept Job</a><a href="${reqUrl}&action=deny" style="display:inline-block;background:#dc2626;color:#fff;text-decoration:none;font-weight:700;font-size:14px;padding:13px 24px;border-radius:10px">✗ Decline</a></div>`);
               withTimeout(sendEmail(settings, { to: emp.email, subject: `Job Request — ${j.scheduledDate}`, body: html }), 8000, "Email send").catch((e: any) => console.warn("Alfred job request email failed — request still saved:", e?.message));
             }
             toast("Alfred sent a job request to " + emp.firstName);
@@ -926,7 +932,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
         case "send_reminder": {
           const c = customers.find(x => x.id === inputs.customerId);
           if (!c) return { error: "Customer not found" };
-          const msg = inputs.message || ("Hi " + c.firstName + ", a quick reminder from Smock's Pressure Washing. Reply or call (717) 555-0100.");
+          const msg = inputs.message || ("Hi " + c.firstName + ", a quick reminder from Crew Boss. Reply or call (717) 555-0100.");
           const channel = inputs.channel || "sms";
           if (channel === "sms" && c.phone) {
             if (settings?.twilioSid) {
@@ -936,7 +942,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
               return { success: false, note: "Twilio not configured — add credentials in Settings to send real SMS", draft: msg };
             }
           } else if (channel === "email" && c.email) {
-            try { await sendEmail(settings, { to: c.email, subject: inputs.subject || "Reminder from Smock's", body: emailShell(settings?.companyName || "Smock's Pressure Washing", "Reminder", `<p>${msg}</p>`) }); }
+            try { await sendEmail(settings, { to: c.email, subject: inputs.subject || "Reminder from Crew Boss", body: emailShell(settings?.companyName || "Crew Boss", "Reminder", `<p>${msg}</p>`) }); }
             catch(e) { return { error: "Email failed: " + e.message }; }
           }
           toast("Reminder sent to " + c.firstName + " via " + channel + " ✓");
@@ -1293,10 +1299,10 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
 
     try {
       const prompts = {
-        drill: "You are Alfred, a gruff drill sergeant who manages Smock's Pressure Washing, a pressure washing business in York, PA. Be aggressive, motivating, use military terminology. Keep responses short and punchy (2-4 short lines usually). End every response with 'Alfred out.'",
-        butler: "You are Alfred, a polished British butler at Smock's Pressure Washing in York, PA. Be formal, courteous, and refined. Use 'sir' and British expressions. Keep responses concise and professional.",
-        quiet: "You are Alfred, a stoic operations manager at Smock's Pressure Washing in York, PA. Be terse, data-driven, and matter-of-fact. No pleasantries. Just facts and actions. Keep it short.",
-        savage: "You are Alfred, a sarcastic but brilliant assistant at Smock's Pressure Washing in York, PA. Roast the user occasionally but always be helpful underneath. Be witty and sharp."
+        drill: "You are Alfred, a gruff drill sergeant who manages Crew Boss, a pressure washing business in York, PA. Be aggressive, motivating, use military terminology. Keep responses short and punchy (2-4 short lines usually). End every response with 'Alfred out.'",
+        butler: "You are Alfred, a polished British butler at Crew Boss in York, PA. Be formal, courteous, and refined. Use 'sir' and British expressions. Keep responses concise and professional.",
+        quiet: "You are Alfred, a stoic operations manager at Crew Boss in York, PA. Be terse, data-driven, and matter-of-fact. No pleasantries. Just facts and actions. Keep it short.",
+        savage: "You are Alfred, a sarcastic but brilliant assistant at Crew Boss in York, PA. Roast the user occasionally but always be helpful underneath. Be witty and sharp."
       };
       const activePersonality = active?.personality || personality;
       const memByCat: Record<string, string[]> = memory.reduce((acc: Record<string, string[]>, m: any) => { const k = m.category || "general"; (acc[k] = acc[k] || []).push(m.text); return acc; }, {});
@@ -1832,7 +1838,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
                             role: "user",
                             content: [
                               { type: "image", source: { type: "base64", media_type: mediaType, data: base64 } },
-                              { type: "text", text: "You are Alfred, business assistant for Smock's Pressure Washing. Analyze this image. If it's a receipt or invoice: extract vendor name, date, total amount, and category (fuel/supplies/equipment/food/other). Format as: RECEIPT: [vendor] | [date] | $[amount] | [category]. If it's a job photo: describe what you see and whether it's before/after. If other: describe briefly." }
+                              { type: "text", text: "You are Alfred, business assistant for Crew Boss. Analyze this image. If it's a receipt or invoice: extract vendor name, date, total amount, and category (fuel/supplies/equipment/food/other). Format as: RECEIPT: [vendor] | [date] | $[amount] | [category]. If it's a job photo: describe what you see and whether it's before/after. If other: describe briefly." }
                             ]
                           }]
                         })

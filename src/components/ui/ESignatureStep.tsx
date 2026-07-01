@@ -1,4 +1,4 @@
-// auto-extracted from Smock's OS monolith
+// auto-extracted from Crew Boss OS monolith
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
   LayoutDashboard, Users, FileText, Briefcase, Bot, BarChart3,
@@ -74,7 +74,7 @@ export function ESignatureStep({ e, c, sigData, setSigData, canvasRef, startDraw
     <div className="space-y-4">
       <div>
         <div className="font-semibold mb-1">E-Signature</div>
-        <div className="text-xs text-white/60 mb-3">By signing below, you agree to the estimate total of <span className="text-red-400 font-bold">{fmt(e.total)}</span> and authorize Smock's Pressure Washing to perform the listed services.</div>
+        <div className="text-xs text-white/60 mb-3">By signing below, you agree to the estimate total of <span className="text-red-400 font-bold">{fmt(e.total)}</span> and authorize Crew Boss to perform the listed services.</div>
       </div>
       <div className="flex gap-2">
         {[["draw","✍️ Draw"],["type","⌨️ Type Name"]].map(([m,l]) => (

@@ -1,4 +1,4 @@
-// auto-extracted from Smock's OS monolith
+// auto-extracted from Crew Boss OS monolith
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
   LayoutDashboard, Users, FileText, Briefcase, Bot, BarChart3,
@@ -108,13 +108,13 @@ export function VisualWorkflowBuilder({ open, data, onClose, onSave }) {
       const res = await fetch("https://api.anthropic.com/v1/messages", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: 200,
-          messages: [{ role: "user", content: `Write a short, professional ${channel === "sms" ? "SMS text message" : "email"} for a pressure washing company (Smock's, York PA, owner Will). Context: "${context}". Action: "${step.label}". Use {{first_name}} for customer name. ${channel === "sms" ? "Keep under 160 chars." : "Keep under 3 sentences."} No quotes around the whole message. Start with "Hi {{first_name}},"` }]
+          messages: [{ role: "user", content: `Write a short, professional ${channel === "sms" ? "SMS text message" : "email"} for a pressure washing company (Crew Boss, York PA, owner Will). Context: "${context}". Action: "${step.label}". Use {{first_name}} for customer name. ${channel === "sms" ? "Keep under 160 chars." : "Keep under 3 sentences."} No quotes around the whole message. Start with "Hi {{first_name}},"` }]
         })
       });
       const d = await res.json();
       const msg = d.content?.[0]?.text?.trim();
       if (msg) updateStep(idx, { messageBody: msg });
-    } catch { updateStep(idx, { messageBody: "Hi {{first_name}}, " + (step.label || "following up from Smock's Pressure Washing") + ". — Will @ Smock's" }); }
+    } catch { updateStep(idx, { messageBody: "Hi {{first_name}}, " + (step.label || "following up from Crew Boss") + ". — Will @ Crew Boss" }); }
     setAiDrafting(false);
   };
 
@@ -167,11 +167,11 @@ export function VisualWorkflowBuilder({ open, data, onClose, onSave }) {
 
   const ACTION_CONFIGS = {
     sms: {
-      presets: ["Thank you for choosing Smock's!", "Reminder: service tomorrow at {{date}}", "We're on our way! ETA 15 min", "Review request: {{review_link}}", "Invoice due: {{portal_link}}", "Promo: 15% off this month"],
+      presets: ["Thank you for choosing Crew Boss!", "Reminder: service tomorrow at {{date}}", "We're on our way! ETA 15 min", "Review request: {{review_link}}", "Invoice due: {{portal_link}}", "Promo: 15% off this month"],
       subject: false
     },
     email: {
-      presets: ["Welcome to Smock's — here's what to expect", "Your estimate is ready", "Service complete — how'd we do?", "Invoice ready for review", "Seasonal maintenance reminder", "Thank you for your business"],
+      presets: ["Welcome to Crew Boss — here's what to expect", "Your estimate is ready", "Service complete — how'd we do?", "Invoice ready for review", "Seasonal maintenance reminder", "Thank you for your business"],
       subject: true
     },
     task: {
@@ -369,7 +369,7 @@ export function VisualWorkflowBuilder({ open, data, onClose, onSave }) {
                     {["sms", "email", "internal", "task"].includes(selected.channel || "sms") && <>
                       {selected.channel === "email" && <div>
                         <label className="text-[10px] text-white/50 uppercase tracking-wider mb-1.5 block">Email Subject</label>
-                        <GInput value={selected.subject || ""} onChange={e => updateStep(selectedIdx, { subject: e.target.value })} placeholder="Your service confirmation from Smock's" className="!text-xs" />
+                        <GInput value={selected.subject || ""} onChange={e => updateStep(selectedIdx, { subject: e.target.value })} placeholder="Your service confirmation from Crew Boss" className="!text-xs" />
                       </div>}
                       <div>
                         <div className="flex items-center justify-between mb-1.5">
@@ -378,7 +378,7 @@ export function VisualWorkflowBuilder({ open, data, onClose, onSave }) {
                             {aiDrafting ? <><div className="w-2.5 h-2.5 border border-purple-400 border-t-transparent rounded-full animate-spin" />Drafting…</> : <><Zap size={9} />AI Draft</>}
                           </button>
                         </div>
-                        <GTxt rows={5} value={selected.messageBody || ""} onChange={e => updateStep(selectedIdx, { messageBody: e.target.value })} placeholder={"Hi {{first_name}}, " + (selected.channel === "sms" ? "your service is confirmed for {{date}}. — Smock's" : "thank you for choosing Smock's Pressure Washing…")} className="!text-xs font-mono" />
+                        <GTxt rows={5} value={selected.messageBody || ""} onChange={e => updateStep(selectedIdx, { messageBody: e.target.value })} placeholder={"Hi {{first_name}}, " + (selected.channel === "sms" ? "your service is confirmed for {{date}}. — Crew Boss" : "thank you for choosing Crew Boss…")} className="!text-xs font-mono" />
                         {selected.channel === "sms" && selected.messageBody && <div className={"text-[10px] mt-1 " + (selected.messageBody.length > 160 ? "text-yellow-400" : "text-white/30")}>{selected.messageBody.length}/160 chars{selected.messageBody.length > 160 ? " · " + Math.ceil(selected.messageBody.length/160) + " segments" : ""}</div>}
                         {/* Merge tag buttons */}
                         <div className="flex flex-wrap gap-1 mt-2">
@@ -388,7 +388,7 @@ export function VisualWorkflowBuilder({ open, data, onClose, onSave }) {
                         {ACTION_CONFIGS[selected.channel || "sms"]?.presets.length > 0 && <div className="mt-3">
                           <div className="text-[9px] text-white/30 uppercase tracking-wider mb-1.5">Quick presets</div>
                           <div className="space-y-0.5 max-h-32 overflow-y-auto">
-                            {ACTION_CONFIGS[selected.channel || "sms"].presets.map(p => <button key={p} onClick={() => updateStep(selectedIdx, { label: p, messageBody: "Hi {{first_name}}, " + p + " — Smock's Pressure Washing" })} className="w-full text-left text-[10px] px-2 py-1.5 rounded-lg hover:bg-white/5 text-white/45 hover:text-white transition">{p}</button>)}
+                            {ACTION_CONFIGS[selected.channel || "sms"].presets.map(p => <button key={p} onClick={() => updateStep(selectedIdx, { label: p, messageBody: "Hi {{first_name}}, " + p + " — Crew Boss" })} className="w-full text-left text-[10px] px-2 py-1.5 rounded-lg hover:bg-white/5 text-white/45 hover:text-white transition">{p}</button>)}
                           </div>
                         </div>}
                       </div>

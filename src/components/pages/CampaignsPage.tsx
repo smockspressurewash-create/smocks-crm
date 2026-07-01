@@ -1,4 +1,4 @@
-// auto-extracted from Smock's OS monolith
+// auto-extracted from Crew Boss OS monolith
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
   LayoutDashboard, Users, FileText, Briefcase, Bot, BarChart3,
@@ -82,7 +82,7 @@ export function CampaignsPage({ campaigns = [], setCampaigns, customers = [], es
   const [tab, setTab] = useState("compose");
   const [ch, setCh] = useState("sms");
   const [subj, setSubj] = useState("");
-  const [body, setBody] = useState("Hi {{first_name}}, spring special — 15% off house soft washes this month. Reply BOOK or call (717) 555-0100. — Smock's");
+  const [body, setBody] = useState("Hi {{first_name}}, spring special — 15% off house soft washes this month. Reply BOOK or call (717) 555-0100. — Crew Boss");
   const [fCity, setFCity] = useState("");
   const [fLast, setFLast] = useState(""); // last service date (most recent completed job)
   const [fTag, setFTag] = useState("");
@@ -171,7 +171,7 @@ export function CampaignsPage({ campaigns = [], setCampaigns, customers = [], es
     setSendProgress(null);
     setCampaigns(prev => prev.map(c => c.id === campaignId ? { ...c, status: "sent", sentCount: sent, failedCount: failed, openRate: Math.floor(35 + Math.random() * 30), clickRate: Math.floor(8 + Math.random() * 15) } : c));
     toast(`Campaign sent! ${sent} delivered${failed > 0 ? ", " + failed + " failed" : ""}`, sent > 0 ? "success" : "error");
-    setBody("Hi {{first_name}}, spring special — 15% off house soft washes this month. Reply BOOK or call (717) 555-0100. — Smock's");
+    setBody("Hi {{first_name}}, spring special — 15% off house soft washes this month. Reply BOOK or call (717) 555-0100. — Crew Boss");
     setSubj("");
   };
 

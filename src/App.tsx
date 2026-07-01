@@ -531,7 +531,7 @@ export function App() {
   const [estimateTemplates, setEstimateTemplates] = usePersistent<any[]>("smocks.estimateTpls", []);
   const [timeline,        setTimeline]        = usePersistent<Timeline>("smocks.timeline", seedTimeline as Timeline);
   const [settings,        setSettings]        = usePersistent<AppSettings>("smocks.settings", {
-    companyName: "Smock's Pressure Washing",
+    companyName: "Crew Boss",
     companyPhone: "(717) 555-0100",
     ownerName: "Will Smock",
     monthlyRevenueGoal: 8000,
@@ -547,6 +547,77 @@ export function App() {
     notifyWeather: true,
     reviewShowcaseMinRating: 5,
   });
+
+  // ── Cross-device settings sync (BUG 9) ──────────────────────────────────────
+  // Settings (API keys, model prefs, integrations, branding) live in
+  // localStorage via usePersistent, which is per-device — so keys saved on a
+  // laptop never appeared on a phone. Mirror the whole settings blob into a
+  // Supabase `app_settings` table keyed by the owner's user id: load it on
+  // mount (server wins over this device's stale copy) and upsert on change
+  // (debounced). Fails silently if the table doesn't exist yet.
+  const settingsSyncLoadedRef = useRef(false);
+  const settingsSaveTimerRef = useRef<any>(null);
+  useEffect(() => {
+    if (!crmUserId || settingsSyncLoadedRef.current) return;
+    (async () => {
+      try {
+        const { data, error } = await (supabase as any)
+          .from("app_settings").select("data").eq("owner_id", crmUserId).maybeSingle();
+        if (!error && data?.data && typeof data.data === "object") {
+          // Merge server settings over local — server is the source of truth
+          // for cross-device fields, but keep any local-only keys not present
+          // on the server so nothing is lost.
+          setSettings((prev: any) => ({ ...prev, ...data.data }));
+        }
+      } catch { /* app_settings table may not exist yet */ }
+      settingsSyncLoadedRef.current = true;
+    })();
+  }, [crmUserId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    // Only start saving after the initial load has run, so we never overwrite
+    // the server copy with this device's pre-load defaults.
+    if (!crmUserId || !settingsSyncLoadedRef.current) return;
+    clearTimeout(settingsSaveTimerRef.current);
+    settingsSaveTimerRef.current = setTimeout(() => {
+      (supabase as any)
+        .from("app_settings")
+        .upsert({ owner_id: crmUserId, data: settings, updated_at: new Date().toISOString() }, { onConflict: "owner_id" })
+        .then((r: any) => { if (r?.error) console.warn("Settings sync failed:", r.error.message); })
+        .catch((e: any) => console.warn("Settings sync failed:", e?.message));
+    }, 1500);
+    return () => clearTimeout(settingsSaveTimerRef.current);
+  }, [settings, crmUserId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Owner notifications on client invoice activity (BUG 15 / FEATURE 5) ──────
+  // The client portal writes `clientViewedAt` / `paidAt` / `paymentFailedAt`
+  // onto the estimate row in Supabase; the owner's 3s poll pulls those in. Diff
+  // each poll against the previous snapshot and surface a toast + bell entry the
+  // moment a client opens, pays, or fails to pay an invoice.
+  const invoiceActivityRef = useRef<Record<string, { viewed?: string; paid?: string; failed?: string }>>({});
+  const invoiceActivitySeededRef = useRef(false);
+  const [invoiceNotifs, setInvoiceNotifs] = useState<{ id: string; text: string; at: number }[]>([]);
+  useEffect(() => {
+    if (!hasCrmSession) return;
+    const snapshot: Record<string, { viewed?: string; paid?: string; failed?: string }> = {};
+    const newEvents: { id: string; text: string; at: number }[] = [];
+    for (const e of estimates as any[]) {
+      const cur = { viewed: e.clientViewedAt, paid: e.paidAt, failed: e.paymentFailedAt };
+      snapshot[e.id] = cur;
+      if (!invoiceActivitySeededRef.current) continue; // don't fire on first load
+      const prev = invoiceActivityRef.current[e.id] || {};
+      const custName = (() => { const c = customers.find(x => x.id === e.customerId); return c ? `${c.firstName} ${c.lastName}` : "A customer"; })();
+      if (cur.paid && !prev.paid) newEvents.push({ id: e.id + ":paid", text: `💰 ${custName} paid invoice ${fmt(e.total)}`, at: Date.now() });
+      else if (cur.failed && cur.failed !== prev.failed) newEvents.push({ id: e.id + ":failed", text: `⚠️ ${custName}'s payment failed on ${fmt(e.total)}`, at: Date.now() });
+      else if (cur.viewed && !prev.viewed) newEvents.push({ id: e.id + ":viewed", text: `👀 ${custName} opened invoice ${fmt(e.total)}`, at: Date.now() });
+    }
+    invoiceActivityRef.current = snapshot;
+    if (!invoiceActivitySeededRef.current) { invoiceActivitySeededRef.current = true; return; }
+    if (newEvents.length) {
+      newEvents.forEach(ev => toast(ev.text, ev.text.startsWith("⚠️") ? "red" : "green"));
+      setInvoiceNotifs(prev => [...newEvents, ...prev].slice(0, 20));
+    }
+  }, [estimates, hasCrmSession]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Alfred
   const [alfredConversations, setAlfredConversations] = usePersistent<AlfredConversation[]>("smocks.alfredConvs", []);
@@ -1054,7 +1125,7 @@ export function App() {
           job: j,
           custName: (() => { const c = customers.find(x => x.id === j.customerId); return c ? `${c.firstName} ${c.lastName}` : ""; })(),
         }));
-        const html = buildTomorrowJobsEmailHtml(settings.companyName || "Smock's Pressure Washing", emp.firstName, jobsList);
+        const html = buildTomorrowJobsEmailHtml(settings.companyName || "Crew Boss", emp.firstName, jobsList);
         try { await sendEmail(settings as any, emp.email, "Tomorrow's Jobs", html); } catch { /* best-effort */ }
       }
       localStorage.setItem(dedupeKey, "1");
@@ -1078,7 +1149,7 @@ export function App() {
       return (j.clockInAt - scheduled) / 60000 > 15;
     }).length;
     const issues = todaysJobs.flatMap(j => (j.commLog || []).filter((e: any) => e.type === "note" && e.date === tKey)).length;
-    const html = buildDailyBriefingEmailHtml(settings.companyName || "Smock's Pressure Washing", { completed: completed.length, total: todaysJobs.length, revenue, late, issues });
+    const html = buildDailyBriefingEmailHtml(settings.companyName || "Crew Boss", { completed: completed.length, total: todaysJobs.length, revenue, late, issues });
     const toEmail = settings.companyEmail || settings.myEmail;
     if (!toEmail) { toast("Add a business email in Settings → My Profile first", "yellow"); return; }
     try {
@@ -1152,7 +1223,7 @@ export function App() {
             <Lock size={28} className="text-white" />
           </div>
           <div>
-            <div className="text-xl font-bold text-white">Smock's OS</div>
+            <div className="text-xl font-bold text-white">Crew Boss OS</div>
             <div className="text-sm text-white/50 mt-1">Enter your PIN to continue</div>
           </div>
           <div className="flex justify-center gap-3">
@@ -1320,7 +1391,7 @@ export function App() {
                     <label className="text-xs text-white/50 mb-1 block">Company Name</label>
                     <input
                       type="text" value={ownerCompanyName} onChange={e => setOwnerCompanyName(e.target.value)}
-                      placeholder="Smock's Pressure Washing"
+                      placeholder="Crew Boss"
                       className="w-full bg-white/5 border border-white/20 rounded-xl px-4 py-3.5 text-base text-white placeholder-white/30 focus:outline-none focus:border-red-500/50"
                     />
                   </div>
@@ -1443,7 +1514,7 @@ export function App() {
               {(settings.companyName || "S")[0].toUpperCase()}
             </div>
             <div>
-              <div className="font-bold text-sm leading-tight">{settings.companyName || "Smock's OS"}</div>
+              <div className="font-bold text-sm leading-tight">{settings.companyName || "Crew Boss OS"}</div>
               <div className="text-[10px] text-white/40">Business CRM</div>
             </div>
           </div>
@@ -1553,6 +1624,12 @@ export function App() {
                   <button onClick={() => setNotifOpen(false)} className="p-1 text-white/40 hover:text-white"><X size={14} /></button>
                 </div>
                 <div className="flex-1 overflow-y-auto p-2 space-y-1">
+                  {invoiceNotifs.map(n => (
+                    <button key={n.id + n.at} onClick={() => { setPage("invoices"); setNotifOpen(false); }} className="w-full flex items-center gap-3 p-2.5 hover:bg-white/5 rounded-xl text-left">
+                      <div className="p-1.5 rounded-lg bg-green-950/30 text-green-400"><Receipt size={12} /></div>
+                      <div><div className="text-xs font-semibold">{n.text}</div><div className="text-[10px] text-white/40">{new Date(n.at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</div></div>
+                    </button>
+                  ))}
                   {overdueCount > 0 && (
                     <button onClick={() => { setPage("invoices"); setNotifOpen(false); }} className="w-full flex items-center gap-3 p-2.5 hover:bg-white/5 rounded-xl text-left">
                       <div className="p-1.5 rounded-lg bg-yellow-950/30 text-yellow-400"><Receipt size={12} /></div>
@@ -1574,7 +1651,7 @@ export function App() {
                       </button>
                     );
                   })}
-                  {negativeAlerts.length === 0 && overdueCount === 0 && lowStock === 0 && estimates.filter(e => e.status === "pending" && daysSince(e.createdAt) >= 7).length === 0 && (
+                  {negativeAlerts.length === 0 && overdueCount === 0 && lowStock === 0 && invoiceNotifs.length === 0 && estimates.filter(e => e.status === "pending" && daysSince(e.createdAt) >= 7).length === 0 && (
                     <div className="p-6 text-center text-sm text-white/40">All clear ✓</div>
                   )}
                 </div>
@@ -1748,7 +1825,9 @@ export function App() {
       {settings.fabEnabled !== false && (
         <>
           {fabOpen && <div className="fixed inset-0 z-40" onClick={() => setFabOpen(false)} />}
-          <div className="fixed bottom-6 right-6 z-50 flex flex-col items-end gap-2.5">
+          {/* Raised above the mobile bottom nav (bottom-20) so it never overlaps
+              it; drops back to bottom-6 on md+ where there's no bottom nav. */}
+          <div className="fixed bottom-20 right-5 md:bottom-6 md:right-6 z-50 flex flex-col items-end gap-2.5" style={{ marginBottom: "env(safe-area-inset-bottom)" }}>
             {fabOpen && (
               <>
                 {(() => {
@@ -1806,7 +1885,7 @@ export function App() {
                 value={companySetupName}
                 onChange={e => setCompanySetupName(e.target.value)}
                 onKeyDown={e => e.key === "Enter" && saveCompanySetup()}
-                placeholder="e.g. Smock's Pressure Washing"
+                placeholder="e.g. Crew Boss"
                 className="w-full bg-white/5 border border-white/20 rounded-xl px-3 py-2.5 text-sm text-white placeholder-white/30 focus:outline-none focus:border-red-500/50"
               />
             </div>
@@ -1824,8 +1903,8 @@ export function App() {
         </div>
       )}
 
-      {/* Toasts */}
-      <div className="fixed bottom-4 left-4 z-50 space-y-2 pointer-events-none">
+      {/* Toasts — raised above the mobile bottom nav so they're not hidden behind it */}
+      <div className="fixed bottom-20 left-4 right-4 md:bottom-4 md:right-auto z-50 space-y-2 pointer-events-none">
         {toasts.map(t => (
           <div key={t.id} className={"pointer-events-auto flex items-center gap-2.5 px-4 py-3 rounded-xl shadow-xl text-sm font-medium backdrop-blur animate-fade-in border " + (t.tone === "red" ? "bg-red-950/90 border-red-700/50 text-red-200" : t.tone === "yellow" ? "bg-yellow-950/90 border-yellow-700/50 text-yellow-200" : "bg-black/90 border-green-700/50 text-green-200")}>
             <div className={"w-1.5 h-1.5 rounded-full flex-shrink-0 " + (t.tone === "red" ? "bg-red-400" : t.tone === "yellow" ? "bg-yellow-400" : "bg-green-400")} />

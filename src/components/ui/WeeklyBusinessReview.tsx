@@ -1,4 +1,4 @@
-// auto-extracted from Smock's OS monolith
+// auto-extracted from Crew Boss OS monolith
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
   LayoutDashboard, Users, FileText, Briefcase, Bot, BarChart3,
@@ -61,7 +61,7 @@ export function WeeklyBusinessReview({ jobs = [], customers = [], estimates = []
   const generate = async () => {
     setLoading(true); setReview("");
     try {
-      const res = await fetch("https://api.anthropic.com/v1/messages", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: 500, messages: [{ role: "user", content: `Write a concise 3-paragraph ${mode} business review for Smock's Pressure Washing (York PA, owner Will). Data for the last ${days} days: Revenue $${periodRev.toFixed(0)}, Jobs ${periodJobs.length}, New customers ${periodCustomers}, Expenses $${periodExp.toFixed(0)}, Profit $${periodProfit.toFixed(0)} (${periodRev > 0 ? Math.round(periodProfit/periodRev*100) : 0}% margin), Pending quotes ${pendingEst}, Overdue invoices ${overdueInv}. Para 1: wins. Para 2: what needs work. Para 3: top 3 action items for next ${mode === "monthly" ? "month" : "week"}. Direct, specific, under ${mode === "monthly" ? "250" : "200"} words. ${mode === "monthly" ? "For monthly review, also compare to typical seasonal benchmarks for a pressure washing business." : ""}` }] }) });
+      const res = await fetch("https://api.anthropic.com/v1/messages", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: 500, messages: [{ role: "user", content: `Write a concise 3-paragraph ${mode} business review for Crew Boss (York PA, owner Will). Data for the last ${days} days: Revenue $${periodRev.toFixed(0)}, Jobs ${periodJobs.length}, New customers ${periodCustomers}, Expenses $${periodExp.toFixed(0)}, Profit $${periodProfit.toFixed(0)} (${periodRev > 0 ? Math.round(periodProfit/periodRev*100) : 0}% margin), Pending quotes ${pendingEst}, Overdue invoices ${overdueInv}. Para 1: wins. Para 2: what needs work. Para 3: top 3 action items for next ${mode === "monthly" ? "month" : "week"}. Direct, specific, under ${mode === "monthly" ? "250" : "200"} words. ${mode === "monthly" ? "For monthly review, also compare to typical seasonal benchmarks for a pressure washing business." : ""}` }] }) });
       const data = await res.json();
       setReview(data.content?.[0]?.text || "Unable to generate.");
     } catch { setReview("Could not generate — check connection."); }

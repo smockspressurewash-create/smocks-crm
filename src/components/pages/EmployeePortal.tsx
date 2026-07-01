@@ -628,7 +628,7 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
 
           {completeStep === "payment" && (
             <>
-              <div className="text-lg font-bold">Has the customer paid?</div>
+              <div className="text-lg font-bold">Has the customer paid yet?</div>
               <div className="text-sm text-white/50">Amount due: <span className="text-green-400 font-semibold">{fmt(job.amount)}</span></div>
               <div className="grid grid-cols-2 gap-3">
                 <button onClick={() => { setPaidChoice("yes"); setCompleteStep("method"); }} className="py-4 rounded-xl border-2 border-green-600/50 bg-green-950/30 text-green-300 font-semibold hover:bg-green-900/40 transition">Yes</button>
@@ -1317,6 +1317,8 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
   const [pendingCompleteJobId, setPendingCompleteJobId] = useState<string | null>(null);
   const [activeJobMenuOpen, setActiveJobMenuOpen] = useState(false);
+  // FEATURE 1 — shows "Shift ended · Total 7h 23m" for a few seconds after End My Day
+  const [shiftEndedMsg, setShiftEndedMsg] = useState<string | null>(null);
   const [routeLoading, setRouteLoading] = useState(false);
   const [routeInfo, setRouteInfo] = useState<{ order: Job[]; totalDuration: string; totalDistance: string; etas: string[]; origin: { lat: number; lng: number } | string } | null>(null);
   const [calMode, setCalMode] = useState<"week" | "month">("month");
@@ -2274,7 +2276,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
       catch (e: any) { toast(e?.message || "Failed to send OTW text", "red"); }
     } else if (cust!.email) {
       try {
-        const html = emailShell(settings?.companyName || "Smock's Pressure Washing", "On My Way", `<p>${msg}</p>`);
+        const html = emailShell(settings?.companyName || "Crew Boss", "On My Way", `<p>${msg}</p>`);
         await sendEmail(settings as any, { to: cust!.email, subject: "Your technician is on the way", body: html });
         toast("OTW email sent to " + cust!.firstName + " ✓");
       } catch (e: any) { toast(e?.message || "Failed to send OTW email", "red"); }
@@ -2741,7 +2743,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
             <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-red-600 to-red-900 flex items-center justify-center mx-auto mb-4 shadow-lg">
               <span className="text-2xl font-black">S</span>
             </div>
-            <div className="text-xl font-bold">{settings.companyName || "Smock's OS"}</div>
+            <div className="text-xl font-bold">{settings.companyName || "Crew Boss OS"}</div>
             <div className="text-sm text-white/50 mt-1">{inviteRecord ? "Create Your Crew Account" : "Employee Portal"}</div>
           </div>
 
@@ -3015,7 +3017,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
         onBack={() => setSelectedJobId(null)}
         onUpdateJob={patch => updateJob(selectedJobId, patch)}
         toast={toast}
-        companyName={settings.companyName || "Smock's Pressure Washing"}
+        companyName={settings.companyName || "Crew Boss"}
         onComplete={handleJobComplete}
         perms={perms}
         maxLunchMinutes={settings.maxLunchMinutes ?? 30}
@@ -3050,7 +3052,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   const notifyOwnerArrival = (job: Job, cust: Customer | undefined) => {
     const ownerEmail = (settings as any)?.myEmail || (settings as any)?.companyEmail;
     if (!ownerEmail) return;
-    const html = emailShell(settings?.companyName || "Smock's Pressure Washing", "Crew Arrived", `<p>${myEmployee.firstName} ${myEmployee.lastName} has arrived at a job:</p><ul><li><b>Address:</b> ${job.address}</li>${cust ? `<li><b>Customer:</b> ${cust.firstName} ${cust.lastName}</li>` : ""}<li><b>Time:</b> ${new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</li></ul>`);
+    const html = emailShell(settings?.companyName || "Crew Boss", "Crew Arrived", `<p>${myEmployee.firstName} ${myEmployee.lastName} has arrived at a job:</p><ul><li><b>Address:</b> ${job.address}</li>${cust ? `<li><b>Customer:</b> ${cust.firstName} ${cust.lastName}</li>` : ""}<li><b>Time:</b> ${new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</li></ul>`);
     sendEmail(settings, { to: ownerEmail, subject: `${myEmployee.firstName} arrived — ${job.address}`, body: html }).catch(() => {});
   };
 
@@ -3082,13 +3084,18 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
           await twilioSend(settings as any, customer.phone, `Hi ${customer.firstName}, ${msg}`);
           toast(`Running late notice sent to ${customer.firstName} ✓`);
         } else if (customer.email) {
-          const html = emailShell(settings?.companyName || "Smock's Pressure Washing", "Running Late", `<p>Hi ${customer.firstName},</p><p>${msg}</p>`);
+          const html = emailShell(settings?.companyName || "Crew Boss", "Running Late", `<p>Hi ${customer.firstName},</p><p>${msg}</p>`);
           await sendEmail(settings as any, { to: customer.email, subject: "Your technician is running late", body: html });
           toast(`Running late email sent to ${customer.firstName} ✓`);
+        } else if (customer.phone) {
+          // No Twilio configured and no email — open the device's own SMS app
+          // prefilled so the message still goes out from the tech's phone.
+          window.location.href = "sms:" + customer.phone.replace(/\D/g, "") + "?body=" + encodeURIComponent(`Hi ${customer.firstName}, ${msg}`);
+          toast(`Opening your texts to notify ${customer.firstName}…`);
         }
         const ownerEmail = (settings as any)?.myEmail || (settings as any)?.companyEmail;
         if (ownerEmail) {
-          const ownerMsg = emailShell(settings?.companyName || "Smock's Pressure Washing", "Crew Running Late", `<p>${myEmployee.firstName} ${myEmployee.lastName} is running ~${minutes} min late to ${job.address}${lateNote.trim() ? ` (${lateNote.trim()})` : ""}.</p>`);
+          const ownerMsg = emailShell(settings?.companyName || "Crew Boss", "Crew Running Late", `<p>${myEmployee.firstName} ${myEmployee.lastName} is running ~${minutes} min late to ${job.address}${lateNote.trim() ? ` (${lateNote.trim()})` : ""}.</p>`);
           sendEmail(settings as any, { to: ownerEmail, subject: `Running late — ${job.address}`, body: ownerMsg }).catch(() => {});
         }
         updateJob(job.id, { commLog: [...(job.commLog || []), { id: uid(), type: "note" as const, date: today(), note: `⏱ Running late +${minutes}min${lateNote.trim() ? ` (${lateNote.trim()})` : ""} — customer notified` }] });
@@ -3443,12 +3450,20 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
 
           {/* Today tab */}
           {tab === "today" && <>
-            {/* Welcome header */}
-            <div className="pb-1">
-              <div className="text-xl font-bold text-white">Welcome, {myEmployee.firstName}!</div>
-              <div className="text-sm text-white/50 mt-0.5">
-                {new Date().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" })}
+            {/* Welcome header + top-of-page Route button (FEATURE 2) */}
+            <div className="pb-1 flex items-start justify-between gap-2">
+              <div>
+                <div className="text-xl font-bold text-white">Welcome, {myEmployee.firstName}!</div>
+                <div className="text-sm text-white/50 mt-0.5">
+                  {new Date().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" })}
+                </div>
               </div>
+              {todayJobs.filter(j => j.status !== "completed" && j.address).length >= 1 && (
+                <button onClick={optimizeRoute} disabled={routeLoading}
+                  className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-blue-950/40 hover:bg-blue-900/50 border border-blue-700/40 text-blue-300 text-xs font-semibold transition disabled:opacity-40 flex-shrink-0">
+                  <Route size={13} />{routeLoading ? "Routing…" : "Route"}
+                </button>
+              )}
             </div>
 
             {/* Start My Day — overall work-hours clock, separate from clocking
@@ -3485,7 +3500,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                   <div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #eee"><span>Estimated pay</span><strong>${fmt(pay)}</strong></div>
                   <div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #eee"><span>Checklist completion</span><strong>${ckRate}%</strong></div>
                 `;
-                const companyName = settings?.companyName || "Smock's Pressure Washing";
+                const companyName = settings?.companyName || "Crew Boss";
 
                 if (myEmployee?.email) {
                   sendEmail(settings as any, { to: myEmployee.email, subject: `Your day summary — ${todayStr}`, body: emailShell(companyName, "End of Day Summary", `<p>Nice work today, ${myEmployee.firstName}!</p>${summaryRows}`) }).catch(() => {});
@@ -3506,7 +3521,17 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                 // success toast fired and refetchEmployees() then reverted the
                 // UI right back since the row was never actually updated).
                 setOptimisticDayClockInAt(nextVal);
-                if (endingDay) { setOptimisticDayLunchStartAt(null); sendEndOfDaySummary(finalHours); }
+                // Human-readable total (7h 23m) shown in a banner before the
+                // timer disappears, and logged to lastShiftHours below.
+                const totH = Math.floor(finalHours);
+                const totM = Math.round((finalHours - totH) * 60);
+                const totalLabel = `${totH}h ${String(totM).padStart(2, "0")}m`;
+                if (endingDay) {
+                  setOptimisticDayLunchStartAt(null);
+                  sendEndOfDaySummary(finalHours);
+                  setShiftEndedMsg(`Shift ended · Total ${totalLabel}`);
+                  setTimeout(() => setShiftEndedMsg(null), 8000);
+                }
                 const patch: any = endingDay
                   ? { dayClockInAt: null, dayLunchStartAt: null, dayPausedMinutes: 0, lastShiftHours: finalHours, lastShiftDate: today() }
                   : { dayClockInAt: nextVal, dayLunchStartAt: null, dayPausedMinutes: 0 };
@@ -3516,7 +3541,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                     toast("Saved locally, but couldn't sync to the server: " + result.error.message, "red");
                   } else {
                     refetchEmployees?.();
-                    toast(endingDay ? `Day ended ✓ — ${finalHours}h logged, summary emailed` : "Day started — have a great shift!");
+                    toast(endingDay ? `Shift ended · Total ${totalLabel} logged, summary emailed` : "Day started — have a great shift!");
                   }
                 } catch (e: any) {
                   toast("Saved locally, but couldn't sync to the server: " + (e?.message || "unknown error"), "red");
@@ -3555,7 +3580,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
               const lunchCountdownHHMMSS = [Math.floor(lunchRemainSecs / 3600), Math.floor((lunchRemainSecs % 3600) / 60), lunchRemainSecs % 60].map(n => String(n).padStart(2, "0")).join(":");
               const locationSharing = !!(myEmployee as any)?.locationSharing;
               const toggleLocationSharing = async () => {
-                if (!empId) return;
+                if (!empId) { toast("Still loading your profile — try again in a moment", "yellow"); return; }
                 const turningOn = !locationSharing;
                 // Request the permission prompt immediately on tap — previously
                 // this only flipped a DB flag and GPS posting silently waited
@@ -3604,6 +3629,11 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
               };
               return (
                 <>
+                  {shiftEndedMsg && !dayClockInAt && (
+                    <div className="flex items-center justify-center gap-2 py-3 px-4 rounded-2xl bg-green-950/40 border border-green-700/40 text-green-300 font-semibold text-sm">
+                      <CheckCircle size={16} />{shiftEndedMsg}
+                    </div>
+                  )}
                   {dayClockInAt && (
                     <div className="text-center py-2 rounded-2xl">
                       <div className={"font-mono text-2xl font-bold tracking-wider " + (onLunch ? "text-yellow-400" : "text-green-300")}>
@@ -4370,6 +4400,13 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
 
             return (
               <div className="space-y-5">
+                {/* Route button — optimize today's stops (FEATURE 2) */}
+                {todayJobs.filter(j => j.status !== "completed" && j.address).length >= 1 && (
+                  <button onClick={optimizeRoute} disabled={routeLoading}
+                    className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl bg-blue-950/40 hover:bg-blue-900/50 border border-blue-700/40 text-blue-300 text-sm font-semibold transition disabled:opacity-40">
+                    <Route size={15} />{routeLoading ? "Optimizing route…" : "Route Today's Jobs"}
+                  </button>
+                )}
                 {canceledCount > 0 && (
                   <button onClick={() => setShowCanceledJobs(v => !v)} className={"w-full flex items-center justify-center gap-1.5 py-2 rounded-xl border text-xs font-medium transition " + (showCanceledJobs ? "bg-red-950/20 border-red-700/40 text-red-300" : "bg-black/30 border-white/10 text-white/40 hover:text-white/60")}>
                     {showCanceledJobs ? <ToggleRight size={14} /> : <ToggleLeft size={14} />}
@@ -4471,7 +4508,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
               .disclaimer{margin-top:32px;padding:12px;background:#fffbf0;border:1px solid #f0c040;border-radius:6px;font-size:11px;color:#555}
               @media print{body{padding:20px}}</style></head><body>
               <div class="header">
-                <div><h1>${settings.companyName || "Smock's Pressure Washing"}</h1><p style="color:#666;margin-top:4px">Employee Tax Summary — ${empName} · ${thisYear} · Generated ${today()}</p></div>
+                <div><h1>${settings.companyName || "Crew Boss"}</h1><p style="color:#666;margin-top:4px">Employee Tax Summary — ${empName} · ${thisYear} · Generated ${today()}</p></div>
               </div>
               <div class="kpis">
                 <div class="kpi"><label>YTD Gross Earnings</label><div class="val">$${ytdGross.toFixed(2)}</div></div>
@@ -4868,6 +4905,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                     onChange={v => saveHomeBaseAddress(v)}
                     placeholder="412 Oak Ridge Ln, York PA"
                     mapsKey={settings.googleMapsKey || settings.mapsKey || ""}
+                    knownAddresses={Array.from(new Set([...myJobs.map(j => j.address), ...customers.map((c: any) => c.address)].filter(Boolean)))}
                   />
                 </Glass>
 

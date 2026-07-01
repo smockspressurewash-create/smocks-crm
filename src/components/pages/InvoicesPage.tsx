@@ -1,4 +1,4 @@
-// auto-extracted from Smock's OS monolith
+// auto-extracted from Crew Boss OS monolith
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
   LayoutDashboard, Users, FileText, Briefcase, Bot, BarChart3,
@@ -29,6 +29,7 @@ import { callModel, MODELS } from "../../lib/api";
 import { createCalendarEvent, updateCalendarEvent, deleteCalendarEvent, fetchDriveFiles, MOCK_GOOGLE_DATA, fmtSize, fmtDate, fileIcon } from "../../lib/google";
 import { usePersistent } from "../../hooks/usePersistent";
 import { usePersistentRaw } from "../../hooks/usePersistentRaw";
+import { supabase } from "../../lib/supabase";
 import { Glass } from "../ui/Glass";
 import { GBtn } from "../ui/GBtn";
 import { GInput } from "../ui/GInput";
@@ -122,6 +123,27 @@ export function InvoicesPage({ estimates = [], setEstimates, customers = [], set
   const [filter, setFilter] = useState("all");
   const [search, setSearch] = useState("");
   const [viewing, setViewing] = useState(null);
+  // FEATURE 7 — standalone invoice creation (not tied to a job)
+  const [newInvOpen, setNewInvOpen] = useState(false);
+  const [newInvForm, setNewInvForm] = useState<{ customerId: string; title: string; items: { id: string; description: string; quantity: number; unitPrice: number }[] }>({ customerId: "", title: "", items: [{ id: uid(), description: "", quantity: 1, unitPrice: 0 }] });
+  const newInvTotal = newInvForm.items.reduce((s, it) => s + (Number(it.quantity) || 0) * (Number(it.unitPrice) || 0), 0);
+  const createStandaloneInvoice = () => {
+    if (!newInvForm.customerId) { toast?.("Pick a customer first", "yellow"); return; }
+    if (newInvTotal <= 0) { toast?.("Add at least one line item with an amount", "yellow"); return; }
+    const inv: any = {
+      id: uid(), customerId: newInvForm.customerId,
+      title: newInvForm.title.trim() || "Invoice",
+      lineItems: newInvForm.items.filter(it => it.description.trim() || (Number(it.unitPrice) || 0) > 0).map(it => ({ id: it.id, description: it.description || "Service", quantity: Number(it.quantity) || 1, unitPrice: Number(it.unitPrice) || 0 })),
+      subtotal: newInvTotal, discount: 0, depositRequired: 0, tax: 0, total: newInvTotal,
+      status: "approved" as const, createdAt: today(), validUntil: daysFromNow(30),
+      invoiced: true, invoicedAt: today(), standalone: true,
+    };
+    setEstimates((prev: any[]) => [...prev, inv]);
+    (supabase as any).from("estimates").insert(inv).then((r: any) => { if (r?.error) console.warn("Standalone invoice save failed:", r.error.message); }).catch(() => {});
+    setNewInvOpen(false);
+    setNewInvForm({ customerId: "", title: "", items: [{ id: uid(), description: "", quantity: 1, unitPrice: 0 }] });
+    toast?.("Invoice created ✓ — open it to send or take payment", "green");
+  };
   const [selected, setSelected] = useState([]);
   const [stripePayInvoice, setStripePayInvoice] = useState<any>(null);
   const [checkoutLoadingId, setCheckoutLoadingId] = useState<string | null>(null);
@@ -130,8 +152,8 @@ export function InvoicesPage({ estimates = [], setEstimates, customers = [], set
   const sendStripeReceipt = (inv: any) => {
     const cust = customers.find(c => c.id === inv.customerId);
     if (!cust?.email) return;
-    sendEmail(settings as any, cust.email, `Receipt — ${settings?.companyName || "Smock's Pressure Washing"}`,
-      `<p>Hi ${cust.firstName},</p><p>Thanks for your payment of <strong>${fmt(inv.amount)}</strong> for ${inv.address || "your service"}.</p><p>This receipt confirms your invoice is paid in full.</p><p>— ${settings?.companyName || "Smock's Pressure Washing"}</p>`
+    sendEmail(settings as any, cust.email, `Receipt — ${settings?.companyName || "Crew Boss"}`,
+      `<p>Hi ${cust.firstName},</p><p>Thanks for your payment of <strong>${fmt(inv.amount)}</strong> for ${inv.address || "your service"}.</p><p>This receipt confirms your invoice is paid in full.</p><p>— ${settings?.companyName || "Crew Boss"}</p>`
     ).catch(() => {});
   };
 
@@ -260,7 +282,7 @@ export function InvoicesPage({ estimates = [], setEstimates, customers = [], set
     const c = customers.find(x => x.id === inv.customerId);
     if (!c) return;
     const age = inv.invoicedAt ? daysSince(inv.invoicedAt) : 0;
-    const msg = `Hi ${c.firstName}, this is a friendly reminder that your invoice of ${fmt(inv.total)} from Smock's Pressure Washing is ${age > 0 ? age + " days " : ""}past due. Pay online or call (717) 555-0100. Thank you!`;
+    const msg = `Hi ${c.firstName}, this is a friendly reminder that your invoice of ${fmt(inv.total)} from Crew Boss is ${age > 0 ? age + " days " : ""}past due. Pay online or call (717) 555-0100. Thank you!`;
     if (settings?.twilioSid && c.phone) {
       try {
         await twilioSend(settings, c.phone, msg);
@@ -281,7 +303,7 @@ export function InvoicesPage({ estimates = [], setEstimates, customers = [], set
       const c = customers.find(x => x.id === inv.customerId);
       if (!c) continue;
       const age = inv.invoicedAt ? daysSince(inv.invoicedAt) : 0;
-      const msg = "Hi " + c.firstName + ", friendly reminder that your invoice of " + fmt(inv.total) + " from Smock's is " + (age > 0 ? age + " days " : "") + "past due. Please pay at your convenience. Call (717) 555-0100 with questions. Thank you!";
+      const msg = "Hi " + c.firstName + ", friendly reminder that your invoice of " + fmt(inv.total) + " from Crew Boss is " + (age > 0 ? age + " days " : "") + "past due. Please pay at your convenience. Call (717) 555-0100 with questions. Thank you!";
       try {
         if (settings?.twilioSid && c.phone) { await twilioSend(settings, c.phone, msg); sent++; }
         else if (c.phone) { window.location.href = "sms:" + c.phone.replace(/\D/g,"") + "?body=" + encodeURIComponent(msg); sent++; break; }
@@ -314,6 +336,12 @@ export function InvoicesPage({ estimates = [], setEstimates, customers = [], set
 
   return (
     <div className="space-y-4">
+      {/* Header + New Invoice (FEATURE 7) */}
+      <div className="flex items-center justify-between gap-2">
+        <h2 className="text-lg font-bold">Invoices</h2>
+        <GBtn onClick={() => setNewInvOpen(true)} className="!py-2"><Plus size={14} className="inline mr-1" />New Invoice</GBtn>
+      </div>
+
       {/* Stats */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <Stat icon={DollarSign} label="Outstanding" value={fmt(totalOutstanding)} />
@@ -457,7 +485,7 @@ export function InvoicesPage({ estimates = [], setEstimates, customers = [], set
                         <button onClick={() => {
                           const c = customers.find(x => x.id === inv.customerId);
                           const html = `<!DOCTYPE html><html><head><title>Invoice</title><style>body{font-family:Arial;padding:32px;color:#111;max-width:700px;margin:auto}h1{color:#e11d48}.hdr{display:flex;justify-content:space-between;border-bottom:2px solid #e11d48;padding-bottom:16px;margin-bottom:24px}table{width:100%;border-collapse:collapse;font-size:13px}th{text-align:left;padding:8px;border-bottom:1px solid #ccc;font-size:10px;text-transform:uppercase}td{padding:8px;border-bottom:1px solid #eee}.r{text-align:right}.total{font-weight:bold;font-size:16px;color:#e11d48}.paid{background:#dcfce7;border:1px solid #16a34a;padding:12px;text-align:center;margin-top:16px;border-radius:8px;font-weight:bold}</style></head><body>
-                          <div class="hdr"><div><h1>Smock's Pressure Washing</h1><div style="font-size:12px;color:#666">York, PA · (717) 555-0100</div></div><div style="text-align:right"><strong>INVOICE #${inv.id.slice(-8).toUpperCase()}</strong><br><span style="font-size:12px;color:#666">${inv.invoicedAt || today()}</span></div></div>
+                          <div class="hdr"><div><h1>Crew Boss</h1><div style="font-size:12px;color:#666">York, PA · (717) 555-0100</div></div><div style="text-align:right"><strong>INVOICE #${inv.id.slice(-8).toUpperCase()}</strong><br><span style="font-size:12px;color:#666">${inv.invoicedAt || today()}</span></div></div>
                           <div style="margin-bottom:16px"><strong>Bill To:</strong><br>${c ? c.firstName + " " + c.lastName : ""}<br>${c?.address || ""}</div>
                           <table><thead><tr><th>Service</th><th class="r">Qty</th><th class="r">Unit</th><th class="r">Amount</th></tr></thead><tbody>
                           ${(inv.lineItems || []).map(li => `<tr><td>${li.description}</td><td class="r">${li.quantity}</td><td class="r">$${Number(li.unitPrice).toFixed(2)}</td><td class="r">$${(li.quantity*li.unitPrice).toFixed(2)}</td></tr>`).join("")}
@@ -495,7 +523,7 @@ export function InvoicesPage({ estimates = [], setEstimates, customers = [], set
           return <div className="space-y-4">
             <div className="bg-white text-black rounded-xl p-6">
               <div className="flex justify-between items-start mb-6 pb-4 border-b-2 border-red-600">
-                <div><div className="text-2xl font-bold text-red-700">Smock's Pressure Washing</div><div className="text-xs text-gray-600 mt-1">Professional Exterior Cleaning</div></div>
+                <div><div className="text-2xl font-bold text-red-700">Crew Boss</div><div className="text-xs text-gray-600 mt-1">Professional Exterior Cleaning</div></div>
                 <div className="text-right text-sm"><div className="font-bold text-gray-800">INVOICE</div><div className="text-xs text-gray-600">#{viewing.id.toUpperCase()}</div><div className="text-xs text-gray-600">Invoiced {viewing.invoicedAt}</div></div>
               </div>
               <div className="mb-5 text-sm"><div className="text-gray-500 text-xs uppercase tracking-wider mb-1">Bill to</div><div className="font-semibold">{c?.firstName} {c?.lastName}</div><div className="text-gray-600 text-xs">{c?.address}</div></div>
@@ -520,7 +548,7 @@ export function InvoicesPage({ estimates = [], setEstimates, customers = [], set
               }} className="!text-xs"><Link size={11} className="inline mr-1" />Regen Link</GBtn>
               <GBtn variant="ghost" onClick={() => {
                 const html = '<!DOCTYPE html><html><head><title>Invoice ' + viewing.id + '</title><style>body{font-family:Arial,sans-serif;padding:40px;max-width:700px;margin:auto;color:#111}h1{color:#e11d48;margin:0}.hdr{display:flex;justify-content:space-between;align-items:start;border-bottom:2px solid #e11d48;padding-bottom:16px;margin-bottom:24px}.sub{color:#666;font-size:12px;margin-top:4px}.meta{text-align:right;font-size:13px}.meta strong{color:#222}.bill{margin-bottom:24px}.bill-lbl{font-size:10px;text-transform:uppercase;letter-spacing:1px;color:#999;margin-bottom:4px}.bill-name{font-weight:bold;font-size:15px}.bill-addr{color:#555;font-size:12px}table{width:100%;border-collapse:collapse;margin-bottom:24px;font-size:13px}th{text-align:left;padding:8px;text-transform:uppercase;font-size:10px;letter-spacing:1px;color:#999;border-bottom:1px solid #ccc}td{padding:10px 8px;border-bottom:1px solid #eee}.r{text-align:right}.totals{margin-left:auto;width:280px;font-size:13px}.totals div{display:flex;justify-content:space-between;padding:4px 0}.totals .total{font-weight:bold;font-size:17px;color:#e11d48;border-top:2px solid #e11d48;padding-top:8px;margin-top:8px}.paid{background:#dcfce7;border:1px solid #16a34a;color:#14532d;padding:12px;text-align:center;border-radius:8px;margin-top:24px;font-weight:bold}.due{background:#fef9c3;border:1px solid #ca8a04;color:#713f12;padding:12px;text-align:center;border-radius:8px;margin-top:24px}@media print{body{padding:20px}}</style></head><body>' +
-                  '<div class="hdr"><div><h1>Smock\'s Pressure Washing</h1><div class="sub">Professional Exterior Cleaning · York, PA</div></div><div class="meta"><strong>INVOICE</strong><br>#' + viewing.id.toUpperCase() + '<br><span style="color:#666">Invoiced ' + (viewing.invoicedAt || '—') + '</span></div></div>' +
+                  '<div class="hdr"><div><h1>' + (settings?.companyName || 'Crew Boss') + '</h1><div class="sub">Professional Exterior Cleaning · York, PA</div></div><div class="meta"><strong>INVOICE</strong><br>#' + viewing.id.toUpperCase() + '<br><span style="color:#666">Invoiced ' + (viewing.invoicedAt || '—') + '</span></div></div>' +
                   '<div class="bill"><div class="bill-lbl">Bill To</div><div class="bill-name">' + (c?.firstName || '') + ' ' + (c?.lastName || '') + '</div><div class="bill-addr">' + (c?.address || '') + '</div></div>' +
                   '<table><thead><tr><th>Description</th><th class="r">Qty</th><th class="r">Unit</th><th class="r">Amount</th></tr></thead><tbody>' +
                   viewing.lineItems.map(li => '<tr><td>' + li.description + '</td><td class="r">' + li.quantity + '</td><td class="r">' + fmt(li.unitPrice) + '</td><td class="r"><strong>' + fmt(li.quantity * li.unitPrice) + '</strong></td></tr>').join('') +
@@ -543,7 +571,7 @@ export function InvoicesPage({ estimates = [], setEstimates, customers = [], set
                 <GBtn variant="ghost" onClick={() => {
                   const cv = customers.find(x => x.id === viewing?.customerId);
                   if (!cv?.phone) { toast("No phone for this customer"); return; }
-                  const msg2 = "Hi " + cv.firstName + "! Your invoice for " + fmt(viewing.total) + " from Smock's is ready: smocks.com/portal/" + viewing.id;
+                  const msg2 = "Hi " + cv.firstName + "! Your invoice for " + fmt(viewing.total) + " from Crew Boss is ready: smocks.com/portal/" + viewing.id;
                   if (settings?.twilioSid) twilioSend(settings, cv.phone, msg2).then(() => toast("Link sent ✓")).catch(e => toast(e.message, "error"));
                   else window.location.href = "sms:" + cv.phone.replace(/\D/g,"") + "?body=" + encodeURIComponent(msg2);
                 }} className="!text-xs"><Send size={11} className="inline mr-1" />Text Link</GBtn>
@@ -596,9 +624,48 @@ export function InvoicesPage({ estimates = [], setEstimates, customers = [], set
         onConfirm={(subject, bodyHtml) => sendInvoiceForJob(previewInvoiceJob, subject, bodyHtml)}
         data={previewInvoiceJob ? (() => {
           const cust = customers.find((c: any) => c.id === previewInvoiceJob.customerId);
-          return { customerName: cust?.firstName || "Customer", address: previewInvoiceJob.address || "", amount: Number(previewInvoiceJob.amount) || 0, companyName: settings?.companyName || "Smock's Pressure Washing", payLink: "" };
+          return { customerName: cust?.firstName || "Customer", address: previewInvoiceJob.address || "", amount: Number(previewInvoiceJob.amount) || 0, companyName: settings?.companyName || "Crew Boss", payLink: "" };
         })() : null}
       />
+
+      {/* New standalone invoice (FEATURE 7) */}
+      <Modal open={newInvOpen} onClose={() => setNewInvOpen(false)} title="New Invoice" maxW="max-w-lg">
+        <div className="space-y-4">
+          <div>
+            <label className="text-xs text-white/60 mb-1 block">Customer *</label>
+            <GSel value={newInvForm.customerId} onChange={(e: any) => setNewInvForm(f => ({ ...f, customerId: e.target.value }))}>
+              <option value="" className="bg-black">Select a customer…</option>
+              {customers.map((c: any) => <option key={c.id} value={c.id} className="bg-black">{c.firstName} {c.lastName}</option>)}
+            </GSel>
+          </div>
+          <div>
+            <label className="text-xs text-white/60 mb-1 block">Title / description</label>
+            <GInput value={newInvForm.title} onChange={(e: any) => setNewInvForm(f => ({ ...f, title: e.target.value }))} placeholder="e.g. Driveway & house wash" />
+          </div>
+          <div>
+            <label className="text-xs text-white/60 mb-1 block">Line items</label>
+            <div className="space-y-2">
+              {newInvForm.items.map((it, idx) => (
+                <div key={it.id} className="flex gap-2 items-center">
+                  <GInput value={it.description} onChange={(e: any) => setNewInvForm(f => ({ ...f, items: f.items.map(x => x.id === it.id ? { ...x, description: e.target.value } : x) }))} placeholder="Description" className="!flex-1" />
+                  <GInput type="number" value={it.quantity} onChange={(e: any) => setNewInvForm(f => ({ ...f, items: f.items.map(x => x.id === it.id ? { ...x, quantity: Number(e.target.value) } : x) }))} placeholder="Qty" className="!w-16" />
+                  <GInput type="number" value={it.unitPrice} onChange={(e: any) => setNewInvForm(f => ({ ...f, items: f.items.map(x => x.id === it.id ? { ...x, unitPrice: Number(e.target.value) } : x) }))} placeholder="$" className="!w-24" />
+                  {newInvForm.items.length > 1 && (
+                    <button onClick={() => setNewInvForm(f => ({ ...f, items: f.items.filter(x => x.id !== it.id) }))} className="p-1.5 text-white/40 hover:text-red-400"><X size={14} /></button>
+                  )}
+                </div>
+              ))}
+            </div>
+            <button onClick={() => setNewInvForm(f => ({ ...f, items: [...f.items, { id: uid(), description: "", quantity: 1, unitPrice: 0 }] }))} className="mt-2 text-xs text-blue-400 hover:text-blue-300 flex items-center gap-1"><Plus size={12} />Add line item</button>
+          </div>
+          <div className="flex items-center justify-between pt-2 border-t border-white/10">
+            <span className="text-sm text-white/60">Total</span>
+            <span className="text-xl font-black text-green-400">{fmt(newInvTotal)}</span>
+          </div>
+          <GBtn onClick={createStandaloneInvoice} className="w-full !justify-center !py-3">Create Invoice</GBtn>
+          <div className="text-[10px] text-white/30 text-center">After creating, open the invoice to send it (Gmail / SMS) or take payment. It appears in the list and the customer can pay via the client portal.</div>
+        </div>
+      </Modal>
     </div>
   );
 }

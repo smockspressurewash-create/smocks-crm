@@ -1,4 +1,4 @@
-// auto-extracted from Smock's OS monolith
+// auto-extracted from Crew Boss OS monolith
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
   LayoutDashboard, Users, FileText, Briefcase, Bot, BarChart3,
@@ -105,7 +105,7 @@ export function ReviewToGraphic({ toast, posts = [], setPosts }) {
     ctx.fillRect(0, H - 120, W, 120);
     ctx.fillStyle = style === "light" ? "#fff" : tc;
     ctx.font = "bold 32px Arial";
-    ctx.fillText("Smock's Pressure Washing", 80, H - 70);
+    ctx.fillText("Crew Boss", 80, H - 70);
     ctx.font = "24px Arial";
     ctx.fillStyle = style === "light" ? "rgba(255,255,255,0.8)" : sc;
     ctx.fillText("York, PA  ·  (717) 555-0100  ·  ★ 5-Star Rated", 80, H - 32);
@@ -118,7 +118,7 @@ export function ReviewToGraphic({ toast, posts = [], setPosts }) {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const dataUrl = canvas.toDataURL("image/png");
-    const caption = "⭐".repeat(rating) + "\n\n\"" + quote + "\"\n\n— " + name + " · " + service + "\n\nSmock's Pressure Washing · York, PA · (717) 555-0100\n\n#pressurewashing #review #softwash #yorkpa";
+    const caption = "⭐".repeat(rating) + "\n\n\"" + quote + "\"\n\n— " + name + " · " + service + "\n\nCrew Boss · York, PA · (717) 555-0100\n\n#pressurewashing #review #softwash #yorkpa";
     const newPost = { id: uid(), platform: "instagram", type: "testimonial", caption, scheduledFor: daysFromNow(1), hashtags: "#pressurewashing #review #yorkpa", status: "scheduled", imagePreview: dataUrl, createdAt: today() };
     setPosts(prev => [newPost, ...prev]);
     toast("Review graphic scheduled to Instagram ✓");

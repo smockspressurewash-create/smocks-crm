@@ -1,4 +1,4 @@
-// auto-extracted from Smock's OS monolith
+// auto-extracted from Crew Boss OS monolith
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
   LayoutDashboard, Users, FileText, Briefcase, Bot, BarChart3,
@@ -112,7 +112,7 @@ export function ReferralsPage({ customers = [], setCustomers = (() => {}) as any
 
   const copy = (code, channel = "link") => {
     const url = `${window.location.origin}${window.location.pathname}#/referral?ref=${code}`;
-    const msg = "I use Smock's Pressure Washing for my home — they're great! Use my code " + code + " and get 10% off: " + url;
+    const msg = "I use Crew Boss for my home — they're great! Use my code " + code + " and get 10% off: " + url;
     if (channel === "link") {
       navigator.clipboard?.writeText(url).catch(() => {});
       toast("Referral link copied ✓");
@@ -127,7 +127,7 @@ export function ReferralsPage({ customers = [], setCustomers = (() => {}) as any
 
   const sendReferralRequest = async c => {
     setSending(c.id);
-    const msg = "Hi " + c.firstName + "! Thanks for being a loyal Smock's customer 🙏 Know anyone who needs exterior cleaning? Share your unique link and earn $" + rewardSettings.referrerCredit + " credit: smocks.com/refer/" + c.m.code + " — They save " + rewardSettings.refereeDiscount + (rewardSettings.refereeDiscountType === "percent" ? "%" : "$") + " off their first service. Thanks!";
+    const msg = "Hi " + c.firstName + "! Thanks for being a loyal Crew Boss customer 🙏 Know anyone who needs exterior cleaning? Share your unique link and earn $" + rewardSettings.referrerCredit + " credit: smocks.com/refer/" + c.m.code + " — They save " + rewardSettings.refereeDiscount + (rewardSettings.refereeDiscountType === "percent" ? "%" : "$") + " off their first service. Thanks!";
     if (settings?.twilioSid && c.phone) {
       try {
         await twilioSend(settings, c.phone, msg);

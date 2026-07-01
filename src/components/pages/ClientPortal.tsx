@@ -1,4 +1,4 @@
-// auto-extracted from Smock's OS monolith
+// auto-extracted from Crew Boss OS monolith
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
   LayoutDashboard, Users, FileText, Briefcase, Bot, BarChart3,
@@ -222,14 +222,14 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
 
     // Payment confirmation SMS to customer
     if (settings?.twilioSid && c.phone) {
-      const confirmMsg = "Hi " + c.firstName + "! Your payment of $" + totalWithTip.toFixed(2) + " to Smock's Pressure Washing has been received ✅ We'll be in touch to confirm your service date. Thank you! — " + (settings?.companyName || "Smock's");
+      const confirmMsg = "Hi " + c.firstName + "! Your payment of $" + totalWithTip.toFixed(2) + " to Crew Boss has been received ✅ We'll be in touch to confirm your service date. Thank you! — " + (settings?.companyName || "Crew Boss");
       twilioSend(settings, c.phone, confirmMsg).catch(() => {});
     }
 
     // Payment confirmation email to customer
     if (c.email && (settings?.resendKey || settings?.googleConnected)) {
-      const subject = "Payment Receipt — Smock's Pressure Washing";
-      const body = "Hi " + c.firstName + ",\n\nThank you for your payment of $" + totalWithTip.toFixed(2) + ".\n\nServices: " + (e.lineItems || []).map(li => li.description).join(", ") + "\nAmount: $" + totalWithTip.toFixed(2) + "\n\nWe'll contact you soon to schedule your service.\n\n— " + (settings?.companyName || "Smock's Pressure Washing") + "\n" + (settings?.companyPhone || "(717) 555-0100");
+      const subject = "Payment Receipt — Crew Boss";
+      const body = "Hi " + c.firstName + ",\n\nThank you for your payment of $" + totalWithTip.toFixed(2) + ".\n\nServices: " + (e.lineItems || []).map(li => li.description).join(", ") + "\nAmount: $" + totalWithTip.toFixed(2) + "\n\nWe'll contact you soon to schedule your service.\n\n— " + (settings?.companyName || "Crew Boss") + "\n" + (settings?.companyPhone || "(717) 555-0100");
       sendEmail(settings, { to: c.email, subject, body }).catch(() => {});
     }
 
@@ -240,7 +240,7 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
     }
   };
 
-  const companyName = settings?.companyName || "Smock's Pressure Washing";
+  const companyName = settings?.companyName || "Crew Boss";
   const companyPhone = settings?.companyPhone || "(717) 555-0100";
 
   return (
@@ -541,7 +541,7 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
               </Glass>
               {/* Download signed PDF */}
               <button onClick={() => {
-                const companyName = settings?.companyName || "Smock's Pressure Washing";
+                const companyName = settings?.companyName || "Crew Boss";
                 const html = `<!DOCTYPE html><html><head><title>Signed Estimate</title><style>
                   body{font-family:Arial,sans-serif;padding:40px;max-width:700px;margin:auto;color:#111}
                   h1{color:#dc2626;margin-bottom:4px}
@@ -582,7 +582,7 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
               </button>
               {/* Receipt PDF */}
               <button onClick={() => {
-                const companyName = settings?.companyName || "Smock's Pressure Washing";
+                const companyName = settings?.companyName || "Crew Boss";
                 const receiptHtml = `<!DOCTYPE html><html><head><title>Receipt</title><style>body{font-family:Arial;padding:40px;max-width:500px;margin:auto;color:#111}.logo{font-size:22px;font-weight:bold;color:#dc2626}.receipt-box{border:2px solid #dc2626;border-radius:8px;padding:24px;margin:20px 0}.line{display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #eee;font-size:13px}.total{font-size:18px;font-weight:bold;color:#dc2626;margin-top:8px}.stamp{background:#dcfce7;border:2px solid #16a34a;color:#14532d;padding:10px;text-align:center;border-radius:8px;font-weight:bold;margin-top:16px;font-size:15px}@media print{body{padding:20px}}</style></head><body>
                 <div class="logo">${companyName}</div><div style="font-size:11px;color:#666">York, PA · (717) 555-0100</div>
                 <div class="receipt-box">

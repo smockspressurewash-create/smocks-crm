@@ -1,4 +1,4 @@
-// auto-extracted from Smock's OS monolith
+// auto-extracted from Crew Boss OS monolith
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
   LayoutDashboard, Users, FileText, Briefcase, Bot, BarChart3,
@@ -338,7 +338,19 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
     const interval = setInterval(() => liveTeamTick(t => t + 1), 5000);
     return () => clearInterval(interval);
   }, []);
-  const activeJobs = jobs.filter(j => j.status === "in_progress" && j.clockInAt);
+  // Live team = employees currently on shift (shift timer `dayClockInAt`),
+  // NOT the old per-job `clockInAt` (removed when the per-job clock was
+  // replaced by the whole-shift timer). Each on-shift employee is paired with
+  // the job they're currently at (in_progress first, else an arrived-at job).
+  const todayStrLive = today();
+  const liveEmps = employees.filter((e: any) => e.status === "active" && !!e.dayClockInAt);
+  const liveTeam = liveEmps.map((e: any) => {
+    const empJobs = jobs.filter((j: any) => (j.crew || []).includes(e.id) && j.scheduledDate === todayStrLive);
+    const currentJob = empJobs.find((j: any) => j.status === "in_progress")
+      || empJobs.find((j: any) => j.arrivedAt && j.status !== "completed")
+      || null;
+    return { emp: e, job: currentJob };
+  });
   const checklistProgress = (j: any) => {
     const items = [...(j.preChecklist || []), ...(j.duringChecklist || []), ...(j.postChecklist || []), ...(j.checklist || [])];
     if (items.length === 0) return null;
@@ -427,34 +439,40 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
         <div className="flex items-center gap-2 mb-3">
           <Users2 size={15} className="text-green-400" />
           <h3 className="font-semibold text-sm">Live Team View</h3>
-          {activeJobs.length > 0 && <Badge tone="green">{activeJobs.length} active</Badge>}
+          {liveTeam.length > 0 && <Badge tone="green">{liveTeam.length} on shift</Badge>}
         </div>
-        {activeJobs.length === 0 ? (
-          <div className="text-center py-6 text-sm text-white/40">No active jobs — waiting for crew to clock in</div>
+        {liveTeam.length === 0 ? (
+          <div className="text-center py-6 text-sm text-white/40">No one on shift — waiting for crew to start their day</div>
         ) : (
           <div className="space-y-2">
-            {activeJobs.map(j => {
-              const c = customers.find(x => x.id === j.customerId);
-              const crewNames = (j.crew || []).map((eid: string) => employees.find((e: any) => e.id === eid)).filter(Boolean).map((e: any) => e.firstName).join(", ") || "Unassigned";
-              const elapsedMs = Date.now() - Number(j.clockInAt);
-              const overSchedule = j.duration && elapsedMs / 3600000 > Number(j.duration);
-              const prog = checklistProgress(j);
-              const photoCount = (j.photos || []).length;
+            {liveTeam.map(({ emp: e, job: j }) => {
+              const c = j ? customers.find(x => x.id === j.customerId) : null;
+              const pausedMs = (Number(e.dayPausedMinutes) || 0) * 60000;
+              const onLunch = !!e.dayLunchStartAt;
+              const lunchMs = onLunch ? Math.max(0, Date.now() - Number(e.dayLunchStartAt)) : 0;
+              const shiftMs = Math.max(0, Date.now() - Number(e.dayClockInAt) - pausedMs - lunchMs);
+              const prog = j ? checklistProgress(j) : null;
+              const photoCount = j ? (j.photos || []).length : 0;
               const mapsKey = settings.googleMapsKey || settings.mapsKey;
               return (
-                <div key={j.id} className={"flex items-center gap-3 p-3 rounded-xl border " + (overSchedule ? "bg-yellow-950/20 border-yellow-700/40" : "bg-black/30 border-white/10")}>
-                  <MiniStreetViewThumb address={j.address} mapsKey={mapsKey} />
+                <div key={e.id} className={"flex items-center gap-3 p-3 rounded-xl border " + (onLunch ? "bg-yellow-950/20 border-yellow-700/40" : "bg-black/30 border-white/10")}>
+                  {j ? <MiniStreetViewThumb address={j.address} mapsKey={mapsKey} /> : (
+                    <div className="w-14 h-14 rounded-lg bg-green-950/30 border border-green-700/30 flex items-center justify-center flex-shrink-0 text-green-400 font-bold text-sm">
+                      {(e.firstName?.[0] || "?")}{(e.lastName?.[0] || "")}
+                    </div>
+                  )}
                   <div className="flex-1 min-w-0">
-                    <div className="text-sm font-medium truncate">{crewNames} — {c ? c.firstName + " " + c.lastName : j.address}</div>
+                    <div className="text-sm font-medium truncate">{e.firstName} {e.lastName}{j ? ` — ${c ? c.firstName + " " + c.lastName : j.address}` : ""}</div>
                     <div className="text-xs text-white/40 flex items-center gap-2 flex-wrap mt-0.5">
-                      <span>Clocked in {new Date(Number(j.clockInAt)).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</span>
-                      <span>· {fmtElapsed(elapsedMs)} elapsed{j.duration ? ` of ~${j.duration}h` : ""}</span>
+                      <span className={"font-mono " + (onLunch ? "text-yellow-400" : "text-green-400")}>{onLunch ? "⏸ " : "⏱ "}{fmtElapsed(shiftMs)} shift</span>
+                      {onLunch && <span className="text-yellow-400/70">on lunch</span>}
+                      {j?.arrivedAt && <span className="text-green-400">✓ on site</span>}
                       {prog && <span className="flex items-center gap-1"><CheckSquare size={10} />{prog.done}/{prog.total} checklist</span>}
                       {photoCount > 0 && <span className="flex items-center gap-1"><ImageIcon size={10} />{photoCount} photo{photoCount !== 1 ? "s" : ""}</span>}
-                      {overSchedule && <span className="text-yellow-400 font-semibold">⚠ Over schedule</span>}
+                      {!j && <span className="text-white/30">no active job</span>}
                     </div>
                   </div>
-                  <button onClick={() => onViewJob(j.id)} className="px-2.5 py-1.5 bg-white/5 border border-white/10 rounded-lg text-xs text-white/60 hover:text-white flex-shrink-0">View Details</button>
+                  {j && <button onClick={() => onViewJob(j.id)} className="px-2.5 py-1.5 bg-white/5 border border-white/10 rounded-lg text-xs text-white/60 hover:text-white flex-shrink-0">View Details</button>}
                 </div>
               );
             })}
@@ -1023,7 +1041,7 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
         onConfirm={(subject, bodyHtml) => sendDashInvoice(previewInvoiceJob, subject, bodyHtml)}
         data={previewInvoiceJob ? (() => {
           const cust = customers.find((c: any) => c.id === previewInvoiceJob.customerId);
-          return { customerName: cust?.firstName || "Customer", address: previewInvoiceJob.address || "", amount: Number(previewInvoiceJob.amount) || 0, companyName: settings?.companyName || "Smock's Pressure Washing", payLink: "" };
+          return { customerName: cust?.firstName || "Customer", address: previewInvoiceJob.address || "", amount: Number(previewInvoiceJob.amount) || 0, companyName: settings?.companyName || "Crew Boss", payLink: "" };
         })() : null}
       />
     </div>

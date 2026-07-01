@@ -1,4 +1,4 @@
-// auto-extracted from Smock's OS monolith
+// auto-extracted from Crew Boss OS monolith
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
   LayoutDashboard, Users, FileText, Briefcase, Bot, BarChart3,
@@ -161,7 +161,7 @@ export function SettingsModal({ open, onClose, settings, setSettings, services, 
                 )}
                 <div className="flex-1">
                   <div className="font-bold">{f.ownerName || "Will Smock"}</div>
-                  <div className="text-xs text-white/50">{f.ownerRole || "Owner · Smock's Pressure Washing"}</div>
+                  <div className="text-xs text-white/50">{f.ownerRole || "Owner · Crew Boss"}</div>
                   <div className="text-xs text-white/40">{f.companyEmail || "—"}</div>
                 </div>
                 <label className="cursor-pointer px-3 py-2 bg-black/40 border border-red-900/30 rounded-xl text-xs text-white/70 hover:text-white transition flex items-center gap-1.5 flex-shrink-0">
@@ -250,7 +250,7 @@ export function SettingsModal({ open, onClose, settings, setSettings, services, 
                     try {
                       const res = await fetch("https://api.telegram.org/bot" + f.telegramToken + "/sendMessage", {
                         method: "POST", headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({ chat_id: f.telegramChatId, text: "🤖 Alfred here. Telegram is connected to your Smock's CRM. Reply with any slash command. Alfred out." })
+                        body: JSON.stringify({ chat_id: f.telegramChatId, text: "🤖 Alfred here. Telegram is connected to your Crew Boss CRM. Reply with any slash command. Alfred out." })
                       });
                       const d = await res.json();
                       if (d.ok) toast("Telegram test message sent ✓"); else toast("Failed: " + d.description, "error");
@@ -283,11 +283,11 @@ export function SettingsModal({ open, onClose, settings, setSettings, services, 
             <div className="text-xs text-white/50">These pages are displayed in your client portal and estimate pages. Edit to match your business.</div>
             <Glass className="p-4">
               <div className="font-semibold text-sm mb-2">Privacy Policy</div>
-              <GTxt rows={6} value={f.privacyPolicy || "Privacy Policy for Smock's Pressure Washing\n\nLast updated: " + today() + "\n\nWe collect your name, phone, email, and address to provide pressure washing services. We do not sell your information to third parties. Your data is used only for scheduling, invoicing, and communication related to our services. We use SMS (Twilio) and email to communicate with you about your service. You may opt out at any time by replying STOP to any text message.\n\nContact: smocks@smockspower.com"} onChange={e => setF({ ...f, privacyPolicy: e.target.value })} className="!text-xs" />
+              <GTxt rows={6} value={f.privacyPolicy || "Privacy Policy for Crew Boss\n\nLast updated: " + today() + "\n\nWe collect your name, phone, email, and address to provide pressure washing services. We do not sell your information to third parties. Your data is used only for scheduling, invoicing, and communication related to our services. We use SMS (Twilio) and email to communicate with you about your service. You may opt out at any time by replying STOP to any text message.\n\nContact: smocks@smockspower.com"} onChange={e => setF({ ...f, privacyPolicy: e.target.value })} className="!text-xs" />
             </Glass>
             <Glass className="p-4">
               <div className="font-semibold text-sm mb-2">Terms of Service</div>
-              <GTxt rows={6} value={f.termsOfService || "Terms of Service for Smock's Pressure Washing\n\nBy booking our services, you agree to:\n\n1. Payment is due upon completion unless otherwise agreed.\n2. Cancellations within 24 hours may incur a $50 fee.\n3. We are not liable for pre-existing damage to surfaces.\n4. Our 48-hour rain guarantee applies to soft wash services only.\n5. All estimates are valid for 30 days from the date issued.\n\nContact: (717) 555-0100 | smocks@smockspower.com"} onChange={e => setF({ ...f, termsOfService: e.target.value })} className="!text-xs" />
+              <GTxt rows={6} value={f.termsOfService || "Terms of Service for Crew Boss\n\nBy booking our services, you agree to:\n\n1. Payment is due upon completion unless otherwise agreed.\n2. Cancellations within 24 hours may incur a $50 fee.\n3. We are not liable for pre-existing damage to surfaces.\n4. Our 48-hour rain guarantee applies to soft wash services only.\n5. All estimates are valid for 30 days from the date issued.\n\nContact: (717) 555-0100 | smocks@smockspower.com"} onChange={e => setF({ ...f, termsOfService: e.target.value })} className="!text-xs" />
             </Glass>
             <Glass className="p-4">
               <div className="font-semibold text-sm mb-2">GDPR / Data Compliance</div>
@@ -781,7 +781,7 @@ export function SettingsModal({ open, onClose, settings, setSettings, services, 
                       {[
                         { id: "primary", label: "Primary (personal) calendar", color: "#4285F4" },
                         { id: "work", label: "Work calendar (recommended)", color: "#0F9D58" },
-                        { id: "smocks", label: "Smock's Pressure Washing", color: "#DB4437" },
+                        { id: "smocks", label: "Crew Boss", color: "#DB4437" },
                       ].map(cal => (
                         <label key={cal.id} className={"flex items-center gap-3 p-3 rounded-xl border cursor-pointer transition " + (f.googleCalendarId === cal.id ? "border-blue-500/50 bg-blue-950/20" : "border-white/10 bg-black/30 hover:border-white/20")}>
                           <input type="radio" name="calendarId" checked={f.googleCalendarId === cal.id} onChange={() => setF({ ...f, googleCalendarId: cal.id })} className="accent-blue-500" />

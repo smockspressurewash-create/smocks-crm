@@ -1,4 +1,4 @@
-// auto-extracted from Smock's OS monolith
+// auto-extracted from Crew Boss OS monolith
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
   LayoutDashboard, Users, FileText, Briefcase, Bot, BarChart3,
@@ -65,7 +65,7 @@ export function BulkPhotoUpload({ toast, posts = [], setPosts }) {
     try {
       const res = await fetch("https://api.anthropic.com/v1/messages", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: 500, messages: [{ role: "user", content: `Generate ${photos.length} unique short social media captions for a pressure washing company (Smock's, York PA). Each caption should be different. Return only a JSON array of strings, no other text. Number of captions: ${photos.length}` }] })
+        body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: 500, messages: [{ role: "user", content: `Generate ${photos.length} unique short social media captions for a pressure washing company (Crew Boss, York PA). Each caption should be different. Return only a JSON array of strings, no other text. Number of captions: ${photos.length}` }] })
       });
       const data = await res.json();
       const text = data.content?.[0]?.text || "[]";

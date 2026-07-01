@@ -1,4 +1,4 @@
-// auto-extracted from Smock's OS monolith
+// auto-extracted from Crew Boss OS monolith
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
   LayoutDashboard, Users, FileText, Briefcase, Bot, BarChart3,
@@ -228,7 +228,7 @@ export function CalendarPage({ jobs = [], setJobs, customers = [], employees = [
     if (job && oldDate && oldDate !== targetKey) {
       const c = customers.find(x => x.id === job.customerId);
       if (c?.phone && settings?.twilioSid) {
-        const msg = "Hi " + c.firstName + "! Your Smock's service has been rescheduled from " + oldDate + " to " + targetKey + ". Questions? Call (717) 555-0100. — Smock's";
+        const msg = "Hi " + c.firstName + "! Your Crew Boss service has been rescheduled from " + oldDate + " to " + targetKey + ". Questions? Call (717) 555-0100. — Crew Boss";
         twilioSend(settings, c.phone, msg).catch(() => {});
       }
       // Update Google Calendar event if connected
@@ -326,22 +326,24 @@ export function CalendarPage({ jobs = [], setJobs, customers = [], employees = [
       {view === "month" && (
         <div className="grid lg:grid-cols-[1fr_220px] gap-4">
           <Glass className="p-4">
-          <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center justify-between mb-4 gap-2">
             <button
               onClick={() => setOff(off - 1)}
               onDragEnter={() => onDragEnterArrow("prev")}
               onDragOver={e => { e.preventDefault(); }}
               onDragLeave={onDragLeaveArrow}
-              className={"p-2 rounded-lg transition " + (dragHoverArrow === "prev" ? "bg-red-700/60 scale-110" : "hover:bg-white/5")}
-            ><ChevronLeft size={16} /></button>
-            <div className="font-semibold">{vd.toLocaleString("default", { month: "long", year: "numeric" })}</div>
+              title={dragId ? "Hold a job here to jump to the previous month" : "Previous month"}
+              className={"flex items-center gap-1 px-5 py-3 rounded-xl border transition " + (dragHoverArrow === "prev" ? "bg-red-600 border-red-400 scale-105 shadow-lg shadow-red-900/40" : dragId ? "border-red-700/40 border-dashed bg-red-950/20 hover:bg-red-900/30" : "border-transparent hover:bg-white/5")}
+            ><ChevronLeft size={18} />{dragHoverArrow === "prev" && <span className="text-[10px] font-semibold">Prev month…</span>}</button>
+            <div className="font-semibold text-center flex-1">{vd.toLocaleString("default", { month: "long", year: "numeric" })}</div>
             <button
               onClick={() => setOff(off + 1)}
               onDragEnter={() => onDragEnterArrow("next")}
               onDragOver={e => { e.preventDefault(); }}
               onDragLeave={onDragLeaveArrow}
-              className={"p-2 rounded-lg transition " + (dragHoverArrow === "next" ? "bg-red-700/60 scale-110" : "hover:bg-white/5")}
-            ><ChevronRight size={16} /></button>
+              title={dragId ? "Hold a job here to jump to the next month" : "Next month"}
+              className={"flex items-center gap-1 px-5 py-3 rounded-xl border transition " + (dragHoverArrow === "next" ? "bg-red-600 border-red-400 scale-105 shadow-lg shadow-red-900/40" : dragId ? "border-red-700/40 border-dashed bg-red-950/20 hover:bg-red-900/30" : "border-transparent hover:bg-white/5")}
+            >{dragHoverArrow === "next" && <span className="text-[10px] font-semibold">Next month…</span>}<ChevronRight size={18} /></button>
           </div>
           <div className="grid grid-cols-7 gap-1 mb-2">{["S", "M", "T", "W", "T", "F", "S"].map((d, i) => <div key={i} className="text-center text-[10px] uppercase text-white/40 py-2">{d}</div>)}</div>
           <div className="grid grid-cols-7 gap-1">
@@ -489,7 +491,7 @@ export function CalendarPage({ jobs = [], setJobs, customers = [], employees = [
       {jobContextMenu && (
         <>
           <div className="fixed inset-0 z-40" onClick={() => setJobContextMenu(null)} onContextMenu={(e: React.MouseEvent) => { e.preventDefault(); setJobContextMenu(null); }} />
-          <div className="fixed z-50 bg-black/95 border border-red-900/40 rounded-xl shadow-2xl overflow-hidden py-1 w-44" style={{ left: Math.min(jobContextMenu.x, window.innerWidth - 180), top: Math.min(jobContextMenu.y, window.innerHeight - 180) }}>
+          <div className="fixed z-50 bg-black/95 border border-red-900/40 rounded-xl shadow-2xl overflow-hidden py-1 w-44" style={{ left: Math.max(8, Math.min(jobContextMenu.x + 10, window.innerWidth - 184)), top: Math.max(8, Math.min(jobContextMenu.y - 10, window.innerHeight - 200)) }}>
             <button onClick={() => { setSelectedJobId(jobContextMenu.jobId); setJobContextMenu(null); }} className="w-full flex items-center gap-2 px-3 py-2 text-xs text-white/80 hover:bg-white/10 transition"><Eye size={12} />View Details</button>
             <button onClick={() => { setSelectedJobId(jobContextMenu.jobId); setJobContextMenu(null); }} className="w-full flex items-center gap-2 px-3 py-2 text-xs text-white/80 hover:bg-white/10 transition"><UserCheck size={12} />Assign Crew</button>
             <button onClick={() => rescheduleJobQuick(jobContextMenu.jobId)} className="w-full flex items-center gap-2 px-3 py-2 text-xs text-white/80 hover:bg-white/10 transition"><RefreshCw size={12} />Reschedule</button>

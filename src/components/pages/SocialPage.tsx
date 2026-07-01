@@ -1,4 +1,4 @@
-// auto-extracted from Smock's OS monolith
+// auto-extracted from Crew Boss OS monolith
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
   LayoutDashboard, Users, FileText, Briefcase, Bot, BarChart3,
@@ -120,10 +120,10 @@ export function SocialPage({ posts = [], setPosts, toast, settings = {} as AppSe
       if (imageData && f.type === "before_after") {
         messageContent = [
           { type: "image", source: { type: "base64", media_type: imageData.mediaType, data: imageData.data } },
-          { type: "text", text: `You are writing a social media caption for Smock's Pressure Washing in York, PA. Analyze this before/after or transformation photo and write a compelling ${f.platform} caption. The owner is Will. Make it engaging, real, and slightly casual. Include a call to action (DM or call (717) 555-0100). Keep it under 150 words. Use natural line breaks.` }
+          { type: "text", text: `You are writing a social media caption for Crew Boss in York, PA. Analyze this before/after or transformation photo and write a compelling ${f.platform} caption. The owner is Will. Make it engaging, real, and slightly casual. Include a call to action (DM or call (717) 555-0100). Keep it under 150 words. Use natural line breaks.` }
         ];
       } else {
-        messageContent = `Write ${typeDesc} for Smock's Pressure Washing in York, PA. The owner's name is Will. Write one caption only — no alternatives, no intro text. Make it engaging, real, and slightly casual. Include a call to action. Keep it under 150 words. Use natural line breaks for readability. Don't use quotation marks around the whole thing. Platform: ${f.platform}.`;
+        messageContent = `Write ${typeDesc} for Crew Boss in York, PA. The owner's name is Will. Write one caption only — no alternatives, no intro text. Make it engaging, real, and slightly casual. Include a call to action. Keep it under 150 words. Use natural line breaks for readability. Don't use quotation marks around the whole thing. Platform: ${f.platform}.`;
       }
       const modelId = settings.activeModel || "claude";
       const apiKey = (settings.modelKeys || {})[modelId] || (modelId === "claude" ? settings.anthropicKey : undefined);
@@ -214,7 +214,7 @@ export function SocialPage({ posts = [], setPosts, toast, settings = {} as AppSe
       // Generic: Web Share API
       if (navigator.share) {
         try {
-          await navigator.share({ title: "Smock's Pressure Washing", text: caption, url: "https://smocks.com" });
+          await navigator.share({ title: "Crew Boss", text: caption, url: "https://smocks.com" });
           toast("Share sheet opened ✓");
           return;
         } catch { /* cancelled */ }
@@ -486,12 +486,12 @@ export function SocialPage({ posts = [], setPosts, toast, settings = {} as AppSe
             <div className="mb-2">
               <GSel defaultValue="" onChange={e => {
                 const templates = [
-                  { id: "ba", label: "Before/After Reveal", body: "🚿 Before & After transformation in York, PA!\n\nThis [SERVICE] was looking rough — years of grime, mold, and algae. One visit from Smock's and it looks brand new! 🤩\n\nReady to restore your home? Link in bio or DM us for a free quote!\n\n📞 (717) 555-0100" },
+                  { id: "ba", label: "Before/After Reveal", body: "🚿 Before & After transformation in York, PA!\n\nThis [SERVICE] was looking rough — years of grime, mold, and algae. One visit from Crew Boss and it looks brand new! 🤩\n\nReady to restore your home? Link in bio or DM us for a free quote!\n\n📞 (717) 555-0100" },
                   { id: "seasonal", label: "Seasonal Promo", body: "🌸 Spring is here and your home deserves a deep clean!\n\nWinter left behind dirt, algae, and mildew on your siding, driveway, and roof. We remove it all safely with our soft wash system.\n\n✅ No damage to plants or surfaces\n✅ Same-day quotes\n✅ York PA & surrounding areas\n\nBook now — slots filling fast! DM or call (717) 555-0100" },
                   { id: "review", label: "Customer Review Feature", body: "⭐⭐⭐⭐⭐ \"[CUSTOMER QUOTE HERE]\"\n\n— Happy customer in York, PA\n\nThank you for the kind words! Nothing motivates us more than knowing we made your home shine again. 🙏\n\nYour home could look like this too. DM us for a free estimate!\n\n#smockspressurewashing #yorkpa #pressurewashing" },
                   { id: "tip", label: "Pro Tip / Educational", body: "💡 PRO TIP: Did you know soft washing is SAFER than pressure washing for most surfaces?\n\nHigh pressure can:\n❌ Crack siding\n❌ Damage wood decks\n❌ Force water behind walls\n\nOur low-pressure soft wash uses eco-friendly solutions to clean safely and effectively.\n\nQuestions? Drop them below 👇 or DM us!\n\n📞 (717) 555-0100 | York, PA" },
                   { id: "cta", label: "Strong CTA / Urgency", body: "🔴 SPOTS AVAILABLE THIS WEEK in York PA!\n\nWe had a cancellation and can fit in [X] more homes this week. If your driveway, siding, or roof needs some love — now's the time!\n\n💧 House Wash starting at $[PRICE]\n💧 Driveway Cleaning from $[PRICE]\n💧 Roof Soft Wash from $[PRICE]\n\nDM us or call (717) 555-0100 to grab your spot!" },
-                  { id: "team", label: "Meet the Team / Behind the Scenes", body: "👋 Just another day at Smock's Pressure Washing!\n\nStarted at 7am, [X] jobs on the books, and we're making York PA look its best one property at a time. 💪\n\nSmall business, big results. We treat every home like it's our own.\n\nTag someone whose house needs a wash! 👇" },
+                  { id: "team", label: "Meet the Team / Behind the Scenes", body: "👋 Just another day at Crew Boss!\n\nStarted at 7am, [X] jobs on the books, and we're making York PA look its best one property at a time. 💪\n\nSmall business, big results. We treat every home like it's our own.\n\nTag someone whose house needs a wash! 👇" },
                 ];
                 const t = templates.find(x => x.id === e.target.value);
                 if (t) setF(prev => ({ ...prev, caption: t.body }));

@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { Lock, Mail, User, Phone, LogOut, CreditCard, Receipt, CheckCircle, Clock, Gift, Copy, Repeat, ImageIcon, ChevronRight } from "lucide-react";
 import { supabase } from "../../lib/supabase";
 import { fmt, uid, today } from "../../lib/utils";
@@ -53,6 +53,28 @@ export function ClientAuthPortal({
     ? customers.find(c => (c.email || "").toLowerCase() === session.user.email.toLowerCase())
     : null;
 
+  // BUG 10 — if an OWNER/employee is logged in and lands on #/client, they'll
+  // have a session but no matching customer record, which used to strand them
+  // on "Setting up your account…". Detect a staff session (matches the owner's
+  // configured email, or a row in the employees table) and bounce them to the
+  // main app instead of showing the customer setup screen.
+  useEffect(() => {
+    if (!checked || !session?.user?.email || cust) return;
+    const email = session.user.email.toLowerCase();
+    const ownerEmail = ((settings as any)?.myEmail || (settings as any)?.companyEmail || "").toLowerCase();
+    if (ownerEmail && email === ownerEmail) {
+      window.location.hash = "/dashboard";
+      return;
+    }
+    (async () => {
+      try {
+        const { data } = await (supabase as any)
+          .from("employees").select("id, role").ilike("email", email).maybeSingle();
+        if (data) { window.location.hash = "/dashboard"; }
+      } catch { /* employees table may not exist */ }
+    })();
+  }, [checked, session?.user?.email, cust]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const handleAuth = async () => {
     setAuthError("");
     if (!email.trim() || !password.trim()) { setAuthError("Email and password are required"); return; }
@@ -85,7 +107,7 @@ export function ClientAuthPortal({
 
   const signOut = async () => { await supabase.auth.signOut({ scope: "local" }); setSession(null); };
 
-  const companyName = settings?.companyName || "Smock's Pressure Washing";
+  const companyName = settings?.companyName || "Crew Boss";
 
   if (!checked) {
     return <div className="min-h-screen bg-black flex items-center justify-center text-white/40 text-sm">Loading…</div>;
@@ -143,6 +165,19 @@ export function ClientAuthPortal({
 
   const myInvoices = estimates.filter(e => e.customerId === cust.id && e.invoiced);
   const outstanding = myInvoices.filter(e => !e.paidAt);
+
+  // Mark outstanding invoices as viewed once per session so the owner gets a
+  // "client opened invoice" notification (BUG 15 / FEATURE 5). Writes only to
+  // Supabase (owner's source of truth); guarded so it fires at most once per
+  // invoice per portal load.
+  const viewedMarkedRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    outstanding.forEach(inv => {
+      if ((inv as any).clientViewedAt || viewedMarkedRef.current.has(inv.id)) return;
+      viewedMarkedRef.current.add(inv.id);
+      (supabase as any).from("estimates").update({ clientViewedAt: new Date().toISOString() }).eq("id", inv.id).then(() => {}).catch(() => {});
+    });
+  }, [outstanding.map(i => i.id).join(",")]); // eslint-disable-line react-hooks/exhaustive-deps
   const paid = myInvoices.filter(e => !!e.paidAt);
   const myJobs = jobs.filter(j => j.customerId === cust.id).sort((a, b) => (b.scheduledDate || "").localeCompare(a.scheduledDate || ""));
   const completedJobs = myJobs.filter(j => j.status === "completed");
@@ -279,7 +314,13 @@ export function ClientAuthPortal({
         amount={payingInv?.total || 0}
         description={`${companyName} — Invoice #${payingInv?.id || ""}`}
         onSuccess={(paymentIntentId) => {
-          setEstimates((prev: Estimate[]) => prev.map(e => e.id === payingInv?.id ? { ...e, paidAt: today(), stripePaymentIntentId: paymentIntentId, stripePaymentStatus: "paid" as const } : e));
+          const invId = payingInv?.id;
+          setEstimates((prev: Estimate[]) => prev.map(e => e.id === invId ? { ...e, paidAt: today(), stripePaymentIntentId: paymentIntentId, stripePaymentStatus: "paid" as const } : e));
+          // Persist to Supabase so the OWNER's CRM poll sees the payment and
+          // fires an owner notification (BUG 15 / FEATURE 5).
+          if (invId) {
+            (supabase as any).from("estimates").update({ paidAt: today(), stripePaymentIntentId: paymentIntentId, stripePaymentStatus: "paid" }).eq("id", invId).then(() => {}).catch(() => {});
+          }
           toast?.("Payment received ✓", "green");
           setPayingInv(null);
         }}

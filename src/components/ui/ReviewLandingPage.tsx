@@ -1,4 +1,4 @@
-// auto-extracted from Smock's OS monolith
+// auto-extracted from Crew Boss OS monolith
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
   LayoutDashboard, Users, FileText, Briefcase, Bot, BarChart3,
@@ -50,7 +50,7 @@ export function ReviewLandingPage({ review, customer, settings = {} as any, onCl
   const [name, setName] = useState(customer?.firstName + " " + customer?.lastName || "");
   const [submitting, setSubmitting] = useState(false);
 
-  const companyName = settings?.companyName || "Smock's Pressure Washing";
+  const companyName = settings?.companyName || "Crew Boss";
   const googlePlaceId = settings?.googlePlaceId || "";
   const googleReviewUrl = googlePlaceId
     ? `https://search.google.com/local/writereview?placeid=${googlePlaceId}`

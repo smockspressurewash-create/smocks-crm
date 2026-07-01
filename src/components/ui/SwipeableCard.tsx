@@ -1,4 +1,4 @@
-// auto-extracted from Smock's OS monolith
+// auto-extracted from Crew Boss OS monolith
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
   LayoutDashboard, Users, FileText, Briefcase, Bot, BarChart3,
@@ -42,12 +42,15 @@ import { PBar } from "./PBar";
 import { PageFade } from "./PageFade";
 import { TimeframeSelector } from "./TimeframeSelector";
 
-export function SwipeableCard({ job, stages = [], onMove, children }) {
+export function SwipeableCard({ job, stages = [], onMove, children, currentStage = null }) {
   const touchStartX = useRef(null);
   const touchStartY = useRef(null);
   const [swipeHint, setSwipeHint] = useState(null); // "left" | "right" | null
 
-  const currentIdx = stages.findIndex(s => s.key === job.pipelineStage);
+  // Prefer the column the card is actually rendered in (currentStage) over the
+  // raw job.pipelineStage — auto-tracked jobs may have no explicit stage set,
+  // which would otherwise leave currentIdx at -1 and break swipe.
+  const currentIdx = stages.findIndex(s => s.key === (currentStage || job.pipelineStage));
 
   const onTouchStart = e => {
     touchStartX.current = e.touches[0].clientX;

@@ -18,7 +18,7 @@ export function CustomerReviewPage() {
   const customerId = hashParam("c");
   const firstName = decodeURIComponent(hashParam("n") || "there");
   const googlePlaceId = hashParam("g");
-  const companyName = decodeURIComponent(hashParam("co") || "Smock's Pressure Washing");
+  const companyName = decodeURIComponent(hashParam("co") || "Crew Boss");
 
   const googleUrl = googlePlaceId
     ? `https://search.google.com/local/writereview?placeid=${googlePlaceId}`

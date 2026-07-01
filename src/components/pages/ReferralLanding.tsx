@@ -23,7 +23,7 @@ export function ReferralLanding({ customers = [], setCustomers = (() => {}) as a
   const [f, setF] = useState({ firstName: "", lastName: "", email: "", phone: "", address: "" });
   const [busy, setBusy] = useState(false);
 
-  const companyName = settings?.companyName || "Smock's Pressure Washing";
+  const companyName = settings?.companyName || "Crew Boss";
   const refereeDiscount = Number((settings as any)?.referralSettings?.refereeDiscount) || 10;
 
   const submit = () => {

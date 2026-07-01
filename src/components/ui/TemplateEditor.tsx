@@ -1,4 +1,4 @@
-// auto-extracted from Smock's OS monolith
+// auto-extracted from Crew Boss OS monolith
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
   LayoutDashboard, Users, FileText, Briefcase, Bot, BarChart3,
@@ -46,7 +46,7 @@ export function TemplateEditor({ emailTemplates, setEmailTemplates, smsTemplates
   const [tab, setTab] = useState("email");
   const [editing, setEditing] = useState(null);
   const [f, setF] = useState({ name: "", subject: "", body: "" });
-  const [termsText, setTermsText] = useState(settings?.terms || "Payment due upon completion. 48-hour re-service guarantee for streaking or missed spots. No refunds after service completion. Customer is responsible for removing vehicles, furniture, and pets from work area before service. Smock's Pressure Washing is not liable for pre-existing damage.");
+  const [termsText, setTermsText] = useState(settings?.terms || "Payment due upon completion. 48-hour re-service guarantee for streaking or missed spots. No refunds after service completion. Customer is responsible for removing vehicles, furniture, and pets from work area before service. Crew Boss is not liable for pre-existing damage.");
 
   const templates = tab === "email" ? emailTemplates : smsTemplates;
   const setTemplates = tab === "email" ? setEmailTemplates : setSmsTemplates;
@@ -80,7 +80,7 @@ export function TemplateEditor({ emailTemplates, setEmailTemplates, smsTemplates
           <GTxt rows={8} value={termsText} onChange={e => setTermsText(e.target.value)} className="!text-xs font-mono" placeholder="Enter your terms and conditions..." />
           <div className="flex gap-2">
             <GBtn onClick={() => { setSettings(s => ({ ...s, terms: termsText })); }} className="flex-1 !text-xs">Save Terms</GBtn>
-            <GBtn variant="ghost" onClick={() => setTermsText("Payment due upon completion. 48-hour re-service guarantee for streaking or missed spots. No refunds after service completion. Customer is responsible for removing vehicles, furniture, and pets from work area before service. Smock's Pressure Washing is not liable for pre-existing damage.")} className="!text-xs">Reset Default</GBtn>
+            <GBtn variant="ghost" onClick={() => setTermsText("Payment due upon completion. 48-hour re-service guarantee for streaking or missed spots. No refunds after service completion. Customer is responsible for removing vehicles, furniture, and pets from work area before service. Crew Boss is not liable for pre-existing damage.")} className="!text-xs">Reset Default</GBtn>
           </div>
           <div className="p-3 bg-black/40 border border-white/5 rounded-xl">
             <div className="text-[10px] text-white/40 mb-2 uppercase tracking-wider">Preview (as customers see it)</div>

@@ -1,4 +1,4 @@
-// auto-extracted from Smock's OS monolith
+// auto-extracted from Crew Boss OS monolith
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
   LayoutDashboard, Users, FileText, Briefcase, Bot, BarChart3,
@@ -186,7 +186,7 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
       const j = jobs.find(x => x.id === jid);
       const c = j && customers.find(x => x.id === j.customerId);
       if (c?.phone && settings?.twilioSid) {
-        const msg = "Hi " + c.firstName + "! Your pressure washing service has been confirmed for " + (j.scheduledDate || "your requested date") + ". We'll text you when we're on the way. Questions? Call (717) 555-0100. — Smock's";
+        const msg = "Hi " + c.firstName + "! Your pressure washing service has been confirmed for " + (j.scheduledDate || "your requested date") + ". We'll text you when we're on the way. Questions? Call (717) 555-0100. — Crew Boss";
         twilioSend(settings, c.phone, msg).catch(() => {});
       }
     }
@@ -195,7 +195,7 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
       const j = jobs.find(x => x.id === jid);
       const c = j && customers.find(x => x.id === j.customerId);
       if (c?.phone && settings?.twilioSid) {
-        const msg = "Hi " + c.firstName + "! Your home is looking great 🙌 Thank you for choosing Smock's Pressure Washing. We appreciate your business! If you ever need us again, reply or call (717) 555-0100. — Will @ Smock's";
+        const msg = "Hi " + c.firstName + "! Your home is looking great 🙌 Thank you for choosing Crew Boss. We appreciate your business! If you ever need us again, reply or call (717) 555-0100. — Will @ Crew Boss";
         setTimeout(() => twilioSend(settings, c.phone, msg).catch(() => {}), 1000);
       }
       // Auto-add to customer timeline
@@ -321,13 +321,13 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
           status: "pending",
           message: quickReqMsg.trim() || null,
         }).select("id").single(),
-        8000, "Save request"
+        15000, "Save request"
       );
       if (!error && row?.id) {
         const requestUrl = `${portalUrl}#/portal?request=${row.id}`;
         const c = customers.find((x: any) => x.id === job.customerId);
         if (emp.email) {
-          const html = emailShell(settings.companyName || "Smock's Pressure Washing", "Job Request", `<p>Hi ${emp.firstName},</p><p>${quickReqMsg || "You have a new job request:"}</p>
+          const html = emailShell(settings.companyName || "Crew Boss", "Job Request", `<p>Hi ${emp.firstName},</p><p>${quickReqMsg || "You have a new job request:"}</p>
               <ul>
                 <li><b>Date:</b> ${job.scheduledDate}${job.scheduledTime ? " at " + job.scheduledTime : ""}</li>
                 <li><b>Address:</b> ${job.address}</li>
@@ -548,17 +548,15 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
               // immediately instead, and verify with a re-fetch so a failed
               // write surfaces as a visible error rather than silent data loss.
               (async () => {
-                const { error } = await withTimeout<any>((supabase as any).from("jobs").insert(job), 8000, "Save job");
+                const { error } = await withTimeout<any>((supabase as any).from("jobs").insert(job), 15000, "Save job");
                 if (error) {
                   console.error("New job failed to save to Supabase:", error);
                   toast?.("Job created locally, but failed to save to the server — " + error.message, "red");
-                  return;
                 }
-                const verify = await (supabase as any).from("jobs").select("id, crew").eq("id", job.id).maybeSingle();
-                console.log("VERIFY NEW JOB SAVED:", verify?.data);
-                if (!verify?.data) {
-                  toast?.("Job save could not be verified — refresh and check", "red");
-                }
+                // No verify SELECT round-trip — it needs a SELECT RLS policy
+                // that may be absent, and would otherwise spuriously warn on a
+                // save that actually succeeded. The 3s cross-device poll will
+                // reconcile local state with the server on its own.
               })();
               // Create Google Calendar event if Google is connected
               if (settings?.googleConnected && (settings as any)?.googleToken && job.scheduledDate) {
@@ -581,7 +579,7 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
                 const custLine = cust ? `<li><b>Customer:</b> ${cust.firstName} ${cust.lastName}</li>` : "";
                 if (directAssign) {
                   const portalLink = `${window.location.origin}${window.location.pathname}#/portal`;
-                  const html = emailShell(settings.companyName || "Smock's Pressure Washing", "Job Assignment", `<p>Hi ${assignedEmp.firstName},</p><p>You've been assigned to a new job:</p><ul><li><b>Date:</b> ${job.scheduledDate}${job.scheduledTime ? " at " + job.scheduledTime : ""}</li><li><b>Address:</b> ${job.address}</li>${custLine}</ul>` + emailButton("Open Crew Portal", portalLink));
+                  const html = emailShell(settings.companyName || "Crew Boss", "Job Assignment", `<p>Hi ${assignedEmp.firstName},</p><p>You've been assigned to a new job:</p><ul><li><b>Date:</b> ${job.scheduledDate}${job.scheduledTime ? " at " + job.scheduledTime : ""}</li><li><b>Address:</b> ${job.address}</li>${custLine}</ul>` + emailButton("Open Crew Portal", portalLink));
                   withTimeout(sendEmail(settings, { to: assignedEmp.email, subject: `You've Been Assigned — ${job.scheduledDate}`, body: html }), 8000, "Email send").catch((e: any) => { console.warn("Assignment email failed — job still assigned:", e?.message); toast?.("Assigned, but the notification email failed to send", "red"); });
                 } else {
                   (async () => {
@@ -594,7 +592,7 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
                         (supabase as any).from("job_requests").insert({
                           job_id: job.id, employee_id: assignedEmp.id, owner_id: ownerId, status: "pending",
                         }).select("id").single(),
-                        8000, "Save request"
+                        15000, "Save request"
                       );
                       if (error || !data?.id) {
                         console.error("Failed to create job_request:", error);
@@ -602,7 +600,7 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
                         return;
                       }
                       const reqUrl = `${window.location.origin}${window.location.pathname}#/portal?request=${data.id}`;
-                      const html = emailShell(settings.companyName || "Smock's Pressure Washing", "Job Request", `<p>Hi ${assignedEmp.firstName},</p><p>You have a new job request:</p><ul><li><b>Date:</b> ${job.scheduledDate}${job.scheduledTime ? " at " + job.scheduledTime : ""}</li><li><b>Address:</b> ${job.address}</li>${custLine}</ul><div style="text-align:center;margin:22px 0 4px"><a href="${reqUrl}" style="display:inline-block;background:#16a34a;color:#fff;text-decoration:none;font-weight:700;font-size:14px;padding:13px 24px;border-radius:10px;margin-right:8px">✓ Accept Job</a><a href="${reqUrl}&action=deny" style="display:inline-block;background:#dc2626;color:#fff;text-decoration:none;font-weight:700;font-size:14px;padding:13px 24px;border-radius:10px">✗ Decline</a></div>`);
+                      const html = emailShell(settings.companyName || "Crew Boss", "Job Request", `<p>Hi ${assignedEmp.firstName},</p><p>You have a new job request:</p><ul><li><b>Date:</b> ${job.scheduledDate}${job.scheduledTime ? " at " + job.scheduledTime : ""}</li><li><b>Address:</b> ${job.address}</li>${custLine}</ul><div style="text-align:center;margin:22px 0 4px"><a href="${reqUrl}" style="display:inline-block;background:#16a34a;color:#fff;text-decoration:none;font-weight:700;font-size:14px;padding:13px 24px;border-radius:10px;margin-right:8px">✓ Accept Job</a><a href="${reqUrl}&action=deny" style="display:inline-block;background:#dc2626;color:#fff;text-decoration:none;font-weight:700;font-size:14px;padding:13px 24px;border-radius:10px">✗ Decline</a></div>`);
                       withTimeout(sendEmail(settings, { to: assignedEmp.email, subject: `Job Request — ${job.scheduledDate}`, body: html }), 8000, "Email send").catch((e: any) => console.warn("Job request email failed — request still saved:", e?.message));
                     } catch (e: any) {
                       console.error("Crew request failed:", e);
@@ -627,7 +625,7 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
               const j = jobs.find(x => x.id === jid);
               const c = customers.find(x => x.id === j?.customerId);
               if (!c?.phone) continue;
-              const msg = "Hi " + c.firstName + ", reminder about your scheduled pressure wash on " + (j?.scheduledDate || "your upcoming date") + ". Questions? Call (717) 555-0100 — Smock's";
+              const msg = "Hi " + c.firstName + ", reminder about your scheduled pressure wash on " + (j?.scheduledDate || "your upcoming date") + ". Questions? Call (717) 555-0100 — Crew Boss";
               try {
                 if (settings?.twilioSid) { await twilioSend(settings, c.phone, msg); sent++; }
                 else { window.location.href = "sms:" + c.phone.replace(/\D/g, "") + "?body=" + encodeURIComponent(msg); sent++; break; }
@@ -663,7 +661,7 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
                 <button onClick={() => { updateJob(rj.id, { scheduledDate: "" }); toast("Moved to unscheduled — reschedule from Calendar"); }} className="px-2 py-1 rounded-lg text-[10px] bg-blue-900/40 hover:bg-blue-800/50 text-blue-300 border border-blue-700/40 whitespace-nowrap">Reschedule</button>
                 <button onClick={async () => {
                   if (!c?.phone) { toast("No phone number for " + c?.firstName, "error"); return; }
-                  const msg = "Hi " + c.firstName + ", we have rain forecast for your service on " + rj.scheduledDate + ". Would you like to reschedule? What day works for you? — Smock's";
+                  const msg = "Hi " + c.firstName + ", we have rain forecast for your service on " + rj.scheduledDate + ". Would you like to reschedule? What day works for you? — Crew Boss";
                   if (settings?.twilioSid) { try { await twilioSend(settings, c.phone, msg); toast("Weather reschedule text sent to " + c.firstName + " ✓"); } catch(e) { toast(e.message, "error"); } }
                   else { window.location.href = "sms:" + c.phone.replace(/\D/g,"") + "?body=" + encodeURIComponent(msg); }
                 }} className="px-2 py-1 rounded-lg text-[10px] bg-white/5 hover:bg-white/10 text-white/60 border border-white/10 whitespace-nowrap">Text customer</button>
@@ -840,12 +838,12 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
                     // Get live GPS location then include in message
                     const sendOTW = async (lat: number | null, lng: number | null) => {
                       const locationLink = lat != null ? "https://maps.google.com/?q=" + lat + "," + lng : null;
-                      const omwMsg = `Hi ${c.firstName}! Your technician is on the way! ETA: ${eta}. 🚗` + (locationLink ? " Track me: " + locationLink : "") + " — Will @ Smock's";
+                      const omwMsg = `Hi ${c.firstName}! Your technician is on the way! ETA: ${eta}. 🚗` + (locationLink ? " Track me: " + locationLink : "") + " — Will @ Crew Boss";
                       if (settings?.twilioSid && c.phone) {
                         try { await twilioSend(settings, c.phone, omwMsg); toast("OTW text sent to " + c.firstName + " ✓"); }
                         catch (e: any) { toast(e?.message || "Failed to send OTW text", "red"); }
                       } else if (c.email) {
-                        const html = emailShell(settings.companyName || "Smock's Pressure Washing", "On My Way", `<p>${omwMsg}</p>`);
+                        const html = emailShell(settings.companyName || "Crew Boss", "On My Way", `<p>${omwMsg}</p>`);
                         try {
                           await sendEmail(settings, { to: c.email, subject: "Your technician is on the way", body: html });
                           toast("OTW email sent to " + c.firstName + " ✓");
@@ -949,7 +947,7 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
                   move(j.id, "scheduled");
                   setJobs(prev => prev.map(x => x.id === j.id ? { ...x, scheduledDate: newDate, status: "scheduled", cancelReason: "" } : x));
                   if (c?.phone) {
-                    const msg = "Hi " + c.firstName + ", we've rescheduled your service to " + newDate + ". Reply to confirm or request a different date. — Smock's";
+                    const msg = "Hi " + c.firstName + ", we've rescheduled your service to " + newDate + ". Reply to confirm or request a different date. — Crew Boss";
                     if (settings?.twilioSid) {
                       try { await twilioSend(settings, c.phone, msg); toast("Rescheduled + customer texted ✓"); } catch { toast("Rescheduled — text failed"); }
                     } else {

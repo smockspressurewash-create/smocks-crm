@@ -1,4 +1,4 @@
-// auto-extracted from Smock's OS monolith
+// auto-extracted from Crew Boss OS monolith
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
   LayoutDashboard, Users, FileText, Briefcase, Bot, BarChart3,
@@ -113,7 +113,7 @@ export function LeadIntakePage({ customers = [], setCustomers, estimates = [], s
 
       // Instant auto-response SMS to the lead
       if (settings?.twilioSid && f.phone) {
-        const autoReply = "Hi " + f.firstName + "! Thanks for reaching out to Smock's Pressure Washing 🙌 We received your request" + (f.service ? " for " + f.service : "") + " and will follow up within 24 hours with a quote. Questions? Call (717) 555-0100. — Will @ Smock's";
+        const autoReply = "Hi " + f.firstName + "! Thanks for reaching out to Crew Boss 🙌 We received your request" + (f.service ? " for " + f.service : "") + " and will follow up within 24 hours with a quote. Questions? Call (717) 555-0100. — Will @ Crew Boss";
         twilioSend(settings, f.phone, autoReply).catch(() => {});
       }
 
@@ -145,7 +145,7 @@ export function LeadIntakePage({ customers = [], setCustomers, estimates = [], s
     dismiss(sub.id);
   };
 
-  const companyName = settings?.companyName || "Smock's Pressure Washing";
+  const companyName = settings?.companyName || "Crew Boss";
 
   return (
     <div className="space-y-5">
@@ -159,7 +159,7 @@ export function LeadIntakePage({ customers = [], setCustomers, estimates = [], s
           <div className="flex items-center gap-2">
             <GBtn variant="ghost" onClick={() => setPreview(!preview)} className="!text-xs"><Globe size={12} className="inline mr-1" />{preview ? "Hide Form" : "Preview Form"}</GBtn>
             <GBtn onClick={() => {
-              const embedHtml = `<!-- Smock's Pressure Washing Lead Form -->\n<iframe\n  src="https://smocks.com/lead-form"\n  width="100%"\n  height="620"\n  frameborder="0"\n  style="border-radius:12px;box-shadow:0 4px 20px rgba(0,0,0,0.15)"\n  title="Request a Quote"\n></iframe>`;
+              const embedHtml = `<!-- Crew Boss Lead Form -->\n<iframe\n  src="https://smocks.com/lead-form"\n  width="100%"\n  height="620"\n  frameborder="0"\n  style="border-radius:12px;box-shadow:0 4px 20px rgba(0,0,0,0.15)"\n  title="Request a Quote"\n></iframe>`;
               navigator.clipboard?.writeText(embedHtml).catch(()=>{});
               toast("Embed code copied! Paste into your website's HTML ✓");
             }} className="!text-xs"><Copy size={12} className="inline mr-1" />Copy Embed</GBtn>
@@ -232,7 +232,7 @@ export function LeadIntakePage({ customers = [], setCustomers, estimates = [], s
                 </div>
                 <div><label className="text-xs text-white/60 mb-1 block">Phone Number *</label><GInput type="tel" value={f.phone} onChange={e => setF({ ...f, phone: e.target.value })} placeholder="(717) 555-0100" /></div>
                 <div><label className="text-xs text-white/60 mb-1 block">Email</label><GInput type="email" value={f.email} onChange={e => setF({ ...f, email: e.target.value })} placeholder="jen@email.com" /></div>
-                <div><label className="text-xs text-white/60 mb-1 block">Property Address *</label><AddressAutocomplete value={f.address} onChange={v => setF({ ...f, address: v })} mapsKey={settings.googleMapsKey || (settings as any).mapsKey || ""} placeholder="412 Oak Ridge Ln, York PA" /></div>
+                <div><label className="text-xs text-white/60 mb-1 block">Property Address *</label><AddressAutocomplete value={f.address} onChange={v => setF({ ...f, address: v })} mapsKey={settings.googleMapsKey || (settings as any).mapsKey || ""} placeholder="412 Oak Ridge Ln, York PA" knownAddresses={customers.map((c: any) => c.address).filter(Boolean)} /></div>
                 <div className="grid grid-cols-2 gap-3">
                   <div><label className="text-xs text-white/60 mb-1 block">Service Needed</label>
                     <GSel value={f.service} onChange={e => setF({ ...f, service: e.target.value })} className="!text-xs">

@@ -25,7 +25,7 @@ export function PromotionsPage({ promotions = [], setPromotions = (() => {}) as 
   const [previewOn, setPreviewOn] = useState(false);
   const [busy, setBusy] = useState(false);
 
-  const companyName = settings?.companyName || "Smock's Pressure Washing";
+  const companyName = settings?.companyName || "Crew Boss";
 
   const matchAudience = (p: Promotion): Customer[] => {
     if (p.audience === "all") return customers;

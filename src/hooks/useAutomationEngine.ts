@@ -15,12 +15,12 @@ interface AutomationEngineProps {
 }
 
 const SMS_TEMPLATES: Record<string, string> = {
-  new_lead:         "Hi {{first_name}}! Thanks for reaching out to Smock's. I'll send your estimate shortly. — Will",
-  estimate_followup: "Hi {{first_name}}, just checking in on your estimate. Any questions? Ready to schedule? — Will @ Smock's",
-  job_reminder:     "Hi {{first_name}}, reminder: your Smock's service is tomorrow. We'll text when on the way. — Smock's",
+  new_lead:         "Hi {{first_name}}! Thanks for reaching out to Crew Boss. I'll send your estimate shortly. — Will",
+  estimate_followup: "Hi {{first_name}}, just checking in on your estimate. Any questions? Ready to schedule? — Will @ Crew Boss",
+  job_reminder:     "Hi {{first_name}}, reminder: your Crew Boss service is tomorrow. We'll text when on the way. — Crew Boss",
   review_request:   "Hi {{first_name}}, how did we do? A quick Google review means a lot: {{review_link}} — Will",
-  payment_overdue:  "Hi {{first_name}}, your invoice is past due. Pay here: {{payment_link}} — Smock's",
-  birthday:         "Hi {{first_name}}! Happy birthday 🎂 Enjoy 10% off your next service — code BDAY10. — Smock's",
+  payment_overdue:  "Hi {{first_name}}, your invoice is past due. Pay here: {{payment_link}} — Crew Boss",
+  birthday:         "Hi {{first_name}}! Happy birthday 🎂 Enjoy 10% off your next service — code BDAY10. — Crew Boss",
 };
 
 const fillTemplate = (template: string, vars: Record<string, string>): string =>
@@ -112,7 +112,7 @@ export function useAutomationEngine({
             if (!c?.phone || c.smsOptOut) continue;
             // Check throttle
             if (c.reviewRequested && daysSince(c.reviewRequested) < 90) continue;
-            const reviewLink = `${window.location.origin}${window.location.pathname}#/rate?c=${encodeURIComponent(c.id)}&n=${encodeURIComponent(c.firstName)}&g=${encodeURIComponent(settings.googlePlaceId ?? "")}&co=${encodeURIComponent(settings.companyName ?? "Smock's")}`;
+            const reviewLink = `${window.location.origin}${window.location.pathname}#/rate?c=${encodeURIComponent(c.id)}&n=${encodeURIComponent(c.firstName)}&g=${encodeURIComponent(settings.googlePlaceId ?? "")}&co=${encodeURIComponent(settings.companyName ?? "Crew Boss")}`;
             const msg = fillTemplate(SMS_TEMPLATES.review_request, {
               first_name: c.firstName,
               review_link: reviewLink,

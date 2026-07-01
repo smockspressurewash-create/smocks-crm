@@ -294,7 +294,7 @@ export const sendEmail = async (
     const res = await fetch(`${resendBackendUrl}/email`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ to, subject: subj, html: body, from: `${fromName ?? "Smock's"} <${fromEmail ?? "noreply@smocks.com"}>`, replyTo }),
+      body: JSON.stringify({ to, subject: subj, html: body, from: `${fromName ?? "Crew Boss"} <${fromEmail ?? "noreply@smocks.com"}>`, replyTo }),
     });
     if (!res.ok) throw new Error(`Email proxy error: ${res.status}`);
     return;
@@ -309,7 +309,7 @@ export const sendEmail = async (
       Authorization: `Bearer ${resendKey}`,
     },
     body: JSON.stringify({
-      from: `${fromName ?? "Smock's Pressure Washing"} <${fromEmail ?? "noreply@smocks.com"}>`,
+      from: `${fromName ?? "Crew Boss"} <${fromEmail ?? "noreply@smocks.com"}>`,
       to: [to],
       subject: subj,
       html: body,

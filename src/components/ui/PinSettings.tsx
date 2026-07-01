@@ -1,4 +1,4 @@
-// auto-extracted from Smock's OS monolith
+// auto-extracted from Crew Boss OS monolith
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
   LayoutDashboard, Users, FileText, Briefcase, Bot, BarChart3,
@@ -52,7 +52,7 @@ export function PinSettings({ toast }) {
         <span className="font-semibold text-sm">App PIN Protection</span>
         <Badge tone={currentPin ? "green" : "gray"}>{currentPin ? "Enabled" : "Off"}</Badge>
       </div>
-      <div className="text-[10px] text-white/50">Set a 4-digit PIN to lock the app. You'll need it every time you open Smock's OS.</div>
+      <div className="text-[10px] text-white/50">Set a 4-digit PIN to lock the app. You'll need it every time you open Crew Boss OS.</div>
       <div className="flex gap-2">
         <GInput type="password" maxLength={4} value={newPin} onChange={e => setNewPin(e.target.value.slice(0,4))} placeholder="New 4-digit PIN" className="!text-xs flex-1" />
         <GBtn onClick={() => { if (newPin.length === 4) { setCurrentPin(newPin); setNewPin(""); toast("PIN set ✓"); } else toast("PIN must be exactly 4 digits"); }} className="!text-xs">Set PIN</GBtn>

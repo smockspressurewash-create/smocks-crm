@@ -1,4 +1,4 @@
-// auto-extracted from Smock's OS monolith
+// auto-extracted from Crew Boss OS monolith
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
   LayoutDashboard, Users, FileText, Briefcase, Bot, BarChart3,
@@ -129,7 +129,7 @@ export function FleetPage({ vehicles = [], setVehicles, maintenance = [], setMai
           <GBtn variant="ghost" className="!text-xs" onClick={() => {
             const irsRate = 0.67;
             const html = `<!DOCTYPE html><html><head><title>Mileage Log</title><style>body{font-family:Arial;padding:32px;max-width:800px;margin:auto;color:#111}h1{color:#dc2626}table{width:100%;border-collapse:collapse;margin:16px 0;font-size:12px}th{background:#f5f5f5;padding:8px;text-align:left;border-bottom:2px solid #ccc;font-size:10px;text-transform:uppercase}td{padding:7px;border-bottom:1px solid #eee}.r{text-align:right}.total{font-weight:bold;background:#fff8f0}</style></head><body>
-            <h1>Smock's Pressure Washing — Mileage & Fleet Log</h1><p style="color:#666">IRS Rate: $${irsRate}/mile · Generated ${today()}</p>
+            <h1>Crew Boss — Mileage & Fleet Log</h1><p style="color:#666">IRS Rate: $${irsRate}/mile · Generated ${today()}</p>
             <table><thead><tr><th>Vehicle</th><th>Year/Make/Model</th><th>License</th><th class="r">Odometer</th><th class="r">Est. Deduction</th></tr></thead><tbody>
             ${vehicles.map(v => `<tr><td>${v.name}</td><td>${v.year||""} ${v.make||""} ${v.model||""}</td><td>${v.licensePlate||""}</td><td class="r">${Number(v.mileage||0).toLocaleString()} mi</td><td class="r">$${(Number(v.mileage || 0) * irsRate).toFixed(2)}</td></tr>`).join("")}
             <tr class="total"><td colspan="3"><strong>Total Fleet</strong></td><td class="r"><strong>${totalMiles.toLocaleString()} mi</strong></td><td class="r"><strong>$${(totalMiles*irsRate).toFixed(2)}</strong></td></tr>

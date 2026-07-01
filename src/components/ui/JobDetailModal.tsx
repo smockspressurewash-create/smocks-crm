@@ -1,4 +1,4 @@
-// auto-extracted from Smock's OS monolith
+// auto-extracted from Crew Boss OS monolith
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
   LayoutDashboard, Users, FileText, Briefcase, Bot, BarChart3,
@@ -191,6 +191,7 @@ const withTimeout = <T,>(p: Promise<T>, ms: number, label: string): Promise<T> =
 export function JobDetailModal({ jobId, job, onClose, customers = [], employees = [], updateJob, toast, gToken = "", settings = {} as any, estimates = [], setEstimates = (() => {}) as any, onPortal = (_id: string) => {}, ownerId = "" }: { jobId: any; job: any; onClose: any; customers?: any[]; employees?: any[]; updateJob: any; toast: any; gToken?: string; settings?: any; estimates?: any[]; setEstimates?: any; onPortal?: (id: string) => void; ownerId?: string }) {
   const [commNote, setCommNote] = useState("");
   const [sendingInvoice, setSendingInvoice] = useState(false);
+  const [sendingReview, setSendingReview] = useState(false);
   const [showInvoicePreview, setShowInvoicePreview] = useState(false);
   const [commType, setCommType] = useState("note");
   const [chemName, setChemName] = useState("");
@@ -240,7 +241,7 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
       try {
         const { data: empRow } = await withTimeout<any>(
           (supabase as any).from("employees").select("google_token, google_token_expires_at, google_refresh_token, autoSyncCalendar").eq("id", (emp as any).id).maybeSingle(),
-          3000, "Employee lookup"
+          6000, "Employee lookup"
         );
         if (empRow?.autoSyncCalendar === false) continue;
         let tok = empRow?.google_token;
@@ -275,7 +276,7 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
       notifyEmployeesRef.current(
         withEmail,
         () => `Job Updated — ${job.address}`,
-        (emp: any) => emailShell(settings.companyName || "Smock's Pressure Washing", "Job Updated", `<p>Hi ${emp.firstName},</p><p>Your job has changed:</p><ul>${changes.map(c => `<li>${c}</li>`).join("")}</ul>`)
+        (emp: any) => emailShell(settings.companyName || "Crew Boss", "Job Updated", `<p>Hi ${emp.firstName},</p><p>Your job has changed:</p><ul>${changes.map(c => `<li>${c}</li>`).join("")}</ul>`)
       ).then((sent: number) => { if (sent > 0) toast(`Notified ${sent} crew member${sent !== 1 ? "s" : ""} of the change`, "green"); });
     }
     // Calendar sync happens immediately on the same change, not on a timer.
@@ -318,7 +319,7 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
         notifyEmployeesRef.current(
           [emp],
           () => `You've Been Assigned — ${job.scheduledDate || job.address}`,
-          () => emailShell(settings.companyName || "Smock's Pressure Washing", "You've Been Assigned", `<p>Hi ${emp.firstName},</p><p>You've been assigned to a job:</p><ul><li><b>Date:</b> ${job.scheduledDate}${job.scheduledTime ? " at " + job.scheduledTime : ""}</li><li><b>Address:</b> ${job.address}</li>${cust ? `<li><b>Customer:</b> ${cust.firstName} ${cust.lastName}</li>` : ""}</ul><p>This job is already on your schedule — no action needed.</p>`)
+          () => emailShell(settings.companyName || "Crew Boss", "You've Been Assigned", `<p>Hi ${emp.firstName},</p><p>You've been assigned to a job:</p><ul><li><b>Date:</b> ${job.scheduledDate}${job.scheduledTime ? " at " + job.scheduledTime : ""}</li><li><b>Address:</b> ${job.address}</li>${cust ? `<li><b>Customer:</b> ${cust.firstName} ${cust.lastName}</li>` : ""}</ul><p>This job is already on your schedule — no action needed.</p>`)
         ).then((sent: number) => { if (sent > 0) toast?.(`Notified ${emp.firstName} ✓`, "green"); });
       }
     }
@@ -343,7 +344,7 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
       try {
         const { data: empRow } = await withTimeout<any>(
           (supabase as any).from("employees").select("google_token, google_token_expires_at, google_refresh_token, google_email").eq("id", emp.id).maybeSingle(),
-          3000, "Employee lookup"
+          6000, "Employee lookup"
         );
         let tok = empRow?.google_token;
         const validTok = tok && empRow?.google_token_expires_at && new Date(empRow.google_token_expires_at).getTime() > Date.now();
@@ -410,7 +411,7 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
       setEstimates((prev: any[]) => [...prev, newInv]);
       const payLink = `${window.location.origin}${window.location.pathname}#/portal/${newInv.id}`;
       if (c.email) {
-        const html = emailShell(settings.companyName || "Smock's Pressure Washing", subject, bodyHtml + emailButton("View & Pay Invoice", payLink));
+        const html = emailShell(settings.companyName || "Crew Boss", subject, bodyHtml + emailButton("View & Pay Invoice", payLink));
         await withTimeout(sendEmail(settings, { to: c.email, subject, body: html }), 10000, "Invoice email");
       } else {
         await withTimeout(twilioSend(settings as any, c.phone!, `Hi ${c.firstName}, your invoice for $${(Number(job.amount) || 0).toFixed(2)} is ready: ${payLink}`), 10000, "Invoice SMS");
@@ -425,6 +426,34 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
     }
   };
 
+  // BUG 16 — send a review request for a completed job. Links to the #/rate
+  // page (4–5★ → Google review, 1–3★ → private feedback). Prefers SMS via
+  // Twilio, falls back to email.
+  const sendReviewRequest = async () => {
+    const c = customers.find(x => x.id === job.customerId);
+    if (!c) { toast("No customer on this job", "red"); return; }
+    if (!c.phone && !c.email) { toast("No phone or email on file for this customer", "red"); return; }
+    setSendingReview(true);
+    try {
+      const companyName = settings.companyName || "Crew Boss";
+      const rateLink = `${window.location.origin}${window.location.pathname}#/rate?c=${encodeURIComponent(c.id)}&n=${encodeURIComponent(c.firstName)}&g=${encodeURIComponent(settings.googlePlaceId || "")}&co=${encodeURIComponent(companyName)}`;
+      if (settings.twilioSid && c.phone) {
+        await withTimeout(twilioSend(settings as any, c.phone, `Hi ${c.firstName}, thanks for choosing ${companyName}! How did we do? ${rateLink}`), 10000, "Review SMS");
+      } else if (c.email) {
+        const html = emailShell(companyName, "How did we do?", `<p>Hi ${c.firstName},</p><p>Thanks for choosing ${companyName}! We'd love your feedback on your recent service.</p>` + emailButton("Leave a Review", rateLink));
+        await withTimeout(sendEmail(settings, { to: c.email, subject: `How did we do, ${c.firstName}?`, body: html }), 10000, "Review email");
+      } else if (c.phone) {
+        window.location.href = "sms:" + c.phone.replace(/\D/g, "") + "?body=" + encodeURIComponent(`Hi ${c.firstName}, how did we do? ${rateLink}`);
+      }
+      updateJob(jobId, { reviewRequestedAt: today() } as any);
+      toast(`Review request sent to ${c.firstName} ✓`, "green");
+    } catch (err: any) {
+      toast(err?.message || "Failed to send review request", "red");
+    } finally {
+      setSendingReview(false);
+    }
+  };
+
   const notifyCrew = async () => {
     const crewEmps = (job.crew || []).map(id => employees.find(e => e.id === id)).filter(Boolean);
     const withEmail = crewEmps.filter(e => e.email);
@@ -436,7 +465,7 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
       const sent = await notifyEmployees(
         withEmail,
         () => `Job Assignment — ${job.scheduledDate}`,
-        emp => emailShell(settings.companyName || "Smock's Pressure Washing", "Job Assignment", `<p>Hi ${emp.firstName},</p><p>You've been assigned to a job:</p><ul><li><b>Date:</b> ${job.scheduledDate}${job.scheduledTime ? " at " + job.scheduledTime : ""}</li><li><b>Address:</b> ${job.address}</li>${c ? `<li><b>Customer:</b> ${c.firstName} ${c.lastName}</li>` : ""}</ul>` + emailButton("Open Crew Portal", jobLink))
+        emp => emailShell(settings.companyName || "Crew Boss", "Job Assignment", `<p>Hi ${emp.firstName},</p><p>You've been assigned to a job:</p><ul><li><b>Date:</b> ${job.scheduledDate}${job.scheduledTime ? " at " + job.scheduledTime : ""}</li><li><b>Address:</b> ${job.address}</li>${c ? `<li><b>Customer:</b> ${c.firstName} ${c.lastName}</li>` : ""}</ul>` + emailButton("Open Crew Portal", jobLink))
       );
       toast(sent > 0 ? `Notified ${sent} crew member${sent !== 1 ? "s" : ""} ✓` : "Email send failed — check Resend settings", sent > 0 ? "green" : "red");
     } catch (err: any) {
@@ -464,7 +493,7 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
           status: "pending",
           message: requestMsg.trim() || null,
         }).select("id").single(),
-        8000, "Save request"
+        15000, "Save request"
       );
       if (!error && data) {
         // The save succeeded — the request is on the books regardless of whether
@@ -477,7 +506,7 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
             await notifyEmployees(
               [emp],
               () => `Job Request — ${job.scheduledDate}`,
-              () => emailShell(settings.companyName || "Smock's Pressure Washing", "Job Request", `<p>Hi ${emp.firstName},</p><p>${requestMsg || "You have a new job request:"}</p>
+              () => emailShell(settings.companyName || "Crew Boss", "Job Request", `<p>Hi ${emp.firstName},</p><p>${requestMsg || "You have a new job request:"}</p>
                 <ul>
                   <li><b>Date:</b> ${job.scheduledDate}${job.scheduledTime ? " at " + job.scheduledTime : ""}</li>
                   <li><b>Address:</b> ${job.address}</li>
@@ -530,7 +559,7 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
         try {
           const { data: empRow } = await withTimeout<any>(
             (supabase as any).from("employees").select("google_token, google_token_expires_at, google_refresh_token, autoSyncCalendar").eq("id", emp.id).maybeSingle(),
-            3000, "Employee lookup"
+            6000, "Employee lookup"
           );
           let tok = empRow?.google_token;
           const validTok = tok && empRow?.google_token_expires_at && new Date(empRow.google_token_expires_at).getTime() > Date.now();
@@ -571,7 +600,7 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
         await notifyEmployees(
           [emp],
           () => `You've Been Scheduled — ${job.scheduledDate}`,
-          () => emailShell(settings.companyName || "Smock's Pressure Washing", "You've Been Scheduled", `<p>Hi ${emp.firstName},</p><p>You've been scheduled for a job — you're confirmed, no action needed:</p><ul><li><b>Date:</b> ${job.scheduledDate}${job.scheduledTime ? " at " + job.scheduledTime : ""}</li><li><b>Address:</b> ${job.address}</li>${cust ? `<li><b>Customer:</b> ${cust.firstName} ${cust.lastName}</li>` : ""}</ul>${calendarSynced ? "<p>This has been added to your Google Calendar.</p>" : ""}`)
+          () => emailShell(settings.companyName || "Crew Boss", "You've Been Scheduled", `<p>Hi ${emp.firstName},</p><p>You've been scheduled for a job — you're confirmed, no action needed:</p><ul><li><b>Date:</b> ${job.scheduledDate}${job.scheduledTime ? " at " + job.scheduledTime : ""}</li><li><b>Address:</b> ${job.address}</li>${cust ? `<li><b>Customer:</b> ${cust.firstName} ${cust.lastName}</li>` : ""}</ul>${calendarSynced ? "<p>This has been added to your Google Calendar.</p>" : ""}`)
         );
       } catch (err) {
         console.warn("Schedule notification email failed — crew assignment still saved:", err);
@@ -636,7 +665,7 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
       const startDt = new Date(`${job.scheduledDate}T${timeStr}:00`);
       const endDt = new Date(startDt.getTime() + (Number(job.duration) || 2) * 3600000);
       const customer = customers.find((x: any) => x.id === job.customerId);
-      const title = customer ? `${customer.firstName} ${customer.lastName} — Smock's Service` : "Smock's Service";
+      const title = customer ? `${customer.firstName} ${customer.lastName} — Crew Boss Service` : "Crew Boss Service";
       if (job.googleEventId) {
         await updateGCalEventApi(gToken, job.googleEventId, { title, start: startDt.toISOString(), end: endDt.toISOString(), location: job.address, description: job.notes || "" });
         toast("Google Calendar event updated ✓");
@@ -818,6 +847,19 @@ ${job.notes ? `<div class="section"><h2>Job Notes</h2><p>${job.notes}</p></div>`
                 </GBtn>
               </div>
             )}
+          </Glass>
+        )}
+
+        {/* Send Review Request — completed jobs only (BUG 16) */}
+        {job.status === "completed" && (
+          <Glass className="p-3 flex items-center justify-between gap-3 !bg-purple-950/15 !border-purple-700/30">
+            <div className="text-xs text-white/60">
+              <div className="font-semibold mb-0.5 text-purple-300 flex items-center gap-1"><Star size={11} />Review Request</div>
+              {(job as any).reviewRequestedAt ? `Sent ${(job as any).reviewRequestedAt}` : "Ask the customer for a review — 4–5★ routes to Google, low ratings stay private."}
+            </div>
+            <GBtn onClick={sendReviewRequest} disabled={sendingReview} className="!text-xs !py-1.5 flex-shrink-0">
+              {sendingReview ? "Sending…" : <><Star size={11} className="inline mr-1" />Send Review Request</>}
+            </GBtn>
           </Glass>
         )}
 
@@ -1398,7 +1440,7 @@ ${job.notes ? `<div class="section"><h2>Job Notes</h2><p>${job.notes}</p></div>`
         data={(() => {
           const c = customers.find(x => x.id === job.customerId);
           if (!c) return null;
-          return { customerName: c.firstName, address: job.address || "", amount: Number(job.amount) || 0, companyName: settings.companyName || "Smock's Pressure Washing", payLink: "" };
+          return { customerName: c.firstName, address: job.address || "", amount: Number(job.amount) || 0, companyName: settings.companyName || "Crew Boss", payLink: "" };
         })()}
       />
     </Modal>
