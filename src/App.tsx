@@ -49,6 +49,7 @@ import { SettingsModal } from "./components/pages/SettingsModal";
 import { ClientPortal } from "./components/pages/ClientPortal";
 import { ClientAuthPortal } from "./components/pages/ClientAuthPortal";
 import { ReferralLanding } from "./components/pages/ReferralLanding";
+import { CustomerReviewPage } from "./components/pages/CustomerReviewPage";
 import { EmployeePortal } from "./components/pages/EmployeePortal";
 import { saveEmpGoogleToken } from "./lib/googleApi";
 import { ResetPassword } from "./components/pages/ResetPassword";
@@ -413,7 +414,8 @@ export function App() {
     const hash = window.location.hash.replace(/^#\/?/, "").split("?")[0];
     if (hash === "portal" || hash.startsWith("portal/")) return "portal";
     if (hash === "referral" || hash.startsWith("r/")) return "referral";
-    const valid = ["dashboard","alfred","inbox","customers","estimates","invoices","pipeline","intake","jobs","calendar","crew","campaigns","reviews","automations","social","referrals","promotions","expenses","reports","analytics","budget","personal","accountability","employees","fleet","chemicals","google","portal","reset-password","client","referral"];
+    if (hash === "rate" || hash.startsWith("rate?")) return "rate";
+    const valid = ["dashboard","alfred","inbox","customers","estimates","invoices","pipeline","intake","jobs","calendar","crew","campaigns","reviews","automations","social","referrals","promotions","expenses","reports","analytics","budget","personal","accountability","employees","fleet","chemicals","google","portal","reset-password","client","referral","rate"];
     return valid.includes(hash) ? hash : "dashboard";
   });
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -468,11 +470,12 @@ export function App() {
 
   // Listen for browser back/forward
   useEffect(() => {
-    const valid = ["dashboard","alfred","inbox","customers","estimates","invoices","pipeline","intake","jobs","calendar","crew","campaigns","reviews","automations","social","referrals","promotions","expenses","reports","analytics","budget","personal","accountability","employees","fleet","chemicals","google","portal","reset-password","client","referral"];
+    const valid = ["dashboard","alfred","inbox","customers","estimates","invoices","pipeline","intake","jobs","calendar","crew","campaigns","reviews","automations","social","referrals","promotions","expenses","reports","analytics","budget","personal","accountability","employees","fleet","chemicals","google","portal","reset-password","client","referral","rate"];
     const handler = () => {
       const hash = window.location.hash.replace(/^#\/?/, "").split("?")[0];
       if (hash === "portal" || hash.startsWith("portal/")) { setPage("portal"); return; }
       if (hash === "referral" || hash.startsWith("r/")) { setPage("referral"); return; }
+      if (hash === "rate" || hash.startsWith("rate?")) { setPage("rate"); return; }
       if (valid.includes(hash)) setPage(hash);
     };
     window.addEventListener("hashchange", handler);
@@ -812,9 +815,10 @@ export function App() {
         .on("postgres_changes", { event: "*", schema: "public", table: "jobs" }, () => { refetchData(); })
         .on("postgres_changes", { event: "*", schema: "public", table: "customers" }, () => { refetchData(); })
         .on("postgres_changes", { event: "*", schema: "public", table: "estimates" }, () => { refetchData(); })
+        .on("postgres_changes", { event: "*", schema: "public", table: "employees" }, () => { refetchEmployees(); })
         .subscribe();
     } catch { /* realtime may not be enabled on this project */ }
-    const interval = setInterval(refetchData, 3000);
+    const interval = setInterval(() => { refetchData(); refetchEmployees(); }, 3000);
     return () => {
       clearInterval(interval);
       try { channel?.unsubscribe(); } catch { /* ignore */ }
@@ -1122,6 +1126,12 @@ export function App() {
   // #/referral?ref=CODE and the shorthand #/r/CODE.
   if (page === "referral") {
     return <ReferralLanding customers={customers} setCustomers={setCustomers} settings={settings} toast={toast} />;
+  }
+
+  // ── Customer review landing — public route, no auth.
+  // URL: #/rate?c=CUSTOMER_ID&n=FIRST_NAME&g=GOOGLE_PLACE_ID&co=COMPANY_NAME
+  if (page === "rate") {
+    return <CustomerReviewPage />;
   }
 
   // No top-level loading gate — render immediately with whatever's already

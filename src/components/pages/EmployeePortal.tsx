@@ -227,12 +227,13 @@ function PortalChecklistSection({ title, emoji, items, onUpdate, allowPhotos = f
 
 const DEFAULT_SIGNOFF_DISCLAIMER = "I confirm that all services have been completed to my satisfaction. I accept the work as described and acknowledge that {{company}} is not liable for pre-existing conditions documented in the pre-job checklist. I understand that this serves as a legally binding acceptance of completed work.";
 
-function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName = "the company", onComplete, perms: permsOverride, maxLunchMinutes = 30, onJobCompleted, googleMapsKey = "", paidLunchBreaks = false, signOffDisclaimer = "", settings = {} as AppSettings, setEstimates = (() => {}) as any, nextJob = null, nextJobCustomer = null }: {
+function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName = "the company", onComplete, perms: permsOverride, maxLunchMinutes = 30, onJobCompleted, googleMapsKey = "", paidLunchBreaks = false, signOffDisclaimer = "", settings = {} as AppSettings, setEstimates = (() => {}) as any, nextJob = null, nextJobCustomer = null, onArrived, autoComplete = false }: {
   job: Job; customer?: Customer; onBack: () => void;
   onUpdateJob: (patch: Partial<Job>) => void; toast: (msg: string, tone?: any) => void;
   companyName?: string; onComplete?: () => void; perms?: Record<string, boolean>; maxLunchMinutes?: number;
   onJobCompleted?: (job: Job) => void; googleMapsKey?: string; paidLunchBreaks?: boolean; signOffDisclaimer?: string;
   settings?: AppSettings; setEstimates?: any; nextJob?: Job | null; nextJobCustomer?: Customer | null;
+  onArrived?: () => void; autoComplete?: boolean;
 }) {
   const effPerms = { ...DEFAULT_PERMISSIONS, ...(permsOverride || {}) };
   const [note, setNote] = useState("");
@@ -252,7 +253,18 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
   const [completeSummary, setCompleteSummary] = useState<{ hours: number; amount: number; paymentStatus: string } | null>(null);
   const [invoiceEditSubject, setInvoiceEditSubject] = useState("");
   const [invoiceEditNote, setInvoiceEditNote] = useState("");
+  const [invoiceChannel, setInvoiceChannel] = useState<"email" | "sms">("email");
 
+  // Auto-start the complete flow when the parent tells us to (e.g. tapping
+  // "Complete" directly on a Today-tab job card rather than going through
+  // View Details first).
+  useEffect(() => {
+    if (autoComplete && job.status !== "completed") {
+      setCompleteStep("review");
+      setPaidChoice("");
+      setPaymentMethod("");
+    }
+  }, []); // run once on mount // eslint-disable-line react-hooks/exhaustive-deps
 
   const hasRequiredGear = (job.equipment || []).length > 0 || (job.requiredChemicals || []).length > 0;
   const sendRunningLate = async (minutes: number) => {
@@ -412,13 +424,16 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
       const payLink = `${window.location.origin}${window.location.pathname}#/portal/${newInv.id}`;
       const subject = customSubject?.trim() || `Invoice — ${companyName}`;
       const noteHtml = customNote?.trim() ? `<p style="font-style:italic;color:rgba(255,255,255,0.6)">${customNote.trim()}</p>` : "";
-      if (customer.email) {
+      if (invoiceChannel === "sms" && customer.phone) {
+        await twilioSend(settings as any, customer.phone, `Hi ${customer.firstName}, your invoice for ${fmt(Number(job.amount) || 0)} is ready: ${payLink}`);
+        toast(`Invoice texted to ${customer.firstName} ✓`, "green");
+      } else if (customer.email) {
         const html = emailShell(companyName, "Invoice", `<p>Hi ${customer.firstName},</p>${noteHtml}<p>Thanks for choosing us! Your service at <b>${job.address}</b> is complete.</p><p><b>Amount due:</b> $${(Number(job.amount) || 0).toFixed(2)}</p>` + emailButton("View & Pay Invoice", payLink));
         await sendEmail(settings, { to: customer.email, subject, body: html });
-        toast(`Invoice sent to ${customer.firstName} ✓`, "green");
-      } else {
-        await twilioSend(settings as any, customer.phone!, `Hi ${customer.firstName}, your invoice for ${fmt(Number(job.amount) || 0)} is ready: ${payLink}`);
-        toast(`Invoice sent to ${customer.firstName} ✓`, "green");
+        toast(`Invoice emailed to ${customer.firstName} ✓`, "green");
+      } else if (customer.phone) {
+        await twilioSend(settings as any, customer.phone, `Hi ${customer.firstName}, your invoice for ${fmt(Number(job.amount) || 0)} is ready: ${payLink}`);
+        toast(`Invoice texted to ${customer.firstName} ✓`, "green");
       }
       return true;
     } catch (err: any) {
@@ -639,14 +654,34 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
           {completeStep === "invoice" && (
             <>
               <div className="text-lg font-bold">Send invoice to customer?</div>
-              <div className="text-sm text-white/50">Email {customer?.firstName || "the customer"} a payment link for <span className="text-green-400 font-semibold">{fmt(job.amount)}</span>.</div>
+              <div className="text-sm text-white/50">Amount: <span className="text-green-400 font-semibold">{fmt(job.amount)}</span> · {customer?.firstName || "Customer"}</div>
+              {/* Channel selector */}
+              <div className="flex gap-2">
+                {(["email", "sms"] as const).map(ch => (
+                  <button key={ch} onClick={() => setInvoiceChannel(ch)}
+                    className={"flex-1 py-2 rounded-xl border text-sm font-semibold transition " + (invoiceChannel === ch ? "border-red-500/60 bg-red-950/30 text-red-300" : "border-white/10 bg-white/5 text-white/50 hover:border-white/30")}>
+                    {ch === "email" ? "📧 Email" : "💬 Text"}
+                  </button>
+                ))}
+              </div>
+              {invoiceChannel === "email" && !customer?.email && (
+                <div className="text-xs text-yellow-400/80 bg-yellow-950/20 border border-yellow-700/30 rounded-xl px-3 py-2">
+                  No email on file — add one in customer settings or switch to Text.
+                </div>
+              )}
+              {invoiceChannel === "sms" && !customer?.phone && (
+                <div className="text-xs text-yellow-400/80 bg-yellow-950/20 border border-yellow-700/30 rounded-xl px-3 py-2">
+                  No phone on file — add one in customer settings or switch to Email.
+                </div>
+              )}
               <div className="grid grid-cols-2 gap-3">
                 <GBtn onClick={() => {
                   setInvoiceEditSubject(`Invoice — ${companyName}`);
                   setInvoiceEditNote("");
                   setCompleteStep("invoice-preview");
-                }} className="!py-3 !justify-center">
-                  Yes — Preview First
+                }} className="!py-3 !justify-center"
+                  disabled={invoiceChannel === "email" ? !customer?.email : !customer?.phone}>
+                  Yes — Preview
                 </GBtn>
                 <GBtn variant="ghost" onClick={() => finalizeCompletion("Pending", undefined, false)} className="!py-3 !justify-center">
                   No, Skip
@@ -839,9 +874,8 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
           </Glass>
         )}
 
-        {/* Running Late — proactively warn the customer (and owner) while
-            actively on the job (clocked in / in_progress). */}
-        {job.status === "in_progress" && (customer?.phone || customer?.email) && (
+        {/* Running Late — proactively warn the customer (and owner) on any active job. */}
+        {job.status !== "completed" && job.status !== "cancelled" && (customer?.phone || customer?.email) && (
           <Glass className="p-3 !bg-orange-950/15 !border-orange-700/30">
             {runningLateOpen ? (
               <div className="space-y-3">
@@ -907,6 +941,7 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
                 <GBtn onClick={() => {
                   onUpdateJob({ arrivedAt: Date.now(), status: job.status === "scheduled" ? "in_progress" : job.status });
                   toast("Marked as arrived ✓ — owner notified");
+                  onArrived?.();
                 }} className="!gap-2">
                   <MapPin size={14} />I'm Here
                 </GBtn>
@@ -1280,6 +1315,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     return () => window.removeEventListener("hashchange", handler);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
+  const [pendingCompleteJobId, setPendingCompleteJobId] = useState<string | null>(null);
   const [activeJobMenuOpen, setActiveJobMenuOpen] = useState(false);
   const [routeLoading, setRouteLoading] = useState(false);
   const [routeInfo, setRouteInfo] = useState<{ order: Job[]; totalDuration: string; totalDistance: string; etas: string[]; origin: { lat: number; lng: number } | string } | null>(null);
@@ -1475,6 +1511,36 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
       setOptimisticDayLunchStartAt(undefined);
     }
   }, [(myEmployee as any)?.dayLunchStartAt]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Effective dayClockInAt — used by shift timer bar AND startDayShiftIfNeeded.
+  // Keeps optimistic value until Supabase confirms it so the timer never flickers.
+  const empDayClockInAt: number | null = optimisticDayClockInAt !== undefined
+    ? optimisticDayClockInAt
+    : ((myEmployee as any)?.dayClockInAt ?? null);
+
+  // Shared function so both JobCard's "I'm Here" button and JobDetailView's
+  // "I'm Here" button can auto-start the shift timer in one place.
+  const startDayShiftIfNeeded = async () => {
+    if (empDayClockInAt) return; // already running
+    const empId = (myEmployee as any)?.id;
+    if (!empId) return;
+    const nextVal = Date.now();
+    setOptimisticDayClockInAt(nextVal);
+    try {
+      const result = await (supabase as any)
+        .from("employees")
+        .update({ dayClockInAt: nextVal, dayLunchStartAt: null, dayPausedMinutes: 0 })
+        .eq("id", empId);
+      if (result?.error) {
+        console.warn("Auto-start shift failed:", result.error.message);
+      } else {
+        refetchEmployees?.();
+        toast("Shift started automatically ✓");
+      }
+    } catch (e: any) {
+      console.warn("Auto-start shift failed:", e?.message);
+    }
+  };
 
   // Log whenever the lookup inputs change so we can see if employees is empty on first render.
   // Also auto-retries once against Supabase when myEmployee isn't found in the prop array.
@@ -2961,6 +3027,8 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
         setEstimates={setEstimates}
         nextJob={nextJob}
         nextJobCustomer={nextJobCustomer}
+        onArrived={startDayShiftIfNeeded}
+        autoComplete={pendingCompleteJobId === selectedJobId}
       />
     );
   }
@@ -3037,10 +3105,11 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
 
     const arriveCard = (e: React.MouseEvent) => {
       e.stopPropagation();
-      updateJob(job.id, { arrivedAt: Date.now() });
+      updateJob(job.id, { arrivedAt: Date.now(), status: job.status === "scheduled" ? "in_progress" : job.status });
       toast("Marked as arrived ✓ — owner notified");
       const cust = customers.find(c => c.id === job.customerId);
       notifyOwnerArrival?.(job, cust);
+      startDayShiftIfNeeded();
     };
 
     const isNextUp = job.id === completionNotif?.nextJobId;
@@ -3129,8 +3198,8 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
             : null
           }
         </div>
-        {/* OTW + Running Late — only on active in_progress jobs with a customer */}
-        {job.status === "in_progress" && (
+        {/* OTW + Running Late — any non-completed job */}
+        {job.status !== "completed" && job.status !== "cancelled" && (
           <div className="px-4 pb-2 space-y-2" onClick={e => e.stopPropagation()}>
             {latePickerOpen ? (
               <div className="p-2 rounded-xl bg-orange-950/20 border border-orange-700/30 space-y-2">
@@ -3184,11 +3253,17 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
             )}
           </div>
         )}
-        <div className="px-4 pb-3">
+        <div className="px-4 pb-3 flex gap-2">
           <button onClick={() => setSelectedJobId(job.id)}
-            className="w-full flex items-center justify-center gap-1.5 py-2 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-white/60 text-xs font-semibold transition">
+            className="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-white/60 text-xs font-semibold transition">
             <ChevronRight size={12} />View Details
           </button>
+          {!isCompletedCard && (
+            <button onClick={e => { e.stopPropagation(); setPendingCompleteJobId(job.id); setSelectedJobId(job.id); }}
+              className="flex items-center justify-center gap-1 px-3 py-2 rounded-xl bg-green-950/40 hover:bg-green-900/50 border border-green-700/40 text-green-300 text-xs font-semibold transition">
+              <CheckCircle size={12} />Complete
+            </button>
+          )}
         </div>
       </div>
     );
@@ -3253,6 +3328,72 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
           </button>
         </div>
       </header>
+
+      {/* Persistent shift timer bar — visible on all tabs while clocked in */}
+      {empDayClockInAt && (() => {
+        const empDayLunchStartAt: number | null = optimisticDayLunchStartAt !== undefined
+          ? optimisticDayLunchStartAt
+          : ((myEmployee as any)?.dayLunchStartAt ?? null);
+        const dayPausedMinutes = Number((myEmployee as any)?.dayPausedMinutes) || 0;
+        const currentPauseMs = empDayLunchStartAt ? Math.max(0, Date.now() - empDayLunchStartAt) : 0;
+        const netSecs = Math.max(0, Math.floor((Date.now() - empDayClockInAt - dayPausedMinutes * 60000 - currentPauseMs) / 1000));
+        const hh = Math.floor(netSecs / 3600);
+        const mm = Math.floor((netSecs % 3600) / 60);
+        const ss = netSecs % 60;
+        const display = `${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}:${String(ss).padStart(2, "0")}`;
+        const onLunch = !!empDayLunchStartAt;
+        const locationSharing = !!(myEmployee as any)?.locationSharing;
+        const empId = (myEmployee as any)?.id;
+        const headerToggleLocation = async () => {
+          if (!empId) return;
+          const turningOn = !locationSharing;
+          if (turningOn && navigator.geolocation) {
+            setLocationPermissionPending(true);
+            let settled = false;
+            const safety = setTimeout(() => { if (settled) return; settled = true; setLocationPermissionPending(false); toast("Location request timed out", "red"); }, 12000);
+            navigator.geolocation.getCurrentPosition(
+              pos => {
+                if (settled) return; settled = true; clearTimeout(safety);
+                setLocationPermissionPending(false);
+                toast("📍 Location sharing active");
+                (supabase as any).from("employees").update({ lastLocation: { lat: pos.coords.latitude, lng: pos.coords.longitude, updatedAt: Date.now() } }).eq("id", empId).then(() => refetchEmployees?.());
+              },
+              err => { if (settled) return; settled = true; clearTimeout(safety); setLocationPermissionPending(false); toast("Location permission denied — enable in browser settings", "red"); },
+              { enableHighAccuracy: true, timeout: 10000 }
+            );
+          } else if (turningOn && !navigator.geolocation) {
+            toast("This browser doesn't support location sharing", "red"); return;
+          }
+          try {
+            const result = await (supabase as any).from("employees").update({ locationSharing: turningOn }).eq("id", empId);
+            if (result?.error) { toast("Failed to save — " + result.error.message, "red"); return; }
+            refetchEmployees?.();
+          } catch (e: any) { toast("Failed to save — " + (e?.message || "try again"), "red"); }
+        };
+        return (
+          <>
+            <div className={"flex items-center justify-between px-4 py-1.5 border-b text-xs font-semibold " + (onLunch ? "bg-yellow-950/40 border-yellow-800/30 text-yellow-400" : "bg-green-950/30 border-green-800/20 text-green-400")}>
+              <span className="flex items-center gap-1.5">
+                <span className="relative flex h-2 w-2">
+                  <span className={"absolute inline-flex h-full w-full rounded-full opacity-75 animate-ping " + (onLunch ? "bg-yellow-400" : "bg-green-400")} />
+                  <span className={"relative inline-flex rounded-full h-2 w-2 " + (onLunch ? "bg-yellow-400" : "bg-green-400")} />
+                </span>
+                {onLunch ? "On Lunch / Paused" : "Shift Active"}
+              </span>
+              <div className="flex items-center gap-3">
+                <button onClick={headerToggleLocation} disabled={locationPermissionPending}
+                  className={"flex items-center gap-1 px-2 py-0.5 rounded-lg border transition disabled:opacity-50 " + (locationSharing ? "bg-blue-900/40 border-blue-600/40 text-blue-300" : "bg-white/5 border-white/10 text-white/40 hover:text-white/70")}>
+                  {locationPermissionPending
+                    ? <div className="w-2.5 h-2.5 border border-white/40 border-t-transparent rounded-full animate-spin" />
+                    : <MapPin size={10} />}
+                  {locationSharing ? "📍 Sharing" : "Share location"}
+                </button>
+                <span className="font-mono tracking-widest">{display}</span>
+              </div>
+            </div>
+          </>
+        );
+      })()}
 
       {/* Content */}
       <main className="flex-1 overflow-y-auto pb-24">
@@ -3600,7 +3741,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
             })()}
 
             {/* Route optimization for today's jobs */}
-            {todayJobs.filter(j => j.status !== "completed").length > 1 && (
+            {todayJobs.filter(j => j.status !== "completed" && j.address).length >= 1 && (
               <Glass className="p-4 !bg-black/40">
                 <div className="flex items-center justify-between gap-2">
                   <div className="flex items-center gap-2 min-w-0">

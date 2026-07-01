@@ -112,9 +112,10 @@ export function useAutomationEngine({
             if (!c?.phone || c.smsOptOut) continue;
             // Check throttle
             if (c.reviewRequested && daysSince(c.reviewRequested) < 90) continue;
+            const reviewLink = `${window.location.origin}${window.location.pathname}#/rate?c=${encodeURIComponent(c.id)}&n=${encodeURIComponent(c.firstName)}&g=${encodeURIComponent(settings.googlePlaceId ?? "")}&co=${encodeURIComponent(settings.companyName ?? "Smock's")}`;
             const msg = fillTemplate(SMS_TEMPLATES.review_request, {
               first_name: c.firstName,
-              review_link: `https://g.page/r/${settings.googlePlaceId ?? "smocks-pressure-washing"}/review`,
+              review_link: reviewLink,
             });
             try {
               await twilioSend(settings, c.phone, msg);

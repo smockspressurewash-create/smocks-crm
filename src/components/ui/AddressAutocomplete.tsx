@@ -155,6 +155,11 @@ export function AddressAutocomplete({
           Verify
         </button>
       </div>
+      {!open && !value && (
+        <div className="text-[9px] text-white/30 mt-1 pl-1">
+          Browser address autofill active · type 3+ chars to see saved CRM matches
+        </div>
+      )}
       {open && suggestions.length > 0 && (
         <div className="absolute z-50 left-0 right-0 top-full mt-1 bg-black/95 border border-red-900/40 rounded-xl shadow-2xl overflow-hidden">
           <div className="px-3 py-1.5 text-[9px] text-white/40 bg-white/5 border-b border-white/10">

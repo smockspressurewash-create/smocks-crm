@@ -67,3 +67,80 @@ body {
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
+
+/* ── Mobile responsiveness ────────────────────────────────────────────────── */
+
+/* Tables scroll horizontally rather than squishing on small screens */
+@media (max-width: 767px) {
+  table {
+    display: block;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    max-width: 100%;
+  }
+}
+
+/* Minimum 44px touch targets on interactive elements on mobile */
+@media (max-width: 767px) {
+  button:not(.no-min-height),
+  a[role="button"],
+  [role="button"] {
+    min-height: 44px;
+    min-width: 44px;
+  }
+
+  /* Small inline icon buttons (e.g. X, close) should stay compact */
+  button.p-1,
+  button.p-1\.5 {
+    min-height: unset;
+    min-width: unset;
+  }
+}
+
+/* Prevent horizontal overflow on small screens — the main content areas
+   should never extend past the viewport width */
+@media (max-width: 767px) {
+  main, .main-content {
+    overflow-x: hidden;
+  }
+
+  /* Inputs, selects, textareas are always full-width on mobile */
+  input[type="text"],
+  input[type="email"],
+  input[type="tel"],
+  input[type="number"],
+  input[type="password"],
+  input[type="date"],
+  select,
+  textarea {
+    max-width: 100%;
+    width: 100%;
+  }
+}
+
+/* Pipeline / kanban horizontal scroll on mobile */
+@media (max-width: 767px) {
+  .pipeline-scroll {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+}
+
+/* Utility: table-scroll wrapper — add class "table-scroll" around any <table> for contained scroll */
+.table-scroll {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  max-width: 100%;
+}
+
+/* Prevent fixed-column grids from overflowing on very narrow screens.
+   Components that use grid-cols-3 or grid-cols-4 without breakpoints get
+   this safety net via Tailwind's arbitrary selector. */
+@media (max-width: 400px) {
+  .grid.grid-cols-3 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .grid.grid-cols-4 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}

@@ -525,7 +525,7 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
                 </button>
               )}
             </div>
-            <div className="grid grid-cols-3 gap-3 mb-3">
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 mb-3">
               <div className="text-center p-2.5 rounded-xl bg-green-950/20 border border-green-700/20">
                 <div className="text-xl font-black text-green-400">{completedToday.length}/{todaysJobs.length}</div>
                 <div className="text-[10px] text-white/40 uppercase mt-0.5">Jobs Done</div>
@@ -643,7 +643,7 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
         const monthRev = jobs.filter(j => j.status === "completed" && (j.scheduledDate||"").startsWith(monthStr)).reduce((s,j) => s + j.amount, 0);
         const todayTips = jobs.filter(j => j.status === "completed" && j.scheduledDate === todayStr).reduce((s,j) => s + (Number(j.tip)||0), 0);
         const todayCash = jobs.filter(j => j.status === "completed" && j.scheduledDate === todayStr && j.isCash).reduce((s,j) => s + j.amount, 0);
-        return <div className="grid grid-cols-3 gap-4">
+        return <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
           <Glass className="p-5">
             <div className="text-[10px] text-white/50 uppercase tracking-wider font-semibold mb-2">💰 Today</div>
             <div className="text-3xl font-black text-green-400">{fmt(todayRev_)}</div>
