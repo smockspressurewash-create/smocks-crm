@@ -62,6 +62,8 @@ export interface PlaceResult {
 }
 
 // Local fallback — string-match against addresses already in the CRM.
+// Substring OR per-word prefix match, so "2780" matches "2780 Prospect Ave"
+// and "prospect" matches it too. Case-insensitive, de-duped, capped at 6.
 function matchKnownAddresses(q: string, knownAddresses: string[]): string[] {
   const needle = q.trim().toLowerCase();
   if (!needle) return [];
@@ -69,10 +71,13 @@ function matchKnownAddresses(q: string, knownAddresses: string[]): string[] {
   const out: string[] = [];
   for (const addr of knownAddresses) {
     if (!addr) continue;
-    if (addr.toLowerCase().includes(needle) && !seen.has(addr)) {
+    const lower = addr.toLowerCase();
+    const words = lower.split(/[\s,]+/);
+    const matches = lower.includes(needle) || words.some(w => w.startsWith(needle));
+    if (matches && !seen.has(addr)) {
       seen.add(addr);
       out.push(addr);
-      if (out.length >= 5) break;
+      if (out.length >= 6) break;
     }
   }
   return out;
@@ -107,20 +112,21 @@ export function AddressAutocomplete({
   knownAddresses?: string[];
 }) {
   const [open, setOpen] = useState(false);
-  const timer = useRef<any>(null);
-  const [suggestions, setSuggestions] = useState<string[]>([]);
+  // Suggestions are derived synchronously from the current value on every
+  // render — no debounce timer, no separate state to fall out of sync. Local
+  // string matching is instant, so a stale-state race (the old bug where the
+  // dropdown showed matches for the previous keystroke, or nothing at all) is
+  // impossible. Threshold is 2 chars so a house number like "27" already lists.
+  const suggestions = value.trim().length >= 2 ? matchKnownAddresses(value, knownAddresses) : [];
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const v = e.target.value;
     onChange(v);
     setOpen(true);
-    clearTimeout(timer.current);
-    timer.current = setTimeout(() => setSuggestions(v.length >= 3 ? matchKnownAddresses(v, knownAddresses) : []), 120);
   };
 
   const handleSelect = (s: string) => {
     onChange(s);
-    setSuggestions([]);
     setOpen(false);
   };
 

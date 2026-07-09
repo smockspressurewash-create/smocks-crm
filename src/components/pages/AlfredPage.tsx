@@ -888,7 +888,27 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
               : { error: "Employee not found" };
           }
           const crew = j.crew || [];
-          if (!crew.includes(emp.id)) setJobs(prev => prev.map(x => x.id === j.id ? { ...x, crew: [...(x.crew || []), emp.id] } : x));
+          if (crew.includes(emp.id)) {
+            return { success: true, jobId: j.id, employeeId: emp.id, employee: emp.firstName + " " + emp.lastName, note: "Already assigned" };
+          }
+          const newCrew = [...crew, emp.id];
+          const crewAssignedAt = { ...(j.crewAssignedAt || {}), [emp.id]: Date.now() };
+          // CRITICAL: persist to Supabase so the employee's portal (which polls
+          // Supabase directly every 3s) actually sees the assignment. The old
+          // code only did setJobs() locally, so Alfred's assignment never left
+          // the owner's browser — the whole "Alfred can't assign crew" bug.
+          console.log("[Alfred assign_employee] writing crew to Supabase — job:", j.id, "crew:", newCrew);
+          const { error: assignErr } = await withTimeout<any>(
+            (supabase as any).from("jobs").update({ crew: newCrew, crewAssignedAt }).eq("id", j.id),
+            15000, "Assign crew"
+          ).catch((e: any) => ({ error: e }));
+          if (assignErr) {
+            console.error("[Alfred assign_employee] — error:", assignErr.message || assignErr);
+            return { error: "Could not save the assignment — " + (assignErr.message || String(assignErr)) };
+          }
+          console.log("[Alfred assign_employee] — success: crew saved to Supabase");
+          // Local echo so the owner UI reflects it before the next poll.
+          setJobs(prev => prev.map(x => x.id === j.id ? { ...x, crew: newCrew, crewAssignedAt } : x));
           if (emp.email) {
             const c = customers.find(x => x.id === j.customerId);
             const portalLink = `${window.location.origin}${window.location.pathname}#/portal`;

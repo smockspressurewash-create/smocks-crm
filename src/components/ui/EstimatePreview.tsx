@@ -49,6 +49,15 @@ export function EstimatePreview({ estimate: e, customers = [], settings = {} as 
 
   return (
     <Modal open={!!e} onClose={onClose} title={"Estimate #" + e.id.toUpperCase()} maxW="max-w-2xl">
+      {/* Always-visible floating close button — guarantees a tap target on
+          mobile even if the Modal's own header X scrolls out of view. */}
+      <button
+        onClick={onClose}
+        aria-label="Close preview"
+        className="fixed top-3 right-3 z-[400] w-11 h-11 rounded-full bg-red-600 hover:bg-red-500 text-white shadow-lg flex items-center justify-center md:hidden"
+      >
+        <X size={22} />
+      </button>
       <div className="bg-white text-black rounded-2xl overflow-hidden shadow-xl">
         {/* Branded header band */}
         <div className="bg-gradient-to-br from-red-600 to-red-800 px-7 py-6 flex justify-between items-start">

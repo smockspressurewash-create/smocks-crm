@@ -144,6 +144,18 @@ export function InvoicesPage({ estimates = [], setEstimates, customers = [], set
     setNewInvForm({ customerId: "", title: "", items: [{ id: uid(), description: "", quantity: 1, unitPrice: 0 }] });
     toast?.("Invoice created ✓ — open it to send or take payment", "green");
   };
+  // FEATURE 3 — prefill the New Invoice form from a completed job that hasn't
+  // been invoiced yet, so the owner can turn a finished job into an invoice in
+  // one tap instead of retyping the customer + amount.
+  const prefillFromJob = (j: any) => {
+    const cust = customers.find((c: any) => c.id === j.customerId);
+    setNewInvForm({
+      customerId: j.customerId || "",
+      title: j.title || j.notes || (cust ? `Service at ${j.address}` : "Service"),
+      items: [{ id: uid(), description: j.notes || j.address || "Service", quantity: 1, unitPrice: Number(j.amount) || 0 }],
+    });
+    console.log("[New Invoice] prefilled from completed job", j.id, "amount", j.amount);
+  };
   const [selected, setSelected] = useState([]);
   const [stripePayInvoice, setStripePayInvoice] = useState<any>(null);
   const [checkoutLoadingId, setCheckoutLoadingId] = useState<string | null>(null);
@@ -631,6 +643,30 @@ export function InvoicesPage({ estimates = [], setEstimates, customers = [], set
       {/* New standalone invoice (FEATURE 7) */}
       <Modal open={newInvOpen} onClose={() => setNewInvOpen(false)} title="New Invoice" maxW="max-w-lg">
         <div className="space-y-4">
+          {/* FEATURE 3 — pick a completed job that still needs an invoice */}
+          {needsInvoiceJobs.length > 0 && (
+            <div className="rounded-xl border border-yellow-700/30 bg-yellow-950/15 p-3">
+              <div className="text-xs text-yellow-300/90 font-semibold mb-2 flex items-center gap-1.5">
+                <AlertTriangle size={12} />Completed jobs needing an invoice ({needsInvoiceJobs.length})
+              </div>
+              <div className="space-y-1.5 max-h-40 overflow-y-auto">
+                {needsInvoiceJobs.map((j: any) => {
+                  const cust = customers.find((c: any) => c.id === j.customerId);
+                  return (
+                    <button key={j.id} onClick={() => prefillFromJob(j)}
+                      className="w-full flex items-center justify-between gap-2 text-left px-2.5 py-2 rounded-lg bg-black/30 border border-white/10 hover:border-yellow-600/50 hover:bg-yellow-950/20 transition">
+                      <div className="min-w-0">
+                        <div className="text-xs font-medium truncate">{cust ? `${cust.firstName} ${cust.lastName}` : j.address}</div>
+                        <div className="text-[10px] text-white/40 truncate">{j.address} · {j.scheduledDate}</div>
+                      </div>
+                      <span className="text-xs font-bold text-green-400 flex-shrink-0">{fmt(j.amount)}</span>
+                    </button>
+                  );
+                })}
+              </div>
+              <div className="text-[10px] text-white/30 mt-2 text-center">Tap a job to prefill below, or fill it in manually for a standalone invoice.</div>
+            </div>
+          )}
           <div>
             <label className="text-xs text-white/60 mb-1 block">Customer *</label>
             <GSel value={newInvForm.customerId} onChange={(e: any) => setNewInvForm(f => ({ ...f, customerId: e.target.value }))}>

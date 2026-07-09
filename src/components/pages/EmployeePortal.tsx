@@ -229,7 +229,7 @@ const DEFAULT_SIGNOFF_DISCLAIMER = "I confirm that all services have been comple
 
 function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName = "the company", onComplete, perms: permsOverride, maxLunchMinutes = 30, onJobCompleted, googleMapsKey = "", paidLunchBreaks = false, signOffDisclaimer = "", settings = {} as AppSettings, setEstimates = (() => {}) as any, nextJob = null, nextJobCustomer = null, onArrived, autoComplete = false }: {
   job: Job; customer?: Customer; onBack: () => void;
-  onUpdateJob: (patch: Partial<Job>) => void; toast: (msg: string, tone?: any) => void;
+  onUpdateJob: (patch: Partial<Job>) => void | Promise<any>; toast: (msg: string, tone?: any) => void;
   companyName?: string; onComplete?: () => void; perms?: Record<string, boolean>; maxLunchMinutes?: number;
   onJobCompleted?: (job: Job) => void; googleMapsKey?: string; paidLunchBreaks?: boolean; signOffDisclaimer?: string;
   settings?: AppSettings; setEstimates?: any; nextJob?: Job | null; nextJobCustomer?: Customer | null;
@@ -444,9 +444,10 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
     }
   };
 
-  const finalizeCompletion = (paymentStatus: "Paid" | "Pending", method?: string, invoiceSent?: boolean) => {
+  const finalizeCompletion = async (paymentStatus: "Paid" | "Pending", method?: string, invoiceSent?: boolean) => {
+    console.log("[Complete Job] Mark Complete clicked — paymentStatus:", paymentStatus, "method:", method, "invoiceSent:", invoiceSent, "jobId:", job.id);
     let hrs = Number(job.loggedHours) || 0;
-    const patch: Partial<Job> = { status: "completed", completedAt: new Date().toISOString() };
+    const patch: Partial<Job> = { status: "completed", completedAt: new Date().toISOString(), pipelineStage: paymentStatus === "Paid" ? "paid" : "completed" };
     if (job.clockInAt) {
       const lunchMs = paidLunchBreaks ? 0 : (job.lunchMinutes || 0) * 60000;
       const added = Math.round((Date.now() - job.clockInAt - lunchMs) / 36000) / 100;
@@ -461,11 +462,25 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
       patch.paymentStatus = "Pending";
       if (invoiceSent) { patch.paymentType = "Invoice"; patch.invoiceSentAt = today(); }
     }
-    onUpdateJob(patch);
+    // Show the summary immediately (local state already reflects completion),
+    // but await the actual Supabase write so the toast tells the truth and the
+    // completion can't silently revert on the next poll.
     onJobCompleted?.({ ...job, ...patch } as Job);
     setCompleteSummary({ hours: hrs, amount: Number(job.amount) || 0, paymentStatus: paymentStatus === "Paid" ? `Paid (${patch.paymentType})` : invoiceSent ? "Unpaid — Invoice Sent" : "Unpaid" });
     setCompleteStep("summary");
-    toast("Job marked complete ✓", "green");
+    try {
+      const result = await onUpdateJob(patch);
+      if (result?.error) {
+        console.error("[Complete Job] — error:", result.error.message || result.error);
+        toast("Completed locally, but the server didn't confirm — " + (result.error.message || "check connection"), "red");
+      } else {
+        console.log("[Complete Job] — success: job", job.id, "saved as completed");
+        toast("✅ Job completed successfully", "green");
+      }
+    } catch (e: any) {
+      console.error("[Complete Job] — error:", e?.message || e);
+      toast("Completed locally, but the server didn't confirm — " + (e?.message || "check connection"), "red");
+    }
   };
 
   // ── Customer sign-off overlay ─────────────────────────────────────────────
@@ -1319,6 +1334,13 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   const [activeJobMenuOpen, setActiveJobMenuOpen] = useState(false);
   // FEATURE 1 — shows "Shift ended · Total 7h 23m" for a few seconds after End My Day
   const [shiftEndedMsg, setShiftEndedMsg] = useState<string | null>(null);
+  // BUG 4 — Running Late picker state lives on the PARENT (keyed by job id), not
+  // inside JobCard. JobCard is re-created on every 1s tick / 3s poll re-render,
+  // which remounted it and reset any local useState — making the picker flash
+  // shut. Hoisting it here keeps it open across those re-renders.
+  const [lateOpenJobId, setLateOpenJobId] = useState<string | null>(null);
+  const [lateNoteText, setLateNoteText] = useState("");
+  const [sendingLateJobId, setSendingLateJobId] = useState<string | null>(null);
   const [routeLoading, setRouteLoading] = useState(false);
   const [routeInfo, setRouteInfo] = useState<{ order: Job[]; totalDuration: string; totalDistance: string; etas: string[]; origin: { lat: number; lng: number } | string } | null>(null);
   const [calMode, setCalMode] = useState<"week" | "month">("month");
@@ -1983,16 +2005,36 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     return [Math.floor(sec / 3600), Math.floor((sec % 3600) / 60), sec % 60].map(n => String(n).padStart(2, "0")).join(":");
   };
 
-  const updateJob = (jobId: string, patch: Partial<Job>) => {
+  // Columns known to exist on every deployment of the jobs table. If a full
+  // patch is rejected (e.g. an optional column like completedAt/amountCollected
+  // isn't in this project's schema), the WHOLE update is discarded by
+  // PostgREST — which silently drops critical fields like `status`. To stop a
+  // "Mark Complete" from reverting on the next 3s poll, retry with just this
+  // safe subset so the important fields always land.
+  const CORE_JOB_COLUMNS = ["status", "paymentStatus", "paymentType", "loggedHours", "amountCollected", "invoiceSentAt", "arrivedAt", "crew", "clockInAt", "lunchStartAt", "pipelineStage"] as const;
+  const updateJob = (jobId: string, patch: Partial<Job>): Promise<any> => {
     setJobs(prev => prev.map(j => j.id === jobId ? { ...j, ...patch } : j));
     // Persist immediately rather than waiting on the 30s App-level auto-save —
-    // the jobs-fetch poll below runs every 10s and merges Supabase's row straight
-    // over local state, so anything not yet saved (clock-in, lunch, checklist
-    // progress) can get silently reverted by the very next poll tick. That race
-    // is what made actions like Clock In appear to randomly "undo" themselves.
-    (supabase as any).from("jobs").update(patch).eq("id", jobId)
-      .then((result: any) => { if (result?.error) console.warn("Job update failed to save:", result.error); })
-      .catch((e: any) => console.warn("Job update failed to save:", e?.message));
+    // the jobs-fetch poll below runs every 3s and merges Supabase's row straight
+    // over local state, so anything not yet saved can get silently reverted by
+    // the very next poll tick.
+    return (supabase as any).from("jobs").update(patch).eq("id", jobId)
+      .then(async (result: any) => {
+        if (result?.error) {
+          console.warn("[updateJob] full patch failed:", result.error.message, "— retrying core fields only");
+          const core: any = {};
+          CORE_JOB_COLUMNS.forEach(k => { if ((patch as any)[k] !== undefined) core[k] = (patch as any)[k]; });
+          if (Object.keys(core).length > 0) {
+            const retry = await (supabase as any).from("jobs").update(core).eq("id", jobId);
+            if (retry?.error) { console.error("[updateJob] core retry failed:", retry.error.message); return retry; }
+            console.log("[updateJob] core fields saved after retry:", Object.keys(core).join(", "));
+            return retry;
+          }
+          return result;
+        }
+        return result;
+      })
+      .catch((e: any) => { console.warn("[updateJob] failed to save:", e?.message); return { error: e }; });
   };
 
   // Tick every second when any job is clocked in so card timers update live
@@ -2324,6 +2366,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   };
 
   const doForgotPassword = async () => {
+    console.log("[Forgot Password/employee] clicked — email:", loginEmail);
     if (!loginEmail.trim()) { setLoginError("Enter your email first"); return; }
     try {
       // resetPasswordForEmail resolves with {error} rather than throwing on
@@ -2332,7 +2375,8 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
       const { error } = await supabase.auth.resetPasswordForEmail(loginEmail.trim(), {
         redirectTo: `${window.location.origin}${window.location.pathname}#/reset-password`,
       });
-      if (error) { setLoginError("Could not send reset email — " + error.message); return; }
+      if (error) { console.error("[Forgot Password/employee] — error:", error.message); setLoginError("Could not send reset email — " + error.message); return; }
+      console.log("[Forgot Password/employee] — success: reset email sent");
       setForgotSent(true);
     } catch (e: any) { setLoginError("Could not send reset email — " + (e?.message || "try again")); }
   };
@@ -3062,19 +3106,25 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     const postItems = job.postChecklist?.length ? job.postChecklist : POST_DEFAULTS;
     const allItems = [...preItems, ...(job.duringChecklist?.length ? job.duringChecklist : DURING_DEFAULTS), ...postItems];
     const doneCount = allItems.filter(i => i.done).length;
-    const [latePickerOpen, setLatePickerOpen] = React.useState(false);
-    const [sendingLate, setSendingLate] = React.useState(false);
-    const [lateNote, setLateNote] = React.useState("");
+    // BUG 4 — read/write the parent-hoisted picker state so it survives the
+    // frequent re-renders that otherwise remounted this card and flashed it shut.
+    const latePickerOpen = lateOpenJobId === job.id;
+    const setLatePickerOpen = (open: boolean) => setLateOpenJobId(open ? job.id : null);
+    const sendingLate = sendingLateJobId === job.id;
+    const lateNote = lateOpenJobId === job.id ? lateNoteText : "";
+    const setLateNote = (v: string) => setLateNoteText(v);
 
     const sendOTW = async (e: React.MouseEvent) => {
       e.stopPropagation();
+      console.log("[OTW] clicked for job", job.id, "customer", job.customerId);
       await messageNextJobCustomer(job, 0);
     };
     const sendRunningLateCard = async (e: React.MouseEvent, minutes: number) => {
       e.stopPropagation();
+      console.log("[Running Late] send clicked —", minutes, "min, job", job.id);
       if (!customer) { toast("No customer info for this job", "yellow"); return; }
       if (!customer.phone && !customer.email) { toast("No contact info for this customer", "yellow"); return; }
-      setSendingLate(true);
+      setSendingLateJobId(job.id);
       const nowMs = Date.now() + minutes * 60000;
       const newEta = new Date(nowMs).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
       const noteStr = lateNote.trim() ? ` Reason: ${lateNote.trim()}.` : "";
@@ -3103,10 +3153,11 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
         const errMsg = e?.message || "";
         if (/401|expired|reconnect/i.test(errMsg)) toast("Google token expired. Reconnect Google in Settings.", "red");
         else toast(errMsg || "Failed to send running-late notice", "red");
+        console.log("[Running Late] — success: notice sent for job", job.id);
       } finally {
-        setSendingLate(false);
-        setLatePickerOpen(false);
-        setLateNote("");
+        setSendingLateJobId(null);
+        setLateOpenJobId(null);
+        setLateNoteText("");
       }
     };
 
@@ -3532,18 +3583,33 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                   setShiftEndedMsg(`Shift ended · Total ${totalLabel}`);
                   setTimeout(() => setShiftEndedMsg(null), 8000);
                 }
+                console.log("[Start My Day] clicked — endingDay:", endingDay, "empId:", empId, "dayClockInAt→", nextVal);
                 const patch: any = endingDay
                   ? { dayClockInAt: null, dayLunchStartAt: null, dayPausedMinutes: 0, lastShiftHours: finalHours, lastShiftDate: today() }
                   : { dayClockInAt: nextVal, dayLunchStartAt: null, dayPausedMinutes: 0 };
                 try {
-                  const result = await (supabase as any).from("employees").update(patch).eq("id", empId);
+                  let result = await (supabase as any).from("employees").update(patch).eq("id", empId);
                   if (result?.error) {
+                    // Retry with ONLY the shift-timer columns the owner's Live
+                    // Team View actually reads — a missing optional column
+                    // (lastShiftHours/lastShiftDate) must not stop dayClockInAt
+                    // from persisting, or the owner never sees the shift.
+                    console.warn("[Start My Day] full patch failed:", result.error.message, "— retrying core columns");
+                    const core = endingDay
+                      ? { dayClockInAt: null, dayLunchStartAt: null, dayPausedMinutes: 0 }
+                      : { dayClockInAt: nextVal, dayLunchStartAt: null, dayPausedMinutes: 0 };
+                    result = await (supabase as any).from("employees").update(core).eq("id", empId);
+                  }
+                  if (result?.error) {
+                    console.error("[Start My Day] — error:", result.error.message);
                     toast("Saved locally, but couldn't sync to the server: " + result.error.message, "red");
                   } else {
+                    console.log("[Start My Day] — success: dayClockInAt persisted to Supabase for", empId);
                     refetchEmployees?.();
-                    toast(endingDay ? `Shift ended · Total ${totalLabel} logged, summary emailed` : "Day started — have a great shift!");
+                    toast(endingDay ? `Shift ended · Total ${totalLabel} logged, summary emailed` : "Day started — owner can see you're on shift");
                   }
                 } catch (e: any) {
+                  console.error("[Start My Day] — error:", e?.message || e);
                   toast("Saved locally, but couldn't sync to the server: " + (e?.message || "unknown error"), "red");
                 }
               };
@@ -3580,6 +3646,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
               const lunchCountdownHHMMSS = [Math.floor(lunchRemainSecs / 3600), Math.floor((lunchRemainSecs % 3600) / 60), lunchRemainSecs % 60].map(n => String(n).padStart(2, "0")).join(":");
               const locationSharing = !!(myEmployee as any)?.locationSharing;
               const toggleLocationSharing = async () => {
+                console.log("[Share Location] clicked — empId:", empId, "currentlySharing:", locationSharing, "geolocation available:", !!navigator.geolocation);
                 if (!empId) { toast("Still loading your profile — try again in a moment", "yellow"); return; }
                 const turningOn = !locationSharing;
                 // Request the permission prompt immediately on tap — previously
@@ -3601,19 +3668,22 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                     setLocationPermissionPending(false);
                     toast("Location request timed out — try again", "red");
                   }, 12000);
+                  console.log("[Share Location] requesting getCurrentPosition…");
                   navigator.geolocation.getCurrentPosition(
                     (pos) => {
                       if (settled) return;
                       settled = true; clearTimeout(safety);
                       setLocationPermissionPending(false);
+                      console.log("[Share Location] — success: got coords", pos.coords.latitude, pos.coords.longitude);
                       toast("📍 Location sharing active");
-                      (supabase as any).from("employees").update({ lastLocation: { lat: pos.coords.latitude, lng: pos.coords.longitude, updatedAt: Date.now() } }).eq("id", empId).then((r: any) => { if (r?.error) console.warn("Failed to save location:", r.error); else refetchEmployees?.(); });
+                      (supabase as any).from("employees").update({ lastLocation: { lat: pos.coords.latitude, lng: pos.coords.longitude, updatedAt: Date.now() }, locationSharing: true }).eq("id", empId).then((r: any) => { if (r?.error) console.error("[Share Location] — error saving coords:", r.error.message); else { console.log("[Share Location] coords saved to Supabase"); refetchEmployees?.(); } });
                     },
                     (err) => {
                       if (settled) return;
                       settled = true; clearTimeout(safety);
                       setLocationPermissionPending(false);
-                      toast("Location permission denied — enable in browser settings", "red");
+                      console.error("[Share Location] — error:", err.code, err.message);
+                      toast("Location denied — enable in settings (" + err.message + ")", "red");
                     },
                     { enableHighAccuracy: true, timeout: 10000 }
                   );

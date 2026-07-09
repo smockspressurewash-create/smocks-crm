@@ -619,6 +619,47 @@ export function App() {
     }
   }, [estimates, hasCrmSession]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // ── Owner notifications on crew activity (FEATURE 7) ─────────────────────────
+  // Diff the 3s employees/jobs poll to detect clock in/out (dayClockInAt),
+  // job completion (status), and arrival ("I'm Here" → arrivedAt). Fires a
+  // toast + bell entry the moment it happens, mirroring the invoice-activity
+  // diff above. Seeded on first pass so a fresh load doesn't replay history.
+  const crewActivityEmpRef = useRef<Record<string, number | null>>({});
+  const crewActivityJobRef = useRef<Record<string, { status?: string; arrivedAt?: number }>>({});
+  const crewActivitySeededRef = useRef(false);
+  useEffect(() => {
+    if (!hasCrmSession) return;
+    const empSnap: Record<string, number | null> = {};
+    const jobSnap: Record<string, { status?: string; arrivedAt?: number }> = {};
+    const events: { id: string; text: string; at: number }[] = [];
+    const empName = (e: any) => `${e.firstName || ""} ${e.lastName || ""}`.trim() || "An employee";
+    for (const e of employees as any[]) {
+      const cur = e.dayClockInAt ?? null;
+      empSnap[e.id] = cur;
+      if (!crewActivitySeededRef.current) continue;
+      const prev = crewActivityEmpRef.current[e.id] ?? null;
+      if (cur && !prev) events.push({ id: e.id + ":in:" + cur, text: `🟢 ${empName(e)} started their shift`, at: Date.now() });
+      else if (!cur && prev) events.push({ id: e.id + ":out:" + Date.now(), text: `⏹ ${empName(e)} ended their shift`, at: Date.now() });
+    }
+    for (const j of jobs as any[]) {
+      const cur = { status: j.status, arrivedAt: j.arrivedAt };
+      jobSnap[j.id] = cur;
+      if (!crewActivitySeededRef.current) continue;
+      const prev = crewActivityJobRef.current[j.id] || {};
+      const cust = customers.find(x => x.id === j.customerId);
+      const who = cust ? `${cust.firstName} ${cust.lastName}` : j.address;
+      if (cur.status === "completed" && prev.status && prev.status !== "completed") events.push({ id: j.id + ":done", text: `✅ Job completed — ${who}`, at: Date.now() });
+      if (cur.arrivedAt && !prev.arrivedAt) events.push({ id: j.id + ":arrived", text: `📍 Crew arrived at ${who}`, at: Date.now() });
+    }
+    crewActivityEmpRef.current = empSnap;
+    crewActivityJobRef.current = jobSnap;
+    if (!crewActivitySeededRef.current) { crewActivitySeededRef.current = true; return; }
+    if (events.length) {
+      events.forEach(ev => toast(ev.text));
+      setInvoiceNotifs(prev => [...events, ...prev].slice(0, 20));
+    }
+  }, [employees, jobs, hasCrmSession]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Alfred
   const [alfredConversations, setAlfredConversations] = usePersistent<AlfredConversation[]>("smocks.alfredConvs", []);
   const [activeConvId, setActiveConvId]               = usePersistent<string>("smocks.alfredActiveConv", "");
@@ -1346,13 +1387,16 @@ export function App() {
       // onAuthStateChange handles the rest of the routing from here.
     };
     const handleForgotPassword = async () => {
-      if (!ownerEmail.trim()) { setOwnerLoginError("Enter your email above first, then tap \"Forgot password?\""); return; }
+      console.log("[Forgot Password] clicked — email:", ownerEmail);
+      if (!ownerEmail.trim()) { setOwnerLoginError("Enter your email first, then tap \"Forgot password?\""); toast("Enter your email first", "yellow"); return; }
       setOwnerLoginLoading(true); setOwnerLoginError("");
       const { error } = await supabase.auth.resetPasswordForEmail(ownerEmail.trim(), {
         redirectTo: window.location.origin + window.location.pathname + "#/reset-password",
       });
       setOwnerLoginLoading(false);
-      toast(error ? "Couldn't send reset email — " + error.message : "Password reset email sent ✓", error ? "red" : "green");
+      if (error) console.error("[Forgot Password] — error:", error.message);
+      else console.log("[Forgot Password] — success: reset email sent to", ownerEmail.trim());
+      toast(error ? "Couldn't send reset email — " + error.message : "Check your email for the reset link ✓", error ? "red" : "green");
     };
     return (
       <div className="min-h-screen bg-black text-white flex flex-col items-center justify-center p-6 overflow-y-auto overflow-x-hidden">
