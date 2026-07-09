@@ -1399,6 +1399,8 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   // refetch, since the underlying request never persisted. undefined means
   // "trust the server value".
   const [optimisticDayClockInAt, setOptimisticDayClockInAt] = useState<number | null | undefined>(undefined);
+  // FIX 5 — instant "📍 Sharing" badge before the Supabase round-trip / next poll.
+  const [optimisticLocationSharing, setOptimisticLocationSharing] = useState<boolean | undefined>(undefined);
   const [optimisticDayLunchStartAt, setOptimisticDayLunchStartAt] = useState<number | null | undefined>(undefined);
   const [payChartRange, setPayChartRange] = useState<"7d" | "4wk" | "12mo">("7d");
   // Drives a spinner on the "Share My Location" button for the window between
@@ -1535,6 +1537,12 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
       setOptimisticDayLunchStartAt(undefined);
     }
   }, [(myEmployee as any)?.dayLunchStartAt]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (optimisticLocationSharing !== undefined && !!(myEmployee as any)?.locationSharing === optimisticLocationSharing) {
+      setOptimisticLocationSharing(undefined);
+    }
+  }, [(myEmployee as any)?.locationSharing]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Effective dayClockInAt — used by shift timer bar AND startDayShiftIfNeeded.
   // Keeps optimistic value until Supabase confirms it so the timer never flickers.
@@ -2313,17 +2321,22 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     const msg = lateMinutes > 0
       ? `Hi ${cust!.firstName}, running a few minutes behind — ETA ${eta}. Sorry for the delay!`
       : `Hi ${cust!.firstName}, on my way — ETA ${eta}. See you soon!`;
+    console.log("[OTW] sending — twilioConfigured:", !!settings?.twilioSid, "phone:", cust!.phone, "email:", cust!.email);
     if (settings?.twilioSid && cust!.phone) {
-      try { await twilioSend(settings as any, cust!.phone, msg); toast("OTW text sent to " + cust!.firstName + " ✓"); }
-      catch (e: any) { toast(e?.message || "Failed to send OTW text", "red"); }
+      try { await twilioSend(settings as any, cust!.phone, msg); console.log("[OTW] — success: SMS sent"); toast("OTW text sent to " + cust!.firstName + " ✓", "green"); }
+      catch (e: any) { console.error("[OTW] — error:", e?.message); toast(e?.message || "Failed to send OTW text", "red"); }
     } else if (cust!.email) {
       try {
         const html = emailShell(settings?.companyName || "Crew Boss", "On My Way", `<p>${msg}</p>`);
         await sendEmail(settings as any, { to: cust!.email, subject: "Your technician is on the way", body: html });
-        toast("OTW email sent to " + cust!.firstName + " ✓");
-      } catch (e: any) { toast(e?.message || "Failed to send OTW email", "red"); }
+        console.log("[OTW] — success: email sent");
+        toast("OTW email sent to " + cust!.firstName + " ✓", "green");
+      } catch (e: any) { console.error("[OTW] — error:", e?.message); toast(e?.message || "Failed to send OTW email", "red"); }
     } else if (cust!.phone) {
+      // No Twilio and no email on file — open the tech's own SMS app prefilled.
+      console.log("[OTW] no provider configured — opening device SMS app");
       window.location.href = "sms:" + cust!.phone.replace(/\D/g, "") + "?body=" + encodeURIComponent(msg);
+      toast("Opening your texts to notify " + cust!.firstName + " — add Twilio in Settings to send automatically", "yellow");
     }
   };
 
@@ -3400,31 +3413,45 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
         const ss = netSecs % 60;
         const display = `${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}:${String(ss).padStart(2, "0")}`;
         const onLunch = !!empDayLunchStartAt;
-        const locationSharing = !!(myEmployee as any)?.locationSharing;
+        const locationSharing = optimisticLocationSharing !== undefined ? optimisticLocationSharing : !!(myEmployee as any)?.locationSharing;
         const empId = (myEmployee as any)?.id;
         const headerToggleLocation = async () => {
+          console.log("[Share Location] clicked — empId:", empId, "currentlySharing:", locationSharing);
           if (!empId) return;
           const turningOn = !locationSharing;
           if (turningOn && navigator.geolocation) {
             setLocationPermissionPending(true);
             let settled = false;
             const safety = setTimeout(() => { if (settled) return; settled = true; setLocationPermissionPending(false); toast("Location request timed out", "red"); }, 12000);
+            console.log("[Share Location] requesting getCurrentPosition…");
             navigator.geolocation.getCurrentPosition(
-              pos => {
+              async pos => {
                 if (settled) return; settled = true; clearTimeout(safety);
                 setLocationPermissionPending(false);
-                toast("📍 Location sharing active");
-                (supabase as any).from("employees").update({ lastLocation: { lat: pos.coords.latitude, lng: pos.coords.longitude, updatedAt: Date.now() } }).eq("id", empId).then(() => refetchEmployees?.());
+                console.log("[Share Location] — success: coords", pos.coords.latitude, pos.coords.longitude);
+                // Optimistic flip so the "📍 Sharing" badge shows instantly.
+                setOptimisticLocationSharing(true);
+                toast("📍 Location sharing active", "green");
+                // Write BOTH fields in one update so the badge state and the pin
+                // land together — a split write meant a missing/slow second
+                // update left the badge off even though coords were captured.
+                const { error } = await (supabase as any).from("employees").update({ locationSharing: true, lastLocation: { lat: pos.coords.latitude, lng: pos.coords.longitude, updatedAt: Date.now() } }).eq("id", empId);
+                if (error) console.error("[Share Location] — error saving:", error.message);
+                else { console.log("[Share Location] saved to Supabase (sharing + coords)"); refetchEmployees?.(); }
               },
-              err => { if (settled) return; settled = true; clearTimeout(safety); setLocationPermissionPending(false); toast("Location permission denied — enable in browser settings", "red"); },
+              err => { if (settled) return; settled = true; clearTimeout(safety); setLocationPermissionPending(false); console.error("[Share Location] — error:", err.code, err.message); toast("Location denied — enable in settings (" + err.message + ")", "red"); },
               { enableHighAccuracy: true, timeout: 10000 }
             );
+            return;
           } else if (turningOn && !navigator.geolocation) {
             toast("This browser doesn't support location sharing", "red"); return;
           }
+          // Turning OFF
+          setOptimisticLocationSharing(false);
           try {
-            const result = await (supabase as any).from("employees").update({ locationSharing: turningOn }).eq("id", empId);
+            const result = await (supabase as any).from("employees").update({ locationSharing: false }).eq("id", empId);
             if (result?.error) { toast("Failed to save — " + result.error.message, "red"); return; }
+            console.log("[Share Location] sharing turned off");
             refetchEmployees?.();
           } catch (e: any) { toast("Failed to save — " + (e?.message || "try again"), "red"); }
         };

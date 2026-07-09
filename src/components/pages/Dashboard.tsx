@@ -20,7 +20,8 @@ import {
   Tooltip, ResponsiveContainer, Area, AreaChart, LineChart, Line,
   ComposedChart, Legend
 } from "recharts";
-import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, forecastFor, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE } from "../../lib/utils";
+import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, forecastFor, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, withTimeout } from "../../lib/utils";
+import { supabase } from "../../lib/supabase";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
 import { twilioSend, sendEmail } from "../../lib/messaging";
 import { seedWeather } from "../../lib/weather";
@@ -109,6 +110,7 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
   const sendDashInvoice = async (job: any, subject: string, bodyHtml: string) => {
     const cust = customers.find((c: any) => c.id === job.customerId);
     if (!cust?.email) { toast?.("Customer has no email on file", "red"); return; }
+    console.log("[Send Invoice] start — job:", job.id, "to:", cust.email);
     setSendingDashInvoiceId(job.id);
     try {
       const newInv = {
@@ -118,16 +120,23 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
         status: "approved" as const, createdAt: today(), validUntil: daysFromNow(30), invoiced: true, invoicedAt: today(),
       };
       setEstimates((prev: any[]) => [...prev, newInv]);
+      (supabase as any).from("estimates").insert(newInv).then((r: any) => { if (r?.error) console.warn("[Send Invoice] estimate save failed:", r.error.message); }).catch(() => {});
       const payLink = `${window.location.origin}${window.location.pathname}#/portal/${newInv.id}`;
       const html = bodyHtml + `<div style="text-align:center;margin:22px 0 4px"><a href="${payLink}" style="display:inline-block;background:#dc2626;color:#fff;text-decoration:none;font-weight:700;font-size:14px;padding:13px 30px;border-radius:10px">View & Pay Invoice</a></div>`;
-      await sendEmail(settings as any, { to: cust.email, subject, body: html });
+      // Hard timeout — a hung Gmail/Resend fetch (no built-in timeout) is exactly
+      // what left the button stuck on "Sending…" forever. This guarantees the
+      // await always settles so `finally` runs and the button resets.
+      await withTimeout(sendEmail(settings as any, { to: cust.email, subject, body: html }), 15000, "Invoice email");
       setJobs((prev: any[]) => prev.map((j: any) => j.id === job.id ? { ...j, invoiceSentAt: today(), paymentType: "Invoice", paymentStatus: j.paymentStatus === "Paid" ? j.paymentStatus : "Pending" } : j));
+      console.log("[Send Invoice] — success: sent to", cust.email);
       toast?.(`Invoice sent to ${cust.firstName} ✓`, "green");
       setPreviewInvoiceJob(null);
     } catch (e: any) {
-      toast?.(e?.message || "Failed to send invoice", "red");
+      console.error("[Send Invoice] — error:", e?.message || e);
+      toast?.(e?.message === "Invoice email timed out" ? "Send timed out — check your Gmail/Resend connection" : (e?.message || "Failed to send invoice"), "red");
     } finally {
       setSendingDashInvoiceId(null);
+      console.log("[Send Invoice] button reset");
     }
   };
   const pipelineVal = jobs.filter(j => j.status !== "completed").reduce((s, j) => s + j.amount, 0);

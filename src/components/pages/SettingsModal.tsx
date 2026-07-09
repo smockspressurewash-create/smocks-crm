@@ -797,6 +797,24 @@ export function SettingsModal({ open, onClose, settings, setSettings, services, 
                     </div>
                   </div>}
 
+                  {/* FIX 9 — auto-sync toggle. When ON, every assigned/accepted
+                      job creates a calendar event automatically; OFF = manual. */}
+                  {(f.googleScopes || {}).calendar && (
+                    <label className="flex items-center justify-between gap-3 p-3 rounded-xl border border-white/10 bg-black/30 cursor-pointer">
+                      <div>
+                        <div className="text-xs font-medium">Auto-sync jobs to Google Calendar</div>
+                        <div className="text-[10px] text-white/50 mt-0.5">Automatically create a calendar event whenever a job is scheduled or assigned.</div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setF({ ...f, autoSyncCalendar: !(f.autoSyncCalendar ?? true) })}
+                        className={"relative w-11 h-6 rounded-full transition flex-shrink-0 " + ((f.autoSyncCalendar ?? true) ? "bg-blue-600" : "bg-white/15")}
+                      >
+                        <span className={"absolute top-0.5 w-5 h-5 rounded-full bg-white transition-all " + ((f.autoSyncCalendar ?? true) ? "left-[22px]" : "left-0.5")} />
+                      </button>
+                    </label>
+                  )}
+
                   <GBtn variant="danger" onClick={() => setF({ ...f, googleConnected: false, googleToken: "", googleEmail: "", googleRefreshToken: "", googleScopes: {} })} className="w-full !text-xs">
                     Disconnect Google Account
                   </GBtn>

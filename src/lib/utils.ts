@@ -5,7 +5,27 @@ export const fmt = (n: number | undefined | null): string => {
   return "$" + Number(n).toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 0 });
 };
 
-export const uid = (): string => Math.random().toString(36).slice(2, 10);
+// Generate a real RFC-4122 UUID v4 rather than a short base-36 string. The
+// Supabase tables (jobs, estimates, customers, employees, job_requests) have
+// `id` columns that are frequently typed `uuid` — a short id like "a3f9k2m1"
+// makes every INSERT fail with "invalid input syntax for type uuid", which is
+// why job saves timed out and estimate sync errored. A UUID is accepted by a
+// `uuid` column AND by a `text` column, so this works no matter how the schema
+// is set up. Falls back to a manual v4 build where crypto.randomUUID is absent
+// (older/non-secure contexts).
+export const uid = (): string => {
+  try {
+    if (typeof crypto !== "undefined" && (crypto as any).randomUUID) {
+      return (crypto as any).randomUUID();
+    }
+  } catch { /* fall through */ }
+  // Manual RFC-4122 v4 fallback
+  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (ch) => {
+    const r = (Math.random() * 16) | 0;
+    const v = ch === "x" ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
+};
 
 export const today = (): string => new Date().toISOString().slice(0, 10);
 

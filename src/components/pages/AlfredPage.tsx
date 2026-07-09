@@ -807,32 +807,33 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
               : { error: "Customer not found" };
           }
           const newJ = { id: uid(), customerId: c.id, scheduledDate: inputs.date || daysFromNow(3), status: "scheduled", pipelineStage: "scheduled", address: c.address, amount: inputs.amount || 0, photos: [], checklist: (inputs.checklist || ["Confirm water access"]).map(t => ({ label: t, done: false })), isRecurring: false, recurringFreq: "monthly", cancelReason: "", noShow: false, crew: [], duration: inputs.duration || 2, internalNotes: inputs.notes || "", chemicalsUsed: [], equipment: [], commLog: [], priority: inputs.priority || "normal", tags: inputs.tags || [], loggedHours: 0, clockInAt: null, attachments: [] };
-          let savedJ: any = null;
+          // EXACT same pattern as the manual "Schedule Job" form in JobsPage:
+          // update local state immediately (optimistic) so the UI shows the job
+          // right away, THEN persist to Supabase. With uid() now producing a
+          // real UUID, the insert no longer fails on a uuid-typed id column.
+          console.log("[Alfred schedule_job] optimistic add + insert — id:", newJ.id, "date:", newJ.scheduledDate);
+          setJobs(prev => [...prev, newJ as any]);
           let saveErrorJ: any = null;
           try {
-            // Insert WITHOUT a chained .select().single() — that requires a
-            // post-insert SELECT RLS policy which, when missing, makes the call
-            // hang until the timeout fires (the "Save job timed out" symptom).
-            // create_customer only appears more reliable because its table has
-            // that SELECT policy. Insert alone just needs INSERT permission; on
-            // no error we treat the locally-built row as the saved job.
             const { error } = await withTimeout<any>(
               (supabase as any).from("jobs").insert(newJ),
               15000, "Save job"
             );
             saveErrorJ = error;
-            if (!error) savedJ = newJ;
           } catch (e: any) {
             saveErrorJ = e;
           }
-          console.log("TOOL CALL: schedule_job — result:", { saved: savedJ, error: saveErrorJ });
-          if (saveErrorJ || !savedJ) {
-            return { error: "Failed to schedule job — " + (saveErrorJ?.message || "Supabase write did not return a row") };
+          if (saveErrorJ) {
+            console.error("[Alfred schedule_job] — error:", saveErrorJ.message || saveErrorJ);
+            // Roll back the optimistic add so the UI doesn't show a job that
+            // never persisted.
+            setJobs(prev => prev.filter(x => x.id !== newJ.id));
+            return { error: "Failed to schedule job — " + (saveErrorJ.message || String(saveErrorJ)) + ". If this says 'row-level security' or 'uuid', run the jobs-table SQL in Settings." };
           }
-          // No local setJobs call — the 3s cross-device poll picks the row up.
-          toast("Alfred scheduled job for " + c.firstName + " on " + savedJ.scheduledDate);
+          console.log("[Alfred schedule_job] — success: job", newJ.id, "saved to Supabase");
+          toast("Alfred scheduled job for " + c.firstName + " on " + newJ.scheduledDate);
           setTimeout(() => onNav("jobs"), 1200);
-          return { success: true, jobId: savedJ.id, date: savedJ.scheduledDate, customer: c.firstName + " " + c.lastName };
+          return { success: true, jobId: newJ.id, date: newJ.scheduledDate, customer: c.firstName + " " + c.lastName };
         }
         case "update_job_priority": {
           const j = jobs.find(x => x.id === inputs.jobId);

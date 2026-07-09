@@ -653,8 +653,9 @@ export function App() {
     }
     crewActivityEmpRef.current = empSnap;
     crewActivityJobRef.current = jobSnap;
-    if (!crewActivitySeededRef.current) { crewActivitySeededRef.current = true; return; }
+    if (!crewActivitySeededRef.current) { crewActivitySeededRef.current = true; console.log("[Owner Notifications] seeded baseline — will notify on future changes"); return; }
     if (events.length) {
+      console.log("[Owner Notifications] firing", events.length, "event(s):", events.map(e => e.text).join(" | "));
       events.forEach(ev => toast(ev.text));
       setInvoiceNotifs(prev => [...events, ...prev].slice(0, 20));
     }

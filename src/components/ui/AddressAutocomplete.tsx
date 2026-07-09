@@ -1,4 +1,4 @@
-import React, { useState, useRef } from "react";
+import React, { useState, useRef, useEffect } from "react";
 import { MapPin, ExternalLink } from "lucide-react";
 import { GInput } from "./GInput";
 
@@ -99,7 +99,7 @@ export function AddressAutocomplete({
   onChange,
   onPlaceSelect: _onPlaceSelect,
   placeholder = "Start typing an address...",
-  mapsKey: _mapsKey = "",
+  mapsKey = "",
   className = "",
   knownAddresses = [],
 }: {
@@ -112,12 +112,46 @@ export function AddressAutocomplete({
   knownAddresses?: string[];
 }) {
   const [open, setOpen] = useState(false);
-  // Suggestions are derived synchronously from the current value on every
-  // render — no debounce timer, no separate state to fall out of sync. Local
-  // string matching is instant, so a stale-state race (the old bug where the
-  // dropdown showed matches for the previous keystroke, or nothing at all) is
-  // impossible. Threshold is 2 chars so a house number like "27" already lists.
-  const suggestions = value.trim().length >= 2 ? matchKnownAddresses(value, knownAddresses) : [];
+  // Local CRM matches — instant, synchronous, always available.
+  const localMatches = value.trim().length >= 2 ? matchKnownAddresses(value, knownAddresses) : [];
+
+  // FIX 8 — Google Places predictions when a Maps key is configured. Loaded via
+  // the shared Maps JS loader; uses AutocompleteService.getPlacePredictions so
+  // ANY address the user types shows up, not just ones already in the CRM. If
+  // the key is missing or the API 403s (restricted key), this stays empty and
+  // the local CRM matches are shown instead — never blocks the input.
+  const [placePreds, setPlacePreds] = useState<string[]>([]);
+  const svcRef = useRef<any>(null);
+  const debounceRef = useRef<any>(null);
+  useEffect(() => {
+    if (!mapsKey || value.trim().length < 3) { setPlacePreds([]); return; }
+    clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(async () => {
+      try {
+        if (!svcRef.current) {
+          await loadMapsScript(mapsKey);
+          const g = (window as any).google;
+          if (!g?.maps?.places?.AutocompleteService) { console.warn("[AddressAutocomplete] Places library unavailable — using local matches"); return; }
+          svcRef.current = new g.maps.places.AutocompleteService();
+        }
+        svcRef.current.getPlacePredictions(
+          { input: value, componentRestrictions: { country: "us" }, types: ["address"] },
+          (preds: any[], status: string) => {
+            if (status !== "OK" || !preds) { console.log("[AddressAutocomplete] Places status:", status, "— falling back to local"); setPlacePreds([]); return; }
+            setPlacePreds(preds.map(p => p.description).slice(0, 5));
+          }
+        );
+      } catch (e: any) {
+        console.warn("[AddressAutocomplete] Places lookup failed — using local matches:", e?.message);
+        setPlacePreds([]);
+      }
+    }, 250);
+    return () => clearTimeout(debounceRef.current);
+  }, [value, mapsKey]);
+
+  // Google predictions first (broadest), then any local CRM matches not already
+  // covered, de-duplicated.
+  const suggestions = Array.from(new Set([...placePreds, ...localMatches])).slice(0, 6);
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const v = e.target.value;
@@ -169,7 +203,7 @@ export function AddressAutocomplete({
       {open && suggestions.length > 0 && (
         <div className="absolute z-50 left-0 right-0 top-full mt-1 bg-black/95 border border-red-900/40 rounded-xl shadow-2xl overflow-hidden">
           <div className="px-3 py-1.5 text-[9px] text-white/40 bg-white/5 border-b border-white/10">
-            Matches from saved addresses
+            {placePreds.length > 0 ? "Google address suggestions" : "Matches from saved addresses"}
           </div>
           {suggestions.map((s, i) => (
             <button
