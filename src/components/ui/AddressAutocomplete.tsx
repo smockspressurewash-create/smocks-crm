@@ -131,18 +131,19 @@ export function AddressAutocomplete({
         if (!svcRef.current) {
           await loadMapsScript(mapsKey);
           const g = (window as any).google;
-          if (!g?.maps?.places?.AutocompleteService) { console.warn("[AddressAutocomplete] Places library unavailable — using local matches"); return; }
+          if (!g?.maps?.places?.AutocompleteService) { console.warn("[Autocomplete] Places library unavailable — using local matches"); return; }
           svcRef.current = new g.maps.places.AutocompleteService();
         }
         svcRef.current.getPlacePredictions(
           { input: value, componentRestrictions: { country: "us" }, types: ["address"] },
           (preds: any[], status: string) => {
-            if (status !== "OK" || !preds) { console.log("[AddressAutocomplete] Places status:", status, "— falling back to local"); setPlacePreds([]); return; }
+            if (status !== "OK" || !preds) { console.log("[Autocomplete] Places status:", status, "— falling back to local matches"); setPlacePreds([]); return; }
+            console.log("[Autocomplete] Places returned", preds.length, "suggestions for", JSON.stringify(value));
             setPlacePreds(preds.map(p => p.description).slice(0, 5));
           }
         );
       } catch (e: any) {
-        console.warn("[AddressAutocomplete] Places lookup failed — using local matches:", e?.message);
+        console.warn("[Autocomplete] Places lookup failed — using local matches:", e?.message);
         setPlacePreds([]);
       }
     }, 250);

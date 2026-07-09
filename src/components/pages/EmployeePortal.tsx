@@ -660,7 +660,7 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
                   <button key={m} onClick={() => setPaymentMethod(m)} className={"py-3 rounded-xl border-2 text-sm font-semibold transition " + (paymentMethod === m ? "border-green-500 bg-green-950/30 text-green-300" : "border-white/10 bg-black/40 text-white/60 hover:border-white/30")}>{m}</button>
                 ))}
               </div>
-              <GBtn onClick={() => finalizeCompletion("Paid", paymentMethod || "Cash")} disabled={!paymentMethod} className="w-full !justify-center !py-3">
+              <GBtn onClick={() => { console.log("[CompleteJob] Mark Complete (paid) clicked — method:", paymentMethod); finalizeCompletion("Paid", paymentMethod || "Cash"); }} disabled={!paymentMethod} className="w-full !justify-center !py-3">
                 <CheckCircle size={16} className="inline mr-1.5" />Mark Complete
               </GBtn>
             </>
@@ -737,7 +737,9 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
               </Glass>
               <div className="grid grid-cols-2 gap-3">
                 <GBtn onClick={async () => {
+                  console.log("[CompleteJob] Send Invoice clicked — channel:", invoiceChannel, "to:", customer?.email || customer?.phone);
                   const sent = await sendInvoiceFromPortal(invoiceEditSubject, invoiceEditNote);
+                  console.log("[CompleteJob] invoice send result:", sent);
                   if (sent) finalizeCompletion("Pending", undefined, true);
                 }} disabled={sendingCompleteInvoice} className="!py-3 !justify-center !bg-gradient-to-r !from-green-700 !to-green-900 !border-green-600/50">
                   {sendingCompleteInvoice ? "Sending…" : "Send Invoice ✓"}
@@ -1333,7 +1335,22 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   const [pendingCompleteJobId, setPendingCompleteJobId] = useState<string | null>(null);
   const [activeJobMenuOpen, setActiveJobMenuOpen] = useState(false);
   // FEATURE 1 — shows "Shift ended · Total 7h 23m" for a few seconds after End My Day
-  const [shiftEndedMsg, setShiftEndedMsg] = useState<string | null>(null);
+  // FIX 11 — persists the "Shift ended · Total 7h 23m" banner for the REST of
+  // the day (until the next calendar day), surviving reloads via localStorage.
+  const [shiftEndedMsg, setShiftEndedMsgState] = useState<string | null>(() => {
+    try {
+      const raw = localStorage.getItem("smocks.shiftEnded");
+      if (raw) { const o = JSON.parse(raw); if (o.date === new Date().toISOString().slice(0, 10)) return o.msg; }
+    } catch { /* ignore */ }
+    return null;
+  });
+  const setShiftEndedMsg = (msg: string | null) => {
+    setShiftEndedMsgState(msg);
+    try {
+      if (msg) localStorage.setItem("smocks.shiftEnded", JSON.stringify({ date: new Date().toISOString().slice(0, 10), msg }));
+      else localStorage.removeItem("smocks.shiftEnded");
+    } catch { /* ignore */ }
+  };
   // BUG 4 — Running Late picker state lives on the PARENT (keyed by job id), not
   // inside JobCard. JobCard is re-created on every 1s tick / 3s poll re-render,
   // which remounted it and reset any local useState — making the picker flash
@@ -1341,6 +1358,9 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   const [lateOpenJobId, setLateOpenJobId] = useState<string | null>(null);
   const [lateNoteText, setLateNoteText] = useState("");
   const [sendingLateJobId, setSendingLateJobId] = useState<string | null>(null);
+  // FIX 3 — selected minutes for the Running Late picker (parent-hoisted so it
+  // survives the frequent re-renders). null = nothing picked yet.
+  const [lateMinutes, setLateMinutes] = useState<number | null>(null);
   const [routeLoading, setRouteLoading] = useState(false);
   const [routeInfo, setRouteInfo] = useState<{ order: Job[]; totalDuration: string; totalDistance: string; etas: string[]; origin: { lat: number; lng: number } | string } | null>(null);
   const [calMode, setCalMode] = useState<"week" | "month">("month");
@@ -3134,27 +3154,30 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     };
     const sendRunningLateCard = async (e: React.MouseEvent, minutes: number) => {
       e.stopPropagation();
-      console.log("[Running Late] send clicked —", minutes, "min, job", job.id);
-      if (!customer) { toast("No customer info for this job", "yellow"); return; }
-      if (!customer.phone && !customer.email) { toast("No contact info for this customer", "yellow"); return; }
+      console.log("[RunningLate] Send pressed —", minutes, "min, reason:", lateNote || "(none)", "job:", job.id);
+      if (!customer) { console.warn("[RunningLate] no customer object"); toast("No customer info for this job", "yellow"); return; }
+      if (!customer.phone && !customer.email) { console.warn("[RunningLate] customer has no phone/email"); toast("No contact info for this customer", "yellow"); return; }
       setSendingLateJobId(job.id);
       const nowMs = Date.now() + minutes * 60000;
       const newEta = new Date(nowMs).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-      const noteStr = lateNote.trim() ? ` Reason: ${lateNote.trim()}.` : "";
-      const msg = `Your CrewBoss technician is running approximately ${minutes} minutes behind.${noteStr} New ETA: ${newEta}. We apologize for the delay.`;
+      const reason = lateNote.trim() ? ` — ${lateNote.trim()}` : "";
+      const msg = `Running ${minutes} min late${reason}. New ETA: ${newEta}. -Crew Boss`;
       try {
         if (settings?.twilioSid && customer.phone) {
+          console.log("[RunningLate] sending via Twilio to", customer.phone);
           await twilioSend(settings as any, customer.phone, `Hi ${customer.firstName}, ${msg}`);
-          toast(`Running late notice sent to ${customer.firstName} ✓`);
+          console.log("[RunningLate] — success: SMS sent");
+          toast(`Message sent to ${customer.firstName} ✓`, "green");
         } else if (customer.email) {
+          console.log("[RunningLate] sending via email to", customer.email);
           const html = emailShell(settings?.companyName || "Crew Boss", "Running Late", `<p>Hi ${customer.firstName},</p><p>${msg}</p>`);
           await sendEmail(settings as any, { to: customer.email, subject: "Your technician is running late", body: html });
-          toast(`Running late email sent to ${customer.firstName} ✓`);
+          console.log("[RunningLate] — success: email sent");
+          toast(`Message sent to ${customer.firstName} ✓`, "green");
         } else if (customer.phone) {
-          // No Twilio configured and no email — open the device's own SMS app
-          // prefilled so the message still goes out from the tech's phone.
+          console.log("[RunningLate] no provider — opening device SMS app");
           window.location.href = "sms:" + customer.phone.replace(/\D/g, "") + "?body=" + encodeURIComponent(`Hi ${customer.firstName}, ${msg}`);
-          toast(`Opening your texts to notify ${customer.firstName}…`);
+          toast(`Opening your texts — add Twilio in Settings to send automatically`, "yellow");
         }
         const ownerEmail = (settings as any)?.myEmail || (settings as any)?.companyEmail;
         if (ownerEmail) {
@@ -3162,15 +3185,16 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
           sendEmail(settings as any, { to: ownerEmail, subject: `Running late — ${job.address}`, body: ownerMsg }).catch(() => {});
         }
         updateJob(job.id, { commLog: [...(job.commLog || []), { id: uid(), type: "note" as const, date: today(), note: `⏱ Running late +${minutes}min${lateNote.trim() ? ` (${lateNote.trim()})` : ""} — customer notified` }] });
-      } catch (e: any) {
-        const errMsg = e?.message || "";
+      } catch (err: any) {
+        const errMsg = err?.message || "";
+        console.error("[RunningLate] — error:", errMsg);
         if (/401|expired|reconnect/i.test(errMsg)) toast("Google token expired. Reconnect Google in Settings.", "red");
-        else toast(errMsg || "Failed to send running-late notice", "red");
-        console.log("[Running Late] — success: notice sent for job", job.id);
+        else toast("Failed to send — " + (errMsg || "unknown error"), "red");
       } finally {
         setSendingLateJobId(null);
         setLateOpenJobId(null);
         setLateNoteText("");
+        setLateMinutes(null);
       }
     };
 
@@ -3292,16 +3316,24 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                   placeholder="Custom note (optional)…"
                   className="w-full bg-white/5 border border-white/10 rounded-lg px-2.5 py-1 text-[10px] text-white placeholder-white/30 focus:outline-none focus:border-orange-700/60"
                 />
-                <div className="text-[10px] text-white/50">Minutes late:</div>
+                <div className="text-[10px] text-white/50">How many minutes late?</div>
                 <div className="flex gap-1">
                   {[5, 10, 15, 20, 30].map(m => (
-                    <button key={m} disabled={sendingLate} onClick={e => sendRunningLateCard(e, m)}
-                      className="flex-1 py-1.5 rounded-lg bg-orange-900/40 border border-orange-700/40 text-orange-300 text-xs font-bold disabled:opacity-50 hover:bg-orange-900/60 transition">
+                    <button key={m} onClick={e => { e.stopPropagation(); setLateMinutes(m); }}
+                      className={"flex-1 py-1.5 rounded-lg border text-xs font-bold transition " + (lateMinutes === m ? "bg-orange-600 border-orange-400 text-white" : "bg-orange-900/40 border-orange-700/40 text-orange-300 hover:bg-orange-900/60")}>
                       {m}
                     </button>
                   ))}
                 </div>
-                <button onClick={e => { e.stopPropagation(); setLatePickerOpen(false); setLateNote(""); }} className="text-[10px] text-white/30 hover:text-white/60">Cancel</button>
+                {/* Explicit Send button — a picked minute value only SELECTS now;
+                    the message isn't sent until the tech confirms here. */}
+                <button
+                  disabled={sendingLate || lateMinutes == null}
+                  onClick={e => sendRunningLateCard(e, lateMinutes || 0)}
+                  className="w-full py-2 rounded-lg bg-gradient-to-r from-orange-600 to-orange-800 border border-orange-500/60 text-white text-xs font-bold disabled:opacity-40 hover:from-orange-500 hover:to-orange-700 transition flex items-center justify-center gap-1.5">
+                  <Navigation size={12} />{sendingLate ? "Sending…" : lateMinutes == null ? "Pick minutes above" : `Send "${lateMinutes} min late" message`}
+                </button>
+                <button onClick={e => { e.stopPropagation(); setLatePickerOpen(false); setLateNote(""); setLateMinutes(null); }} className="text-[10px] text-white/30 hover:text-white/60">Cancel</button>
               </div>
             ) : (
               <div className="flex gap-2">
@@ -3607,8 +3639,11 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                 if (endingDay) {
                   setOptimisticDayLunchStartAt(null);
                   sendEndOfDaySummary(finalHours);
+                  // Persist for the rest of the day (no auto-hide) — FIX 11.
                   setShiftEndedMsg(`Shift ended · Total ${totalLabel}`);
-                  setTimeout(() => setShiftEndedMsg(null), 8000);
+                } else {
+                  // Starting a fresh shift clears any prior "shift ended" banner.
+                  setShiftEndedMsg(null);
                 }
                 console.log("[Start My Day] clicked — endingDay:", endingDay, "empId:", empId, "dayClockInAt→", nextVal);
                 const patch: any = endingDay

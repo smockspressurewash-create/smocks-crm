@@ -766,15 +766,32 @@ export function App() {
     status: e.status || "active",
     hourlyRate: e.hourlyRate ?? e.hourly_rate ?? 0,
     email: e.email || "",
+    // Shift-timer + location fields are read by the owner's Live Team View.
+    // Postgres folds unquoted column names to lowercase, so a column created
+    // as dayClockInAt (unquoted) actually lands as `dayclockinat` — read every
+    // plausible casing so the owner sees the shift no matter how the column
+    // was declared. (FIX 1 / FIX 7 / FIX 12.)
+    dayClockInAt: e.dayClockInAt ?? e.dayclockinat ?? e.day_clock_in_at ?? null,
+    dayLunchStartAt: e.dayLunchStartAt ?? e.daylunchstartat ?? e.day_lunch_start_at ?? null,
+    dayPausedMinutes: e.dayPausedMinutes ?? e.daypausedminutes ?? e.day_paused_minutes ?? 0,
+    locationSharing: e.locationSharing ?? e.locationsharing ?? e.location_sharing ?? false,
+    lastLocation: e.lastLocation ?? e.lastlocation ?? e.last_location ?? null,
   });
 
   const refetchEmployees = async () => {
     try {
       const { data, error } = await (supabase as any).from("employees").select("*");
-      if (!error && Array.isArray(data) && data.length > 0) {
-        setEmployees(data.map(normalizeEmployee) as Employee[]);
+      if (error) { console.warn("[LiveCrew] employees fetch error:", error.message, "— (RLS may be blocking reads; run the employees RLS SQL)"); return; }
+      if (Array.isArray(data) && data.length > 0) {
+        const normed = data.map(normalizeEmployee) as Employee[];
+        const onShift = normed.filter((x: any) => !!x.dayClockInAt);
+        console.log("[LiveCrew] fetched", normed.length, "employees;", onShift.length, "on shift:", onShift.map((x: any) => `${x.firstName}(${new Date(Number(x.dayClockInAt)).toLocaleTimeString()})`).join(", ") || "none");
+        setEmployees(normed);
+      } else {
+        // Empty result usually means RLS is hiding the crew rows from the owner.
+        console.warn("[LiveCrew] employees query returned 0 rows — keeping current state (likely RLS; owner can't read crew rows)");
       }
-    } catch { /* employees table may not exist yet */ }
+    } catch (e: any) { console.warn("[LiveCrew] employees fetch threw:", e?.message); }
   };
 
   // Fetch jobs + customers from Supabase and merge into local state
@@ -817,6 +834,28 @@ export function App() {
     } catch { /* tables may not exist yet */ }
     setIsSyncing(false);
   };
+
+  // FIX 2 — auto-complete stale "in_progress" jobs left over from PAST days
+  // that were never actually clocked into (clockInAt null). A job that a crew
+  // genuinely started (clockInAt set) is left alone. Runs once per session
+  // after jobs are available; persists to Supabase so the owner + employee
+  // both stop seeing yesterday's jobs stuck "in progress".
+  const pastJobSweepRef = useRef(false);
+  useEffect(() => {
+    if (pastJobSweepRef.current || jobs.length === 0) return;
+    const todayStr = today();
+    const stale = jobs.filter(j => j.status === "in_progress" && !j.clockInAt && j.scheduledDate && j.scheduledDate < todayStr);
+    if (stale.length === 0) { pastJobSweepRef.current = true; return; }
+    pastJobSweepRef.current = true;
+    console.log("[PastJobs] auto-completing", stale.length, "stale in_progress job(s) from previous days:", stale.map(j => j.id).join(", "));
+    const staleIds = new Set(stale.map(j => j.id));
+    setJobs(prev => prev.map(j => staleIds.has(j.id) ? { ...j, status: "completed" as const } : j));
+    stale.forEach(j => {
+      (supabase as any).from("jobs").update({ status: "completed" }).eq("id", j.id)
+        .then((r: any) => { if (r?.error) console.warn("[PastJobs] failed to persist for", j.id, r.error.message); })
+        .catch(() => {});
+    });
+  }, [jobs.length]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Auto-save jobs to Supabase every 30 seconds (upsert on id)
   useEffect(() => {
