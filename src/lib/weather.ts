@@ -52,7 +52,11 @@ export const seedWeather: WeatherData = {
 
 // ─── Real OpenWeatherMap fetch ────────────────────────────────────────────────
 
-const OWM_CITY = "York,PA,US";
+// FIX 12 — was hardcoded to York, PA regardless of where the business
+// actually operates. fetchRealWeather now takes the location string from
+// Settings → Company (a zip code or "City,ST" both work with OWM's `q=`
+// param) and only falls back to York, PA if the owner hasn't set one.
+const DEFAULT_WEATHER_LOCATION = "York,PA,US";
 const OWM_UNITS = "imperial";
 
 interface OWMCurrentResponse {
@@ -91,9 +95,13 @@ const dayLabel = (dt: number): string => {
   return d.toLocaleDateString("en-US", { weekday: "short" });
 };
 
-export const fetchRealWeather = async (apiKey: string): Promise<WeatherData> => {
+export const fetchRealWeather = async (apiKey: string, location?: string): Promise<WeatherData> => {
   const base = `https://api.openweathermap.org/data/2.5`;
-  const params = `q=${OWM_CITY}&units=${OWM_UNITS}&appid=${apiKey}`;
+  const loc = (location || "").trim() || DEFAULT_WEATHER_LOCATION;
+  // A bare US zip code needs OWM's `zip=` param instead of `q=` (which expects
+  // a city name) — detect a plain 5-digit string and route it correctly.
+  const locParam = /^\d{5}$/.test(loc) ? `zip=${loc},US` : `q=${encodeURIComponent(loc)}`;
+  const params = `${locParam}&units=${OWM_UNITS}&appid=${apiKey}`;
 
   const [currentRes, forecastRes] = await Promise.all([
     fetch(`${base}/weather?${params}`),

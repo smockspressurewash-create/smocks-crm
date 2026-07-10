@@ -20,7 +20,7 @@ import {
   Tooltip, ResponsiveContainer, Area, AreaChart, LineChart, Line,
   ComposedChart, Legend
 } from "recharts";
-import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, requiredChemicalsList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, compressImageFile } from "../../lib/utils";
+import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, requiredChemicalsList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, compressImageFile, getEffectiveRate } from "../../lib/utils";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField, JobChecklistItem, ChecklistPhoto, JobVideo, JobSignOff } from "../../types";
 import { twilioSend, sendEmail, sendViaGmail, sendOwnerGmailOnly, emailShell, emailButton, logOutboundSmsToInbox } from "../../lib/messaging";
 import { seedWeather } from "../../lib/weather";
@@ -328,7 +328,7 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
   // Sends one notification per employee. Prefers the EMPLOYEE'S OWN connected Gmail
   // account (their token, persisted in their employees row when they connect Google
   // in the portal) so the email comes from/through their own account; falls back to
-  // the owner's configured email channel (Resend or owner Gmail) when unavailable.
+  // the owner's connected Gmail account when unavailable.
   const notifyEmployees = async (
     emps: any[],
     buildSubject: (emp: any) => string,
@@ -471,7 +471,7 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
         () => `Job Assignment — ${job.scheduledDate}`,
         emp => emailShell(settings.companyName || "Crew Boss", "Job Assignment", `<p>Hi ${emp.firstName},</p><p>You've been assigned to a job:</p><ul><li><b>Date:</b> ${job.scheduledDate}${job.scheduledTime ? " at " + job.scheduledTime : ""}</li><li><b>Address:</b> ${job.address}</li>${c ? `<li><b>Customer:</b> ${c.firstName} ${c.lastName}</li>` : ""}</ul>` + emailButton("Open Crew Portal", jobLink))
       );
-      toast(sent > 0 ? `Notified ${sent} crew member${sent !== 1 ? "s" : ""} ✓` : "Email send failed — check Resend settings", sent > 0 ? "green" : "red");
+      toast(sent > 0 ? `Notified ${sent} crew member${sent !== 1 ? "s" : ""} ✓` : "Email send failed — check Gmail connection in Settings → Integrations", sent > 0 ? "green" : "red");
     } catch (err: any) {
       toast(err?.message || "Failed to notify crew", "red");
     } finally {
@@ -838,8 +838,8 @@ ${job.notes ? `<div class="section"><h2>Job Notes</h2><p>${job.notes}</p></div>`
           )}
         </Glass>
 
-        {/* Priority + Duration + Recurring */}
-        <div className="grid grid-cols-3 gap-3">
+        {/* Priority + Duration + Recurring + Job Type */}
+        <div className="grid grid-cols-2 gap-3">
           <div>
             <label className="text-xs text-white/60 mb-1 block flex items-center gap-1"><AlertCircle size={10} />Priority</label>
             <GSel value={job.priority || "normal"} onChange={e => updateJob(jobId, { priority: e.target.value })}>
@@ -848,7 +848,25 @@ ${job.notes ? `<div class="section"><h2>Job Notes</h2><p>${job.notes}</p></div>`
           </div>
           <div><label className="text-xs text-white/60 mb-1 block">Est. Duration (hrs)</label><GInput type="number" step="0.25" value={job.duration || ""} onChange={e => updateJob(jobId, { duration: e.target.value })} placeholder="e.g. 3.5" /></div>
           <div><label className="text-xs text-white/60 mb-1 block">Recurring</label><GSel value={job.recurringFreq || "monthly"} onChange={e => updateJob(jobId, { recurringFreq: e.target.value, isRecurring: true })}>{recurringFreqs.map(f => <option key={f.key} value={f.key} className="bg-black">{f.label}</option>)}</GSel></div>
+          <div>
+            <label className="text-xs text-white/60 mb-1 block">Job Type <span className="text-white/30">(drives crew pay rate)</span></label>
+            <GSel value={job.jobType || "residential"} onChange={e => updateJob(jobId, { jobType: e.target.value as any })}>
+              <option value="residential" className="bg-black">Residential</option>
+              <option value="commercial" className="bg-black">Commercial</option>
+            </GSel>
+          </div>
         </div>
+        {/* FIX 10 — effective pay rate for each crew member on THIS job's type */}
+        {(job.crew || []).length > 0 && (
+          <div className="flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-green-400/80 -mt-1">
+            {(job.crew || []).map((empId: string) => {
+              const emp = employees.find((e: any) => e.id === empId);
+              if (!emp) return null;
+              const rate = getEffectiveRate(emp, job);
+              return <span key={empId} className="flex items-center gap-1"><DollarSign size={10} />{emp.firstName}: {fmt(rate)}/hr</span>;
+            })}
+          </div>
+        )}
 
         {/* Time Tracking */}
         <Glass className={"p-3 " + (job.clockInAt ? "!bg-green-950/20 !border-green-600/40" : "!bg-black/40")}>
@@ -1134,7 +1152,9 @@ ${job.notes ? `<div class="section"><h2>Job Notes</h2><p>${job.notes}</p></div>`
                 files.forEach(f => {
                   compressImageFile(f).then(dataUrl => {
                     const newPhoto = { id: uid(), type: "before", caption: "Before — " + today(), dataUrl, addedAt: today() };
-                    updateJob(jobId, { photos: [...(job.photos || []), newPhoto] });
+                    const nextPhotos = [...(job.photos || []), newPhoto];
+                    console.log("[PhotoSync] owner adding before photo — job:", jobId, "photo count now:", nextPhotos.length);
+                    updateJob(jobId, { photos: nextPhotos });
                   });
                 });
                 e.target.value = "";
@@ -1148,7 +1168,9 @@ ${job.notes ? `<div class="section"><h2>Job Notes</h2><p>${job.notes}</p></div>`
                 files.forEach(f => {
                   compressImageFile(f).then(dataUrl => {
                     const newPhoto = { id: uid(), type: "after", caption: "After — " + today(), dataUrl, addedAt: today() };
-                    updateJob(jobId, { photos: [...(job.photos || []), newPhoto] });
+                    const nextPhotos = [...(job.photos || []), newPhoto];
+                    console.log("[PhotoSync] owner adding after photo — job:", jobId, "photo count now:", nextPhotos.length);
+                    updateJob(jobId, { photos: nextPhotos });
                   });
                 });
                 e.target.value = "";

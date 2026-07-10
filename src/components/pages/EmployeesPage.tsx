@@ -111,7 +111,7 @@ const DEFAULT_MANAGER_PERMS: Record<string, boolean> = {
   alfred: false, inbox: false, accountability: false, google: false,
 };
 
-export function EmployeesPage({ employees = [], setEmployees, jobs = [], settings = {} as any, toast = (_msg: string, _tone?: string) => {} }: { employees?: any[]; setEmployees: any; jobs?: any[]; settings?: any; toast?: any }) {
+export function EmployeesPage({ employees = [], setEmployees, jobs = [], settings = {} as any, toast = (_msg: string, _tone?: string) => {}, autoOpenManagerInvite = false, onAutoOpenManagerInviteConsumed }: { employees?: any[]; setEmployees: any; jobs?: any[]; settings?: any; toast?: any; autoOpenManagerInvite?: boolean; onAutoOpenManagerInviteConsumed?: () => void }) {
   const [modal, setModal] = useState({ open: false, data: null });
   const [view, setView] = useState("list"); // list | hours | payroll
   const [payPeriodStart, setPayPeriodStart] = usePersistent("smocks.payPeriodStart", (() => { const d = new Date(); d.setDate(1); return d.toISOString().slice(0,10); })());
@@ -166,7 +166,7 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setting
         .catch((e: any) => console.warn("[Invite] pre-create employee row threw:", e?.message));
     }
     setInviteCreated(inv);
-    // Send invite email if Resend is configured
+    // Send invite email via the owner's connected Gmail account
     const link = inviteLink(code);
     const companyName = settings?.companyName || "your company";
     const ownerName = settings?.ownerName || "Your Manager";
@@ -178,7 +178,7 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setting
       });
       toast(`Invite email sent to ${inviteF.email} ✓`, "green");
     } catch {
-      // Email sending failed (Resend not configured) — link was still created
+      // Gmail not connected — link was still created
       toast(`Invite created! Share the link manually with ${inviteF.firstName}.`, "yellow");
     }
   };
@@ -193,6 +193,20 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setting
     }
     setShowEditPerms(false);
   }, [modal]);
+
+  // FIX 8 — "Add Manager" in Settings → Company jumps here with the invite
+  // modal pre-opened and role defaulted to Manager, since the actual invite
+  // form (permissions, CRM access, invite code) already lives on this page.
+  useEffect(() => {
+    if (!autoOpenManagerInvite) return;
+    setInviteOpen(true);
+    setInviteCreated(null);
+    setInviteF({ firstName: "", lastName: "", email: "", role: "Manager", hourlyRate: 18 });
+    setInvitePerms({ ...DEFAULT_PERMS });
+    setInviteManagerPerms({ ...DEFAULT_MANAGER_PERMS });
+    setShowInvitePerms(false);
+    onAutoOpenManagerInviteConsumed?.();
+  }, [autoOpenManagerInvite]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Employee edits (pay rate, paidPeriods, permissions, etc.) have no bulk
   // autosave the way `jobs` does — without an immediate Supabase write here,
@@ -655,6 +669,43 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setting
                     ))}
                   </div>
                 )}
+              </div>
+            );
+          })()}
+          {/* FIX 3 — daily breakdown, parallel to the 14-day periods above but
+              per individual day (employees.paidDays), matching what the
+              employee sees in their own Pay tab calendar. */}
+          {f.id && (() => {
+            const paidDays: Record<string, "paid" | "unpaid"> = f.paidDays || {};
+            const days = Array.from({ length: 14 }, (_, i) => {
+              const d = new Date(); d.setDate(d.getDate() - i);
+              const key = d.toISOString().slice(0, 10);
+              const dayJobs = jobs.filter((j: any) => (j.crew || []).includes(f.id) && j.scheduledDate === key && Number(j.loggedHours) > 0);
+              const hours = Math.round(dayJobs.reduce((s: number, j: any) => s + Number(j.loggedHours || 0), 0) * 100) / 100;
+              const pay = Math.round(dayJobs.reduce((s: number, j: any) => s + Number(j.loggedHours || 0) * getEffectiveRate(f, j), 0) * 100) / 100;
+              return { key, label: d.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" }), hours, pay, status: paidDays[key] || "unpaid" };
+            }).filter(d => d.hours > 0);
+            const toggleDay = (key: string) => {
+              const next = { ...paidDays, [key]: paidDays[key] === "paid" ? "unpaid" as const : "paid" as const };
+              setF((p: any) => ({ ...p, paidDays: next }));
+            };
+            if (days.length === 0) return null;
+            return (
+              <div className="border border-white/10 rounded-xl p-3 space-y-2">
+                <div className="text-xs font-semibold text-white/70 flex items-center gap-1.5 mb-1"><Calendar size={12} />Daily Breakdown (last 14 days)</div>
+                <div className="space-y-1.5">
+                  {days.map(d => (
+                    <div key={d.key} className="flex items-center justify-between gap-2 px-2.5 py-2 rounded-lg bg-black/30 border border-white/5">
+                      <div className="min-w-0">
+                        <div className="text-xs text-white/70">{d.label}</div>
+                        <div className="text-[10px] text-white/40">{d.hours}h · {fmt(d.pay)}</div>
+                      </div>
+                      <button onClick={() => toggleDay(d.key)} className={"text-[10px] font-bold px-2.5 py-1 rounded-full flex-shrink-0 transition " + (d.status === "paid" ? "bg-green-700 text-white" : "bg-yellow-950/40 border border-yellow-700/40 text-yellow-300 hover:bg-yellow-900/40")}>
+                        {d.status === "paid" ? "✓ Paid" : "Mark Paid"}
+                      </button>
+                    </div>
+                  ))}
+                </div>
               </div>
             );
           })()}

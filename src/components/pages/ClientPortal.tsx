@@ -289,7 +289,7 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
     }
 
     // Payment confirmation email to customer
-    if (c.email && (settings?.resendKey || settings?.googleConnected)) {
+    if (c.email && settings?.googleConnected) {
       const subject = "Payment Receipt — Crew Boss";
       const body = "Hi " + c.firstName + ",\n\nThank you for your payment of $" + totalWithTip.toFixed(2) + ".\n\nServices: " + (e.lineItems || []).map(li => li.description).join(", ") + "\nAmount: $" + totalWithTip.toFixed(2) + "\n\nWe'll contact you soon to schedule your service.\n\n— " + (settings?.companyName || "Crew Boss") + "\n" + (settings?.companyPhone || "(717) 555-0100");
       sendEmail(settings, { to: c.email, subject, body }).catch(() => {});

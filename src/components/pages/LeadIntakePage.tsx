@@ -106,7 +106,7 @@ export function LeadIntakePage({ customers = [], setCustomers, estimates = [], s
       setSubmissions(prev => [lead, ...prev]);
 
       // Also notify Will by email
-      if (settings?.resendKey || (settings?.googleConnected && settings?.googleScopes?.gmail)) {
+      if (settings?.googleConnected && settings?.googleScopes?.gmail) {
         const notifyMsg = `New lead from ${derivedSource}:\n${f.firstName} ${f.lastName}\n${f.phone}\n${f.email || "no email"}\n${f.address}\nService: ${f.service || "not specified"}\nMessage: ${f.message || "none"}`;
         sendEmail(settings, { to: settings.companyEmail || "smocks@smockspower.com", subject: "🔔 New Lead: " + f.firstName + " " + f.lastName + " (" + derivedSource + ")", body: notifyMsg }).catch(() => {});
       }

@@ -438,6 +438,10 @@ export function App() {
   });
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // FIX 8 — "Add Manager" in Settings jumps to Employees with the invite
+  // modal pre-opened (role defaulted to Manager) instead of duplicating the
+  // whole invite form inside Settings.
+  const [autoOpenManagerInvite, setAutoOpenManagerInvite] = useState(false);
   const [notifOpen, setNotifOpen] = useState(false);
   const [fabOpen, setFabOpen] = useState(false);
 
@@ -953,6 +957,8 @@ export function App() {
         (supabase as any).from("promotions").select("*").then((r: any) => r).catch(() => ({ data: null })),
       ]);
       if (Array.isArray(sbJobs) && sbJobs.length > 0) {
+        const totalPhotos = sbJobs.reduce((s: number, j: any) => s + (Array.isArray(j.photos) ? j.photos.length : 0), 0);
+        console.log("[PhotoSync] refetchData — fetched", sbJobs.length, "jobs from Supabase,", totalPhotos, "total photos across all jobs");
         setJobs(prev => {
           const sbMap = new Map(sbJobs.map((j: any) => [j.id, j]));
           const merged = prev.map(j => sbMap.has(j.id) ? { ...j, ...sbMap.get(j.id) } : j);
@@ -1023,13 +1029,27 @@ export function App() {
     const interval = setInterval(async () => {
       if (jobs.length === 0) return;
       try {
-        // Fields the employee portal writes directly (clock-in/lunch/hours) are
-        // omitted from this bulk upsert — owner-side `jobs` state can be stale
-        // for these by up to one poll interval, and sending them here would
-        // overwrite a clock-in/clock-out the employee just made on their phone
-        // with the owner's stale copy. Upsert only sends columns present on
-        // each row object, so omitting a key leaves that column untouched.
-        const EMPLOYEE_OWNED_FIELDS = ["clockInAt", "lunchStartAt", "lunchMinutes", "lunchExceeded", "loggedHours"] as const;
+        // FIX 7 — every field the employee portal (or the owner's own
+        // immediate-write JobsPage/JobDetailModal updateJob calls) can write
+        // directly must be excluded from this 30s bulk upsert, or a stale
+        // owner-browser copy can silently revert a genuinely fresh write —
+        // e.g. an employee's "Mark Complete" sets status:"completed" and
+        // paymentStatus:"Paid" immediately, but if the owner's local `jobs`
+        // state hadn't caught up yet (their 3s poll hasn't landed since), this
+        // bulk save would upsert their stale status:"scheduled" right back
+        // over it moments later — which is exactly why completed jobs and
+        // dashboard revenue looked like they "didn't update": the completion
+        // got silently undone in Supabase by this loop, not by anything on
+        // the dashboard itself. This list matches EmployeePortal's own
+        // CORE_JOB_COLUMNS (the fields it knows it writes) plus lunch fields.
+        // Upsert only sends columns present on each row object, so omitting a
+        // key leaves that column untouched.
+        const EMPLOYEE_OWNED_FIELDS = [
+          "status", "paymentStatus", "paymentType", "loggedHours", "amountCollected", "invoiceSentAt", "arrivedAt",
+          "crew", "clockInAt", "lunchStartAt", "lunchMinutes", "lunchExceeded", "pipelineStage", "photos", "videos",
+          "preChecklist", "duringChecklist", "postChecklist", "checklist", "signOff", "scheduledTime", "commLog",
+          "equipmentChecked", "notes",
+        ] as const;
         const safeJobs = jobs.map(j => {
           const copy: any = { ...j };
           EMPLOYEE_OWNED_FIELDS.forEach(f => delete copy[f]);
@@ -1336,11 +1356,13 @@ export function App() {
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Fetch real weather when OWM key is set
+  // Fetch real weather when OWM key is set — FIX 12: location comes from
+  // Settings → Company (zip or "City, ST"), defaulting to York, PA only if
+  // the owner hasn't set one.
   useEffect(() => {
     if (!settings.owmKey) return;
-    fetchRealWeather(settings.owmKey).then(setWeatherData).catch(() => {});
-  }, [settings.owmKey]);
+    fetchRealWeather(settings.owmKey, (settings as any).weatherLocation).then(setWeatherData).catch(() => {});
+  }, [settings.owmKey, (settings as any).weatherLocation]);
 
   // "Tomorrow's Jobs" crew email — there's no server cron in a client-only app,
   // so this checks once on load and hourly thereafter: if it's 6pm or later and
@@ -2054,7 +2076,7 @@ export function App() {
                 {page === "intake"         && <LeadIntakePage customers={customers} setCustomers={setCustomers} estimates={estimates} setEstimates={setEstimates} services={services} settings={settings} toast={toast} onNav={setPage} />}
                 {page === "alfred"         && (managerBlocked("alfred") ? <RestrictedNotice label="Alfred AI" /> : <AlfredPage conversations={alfredConversations} setConversations={setAlfredConversations} activeConvId={activeConvId} setActiveConvId={setActiveConvId} memory={alfredMemory} setMemory={setAlfredMemory} personality={personality} setPersonality={setPersonality} apiKey={settings.anthropicKey ?? settings.geminiKey ?? ""} openSettings={() => setSettingsOpen(true)} toast={toast} jobs={jobs} setJobs={setJobs} estimates={estimates} setEstimates={setEstimates} customers={customers} setCustomers={setCustomers} employees={employees} automations={automations} setAutomations={setAutomations} stats={{ totalRev, activeJobs, pendingEst, closeRate, doneMonth }} setWins={setWins} goals={goalsList} setGoals={setGoalsList} setSettings={setSettings} settings={settings} modelStatus={modelStatus} setModelStatus={setModelStatus} onNav={setPage} ownerId={crmUserId} />)}
                 {page === "google"         && (managerBlocked("google") ? <RestrictedNotice label="Google Workspace" /> : <GoogleWorkspacePage settings={settings} setSettings={setSettings} googleData={googleData as any} setGoogleData={setGoogleData} customers={customers} setCustomers={setCustomers} jobs={jobs} toast={toast} onNav={setPage} />)}
-                {page === "employees"      && <EmployeesPage employees={employees} setEmployees={setEmployees} jobs={jobs} settings={settings} toast={toast} />}
+                {page === "employees"      && <EmployeesPage employees={employees} setEmployees={setEmployees} jobs={jobs} settings={settings} toast={toast} autoOpenManagerInvite={autoOpenManagerInvite} onAutoOpenManagerInviteConsumed={() => setAutoOpenManagerInvite(false)} />}
                 {page === "fleet"          && <FleetPage vehicles={vehicles} setVehicles={setVehicles} maintenance={maintenance} setMaintenance={setMaintenance} toast={toast} />}
                 {page === "expenses"       && <ExpensesPage expenses={expenses} setExpenses={setExpenses} />}
                 {page === "chemicals"      && <ChemicalsPage chemicals={chemicals} setChemicals={setChemicals} toast={toast} settings={settings} />}
@@ -2115,6 +2137,7 @@ export function App() {
         toast={toast}
         onSignOut={handleSignOut}
         restrictToProfile={crmRole === "manager"}
+        onAddManager={() => { setSettingsOpen(false); setAutoOpenManagerInvite(true); setPage("employees"); }}
       />
 
       {/* Client portal */}

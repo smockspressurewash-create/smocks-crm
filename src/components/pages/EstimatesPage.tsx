@@ -20,7 +20,7 @@ import {
   Tooltip, ResponsiveContainer, Area, AreaChart, LineChart, Line,
   ComposedChart, Legend
 } from "recharts";
-import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE } from "../../lib/utils";
+import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, withTimeout } from "../../lib/utils";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
 import { twilioSend, sendEmail } from "../../lib/messaging";
 import { supabase } from "../../lib/supabase";
@@ -122,25 +122,37 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
     if (!sendModalEst) return;
     const cust = customers.find((c: any) => c.id === sendModalEst.customerId);
     if (!cust) return;
+    console.log("[SendEstimate] start — estimate:", sendModalEst.id, "channel:", sendChannel, "to:", cust.email || cust.phone);
     setSendBusy(true);
     try {
       if ((sendChannel === "email" || sendChannel === "both")) {
         if (!cust.email) { toast?.("No email on file for " + cust.firstName, "error"); }
-        else await sendEmail(settings, { to: cust.email, subject: "Your estimate from " + (settings?.companyName || "Crew Boss") + " — " + fmt(sendModalEst.total), body: buildSendHtml(sendModalEst, cust) });
+        // A hung Gmail fetch with no timeout is exactly what left this button
+        // stuck on "Sending…" forever — same fix as invoice sends (FIX 4).
+        else await withTimeout(sendEmail(settings, { to: cust.email, subject: "Your estimate from " + (settings?.companyName || "Crew Boss") + " — " + fmt(sendModalEst.total), body: buildSendHtml(sendModalEst, cust) }), 10000, "Estimate email");
       }
       if ((sendChannel === "sms" || sendChannel === "both")) {
         if (!cust.phone) { toast?.("No phone on file for " + cust.firstName, "error"); }
-        else if (settings?.twilioSid) await twilioSend(settings, cust.phone, buildSendSms(sendModalEst, cust));
+        else if (settings?.twilioSid) await withTimeout(twilioSend(settings, cust.phone, buildSendSms(sendModalEst, cust)), 10000, "Estimate SMS");
         else { window.location.href = "sms:" + cust.phone.replace(/\D/g, "") + "?body=" + encodeURIComponent(buildSendSms(sendModalEst, cust)); }
       }
       setEstimates((prev: any[]) => prev.map((x: any) => x.id === sendModalEst.id ? { ...x, sentAt: today(), sendChannel, templateId: sendTemplateId || undefined } : x));
-      toast?.("Estimate sent to " + cust.firstName + " ✓");
+      (supabase as any).from("estimates").update({ sentAt: today(), sendChannel }).eq("id", sendModalEst.id).catch(() => {});
+      console.log("[SendEstimate] — success");
+      toast?.(`📧 Estimate sent to ${cust.firstName} ✓`, "green");
       setSendModalEst(null);
       setSendPreviewOn(false);
     } catch (err: any) {
-      toast?.(err?.message || "Failed to send", "error");
+      console.error("[SendEstimate] — error:", err?.message || err);
+      const msg = err?.message === "Estimate email timed out"
+        ? "Send timed out — check your Gmail connection in Settings → Integrations"
+        : /expired|reconnect/i.test(err?.message || "")
+        ? "Google token expired — reconnect in Settings → Integrations"
+        : (err?.message || "Failed to send");
+      toast?.(msg, "error");
     } finally {
       setSendBusy(false);
+      console.log("[SendEstimate] button reset");
     }
   };
 

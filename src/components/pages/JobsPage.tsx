@@ -20,7 +20,7 @@ import {
   Tooltip, ResponsiveContainer, Area, AreaChart, LineChart, Line,
   ComposedChart, Legend
 } from "recharts";
-import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, withTimeout } from "../../lib/utils";
+import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, withTimeout, getEffectiveRate } from "../../lib/utils";
 const weatherRisk = (_dateStr: string): {icon: string; level: string; reason: string} | null => null;
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
 import { twilioSend, sendEmail, emailShell, emailButton } from "../../lib/messaging";
@@ -244,6 +244,19 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
   const updateJob = (jid, patch) => {
     const oldJob = jobs.find(j => j.id === jid);
     setJobs(jobs.map(j => j.id === jid ? { ...j, ...patch } : j));
+    // FIX 7 — write the WHOLE patch immediately, unconditionally. This used to
+    // only push specific field categories (clock/lunch, crew, photos) right
+    // away and leave everything else (notes, scheduledTime, equipmentChecked,
+    // etc.) to the App-level 30s bulk autosave — but that bulk save now
+    // excludes every employee-writable field (to stop it clobbering fresher
+    // employee-portal writes with a stale owner-browser copy, see App.tsx),
+    // so anything ONLY relying on the bulk save would never persist at all.
+    // Writing the full patch here closes that gap; the specific blocks below
+    // still run for their extra side effects (toasts, crew-write verification,
+    // job_requests sync) — the writes overlap harmlessly.
+    (supabase as any).from("jobs").update(patch).eq("id", jid)
+      .then((result: any) => { if (result?.error) console.warn("[updateJob] full patch failed:", result.error.message); })
+      .catch((e: any) => console.warn("[updateJob] full patch threw:", e?.message));
     // Crew assignment must reach Supabase immediately — the employee portal
     // polls Supabase directly, and waiting for the 30s auto-save interval in
     // App.tsx means an assignment can sit invisible to the employee that long.
@@ -567,6 +580,20 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
                   : "Sends a request they must accept or decline before they're on the crew."}
               </div>
             )}
+            {/* FIX 10 — show the assigned employee's effective pay rate for
+                THIS job's type, so the owner can see at a glance whether the
+                residential/commercial override applies before saving. */}
+            {newJobForm.crewEmpId && (() => {
+              const emp = employees.find((e: any) => e.id === newJobForm.crewEmpId);
+              if (!emp) return null;
+              const rate = getEffectiveRate(emp, { jobType: newJobForm.jobType });
+              const hasOverride = (emp as any).jobTypeRates?.[newJobForm.jobType] != null;
+              return (
+                <div className="text-[11px] text-green-400/80 mt-1 flex items-center gap-1">
+                  <DollarSign size={10} />{emp.firstName}'s {newJobForm.jobType} rate: {fmt(rate)}/hr{hasOverride ? " (override)" : " (default)"}
+                </div>
+              );
+            })()}
           </div>
           <div className="flex gap-2 justify-end pt-2">
             <GBtn variant="ghost" onClick={() => setNewJobOpen(false)}>Cancel</GBtn>

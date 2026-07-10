@@ -125,6 +125,12 @@ export function AddressAutocomplete({
   // restricted key), this stays empty and the local CRM matches are shown
   // instead — never blocks the input.
   const [placePreds, setPlacePreds] = useState<string[]>([]);
+  // FIX 11 — a restricted/blocked API key (Google's error: "Requests to this
+  // API ... are blocked") previously only ever showed up in the browser
+  // console. Local CRM matches already cover the input either way, but the
+  // owner has no way to discover — let alone fix — a misconfigured key
+  // without opening devtools, so surface it as a small visible banner.
+  const [placesBlocked, setPlacesBlocked] = useState(false);
   const placesLibRef = useRef<any>(null);
   const debounceRef = useRef<any>(null);
   useEffect(() => {
@@ -149,8 +155,12 @@ export function AddressAutocomplete({
           .slice(0, 5);
         console.log("[Autocomplete] Places returned", texts.length, "suggestions for", JSON.stringify(value));
         setPlacePreds(texts);
+        setPlacesBlocked(false);
       } catch (e: any) {
-        console.warn("[Autocomplete] Places lookup failed — using local matches:", e?.message);
+        const msg = String(e?.message || e || "");
+        const blocked = /blocked|forbidden|403|not authorized|REQUEST_DENIED/i.test(msg);
+        console.warn("[Autocomplete] Places lookup failed — using local matches:", msg);
+        if (blocked) setPlacesBlocked(true);
         setPlacePreds([]);
       }
     }, 250);
@@ -206,6 +216,12 @@ export function AddressAutocomplete({
       {!open && !value && (
         <div className="text-[9px] text-white/30 mt-1 pl-1">
           Browser address autofill active · type 3+ chars to see saved CRM matches
+        </div>
+      )}
+      {placesBlocked && mapsKey && (
+        <div className="text-[10px] text-yellow-400/80 mt-1 pl-1 flex items-start gap-1">
+          <span>⚠️</span>
+          <span>Google Places is blocking this API key (check its API restrictions in Cloud Console include "Places API (New)") — showing saved CRM addresses only for now.</span>
         </div>
       )}
       {open && suggestions.length > 0 && (

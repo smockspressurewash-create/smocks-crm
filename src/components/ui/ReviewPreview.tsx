@@ -462,7 +462,7 @@ const executeAction = async (step, ctx, toast, settings) => {
   if (ch === "sms" && phone && settings?.twilioSid) {
     try { await twilioSend(settings, phone, body); sent = true; }
     catch { /* log but don't block */ }
-  } else if (ch === "email" && email && (settings?.resendKey || settings?.googleConnected)) {
+  } else if (ch === "email" && email && settings?.googleConnected) {
     try { await sendEmail(settings, { to: email, subject, body }); sent = true; }
     catch { /* log but don't block */ }
   } else if (ch === "webhook" && step.url) {

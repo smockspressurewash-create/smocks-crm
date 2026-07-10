@@ -271,6 +271,7 @@ export interface Employee {
   lastShiftHours?: number;
   lastShiftDate?: string;
   paidPeriods?: Record<string, "paid" | "unpaid">;
+  paidDays?: Record<string, "paid" | "unpaid">;
   locationSharing?: boolean;
   lastLocation?: { lat: number; lng: number; updatedAt: number };
   jobTypeRates?: Record<string, number>;
@@ -574,9 +575,6 @@ export interface AppSettings {
   // Secret key is obfuscated (see lib/crypto.ts) before being persisted — not real
   // encryption, but keeps it from sitting in localStorage as plain text.
   stripeSecretKeyEnc?: string;
-  resendKey?: string;
-  fromEmail?: string;
-  resendBackendUrl?: string;
 
   // Google
   googleConnected?: boolean;

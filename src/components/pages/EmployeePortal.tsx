@@ -17,7 +17,7 @@ import { loadMapsScript, AddressAutocomplete } from "../ui/AddressAutocomplete";
 import { LiveMap } from "../ui/LiveMap";
 import { PropertyMapEmbed } from "../ui/PropertyMapEmbed";
 import { BarChart, Bar, LineChart, Line, XAxis, YAxis, ResponsiveContainer, Tooltip, CartesianGrid } from "recharts";
-import { fmt, uid, today, daysFromNow, computeJobRatingScore, setOAuthIntent, compressImageFile } from "../../lib/utils";
+import { fmt, uid, today, daysFromNow, computeJobRatingScore, setOAuthIntent, compressImageFile, getEffectiveRate } from "../../lib/utils";
 import type { Job, Employee, Customer, AppSettings, JobChecklistItem } from "../../types";
 
 const PRE_DEFAULTS: JobChecklistItem[] = [
@@ -143,6 +143,7 @@ function PortalChecklistSection({ title, emoji, items, onUpdate, allowPhotos = f
   const updateNotes = (id: string, notes: string) => onUpdate(items.map(it => it.id === id ? { ...it, notes } : it));
   const addItemPhoto = (id: string, dataUrl: string, isVideo: boolean) => {
     const media = { id: uid(), dataUrl };
+    console.log("[PhotoSync] checklist item", isVideo ? "video" : "photo", "added — item:", id, "size:", Math.round(dataUrl.length / 1024), "KB");
     onUpdate(items.map(it => it.id === id
       ? isVideo ? { ...it, videos: [...(it.videos || []), media] } : { ...it, photos: [...(it.photos || []), media] }
       : it));
@@ -358,10 +359,23 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
     }
   };
 
-  const addPhoto = (type: "before" | "after", dataUrl: string) => {
+  const addPhoto = async (type: "before" | "after", dataUrl: string) => {
     const newPhoto = { id: uid(), type, caption: (type === "before" ? "Before" : "After") + " — " + today(), dataUrl, uploadedAt: today() };
-    onUpdateJob({ photos: [...(job.photos || []), newPhoto] });
-    toast(type === "before" ? "Before photo added" : "After photo added");
+    const nextPhotos = [...(job.photos || []), newPhoto];
+    console.log("[PhotoSync] adding", type, "photo — job:", job.id, "photo count now:", nextPhotos.length, "size:", Math.round(dataUrl.length / 1024), "KB");
+    try {
+      const result = await withTimeout(Promise.resolve(onUpdateJob({ photos: nextPhotos })), 15000, "Photo upload");
+      if (result?.error) {
+        console.error("[PhotoSync] — error:", result.error.message);
+        toast("Photo saved locally, but failed to sync — " + result.error.message, "red");
+      } else {
+        console.log("[PhotoSync] — success: photo saved for job", job.id);
+        toast(type === "before" ? "Before photo added ✓" : "After photo added ✓", "green");
+      }
+    } catch (e: any) {
+      console.error("[PhotoSync] — error:", e?.message || e);
+      toast("Photo saved locally, but failed to sync — " + (e?.message || "unknown error"), "red");
+    }
   };
 
   const addVideo = (file: File) => {
@@ -505,19 +519,20 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
         logOutboundSmsToInbox({ contactName: `${customer.firstName} ${customer.lastName}`, contactPhone: customer.phone, customerId: customer.id, body: `Hi ${customer.firstName}, your invoice for ${fmt(Number(job.amount) || 0)} is ready: ${payLink}` }).catch(() => {});
       } else {
         if (!customer.email) throw new Error("No email on file for this customer.");
-        console.log("[CompleteJob] sending invoice via Gmail to", customer.email);
+        console.log("[SendInvoice] sending invoice via Gmail to", customer.email);
         const html = emailShell(companyName, "Invoice", `<p>Hi ${customer.firstName},</p>${noteHtml}<p>Thanks for choosing us! Your service at <b>${job.address}</b> is complete.</p><p><b>Amount due:</b> $${(Number(job.amount) || 0).toFixed(2)}</p>` + emailButton("View & Pay Invoice", payLink));
-        await withTimeout(sendOwnerGmailOnly(settings as any, customer.email, subject, html), 15000, "Invoice email");
-        toast(`Invoice emailed to ${customer.firstName} ✓`, "green");
+        await withTimeout(sendOwnerGmailOnly(settings as any, customer.email, subject, html), 10000, "Invoice email");
+        toast(`📧 Invoice emailed to ${customer.firstName} ✓`, "green");
       }
-      console.log("[CompleteJob] invoice send — success");
+      console.log("[SendInvoice] invoice send — success");
       return true;
     } catch (err: any) {
-      console.error("[CompleteJob] invoice send — error:", err?.message || err);
+      console.error("[SendInvoice] invoice send — error:", err?.message || err);
       toast(`Failed to send invoice — ${err?.message || "unknown error"}`, "red");
       return false;
     } finally {
       setSendingCompleteInvoice(false);
+      console.log("[SendInvoice] button reset");
     }
   };
 
@@ -530,7 +545,19 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
       const added = Math.round((Date.now() - job.clockInAt - lunchMs) / 36000) / 100;
       hrs = Math.round((hrs + added) * 100) / 100;
       patch.clockInAt = null; patch.lunchStartAt = null; patch.loggedHours = hrs;
+    } else if (job.arrivedAt && !hrs) {
+      // FIX 3 — employees normally never set the per-job clockInAt at all (only
+      // the owner's own JobDetailModal Clock In/Out uses it); the field portal's
+      // "I'm Here" button only sets arrivedAt + the whole-day shift timer. Without
+      // this fallback, loggedHours stayed 0 forever for every employee-completed
+      // job, which is why hours/pay never showed up in the owner's Hours/Payroll
+      // tabs or the employee's own Pay tab — those all read job.loggedHours.
+      const lunchMs = paidLunchBreaks ? 0 : (job.lunchMinutes || 0) * 60000;
+      const added = Math.max(0, Math.round((Date.now() - job.arrivedAt - lunchMs) / 36000) / 100);
+      hrs = added;
+      patch.loggedHours = hrs;
     }
+    console.log("[HoursSync] Complete Job — jobId:", job.id, "crew:", job.crew, "clockInAt:", job.clockInAt, "arrivedAt:", job.arrivedAt, "computed loggedHours:", hrs);
     if (paymentStatus === "Paid") {
       patch.paymentType = (method as any) || "Cash";
       patch.paymentStatus = "Paid";
@@ -1046,7 +1073,7 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
           </Glass>
         )}
 
-        {/* On My Way — send channel choice, never silently defaults to Resend */}
+        {/* On My Way — send channel choice, never silently defaults away from the chosen channel */}
         {job.status !== "completed" && job.status !== "cancelled" && (customer?.phone || customer?.email) && (
           <Glass className="p-3 !bg-blue-950/15 !border-blue-700/30">
             {otwOpen ? (
@@ -1512,7 +1539,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   // survives the frequent re-renders). null = nothing picked yet.
   const [lateMinutes, setLateMinutes] = useState<number | null>(null);
   // FIX 2 — explicit Email/Text channel choice for Running Late + OTW on job
-  // cards (never silently defaults to Resend). Shared across cards since only
+  // cards (never silently defaults away from the chosen channel). Shared across cards since only
   // one picker is open at a time.
   const [lateCardChannel, setLateCardChannel] = useState<"sms" | "email">("sms");
   const [otwOpenJobId, setOtwOpenJobId] = useState<string | null>(null);
@@ -1544,6 +1571,33 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
       setMarkingPaidPeriod(null);
     }
   };
+  // FIX 3 — per-day "Mark as Paid" for the Pay tab's daily calendar view,
+  // parallel to markPeriodPaid but keyed by individual date (employees.paidDays).
+  const [markingPaidDay, setMarkingPaidDay] = useState<string | null>(null);
+  const markDayPaid = async (dateKey: string) => {
+    const empId = (myEmployee as any)?.id;
+    if (!empId) return;
+    setMarkingPaidDay(dateKey);
+    const current = (myEmployee as any)?.paidDays || {};
+    const nextPaid = { ...current, [dateKey]: current[dateKey] === "paid" ? "unpaid" as const : "paid" as const };
+    console.log("[HoursSync] markDayPaid — empId:", empId, "date:", dateKey, "→", nextPaid[dateKey]);
+    try {
+      const result = await (supabase as any).from("employees").update({ paidDays: nextPaid }).eq("id", empId);
+      if (result?.error) {
+        console.error("[HoursSync] markDayPaid — error:", result.error.message);
+        toast("Saved locally, but couldn't sync to the owner: " + result.error.message, "red");
+      } else {
+        refetchEmployees?.();
+        toast(nextPaid[dateKey] === "paid" ? "Day marked as paid ✓" : "Day marked unpaid");
+      }
+    } catch (e: any) {
+      console.error("[HoursSync] markDayPaid — error:", e?.message || e);
+      toast("Couldn't sync to the owner: " + (e?.message || "unknown error"), "red");
+    } finally {
+      setMarkingPaidDay(null);
+    }
+  };
+  const [payCalMonthOffset, setPayCalMonthOffset] = useState(0);
   const [routeInfo, setRouteInfo] = useState<{ order: Job[]; totalDuration: string; totalDistance: string; etas: string[]; origin: { lat: number; lng: number } | string } | null>(null);
   const [calMode, setCalMode] = useState<"week" | "month">("month");
   const [calSelectedDate, setCalSelectedDate] = useState(today());
@@ -3519,7 +3573,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
             {latePickerOpen ? (
               <div className="p-2 rounded-xl bg-orange-950/20 border border-orange-700/30 space-y-2">
                 <div className="text-[10px] text-orange-300 font-semibold">Running Late</div>
-                {/* Send via — explicit choice, never silently defaults to Resend */}
+                {/* Send via — explicit choice, never silently defaults away from the chosen channel */}
                 <div className="flex gap-1">
                   <button disabled={!customer?.phone} onClick={e => { e.stopPropagation(); setLateCardChannel("sms"); }}
                     className={"flex-1 py-1 rounded-lg border text-[10px] font-semibold transition disabled:opacity-30 " + (lateCardChannel === "sms" ? "border-orange-500 bg-orange-900/40 text-orange-200" : "border-white/10 bg-black/30 text-white/50")}>
@@ -3855,7 +3909,20 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
               // already-worked hours from the last End-My-Day and, on Resume,
               // backdate the new dayClockInAt by that amount so the timer
               // continues from where it left off instead of restarting.
-              const alreadyWorkedTodayHours = (myEmployee as any)?.lastShiftDate === today() ? Number((myEmployee as any)?.lastShiftHours) || 0 : 0;
+              // FIX 2 — prefer the Supabase-synced lastShiftHours/lastShiftDate, but
+              // fall back to a localStorage copy for THIS device/browser. If the
+              // migration adding those two columns was never run against the real
+              // Supabase project, the server write silently fails (see toggleDay's
+              // retry chain below) and the Resume feature would otherwise never
+              // work at all, no matter how correct this logic is — the localStorage
+              // copy guarantees same-device Resume always works regardless.
+              const localLastShift = (() => {
+                if (!empId) return null;
+                try { return JSON.parse(localStorage.getItem("smocks.lastShift." + empId) || "null"); } catch { return null; }
+              })();
+              const alreadyWorkedTodayHours = (myEmployee as any)?.lastShiftDate === today()
+                ? Number((myEmployee as any)?.lastShiftHours) || 0
+                : (localLastShift?.date === today() ? Number(localLastShift?.hours) || 0 : 0);
               const isResuming = !dayClockInAt && alreadyWorkedTodayHours > 0;
               const onLunch = !!dayLunchStartAt;
               const currentPauseMs = onLunch ? Date.now() - dayLunchStartAt : 0;
@@ -3924,33 +3991,47 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                   // Starting a fresh shift clears any prior "shift ended" banner.
                   setShiftEndedMsg(null);
                 }
-                console.log("[Start My Day] clicked — endingDay:", endingDay, "empId:", empId, "dayClockInAt→", nextVal);
+                console.log("[HoursSync] toggleDay clicked — endingDay:", endingDay, "empId:", empId, "dayClockInAt→", nextVal, "finalHours:", finalHours);
+                // Always write the localStorage fallback immediately, regardless of
+                // how the Supabase write below goes — this is what guarantees
+                // Resume works on this device even if the lastShiftHours/
+                // lastShiftDate columns don't exist yet server-side.
+                if (endingDay && empId) {
+                  try { localStorage.setItem("smocks.lastShift." + empId, JSON.stringify({ hours: finalHours, date: today() })); } catch { /* ignore */ }
+                }
                 const patch: any = endingDay
                   ? { dayClockInAt: null, dayLunchStartAt: null, dayPausedMinutes: 0, lastShiftHours: finalHours, lastShiftDate: today() }
                   : { dayClockInAt: nextVal, dayLunchStartAt: null, dayPausedMinutes: 0 };
                 try {
                   let result = await (supabase as any).from("employees").update(patch).eq("id", empId);
                   if (result?.error) {
-                    // Retry with ONLY the shift-timer columns the owner's Live
-                    // Team View actually reads — a missing optional column
-                    // (lastShiftHours/lastShiftDate) must not stop dayClockInAt
-                    // from persisting, or the owner never sees the shift.
-                    console.warn("[Start My Day] full patch failed:", result.error.message, "— retrying core columns");
+                    // Retry with ONLY the shift-timer columns from migration 0002 —
+                    // a missing lastShiftHours/lastShiftDate column must not stop
+                    // dayClockInAt from persisting, or the owner never sees the shift.
+                    console.warn("[HoursSync] full patch failed:", result.error.message, "— retrying without lastShiftHours/lastShiftDate");
                     const core = endingDay
                       ? { dayClockInAt: null, dayLunchStartAt: null, dayPausedMinutes: 0 }
                       : { dayClockInAt: nextVal, dayLunchStartAt: null, dayPausedMinutes: 0 };
                     result = await (supabase as any).from("employees").update(core).eq("id", empId);
                   }
                   if (result?.error) {
-                    console.error("[Start My Day] — error:", result.error.message);
+                    // Even dayLunchStartAt/dayPausedMinutes (migration 0002) may be
+                    // missing — fall back to JUST dayClockInAt (migration 0001, the
+                    // oldest/most foundational column) so the owner's Live Team View
+                    // at least sees the shift, even if pause/lunch tracking can't save.
+                    console.warn("[HoursSync] core patch also failed:", result.error.message, "— retrying dayClockInAt only. Run supabase/migrations/0001 and 0002 in the Supabase SQL editor.");
+                    result = await (supabase as any).from("employees").update({ dayClockInAt: nextVal }).eq("id", empId);
+                  }
+                  if (result?.error) {
+                    console.error("[HoursSync] — error:", result.error.message);
                     toast("Saved locally, but couldn't sync to the server: " + result.error.message, "red");
                   } else {
-                    console.log("[Start My Day] — success: dayClockInAt persisted to Supabase for", empId);
+                    console.log("[HoursSync] — success: shift data persisted to Supabase for", empId);
                     refetchEmployees?.();
                     toast(endingDay ? `Shift ended · Total ${totalLabel} logged, summary emailed` : "Day started — owner can see you're on shift");
                   }
                 } catch (e: any) {
-                  console.error("[Start My Day] — error:", e?.message || e);
+                  console.error("[HoursSync] — error:", e?.message || e);
                   toast("Saved locally, but couldn't sync to the server: " + (e?.message || "unknown error"), "red");
                 }
               };
@@ -5035,6 +5116,66 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                     </div>
                   )}
                 </Glass>
+
+                {/* FIX 3 — daily calendar view: every day this month with logged
+                    hours, its earnings (respecting per-job-type rate overrides via
+                    getEffectiveRate), and an individually-markable paid/unpaid
+                    status — separate from the 14-day period marking above. */}
+                {(() => {
+                  const calBase = new Date();
+                  calBase.setMonth(calBase.getMonth() + payCalMonthOffset, 1);
+                  const year = calBase.getFullYear(), month = calBase.getMonth();
+                  const daysInMonth = new Date(year, month + 1, 0).getDate();
+                  const firstDow = new Date(year, month, 1).getDay();
+                  const paidDaysMap: Record<string, "paid" | "unpaid"> = (myEmployee as any)?.paidDays || {};
+                  const dayCells: Array<{ key: string; day: number; hours: number; pay: number; status: "paid" | "unpaid" } | null> = [];
+                  for (let i = 0; i < firstDow; i++) dayCells.push(null);
+                  for (let d = 1; d <= daysInMonth; d++) {
+                    const key = `${year}-${String(month + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+                    const dayJobs = myJobs.filter(j => j.scheduledDate === key && Number(j.loggedHours) > 0);
+                    const hours = Math.round(dayJobs.reduce((s, j) => s + Number(j.loggedHours || 0), 0) * 100) / 100;
+                    const pay = Math.round(dayJobs.reduce((s, j) => s + Number(j.loggedHours || 0) * getEffectiveRate(myEmployee, j), 0) * 100) / 100;
+                    dayCells.push({ key, day: d, hours, pay, status: paidDaysMap[key] || "unpaid" });
+                  }
+                  const monthLabel = calBase.toLocaleDateString("en-US", { month: "long", year: "numeric" });
+                  const monthTotal = dayCells.reduce((s, c) => s + (c?.pay || 0), 0);
+                  return (
+                    <Glass className="p-4 !bg-black/40">
+                      <div className="flex items-center justify-between mb-3">
+                        <button onClick={() => setPayCalMonthOffset(o => o - 1)} className="p-1.5 rounded-lg hover:bg-white/10 text-white/50"><ChevronLeft size={14} /></button>
+                        <div className="text-xs font-semibold text-white/70">{monthLabel}</div>
+                        <button onClick={() => setPayCalMonthOffset(o => Math.min(0, o + 1))} disabled={payCalMonthOffset >= 0} className="p-1.5 rounded-lg hover:bg-white/10 text-white/50 disabled:opacity-30"><ChevronRight size={14} /></button>
+                      </div>
+                      <div className="grid grid-cols-7 gap-1 text-center mb-1">
+                        {["S", "M", "T", "W", "T", "F", "S"].map((d, i) => <div key={i} className="text-[9px] text-white/30 font-semibold">{d}</div>)}
+                      </div>
+                      <div className="grid grid-cols-7 gap-1">
+                        {dayCells.map((c, i) => c === null ? <div key={i} /> : (
+                          <button
+                            key={i}
+                            onClick={() => c.hours > 0 && markDayPaid(c.key)}
+                            disabled={c.hours === 0 || markingPaidDay === c.key}
+                            className={"aspect-square rounded-lg text-[9px] flex flex-col items-center justify-center gap-0.5 transition " +
+                              (c.hours === 0 ? "text-white/20" : c.status === "paid" ? "bg-green-900/40 border border-green-600/40 text-green-300 hover:bg-green-800/40" : "bg-yellow-950/30 border border-yellow-700/40 text-yellow-300 hover:bg-yellow-900/40")}
+                            title={c.hours > 0 ? `${c.hours}h · ${fmt(c.pay)} · ${c.status === "paid" ? "Paid — tap to unmark" : "Unpaid — tap to mark paid"}` : undefined}
+                          >
+                            <span className="font-semibold">{c.day}</span>
+                            {c.hours > 0 && <span>{c.hours}h</span>}
+                          </button>
+                        ))}
+                      </div>
+                      <div className="flex items-center justify-between mt-3 pt-2 border-t border-white/10 text-[10px]">
+                        <span className="text-white/40">Month total</span>
+                        <span className="font-bold text-white/70">{fmt(monthTotal)}</span>
+                      </div>
+                      <div className="flex items-center gap-3 mt-2 text-[9px] text-white/30">
+                        <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-yellow-700/60" />Unpaid</span>
+                        <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-green-700/60" />Paid</span>
+                        <span>· tap a day to toggle</span>
+                      </div>
+                    </Glass>
+                  );
+                })()}
 
                 {periods.some(p => p.pay > 0) && (
                   <Glass className="p-4 !bg-black/40">

@@ -132,20 +132,28 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
       // pay/sign portal (ClientPortal).
       const payLink = `${window.location.origin}${window.location.pathname}#/estimate/${newInv.id}`;
       const html = bodyHtml + `<div style="text-align:center;margin:22px 0 4px"><a href="${payLink}" style="display:inline-block;background:#dc2626;color:#fff;text-decoration:none;font-weight:700;font-size:14px;padding:13px 30px;border-radius:10px">View & Pay Invoice</a></div>`;
-      // Hard timeout — a hung Gmail/Resend fetch (no built-in timeout) is exactly
-      // what left the button stuck on "Sending…" forever. This guarantees the
-      // await always settles so `finally` runs and the button resets.
-      await withTimeout(sendOwnerGmailOnly(settings as any, cust.email, subject, html), 15000, "Invoice email");
+      // Hard timeout — a hung Gmail fetch (no built-in timeout) is exactly what
+      // left the button stuck on "Sending…" forever. This guarantees the await
+      // always settles so `finally` runs and the button resets. sendOwnerGmailOnly
+      // (lib/messaging.ts) already auto-refreshes the Google session on a 401
+      // and retries once before giving up.
+      console.log("[SendInvoice] start — job:", job.id, "to:", cust.email, "googleConnected:", !!settings?.googleConnected);
+      await withTimeout(sendOwnerGmailOnly(settings as any, cust.email, subject, html), 10000, "Invoice email");
       setJobs((prev: any[]) => prev.map((j: any) => j.id === job.id ? { ...j, invoiceSentAt: today(), paymentType: "Invoice", paymentStatus: j.paymentStatus === "Paid" ? j.paymentStatus : "Pending" } : j));
-      console.log("[Send Invoice] — success: sent to", cust.email);
-      toast?.(`Invoice sent to ${cust.firstName} ✓`, "green");
+      console.log("[SendInvoice] — success: sent to", cust.email);
+      toast?.(`📧 Invoice sent to ${cust.firstName} ✓`, "green");
       setPreviewInvoiceJob(null);
     } catch (e: any) {
-      console.error("[Send Invoice] — error:", e?.message || e);
-      toast?.(e?.message === "Invoice email timed out" ? "Send timed out — check your Gmail/Resend connection" : (e?.message || "Failed to send invoice"), "red");
+      console.error("[SendInvoice] — error:", e?.message || e);
+      const msg = e?.message === "Invoice email timed out"
+        ? "Send timed out — check your Gmail connection in Settings → Integrations"
+        : /expired|401|reconnect/i.test(e?.message || "")
+        ? "Google token expired — reconnect in Settings → Integrations"
+        : (e?.message || "Failed to send invoice");
+      toast?.(msg, "red");
     } finally {
       setSendingDashInvoiceId(null);
-      console.log("[Send Invoice] button reset");
+      console.log("[SendInvoice] button reset");
     }
   };
   const pipelineVal = jobs.filter(j => j.status !== "completed").reduce((s, j) => s + j.amount, 0);
@@ -370,7 +378,26 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
   // replaced by the whole-shift timer). Each on-shift employee is paired with
   // the job they're currently at (in_progress first, else an arrived-at job).
   const todayStrLive = today();
-  const liveEmps = employees.filter((e: any) => e.status === "active" && !!e.dayClockInAt);
+  // FIX 1 — this used to require e.status === "active" (strict-equality
+  // allowlist). Anything unexpected in that field — a stray capitalized
+  // "Active" from someone editing the Supabase table directly, a status this
+  // app doesn't know about yet, a normalize gap — silently dropped an
+  // otherwise genuinely-clocked-in employee from the whole view with no
+  // error anywhere. Being clocked in (dayClockInAt truthy) already proves
+  // they're on shift; only an explicit "inactive" should ever exclude them.
+  const liveEmps = employees.filter((e: any) => (e.status || "").toString().toLowerCase() !== "inactive" && !!e.dayClockInAt);
+  useEffect(() => {
+    console.log(
+      "[LiveCrew] Dashboard poll — total employees:", employees.length,
+      "| on shift:", liveEmps.length,
+      "| detail:", employees.map((e: any) => ({
+        name: `${e.firstName || "?"} ${e.lastName || ""}`.trim(),
+        status: e.status,
+        dayClockInAt: e.dayClockInAt,
+        onShift: (e.status || "").toString().toLowerCase() !== "inactive" && !!e.dayClockInAt,
+      }))
+    );
+  }, [employees]);
   const liveTeam = liveEmps.map((e: any) => {
     const empJobs = jobs
       .filter((j: any) => (j.crew || []).includes(e.id) && j.scheduledDate === todayStrLive)

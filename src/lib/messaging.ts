@@ -1,5 +1,5 @@
 import { supabase } from "./supabase";
-import { uid } from "./utils";
+import { uid, withTimeout } from "./utils";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -20,11 +20,7 @@ export interface TwilioSettings {
   myPhone?: string;
 }
 
-export interface EmailSettings {
-  resendKey?: string;
-  fromEmail?: string;
-  fromName?: string;
-}
+export interface EmailSettings {}
 
 // ─── Buffer (social posting) ────────────────────────────────────────────────
 // Buffer retired its old REST API (api.bufferapp.com/1/...) in favor of a
@@ -280,29 +276,45 @@ export const sendViaGmail = async (
   subject: string,
   html: string
 ): Promise<void> => {
+  console.log("[SendInvoice] sendViaGmail — attempting send to", to);
   let res = await sendGmailRaw(googleProviderToken, fromEmail, to, subject, html);
   if (res.status === 401) {
-    // refreshSession()'s own return value often omits provider_token even when
-    // the refresh succeeded (a known Supabase SDK quirk) — getSession() right
-    // after tends to reflect the token the SIGNED_IN/TOKEN_REFRESHED listener
-    // in App.tsx just wrote, so check both instead of trusting one.
-    const { data: refreshed } = await supabase.auth.refreshSession();
-    let freshToken = (refreshed.session as any)?.provider_token;
-    if (!freshToken) {
-      const { data: current } = await supabase.auth.getSession();
-      freshToken = (current.session as any)?.provider_token;
+    console.warn("[SendInvoice] Gmail 401 — attempting session refresh");
+    // supabase.auth.refreshSession()/getSession() are documented elsewhere in
+    // this codebase (App.tsx) as able to hang indefinitely under internal
+    // navigator-lock contention rather than reject — left unwrapped, that hang
+    // would silently eat the ENTIRE outer withTimeout budget on this one
+    // refresh attempt, which is exactly what made a 401 show up alongside a
+    // timeout instead of a fast, clear "reconnect Gmail" error. A short,
+    // dedicated timeout here means a stuck refresh fails fast on its own.
+    let freshToken: string | undefined;
+    try {
+      const { data: refreshed } = await withTimeout(supabase.auth.refreshSession(), 6000, "Google session refresh");
+      // refreshSession()'s own return value often omits provider_token even when
+      // the refresh succeeded (a known Supabase SDK quirk) — getSession() right
+      // after tends to reflect the token the SIGNED_IN/TOKEN_REFRESHED listener
+      // in App.tsx just wrote, so check both instead of trusting one.
+      freshToken = (refreshed.session as any)?.provider_token;
+      if (!freshToken) {
+        const { data: current } = await withTimeout(supabase.auth.getSession(), 4000, "Google session check");
+        freshToken = (current.session as any)?.provider_token;
+      }
+    } catch (refreshErr: any) {
+      console.warn("[SendInvoice] session refresh failed or timed out:", refreshErr?.message);
     }
     if (freshToken) {
+      console.log("[SendInvoice] got a fresh token — retrying send");
       res = await sendGmailRaw(freshToken, fromEmail, to, subject, html);
     }
     if (res.status === 401) {
-      throw new Error("Google sign-in expired — reconnect Gmail in Settings → Integrations.");
+      throw new Error("Google token expired — reconnect in Settings → Integrations.");
     }
   }
   if (!res.ok) {
     const err = await res.json().catch(() => ({})) as { error?: { message?: string } };
     throw new Error(err.error?.message ?? `Gmail API error ${res.status}`);
   }
+  console.log("[SendInvoice] sendViaGmail — success, sent to", to);
 };
 
 // Gmail-only send — no Resend fallback, ever. Used by flows that must never
@@ -321,10 +333,15 @@ export const sendOwnerGmailOnly = async (
   await sendViaGmail(settings.googleProviderToken, settings.googleEmail, to, subject, html);
 };
 
-// ─── Email via Resend ─────────────────────────────────────────────────────────
-
+// ─── Email via Gmail (no Resend fallback — removed entirely, FIX 9) ───────────
+// This used to fall back to Resend when Gmail wasn't connected or failed.
+// Every email in this app now goes through the owner's connected Gmail
+// account, full stop — this is functionally identical to sendOwnerGmailOnly,
+// kept as a separate export only because many call sites already use the
+// (to, subject, body) positional/object-args calling convention this
+// function supports.
 export const sendEmail = async (
-  settings: EmailSettings & { resendBackendUrl?: string; googleConnected?: boolean; googleProviderToken?: string; googleEmail?: string; ownerName?: string; myEmail?: string },
+  settings: EmailSettings & { googleConnected?: boolean; googleProviderToken?: string; googleEmail?: string; ownerName?: string; myEmail?: string },
   toOrOpts: string | { to: string; subject: string; body: string; [key: string]: any },
   subject?: string,
   html?: string
@@ -342,54 +359,10 @@ export const sendEmail = async (
     subj = subject!;
     body = html!;
   }
-  const { resendKey, fromEmail, resendBackendUrl } = settings;
-  // The owner's name/email from Settings → My Profile takes priority as the
-  // visible sender and reply target — falls back to the generic company name
-  // when the owner hasn't filled in their profile yet.
-  const fromName = settings.fromName ?? settings.ownerName;
-  const replyTo = settings.myEmail || undefined;
-
-  // Try Gmail first if owner has connected Google account
-  if (settings.googleProviderToken && settings.googleEmail) {
-    try {
-      await sendViaGmail(settings.googleProviderToken, settings.googleEmail, to, subj, body);
-      return;
-    } catch {
-      // Fall through to Resend
-    }
+  if (!settings.googleProviderToken || !settings.googleEmail) {
+    throw new Error("Gmail not connected — connect Google in Settings → Integrations to send email.");
   }
-
-  // Via backend proxy
-  if (resendBackendUrl) {
-    const res = await fetch(`${resendBackendUrl}/email`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ to, subject: subj, html: body, from: `${fromName ?? "Crew Boss"} <${fromEmail ?? "noreply@smocks.com"}>`, replyTo }),
-    });
-    if (!res.ok) throw new Error(`Email proxy error: ${res.status}`);
-    return;
-  }
-
-  if (!resendKey) throw new Error("Resend API key not configured.");
-
-  const res = await fetch("https://api.resend.com/emails", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${resendKey}`,
-    },
-    body: JSON.stringify({
-      from: `${fromName ?? "Crew Boss"} <${fromEmail ?? "noreply@smocks.com"}>`,
-      to: [to],
-      subject: subj,
-      html: body,
-      ...(replyTo ? { reply_to: replyTo } : {}),
-    }),
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({})) as { message?: string };
-    throw new Error(err.message ?? `Resend error ${res.status}`);
-  }
+  await sendViaGmail(settings.googleProviderToken, settings.googleEmail, to, subj, body);
 };
 
 // ─── Branded HTML email shell ──────────────────────────────────────────────────

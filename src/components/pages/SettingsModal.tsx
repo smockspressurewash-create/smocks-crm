@@ -80,7 +80,7 @@ import { ChemicalModal } from "../ui/ChemicalModal";
 import { WeeklyBusinessReview } from "../ui/WeeklyBusinessReview";
 import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 
-export function SettingsModal({ open, onClose, settings, setSettings, services, setServices, emailTemplates, setEmailTemplates, smsTemplates, setSmsTemplates, estimateTemplates = [], setEstimateTemplates = (() => {}) as any, modelStatus = {}, setModelStatus = (() => {}) as any, toast, onSignOut, restrictToProfile = false }: { open?: any; onClose?: any; settings?: any; setSettings?: any; services?: any; setServices?: any; emailTemplates?: any; setEmailTemplates?: any; smsTemplates?: any; setSmsTemplates?: any; estimateTemplates?: any[]; setEstimateTemplates?: any; modelStatus?: any; setModelStatus?: any; toast?: any; onSignOut?: () => void; restrictToProfile?: boolean }) {
+export function SettingsModal({ open, onClose, settings, setSettings, services, setServices, emailTemplates, setEmailTemplates, smsTemplates, setSmsTemplates, estimateTemplates = [], setEstimateTemplates = (() => {}) as any, modelStatus = {}, setModelStatus = (() => {}) as any, toast, onSignOut, restrictToProfile = false, onAddManager }: { open?: any; onClose?: any; settings?: any; setSettings?: any; services?: any; setServices?: any; emailTemplates?: any; setEmailTemplates?: any; smsTemplates?: any; setSmsTemplates?: any; estimateTemplates?: any[]; setEstimateTemplates?: any; modelStatus?: any; setModelStatus?: any; toast?: any; onSignOut?: () => void; restrictToProfile?: boolean; onAddManager?: () => void }) {
   const [f, setF] = useState(settings);
   const [stripeSecretInput, setStripeSecretInput] = useState(() => deobfuscate(settings.stripeSecretKeyEnc || ""));
   const [showStripeSecret, setShowStripeSecret] = useState(false);
@@ -265,12 +265,6 @@ export function SettingsModal({ open, onClose, settings, setSettings, services, 
               </div>
             </div>
             <div>
-              <h4 className="font-semibold text-sm mb-2 flex items-center gap-2"><Mail size={13} className="text-green-400" />Resend API Key</h4>
-              <div className="text-[11px] text-white/50 mb-2">Transactional email sending (estimates, invoices, campaigns) without Google. Free 3,000 emails/month.</div>
-              <GInput type="password" value={f.resendKey || ""} onChange={e => setF({ ...f, resendKey: e.target.value })} placeholder="re_..." />
-              <div className="text-[10px] text-white/40 mt-1"><a href="https://resend.com" target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:underline">resend.com</a> — free to start</div>
-            </div>
-            <div>
               <h4 className="font-semibold text-sm mb-2 flex items-center gap-2"><MapPin size={13} className="text-red-400" />Google Maps API Key</h4>
               <div className="text-[11px] text-white/50 mb-2">Powers address autocomplete and Street View thumbnails on jobs.</div>
               <GInput type="password" value={f.googleMapsKey || ""} onChange={e => setF({ ...f, googleMapsKey: e.target.value.trim() })} placeholder="AIza..." />
@@ -335,6 +329,21 @@ export function SettingsModal({ open, onClose, settings, setSettings, services, 
 
           {sec === "company" && <div className="space-y-3">
             <h4 className="font-semibold text-sm">Company Profile</h4>
+
+            {/* FIX 8 — Manager invites weren't discoverable anywhere in Settings;
+                the actual invite flow (role, rate, permissions, CRM access) lives
+                on the Employees page, so this jumps there with the invite modal
+                pre-opened rather than duplicating that whole form here. */}
+            {!restrictToProfile && onAddManager && (
+              <div className="flex items-center justify-between p-3 bg-purple-950/10 border border-purple-700/30 rounded-xl">
+                <div>
+                  <div className="text-sm font-medium flex items-center gap-1.5"><Shield size={13} className="text-purple-400" />Team & Managers</div>
+                  <div className="text-[10px] text-white/50 mt-0.5">Invite a manager with full CRM access minus Alfred, Accountability, Google Workspace, and Inbox.</div>
+                </div>
+                <GBtn onClick={onAddManager} className="!text-xs !py-2 !px-3 flex-shrink-0">+ Add Manager</GBtn>
+              </div>
+            )}
+
             {/* Logo upload */}
             <div>
               <label className="text-xs text-white/60 mb-2 block">Company Logo</label>
@@ -354,6 +363,11 @@ export function SettingsModal({ open, onClose, settings, setSettings, services, 
             <div className="grid grid-cols-2 gap-3">
               <div><label className="text-xs text-white/60 mb-1 block">Phone</label><GInput value={f.companyPhone} onChange={e => setF({ ...f, companyPhone: e.target.value })} /></div>
               <div><label className="text-xs text-white/60 mb-1 block">Email</label><GInput value={f.companyEmail} onChange={e => setF({ ...f, companyEmail: e.target.value })} /></div>
+            </div>
+            <div>
+              <label className="text-xs text-white/60 mb-1 block flex items-center gap-1"><MapPin size={10} />Location <span className="text-white/30 font-normal">(for weather — zip code or "City, ST")</span></label>
+              <GInput value={f.weatherLocation || ""} onChange={e => setF({ ...f, weatherLocation: e.target.value })} placeholder="e.g. 17403 or York, PA" className="!text-xs" />
+              <div className="text-[10px] text-white/30 mt-1">Defaults to York, PA if left blank.</div>
             </div>
             <div><label className="text-xs text-white/60 mb-1 block flex items-center gap-1"><Phone size={10} />Your Mobile # <span className="text-white/30 font-normal">(for Alfred SMS summaries)</span></label><GInput type="tel" value={f.myPhone || ""} onChange={e => setF({ ...f, myPhone: e.target.value })} placeholder="+17175550100" className="!text-xs" /></div>
             <div><label className="text-xs text-white/60 mb-1 block flex items-center gap-1"><Star size={10} />Google Place ID <span className="text-white/30 font-normal">(for review links)</span></label><GInput value={f.googlePlaceId || ""} onChange={e => setF({ ...f, googlePlaceId: e.target.value })} placeholder="ChIJ..." className="!text-xs" /><div className="text-[10px] text-white/30 mt-1">Find at <a href="https://developers.google.com/maps/documentation/places/web-service/place-id" target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:underline">developers.google.com/maps/…/place-id</a></div></div>
@@ -895,26 +909,6 @@ export function SettingsModal({ open, onClose, settings, setSettings, services, 
               </div>
             </Glass>
 
-            {/* QuickBooks */}
-            <Glass className="p-4 !bg-black/40">
-              <div className="flex items-center justify-between mb-2">
-                <div className="flex items-center gap-2"><Receipt size={14} className="text-green-400" /><div className="font-semibold text-sm">QuickBooks Online</div></div>
-                <Badge tone={f.quickbooksConnected ? "green" : "gray"}>{f.quickbooksConnected ? "Connected" : "Disconnected"}</Badge>
-
-              </div>
-              <div className="text-xs text-white/60 mb-3">Auto-sync invoices, payments, and customers.</div>
-              {f.quickbooksConnected ? (
-                <div className="space-y-2">
-                  <div className="grid grid-cols-3 gap-2 text-xs p-2 bg-green-950/20 border border-green-800/30 rounded-lg">
-                    <div className="text-center"><div className="text-white/50">Invoices</div><div className="font-bold text-green-400">12</div></div>
-                    <div className="text-center"><div className="text-white/50">Payments</div><div className="font-bold text-green-400">9</div></div>
-                    <div className="text-center"><div className="text-white/50">Last sync</div><div className="font-bold text-white/70">2h ago</div></div>
-                  </div>
-                  <GBtn variant="danger" onClick={() => setF({ ...f, quickbooksConnected: false })} className="w-full !text-xs">Disconnect</GBtn>
-                </div>
-              ) : <GBtn onClick={() => setF({ ...f, quickbooksConnected: true })} className="w-full !text-xs">Connect QuickBooks (Mock)</GBtn>}
-            </Glass>
-
             {/* Twilio */}
             <Glass className={"p-4 " + (f.twilioSid && f.twilioToken && f.twilioFrom ? "!bg-gradient-to-br !from-green-950/20 !to-black/60 !border-green-700/30" : "!bg-black/40")}>
               <div className="flex items-center justify-between mb-2">
@@ -1171,8 +1165,8 @@ export function SettingsModal({ open, onClose, settings, setSettings, services, 
             </Glass>
 
             <Glass className="p-3 !bg-black/40 space-y-2">
-              <div className="flex items-center gap-2 text-xs"><Receipt size={12} className="text-green-400" /><span className="font-semibold">QuickBooks CSV Export</span></div>
-              <div className="text-[10px] text-white/50">Exports revenue and expenses in QuickBooks-compatible CSV format.</div>
+              <div className="flex items-center gap-2 text-xs"><Receipt size={12} className="text-green-400" /><span className="font-semibold">Accounting CSV Export</span></div>
+              <div className="text-[10px] text-white/50">Exports revenue and expenses in a standard accounting-import CSV format.</div>
               <GBtn variant="ghost" onClick={() => {
                 const header = "Date,Description,Amount,Type,Account,Category\n";
                 const rows = [
@@ -1181,9 +1175,9 @@ export function SettingsModal({ open, onClose, settings, setSettings, services, 
                 ].join("\n");
                 const blob = new Blob([header + rows], { type: "text/csv" });
                 const url = URL.createObjectURL(blob); const a = document.createElement("a");
-                a.href = url; a.download = "smocks-quickbooks-" + today() + ".csv"; a.click(); URL.revokeObjectURL(url);
-                toast("QuickBooks CSV downloaded");
-              }} className="w-full !text-xs"><Download size={12} className="inline mr-1.5" />Download QuickBooks CSV</GBtn>
+                a.href = url; a.download = "smocks-accounting-" + today() + ".csv"; a.click(); URL.revokeObjectURL(url);
+                toast("Accounting CSV downloaded");
+              }} className="w-full !text-xs"><Download size={12} className="inline mr-1.5" />Download Accounting CSV</GBtn>
             </Glass>
 
             <Glass className="p-3 !bg-black/40 space-y-2">
