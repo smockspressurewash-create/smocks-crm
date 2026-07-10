@@ -946,10 +946,11 @@ export function App() {
   const refetchData = async () => {
     setIsSyncing(true);
     try {
-      const [{ data: sbJobs }, { data: sbCustomers }, { data: sbEstimates }] = await Promise.all([
+      const [{ data: sbJobs }, { data: sbCustomers }, { data: sbEstimates }, { data: sbPromotions }] = await Promise.all([
         (supabase as any).from("jobs").select("*"),
         (supabase as any).from("customers").select("*"),
         (supabase as any).from("estimates").select("*"),
+        (supabase as any).from("promotions").select("*").then((r: any) => r).catch(() => ({ data: null })),
       ]);
       if (Array.isArray(sbJobs) && sbJobs.length > 0) {
         setJobs(prev => {
@@ -975,6 +976,18 @@ export function App() {
           const merged = prev.map(e => sbMap.has(e.id) ? { ...e, ...sbMap.get(e.id) } : e);
           const existingIds = new Set(prev.map(e => e.id));
           const added = sbEstimates.filter((e: any) => !existingIds.has(e.id));
+          return [...merged, ...added];
+        });
+      }
+      // FIX 14 — promotions must reach anonymous #/estimate visitors too, so a
+      // promo code entered at checkout can actually be validated against the
+      // owner's real promotions, not just this device's localStorage copy.
+      if (Array.isArray(sbPromotions) && sbPromotions.length > 0) {
+        setPromotions(prev => {
+          const sbMap = new Map(sbPromotions.map((p: any) => [p.id, p]));
+          const merged = prev.map(p => sbMap.has(p.id) ? { ...p, ...sbMap.get(p.id) } : p);
+          const existingIds = new Set(prev.map(p => p.id));
+          const added = sbPromotions.filter((p: any) => !existingIds.has(p.id));
           return [...merged, ...added];
         });
       }
@@ -1452,6 +1465,9 @@ export function App() {
         invoices={estimates.filter(e => e.invoiced)}
         settings={settings}
         estimateTemplates={estimateTemplates}
+        promotions={promotions}
+        customers={customers}
+        setCustomers={setCustomers}
         onClose={() => { window.location.hash = "/client"; }}
         onView={id => setEstimates(prev => prev.map(e => e.id === id && !e.viewed ? { ...e, viewed: true, viewedAt: new Date().toISOString() } : e))}
         onApprove={(id, data) => {
@@ -1800,6 +1816,27 @@ export function App() {
     );
   }
 
+  // ── Manager CRM permission gating (FIX 8) ──────────────────────────────────
+  // Managers get full CRM access by default EXCEPT Alfred/Inbox/Accountability/
+  // Google Workspace, which stay hidden unless the owner explicitly grants them
+  // via Employees → Edit → Manager CRM Access. Owners are never restricted.
+  const MANAGER_RESTRICTED_PAGE_IDS = ["alfred", "inbox", "accountability", "google"];
+  const currentManagerEmp = crmRole === "manager"
+    ? employees.find((e: any) => (e.user_id && e.user_id === crmUserId) || (e.email && crmUserEmail && e.email.toLowerCase() === crmUserEmail.toLowerCase()))
+    : null;
+  const managerCrmPerms: Record<string, boolean> = (currentManagerEmp as any)?.managerPermissions || {};
+  const managerBlocked = (id: string) => crmRole === "manager" && MANAGER_RESTRICTED_PAGE_IDS.includes(id) && !managerCrmPerms[id];
+  const visibleNavGroups = navGroups
+    .map(g => ({ ...g, items: g.items.filter(item => !managerBlocked(item.id)) }))
+    .filter(g => g.items.length > 0);
+  const RestrictedNotice = ({ label }: { label: string }) => (
+    <div className="flex flex-col items-center justify-center text-center py-24 text-white/40">
+      <Lock size={32} className="mb-3 opacity-40" />
+      <div className="font-semibold text-white/60 mb-1">Access Restricted</div>
+      <div className="text-sm max-w-xs">Your manager account doesn't have access to {label}. Ask the owner to grant it in Employees → Manager CRM Access.</div>
+    </div>
+  );
+
   // ── Main app ──────────────────────────────────────────────────────────────
   return (
     <div className="flex h-screen overflow-hidden bg-black text-white">
@@ -1824,7 +1861,7 @@ export function App() {
 
         {/* Nav */}
         <nav className="flex-1 overflow-y-auto py-3 space-y-4 px-2">
-          {navGroups.map(group => (
+          {visibleNavGroups.map(group => (
             <div key={group.label}>
               <div className="text-[9px] uppercase tracking-widest text-white/30 font-semibold px-3 mb-1">{group.label}</div>
               {group.items.map(item => {
@@ -2009,14 +2046,14 @@ export function App() {
                 {page === "jobs"           && <JobsPage jobs={jobs} setJobs={setJobs} customers={customers} setCustomers={setCustomers} employees={employees} estimates={estimates} setEstimates={setEstimates} settings={settings} toast={toast} posts={socialPosts} setPosts={setSocialPosts} setTimeline={setTimeline} initialDetailId={openJobId} onInitialDetailIdConsumed={() => setOpenJobId(null)} onPortal={id => setPortalEstId(id)} ownerId={crmUserId} />}
                 {page === "pipeline"       && <PipelinePage jobs={jobs} setJobs={setJobs} customers={customers} toast={toast} />}
                 {page === "calendar"       && <CalendarPage jobs={jobs} setJobs={setJobs} customers={customers} employees={employees} toast={toast} settings={settings} ownerId={crmUserId} />}
-                {page === "inbox"          && <InboxPage threads={inboxThreads} setThreads={setInboxThreads} customers={customers} settings={settings} toast={toast} />}
+                {page === "inbox"          && (managerBlocked("inbox") ? <RestrictedNotice label="the Inbox" /> : <InboxPage threads={inboxThreads} setThreads={setInboxThreads} customers={customers} settings={settings} toast={toast} />)}
                 {page === "campaigns"      && <CampaignsPage campaigns={campaigns} setCampaigns={setCampaigns} customers={customers} estimates={estimates} jobs={jobs} settings={settings} inboxThreads={inboxThreads} setInboxThreads={setInboxThreads} toast={toast} />}
                 {page === "reviews"        && <ReviewsPage reviews={reviews} setReviews={setReviews} jobs={jobs} customers={customers} toast={toast} negativeAlerts={negativeAlerts} setNegativeAlerts={setNegativeAlerts} settings={settings} setSettings={setSettings} />}
                 {page === "automations"    && <AutomationsPage automations={automations} setAutomations={setAutomations} jobs={jobs} customers={customers} estimates={estimates} settings={settings} setSettings={setSettings} toast={toast} />}
                 {page === "social"         && <SocialPage posts={socialPosts} setPosts={setSocialPosts} toast={toast} settings={settings} />}
                 {page === "intake"         && <LeadIntakePage customers={customers} setCustomers={setCustomers} estimates={estimates} setEstimates={setEstimates} services={services} settings={settings} toast={toast} onNav={setPage} />}
-                {page === "alfred"         && <AlfredPage conversations={alfredConversations} setConversations={setAlfredConversations} activeConvId={activeConvId} setActiveConvId={setActiveConvId} memory={alfredMemory} setMemory={setAlfredMemory} personality={personality} setPersonality={setPersonality} apiKey={settings.anthropicKey ?? settings.geminiKey ?? ""} openSettings={() => setSettingsOpen(true)} toast={toast} jobs={jobs} setJobs={setJobs} estimates={estimates} setEstimates={setEstimates} customers={customers} setCustomers={setCustomers} employees={employees} automations={automations} setAutomations={setAutomations} stats={{ totalRev, activeJobs, pendingEst, closeRate, doneMonth }} setWins={setWins} goals={goalsList} setGoals={setGoalsList} setSettings={setSettings} settings={settings} modelStatus={modelStatus} setModelStatus={setModelStatus} onNav={setPage} ownerId={crmUserId} />}
-                {page === "google"         && <GoogleWorkspacePage settings={settings} setSettings={setSettings} googleData={googleData as any} setGoogleData={setGoogleData} customers={customers} setCustomers={setCustomers} jobs={jobs} toast={toast} onNav={setPage} />}
+                {page === "alfred"         && (managerBlocked("alfred") ? <RestrictedNotice label="Alfred AI" /> : <AlfredPage conversations={alfredConversations} setConversations={setAlfredConversations} activeConvId={activeConvId} setActiveConvId={setActiveConvId} memory={alfredMemory} setMemory={setAlfredMemory} personality={personality} setPersonality={setPersonality} apiKey={settings.anthropicKey ?? settings.geminiKey ?? ""} openSettings={() => setSettingsOpen(true)} toast={toast} jobs={jobs} setJobs={setJobs} estimates={estimates} setEstimates={setEstimates} customers={customers} setCustomers={setCustomers} employees={employees} automations={automations} setAutomations={setAutomations} stats={{ totalRev, activeJobs, pendingEst, closeRate, doneMonth }} setWins={setWins} goals={goalsList} setGoals={setGoalsList} setSettings={setSettings} settings={settings} modelStatus={modelStatus} setModelStatus={setModelStatus} onNav={setPage} ownerId={crmUserId} />)}
+                {page === "google"         && (managerBlocked("google") ? <RestrictedNotice label="Google Workspace" /> : <GoogleWorkspacePage settings={settings} setSettings={setSettings} googleData={googleData as any} setGoogleData={setGoogleData} customers={customers} setCustomers={setCustomers} jobs={jobs} toast={toast} onNav={setPage} />)}
                 {page === "employees"      && <EmployeesPage employees={employees} setEmployees={setEmployees} jobs={jobs} settings={settings} toast={toast} />}
                 {page === "fleet"          && <FleetPage vehicles={vehicles} setVehicles={setVehicles} maintenance={maintenance} setMaintenance={setMaintenance} toast={toast} />}
                 {page === "expenses"       && <ExpensesPage expenses={expenses} setExpenses={setExpenses} />}
@@ -2025,7 +2062,7 @@ export function App() {
                 {page === "analytics"      && <AnalyticsPage jobs={jobs} customers={customers} estimates={estimates} expenses={expenses} />}
                 {page === "budget"         && <BudgetPage jobs={jobs} estimates={estimates} expenses={expenses} settings={settings} toast={toast} />}
                 {page === "personal"       && <PersonalBudgetPage toast={toast} />}
-                {page === "accountability" && <AccountabilityPage entries={accountability} setEntries={setAccountability} goals={goalsList} setGoals={setGoalsList} wins={wins} setWins={setWins} toast={toast} settings={settings} />}
+                {page === "accountability" && (managerBlocked("accountability") ? <RestrictedNotice label="Accountability Tools" /> : <AccountabilityPage entries={accountability} setEntries={setAccountability} goals={goalsList} setGoals={setGoalsList} wins={wins} setWins={setWins} toast={toast} settings={settings} />)}
                 {page === "referrals"      && <ReferralsPage customers={customers} setCustomers={setCustomers} jobs={jobs} toast={toast} settings={settings} setSettings={setSettings} />}
                 {page === "promotions"     && <PromotionsPage promotions={promotions} setPromotions={setPromotions} customers={customers} services={services} settings={settings} toast={toast} />}
                 {page === "crew"           && <CrewView jobs={jobs} setJobs={setJobs} customers={customers} employees={employees} toast={toast} settings={settings} estimates={estimates} setEstimates={setEstimates} refetchEmployees={refetchEmployees} ownerId={crmUserId} />}
@@ -2089,6 +2126,9 @@ export function App() {
           invoices={estimates.filter(e => e.invoiced)}
           settings={settings}
           estimateTemplates={estimateTemplates}
+          promotions={promotions}
+          customers={customers}
+          setCustomers={setCustomers}
           onClose={() => setPortalEstId(null)}
           onView={id => setEstimates(prev => prev.map(e => e.id === id && !e.viewed ? { ...e, viewed: true, viewedAt: new Date().toISOString() } : e))}
           onApprove={(id, data) => {
@@ -2151,7 +2191,7 @@ export function App() {
                     alfred: Bot, expenses: Receipt, intake: UserPlus,
                   };
                   const enabledFabIds = ((settings as any).fabActions as string[] | undefined) ?? ["customers","estimates","jobs","alfred"];
-                  const fabActions = ALL_FAB_ACTIONS.filter(a => enabledFabIds.includes(a.id));
+                  const fabActions = ALL_FAB_ACTIONS.filter(a => enabledFabIds.includes(a.id) && !managerBlocked(a.dest));
                   return fabActions.map(item => {
                     const Icon = fabIconMap[item.id] ?? Plus;
                     return (

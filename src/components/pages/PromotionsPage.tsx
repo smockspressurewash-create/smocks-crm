@@ -3,6 +3,7 @@ import { Plus, Trash2, Edit, Mail, MessageSquare, Tag, MapPin, Calendar, Percent
 import { fmt, uid, today, daysSince } from "../../lib/utils";
 import type { Customer, Promotion, Service, AppSettings } from "../../types";
 import { twilioSend, sendEmail, emailShell, emailButton } from "../../lib/messaging";
+import { supabase } from "../../lib/supabase";
 import { Glass } from "../ui/Glass";
 import { GBtn } from "../ui/GBtn";
 import { GInput } from "../ui/GInput";
@@ -16,7 +17,7 @@ import { Stat } from "../ui/Stat";
 const blankPromo = (): Promotion => ({
   id: "", name: "", description: "", discountType: "percent", discountValue: 10,
   validFrom: today(), validTo: today(), serviceRestrictions: [], usageLimit: undefined,
-  audience: "all", channel: "email", status: "draft", createdAt: today(),
+  audience: "all", channel: "email", status: "draft", createdAt: today(), code: "",
 });
 
 export function PromotionsPage({ promotions = [], setPromotions = (() => {}) as any, customers = [], services = [], settings = {} as AppSettings, toast }: { promotions?: Promotion[]; setPromotions?: any; customers?: Customer[]; services?: Service[]; settings?: AppSettings; toast?: any }) {
@@ -76,7 +77,11 @@ export function PromotionsPage({ promotions = [], setPromotions = (() => {}) as 
     setSending(null);
   };
 
-  const remove = (id: string) => { setPromotions((prev: Promotion[]) => prev.filter(p => p.id !== id)); toast?.("Promotion deleted"); };
+  const remove = (id: string) => {
+    setPromotions((prev: Promotion[]) => prev.filter(p => p.id !== id));
+    (supabase as any).from("promotions").delete().eq("id", id).catch(() => {});
+    toast?.("Promotion deleted");
+  };
 
   const active = promotions.filter(p => p.status === "sent" || p.status === "active");
   const drafts = promotions.filter(p => p.status === "draft" || p.status === "scheduled");
@@ -158,6 +163,11 @@ export function PromotionsPage({ promotions = [], setPromotions = (() => {}) as 
             <div><label className="text-xs text-white/60 mb-1 block">Usage Limit <span className="text-white/30">(blank = unlimited)</span></label><GInput type="number" value={editing.usageLimit || ""} onChange={(e: any) => setEditing({ ...editing, usageLimit: e.target.value ? Number(e.target.value) : undefined })} /></div>
 
             <div>
+              <label className="text-xs text-white/60 mb-1 block">Promo Code <span className="text-white/30">(optional — customers enter this at checkout to redeem)</span></label>
+              <GInput value={editing.code || ""} onChange={(e: any) => setEditing({ ...editing, code: e.target.value.toUpperCase().replace(/\s+/g, "") })} placeholder="SUMMER10" />
+            </div>
+
+            <div>
               <label className="text-xs text-white/60 mb-1 block">Service Restrictions <span className="text-white/30">(blank = all services)</span></label>
               <div className="flex flex-wrap gap-1.5">
                 {services.map((s: any) => {
@@ -217,6 +227,12 @@ export function PromotionsPage({ promotions = [], setPromotions = (() => {}) as 
                 if (!editing.name.trim()) return;
                 const p = { ...editing, id: editing.id || uid() };
                 setPromotions((prev: Promotion[]) => prev.find(x => x.id === p.id) ? prev.map(x => x.id === p.id ? p : x) : [...prev, p]);
+                // Promo codes must reach Supabase — the public #/estimate page an
+                // anonymous customer redeems a code from reads promotions from
+                // Supabase directly, never from this device's localStorage.
+                (supabase as any).from("promotions").upsert(p, { onConflict: "id" })
+                  .then((r: any) => { if (r?.error) toast?.("Saved locally, but failed to sync — " + r.error.message, "red"); })
+                  .catch((err: any) => toast?.("Saved locally, but failed to sync — " + (err?.message || ""), "red"));
                 setEditing(null);
                 toast?.(editing.id ? "Promotion updated" : "Promotion saved");
               }} disabled={!editing.name.trim()}>Save Promotion</GBtn>

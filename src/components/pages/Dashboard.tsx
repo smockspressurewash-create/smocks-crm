@@ -151,8 +151,6 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
   const pipelineVal = jobs.filter(j => j.status !== "completed").reduce((s, j) => s + j.amount, 0);
   const dayOfMonth = new Date().getDate();
   const daysInMonth = new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0).getDate();
-  const runRate = dayOfMonth > 0 ? Math.round((stats.totalRev / dayOfMonth) * daysInMonth) : 0;
-  const forecast = Math.max(runRate, Math.round(pipelineVal * (stats.closeRate / 100 || 0.6)));
 
   const nowD = new Date();
   const weekStart = new Date(nowD); weekStart.setDate(nowD.getDate() - nowD.getDay());
@@ -162,6 +160,13 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
   const revWeek = completedJobs.filter(j => new Date(j.scheduledDate) >= weekStart).reduce((s, j) => s + j.amount, 0);
   const revMonth = completedJobs.filter(j => new Date(j.scheduledDate) >= monthStart).reduce((s, j) => s + j.amount, 0);
   const avgJobVal = completedJobs.length > 0 ? completedJobs.reduce((s, j) => s + j.amount, 0) / completedJobs.length : 0;
+
+  // FIX 5 — run-rate/forecast must project from MONTH-TO-DATE revenue
+  // (revMonth), not stats.totalRev (all-time) — the latter grows unbounded
+  // and produces a forecast many multiples too high the longer the business
+  // has been running.
+  const runRate = dayOfMonth > 0 ? Math.round((revMonth / dayOfMonth) * daysInMonth) : 0;
+  const forecast = Math.max(runRate, Math.round(pipelineVal * (stats.closeRate / 100 || 0.6)));
 
   // Year-over-year comparison
   const thisYearStart = new Date(nowD.getFullYear(), 0, 1).toISOString().slice(0,10);
@@ -237,8 +242,12 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
   });
   const bestDay = wForecast.find(f => f.rainChance < 30 && f.temp >= 45 && f.temp < 85 && f.wind < 15 && (f.lowTemp || f.temp) > 32);
 
-  const revPct = Math.round((stats.totalRev / goals.revenue) * 100);
-  const jobsPct = Math.round((stats.doneMonth / goals.jobCount) * 100);
+  // FIX 5 — this must compare THIS MONTH's revenue against the monthly goal.
+  // stats.totalRev is ALL-TIME completed revenue (see App.tsx); dividing an
+  // all-time total by a monthly goal is exactly what produced nonsensical
+  // percentages like "173,000%" that only ever grew, never reset.
+  const revPct = goals.revenue > 0 ? Math.round((revMonth / goals.revenue) * 100) : 0;
+  const jobsPct = goals.jobCount > 0 ? Math.round((stats.doneMonth / goals.jobCount) * 100) : 0;
 
   // Smart alerts: maintenance due, low stock, urgent jobs, stale quotes, weather risk
   const alerts = [];
@@ -363,11 +372,16 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
   const todayStrLive = today();
   const liveEmps = employees.filter((e: any) => e.status === "active" && !!e.dayClockInAt);
   const liveTeam = liveEmps.map((e: any) => {
-    const empJobs = jobs.filter((j: any) => (j.crew || []).includes(e.id) && j.scheduledDate === todayStrLive);
+    const empJobs = jobs
+      .filter((j: any) => (j.crew || []).includes(e.id) && j.scheduledDate === todayStrLive)
+      .sort((a: any, b: any) => (a.scheduledTime || "").localeCompare(b.scheduledTime || ""));
     const currentJob = empJobs.find((j: any) => j.status === "in_progress")
       || empJobs.find((j: any) => j.arrivedAt && j.status !== "completed")
       || null;
-    return { emp: e, job: currentJob };
+    // FIX 3 — "Job 2 of 3" / completed-today counters for the crew card.
+    const jobIndex = currentJob ? empJobs.findIndex((j: any) => j.id === currentJob.id) + 1 : 0;
+    const completedTodayCount = empJobs.filter((j: any) => j.status === "completed").length;
+    return { emp: e, job: currentJob, jobIndex, totalJobsToday: empJobs.length, completedTodayCount };
   });
   // FIX 8 — "My Hours": the owner gets a real employees row (see App.tsx
   // ownerEmpRowEnsuredRef effect) keyed `owner_<email>`, so their own clocked
@@ -489,7 +503,7 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
           <div className="text-center py-6 text-sm text-white/40">No one on shift — waiting for crew to start their day</div>
         ) : (
           <div className="space-y-2">
-            {liveTeam.map(({ emp: e, job: j }) => {
+            {liveTeam.map(({ emp: e, job: j, jobIndex, totalJobsToday, completedTodayCount }) => {
               const c = j ? customers.find(x => x.id === j.customerId) : null;
               const pausedMs = (Number(e.dayPausedMinutes) || 0) * 60000;
               const onLunch = !!e.dayLunchStartAt;
@@ -523,6 +537,11 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
                       <span className={"font-mono " + (onLunch ? "text-yellow-400" : "text-green-400")}>{onLunch ? "⏸ " : "⏱ "}{fmtElapsed(shiftMs)} shift</span>
                       {onLunch && <span className="text-yellow-400/70">on lunch</span>}
                       {j?.arrivedAt && <span className="text-green-400">✓ on site</span>}
+                      {totalJobsToday > 0 && (
+                        <span className="text-white/40">
+                          {j ? `Job ${jobIndex} of ${totalJobsToday}` : totalJobsToday === completedTodayCount ? `${totalJobsToday} job${totalJobsToday !== 1 ? "s" : ""} done today` : `${completedTodayCount + 1}${completedTodayCount === 0 ? "st" : completedTodayCount === 1 ? "nd" : completedTodayCount === 2 ? "rd" : "th"} job today`}
+                        </span>
+                      )}
                       {photoCount > 0 && <span className="flex items-center gap-1"><ImageIcon size={10} />{photoCount} photo{photoCount !== 1 ? "s" : ""}</span>}
                       {/* FIX 11 — a simple always-available badge, independent of
                           whether a Google Maps key is configured (CrewView's
@@ -737,17 +756,23 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
         </Glass>
       </div>
 
-      {/* KPI row - 4 across */}
-      {w.kpis && <div className="grid grid-cols-2 lg:grid-cols-4 gap-5">
-        <Stat icon={DollarSign} label="Total Revenue" value={fmt(stats.totalRev)} change="+12%" />
-        <Stat icon={Briefcase} label="Active Jobs" value={stats.activeJobs} change="+3" />
-        <Stat icon={Target} label="Close Rate" value={stats.closeRate + "%"} change="+5%" />
+      {/* KPI row - 4 across — every "change" badge below is calculated from
+          real job/estimate data, never a hardcoded placeholder percentage. */}
+      {(() => {
+        const lastMonthRev = revenueByMonth.length >= 2 ? revenueByMonth[revenueByMonth.length - 2].revenue : 0;
+        const revMoMPct = lastMonthRev > 0 ? Math.round((revMonth - lastMonthRev) / lastMonthRev * 100) : null;
+        const newJobsThisWeek = jobs.filter(j => j.createdAt && daysSince(j.createdAt) <= 7).length;
+        return w.kpis && <div className="grid grid-cols-2 lg:grid-cols-4 gap-5">
+          <Stat icon={DollarSign} label="Total Revenue" value={fmt(stats.totalRev)} change={revMoMPct !== null ? `${revMoMPct >= 0 ? "+" : ""}${revMoMPct}% MoM` : undefined} />
+          <Stat icon={Briefcase} label="Active Jobs" value={stats.activeJobs} change={newJobsThisWeek > 0 ? `+${newJobsThisWeek} this wk` : undefined} />
+          <Stat icon={Target} label="Close Rate" value={stats.closeRate + "%"} />
         {(() => {
           const recurringJobs = jobs.filter(j => j.isRecurring && j.status === "completed" && daysSince(j.scheduledDate) <= 30);
           const mrr = recurringJobs.reduce((s, j) => s + j.amount, 0);
           return <Stat icon={RefreshCw} label="Recurring Rev" value={fmt(mrr)} change={mrr > 0 ? "🔄 MRR" : "—"} />;
         })()}
-      </div>}
+        </div>;
+      })()}
 
       {/* Revenue collected today / this week / this month */}
       {w.kpis && (() => {
@@ -884,8 +909,8 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
             </div>
             <div className="space-y-3">
               <div>
-                <div className="flex justify-between text-xs mb-1"><span className="text-white/70">Month Revenue</span><span className={revPct >= 75 ? "text-green-400 font-bold" : "text-white/60"}>{fmt(stats.totalRev)} / {fmt(goals.revenue)} ({revPct}%)</span></div>
-                <PBar value={stats.totalRev} max={goals.revenue || 1} />
+                <div className="flex justify-between text-xs mb-1"><span className="text-white/70">Month Revenue</span><span className={revPct >= 75 ? "text-green-400 font-bold" : "text-white/60"}>{fmt(revMonth)} / {fmt(goals.revenue)} ({revPct}%)</span></div>
+                <PBar value={revMonth} max={goals.revenue || 1} />
               </div>
               {settings.quarterlyRevenueGoal > 0 && (() => {
                 const qStart = new Date(); qStart.setMonth(Math.floor(qStart.getMonth() / 3) * 3, 1);
@@ -938,7 +963,7 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
               })()}
               <div className="pt-2 border-t border-red-900/20 space-y-2">
                 <div className="flex justify-between text-xs"><span className="text-white/50">Run-rate forecast</span><span className={forecast >= (goals.revenue || 10000) ? "text-green-400 font-bold" : "text-yellow-400 font-semibold"}>{fmt(forecast)}</span></div>
-                <div className="flex justify-between text-xs"><span className="text-white/40">Day {dayOfMonth}/{daysInMonth}</span><span className="text-white/40">{fmt(Math.round(stats.totalRev / dayOfMonth))}/day avg</span></div>
+                <div className="flex justify-between text-xs"><span className="text-white/40">Day {dayOfMonth}/{daysInMonth}</span><span className="text-white/40">{fmt(Math.round(revMonth / dayOfMonth))}/day avg</span></div>
                 {forecast < (goals.revenue || 0) && <div className="text-[10px] text-red-400">⚠️ {fmt((goals.revenue||0) - forecast)} short of goal at current pace</div>}
                 {forecast >= (goals.revenue || 0) && goals.revenue > 0 && <div className="text-[10px] text-green-400">✅ On track to hit monthly goal</div>}
               </div>

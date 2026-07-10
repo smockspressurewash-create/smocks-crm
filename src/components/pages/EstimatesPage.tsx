@@ -311,6 +311,14 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
         setEstimates([...estimates, est]);
         setBuilderOpen(false);
         toast("Estimate created");
+        // FIX 13 — a brand-new estimate previously only reached Supabase via
+        // the 30s app-level bulk autosave. If the owner sends the "Review &
+        // Sign" link within that window, the customer's #/estimate/ID page
+        // (an anonymous fetch straight from Supabase) would 404 on a row that
+        // doesn't exist there yet. Insert immediately instead.
+        (supabase as any).from("estimates").insert(est)
+          .then((r: any) => { if (r?.error) toast("Saved locally, but failed to sync — " + r.error.message, "red"); })
+          .catch((e: any) => toast("Saved locally, but failed to sync — " + (e?.message || ""), "red"));
         // Auto-add to customer timeline
         const c = customers.find(x => x.id === est.customerId);
         if (c) setTimeline(prev => ({ ...prev, [c.id]: [{ id: uid(), type: "estimate", note: "Estimate created — " + fmt(est.total), date: today() }, ...(prev[c.id] || [])] }));

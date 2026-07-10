@@ -20,7 +20,7 @@ import {
   Tooltip, ResponsiveContainer, Area, AreaChart, LineChart, Line,
   ComposedChart, Legend
 } from "recharts";
-import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, requiredChemicalsList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE } from "../../lib/utils";
+import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, requiredChemicalsList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, compressImageFile } from "../../lib/utils";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField, JobChecklistItem, ChecklistPhoto, JobVideo, JobSignOff } from "../../types";
 import { twilioSend, sendEmail, sendViaGmail, sendOwnerGmailOnly, emailShell, emailButton, logOutboundSmsToInbox } from "../../lib/messaging";
 import { seedWeather } from "../../lib/weather";
@@ -1132,12 +1132,10 @@ ${job.notes ? `<div class="section"><h2>Job Notes</h2><p>${job.notes}</p></div>`
               <input type="file" accept="image/*" capture="environment" className="hidden" onChange={e => {
                 const files = Array.from(e.target.files || []);
                 files.forEach(f => {
-                  const r = new FileReader();
-                  r.onload = ev => {
-                    const newPhoto = { id: uid(), type: "before", caption: "Before — " + today(), dataUrl: ev.target.result, addedAt: today() };
+                  compressImageFile(f).then(dataUrl => {
+                    const newPhoto = { id: uid(), type: "before", caption: "Before — " + today(), dataUrl, addedAt: today() };
                     updateJob(jobId, { photos: [...(job.photos || []), newPhoto] });
-                  };
-                  r.readAsDataURL(f);
+                  });
                 });
                 e.target.value = "";
                 toast("Before photo added");
@@ -1148,12 +1146,10 @@ ${job.notes ? `<div class="section"><h2>Job Notes</h2><p>${job.notes}</p></div>`
               <input type="file" accept="image/*" capture="environment" className="hidden" onChange={e => {
                 const files = Array.from(e.target.files || []);
                 files.forEach(f => {
-                  const r = new FileReader();
-                  r.onload = ev => {
-                    const newPhoto = { id: uid(), type: "after", caption: "After — " + today(), dataUrl: ev.target.result, addedAt: today() };
+                  compressImageFile(f).then(dataUrl => {
+                    const newPhoto = { id: uid(), type: "after", caption: "After — " + today(), dataUrl, addedAt: today() };
                     updateJob(jobId, { photos: [...(job.photos || []), newPhoto] });
-                  };
-                  r.readAsDataURL(f);
+                  });
                 });
                 e.target.value = "";
                 toast("After photo added");

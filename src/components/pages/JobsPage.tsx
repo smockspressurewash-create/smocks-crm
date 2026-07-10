@@ -131,7 +131,7 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
   const [bulkAction, setBulkAction] = useState(null);
   const [, forceTick] = useState(0);
   const [newJobOpen, setNewJobOpen] = useState(false);
-  const [newJobForm, setNewJobForm] = useState({ customerId: "", address: "", amount: "", scheduledDate: today(), scheduledTime: "", priority: "normal", notes: "", duration: "", crewEmpId: "" });
+  const [newJobForm, setNewJobForm] = useState({ customerId: "", address: "", amount: "", scheduledDate: today(), scheduledTime: "", priority: "normal", notes: "", duration: "", crewEmpId: "", jobType: "residential" });
   const [newJobCrewMode, setNewJobCrewMode] = useState<"assign" | "request">("assign");
   const [quickReqJobId, setQuickReqJobId] = useState<string | null>(null);
   const [quickReqEmpId, setQuickReqEmpId] = useState("");
@@ -276,6 +276,20 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
           console.warn("SUPABASE SAVE FAILED:", e?.message);
           toast?.("Crew assignment failed to save", "red");
         });
+    }
+    // FIX 6 — photos/checklists must reach Supabase immediately, not wait on
+    // the 30s bulk jobs autosave in App.tsx. That bulk upsert re-sends every
+    // job's full row every cycle; a single job with several photos can push
+    // the whole batch over PostgREST's request-size limit and silently fail
+    // the entire cycle, which looked exactly like "photos don't sync" (see
+    // compressImageFile in lib/utils.ts for the other half of this fix).
+    const IMMEDIATE_SYNC_FIELDS = ["photos", "videos", "checklist", "preChecklist", "duringChecklist", "postChecklist"] as const;
+    const immediatePatch: any = {};
+    IMMEDIATE_SYNC_FIELDS.forEach(f => { if ((patch as any)[f] !== undefined) immediatePatch[f] = (patch as any)[f]; });
+    if (Object.keys(immediatePatch).length > 0) {
+      (supabase as any).from("jobs").update(immediatePatch).eq("id", jid)
+        .then((result: any) => { if (result?.error) toast?.("Failed to save — " + result.error.message, "red"); })
+        .catch((e: any) => toast?.("Failed to save: " + e?.message, "red"));
     }
     // FIX 10 — when a job's date changes, keep any PENDING crew request for it
     // in sync. The request row references job_id (so the portal already reads
@@ -518,6 +532,13 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
             </div>
           </div>
           <div>
+            <label className="text-xs text-white/60 mb-1 block">Job Type <span className="text-white/30">(drives crew pay rate overrides)</span></label>
+            <GSel value={newJobForm.jobType} onChange={e => setNewJobForm(f => ({ ...f, jobType: e.target.value }))}>
+              <option value="residential" className="bg-black">Residential</option>
+              <option value="commercial" className="bg-black">Commercial</option>
+            </GSel>
+          </div>
+          <div>
             <label className="text-xs text-white/60 mb-1 block">Est. Duration <span className="text-white/30">(hours)</span></label>
             <GInput type="number" step="0.25" min="0" placeholder="e.g. 3.5" value={newJobForm.duration || ""} onChange={e => setNewJobForm(f => ({ ...f, duration: e.target.value }))} />
           </div>
@@ -562,6 +583,7 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
                 scheduledDate: newJobForm.scheduledDate,
                 scheduledTime: newJobForm.scheduledTime,
                 priority: newJobForm.priority as any,
+                jobType: newJobForm.jobType as any,
                 notes: newJobForm.notes,
                 duration: newJobForm.duration ? Number(newJobForm.duration) : undefined,
                 crew: directAssign ? [assignedEmp.id] : [], checklist: [], photos: [], commLog: [], chemicalsUsed: [], equipment: [], tags: [],
@@ -778,7 +800,7 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
           <div className="text-xs text-white/40 mt-0.5">{jobs.filter(j => j.status === "scheduled").length} scheduled · {jobs.filter(j => j.status === "in_progress").length} in progress</div>
         </div>
         <button
-          onClick={() => { setNewJobForm({ customerId: "", address: "", amount: "", scheduledDate: today(), scheduledTime: "", priority: "normal", notes: "", duration: "", crewEmpId: "" }); setNewJobOpen(true); }}
+          onClick={() => { setNewJobForm({ customerId: "", address: "", amount: "", scheduledDate: today(), scheduledTime: "", priority: "normal", notes: "", duration: "", crewEmpId: "", jobType: "residential" }); setNewJobOpen(true); }}
           className="flex items-center gap-2 px-4 py-2.5 bg-gradient-to-r from-red-600 to-red-800 border border-red-500/50 rounded-2xl text-sm font-semibold text-white shadow-lg shadow-red-900/30 hover:shadow-red-600/40 hover:scale-[1.02] active:scale-95 transition-all"
         >
           <Plus size={16} />Schedule Job
@@ -794,7 +816,7 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
       </div>
 
       <div className="flex flex-wrap gap-2 items-center">
-        <GBtn onClick={() => { setNewJobForm({ customerId: "", address: "", amount: "", scheduledDate: today(), scheduledTime: "", priority: "normal", notes: "", duration: "", crewEmpId: "" }); setNewJobOpen(true); }} className="!py-1.5 !text-xs flex-shrink-0"><Plus size={13} className="inline mr-1" />Schedule Job</GBtn>
+        <GBtn onClick={() => { setNewJobForm({ customerId: "", address: "", amount: "", scheduledDate: today(), scheduledTime: "", priority: "normal", notes: "", duration: "", crewEmpId: "", jobType: "residential" }); setNewJobOpen(true); }} className="!py-1.5 !text-xs flex-shrink-0"><Plus size={13} className="inline mr-1" />Schedule Job</GBtn>
         <div className="relative flex-1 min-w-[160px]">
           <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-white/40" />
           <GInput placeholder="Search customer, address, tag..." value={search} onChange={e => setSearch(e.target.value)} className="!pl-9 !py-1.5 !text-xs" />

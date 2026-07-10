@@ -17,7 +17,7 @@ import { loadMapsScript, AddressAutocomplete } from "../ui/AddressAutocomplete";
 import { LiveMap } from "../ui/LiveMap";
 import { PropertyMapEmbed } from "../ui/PropertyMapEmbed";
 import { BarChart, Bar, LineChart, Line, XAxis, YAxis, ResponsiveContainer, Tooltip, CartesianGrid } from "recharts";
-import { fmt, uid, today, daysFromNow, computeJobRatingScore, setOAuthIntent } from "../../lib/utils";
+import { fmt, uid, today, daysFromNow, computeJobRatingScore, setOAuthIntent, compressImageFile } from "../../lib/utils";
 import type { Job, Employee, Customer, AppSettings, JobChecklistItem } from "../../types";
 
 const PRE_DEFAULTS: JobChecklistItem[] = [
@@ -184,9 +184,14 @@ function PortalChecklistSection({ title, emoji, items, onUpdate, allowPhotos = f
                         onChange={e => {
                           const f = e.target.files?.[0]; if (!f) return;
                           const isVideo = f.type.startsWith("video/");
-                          const r = new FileReader();
-                          r.onload = ev => addItemPhoto(item.id, ev.target!.result as string, isVideo);
-                          r.readAsDataURL(f); e.target.value = "";
+                          if (isVideo) {
+                            const r = new FileReader();
+                            r.onload = ev => addItemPhoto(item.id, ev.target!.result as string, true);
+                            r.readAsDataURL(f);
+                          } else {
+                            compressImageFile(f).then(dataUrl => addItemPhoto(item.id, dataUrl, false));
+                          }
+                          e.target.value = "";
                         }} />
                       <div className="p-1 rounded-lg bg-blue-950/40 hover:bg-blue-900/50 text-blue-400/80 hover:text-blue-300 transition">
                         <Camera size={12} />
@@ -1130,9 +1135,8 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
                 <input type="file" accept="image/*" capture="environment" className="hidden"
                   onChange={e => {
                     const f = e.target.files?.[0]; if (!f) return;
-                    const r = new FileReader();
-                    r.onload = ev => addPhoto("before", ev.target!.result as string);
-                    r.readAsDataURL(f); e.target.value = "";
+                    compressImageFile(f).then(dataUrl => addPhoto("before", dataUrl));
+                    e.target.value = "";
                   }} />
                 <div className="flex flex-col items-center justify-center gap-1 px-2 py-2.5 rounded-xl bg-blue-950/30 hover:bg-blue-900/40 border border-blue-700/40 text-blue-300 text-xs font-medium transition text-center">
                   <Plus size={13} /><span>📷 Before</span>
@@ -1142,9 +1146,8 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
                 <input type="file" accept="image/*" capture="environment" className="hidden"
                   onChange={e => {
                     const f = e.target.files?.[0]; if (!f) return;
-                    const r = new FileReader();
-                    r.onload = ev => addPhoto("after", ev.target!.result as string);
-                    r.readAsDataURL(f); e.target.value = "";
+                    compressImageFile(f).then(dataUrl => addPhoto("after", dataUrl));
+                    e.target.value = "";
                   }} />
                 <div className="flex flex-col items-center justify-center gap-1 px-2 py-2.5 rounded-xl bg-green-950/30 hover:bg-green-900/40 border border-green-700/40 text-green-300 text-xs font-medium transition text-center">
                   <Plus size={13} /><span>✨ After</span>
@@ -1516,6 +1519,31 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   const [otwCardChannel, setOtwCardChannel] = useState<"sms" | "email">("sms");
   const [sendingOtwJobId, setSendingOtwJobId] = useState<string | null>(null);
   const [routeLoading, setRouteLoading] = useState(false);
+  // FIX 10 — employee-side "Mark as Paid" confirmation, synced to the same
+  // employees.paidPeriods JSONB the owner's Employees > Payroll view reads,
+  // so either side marking a period paid is immediately visible to the other.
+  const [markingPaidPeriod, setMarkingPaidPeriod] = useState<string | null>(null);
+  const markPeriodPaid = async (periodStart: string) => {
+    const empId = (myEmployee as any)?.id;
+    if (!empId) return;
+    setMarkingPaidPeriod(periodStart);
+    const nextPaid = { ...((myEmployee as any)?.paidPeriods || {}), [periodStart]: "paid" as const };
+    try {
+      const result = await (supabase as any).from("employees").update({ paidPeriods: nextPaid }).eq("id", empId);
+      if (result?.error) {
+        console.error("[Mark as Paid] — error:", result.error.message);
+        toast("Saved locally, but couldn't sync to the owner: " + result.error.message, "red");
+      } else {
+        refetchEmployees?.();
+        toast("Marked as paid — owner notified ✓", "green");
+      }
+    } catch (e: any) {
+      console.error("[Mark as Paid] — error:", e?.message || e);
+      toast("Couldn't sync to the owner: " + (e?.message || "unknown error"), "red");
+    } finally {
+      setMarkingPaidPeriod(null);
+    }
+  };
   const [routeInfo, setRouteInfo] = useState<{ order: Job[]; totalDuration: string; totalDistance: string; etas: string[]; origin: { lat: number; lng: number } | string } | null>(null);
   const [calMode, setCalMode] = useState<"week" | "month">("month");
   const [calSelectedDate, setCalSelectedDate] = useState(today());
@@ -4979,7 +5007,18 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                     {periodsWithStatus.map(p => (
                       <div key={p.start} className="flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg bg-white/5">
                         <span className="text-[10px] text-white/50">{p.label}</span>
-                        <span className={"text-[10px] font-bold px-2 py-0.5 rounded-full " + (p.status === "paid" ? "bg-green-900/40 text-green-300" : "bg-yellow-900/30 text-yellow-300")}>{p.status === "paid" ? "Paid" : "Unpaid"}</span>
+                        {p.status === "paid" ? (
+                          <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-green-900/40 text-green-300">Paid</span>
+                        ) : (
+                          <button
+                            onClick={() => markPeriodPaid(p.start)}
+                            disabled={markingPaidPeriod === p.start}
+                            className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-yellow-900/30 text-yellow-300 hover:bg-yellow-800/40 transition disabled:opacity-50"
+                            title="Confirm you received this pay — this notifies the owner"
+                          >
+                            {markingPaidPeriod === p.start ? "Saving…" : "Mark as Paid"}
+                          </button>
+                        )}
                       </div>
                     ))}
                   </div>

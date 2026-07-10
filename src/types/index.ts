@@ -244,6 +244,7 @@ export interface Job {
   completedAt?: string;
   invoiceSentAt?: string;
   estimateId?: string;
+  jobType?: "residential" | "commercial";
 }
 
 // ─── Employee ─────────────────────────────────────────────────────────────────
@@ -272,6 +273,8 @@ export interface Employee {
   paidPeriods?: Record<string, "paid" | "unpaid">;
   locationSharing?: boolean;
   lastLocation?: { lat: number; lng: number; updatedAt: number };
+  jobTypeRates?: Record<string, number>;
+  managerPermissions?: Record<string, boolean>;
 }
 
 // ─── Vehicle / Fleet ──────────────────────────────────────────────────────────
@@ -699,6 +702,7 @@ export interface Promotion {
   validTo: string;
   serviceRestrictions?: string[];
   usageLimit?: number;
+  code?: string;
   audience: "all" | "tag" | "location" | "lastService" | "individual";
   audienceTag?: string;
   audienceCity?: string;

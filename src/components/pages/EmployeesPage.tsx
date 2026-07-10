@@ -20,7 +20,7 @@ import {
   Tooltip, ResponsiveContainer, Area, AreaChart, LineChart, Line,
   ComposedChart, Legend
 } from "recharts";
-import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE } from "../../lib/utils";
+import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, getEffectiveRate } from "../../lib/utils";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
 import { twilioSend, sendEmail } from "../../lib/messaging";
 import { supabase } from "../../lib/supabase";
@@ -97,6 +97,20 @@ const DEFAULT_PERMS: Record<string, boolean> = {
   can_view_pay: true, can_view_calendar: true, can_add_notes: true,
 };
 
+// FIX 8 — CRM-side permissions for a "Manager" role employee (distinct from
+// PERMISSION_DEFS_EMP above, which govern the field/employee portal). Managers
+// get the full owner CRM by default EXCEPT these areas, which are hidden
+// unless the owner explicitly grants them — see App.tsx's nav-gating.
+const MANAGER_CRM_PERM_DEFS = [
+  { key: "alfred",         label: "Alfred AI Assistant", desc: "The in-app AI chatbot" },
+  { key: "inbox",          label: "Inbox",               desc: "Email/texting with customers" },
+  { key: "accountability", label: "Accountability Tools",desc: "Personal goals & reflections" },
+  { key: "google",         label: "Google Workspace",    desc: "Owner's connected Gmail/Calendar/Drive" },
+] as const;
+const DEFAULT_MANAGER_PERMS: Record<string, boolean> = {
+  alfred: false, inbox: false, accountability: false, google: false,
+};
+
 export function EmployeesPage({ employees = [], setEmployees, jobs = [], settings = {} as any, toast = (_msg: string, _tone?: string) => {} }: { employees?: any[]; setEmployees: any; jobs?: any[]; settings?: any; toast?: any }) {
   const [modal, setModal] = useState({ open: false, data: null });
   const [view, setView] = useState("list"); // list | hours | payroll
@@ -108,6 +122,7 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setting
   const [invites, setInvites] = usePersistent<InviteRecord[]>("smocks.invites", []);
   const [inviteF, setInviteF] = useState({ firstName: "", lastName: "", email: "", role: "Technician", hourlyRate: 18 });
   const [invitePerms, setInvitePerms] = useState<Record<string, boolean>>({ ...DEFAULT_PERMS });
+  const [inviteManagerPerms, setInviteManagerPerms] = useState<Record<string, boolean>>({ ...DEFAULT_MANAGER_PERMS });
   const [showInvitePerms, setShowInvitePerms] = useState(false);
   const [showEditPerms, setShowEditPerms] = useState(false);
   const [inviteCreated, setInviteCreated] = useState<InviteRecord | null>(null);
@@ -131,10 +146,24 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setting
         created_by: user?.id ?? null,
       });
     } catch { /* table may not exist yet — invite still works via localStorage in the same browser */ }
-    // Pre-create employee record so the portal can match immediately
+    // Pre-create employee record so the portal can match immediately. This
+    // MUST also land in Supabase (not just local state) — refetchEmployees()
+    // polls the table every few seconds and wholesale-replaces local state
+    // with the server rows, so a local-only placeholder here would silently
+    // vanish from the roster within seconds of being created.
     const alreadyExists = employees.some(e => e.email.toLowerCase() === inviteF.email.toLowerCase());
     if (!alreadyExists) {
-      setEmployees((prev: any[]) => [...prev, { id: uid(), firstName: inv.firstName, lastName: inv.lastName, email: inv.email, role: inv.role, hourlyRate: inv.hourlyRate, status: "active", phone: "", startDate: today(), emergencyContact: "", notes: "Invited — account pending", permissions: invitePerms }]);
+      const preCreated = {
+        id: uid(), firstName: inv.firstName, lastName: inv.lastName, email: inv.email,
+        role: inv.role, hourlyRate: inv.hourlyRate, status: "active", phone: "",
+        startDate: today(), emergencyContact: "", notes: "Invited — account pending",
+        permissions: invitePerms,
+        managerPermissions: inv.role.toLowerCase().includes("manager") ? inviteManagerPerms : undefined,
+      };
+      setEmployees((prev: any[]) => [...prev, preCreated as any]);
+      (supabase as any).from("employees").insert(preCreated)
+        .then((r: any) => { if (r?.error) console.warn("[Invite] pre-create employee row failed:", r.error.message); })
+        .catch((e: any) => console.warn("[Invite] pre-create employee row threw:", e?.message));
     }
     setInviteCreated(inv);
     // Send invite email if Resend is configured
@@ -183,7 +212,16 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setting
     }
     setModal({ open: false, data: null });
   };
-  const del = id => { if (confirm("Remove employee?")) setEmployees(prev => prev.filter(e => e.id !== id)); };
+  const del = id => {
+    if (!confirm("Remove employee?")) return;
+    setEmployees(prev => prev.filter(e => e.id !== id));
+    // Must actually delete server-side — the 3s Live Crew poll fully replaces
+    // local state from Supabase, so a local-only removal (e.g. revoking a
+    // manager's access) would silently reappear on the very next poll.
+    (supabase as any).from("employees").delete().eq("id", id)
+      .then((r: any) => { if (r?.error) toast?.("Removed locally, but failed to sync — " + r.error.message, "red"); })
+      .catch((e: any) => toast?.("Removed locally, but failed to sync — " + (e?.message || ""), "red"));
+  };
   const toggle = id => {
     setEmployees(prev => prev.map(e => e.id === id ? { ...e, status: e.status === "active" ? "inactive" : "active" } : e));
     const emp = employees.find((e: any) => e.id === id);
@@ -200,9 +238,17 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setting
       .reduce((s, j) => s + Number(j.loggedHours || j.duration || 0), 0);
   };
 
+  // Pay must respect per-job-type rate overrides (getEffectiveRate), so it's
+  // computed per-job (hours × that job's effective rate) then summed — a flat
+  // hours-total × hourlyRate would ignore commercial/residential overrides.
+  const getEmployeePay = (emp: any, startDate: string, endDate: string) => {
+    return jobs
+      .filter((j: any) => (j.crew || []).includes(emp.id) && j.status === "completed" && j.scheduledDate >= startDate && j.scheduledDate <= endDate)
+      .reduce((s: number, j: any) => s + Number(j.loggedHours || j.duration || 0) * getEffectiveRate(emp, j), 0);
+  };
+
   const totalPayroll = employees.filter(e => e.status === "active").reduce((s, e) => {
-    const hrs = getEmployeeHours(e.id, payPeriodStart, payPeriodEnd);
-    return s + hrs * e.hourlyRate;
+    return s + getEmployeePay(e, payPeriodStart, payPeriodEnd);
   }, 0);
 
   return (
@@ -218,7 +264,7 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setting
           <button onClick={() => setShowPortalInfo(!showPortalInfo)} className="text-xs px-3 py-1.5 bg-black/40 border border-blue-700/40 text-blue-300 hover:bg-blue-950/30 rounded-xl transition flex items-center gap-1.5">
             <Globe size={12} />Team Portal
           </button>
-          <button onClick={() => { setInviteOpen(true); setInviteCreated(null); setInviteF({ firstName: "", lastName: "", email: "", role: "Technician", hourlyRate: 18 }); setInvitePerms({ ...DEFAULT_PERMS }); setShowInvitePerms(false); }} className="text-xs px-3 py-1.5 bg-black/40 border border-green-700/40 text-green-300 hover:bg-green-950/30 rounded-xl transition flex items-center gap-1.5">
+          <button onClick={() => { setInviteOpen(true); setInviteCreated(null); setInviteF({ firstName: "", lastName: "", email: "", role: "Technician", hourlyRate: 18 }); setInvitePerms({ ...DEFAULT_PERMS }); setInviteManagerPerms({ ...DEFAULT_MANAGER_PERMS }); setShowInvitePerms(false); }} className="text-xs px-3 py-1.5 bg-black/40 border border-green-700/40 text-green-300 hover:bg-green-950/30 rounded-xl transition flex items-center gap-1.5">
             <UserCheck size={12} />Invite Member
           </button>
           <GBtn onClick={() => setModal({ open: true, data: null })}><Plus size={14} className="inline mr-1.5" />Add Employee</GBtn>
@@ -296,7 +342,7 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setting
               {employees.filter(e => e.status === "active").map(e => {
                 const empJobs = jobs.filter(j => (j.crew||[]).includes(e.id) && j.status === "completed" && j.scheduledDate >= payPeriodStart && j.scheduledDate <= payPeriodEnd);
                 const hrs = empJobs.reduce((s,j) => s + Number(j.loggedHours||j.duration||0), 0);
-                const cost = hrs * e.hourlyRate;
+                const cost = getEmployeePay(e, payPeriodStart, payPeriodEnd);
                 const todayStr = today();
                 const weekStart = (() => { const d = new Date(); d.setDate(d.getDate() - d.getDay()); return d.toISOString().slice(0, 10); })();
                 const allCompleted = jobs.filter((j: any) => (j.crew || []).includes(e.id) && j.status === "completed");
@@ -333,7 +379,7 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setting
           <button onClick={() => {
             const rows = employees.filter(e => e.status === "active").map(e => {
               const hrs = getEmployeeHours(e.id, payPeriodStart, payPeriodEnd);
-              const gross = hrs * e.hourlyRate;
+              const gross = getEmployeePay(e, payPeriodStart, payPeriodEnd);
               const fica = gross * 0.0765;
               const net = gross - fica;
               return `${e.firstName} ${e.lastName},${e.role},${hrs.toFixed(1)},${e.hourlyRate},${gross.toFixed(2)},${fica.toFixed(2)},${net.toFixed(2)}`;
@@ -346,7 +392,7 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setting
         <div className="grid gap-4">
           {employees.filter(e => e.status === "active").map(e => {
             const hrs = getEmployeeHours(e.id, payPeriodStart, payPeriodEnd);
-            const gross = hrs * e.hourlyRate;
+            const gross = getEmployeePay(e, payPeriodStart, payPeriodEnd);
             const fica = gross * 0.0765;
             const net = gross - fica;
             const empJobs = jobs.filter(j => (j.crew||[]).includes(e.id) && j.status === "completed" && j.scheduledDate >= payPeriodStart && j.scheduledDate <= payPeriodEnd);
@@ -416,6 +462,25 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setting
               </div>
               <div><label className="text-xs text-white/60 mb-1 block">Hourly Rate ($)</label><GInput type="number" step="0.5" value={inviteF.hourlyRate} onChange={e => setInviteF(p => ({ ...p, hourlyRate: Number(e.target.value) }))} /></div>
             </div>
+            {/* Manager CRM permissions — only relevant when inviting a Manager.
+                Full CRM access by default EXCLUDES these areas; the owner
+                opts a manager INTO them here rather than out of them. */}
+            {inviteF.role === "Manager" && (
+              <div className="border border-purple-700/30 rounded-xl p-3 bg-purple-950/10 space-y-1">
+                <div className="text-xs font-semibold text-purple-300 mb-1 flex items-center gap-1.5"><Shield size={12} />Manager CRM Access</div>
+                <div className="text-[10px] text-white/40 mb-2">Managers get full CRM access except these areas — check any you want to grant.</div>
+                {MANAGER_CRM_PERM_DEFS.map(({ key, label, desc }) => (
+                  <label key={key} className="flex items-center gap-2 cursor-pointer py-1 group">
+                    <input type="checkbox" checked={!!inviteManagerPerms[key]} onChange={e => setInviteManagerPerms(p => ({ ...p, [key]: e.target.checked }))}
+                      className="w-3.5 h-3.5 accent-purple-600 flex-shrink-0" />
+                    <div>
+                      <div className="text-xs text-white/80 group-hover:text-white transition">{label}</div>
+                      <div className="text-[10px] text-white/40">{desc}</div>
+                    </div>
+                  </label>
+                ))}
+              </div>
+            )}
             {/* Permissions editor */}
             <div className="border border-white/10 rounded-xl overflow-hidden">
               <button
@@ -490,7 +555,31 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setting
           </div>
           <div className="grid grid-cols-2 gap-2">
             <div><label className="text-xs text-white/60 mb-1 block">Role</label><GSel value={f.role} onChange={e => setF({ ...f, role: e.target.value })}>{roles.map(r => <option key={r} value={r} className="bg-black">{r}</option>)}</GSel></div>
-            <div><label className="text-xs text-white/60 mb-1 block">Hourly Rate ($)</label><GInput type="number" step="0.5" value={f.hourlyRate} onChange={e => setF({ ...f, hourlyRate: Number(e.target.value) })} /></div>
+            <div><label className="text-xs text-white/60 mb-1 block">Default Hourly Rate ($)</label><GInput type="number" step="0.5" value={f.hourlyRate} onChange={e => setF({ ...f, hourlyRate: Number(e.target.value) })} /></div>
+          </div>
+          <div className="border border-white/10 rounded-xl p-3">
+            <div className="text-xs font-semibold text-white/70 mb-2 flex items-center gap-1.5"><Percent size={12} />Job-Type Rate Overrides</div>
+            <div className="text-[10px] text-white/40 mb-2">Leave blank to use the default hourly rate above. When a job is marked residential or commercial, its logged hours are paid at the matching override.</div>
+            <div className="grid grid-cols-2 gap-2">
+              {["residential", "commercial"].map(jt => (
+                <div key={jt}>
+                  <label className="text-xs text-white/60 mb-1 block capitalize">{jt} ($/hr)</label>
+                  <GInput
+                    type="number" step="0.5"
+                    placeholder={String(f.hourlyRate)}
+                    value={(f.jobTypeRates || {})[jt] ?? ""}
+                    onChange={e => {
+                      const v = e.target.value;
+                      setF((p: any) => {
+                        const next = { ...(p.jobTypeRates || {}) };
+                        if (v === "") delete next[jt]; else next[jt] = Number(v);
+                        return { ...p, jobTypeRates: next };
+                      });
+                    }}
+                  />
+                </div>
+              ))}
+            </div>
           </div>
           <div className="grid grid-cols-2 gap-2">
             <div><label className="text-xs text-white/60 mb-1 block">Phone</label><GInput value={f.phone} onChange={e => setF({ ...f, phone: e.target.value })} placeholder="(717) 555-0100" /></div>
@@ -529,7 +618,8 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setting
               const e = end.toISOString().slice(0, 10);
               const pJobs = empJobs.filter((j: any) => j.scheduledDate >= s && j.scheduledDate <= e);
               const hrs = Math.round(pJobs.reduce((acc: number, j: any) => acc + Number(j.loggedHours || 0), 0) * 10) / 10;
-              return { start: s, end: e, label: i === 0 ? "Current" : `${start.toLocaleDateString("en-US", { month: "short", day: "numeric" })} – ${end.toLocaleDateString("en-US", { month: "short", day: "numeric" })}`, hours: hrs, pay: Math.round(hrs * (Number(f.hourlyRate) || 0) * 100) / 100, status: paidPeriods[s] || "unpaid" };
+              const pay = pJobs.reduce((acc: number, j: any) => acc + Number(j.loggedHours || 0) * getEffectiveRate(f, j), 0);
+              return { start: s, end: e, label: i === 0 ? "Current" : `${start.toLocaleDateString("en-US", { month: "short", day: "numeric" })} – ${end.toLocaleDateString("en-US", { month: "short", day: "numeric" })}`, hours: hrs, pay: Math.round(pay * 100) / 100, status: paidPeriods[s] || "unpaid" };
             }).filter(p => p.hours > 0);
             const totalPaid = periods.filter(p => p.status === "paid").reduce((s, p) => s + p.pay, 0);
             const pendingPay = periods.filter(p => p.status === "unpaid").reduce((s, p) => s + p.pay, 0);
@@ -568,6 +658,26 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setting
               </div>
             );
           })()}
+          {/* Manager CRM permissions — only for role: Manager. Owner can change
+              or fully revoke a manager's CRM access here anytime; setting
+              status to Inactive above (or deleting the employee) removes CRM
+              access entirely regardless of these toggles. */}
+          {f.role === "Manager" && (
+            <div className="border border-purple-700/30 rounded-xl p-3 bg-purple-950/10 space-y-1">
+              <div className="text-xs font-semibold text-purple-300 mb-1 flex items-center gap-1.5"><Shield size={12} />Manager CRM Access</div>
+              <div className="text-[10px] text-white/40 mb-2">Full CRM access except these areas — check any you want to grant.</div>
+              {MANAGER_CRM_PERM_DEFS.map(({ key, label, desc }) => (
+                <label key={key} className="flex items-center gap-2 cursor-pointer py-1 group">
+                  <input type="checkbox" checked={!!(f.managerPermissions || DEFAULT_MANAGER_PERMS)[key]} onChange={e => setF((p: any) => ({ ...p, managerPermissions: { ...(p.managerPermissions || DEFAULT_MANAGER_PERMS), [key]: e.target.checked } }))}
+                    className="w-3.5 h-3.5 accent-purple-600 flex-shrink-0" />
+                  <div>
+                    <div className="text-xs text-white/80 group-hover:text-white transition">{label}</div>
+                    <div className="text-[10px] text-white/40">{desc}</div>
+                  </div>
+                </label>
+              ))}
+            </div>
+          )}
           {/* Permissions editor */}
           <div className="border border-white/10 rounded-xl overflow-hidden">
             <button

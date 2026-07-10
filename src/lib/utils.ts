@@ -1,3 +1,43 @@
+// ─── Image compression (FIX 6) ────────────────────────────────────────────────
+// Job photos are stored as base64 dataURLs directly inside the `jobs.photos`
+// JSONB column. An uncompressed phone-camera photo is routinely 3-8MB; each
+// upload PATCHes the ENTIRE photos array back to Supabase, so a few full-res
+// photos on one job blow past PostgREST/Cloudflare's request-body limit and
+// the whole update is rejected — which look exactly like "photos don't sync",
+// since nothing in the UI ever reports the failure as a size problem. Downscale
+// to a reasonable max dimension and re-encode as JPEG before ever touching
+// Supabase; this alone takes most photos from several MB down to ~100-300KB.
+export const compressImageFile = (file: File, maxDim = 1600, quality = 0.72): Promise<string> => {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(reader.error || new Error("Failed to read file"));
+    reader.onload = () => {
+      const img = new Image();
+      img.onerror = () => resolve(reader.result as string); // fall back to uncompressed rather than losing the photo
+      img.onload = () => {
+        let { width, height } = img;
+        if (width > maxDim || height > maxDim) {
+          const scale = maxDim / Math.max(width, height);
+          width = Math.round(width * scale);
+          height = Math.round(height * scale);
+        }
+        const canvas = document.createElement("canvas");
+        canvas.width = width; canvas.height = height;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) { resolve(reader.result as string); return; }
+        ctx.drawImage(img, 0, 0, width, height);
+        try {
+          resolve(canvas.toDataURL("image/jpeg", quality));
+        } catch {
+          resolve(reader.result as string);
+        }
+      };
+      img.src = reader.result as string;
+    };
+    reader.readAsDataURL(file);
+  });
+};
+
 // ─── Formatting ───────────────────────────────────────────────────────────────
 
 export const fmt = (n: number | undefined | null): string => {
@@ -265,6 +305,20 @@ export const computeJobRatingScore = (job: Record<string, any>): number => {
 // ─── IRS Rate (mileage deduction) ────────────────────────────────────────────
 
 export const IRS_RATE = 0.67; // 2024 rate per mile
+
+// ─── Per-job-type pay rate override ──────────────────────────────────────────
+// Employees have a default hourlyRate plus optional overrides keyed by job
+// type (employee.jobTypeRates = { residential: 15, commercial: 18, ... }).
+// A job's own jobType (falling back to its linked customer address's
+// propertyType, since older jobs never set jobType directly) decides which
+// override applies; no override/no match falls back to the flat hourlyRate.
+export const getEffectiveRate = (employee: any, job: any): number => {
+  const jobType = job?.jobType || job?.propertyType;
+  const override = jobType ? employee?.jobTypeRates?.[jobType] : undefined;
+  return override !== undefined && override !== null && override !== ("" as any)
+    ? Number(override) || 0
+    : Number(employee?.hourlyRate) || 0;
+};
 
 // ─── Job <-> Supabase columns ─────────────────────────────────────────────────
 // The `jobs` table's columns are named to match the Job type's camelCase field

@@ -23,6 +23,7 @@ import {
 import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE } from "../../lib/utils";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
 import { twilioSend, sendEmail } from "../../lib/messaging";
+import { supabase } from "../../lib/supabase";
 import { seedWeather } from "../../lib/weather";
 import { seedCustomers, seedEstimates, seedJobs, seedEmployees, seedVehicles, seedExpenses, seedChemicals, seedServices, seedAutomations, seedEmailTemplates, seedSmsTemplates, seedRewardTiers, seedReferrals, seedMaintenance, campaignTemplates, seedSocialPosts, seedTimeline, seedGoals, seedReminders, seedAccountabilityEntries, seedMileage, seedLeadSrc, STEP_TYPES, AUTOMATION_TEMPLATES } from "../../lib/seed";
 import { callModel, MODELS } from "../../lib/api";
@@ -78,7 +79,7 @@ import { ChemicalModal } from "../ui/ChemicalModal";
 import { WeeklyBusinessReview } from "../ui/WeeklyBusinessReview";
 import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 
-export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [], settings = {} as AppSettings, estimateTemplates = [], onClose, onApprove, onDecline, onView = (_id: string) => {} }: { estimate?: any; customer?: any; jobs?: any[]; invoices?: any[]; settings?: AppSettings; estimateTemplates?: any[]; onClose?: any; onApprove?: any; onDecline?: any; onView?: (id: string) => void }) {
+export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [], settings = {} as AppSettings, estimateTemplates = [], promotions = [], customers = [], setCustomers, onClose, onApprove, onDecline, onView = (_id: string) => {} }: { estimate?: any; customer?: any; jobs?: any[]; invoices?: any[]; settings?: AppSettings; estimateTemplates?: any[]; promotions?: any[]; customers?: any[]; setCustomers?: any; onClose?: any; onApprove?: any; onDecline?: any; onView?: (id: string) => void }) {
   const tpl = estimateTemplates.find((t: any) => t.id === e?.templateId);
   const headerColor = tpl?.colorHeader || "";
   const textColor = tpl?.colorText || "";
@@ -93,6 +94,12 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
   const [sigData, setSigData] = useState(null);
   const [tip, setTip] = useState(0);
   const [customTip, setCustomTip] = useState("");
+  // FIX 14 — promo code (business coupon, Settings → Promotions) or a referral
+  // code (another customer's referralCode) entered at checkout. Only one of
+  // "promotion" | "referral" applies at a time — whichever the code matches.
+  const [promoCode, setPromoCode] = useState("");
+  const [appliedPromo, setAppliedPromo] = useState<{ kind: "promotion"; promo: any } | { kind: "referral"; referrer: any } | null>(null);
+  const [promoError, setPromoError] = useState("");
   // Options type — toggleable items
   const [enabledItems, setEnabledItems] = useState<Record<string, boolean>>({});
   // Package type — selected package
@@ -143,7 +150,35 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
   const remainingAmt = Math.max(0, effectiveTotal - alreadyPaid);
   const hasRemainingBalance = alreadyPaid > 0 && !e?.paidFull && remainingAmt > 0;
   const payAmt = payType === "deposit" ? depositAmt : payType === "remaining" ? remainingAmt : effectiveTotal;
-  const totalWithTip = payAmt + tip;
+
+  // FIX 14 — promo/referral code discount, applied to the payment amount
+  // before tip. Referral codes reuse the existing referral program's
+  // referee-discount settings (Settings → Referrals) rather than inventing a
+  // second discount config.
+  const referralSettings = (settings as any)?.referralSettings || { referrerCredit: 25, refereeDiscount: 10, refereeDiscountType: "percent" };
+  const promoDiscount = !appliedPromo ? 0
+    : appliedPromo.kind === "promotion"
+    ? Math.min(payAmt, appliedPromo.promo.discountType === "percent" ? Math.round(payAmt * appliedPromo.promo.discountValue) / 100 : Number(appliedPromo.promo.discountValue) || 0)
+    : Math.min(payAmt, referralSettings.refereeDiscountType === "percent" ? Math.round(payAmt * referralSettings.refereeDiscount) / 100 : Number(referralSettings.refereeDiscount) || 0);
+  const totalWithTip = Math.max(0, payAmt - promoDiscount) + tip;
+
+  const applyPromoCode = () => {
+    const code = promoCode.trim().toUpperCase();
+    setPromoError("");
+    if (!code) return;
+    const todayStr = today();
+    const promo = (promotions || []).find((p: any) =>
+      (p.code || "").toUpperCase() === code &&
+      p.status !== "ended" &&
+      (!p.validTo || p.validTo >= todayStr) &&
+      (!p.usageLimit || (p.redeemedCount || 0) < p.usageLimit)
+    );
+    if (promo) { setAppliedPromo({ kind: "promotion", promo }); return; }
+    const referrer = (customers || []).find((cust: any) => cust.id !== c?.id && (cust.referralCode || "").toUpperCase() === code);
+    if (referrer) { setAppliedPromo({ kind: "referral", referrer }); return; }
+    setAppliedPromo(null);
+    setPromoError("Code not recognized or expired");
+  };
 
   // Notify Will when estimate is first viewed
   useEffect(() => {
@@ -222,6 +257,18 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
   };
 
   const handleApprove = async (paymentIntentId?: string, payChoice: "now" | "later" | "deposit" = "now") => {
+    // FIX 14 — redeem the applied promo/referral code once the customer
+    // actually approves. A promotion bumps its redeemedCount; a referral
+    // credits the REFERRER (not this customer) per Settings → Referrals.
+    if (appliedPromo?.kind === "promotion") {
+      const promoId = appliedPromo.promo.id;
+      (supabase as any).from("promotions").update({ redeemedCount: (appliedPromo.promo.redeemedCount || 0) + 1 }).eq("id", promoId).catch(() => {});
+    } else if (appliedPromo?.kind === "referral") {
+      const referrer = appliedPromo.referrer;
+      const nextCredit = (Number(referrer.referralCreditOwed) || 0) + (Number(referralSettings.referrerCredit) || 0);
+      setCustomers?.((prev: any[]) => prev.map(cust => cust.id === referrer.id ? { ...cust, referralCreditOwed: nextCredit } : cust));
+      (supabase as any).from("customers").update({ referralCreditOwed: nextCredit }).eq("id", referrer.id).catch(() => {});
+    }
     if (onApprove) onApprove(e.id, {
       sigData, payType, tip, totalPaid: paymentIntentId ? totalWithTip : 0, signedAt: new Date().toISOString(), payChoice,
       ...(paymentIntentId ? { stripePaymentIntentId: paymentIntentId, stripePaymentStatus: "paid" as const } : {}),
@@ -514,6 +561,25 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
                 ))}
               </div>
 
+              {/* FIX 14 — promo or referral code */}
+              <div>
+                <div className="text-xs text-white/60 mb-2">Promo or referral code (optional)</div>
+                {appliedPromo ? (
+                  <div className="flex items-center justify-between gap-2 p-3 rounded-xl bg-green-950/20 border border-green-700/30">
+                    <div className="text-sm text-green-300">
+                      {appliedPromo.kind === "promotion" ? `"${promoCode.toUpperCase()}" applied — ${fmt(promoDiscount)} off` : `Referral code applied — ${fmt(promoDiscount)} off`}
+                    </div>
+                    <button onClick={() => { setAppliedPromo(null); setPromoCode(""); }} className="text-xs text-white/40 hover:text-red-400 transition">Remove</button>
+                  </div>
+                ) : (
+                  <div className="flex gap-2">
+                    <GInput value={promoCode} onChange={(ev: any) => setPromoCode(ev.target.value)} onKeyDown={(ev: any) => ev.key === "Enter" && applyPromoCode()} placeholder="Enter code" className="!text-sm flex-1" />
+                    <GBtn variant="ghost" onClick={applyPromoCode} disabled={!promoCode.trim()} className="!px-4">Apply</GBtn>
+                  </div>
+                )}
+                {promoError && <div className="text-xs text-red-400 mt-1.5">{promoError}</div>}
+              </div>
+
               {/* Tip */}
               <div>
                 <div className="text-xs text-white/60 mb-2">Add a tip? (optional)</div>
@@ -532,6 +598,7 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
               <Glass className="p-4 !bg-black/60">
                 <div className="space-y-1 text-sm">
                   <div className="flex justify-between"><span className="text-white/70">Payment amount</span><span>{fmt(payAmt)}</span></div>
+                  {promoDiscount > 0 && <div className="flex justify-between text-green-400"><span>Promo discount</span><span>− {fmt(promoDiscount)}</span></div>}
                   {tip > 0 && <div className="flex justify-between text-green-400"><span>Tip 🙏</span><span>+ {fmt(tip)}</span></div>}
                   <div className="flex justify-between font-bold text-base pt-2 border-t border-red-900/30"><span>Total charged today</span><span className="text-red-400">{fmt(totalWithTip)}</span></div>
                 </div>
