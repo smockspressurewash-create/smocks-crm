@@ -108,7 +108,9 @@ export function InvoicesPage({ estimates = [], setEstimates, customers = [], set
         status: "approved" as const, createdAt: today(), validUntil: daysFromNow(30), invoiced: true, invoicedAt: today(),
       };
       setEstimates((prev: any[]) => [...prev, newInv]);
-      const payLink = `${window.location.origin}${window.location.pathname}#/portal/${newInv.id}`;
+      // FIX 17 — #/portal/ID is the employee portal's route, not a customer
+      // invoice view; #/estimate/ID is the public no-login pay/sign portal.
+      const payLink = `${window.location.origin}${window.location.pathname}#/estimate/${newInv.id}`;
       const html = bodyHtml + `<div style="text-align:center;margin:22px 0 4px"><a href="${payLink}" style="display:inline-block;background:#dc2626;color:#fff;text-decoration:none;font-weight:700;font-size:14px;padding:13px 30px;border-radius:10px">View & Pay Invoice</a></div>`;
       await sendEmail(settings as any, { to: cust.email, subject, body: html });
       setJobs((prev: any[]) => prev.map(j => j.id === job.id ? { ...j, invoiceSentAt: today(), paymentType: "Invoice", paymentStatus: j.paymentStatus === "Paid" ? j.paymentStatus : "Pending" } : j));

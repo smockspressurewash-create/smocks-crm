@@ -89,7 +89,9 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
   const [sendPreviewOn, setSendPreviewOn] = useState(false);
   const [sendBusy, setSendBusy] = useState(false);
 
-  const portalUrlFor = (estId: string) => `${window.location.origin}${window.location.pathname}#/portal/${estId}`;
+  // FIX 17/20 — #/portal/ID is the employee portal's route, not a customer
+  // estimate view; #/estimate/ID is the public no-login sign/decline/pay portal.
+  const portalUrlFor = (estId: string) => `${window.location.origin}${window.location.pathname}#/estimate/${estId}`;
 
   const buildSendHtml = (est: any, cust: any) => {
     const tpl = estimateTemplates.find((t: any) => t.id === sendTemplateId);

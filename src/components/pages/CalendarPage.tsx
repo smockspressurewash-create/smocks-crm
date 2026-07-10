@@ -83,6 +83,18 @@ export function CalendarPage({ jobs = [], setJobs, customers = [], employees = [
   const [view, setView] = useState(() => typeof window !== "undefined" && window.innerWidth < 768 ? "agenda" : "month");
   const [off, setOff] = useState(0);
   const [dragId, setDragId] = useState(null);
+  // FIX 15 — mobile touch drag-and-drop. HTML5's native draggable/onDragStart
+  // never fires from touch input, so unscheduled jobs couldn't be dragged onto
+  // a day at all on a phone. This tracks a touch-driven drag independently of
+  // the desktop dragId/onDragStart path (which stays as-is for mouse users) —
+  // a floating "ghost" chip follows the finger, and the day cell underneath is
+  // found via elementFromPoint + a data-daykey attribute on each cell.
+  const [touchDragJobId, setTouchDragJobId] = useState<string | null>(null);
+  const [touchDragPos, setTouchDragPos] = useState<{ x: number; y: number } | null>(null);
+  const [touchDragOverKey, setTouchDragOverKey] = useState<string | null>(null);
+  const [touchDragOverUnschedule, setTouchDragOverUnschedule] = useState(false);
+  const touchDragStartPos = useRef<{ x: number; y: number } | null>(null);
+  const touchDragMovedRef = useRef(false);
   const [showBuffer, setShowBuffer] = useState(false);
   const [calSource, setCalSource] = useState<"crm" | "google" | "both">("crm");
   const [gEvents, setGEvents] = useState<GCalEvent[]>([]);
@@ -216,11 +228,16 @@ export function CalendarPage({ jobs = [], setJobs, customers = [], employees = [
   // Jobs without a scheduled date (for the "unscheduled" pool)
   const unscheduled = jobs.filter(j => !j.scheduledDate && j.status !== "completed" && j.status !== "cancelled");
 
-  const handleDrop = async targetKey => {
-    if (!dragId) return;
-    const job = jobs.find(j => j.id === dragId);
+  const handleDrop = async (targetKey, jobIdOverride?: string) => {
+    // jobIdOverride lets the touch-drag path (below) pass the job id directly —
+    // setDragId() followed by an immediate handleDrop() call would otherwise
+    // read the still-stale `dragId` from this closure, since React state
+    // updates aren't applied synchronously.
+    const jid = jobIdOverride ?? dragId;
+    if (!jid) return;
+    const job = jobs.find(j => j.id === jid);
     const oldDate = job?.scheduledDate;
-    setJobs(jobs.map(j => j.id === dragId ? { ...j, scheduledDate: targetKey } : j));
+    setJobs(jobs.map(j => j.id === jid ? { ...j, scheduledDate: targetKey } : j));
     toast("Rescheduled to " + targetKey);
     setDragId(null);
 
@@ -250,6 +267,47 @@ export function CalendarPage({ jobs = [], setJobs, customers = [], employees = [
     if (job?.googleEventId && settings?.googleConnected && (settings as any)?.googleProviderToken) {
       deleteGCalEventApi((settings as any).googleProviderToken, job.googleEventId).catch(() => {});
     }
+  };
+
+  // FIX 15 — touch-driven counterpart to onDragStart/onDrop above. Started
+  // from the unscheduled list's onTouchStart; a small move threshold (8px)
+  // distinguishes an intentional drag from a tap so the job detail modal can
+  // still open on a plain tap. While dragging, the page's own scroll is
+  // suspended (touch-action: none, set inline below) so the gesture doesn't
+  // fight the browser's native scroll.
+  const TOUCH_DRAG_THRESHOLD = 8;
+  const handleUnscheduledTouchStart = (e: React.TouchEvent, jobId: string) => {
+    const t = e.touches[0];
+    touchDragStartPos.current = { x: t.clientX, y: t.clientY };
+    touchDragMovedRef.current = false;
+    setTouchDragJobId(jobId);
+    setTouchDragPos({ x: t.clientX, y: t.clientY });
+  };
+  const handleTouchDragMove = (e: React.TouchEvent) => {
+    if (!touchDragJobId || !touchDragStartPos.current) return;
+    const t = e.touches[0];
+    const dx = t.clientX - touchDragStartPos.current.x, dy = t.clientY - touchDragStartPos.current.y;
+    if (!touchDragMovedRef.current && Math.hypot(dx, dy) < TOUCH_DRAG_THRESHOLD) return;
+    touchDragMovedRef.current = true;
+    e.preventDefault(); // now that it's a real drag, stop the page from scrolling under the finger
+    setTouchDragPos({ x: t.clientX, y: t.clientY });
+    const el = document.elementFromPoint(t.clientX, t.clientY);
+    const dayCell = el?.closest("[data-daykey]") as HTMLElement | null;
+    const unscheduleZone = el?.closest("[data-unschedule-zone]");
+    setTouchDragOverKey(dayCell?.dataset.daykey || null);
+    setTouchDragOverUnschedule(!!unscheduleZone);
+  };
+  const handleTouchDragEnd = () => {
+    if (touchDragJobId && touchDragMovedRef.current) {
+      if (touchDragOverKey) { handleDrop(touchDragOverKey, touchDragJobId); }
+      else if (touchDragOverUnschedule) { unschedule(touchDragJobId); }
+    }
+    setTouchDragJobId(null);
+    setTouchDragPos(null);
+    setTouchDragOverKey(null);
+    setTouchDragOverUnschedule(false);
+    touchDragStartPos.current = null;
+    touchDragMovedRef.current = false;
   };
 
   // Quick actions context menu — right-click (or long-press on mobile) a job
@@ -359,8 +417,9 @@ export function CalendarPage({ jobs = [], setJobs, customers = [], employees = [
               const hasInProgress = dj.some(j => j.status === "in_progress");
               const hasUrgent = dj.some(j => j.priority === "urgent");
               const cellBg = isT ? "bg-red-950/30 border-red-700/50" : hasInProgress ? "bg-orange-950/20 border-orange-700/30" : hasCompleted && dj.every(j => j.status === "completed") ? "bg-green-950/20 border-green-800/30" : hasUrgent ? "bg-red-950/20 border-red-700/40" : dj.length > 0 ? "bg-blue-950/10 border-blue-900/20" : gd.length > 0 ? "bg-blue-950/10 border-blue-900/20" : "bg-white/5 border-white/5 hover:border-red-900/30";
+              const isTouchDragOver = touchDragOverKey === k;
               return (
-                <div key={d} onDragOver={e => e.preventDefault()} onDrop={() => handleDrop(k)} className={"min-h-[84px] p-1.5 rounded-lg border transition-all " + cellBg}>
+                <div key={d} data-daykey={k} onDragOver={e => e.preventDefault()} onDrop={() => handleDrop(k)} className={"min-h-[84px] p-1.5 rounded-lg border transition-all " + cellBg + (isTouchDragOver ? " !border-red-500 !bg-red-950/40 scale-[1.03]" : "")}>
                   <div className="flex items-center justify-between mb-1">
                     <div className={"text-xs font-semibold " + (isT ? "text-red-400" : "text-white/70")}>{d}</div>
                     {dt > 0 && <div className="text-[8px] text-green-400/70 font-mono">${Math.round(dt)}</div>}
@@ -404,7 +463,10 @@ export function CalendarPage({ jobs = [], setJobs, customers = [], employees = [
               {unscheduled.length === 0 && <div className="text-xs text-white/30 text-center py-6">Everything's on the board ✓</div>}
               {unscheduled.map(j => {
                 const c = customers.find(x => x.id === j.customerId);
-                return <div key={j.id} draggable onDragStart={() => setDragId(j.id)} className={"p-2.5 rounded-lg cursor-grab bg-black/40 border hover:border-red-600/50 transition " + (j.priority === "urgent" ? "border-red-500/50" : j.priority === "high" ? "border-yellow-500/50" : "border-red-900/30")}>
+                return <div key={j.id} draggable onDragStart={() => setDragId(j.id)}
+                  onTouchStart={e => handleUnscheduledTouchStart(e, j.id)} onTouchMove={handleTouchDragMove} onTouchEnd={handleTouchDragEnd}
+                  style={{ touchAction: "pan-y", opacity: touchDragJobId === j.id ? 0.3 : 1 }}
+                  className={"p-2.5 rounded-lg cursor-grab bg-black/40 border hover:border-red-600/50 transition " + (j.priority === "urgent" ? "border-red-500/50" : j.priority === "high" ? "border-yellow-500/50" : "border-red-900/30")}>
                   <div className="flex items-center justify-between gap-1 mb-1">
                     <div className="font-medium text-xs truncate">{c?.firstName} {c?.lastName}</div>
                     {j.priority && j.priority !== "normal" && <span className={"text-[8px] px-1 rounded uppercase " + (j.priority === "urgent" ? "bg-red-600/40 text-red-300" : j.priority === "high" ? "bg-yellow-600/40 text-yellow-300" : "bg-white/10 text-white/50")}>{j.priority[0]}</span>}
@@ -414,10 +476,27 @@ export function CalendarPage({ jobs = [], setJobs, customers = [], employees = [
                 </div>;
               })}
             </div>
-            <div className="text-[9px] text-white/30 text-center mt-3 pt-3 border-t border-red-900/20">↳ Drag onto calendar to schedule</div>
+            <div className="text-[9px] text-white/30 text-center mt-3 pt-3 border-t border-red-900/20">↳ Drag (or press and drag on mobile) onto calendar to schedule</div>
             {jobs.some(j => j.scheduledDate) && <div className="mt-2 text-[9px] text-white/30 text-center">Drop on this panel to unschedule</div>}
-            <div onDragOver={e => e.preventDefault()} onDrop={() => dragId && unschedule(dragId)} className="mt-2 h-8 border border-dashed border-white/10 rounded-lg flex items-center justify-center text-[9px] text-white/30">Drop here</div>
+            <div data-unschedule-zone onDragOver={e => e.preventDefault()} onDrop={() => dragId && unschedule(dragId)}
+              className={"mt-2 h-8 border border-dashed rounded-lg flex items-center justify-center text-[9px] transition " + (touchDragOverUnschedule ? "border-red-500 bg-red-950/30 text-red-300" : "border-white/10 text-white/30")}>
+              Drop here
+            </div>
           </Glass>
+
+          {/* FIX 15 — floating "ghost" that follows the finger during a touch
+              drag, since there's no native browser drag-image on touch. */}
+          {touchDragJobId && touchDragPos && (() => {
+            const j = jobs.find(x => x.id === touchDragJobId);
+            const c = j ? customers.find(x => x.id === j.customerId) : null;
+            if (!j) return null;
+            return (
+              <div className="fixed z-[100] pointer-events-none px-3 py-2 rounded-lg bg-red-900/90 border border-red-500/60 text-white text-xs font-medium shadow-2xl"
+                style={{ left: touchDragPos.x + 12, top: touchDragPos.y - 20 }}>
+                {c ? `${c.firstName} ${c.lastName}` : j.address}
+              </div>
+            );
+          })()}
         </div>
       )}
 
@@ -434,7 +513,7 @@ export function CalendarPage({ jobs = [], setJobs, customers = [], employees = [
               const dj = byDate[k] || [];
               const isT = k === tKey;
               return (
-                <div key={k} onDragOver={e => e.preventDefault()} onDrop={() => handleDrop(k)} className={"min-h-[200px] p-2 rounded-lg border " + (isT ? "bg-red-950/30 border-red-700/50" : "bg-white/5 border-white/10")}>
+                <div key={k} data-daykey={k} onDragOver={e => e.preventDefault()} onDrop={() => handleDrop(k)} className={"min-h-[200px] p-2 rounded-lg border transition-all " + (isT ? "bg-red-950/30 border-red-700/50" : "bg-white/5 border-white/10") + (touchDragOverKey === k ? " !border-red-500 !bg-red-950/40 scale-[1.02]" : "")}>
                   <div className={"text-[10px] uppercase " + (isT ? "text-red-400 font-bold" : "text-white/50")}>{d.toLocaleDateString("en-US", { weekday: "short" })}</div>
                   <div className="text-lg font-bold mb-2">{d.getDate()}</div>
                   <div className="space-y-1">

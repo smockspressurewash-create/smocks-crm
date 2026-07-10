@@ -415,6 +415,24 @@ export function App() {
     if (hash === "portal" || hash.startsWith("portal/")) return "portal";
     if (hash === "referral" || hash.startsWith("r/")) return "referral";
     if (hash === "rate" || hash.startsWith("rate?")) return "rate";
+    // FIX 17/20 — public, unauthenticated single-estimate view (sign/decline a
+    // quote, or pay an invoice) reached via #/estimate/ID. This used to be
+    // #/portal/ID, but "portal" is the EMPLOYEE portal's own route — it has no
+    // idea an ID after it is an estimate, not a tab name, so every "Review &
+    // Sign" / "View & Pay Invoice" link a customer received landed them on the
+    // employee login screen instead. See the "estimate" page render below.
+    if (hash.startsWith("estimate/")) return "estimate";
+    // FIX 19 — Supabase's password-recovery redirect appends its own
+    // access_token/refresh_token/type=recovery params onto whatever
+    // redirectTo URL was given; since that URL is itself a hash route
+    // (#/reset-password), there's no room for a second "#", so Supabase just
+    // concatenates onto the existing fragment: #reset-password&access_token=
+    // ...&type=recovery. An exact `valid.includes(hash)` check against the
+    // bare word "reset-password" then fails (the actual hash has all that
+    // extra text appended) and silently fell through to "dashboard" — which
+    // is exactly why the reset page sometimes never even loaded. Prefix-match
+    // it like "portal/" and "estimate/" above.
+    if (hash === "reset-password" || hash.startsWith("reset-password&") || hash.startsWith("reset-password?")) return "reset-password";
     const valid = ["dashboard","alfred","inbox","customers","estimates","invoices","pipeline","intake","jobs","calendar","crew","campaigns","reviews","automations","social","referrals","promotions","expenses","reports","analytics","budget","personal","accountability","employees","fleet","chemicals","google","portal","reset-password","client","referral","rate"];
     return valid.includes(hash) ? hash : "dashboard";
   });
@@ -428,6 +446,7 @@ export function App() {
     if (window.location.hash.includes("access_token")) return;
     if (window.location.hash.includes("invite=")) return;
     if (window.location.hash.includes("type=recovery")) return;
+    if (page === "estimate") return; // keep the #/estimate/ID the link carried — don't strip the id
     window.location.hash = "/" + page;
   }, [page]);
 
@@ -476,6 +495,8 @@ export function App() {
       if (hash === "portal" || hash.startsWith("portal/")) { setPage("portal"); return; }
       if (hash === "referral" || hash.startsWith("r/")) { setPage("referral"); return; }
       if (hash === "rate" || hash.startsWith("rate?")) { setPage("rate"); return; }
+      if (hash.startsWith("estimate/")) { setPage("estimate"); return; }
+      if (hash === "reset-password" || hash.startsWith("reset-password&") || hash.startsWith("reset-password?")) { setPage("reset-password"); return; }
       if (valid.includes(hash)) setPage(hash);
     };
     window.addEventListener("hashchange", handler);
@@ -574,20 +595,62 @@ export function App() {
     })();
   }, [crmUserId]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // FIX 17/20 — public customer pages (#/estimate/ID, #/client) have no
+  // crmUserId (the visitor was never the owner), so the load above never
+  // runs and the customer sees an unbranded portal with no Stripe key —
+  // payment/company-name would be blank. This is a single-tenant app (one
+  // business per deployment), so grab whichever single app_settings row
+  // exists, no owner_id filter needed.
+  useEffect(() => {
+    if (crmUserId || (page !== "estimate" && page !== "client") || settingsSyncLoadedRef.current) return;
+    (async () => {
+      try {
+        const { data, error } = await (supabase as any).from("app_settings").select("data").limit(1).maybeSingle();
+        if (!error && data?.data && typeof data.data === "object") {
+          setSettings((prev: any) => ({ ...prev, ...data.data }));
+        }
+      } catch { /* app_settings table may not exist yet */ }
+      settingsSyncLoadedRef.current = true;
+    })();
+  }, [page, crmUserId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const settingsLastSavedAtRef = useRef<string | null>(null);
   useEffect(() => {
     // Only start saving after the initial load has run, so we never overwrite
     // the server copy with this device's pre-load defaults.
     if (!crmUserId || !settingsSyncLoadedRef.current) return;
     clearTimeout(settingsSaveTimerRef.current);
     settingsSaveTimerRef.current = setTimeout(() => {
+      const updatedAt = new Date().toISOString();
       (supabase as any)
         .from("app_settings")
-        .upsert({ owner_id: crmUserId, data: settings, updated_at: new Date().toISOString() }, { onConflict: "owner_id" })
-        .then((r: any) => { if (r?.error) console.warn("Settings sync failed:", r.error.message); })
+        .upsert({ owner_id: crmUserId, data: settings, updated_at: updatedAt }, { onConflict: "owner_id" })
+        .then((r: any) => { if (r?.error) console.warn("Settings sync failed:", r.error.message); else settingsLastSavedAtRef.current = updatedAt; })
         .catch((e: any) => console.warn("Settings sync failed:", e?.message));
     }, 1500);
     return () => clearTimeout(settingsSaveTimerRef.current);
   }, [settings, crmUserId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // FIX 9 — settings (which Goals, dashboard widgets, and every integration
+  // key read from) only ever loaded ONCE per session — a goal or API key
+  // changed on the phone never appeared on the computer's already-open tab
+  // until it was manually reloaded. Poll like jobs/employees/estimates do,
+  // and skip applying the server copy if its updated_at matches the last
+  // write THIS device made (avoids clobbering a not-yet-debounced local edit
+  // with what is, from the server's point of view, stale-by-a-second data).
+  useEffect(() => {
+    if (!crmUserId) return;
+    const pollSettings = async () => {
+      try {
+        const { data, error } = await (supabase as any).from("app_settings").select("data, updated_at").eq("owner_id", crmUserId).maybeSingle();
+        if (error || !data?.data) return;
+        if (data.updated_at && data.updated_at === settingsLastSavedAtRef.current) return;
+        setSettings((prev: any) => ({ ...prev, ...data.data }));
+      } catch { /* app_settings table may not exist yet */ }
+    };
+    const interval = setInterval(pollSettings, 10000);
+    return () => clearInterval(interval);
+  }, [crmUserId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // FIX 5 — ensure the owner has a real row in `employees` so they can be
   // assigned to jobs, clock in/out, and show up in Live Crew View exactly like
@@ -635,12 +698,25 @@ export function App() {
       else if (cur.failed && cur.failed !== prev.failed) newEvents.push({ id: e.id + ":failed", text: `⚠️ ${custName}'s payment failed on ${fmt(e.total)}`, at: Date.now() });
       else if (cur.viewed && !prev.viewed) newEvents.push({ id: e.id + ":viewed", text: `👀 ${custName} opened invoice ${fmt(e.total)}`, at: Date.now() });
       else if (cur.status === "rejected" && prev.status !== "rejected") newEvents.push({ id: e.id + ":rejected", text: `❌ ${custName} declined estimate ${fmt(e.total)}`, at: Date.now() });
+      // FIX 17 — accepting a quote previously only fired the toast the CLIENT's
+      // own browser showed itself (worthless to the owner, a different
+      // session entirely) — nothing told the owner a quote was accepted.
+      else if (cur.status === "approved" && prev.status !== "approved" && !(e as any).invoiced) newEvents.push({ id: e.id + ":approved", text: `✅ ${custName} accepted the quote for ${fmt(e.total)}`, at: Date.now() });
     }
     invoiceActivityRef.current = snapshot;
     if (!invoiceActivitySeededRef.current) { invoiceActivitySeededRef.current = true; return; }
     if (newEvents.length) {
       newEvents.forEach(ev => toast(ev.text, (ev.text.startsWith("⚠️") || ev.text.startsWith("❌")) ? "red" : "green"));
       setInvoiceNotifs(prev => [...newEvents, ...prev].slice(0, 20));
+      // Email the owner too — a bell/toast only reaches them if the CRM tab is
+      // open; accepted-quote and declined-quote are important enough to also
+      // land in their inbox.
+      const ownerEmail = (settings as any)?.myEmail || (settings as any)?.companyEmail;
+      if (ownerEmail) {
+        newEvents.filter(ev => ev.id.endsWith(":approved") || ev.id.endsWith(":rejected")).forEach(ev => {
+          sendEmail(settings as any, { to: ownerEmail, subject: "Quote update — " + (settings as any)?.companyName || "Crew Boss", body: ev.text }).catch(() => {});
+        });
+      }
     }
   }, [estimates, hasCrmSession]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -693,6 +769,53 @@ export function App() {
   const [personality, setPersonality]                 = usePersistent("smocks.alfredPersonality", "drillsergeant");
   const [modelStatus, setModelStatus]                 = usePersistent<ModelStatus>("smocks.modelStatus", {});
   const [googleData, setGoogleData]                   = usePersistent("smocks.googleData", {});
+
+  // FIX 10 — Alfred conversations only ever lived in this device's
+  // localStorage, so a chat on the computer never showed up on the phone.
+  // Synced to a Supabase `alfred_conversations` table (id, owner_id, title,
+  // messages JSONB, updated_at) the same way inbox_threads/employees/jobs
+  // are: load once, upsert on local change, poll for changes made elsewhere.
+  const alfredConvsLoadedRef = useRef(false);
+  const alfredConvsSaveTimerRef = useRef<any>(null);
+  useEffect(() => {
+    if (!crmUserId) return;
+    const load = async () => {
+      try {
+        const { data, error } = await (supabase as any).from("alfred_conversations").select("*").eq("owner_id", crmUserId);
+        if (error) { console.warn("[Alfred Sync] fetch failed — run the alfred_conversations SQL:", error.message); return; }
+        if (!Array.isArray(data)) return;
+        const fromServer: AlfredConversation[] = data.map((r: any) => ({
+          id: r.id, title: r.title || "Conversation", messages: Array.isArray(r.messages) ? r.messages : [],
+          createdAt: r.created_at || r.createdAt || new Date().toISOString(), updatedAt: r.updated_at || r.updatedAt || new Date().toISOString(),
+        }));
+        setAlfredConversations(prev => {
+          const byId = new Map(fromServer.map(c => [c.id, c]));
+          // Keep any local conversation not yet confirmed server-side (just
+          // created/edited, upsert still in flight) so it doesn't flicker away.
+          const localOnly = prev.filter(c => !byId.has(c.id));
+          return [...fromServer, ...localOnly].sort((a, b) => (b.updatedAt || "").localeCompare(a.updatedAt || ""));
+        });
+        alfredConvsLoadedRef.current = true;
+      } catch (e: any) { console.warn("[Alfred Sync] fetch threw:", e?.message); }
+    };
+    load();
+    const interval = setInterval(load, 5000);
+    return () => clearInterval(interval);
+  }, [crmUserId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (!crmUserId || !alfredConvsLoadedRef.current) return;
+    clearTimeout(alfredConvsSaveTimerRef.current);
+    alfredConvsSaveTimerRef.current = setTimeout(() => {
+      alfredConversations.forEach(c => {
+        (supabase as any).from("alfred_conversations").upsert({
+          id: c.id, owner_id: crmUserId, title: c.title, messages: c.messages,
+          created_at: c.createdAt, updated_at: c.updatedAt || new Date().toISOString(),
+        }, { onConflict: "id" }).then((r: any) => { if (r?.error) console.warn("[Alfred Sync] save failed:", r.error.message); }).catch(() => {});
+      });
+    }, 1200);
+    return () => clearTimeout(alfredConvsSaveTimerRef.current);
+  }, [alfredConversations, crmUserId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Portal
   const [portalEstId, setPortalEstId] = useState<string | null>(null);
@@ -983,8 +1106,11 @@ export function App() {
     // for a full shift never got customers refreshed after the one-time
     // bootstrap fetch, so any customer added/edited after they clocked in
     // silently showed no name/phone on their job cards. Both session types
-    // need this.
-    if (!hasCrmSession && !empSession) return;
+    // need this. FIX 17/20 — an anonymous customer on the public #/estimate/ID
+    // or #/client page ALSO needs real jobs/customers/estimates data (RLS
+    // already allows anon reads); without this, ClientPortal/ClientAuthPortal
+    // rendered with nothing but this browser's empty localStorage.
+    if (!hasCrmSession && !empSession && page !== "estimate" && page !== "client") return;
     let channel: any = null;
     try {
       channel = (supabase as any)
@@ -1254,7 +1380,7 @@ export function App() {
       const scheduled = new Date(`${j.scheduledDate}T${j.scheduledTime}:00`).getTime();
       return (j.clockInAt - scheduled) / 60000 > 15;
     }).length;
-    const issues = todaysJobs.flatMap(j => (j.commLog || []).filter((e: any) => e.type === "note" && e.date === tKey)).length;
+    const issues = todaysJobs.flatMap(j => (j.commLog || []).filter((e: any) => e.type === "note" && (e.date || "").startsWith(tKey))).length;
     const html = buildDailyBriefingEmailHtml(settings.companyName || "Crew Boss", { completed: completed.length, total: todaysJobs.length, revenue, late, issues });
     const toEmail = settings.companyEmail || settings.myEmail;
     if (!toEmail) { toast("Add a business email in Settings → My Profile first", "yellow"); return; }
@@ -1297,6 +1423,72 @@ export function App() {
   // ── Client portal — fully public route, its own Supabase auth, no PIN/owner gate ──
   if (page === "client") {
     return <ClientAuthPortal customers={customers} setCustomers={setCustomers} estimates={estimates} setEstimates={setEstimates} jobs={jobs} settings={settings} estimateTemplates={estimateTemplates} toast={toast} />;
+  }
+
+  // ── Single-estimate portal — fully public, no login. Reached via
+  // #/estimate/ID from a "Review & Sign" / "View & Pay Invoice" link. Replaces
+  // the old #/portal/ID links, which pointed at the EMPLOYEE portal's own
+  // route and left a real customer stranded on an employee login screen
+  // (see FIX 17 / FIX 20). Renders the same ClientPortal used for the owner's
+  // internal preview button, wired to write approve/decline straight to
+  // Supabase — this visitor has no CRM session for the App-level state
+  // setters to mean anything beyond this one render.
+  if (page === "estimate") {
+    const estId = window.location.hash.replace(/^#\/?/, "").split("?")[0].replace(/^estimate\/?/, "");
+    const est = estimates.find(e => e.id === estId);
+    const estCust = est ? customers.find(c => c.id === est.customerId) : undefined;
+    if (!est) {
+      return (
+        <div className="min-h-screen bg-black flex items-center justify-center text-white/50 text-sm p-4 text-center">
+          Loading your estimate… if this doesn't load in a few seconds, the link may have expired — contact {settings.companyName || "the business"} for a new one.
+        </div>
+      );
+    }
+    return (
+      <ClientPortal
+        estimate={est}
+        customer={estCust}
+        jobs={jobs}
+        invoices={estimates.filter(e => e.invoiced)}
+        settings={settings}
+        estimateTemplates={estimateTemplates}
+        onClose={() => { window.location.hash = "/client"; }}
+        onView={id => setEstimates(prev => prev.map(e => e.id === id && !e.viewed ? { ...e, viewed: true, viewedAt: new Date().toISOString() } : e))}
+        onApprove={(id, data) => {
+          const paid = data.payChoice !== "later";
+          setEstimates(prev => prev.map(e => e.id === id ? {
+            ...e, status: "approved", signedAt: data.signedAt || e.signedAt, sigData: data.sigData || e.sigData, payChoice: data.payChoice,
+            ...(paid ? { paidAt: today() } : {}),
+            paidDeposit: data.payType === "deposit" ? data.totalPaid : (e.paidDeposit || 0),
+            paidFull: data.payType === "full" ? data.totalPaid : data.payType === "remaining" ? (e.paidDeposit || 0) + data.totalPaid : (e.paidFull || 0),
+          } : e));
+          (supabase as any).from("estimates").update({
+            status: "approved", signedAt: data.signedAt, sigData: data.sigData, payChoice: data.payChoice,
+            ...(paid ? { paidAt: today() } : {}),
+          }).eq("id", id).catch(() => {});
+          setJobs(prev => {
+            if (prev.some(j => (j as any).estimateId === id)) return prev;
+            const cust = customers.find(c => c.id === est.customerId);
+            const newJob = {
+              id: uid(), customerId: est.customerId, address: cust?.address || "",
+              amount: est.total, status: "scheduled", scheduledDate: "", duration: 2,
+              priority: "normal", crew: [], checklist: [], photos: [], chemicalsUsed: [],
+              equipment: [], tags: ["Needs Scheduling"], commLog: [],
+              notes: "From approved estimate #" + id.slice(-4).toUpperCase(),
+              createdAt: today(), estimateId: id,
+            } as any;
+            (supabase as any).from("jobs").insert(newJob).catch(() => {});
+            return [...prev, newJob];
+          });
+          toast(paid ? "✓ Paid — " + fmt(data.totalPaid) : "✓ Signed — you'll pay later");
+        }}
+        onDecline={async (id: string, data: { reason?: string }) => {
+          const declinedAt = new Date().toISOString();
+          setEstimates(prev => prev.map(e => e.id === id ? { ...e, status: "rejected", declinedAt, declineReason: data.reason || "" } as any : e));
+          try { await (supabase as any).from("estimates").update({ status: "rejected", declinedAt, declineReason: data.reason || "" }).eq("id", id); } catch { /* ignore */ }
+        }}
+      />
+    );
   }
 
   // ── Referral landing — fully public, no auth/PIN gate. Handles both

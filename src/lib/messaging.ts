@@ -6,6 +6,15 @@ import { uid } from "./utils";
 export interface TwilioSettings {
   twilioSid?: string;
   twilioToken?: string;
+  // FIX 13 — Settings → Integrations (and every "is Twilio configured?" check
+  // elsewhere: InboxPage, CampaignsPage) reads/writes the From number under
+  // `twilioFrom`. This field was still called `twilioPhone` here, which meant
+  // the owner could see a green "Configured ✓" badge in Settings while every
+  // actual twilioSend() call threw "Twilio not configured" — the number it
+  // was checking was never the field being filled in. Keeping twilioPhone as
+  // a fallback in case anything still constructs a settings object with the
+  // old name directly.
+  twilioFrom?: string;
   twilioPhone?: string;
   twilioBackendUrl?: string;
   myPhone?: string;
@@ -110,7 +119,8 @@ export const twilioSend = async (
   body: string,
   channel: "sms" | "whatsapp" = "sms"
 ): Promise<void> => {
-  const { twilioSid, twilioToken, twilioPhone, twilioBackendUrl } = settings;
+  const { twilioSid, twilioToken, twilioBackendUrl } = settings;
+  const twilioPhone = settings.twilioFrom || settings.twilioPhone;
   if (!twilioSid || !twilioToken || !twilioPhone) {
     throw new Error("Twilio not configured — add SID, Token, and phone in Settings.");
   }

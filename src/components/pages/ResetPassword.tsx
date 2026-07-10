@@ -14,32 +14,39 @@ export function ResetPassword() {
   const [success, setSuccess] = useState(false);
   const [sessionReady, setSessionReady] = useState(false);
 
-  // Supabase sends recovery tokens as hash params: #access_token=...&type=recovery
-  // We must call setSession with these tokens before updateUser will work.
+  // FIX 19 — Supabase's client is created with detectSessionInUrl: true
+  // (lib/supabase.ts), which ALREADY parses the recovery access_token/
+  // refresh_token out of the URL and establishes the session automatically
+  // (and clears the tokens from the URL once done). Manually re-parsing and
+  // calling setSession() here raced against that: depending on timing, the
+  // tokens could already be consumed/stripped by the time this ran, which is
+  // exactly why this sometimes showed "No valid recovery session" and
+  // sometimes didn't. Instead, listen for Supabase's own PASSWORD_RECOVERY
+  // auth event — fired precisely when it finishes processing a recovery
+  // link — plus a synchronous getSession() check in case that event already
+  // fired before this listener attached (e.g. a fast reload).
   useEffect(() => {
-    const hash = window.location.hash;
-    const params = new URLSearchParams(hash.startsWith("#") ? hash.slice(1) : hash);
-    const access_token = params.get("access_token");
-    const refresh_token = params.get("refresh_token");
-    const type = params.get("type");
-
-    if (type === "recovery" && access_token && refresh_token) {
-      supabase.auth.setSession({ access_token, refresh_token }).then(({ error: err }) => {
-        if (err) {
-          setError("Recovery link is invalid or expired. Please request a new one.");
-        } else {
-          setSessionReady(true);
-          // Clear token params from URL so they can't be replayed
-          window.location.hash = "/reset-password";
-        }
-      });
-    } else {
-      // May already have a recovery session (e.g. page refreshed after setSession)
-      supabase.auth.getSession().then(({ data: { session } }) => {
-        if (session) setSessionReady(true);
-        else setError("No valid recovery session. Please use the link from your email.");
-      });
-    }
+    let settled = false;
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      if (event === "PASSWORD_RECOVERY" && session) {
+        settled = true;
+        setSessionReady(true);
+      }
+    });
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      if (settled) return;
+      if (session) { setSessionReady(true); return; }
+      // Give detectSessionInUrl a brief window to finish processing the
+      // fragment (it's async) before concluding there's truly no session.
+      setTimeout(() => {
+        if (settled) return;
+        supabase.auth.getSession().then(({ data: { session: retry } }) => {
+          if (retry) setSessionReady(true);
+          else setError("No valid recovery session. Please use the link from your email.");
+        });
+      }, 1500);
+    });
+    return () => subscription.unsubscribe();
   }, []);
 
   const handleSubmit = async () => {

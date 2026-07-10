@@ -387,10 +387,14 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
 
   const addNote = () => {
     if (!note.trim()) return;
-    const entry = { id: uid(), type: "note" as const, date: today(), note: note.trim() };
+    // FIX 6 — full ISO timestamp (not just today()'s bare date) so the owner
+    // can tell when during the day a note was left, not just which day. The
+    // "today's field notes" dashboard alerts match on the date PREFIX (see
+    // App.tsx / Dashboard.tsx), so this stays compatible with those.
+    const entry = { id: uid(), type: "note" as const, date: new Date().toISOString(), note: note.trim() };
     onUpdateJob({ commLog: [...(job.commLog || []), entry] });
     setNote("");
-    toast("Note added");
+    toast("Note added ✓", "green");
   };
 
   // Saves the signature only — completion itself (and any payment info) is
@@ -483,7 +487,9 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
         status: "approved" as const, createdAt: today(), validUntil: daysFromNow(30), invoiced: true, invoicedAt: today(),
       };
       setEstimates((prev: any[]) => [...prev, newInv]);
-      const payLink = `${window.location.origin}${window.location.pathname}#/portal/${newInv.id}`;
+      // FIX 17 — #/portal/ID is the employee portal's route, not a customer
+      // invoice view; #/estimate/ID is the public no-login pay/sign portal.
+      const payLink = `${window.location.origin}${window.location.pathname}#/estimate/${newInv.id}`;
       const subject = customSubject?.trim() || `Invoice — ${companyName}`;
       const noteHtml = customNote?.trim() ? `<p style="font-style:italic;color:rgba(255,255,255,0.6)">${customNote.trim()}</p>` : "";
       if (invoiceChannel === "sms") {
@@ -3814,6 +3820,15 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
               const dayLunchStartAt = optimisticDayLunchStartAt !== undefined ? optimisticDayLunchStartAt : (myEmployee as any)?.dayLunchStartAt;
               const dayPausedMinutes = Number((myEmployee as any)?.dayPausedMinutes) || 0;
               const empId = (myEmployee as any)?.id;
+              // FIX 2 — if the employee already ended their shift once today,
+              // "Start My Day" must never overwrite dayClockInAt with a fresh
+              // Date.now() (which reset the visible timer back to 0:00 and
+              // silently discarded the hours already logged). Track today's
+              // already-worked hours from the last End-My-Day and, on Resume,
+              // backdate the new dayClockInAt by that amount so the timer
+              // continues from where it left off instead of restarting.
+              const alreadyWorkedTodayHours = (myEmployee as any)?.lastShiftDate === today() ? Number((myEmployee as any)?.lastShiftHours) || 0 : 0;
+              const isResuming = !dayClockInAt && alreadyWorkedTodayHours > 0;
               const onLunch = !!dayLunchStartAt;
               const currentPauseMs = onLunch ? Date.now() - dayLunchStartAt : 0;
               const netShiftHoursNow = dayClockInAt
@@ -3853,7 +3868,13 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
               const toggleDay = async () => {
                 if (!empId) return;
                 const endingDay = !!dayClockInAt;
-                const nextVal = endingDay ? null : Date.now();
+                // FIX 2 — Resuming after an earlier End-My-Day must never reset the
+                // visible timer to 0:00. Backdate the new dayClockInAt by whatever
+                // was already logged today (isResuming/alreadyWorkedTodayHours,
+                // computed above) so `now - dayClockInAt` picks up right where the
+                // last shift left off instead of restarting from scratch. The time
+                // spent "ended" in between is simply not counted, which is correct.
+                const nextVal = endingDay ? null : Date.now() - Math.round(alreadyWorkedTodayHours * 3600000);
                 const finalHours = Math.round(netShiftHoursNow * 100) / 100;
                 // Flip immediately — a Supabase update() call resolves with an
                 // {error} object on a 400 rather than throwing, so a try/catch
@@ -4019,9 +4040,9 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                     </div>
                   )}
                   <div className="flex gap-2">
-                    <button onClick={toggleDay} className={"flex-1 flex items-center justify-center gap-2 py-3 rounded-2xl font-bold text-sm transition active:scale-95 " + (dayClockInAt ? "bg-green-900/40 border-2 border-green-500/60 text-green-300" : "bg-red-700/40 border-2 border-red-500/60 text-white hover:bg-red-700/60")}>
-                      <Clock size={16} />
-                      {dayClockInAt ? "End My Day" : "Start My Day"}
+                    <button onClick={toggleDay} className={"flex-1 flex items-center justify-center gap-2 py-3 rounded-2xl font-bold text-sm transition active:scale-95 " + (dayClockInAt ? "bg-green-900/40 border-2 border-green-500/60 text-green-300" : isResuming ? "bg-blue-900/40 border-2 border-blue-500/60 text-blue-300 hover:bg-blue-900/60" : "bg-red-700/40 border-2 border-red-500/60 text-white hover:bg-red-700/60")}>
+                      {dayClockInAt ? <Clock size={16} /> : isResuming ? <Play size={16} /> : <Clock size={16} />}
+                      {dayClockInAt ? "End My Day" : isResuming ? "Resume" : "Start My Day"}
                     </button>
                     {dayClockInAt && onLunch && (
                       <button onClick={() => toggleLunchPause()} className="flex-shrink-0 flex items-center justify-center gap-1.5 px-4 rounded-2xl font-semibold text-sm transition active:scale-95 bg-yellow-900/40 border-2 border-yellow-500/60 text-yellow-300">
@@ -4045,11 +4066,23 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                       : <MapPin size={12} />}
                     {locationPermissionPending ? "Requesting location permission…" : locationSharing ? "Sharing my location with owner 🟢" : "Share My Location (off)"}
                   </button>
+                  {/* FIX 11 — sharing itself never needs a Maps key (just browser
+                      geolocation); the map preview is a nice-to-have bonus, not a
+                      requirement. Without a key, show a plain confirmation badge
+                      instead of LiveMap's "add a Maps API key" placeholder, which
+                      read as if sharing were broken/incomplete. */}
                   {locationSharing && (myEmployee as any)?.lastLocation?.lat != null && (
-                    <LiveMap
-                      apiKey={settings.googleMapsKey || settings.mapsKey || ""}
-                      pins={[{ id: empId, label: (myEmployee as any).firstName || "Me", lat: (myEmployee as any).lastLocation.lat, lng: (myEmployee as any).lastLocation.lng, updatedAt: (myEmployee as any).lastLocation.updatedAt }]}
-                    />
+                    (settings.googleMapsKey || settings.mapsKey) ? (
+                      <LiveMap
+                        apiKey={settings.googleMapsKey || settings.mapsKey || ""}
+                        pins={[{ id: empId, label: (myEmployee as any).firstName || "Me", lat: (myEmployee as any).lastLocation.lat, lng: (myEmployee as any).lastLocation.lng, updatedAt: (myEmployee as any).lastLocation.updatedAt }]}
+                      />
+                    ) : (
+                      <div className="flex items-center justify-center gap-2 py-2 rounded-xl bg-blue-950/20 border border-blue-700/30 text-blue-300 text-xs">
+                        <span className="relative flex h-2 w-2"><span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" /><span className="relative inline-flex rounded-full h-2 w-2 bg-blue-400" /></span>
+                        Location updated {new Date((myEmployee as any).lastLocation.updatedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })} — owner can see you on Live Crew View
+                      </div>
+                    )
                   )}
                 </>
               );

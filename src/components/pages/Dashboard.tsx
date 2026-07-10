@@ -23,7 +23,7 @@ import {
 import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, forecastFor, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, withTimeout } from "../../lib/utils";
 import { supabase } from "../../lib/supabase";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
-import { twilioSend, sendEmail } from "../../lib/messaging";
+import { twilioSend, sendOwnerGmailOnly } from "../../lib/messaging";
 import { seedWeather } from "../../lib/weather";
 
 import { callModel, MODELS } from "../../lib/api";
@@ -106,7 +106,13 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
   const [sendingDashInvoiceId, setSendingDashInvoiceId] = useState<string | null>(null);
   const [needsInvoiceCollapsed, setNeedsInvoiceCollapsed] = useState(false);
   const [previewInvoiceJob, setPreviewInvoiceJob] = useState<any>(null);
-  const needsInvoiceJobs = jobs.filter((j: any) => j.status === "completed" && !!j.clockInAt && j.paymentStatus !== "Paid" && !j.invoiceSentAt);
+  // FIX 3 — was requiring j.clockInAt to be truthy, but Complete Job always
+  // clears clockInAt to null when finishing a clocked-in job (it rolls the
+  // elapsed time into loggedHours instead) — so this filter could never match
+  // a job that had actually been worked and completed through the normal
+  // field-portal flow. Status + payment state alone is what "needs an
+  // invoice" actually means.
+  const needsInvoiceJobs = jobs.filter((j: any) => j.status === "completed" && j.paymentStatus !== "Paid" && !j.invoiceSentAt);
   const sendDashInvoice = async (job: any, subject: string, bodyHtml: string) => {
     const cust = customers.find((c: any) => c.id === job.customerId);
     if (!cust?.email) { toast?.("Customer has no email on file", "red"); return; }
@@ -121,12 +127,15 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
       };
       setEstimates((prev: any[]) => [...prev, newInv]);
       (supabase as any).from("estimates").insert(newInv).then((r: any) => { if (r?.error) console.warn("[Send Invoice] estimate save failed:", r.error.message); }).catch(() => {});
-      const payLink = `${window.location.origin}${window.location.pathname}#/portal/${newInv.id}`;
+      // FIX 17 — #/portal/ID is the EMPLOYEE portal's route, not a customer
+      // invoice view; #/estimate/ID is the public, no-login single-estimate
+      // pay/sign portal (ClientPortal).
+      const payLink = `${window.location.origin}${window.location.pathname}#/estimate/${newInv.id}`;
       const html = bodyHtml + `<div style="text-align:center;margin:22px 0 4px"><a href="${payLink}" style="display:inline-block;background:#dc2626;color:#fff;text-decoration:none;font-weight:700;font-size:14px;padding:13px 30px;border-radius:10px">View & Pay Invoice</a></div>`;
       // Hard timeout — a hung Gmail/Resend fetch (no built-in timeout) is exactly
       // what left the button stuck on "Sending…" forever. This guarantees the
       // await always settles so `finally` runs and the button resets.
-      await withTimeout(sendEmail(settings as any, { to: cust.email, subject, body: html }), 15000, "Invoice email");
+      await withTimeout(sendOwnerGmailOnly(settings as any, cust.email, subject, html), 15000, "Invoice email");
       setJobs((prev: any[]) => prev.map((j: any) => j.id === job.id ? { ...j, invoiceSentAt: today(), paymentType: "Invoice", paymentStatus: j.paymentStatus === "Paid" ? j.paymentStatus : "Pending" } : j));
       console.log("[Send Invoice] — success: sent to", cust.email);
       toast?.(`Invoice sent to ${cust.firstName} ✓`, "green");
@@ -304,7 +313,7 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
   // Employee notes/issues logged on jobs today (field reports flagged via the portal's "Add Note")
   const todaysIssueNotes = jobs
     .filter(j => j.scheduledDate === todayStr)
-    .flatMap(j => (j.commLog || []).filter((e: any) => e.type === "note" && e.date === todayStr).map((e: any) => ({ job: j, entry: e })));
+    .flatMap(j => (j.commLog || []).filter((e: any) => e.type === "note" && (e.date || "").startsWith(todayStr)).map((e: any) => ({ job: j, entry: e })));
   if (todaysIssueNotes.length > 0) {
     alerts.push({ key: "fieldnotes", icon: MessageSquare, tone: "orange", msg: todaysIssueNotes.length + " field note" + (todaysIssueNotes.length !== 1 ? "s" : "") + " from crew today", action: () => onNav("jobs") });
   }
@@ -360,6 +369,20 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
       || null;
     return { emp: e, job: currentJob };
   });
+  // FIX 8 — "My Hours": the owner gets a real employees row (see App.tsx
+  // ownerEmpRowEnsuredRef effect) keyed `owner_<email>`, so their own clocked
+  // time and crew-assigned jobs can be summarized the same way a technician's
+  // can, right on the dashboard.
+  const ownerEmpId = (settings as any)?.ownerName ? `owner_${(settings as any)?.googleEmail || "owner"}` : null;
+  const ownerEmp = ownerEmpId ? employees.find((e: any) => e.id === ownerEmpId) : null;
+  const ownerOnShift = !!ownerEmp?.dayClockInAt;
+  const ownerShiftMs = ownerOnShift ? Math.max(0, Date.now() - Number(ownerEmp.dayClockInAt) - (Number(ownerEmp.dayPausedMinutes) || 0) * 60000) : 0;
+  const weekStartLive = (() => { const d = new Date(); d.setDate(d.getDate() - d.getDay()); return d.toISOString().slice(0, 10); })();
+  const ownerJobsToday = ownerEmpId ? jobs.filter((j: any) => (j.crew || []).includes(ownerEmpId) && j.scheduledDate === todayStrLive) : [];
+  const ownerJobsThisWeek = ownerEmpId ? jobs.filter((j: any) => (j.crew || []).includes(ownerEmpId) && j.scheduledDate >= weekStartLive) : [];
+  const ownerHoursToday = ownerJobsToday.reduce((s: number, j: any) => s + (Number(j.loggedHours) || 0), 0);
+  const ownerHoursThisWeek = ownerJobsThisWeek.reduce((s: number, j: any) => s + (Number(j.loggedHours) || 0), 0);
+
   const checklistProgress = (j: any) => {
     const items = [...(j.preChecklist || []), ...(j.duringChecklist || []), ...(j.postChecklist || []), ...(j.checklist || [])];
     if (items.length === 0) return null;
@@ -501,6 +524,15 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
                       {onLunch && <span className="text-yellow-400/70">on lunch</span>}
                       {j?.arrivedAt && <span className="text-green-400">✓ on site</span>}
                       {photoCount > 0 && <span className="flex items-center gap-1"><ImageIcon size={10} />{photoCount} photo{photoCount !== 1 ? "s" : ""}</span>}
+                      {/* FIX 11 — a simple always-available badge, independent of
+                          whether a Google Maps key is configured (CrewView's
+                          "Live Now" map is the full-map view when a key exists). */}
+                      {e.locationSharing && e.lastLocation?.updatedAt && (
+                        <span className="flex items-center gap-1 text-blue-400">
+                          <span className="relative flex h-1.5 w-1.5"><span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" /><span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-blue-400" /></span>
+                          📍 {new Date(e.lastLocation.updatedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}
+                        </span>
+                      )}
                     </div>
                     {prog && (
                       <div className="flex items-center gap-1.5 mt-1.5">
@@ -518,6 +550,33 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
           </div>
         )}
       </Glass>
+
+      {/* FIX 8 — My Hours: the owner's own tracked time, mirroring what a
+          technician sees, computed from their own employees row + crew-assigned jobs. */}
+      {ownerEmpId && (
+        <Glass className="p-4">
+          <div className="flex items-center gap-2 mb-3">
+            <Clock size={15} className={ownerOnShift ? "text-green-400" : "text-white/40"} />
+            <h3 className="font-semibold text-sm">My Hours</h3>
+            {ownerOnShift && <Badge tone="green">On shift</Badge>}
+          </div>
+          <div className="grid grid-cols-3 gap-3 text-center">
+            <div>
+              <div className="text-[10px] text-white/40 uppercase">Current Shift</div>
+              <div className={"text-lg font-bold font-mono " + (ownerOnShift ? "text-green-400" : "text-white/30")}>{ownerOnShift ? fmtElapsed(ownerShiftMs) : "—"}</div>
+            </div>
+            <div>
+              <div className="text-[10px] text-white/40 uppercase">Logged Today</div>
+              <div className="text-lg font-bold">{ownerHoursToday.toFixed(1)}h</div>
+            </div>
+            <div>
+              <div className="text-[10px] text-white/40 uppercase">Logged This Week</div>
+              <div className="text-lg font-bold">{ownerHoursThisWeek.toFixed(1)}h</div>
+            </div>
+          </div>
+          <div className="text-[10px] text-white/30 text-center mt-2">Assign yourself to a job's crew, then use its Clock In/Out to track time here.</div>
+        </Glass>
+      )}
 
       {/* Completed jobs that haven't been invoiced or marked paid yet */}
       {needsInvoiceJobs.length > 0 && (

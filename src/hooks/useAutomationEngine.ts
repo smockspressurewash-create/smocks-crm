@@ -134,10 +134,14 @@ export function useAutomationEngine({
           for (const est of overdueEsts.slice(0, 5)) {
             const c = customers.find(x => x.id === est.customerId);
             if (!c?.phone || c.smsOptOut) continue;
+            // FIX 18 — was a hardcoded "smocks.com" domain pointing at
+            // #/portal/ID, the EMPLOYEE portal's route (see FIX 17); real
+            // link, real origin, and the public no-login estimate/invoice
+            // portal instead.
             const msg = fillTemplate(SMS_TEMPLATES.payment_overdue, {
               first_name: c.firstName,
               amount: `$${est.total}`,
-              payment_link: `smocks.com/portal/${est.id}`,
+              payment_link: `${window.location.origin}${window.location.pathname}#/estimate/${est.id}`,
             });
             try {
               await twilioSend(settings, c.phone, msg);

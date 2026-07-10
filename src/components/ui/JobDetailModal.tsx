@@ -22,7 +22,7 @@ import {
 } from "recharts";
 import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, requiredChemicalsList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE } from "../../lib/utils";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField, JobChecklistItem, ChecklistPhoto, JobVideo, JobSignOff } from "../../types";
-import { twilioSend, sendEmail, sendViaGmail, emailShell, emailButton } from "../../lib/messaging";
+import { twilioSend, sendEmail, sendViaGmail, sendOwnerGmailOnly, emailShell, emailButton, logOutboundSmsToInbox } from "../../lib/messaging";
 import { seedWeather } from "../../lib/weather";
 import { seedCustomers, seedEstimates, seedJobs, seedEmployees, seedVehicles, seedExpenses, seedChemicals, seedServices, seedAutomations, seedEmailTemplates, seedSmsTemplates, seedRewardTiers, seedReferrals, seedMaintenance, campaignTemplates, seedSocialPosts, seedTimeline, seedGoals, seedReminders, seedAccountabilityEntries, seedMileage, seedLeadSrc, STEP_TYPES, AUTOMATION_TEMPLATES } from "../../lib/seed";
 import { callModel, MODELS } from "../../lib/api";
@@ -409,12 +409,16 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
         invoicedAt: today(),
       };
       setEstimates((prev: any[]) => [...prev, newInv]);
-      const payLink = `${window.location.origin}${window.location.pathname}#/portal/${newInv.id}`;
+      // FIX 17 — #/portal/ID is the employee portal's route, not a customer
+      // invoice view; #/estimate/ID is the public no-login pay/sign portal.
+      const payLink = `${window.location.origin}${window.location.pathname}#/estimate/${newInv.id}`;
       if (c.email) {
         const html = emailShell(settings.companyName || "Crew Boss", subject, bodyHtml + emailButton("View & Pay Invoice", payLink));
-        await withTimeout(sendEmail(settings, { to: c.email, subject, body: html }), 10000, "Invoice email");
+        await withTimeout(sendOwnerGmailOnly(settings as any, c.email, subject, html), 10000, "Invoice email");
       } else {
-        await withTimeout(twilioSend(settings as any, c.phone!, `Hi ${c.firstName}, your invoice for $${(Number(job.amount) || 0).toFixed(2)} is ready: ${payLink}`), 10000, "Invoice SMS");
+        const smsBody = `Hi ${c.firstName}, your invoice for $${(Number(job.amount) || 0).toFixed(2)} is ready: ${payLink}`;
+        await withTimeout(twilioSend(settings as any, c.phone!, smsBody), 10000, "Invoice SMS");
+        logOutboundSmsToInbox({ contactName: `${c.firstName} ${c.lastName}`, contactPhone: c.phone!, customerId: c.id, body: smsBody }).catch(() => {});
       }
       updateJob(jobId, { invoiceSentAt: today(), paymentType: "Invoice" as any, paymentStatus: job.paymentStatus === "Paid" ? job.paymentStatus : "Pending" as any });
       toast(`Invoice sent to ${c.firstName} ✓`, "green");
@@ -808,6 +812,31 @@ ${job.notes ? `<div class="section"><h2>Job Notes</h2><p>${job.notes}</p></div>`
     <Modal open={!!jobId} onClose={onClose} title={"Job · " + (c?.firstName + " " + c?.lastName)} maxW="max-w-2xl">
       <div className="space-y-4">
         {job.address && <StreetViewThumb address={job.address} apiKey={settings.googleMapsKey || settings.mapsKey} />}
+
+        {/* FIX 5 — customer + job summary, always visible at the top: name,
+            phone, address, and the estimate/quote amount, none of which the
+            modal surfaced before (the title only showed the customer's name). */}
+        <Glass className="p-3 !bg-black/40 space-y-1.5">
+          <div className="flex items-center justify-between gap-2">
+            <div className="font-semibold text-sm truncate">{c ? `${c.firstName} ${c.lastName}` : "Unknown customer"}</div>
+            {job.amount > 0 && <div className="text-lg font-bold text-green-400 flex-shrink-0">{fmt(job.amount)}</div>}
+          </div>
+          <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-white/60">
+            {c?.phone && (
+              <a href={`tel:${c.phone}`} className="flex items-center gap-1 hover:text-white transition"><Phone size={11} />{c.phone}</a>
+            )}
+            {c?.email && (
+              <a href={`mailto:${c.email}`} className="flex items-center gap-1 hover:text-white transition"><Mail size={11} />{c.email}</a>
+            )}
+            {!c?.phone && !c?.email && <span className="italic text-white/30">No contact info on file</span>}
+          </div>
+          {job.address && (
+            <a href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(job.address)}`} target="_blank" rel="noreferrer"
+              className="flex items-center gap-1 text-xs text-white/60 hover:text-white transition">
+              <MapPin size={11} />{job.address}
+            </a>
+          )}
+        </Glass>
 
         {/* Priority + Duration + Recurring */}
         <div className="grid grid-cols-3 gap-3">
@@ -1308,7 +1337,15 @@ ${job.notes ? `<div class="section"><h2>Job Notes</h2><p>${job.notes}</p></div>`
             <GBtn onClick={addComm} className="!py-1.5"><Plus size={12} /></GBtn>
           </div>
           {(job.commLog || []).length > 0 && <div className="space-y-1 max-h-32 overflow-y-auto">
-            {(job.commLog || []).slice().reverse().map(e => <div key={e.id} className="text-xs p-2 bg-white/5 rounded flex items-center gap-2"><Badge tone="gray">{e.type}</Badge><span className="flex-1">{e.note}</span><span className="text-white/40">{e.date}</span></div>)}
+            {(job.commLog || []).slice().reverse().map(e => {
+              // Notes save a full ISO timestamp (FIX 6); older/other entry types
+              // may still just be a bare YYYY-MM-DD date — show both sensibly.
+              const d = new Date(e.date);
+              const label = !isNaN(d.getTime()) && e.date.length > 10
+                ? d.toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })
+                : e.date;
+              return <div key={e.id} className="text-xs p-2 bg-white/5 rounded flex items-center gap-2"><Badge tone="gray">{e.type}</Badge><span className="flex-1">{e.note}</span><span className="text-white/40 flex-shrink-0">{label}</span></div>;
+            })}
           </div>}
         </Glass>
 

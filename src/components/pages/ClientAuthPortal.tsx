@@ -55,6 +55,26 @@ export function ClientAuthPortal({
     ? customers.find(c => (c.email || "").toLowerCase() === session.user.email.toLowerCase())
     : null;
 
+  // FIX 17 — "View & Pay Invoice" / "Review & Sign" links emailed/texted to
+  // customers all point at #/client?invoice=ID (this portal), NOT the old
+  // #/portal/ID pattern (which is the EMPLOYEE portal's route and had no idea
+  // what to do with an estimate id — those links landed a customer on an
+  // employee login screen). Once logged in and matched to a customer record,
+  // auto-open that specific invoice's payment modal instead of making them
+  // hunt for it in the list.
+  const deepLinkHandledRef = useRef(false);
+  useEffect(() => {
+    if (!cust || deepLinkHandledRef.current) return;
+    const hash = window.location.hash;
+    const qIndex = hash.indexOf("?");
+    if (qIndex === -1) return;
+    const params = new URLSearchParams(hash.slice(qIndex + 1));
+    const invoiceId = params.get("invoice");
+    if (!invoiceId) return;
+    const inv = estimates.find(e => e.id === invoiceId && e.customerId === cust.id);
+    if (inv) { setTab("invoices"); setPayingInv(inv); deepLinkHandledRef.current = true; }
+  }, [cust, estimates]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // BUG 10 — if an OWNER/employee is logged in and lands on #/client, they'll
   // have a session but no matching customer record, which used to strand them
   // on "Setting up your account…". Detect a staff session (matches the owner's
