@@ -648,7 +648,17 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
     setAttName("");
   };
   const removeAtt = id => updateJob(jobId, { attachments: (job.attachments || []).filter(a => a.id !== id) });
-  const clockIn = () => { updateJob(jobId, { clockInAt: Date.now() }); toast("Clocked in"); };
+  // FIX 5 — Owner self-assign: when the owner (identified by the same
+  // `owner_<email>` synthetic id the Crew toggle uses) is on this job's crew,
+  // clocking in/out here also flips their employees row's dayClockInAt so they
+  // show up in Live Crew View exactly like a technician on shift.
+  const ownerEmpId = settings.ownerName ? `owner_${settings.googleEmail || "owner"}` : null;
+  const ownerOnCrew = !!ownerEmpId && (job.crew || []).includes(ownerEmpId);
+  const clockIn = () => {
+    updateJob(jobId, { clockInAt: Date.now() });
+    toast("Clocked in");
+    if (ownerOnCrew) (supabase as any).from("employees").update({ dayClockInAt: Date.now() }).eq("id", ownerEmpId).catch(() => {});
+  };
   const clockOut = () => {
     const started = job.clockInAt;
     if (!started) return;
@@ -656,6 +666,7 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
     const rounded = Math.round(hrs * 100) / 100;
     updateJob(jobId, { clockInAt: null, loggedHours: Math.round(((Number(job.loggedHours) || 0) + rounded) * 100) / 100 });
     toast("+" + rounded + "h logged");
+    if (ownerOnCrew) (supabase as any).from("employees").update({ dayClockInAt: null }).eq("id", ownerEmpId).catch(() => {});
   };
   const handleGoogleSync = async () => {
     if (!gToken || !job.scheduledDate) { toast("Add a scheduled date first"); return; }

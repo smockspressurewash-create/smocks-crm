@@ -7,7 +7,7 @@ import {
 } from "lucide-react";
 import { supabase } from "../../lib/supabase";
 import { getEmpGoogleToken, isEmpGoogleTokenValid, saveEmpGoogleToken, refreshEmpGoogleToken, getValidEmpGoogleToken, createGCalEvent, updateGCalEvent } from "../../lib/googleApi";
-import { sendViaGmail, sendEmail, emailShell, emailButton, twilioSend } from "../../lib/messaging";
+import { sendViaGmail, sendEmail, sendOwnerGmailOnly, emailShell, emailButton, twilioSend, logOutboundSmsToInbox } from "../../lib/messaging";
 import { Glass } from "../ui/Glass";
 import { GBtn } from "../ui/GBtn";
 import { GInput } from "../ui/GInput";
@@ -71,6 +71,17 @@ const withTimeout = <T,>(p: Promise<T>, ms: number, label: string): Promise<T> =
     p,
     new Promise<T>((_, reject) => setTimeout(() => reject(new Error(label + " timed out")), ms)),
   ]);
+
+// Shifts a "HH:MM" scheduled time by +/- minutes, wrapping within a 24h day.
+// Used by Running Late so the job's scheduled time (and anything downstream
+// that reads it — calendar sync, "up next" sorting) reflects the delay.
+const shiftScheduledTime = (time: string | undefined, minutes: number): string | undefined => {
+  if (!time) return time;
+  const [h, m] = time.split(":").map(Number);
+  if (Number.isNaN(h) || Number.isNaN(m)) return time;
+  const total = ((h * 60 + m + minutes) % 1440 + 1440) % 1440;
+  return `${String(Math.floor(total / 60)).padStart(2, "0")}:${String(total % 60).padStart(2, "0")}`;
+};
 
 // Normalizes a single crew entry to a comparable id string. Crew is meant to be a
 // plain array of employee-id strings, but Supabase JSONB round-trips and older
@@ -242,8 +253,16 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
   const [runningLateOpen, setRunningLateOpen] = useState(false);
   const [sendingRunningLate, setSendingRunningLate] = useState(false);
   const [lateReasonNote, setLateReasonNote] = useState("");
+  const [lateChannel, setLateChannel] = useState<"sms" | "email">(customer?.phone ? "sms" : "email");
+  const [otwOpen, setOtwOpen] = useState(false);
+  const [otwChannel, setOtwChannel] = useState<"sms" | "email">(customer?.phone ? "sms" : "email");
+  const [sendingOtw, setSendingOtw] = useState(false);
   const [, forceTick] = useState(0);
   const [showSignOff, setShowSignOff] = useState(false);
+  // Tracks whether Sign-Off was opened from mid-way through the Complete Job
+  // flow ("Get Sign-Off First"), so saving the signature resumes that flow
+  // instead of dropping back to the plain job detail view.
+  const [signOffReturnToComplete, setSignOffReturnToComplete] = useState(false);
   const [signerName, setSignerName] = useState("");
   // "Complete Job" flow: review (checklist/sign-off status) → payment → summary
   const [completeStep, setCompleteStep] = useState<"" | "review" | "payment" | "method" | "invoice" | "invoice-preview" | "summary">("");
@@ -268,31 +287,69 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
 
   const hasRequiredGear = (job.equipment || []).length > 0 || (job.requiredChemicals || []).length > 0;
   const sendRunningLate = async (minutes: number) => {
+    console.log("[RunningLate] send clicked — job:", job.id, "minutes:", minutes, "channel:", lateChannel);
     setSendingRunningLate(true);
     const nowMs = Date.now() + minutes * 60000;
     const newEta = new Date(nowMs).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
     const noteStr = lateReasonNote.trim() ? ` Reason: ${lateReasonNote.trim()}.` : "";
     const msg = `Your CrewBoss technician is running approximately ${minutes} minutes behind.${noteStr} New ETA: ${newEta}. We apologize for the delay.`;
     try {
-      if (customer?.phone && settings?.twilioSid) {
-        await twilioSend(settings as any, customer.phone, `Hi ${customer.firstName}, ${msg}`);
-      } else if (customer?.email) {
+      if (lateChannel === "sms") {
+        if (!customer?.phone) throw new Error("No phone on file for this customer.");
+        await withTimeout(twilioSend(settings as any, customer.phone, `Hi ${customer.firstName}, ${msg}`), 15000, "Running late SMS");
+        console.log("[RunningLate] — success: SMS sent to", customer.phone);
+        logOutboundSmsToInbox({ contactName: `${customer.firstName} ${customer.lastName}`, contactPhone: customer.phone, customerId: customer.id, body: `Hi ${customer.firstName}, ${msg}` }).catch(() => {});
+      } else {
+        if (!customer?.email) throw new Error("No email on file for this customer.");
         const html = emailShell(companyName, "Running Late", `<p>Hi ${customer.firstName},</p><p>${msg}</p>`);
-        await sendEmail(settings as any, { to: customer.email, subject: "Your technician is running late", body: html });
+        await withTimeout(sendOwnerGmailOnly(settings as any, customer.email, "Your technician is running late", html), 15000, "Running late email");
+        console.log("[RunningLate] — success: email sent to", customer.email);
       }
       const ownerEmail = (settings as any)?.myEmail || (settings as any)?.companyEmail;
       if (ownerEmail) {
         const ownerHtml = emailShell(companyName, "Crew Running Late", `<p>${customer ? customer.firstName + " " + customer.lastName : job.address} — running ~${minutes} min late${lateReasonNote.trim() ? ` (${lateReasonNote.trim()})` : ""}.</p><p>Address: ${job.address}</p>`);
-        sendEmail(settings as any, { to: ownerEmail, subject: `Running late — ${job.address}`, body: ownerHtml }).catch(() => {});
+        sendOwnerGmailOnly(settings as any, ownerEmail, `Running late — ${job.address}`, ownerHtml).catch(() => {});
       }
-      onUpdateJob({ commLog: [...(job.commLog || []), { id: uid(), type: "note" as const, date: today(), note: `⏱ Running late +${minutes}min — notified customer${lateReasonNote.trim() ? ` (${lateReasonNote.trim()})` : ""}` }] });
-      toast(`Customer notified — running ${minutes} min late`, "green");
+      const newScheduledTime = shiftScheduledTime(job.scheduledTime, minutes);
+      onUpdateJob({
+        commLog: [...(job.commLog || []), { id: uid(), type: "note" as const, date: today(), note: `⏱ Running late +${minutes}min — notified customer via ${lateChannel === "sms" ? "text" : "email"}${lateReasonNote.trim() ? ` (${lateReasonNote.trim()})` : ""}` }],
+        ...(newScheduledTime ? { scheduledTime: newScheduledTime } : {}),
+      });
+      toast(`Message sent to ${customer?.firstName || "customer"} ✓`, "green");
       setRunningLateOpen(false);
       setLateReasonNote("");
     } catch (e: any) {
+      console.error("[RunningLate] — error:", e?.message || e);
       toast(e?.message || "Failed to send running-late notice", "red");
     } finally {
       setSendingRunningLate(false);
+    }
+  };
+
+  const sendOtw = async () => {
+    console.log("[OTW] send clicked — job:", job.id, "channel:", otwChannel);
+    setSendingOtw(true);
+    const msg = `Hi ${customer?.firstName || "there"}, your CrewBoss technician is on the way!`;
+    try {
+      if (otwChannel === "sms") {
+        if (!customer?.phone) throw new Error("No phone on file for this customer.");
+        await withTimeout(twilioSend(settings as any, customer.phone, msg), 15000, "OTW SMS");
+        console.log("[OTW] — success: SMS sent to", customer.phone);
+        logOutboundSmsToInbox({ contactName: `${customer.firstName} ${customer.lastName}`, contactPhone: customer.phone, customerId: customer.id, body: msg }).catch(() => {});
+      } else {
+        if (!customer?.email) throw new Error("No email on file for this customer.");
+        const html = emailShell(companyName, "On My Way", `<p>${msg}</p>`);
+        await withTimeout(sendOwnerGmailOnly(settings as any, customer.email, "Your technician is on the way", html), 15000, "OTW email");
+        console.log("[OTW] — success: email sent to", customer.email);
+      }
+      onUpdateJob({ commLog: [...(job.commLog || []), { id: uid(), type: "note" as const, date: today(), note: `📍 On my way message sent via ${otwChannel === "sms" ? "text" : "email"}` }] });
+      toast(`On the way message sent to ${customer?.firstName || "customer"} ✓`, "green");
+      setOtwOpen(false);
+    } catch (e: any) {
+      console.error("[OTW] — error:", e?.message || e);
+      toast(e?.message || "Failed to send on-my-way message", "red");
+    } finally {
+      setSendingOtw(false);
     }
   };
 
@@ -352,6 +409,10 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
     onUpdateJob({ signOff });
     toast("Sign-off saved ✓", "green");
     setShowSignOff(false);
+    if (signOffReturnToComplete) {
+      setSignOffReturnToComplete(false);
+      setCompleteStep("review");
+    }
   };
 
   // Draw-mode signature canvas
@@ -408,6 +469,7 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
   const startCompleteFlow = () => { setCompleteStep("review"); setPaidChoice(""); setPaymentMethod(""); };
 
   const sendInvoiceFromPortal = async (customSubject?: string, customNote?: string) => {
+    console.log("[CompleteJob] sendInvoiceFromPortal — channel:", invoiceChannel, "job:", job.id, "customer:", customer?.id);
     if (!customer?.email && !customer?.phone) {
       toast("No contact info for this customer. Add email or phone first.", "red");
       return false;
@@ -424,19 +486,23 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
       const payLink = `${window.location.origin}${window.location.pathname}#/portal/${newInv.id}`;
       const subject = customSubject?.trim() || `Invoice — ${companyName}`;
       const noteHtml = customNote?.trim() ? `<p style="font-style:italic;color:rgba(255,255,255,0.6)">${customNote.trim()}</p>` : "";
-      if (invoiceChannel === "sms" && customer.phone) {
-        await twilioSend(settings as any, customer.phone, `Hi ${customer.firstName}, your invoice for ${fmt(Number(job.amount) || 0)} is ready: ${payLink}`);
+      if (invoiceChannel === "sms") {
+        if (!customer.phone) throw new Error("No phone on file for this customer.");
+        console.log("[CompleteJob] sending invoice via Twilio to", customer.phone);
+        await withTimeout(twilioSend(settings as any, customer.phone, `Hi ${customer.firstName}, your invoice for ${fmt(Number(job.amount) || 0)} is ready: ${payLink}`), 15000, "Invoice SMS");
         toast(`Invoice texted to ${customer.firstName} ✓`, "green");
-      } else if (customer.email) {
+        logOutboundSmsToInbox({ contactName: `${customer.firstName} ${customer.lastName}`, contactPhone: customer.phone, customerId: customer.id, body: `Hi ${customer.firstName}, your invoice for ${fmt(Number(job.amount) || 0)} is ready: ${payLink}` }).catch(() => {});
+      } else {
+        if (!customer.email) throw new Error("No email on file for this customer.");
+        console.log("[CompleteJob] sending invoice via Gmail to", customer.email);
         const html = emailShell(companyName, "Invoice", `<p>Hi ${customer.firstName},</p>${noteHtml}<p>Thanks for choosing us! Your service at <b>${job.address}</b> is complete.</p><p><b>Amount due:</b> $${(Number(job.amount) || 0).toFixed(2)}</p>` + emailButton("View & Pay Invoice", payLink));
-        await sendEmail(settings, { to: customer.email, subject, body: html });
+        await withTimeout(sendOwnerGmailOnly(settings as any, customer.email, subject, html), 15000, "Invoice email");
         toast(`Invoice emailed to ${customer.firstName} ✓`, "green");
-      } else if (customer.phone) {
-        await twilioSend(settings as any, customer.phone, `Hi ${customer.firstName}, your invoice for ${fmt(Number(job.amount) || 0)} is ready: ${payLink}`);
-        toast(`Invoice texted to ${customer.firstName} ✓`, "green");
       }
+      console.log("[CompleteJob] invoice send — success");
       return true;
     } catch (err: any) {
+      console.error("[CompleteJob] invoice send — error:", err?.message || err);
       toast(`Failed to send invoice — ${err?.message || "unknown error"}`, "red");
       return false;
     } finally {
@@ -464,12 +530,14 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
     }
     // Show the summary immediately (local state already reflects completion),
     // but await the actual Supabase write so the toast tells the truth and the
-    // completion can't silently revert on the next poll.
-    onJobCompleted?.({ ...job, ...patch } as Job);
+    // completion can't silently revert on the next poll. onJobCompleted (rating +
+    // calendar sync) is best-effort — a throw in there must never block the
+    // screen from advancing to the summary.
+    try { onJobCompleted?.({ ...job, ...patch } as Job); } catch (e) { console.warn("[Complete Job] onJobCompleted callback failed:", e); }
     setCompleteSummary({ hours: hrs, amount: Number(job.amount) || 0, paymentStatus: paymentStatus === "Paid" ? `Paid (${patch.paymentType})` : invoiceSent ? "Unpaid — Invoice Sent" : "Unpaid" });
     setCompleteStep("summary");
     try {
-      const result = await onUpdateJob(patch);
+      const result = await withTimeout(Promise.resolve(onUpdateJob(patch)), 15000, "Mark complete save");
       if (result?.error) {
         console.error("[Complete Job] — error:", result.error.message || result.error);
         toast("Completed locally, but the server didn't confirm — " + (result.error.message || "check connection"), "red");
@@ -488,7 +556,7 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
     return (
       <div className="min-h-screen bg-black text-white flex flex-col">
         <div className="sticky top-0 z-20 bg-black/95 border-b border-red-900/30 px-4 py-3 flex items-center gap-3">
-          <button onClick={() => setShowSignOff(false)} className="p-2 rounded-xl hover:bg-white/10 text-white/60 -ml-2">
+          <button onClick={() => { setShowSignOff(false); if (signOffReturnToComplete) { setSignOffReturnToComplete(false); setCompleteStep("review"); } }} className="p-2 rounded-xl hover:bg-white/10 text-white/60 -ml-2">
             <ChevronLeft size={20} />
           </button>
           <div className="font-semibold">Customer Sign-Off</div>
@@ -631,7 +699,7 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
                 </div>
               )}
               {!job.signOff && (
-                <GBtn variant="ghost" onClick={() => { setCompleteStep(""); setShowSignOff(true); }} className="w-full !justify-center">
+                <GBtn variant="ghost" onClick={() => { setCompleteStep(""); setSignOffReturnToComplete(true); setShowSignOff(true); }} className="w-full !justify-center">
                   <PenLine size={14} className="inline mr-1.5" />Get Sign-Off First
                 </GBtn>
               )}
@@ -687,6 +755,16 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
               {invoiceChannel === "sms" && !customer?.phone && (
                 <div className="text-xs text-yellow-400/80 bg-yellow-950/20 border border-yellow-700/30 rounded-xl px-3 py-2">
                   No phone on file — add one in customer settings or switch to Email.
+                </div>
+              )}
+              {invoiceChannel === "email" && customer?.email && !(settings as any)?.googleConnected && (
+                <div className="text-xs text-yellow-400/80 bg-yellow-950/20 border border-yellow-700/30 rounded-xl px-3 py-2">
+                  Google isn't connected — connect it in Settings → Integrations, or switch to Text.
+                </div>
+              )}
+              {invoiceChannel === "sms" && customer?.phone && !settings?.twilioSid && (
+                <div className="text-xs text-yellow-400/80 bg-yellow-950/20 border border-yellow-700/30 rounded-xl px-3 py-2">
+                  Twilio isn't configured — add it in Settings → Integrations, or switch to Email.
                 </div>
               )}
               <div className="grid grid-cols-2 gap-3">
@@ -897,6 +975,26 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
             {runningLateOpen ? (
               <div className="space-y-3">
                 <div className="text-xs font-semibold text-orange-300">Running Late — notify customer</div>
+                {/* Send via — never silently defaults to a provider that isn't configured */}
+                <div>
+                  <div className="text-[10px] text-white/50 mb-1.5">Send via</div>
+                  <div className="flex gap-1.5">
+                    <button disabled={!customer?.phone} onClick={() => setLateChannel("sms")}
+                      className={"flex-1 py-1.5 rounded-lg border text-xs font-semibold transition disabled:opacity-30 " + (lateChannel === "sms" ? "border-orange-500 bg-orange-900/40 text-orange-200" : "border-white/10 bg-black/30 text-white/50 hover:border-white/30")}>
+                      💬 Text
+                    </button>
+                    <button disabled={!customer?.email} onClick={() => setLateChannel("email")}
+                      className={"flex-1 py-1.5 rounded-lg border text-xs font-semibold transition disabled:opacity-30 " + (lateChannel === "email" ? "border-orange-500 bg-orange-900/40 text-orange-200" : "border-white/10 bg-black/30 text-white/50 hover:border-white/30")}>
+                      📧 Email
+                    </button>
+                  </div>
+                  {lateChannel === "sms" && !settings?.twilioSid && (
+                    <div className="text-[10px] text-yellow-400/80 mt-1">Twilio isn't configured — add it in Settings → Integrations, or switch to Email.</div>
+                  )}
+                  {lateChannel === "email" && !(settings as any)?.googleConnected && (
+                    <div className="text-[10px] text-yellow-400/80 mt-1">Google isn't connected — connect it in Settings → Integrations, or switch to Text.</div>
+                  )}
+                </div>
                 {/* Reason templates */}
                 <div>
                   <div className="text-[10px] text-white/50 mb-1.5">Reason (optional)</div>
@@ -922,7 +1020,7 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
                   <div className="flex gap-1.5">
                     {[5, 10, 15, 20, 30].map(m => (
                       <button key={m} disabled={sendingRunningLate} onClick={() => sendRunningLate(m)} className="flex-1 py-2 rounded-lg bg-orange-900/30 border border-orange-700/40 text-orange-300 text-sm font-semibold hover:bg-orange-900/50 disabled:opacity-50 transition">
-                        {m}
+                        {sendingRunningLate ? "…" : m}
                       </button>
                     ))}
                   </div>
@@ -932,6 +1030,49 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
             ) : (
               <button onClick={() => setRunningLateOpen(true)} className="w-full flex items-center justify-center gap-1.5 py-1.5 text-xs text-orange-300 hover:text-orange-200 transition">
                 <Clock size={12} />Running Late
+              </button>
+            )}
+          </Glass>
+        )}
+
+        {/* On My Way — send channel choice, never silently defaults to Resend */}
+        {job.status !== "completed" && job.status !== "cancelled" && (customer?.phone || customer?.email) && (
+          <Glass className="p-3 !bg-blue-950/15 !border-blue-700/30">
+            {otwOpen ? (
+              <div className="space-y-3">
+                <div className="text-xs font-semibold text-blue-300">On My Way — notify customer</div>
+                <div>
+                  <div className="text-[10px] text-white/50 mb-1.5">Send via</div>
+                  <div className="flex gap-1.5">
+                    <button disabled={!customer?.phone} onClick={() => setOtwChannel("sms")}
+                      className={"flex-1 py-1.5 rounded-lg border text-xs font-semibold transition disabled:opacity-30 " + (otwChannel === "sms" ? "border-blue-500 bg-blue-900/40 text-blue-200" : "border-white/10 bg-black/30 text-white/50 hover:border-white/30")}>
+                      💬 Text
+                    </button>
+                    <button disabled={!customer?.email} onClick={() => setOtwChannel("email")}
+                      className={"flex-1 py-1.5 rounded-lg border text-xs font-semibold transition disabled:opacity-30 " + (otwChannel === "email" ? "border-blue-500 bg-blue-900/40 text-blue-200" : "border-white/10 bg-black/30 text-white/50 hover:border-white/30")}>
+                      📧 Email
+                    </button>
+                  </div>
+                  {otwChannel === "sms" && !settings?.twilioSid && (
+                    <div className="text-[10px] text-yellow-400/80 mt-1">Twilio isn't configured — add it in Settings → Integrations, or switch to Email.</div>
+                  )}
+                  {otwChannel === "email" && !(settings as any)?.googleConnected && (
+                    <div className="text-[10px] text-yellow-400/80 mt-1">Google isn't connected — connect it in Settings → Integrations, or switch to Text.</div>
+                  )}
+                </div>
+                <div className="flex gap-2">
+                  <button
+                    disabled={sendingOtw}
+                    onClick={sendOtw}
+                    className="flex-1 py-2 rounded-lg bg-gradient-to-r from-blue-600 to-blue-800 border border-blue-500/60 text-white text-xs font-bold disabled:opacity-40 transition">
+                    {sendingOtw ? "Sending…" : "Send"}
+                  </button>
+                  <button onClick={() => setOtwOpen(false)} className="text-[11px] text-white/30 hover:text-white/60 px-2">Cancel</button>
+                </div>
+              </div>
+            ) : (
+              <button onClick={() => setOtwOpen(true)} className="w-full flex items-center justify-center gap-1.5 py-1.5 text-xs text-blue-300 hover:text-blue-200 transition">
+                <Navigation size={12} />On My Way
               </button>
             )}
           </Glass>
@@ -1361,6 +1502,13 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   // FIX 3 — selected minutes for the Running Late picker (parent-hoisted so it
   // survives the frequent re-renders). null = nothing picked yet.
   const [lateMinutes, setLateMinutes] = useState<number | null>(null);
+  // FIX 2 — explicit Email/Text channel choice for Running Late + OTW on job
+  // cards (never silently defaults to Resend). Shared across cards since only
+  // one picker is open at a time.
+  const [lateCardChannel, setLateCardChannel] = useState<"sms" | "email">("sms");
+  const [otwOpenJobId, setOtwOpenJobId] = useState<string | null>(null);
+  const [otwCardChannel, setOtwCardChannel] = useState<"sms" | "email">("sms");
+  const [sendingOtwJobId, setSendingOtwJobId] = useState<string | null>(null);
   const [routeLoading, setRouteLoading] = useState(false);
   const [routeInfo, setRouteInfo] = useState<{ order: Job[]; totalDuration: string; totalDistance: string; etas: string[]; origin: { lat: number; lng: number } | string } | null>(null);
   const [calMode, setCalMode] = useState<"week" | "month">("month");
@@ -2039,7 +2187,11 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   // PostgREST — which silently drops critical fields like `status`. To stop a
   // "Mark Complete" from reverting on the next 3s poll, retry with just this
   // safe subset so the important fields always land.
-  const CORE_JOB_COLUMNS = ["status", "paymentStatus", "paymentType", "loggedHours", "amountCollected", "invoiceSentAt", "arrivedAt", "crew", "clockInAt", "lunchStartAt", "pipelineStage"] as const;
+  const CORE_JOB_COLUMNS = [
+    "status", "paymentStatus", "paymentType", "loggedHours", "amountCollected", "invoiceSentAt", "arrivedAt",
+    "crew", "clockInAt", "lunchStartAt", "pipelineStage", "photos", "videos", "preChecklist", "duringChecklist",
+    "postChecklist", "signOff", "scheduledTime", "commLog", "equipmentChecked", "notes",
+  ] as const;
   const updateJob = (jobId: string, patch: Partial<Job>): Promise<any> => {
     setJobs(prev => prev.map(j => j.id === jobId ? { ...j, ...patch } : j));
     // Persist immediately rather than waiting on the 30s App-level auto-save —
@@ -2343,14 +2495,19 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
       : `Hi ${cust!.firstName}, on my way — ETA ${eta}. See you soon!`;
     console.log("[OTW] sending — twilioConfigured:", !!settings?.twilioSid, "phone:", cust!.phone, "email:", cust!.email);
     if (settings?.twilioSid && cust!.phone) {
-      try { await twilioSend(settings as any, cust!.phone, msg); console.log("[OTW] — success: SMS sent"); toast("OTW text sent to " + cust!.firstName + " ✓", "green"); }
+      try {
+        await withTimeout(twilioSend(settings as any, cust!.phone, msg), 15000, "OTW SMS");
+        console.log("[OTW] — success: SMS sent");
+        toast("On the way message sent to " + cust!.firstName + " ✓", "green");
+        logOutboundSmsToInbox({ contactName: `${cust!.firstName} ${cust!.lastName}`, contactPhone: cust!.phone, customerId: cust!.id, body: msg }).catch(() => {});
+      }
       catch (e: any) { console.error("[OTW] — error:", e?.message); toast(e?.message || "Failed to send OTW text", "red"); }
     } else if (cust!.email) {
       try {
         const html = emailShell(settings?.companyName || "Crew Boss", "On My Way", `<p>${msg}</p>`);
-        await sendEmail(settings as any, { to: cust!.email, subject: "Your technician is on the way", body: html });
+        await withTimeout(sendOwnerGmailOnly(settings as any, cust!.email, "Your technician is on the way", html), 15000, "OTW email");
         console.log("[OTW] — success: email sent");
-        toast("OTW email sent to " + cust!.firstName + " ✓", "green");
+        toast("On the way message sent to " + cust!.firstName + " ✓", "green");
       } catch (e: any) { console.error("[OTW] — error:", e?.message); toast(e?.message || "Failed to send OTW email", "red"); }
     } else if (cust!.phone) {
       // No Twilio and no email on file — open the tech's own SMS app prefilled.
@@ -3147,14 +3304,40 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     const lateNote = lateOpenJobId === job.id ? lateNoteText : "";
     const setLateNote = (v: string) => setLateNoteText(v);
 
-    const sendOTW = async (e: React.MouseEvent) => {
-      e.stopPropagation();
-      console.log("[OTW] clicked for job", job.id, "customer", job.customerId);
-      await messageNextJobCustomer(job, 0);
+    const otwOpenCard = otwOpenJobId === job.id;
+    const setOtwOpenCard = (open: boolean) => setOtwOpenJobId(open ? job.id : null);
+    const sendingOtwCard = sendingOtwJobId === job.id;
+
+    const sendOTW = async () => {
+      console.log("[OTW] send clicked — job:", job.id, "channel:", otwCardChannel);
+      if (!customer) { console.warn("[OTW] no customer object"); toast("No customer info for this job", "yellow"); return; }
+      setSendingOtwJobId(job.id);
+      const msg = `Hi ${customer.firstName || "there"}, your CrewBoss technician is on the way!`;
+      try {
+        if (otwCardChannel === "sms") {
+          if (!customer.phone) throw new Error("No phone on file for this customer.");
+          await withTimeout(twilioSend(settings as any, customer.phone, msg), 15000, "OTW SMS");
+          console.log("[OTW] — success: SMS sent to", customer.phone);
+          logOutboundSmsToInbox({ contactName: `${customer.firstName} ${customer.lastName}`, contactPhone: customer.phone, customerId: customer.id, body: msg }).catch(() => {});
+        } else {
+          if (!customer.email) throw new Error("No email on file for this customer.");
+          const html = emailShell(settings?.companyName || "Crew Boss", "On My Way", `<p>${msg}</p>`);
+          await withTimeout(sendOwnerGmailOnly(settings as any, customer.email, "Your technician is on the way", html), 15000, "OTW email");
+          console.log("[OTW] — success: email sent to", customer.email);
+        }
+        updateJob(job.id, { commLog: [...(job.commLog || []), { id: uid(), type: "note" as const, date: today(), note: `📍 On my way message sent via ${otwCardChannel === "sms" ? "text" : "email"}` }] });
+        toast(`On the way message sent to ${customer.firstName || "customer"} ✓`, "green");
+        setOtwOpenJobId(null);
+      } catch (err: any) {
+        console.error("[OTW] — error:", err?.message || err);
+        toast(err?.message || "Failed to send on-my-way message", "red");
+      } finally {
+        setSendingOtwJobId(null);
+      }
     };
     const sendRunningLateCard = async (e: React.MouseEvent, minutes: number) => {
       e.stopPropagation();
-      console.log("[RunningLate] Send pressed —", minutes, "min, reason:", lateNote || "(none)", "job:", job.id);
+      console.log("[RunningLate] Send pressed —", minutes, "min, reason:", lateNote || "(none)", "job:", job.id, "channel:", lateCardChannel);
       if (!customer) { console.warn("[RunningLate] no customer object"); toast("No customer info for this job", "yellow"); return; }
       if (!customer.phone && !customer.email) { console.warn("[RunningLate] customer has no phone/email"); toast("No contact info for this customer", "yellow"); return; }
       setSendingLateJobId(job.id);
@@ -3163,33 +3346,36 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
       const reason = lateNote.trim() ? ` — ${lateNote.trim()}` : "";
       const msg = `Running ${minutes} min late${reason}. New ETA: ${newEta}. -Crew Boss`;
       try {
-        if (settings?.twilioSid && customer.phone) {
+        if (lateCardChannel === "sms") {
+          if (!customer.phone) throw new Error("No phone on file for this customer.");
           console.log("[RunningLate] sending via Twilio to", customer.phone);
-          await twilioSend(settings as any, customer.phone, `Hi ${customer.firstName}, ${msg}`);
+          await withTimeout(twilioSend(settings as any, customer.phone, `Hi ${customer.firstName}, ${msg}`), 15000, "Running late SMS");
           console.log("[RunningLate] — success: SMS sent");
           toast(`Message sent to ${customer.firstName} ✓`, "green");
-        } else if (customer.email) {
+          logOutboundSmsToInbox({ contactName: `${customer.firstName} ${customer.lastName}`, contactPhone: customer.phone, customerId: customer.id, body: `Hi ${customer.firstName}, ${msg}` }).catch(() => {});
+        } else {
+          if (!customer.email) throw new Error("No email on file for this customer.");
           console.log("[RunningLate] sending via email to", customer.email);
           const html = emailShell(settings?.companyName || "Crew Boss", "Running Late", `<p>Hi ${customer.firstName},</p><p>${msg}</p>`);
-          await sendEmail(settings as any, { to: customer.email, subject: "Your technician is running late", body: html });
+          await withTimeout(sendOwnerGmailOnly(settings as any, customer.email, "Your technician is running late", html), 15000, "Running late email");
           console.log("[RunningLate] — success: email sent");
           toast(`Message sent to ${customer.firstName} ✓`, "green");
-        } else if (customer.phone) {
-          console.log("[RunningLate] no provider — opening device SMS app");
-          window.location.href = "sms:" + customer.phone.replace(/\D/g, "") + "?body=" + encodeURIComponent(`Hi ${customer.firstName}, ${msg}`);
-          toast(`Opening your texts — add Twilio in Settings to send automatically`, "yellow");
         }
         const ownerEmail = (settings as any)?.myEmail || (settings as any)?.companyEmail;
         if (ownerEmail) {
           const ownerMsg = emailShell(settings?.companyName || "Crew Boss", "Crew Running Late", `<p>${myEmployee.firstName} ${myEmployee.lastName} is running ~${minutes} min late to ${job.address}${lateNote.trim() ? ` (${lateNote.trim()})` : ""}.</p>`);
-          sendEmail(settings as any, { to: ownerEmail, subject: `Running late — ${job.address}`, body: ownerMsg }).catch(() => {});
+          sendOwnerGmailOnly(settings as any, ownerEmail, `Running late — ${job.address}`, ownerMsg).catch(() => {});
         }
-        updateJob(job.id, { commLog: [...(job.commLog || []), { id: uid(), type: "note" as const, date: today(), note: `⏱ Running late +${minutes}min${lateNote.trim() ? ` (${lateNote.trim()})` : ""} — customer notified` }] });
+        const newScheduledTime = shiftScheduledTime(job.scheduledTime, minutes);
+        updateJob(job.id, {
+          commLog: [...(job.commLog || []), { id: uid(), type: "note" as const, date: today(), note: `⏱ Running late +${minutes}min${lateNote.trim() ? ` (${lateNote.trim()})` : ""} — customer notified via ${lateCardChannel === "sms" ? "text" : "email"}` }],
+          ...(newScheduledTime ? { scheduledTime: newScheduledTime } : {}),
+        });
       } catch (err: any) {
         const errMsg = err?.message || "";
         console.error("[RunningLate] — error:", errMsg);
         if (/401|expired|reconnect/i.test(errMsg)) toast("Google token expired. Reconnect Google in Settings.", "red");
-        else toast("Failed to send — " + (errMsg || "unknown error"), "red");
+        else toast(errMsg || "Failed to send running-late notice", "red");
       } finally {
         setSendingLateJobId(null);
         setLateOpenJobId(null);
@@ -3299,6 +3485,23 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
             {latePickerOpen ? (
               <div className="p-2 rounded-xl bg-orange-950/20 border border-orange-700/30 space-y-2">
                 <div className="text-[10px] text-orange-300 font-semibold">Running Late</div>
+                {/* Send via — explicit choice, never silently defaults to Resend */}
+                <div className="flex gap-1">
+                  <button disabled={!customer?.phone} onClick={e => { e.stopPropagation(); setLateCardChannel("sms"); }}
+                    className={"flex-1 py-1 rounded-lg border text-[10px] font-semibold transition disabled:opacity-30 " + (lateCardChannel === "sms" ? "border-orange-500 bg-orange-900/40 text-orange-200" : "border-white/10 bg-black/30 text-white/50")}>
+                    💬 Text
+                  </button>
+                  <button disabled={!customer?.email} onClick={e => { e.stopPropagation(); setLateCardChannel("email"); }}
+                    className={"flex-1 py-1 rounded-lg border text-[10px] font-semibold transition disabled:opacity-30 " + (lateCardChannel === "email" ? "border-orange-500 bg-orange-900/40 text-orange-200" : "border-white/10 bg-black/30 text-white/50")}>
+                    📧 Email
+                  </button>
+                </div>
+                {lateCardChannel === "sms" && !settings?.twilioSid && (
+                  <div className="text-[9px] text-yellow-400/80">Twilio isn't configured — add it in Settings, or switch to Email.</div>
+                )}
+                {lateCardChannel === "email" && !(settings as any)?.googleConnected && (
+                  <div className="text-[9px] text-yellow-400/80">Google isn't connected — connect it in Settings, or switch to Text.</div>
+                )}
                 {/* Reason templates */}
                 <div className="flex flex-wrap gap-1">
                   {["Stuck in traffic", "Previous job ran over", "Equipment issue", "Weather delay"].map(t => (
@@ -3335,16 +3538,43 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                 </button>
                 <button onClick={e => { e.stopPropagation(); setLatePickerOpen(false); setLateNote(""); setLateMinutes(null); }} className="text-[10px] text-white/30 hover:text-white/60">Cancel</button>
               </div>
+            ) : otwOpenCard ? (
+              <div className="p-2 rounded-xl bg-blue-950/20 border border-blue-700/30 space-y-2">
+                <div className="text-[10px] text-blue-300 font-semibold">On My Way</div>
+                <div className="flex gap-1">
+                  <button disabled={!customer?.phone} onClick={e => { e.stopPropagation(); setOtwCardChannel("sms"); }}
+                    className={"flex-1 py-1 rounded-lg border text-[10px] font-semibold transition disabled:opacity-30 " + (otwCardChannel === "sms" ? "border-blue-500 bg-blue-900/40 text-blue-200" : "border-white/10 bg-black/30 text-white/50")}>
+                    💬 Text
+                  </button>
+                  <button disabled={!customer?.email} onClick={e => { e.stopPropagation(); setOtwCardChannel("email"); }}
+                    className={"flex-1 py-1 rounded-lg border text-[10px] font-semibold transition disabled:opacity-30 " + (otwCardChannel === "email" ? "border-blue-500 bg-blue-900/40 text-blue-200" : "border-white/10 bg-black/30 text-white/50")}>
+                    📧 Email
+                  </button>
+                </div>
+                {otwCardChannel === "sms" && !settings?.twilioSid && (
+                  <div className="text-[9px] text-yellow-400/80">Twilio isn't configured — add it in Settings, or switch to Email.</div>
+                )}
+                {otwCardChannel === "email" && !(settings as any)?.googleConnected && (
+                  <div className="text-[9px] text-yellow-400/80">Google isn't connected — connect it in Settings, or switch to Text.</div>
+                )}
+                <div className="flex gap-1">
+                  <button disabled={sendingOtwCard} onClick={e => { e.stopPropagation(); sendOTW(); }}
+                    className="flex-1 py-2 rounded-lg bg-gradient-to-r from-blue-600 to-blue-800 border border-blue-500/60 text-white text-xs font-bold disabled:opacity-40 transition">
+                    {sendingOtwCard ? "Sending…" : "Send"}
+                  </button>
+                  <button onClick={e => { e.stopPropagation(); setOtwOpenCard(false); }} className="text-[10px] text-white/30 hover:text-white/60 px-2">Cancel</button>
+                </div>
+              </div>
             ) : (
               <div className="flex gap-2">
                 {(customer?.phone || customer?.email) && (
-                  <button onClick={sendOTW}
+                  <button onClick={e => { e.stopPropagation(); setOtwCardChannel(customer?.phone ? "sms" : "email"); setOtwOpenCard(true); }}
                     className="flex-1 flex items-center justify-center gap-1 py-1.5 rounded-xl bg-blue-950/30 border border-blue-700/40 text-blue-300 text-[10px] font-semibold hover:bg-blue-900/40 transition">
                     <Navigation size={10} />OTW
                   </button>
                 )}
                 {(customer?.phone || customer?.email) && (
-                  <button onClick={e => { e.stopPropagation(); setLatePickerOpen(true); }}
+                  <button onClick={e => { e.stopPropagation(); setLateCardChannel(customer?.phone ? "sms" : "email"); setLatePickerOpen(true); }}
                     className="flex-1 flex items-center justify-center gap-1 py-1.5 rounded-xl bg-orange-950/30 border border-orange-700/40 text-orange-300 text-[10px] font-semibold hover:bg-orange-900/40 transition">
                     <Clock size={10} />Running Late
                   </button>

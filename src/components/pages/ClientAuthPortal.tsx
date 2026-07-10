@@ -35,6 +35,8 @@ export function ClientAuthPortal({
   const [phone, setPhone] = useState("");
   const [authError, setAuthError] = useState("");
   const [authBusy, setAuthBusy] = useState(false);
+  const [forgotBusy, setForgotBusy] = useState(false);
+  const [forgotSent, setForgotSent] = useState(false);
   const [tab, setTab] = useState<"invoices" | "jobs" | "referrals" | "payment">("invoices");
   const [payingInv, setPayingInv] = useState<Estimate | null>(null);
   const [showSaveCard, setShowSaveCard] = useState(false);
@@ -107,6 +109,23 @@ export function ClientAuthPortal({
 
   const signOut = async () => { await supabase.auth.signOut({ scope: "local" }); setSession(null); };
 
+  const handleForgotPassword = async () => {
+    setAuthError("");
+    if (!email.trim()) { setAuthError("Enter your email above first, then tap \"Forgot password?\""); return; }
+    setForgotBusy(true);
+    try {
+      const redirectTo = `${window.location.origin}${window.location.pathname}#/reset-password`;
+      const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), { redirectTo });
+      if (error) throw error;
+      setForgotSent(true);
+      toast?.("Password reset email sent ✓", "green");
+    } catch (e: any) {
+      setAuthError(e?.message || "Failed to send reset email");
+    } finally {
+      setForgotBusy(false);
+    }
+  };
+
   const companyName = settings?.companyName || "Crew Boss";
 
   if (!checked) {
@@ -144,6 +163,15 @@ export function ClientAuthPortal({
             <GInput type="password" placeholder="Password" value={password} onChange={(e: any) => setPassword(e.target.value)} onKeyDown={(e: any) => e.key === "Enter" && handleAuth()} className="!text-sm" />
             {authError && <div className="text-xs text-red-400">{authError}</div>}
             <GBtn onClick={handleAuth} disabled={authBusy} className="w-full !py-3">{authBusy ? "Please wait…" : mode === "login" ? "Log In" : "Create Account"}</GBtn>
+            {mode === "login" && (
+              forgotSent ? (
+                <div className="text-xs text-green-400 text-center">Check your email for a password reset link.</div>
+              ) : (
+                <button type="button" onClick={handleForgotPassword} disabled={forgotBusy} className="w-full text-center text-xs text-white/40 hover:text-white/70 transition disabled:opacity-50">
+                  {forgotBusy ? "Sending…" : "Forgot password?"}
+                </button>
+              )
+            )}
           </Glass>
         </div>
       </div>

@@ -115,33 +115,40 @@ export function AddressAutocomplete({
   // Local CRM matches — instant, synchronous, always available.
   const localMatches = value.trim().length >= 2 ? matchKnownAddresses(value, knownAddresses) : [];
 
-  // FIX 8 — Google Places predictions when a Maps key is configured. Loaded via
-  // the shared Maps JS loader; uses AutocompleteService.getPlacePredictions so
-  // ANY address the user types shows up, not just ones already in the CRM. If
-  // the key is missing or the API 403s (restricted key), this stays empty and
-  // the local CRM matches are shown instead — never blocks the input.
+  // FIX 9 — Google Places predictions when a Maps key is configured, via the
+  // new AutocompleteSuggestion API. AutocompleteService (the old callback-based
+  // API used here previously) is not available to Google Cloud projects created
+  // after March 2025 — it throws "AutocompleteService is not available to new
+  // customers. Please use AutocompleteSuggestion" — so this uses the newer
+  // Promise-based `AutocompleteSuggestion.fetchAutocompleteSuggestions` from the
+  // "places" library instead. If the key is missing or the API errors (e.g. a
+  // restricted key), this stays empty and the local CRM matches are shown
+  // instead — never blocks the input.
   const [placePreds, setPlacePreds] = useState<string[]>([]);
-  const svcRef = useRef<any>(null);
+  const placesLibRef = useRef<any>(null);
   const debounceRef = useRef<any>(null);
   useEffect(() => {
     if (!mapsKey || value.trim().length < 3) { setPlacePreds([]); return; }
     clearTimeout(debounceRef.current);
     debounceRef.current = setTimeout(async () => {
       try {
-        if (!svcRef.current) {
+        if (!placesLibRef.current) {
           await loadMapsScript(mapsKey);
           const g = (window as any).google;
-          if (!g?.maps?.places?.AutocompleteService) { console.warn("[Autocomplete] Places library unavailable — using local matches"); return; }
-          svcRef.current = new g.maps.places.AutocompleteService();
+          if (!g?.maps?.importLibrary) { console.warn("[Autocomplete] Maps JS API unavailable — using local matches"); return; }
+          placesLibRef.current = await g.maps.importLibrary("places");
         }
-        svcRef.current.getPlacePredictions(
-          { input: value, componentRestrictions: { country: "us" }, types: ["address"] },
-          (preds: any[], status: string) => {
-            if (status !== "OK" || !preds) { console.log("[Autocomplete] Places status:", status, "— falling back to local matches"); setPlacePreds([]); return; }
-            console.log("[Autocomplete] Places returned", preds.length, "suggestions for", JSON.stringify(value));
-            setPlacePreds(preds.map(p => p.description).slice(0, 5));
-          }
-        );
+        const { AutocompleteSuggestion } = placesLibRef.current;
+        if (!AutocompleteSuggestion?.fetchAutocompleteSuggestions) { console.warn("[Autocomplete] AutocompleteSuggestion unavailable — using local matches"); setPlacePreds([]); return; }
+        const { suggestions } = await AutocompleteSuggestion.fetchAutocompleteSuggestions({
+          input: value, includedRegionCodes: ["us"], includedPrimaryTypes: ["street_address", "route", "premise"],
+        });
+        const texts = (suggestions || [])
+          .map((s: any) => s.placePrediction?.text?.toString())
+          .filter(Boolean)
+          .slice(0, 5);
+        console.log("[Autocomplete] Places returned", texts.length, "suggestions for", JSON.stringify(value));
+        setPlacePreds(texts);
       } catch (e: any) {
         console.warn("[Autocomplete] Places lookup failed — using local matches:", e?.message);
         setPlacePreds([]);

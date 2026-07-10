@@ -589,20 +589,44 @@ export function App() {
     return () => clearTimeout(settingsSaveTimerRef.current);
   }, [settings, crmUserId]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // FIX 5 — ensure the owner has a real row in `employees` so they can be
+  // assigned to jobs, clock in/out, and show up in Live Crew View exactly like
+  // any technician. Keyed by the same synthetic id JobDetailModal's crew
+  // toggle already uses (`owner_<email>`) so existing crew-assignment code
+  // and this row refer to the same employee. Runs once per session, after
+  // both the owner's Supabase session and their profile name are known.
+  const ownerEmpRowEnsuredRef = useRef(false);
+  useEffect(() => {
+    const ownerEmail = settings.googleEmail || crmUserEmail;
+    if (!crmUserId || !settings.ownerName || !ownerEmail || ownerEmpRowEnsuredRef.current) return;
+    ownerEmpRowEnsuredRef.current = true;
+    const ownerId = `owner_${ownerEmail}`;
+    if (employees.some(e => e.id === ownerId)) return;
+    const firstName = settings.ownerName.trim().split(" ")[0] || "Owner";
+    const lastName = settings.ownerName.trim().split(" ").slice(1).join(" ") || "";
+    const ownerEmpRow: any = {
+      id: ownerId, firstName, lastName, role: "owner", status: "active", email: ownerEmail, hourlyRate: 0,
+    };
+    setEmployees(prev => prev.some(e => e.id === ownerId) ? prev : [...prev, ownerEmpRow as Employee]);
+    (supabase as any).from("employees").upsert(ownerEmpRow, { onConflict: "id" })
+      .then((r: any) => { if (r?.error) console.warn("[Owner Self-Assign] employees upsert failed:", r.error.message); else console.log("[Owner Self-Assign] owner employee row ensured:", ownerId); })
+      .catch((e: any) => console.warn("[Owner Self-Assign] employees upsert threw:", e?.message));
+  }, [crmUserId, crmUserEmail, settings.ownerName, settings.googleEmail, employees]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // ── Owner notifications on client invoice activity (BUG 15 / FEATURE 5) ──────
   // The client portal writes `clientViewedAt` / `paidAt` / `paymentFailedAt`
   // onto the estimate row in Supabase; the owner's 3s poll pulls those in. Diff
   // each poll against the previous snapshot and surface a toast + bell entry the
   // moment a client opens, pays, or fails to pay an invoice.
-  const invoiceActivityRef = useRef<Record<string, { viewed?: string; paid?: string; failed?: string }>>({});
+  const invoiceActivityRef = useRef<Record<string, { viewed?: string; paid?: string; failed?: string; status?: string }>>({});
   const invoiceActivitySeededRef = useRef(false);
   const [invoiceNotifs, setInvoiceNotifs] = useState<{ id: string; text: string; at: number }[]>([]);
   useEffect(() => {
     if (!hasCrmSession) return;
-    const snapshot: Record<string, { viewed?: string; paid?: string; failed?: string }> = {};
+    const snapshot: Record<string, { viewed?: string; paid?: string; failed?: string; status?: string }> = {};
     const newEvents: { id: string; text: string; at: number }[] = [];
     for (const e of estimates as any[]) {
-      const cur = { viewed: e.clientViewedAt, paid: e.paidAt, failed: e.paymentFailedAt };
+      const cur = { viewed: e.clientViewedAt, paid: e.paidAt, failed: e.paymentFailedAt, status: e.status };
       snapshot[e.id] = cur;
       if (!invoiceActivitySeededRef.current) continue; // don't fire on first load
       const prev = invoiceActivityRef.current[e.id] || {};
@@ -610,11 +634,12 @@ export function App() {
       if (cur.paid && !prev.paid) newEvents.push({ id: e.id + ":paid", text: `💰 ${custName} paid invoice ${fmt(e.total)}`, at: Date.now() });
       else if (cur.failed && cur.failed !== prev.failed) newEvents.push({ id: e.id + ":failed", text: `⚠️ ${custName}'s payment failed on ${fmt(e.total)}`, at: Date.now() });
       else if (cur.viewed && !prev.viewed) newEvents.push({ id: e.id + ":viewed", text: `👀 ${custName} opened invoice ${fmt(e.total)}`, at: Date.now() });
+      else if (cur.status === "rejected" && prev.status !== "rejected") newEvents.push({ id: e.id + ":rejected", text: `❌ ${custName} declined estimate ${fmt(e.total)}`, at: Date.now() });
     }
     invoiceActivityRef.current = snapshot;
     if (!invoiceActivitySeededRef.current) { invoiceActivitySeededRef.current = true; return; }
     if (newEvents.length) {
-      newEvents.forEach(ev => toast(ev.text, ev.text.startsWith("⚠️") ? "red" : "green"));
+      newEvents.forEach(ev => toast(ev.text, (ev.text.startsWith("⚠️") || ev.text.startsWith("❌")) ? "red" : "green"));
       setInvoiceNotifs(prev => [...newEvents, ...prev].slice(0, 20));
     }
   }, [estimates, hasCrmSession]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -1901,6 +1926,19 @@ export function App() {
             });
             toast(paid ? "✓ Paid — " + fmt(data.totalPaid) : "✓ Signed — customer will pay later");
             setPortalEstId(null);
+          }}
+          onDecline={async (id: string, data: { reason?: string }) => {
+            const declinedAt = new Date().toISOString();
+            setEstimates(prev => prev.map(est => est.id === id ? { ...est, status: "rejected", declinedAt, declineReason: data.reason || "" } as any : est));
+            // Write immediately rather than waiting on the 30s bulk autosave —
+            // the owner's invoiceActivity diff (above) only fires once this
+            // lands in Supabase and the owner's own poll picks it up.
+            try {
+              const { error } = await (supabase as any).from("estimates").update({ status: "rejected", declinedAt, declineReason: data.reason || "" }).eq("id", id);
+              if (error) console.warn("Decline failed to save server-side:", error.message);
+            } catch (e: any) {
+              console.warn("Decline failed to save server-side:", e?.message);
+            }
           }}
         />
       )}

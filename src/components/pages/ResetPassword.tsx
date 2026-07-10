@@ -57,8 +57,21 @@ export function ResetPassword() {
     }
 
     setSuccess(true);
+    // This route is shared by owner/employee/client password resets — send a
+    // client back to the client portal instead of the employee portal by
+    // checking whether their email matches a customer record (same check
+    // ClientAuthPortal itself uses to tell a client session from staff).
+    let destination = "/portal";
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const resetEmail = session?.user?.email;
+      if (resetEmail) {
+        const { data } = await (supabase as any).from("customers").select("id").ilike("email", resetEmail).maybeSingle();
+        if (data) destination = "/client";
+      }
+    } catch { /* customers table lookup best-effort — default to /portal */ }
     await supabase.auth.signOut();
-    setTimeout(() => { window.location.hash = "/portal"; }, 2500);
+    setTimeout(() => { window.location.hash = destination; }, 2500);
   };
 
   return (

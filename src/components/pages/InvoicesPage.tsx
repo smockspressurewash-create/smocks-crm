@@ -290,6 +290,17 @@ export function InvoicesPage({ estimates = [], setEstimates, customers = [], set
     setEstimates(estimates.map(e => e.id === id ? { ...e, paidAt: null } : e));
     toast("Marked unpaid");
   };
+  // FIX 7 — invoices are stored as estimates with invoiced:true, so deleting
+  // one removes it from the shared `estimates` table (both locally and
+  // server-side, else the next cross-device poll just re-fetches it).
+  const deleteInvoice = (inv: any) => {
+    if (!window.confirm(`Permanently delete invoice #${(inv.id || "").toUpperCase()}? This can't be undone.`)) return;
+    setEstimates(estimates.filter(e => e.id !== inv.id));
+    setViewing(null);
+    (supabase as any).from("estimates").delete().eq("id", inv.id)
+      .then((result: any) => { if (result?.error) toast("Deleted locally, but failed to delete from server — " + result.error.message, "red"); else toast("Invoice deleted"); })
+      .catch((e: any) => toast("Deleted locally, but failed to delete from server — " + (e?.message || ""), "red"));
+  };
   const sendReminder = async inv => {
     const c = customers.find(x => x.id === inv.customerId);
     if (!c) return;
@@ -512,6 +523,7 @@ export function InvoicesPage({ estimates = [], setEstimates, customers = [], set
                           <button onClick={() => markPaid(inv.id)} title="Mark paid" className="p-1.5 rounded-lg hover:bg-green-900/30 text-white/60 hover:text-green-400"><CheckCircle size={12} /></button>
                         </>}
                         {inv.paidAt && <button onClick={() => markUnpaid(inv.id)} title="Mark unpaid" className="p-1.5 rounded-lg hover:bg-yellow-900/30 text-white/60 hover:text-yellow-400"><Undo2 size={12} /></button>}
+                        <button onClick={() => deleteInvoice(inv)} title="Delete invoice" className="p-1.5 rounded-lg hover:bg-red-950/30 text-white/60 hover:text-red-400"><Trash2 size={12} /></button>
                       </div>
                     </td>
                   </tr>
@@ -614,6 +626,7 @@ export function InvoicesPage({ estimates = [], setEstimates, customers = [], set
                 }}><Undo2 size={11} className="inline mr-1" />Refund</GBtn>
                 <GBtn variant="ghost" onClick={() => { markUnpaid(viewing.id); setViewing({ ...viewing, paidAt: null }); }}><Undo2 size={12} className="inline mr-1.5" />Unpaid</GBtn>
               </>}
+              <GBtn variant="danger" onClick={() => deleteInvoice(viewing)}><Trash2 size={12} className="inline mr-1.5" />Delete</GBtn>
             </div>
           </div>;
         })()}

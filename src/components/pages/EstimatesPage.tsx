@@ -23,6 +23,7 @@ import {
 import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE } from "../../lib/utils";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
 import { twilioSend, sendEmail } from "../../lib/messaging";
+import { supabase } from "../../lib/supabase";
 import { seedWeather } from "../../lib/weather";
 import { seedCustomers, seedEstimates, seedJobs, seedEmployees, seedVehicles, seedExpenses, seedChemicals, seedServices, seedAutomations, seedEmailTemplates, seedSmsTemplates, seedRewardTiers, seedReferrals, seedMaintenance, campaignTemplates, seedSocialPosts, seedTimeline, seedGoals, seedReminders, seedAccountabilityEntries, seedMileage, seedLeadSrc, STEP_TYPES, AUTOMATION_TEMPLATES } from "../../lib/seed";
 import { callModel, MODELS } from "../../lib/api";
@@ -191,10 +192,22 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
     toast("Estimate exported (HTML — print to PDF)");
   };
 
-  const bulkDelete = () => {
-    setEstimates(estimates.filter(e => !selected.includes(e.id)));
-    toast(selected.length + " deleted");
+  const bulkDelete = async () => {
+    if (selected.length === 0) return;
+    if (!window.confirm(`Permanently delete ${selected.length} estimate${selected.length !== 1 ? "s" : ""}? This can't be undone.`)) return;
+    const ids = [...selected];
+    setEstimates(estimates.filter(e => !ids.includes(e.id)));
     setSelected([]);
+    // Must also delete server-side — otherwise the next cross-device sync poll
+    // just re-fetches these rows from Supabase and they reappear locally.
+    try {
+      const { error } = await (supabase as any).from("estimates").delete().in("id", ids);
+      if (error) { toast(`Deleted locally, but failed to delete from server — ${error.message}`, "red"); return; }
+    } catch (err: any) {
+      toast(`Deleted locally, but failed to delete from server — ${err?.message || "unknown error"}`, "red");
+      return;
+    }
+    toast(ids.length + " deleted");
   };
 
   const openPreview = est => {
@@ -217,7 +230,7 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
     <div className="space-y-4">
       <div className="flex flex-wrap gap-2 items-center justify-between">
         <div className="flex gap-2 flex-wrap">
-          {["all", "pending", "approved"].map(s => <button key={s} onClick={() => setFilter(s)} className={"px-3 py-1.5 rounded-xl text-xs font-medium transition border " + (filter === s ? "bg-red-900/40 border-red-500/50 text-white" : "bg-black/40 border-red-900/30 text-white/60 hover:text-white")}>{s === "all" ? "All (" + estimates.length + ")" : s + " (" + estimates.filter(e => e.status === s).length + ")"}</button>)}
+          {["all", "pending", "approved", "rejected"].map(s => <button key={s} onClick={() => setFilter(s)} className={"px-3 py-1.5 rounded-xl text-xs font-medium transition border " + (filter === s ? "bg-red-900/40 border-red-500/50 text-white" : "bg-black/40 border-red-900/30 text-white/60 hover:text-white")}>{s === "all" ? "All (" + estimates.length + ")" : (s === "rejected" ? "declined" : s) + " (" + estimates.filter(e => e.status === s).length + ")"}</button>)}
         </div>
         <div className="flex gap-2">
           {selected.length > 0 && <>
@@ -270,7 +283,7 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
                   </div>
                 </div>
                 <div className="flex flex-col gap-1 items-end">
-                  <Badge tone={e.status === "approved" ? "green" : "yellow"}>{e.status}</Badge>
+                  <Badge tone={e.status === "approved" ? "green" : e.status === "rejected" ? "red" : "yellow"}>{e.status === "rejected" ? "declined" : e.status}</Badge>
                   {e.invoiced && <Badge tone="blue">Invoiced</Badge>}
                   {expiry && <Badge tone={expiry.tone}>{expiry.label}</Badge>}
                 </div>

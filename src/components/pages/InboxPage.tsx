@@ -23,6 +23,7 @@ import {
 import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE } from "../../lib/utils";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
 import { twilioSend, sendEmail, pollTwilioIncoming } from "../../lib/messaging";
+import { supabase } from "../../lib/supabase";
 import { seedWeather } from "../../lib/weather";
 import { seedCustomers, seedEstimates, seedJobs, seedEmployees, seedVehicles, seedExpenses, seedChemicals, seedServices, seedAutomations, seedEmailTemplates, seedSmsTemplates, seedRewardTiers, seedReferrals, seedMaintenance, campaignTemplates, seedSocialPosts, seedTimeline, seedGoals, seedReminders, seedAccountabilityEntries, seedMileage, seedLeadSrc, STEP_TYPES, AUTOMATION_TEMPLATES } from "../../lib/seed";
 import { callModel, MODELS } from "../../lib/api";
@@ -93,6 +94,63 @@ export function InboxPage({ threads = [], setThreads, customers = [], settings =
 
   const activeThread = threads.find(t => t.id === active) || gmailThreads.find(t => t.id === active);
 
+  // FIX — SMS Inbox sync. `inbox_threads` in Supabase is the shared source of
+  // truth for SMS conversations (written by both this page and, critically, by
+  // employees sending OTW/Running Late/invoice texts from their own devices in
+  // the field portal — see logOutboundSmsToInbox in lib/messaging.ts). Poll +
+  // realtime so a text sent from a tech's phone shows up here without a
+  // manual refresh. Only the "sms" channel is server-synced; manually
+  // composed email threads stay local-only, same as before.
+  const normalizeInboxThread = (r: any) => ({
+    id: r.id,
+    channel: "sms" as const,
+    contactName: r.contact_name || r.contactName || r.contact_phone || "Unknown",
+    contactPhone: r.contact_phone || r.contactPhone || "",
+    contactEmail: r.contact_email || r.contactEmail || "",
+    customerId: r.customer_id || r.customerId || null,
+    unread: !!r.unread,
+    messages: Array.isArray(r.messages) ? r.messages : [],
+  });
+  useEffect(() => {
+    let cancelled = false;
+    const loadInboxThreads = async () => {
+      try {
+        const { data, error } = await (supabase as any).from("inbox_threads").select("*").eq("channel", "sms");
+        if (error) { console.warn("[Inbox] inbox_threads fetch failed — run the inbox_threads SQL:", error.message); return; }
+        if (cancelled || !Array.isArray(data)) return;
+        const fromServer = data.map(normalizeInboxThread);
+        setThreads((prev: any[]) => {
+          const byId = new Map(fromServer.map(t => [t.id, t]));
+          // Keep any local sms thread not yet confirmed server-side (e.g. a message
+          // just sent, before its own upsert lands) so it doesn't flicker away.
+          const localOnlySms = prev.filter(t => t.channel === "sms" && !byId.has(t.id));
+          const nonSms = prev.filter(t => t.channel !== "sms");
+          return [...fromServer, ...localOnlySms, ...nonSms];
+        });
+      } catch (e: any) {
+        console.warn("[Inbox] inbox_threads fetch threw:", e?.message);
+      }
+    };
+    loadInboxThreads();
+    const interval = setInterval(loadInboxThreads, 3000);
+    const channel = (supabase as any)
+      .channel("inbox_threads_changes")
+      .on("postgres_changes", { event: "*", schema: "public", table: "inbox_threads" }, () => { loadInboxThreads(); })
+      .subscribe();
+    return () => { cancelled = true; clearInterval(interval); (supabase as any).removeChannel(channel); };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Upserts one sms thread's full row to Supabase — called after any local
+  // mutation (send, incoming poll, mark read) so other devices/sessions see it.
+  const syncThreadToSupabase = (t: any) => {
+    if (t.channel !== "sms") return;
+    (supabase as any).from("inbox_threads").upsert({
+      id: t.id, channel: "sms", contact_name: t.contactName, contact_phone: t.contactPhone,
+      customer_id: t.customerId || null, unread: !!t.unread, messages: t.messages,
+      last_message_at: t.messages[t.messages.length - 1]?.ts || Date.now(), updated_at: new Date().toISOString(),
+    }, { onConflict: "id" }).then((r: any) => { if (r?.error) console.warn("[Inbox] thread sync failed:", r.error.message); }).catch(() => {});
+  };
+
   // Auto-scroll to bottom of messages
   useEffect(() => { msgEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [active, activeThread?.messages.length]);
 
@@ -105,6 +163,7 @@ export function InboxPage({ threads = [], setThreads, customers = [], settings =
         const lastTs = Math.max(0, ...threads.flatMap(t => t.messages.map(m => m.ts)));
         const incoming = await pollTwilioIncoming(settings, new Date(lastTs).toISOString());
         if (incoming.length > 0) {
+          const touchedIds = new Set<string>();
           setThreads(prev => {
             let updated = [...prev];
             incoming.forEach(msg => {
@@ -127,10 +186,14 @@ export function InboxPage({ threads = [], setThreads, customers = [], settings =
               const existingThread = updated.find(t => t.channel === "sms" && t.contactPhone?.replace(/\D/g, "") === phone.replace(/\D/g, ""));
               if (existingThread) {
                 updated = updated.map(t => t.id === existingThread.id ? { ...t, unread: true, messages: [...t.messages, newMsg] } : t);
+                touchedIds.add(existingThread.id);
               } else {
-                updated = [{ id: uid(), channel: "sms", contactName: customer ? customer.firstName + " " + customer.lastName : phone, contactPhone: phone, contactEmail: "", customerId: customer?.id || null, unread: true, messages: [newMsg] }, ...updated];
+                const newThreadId = uid();
+                updated = [{ id: newThreadId, channel: "sms", contactName: customer ? customer.firstName + " " + customer.lastName : phone, contactPhone: phone, contactEmail: "", customerId: customer?.id || null, unread: true, messages: [newMsg] }, ...updated];
+                touchedIds.add(newThreadId);
               }
             });
+            touchedIds.forEach(id => { const t = updated.find(x => x.id === id); if (t) syncThreadToSupabase(t); });
             return updated;
           });
           if (incoming.length > 0) toast(incoming.length + " new message" + (incoming.length > 1 ? "s" : ""));
@@ -185,7 +248,10 @@ export function InboxPage({ threads = [], setThreads, customers = [], settings =
       }
       setGmailThreads(prev => prev.map(t => t.id === id ? { ...t, unread: false } : t));
     } else {
-      setThreads(threads.map(t => t.id === id ? { ...t, unread: false } : t));
+      const next = threads.map(t => t.id === id ? { ...t, unread: false } : t);
+      setThreads(next);
+      const t = next.find(x => x.id === id);
+      if (t) syncThreadToSupabase(t);
     }
   };
 
@@ -206,7 +272,12 @@ export function InboxPage({ threads = [], setThreads, customers = [], settings =
       if (isGmail) {
         setGmailThreads(prev => prev.map(t => t.id === active ? { ...t, messages: t.messages.map(m => m.id === outMsg.id ? { ...m, status, ...extra } : m) } : t));
       } else {
-        setThreads(prev => prev.map(t => t.id === active ? { ...t, messages: t.messages.map(m => m.id === outMsg.id ? { ...m, status, ...extra } : m) } : t));
+        setThreads(prev => {
+          const next = prev.map(t => t.id === active ? { ...t, messages: t.messages.map(m => m.id === outMsg.id ? { ...m, status, ...extra } : m) } : t);
+          const t = next.find(x => x.id === active);
+          if (t) syncThreadToSupabase(t);
+          return next;
+        });
       }
     };
     try {
@@ -248,10 +319,20 @@ export function InboxPage({ threads = [], setThreads, customers = [], settings =
       } else {
         await sendEmail(settings, { to: newDraft.email, subject: newDraft.subject, body: newDraft.body });
       }
-      setThreads(prev => prev.map(t => t.id === newThread.id ? { ...t, messages: t.messages.map(m => m.id === outMsg.id ? { ...m, status: "sent" } : m) } : t));
+      setThreads(prev => {
+        const next = prev.map(t => t.id === newThread.id ? { ...t, messages: t.messages.map(m => m.id === outMsg.id ? { ...m, status: "sent" } : m) } : t);
+        const t = next.find(x => x.id === newThread.id);
+        if (t) syncThreadToSupabase(t);
+        return next;
+      });
       toast("Sent ✓");
     } catch (err) {
-      setThreads(prev => prev.map(t => t.id === newThread.id ? { ...t, messages: t.messages.map(m => m.id === outMsg.id ? { ...m, status: "failed", error: err.message } : m) } : t));
+      setThreads(prev => {
+        const next = prev.map(t => t.id === newThread.id ? { ...t, messages: t.messages.map(m => m.id === outMsg.id ? { ...m, status: "failed", error: err.message } : m) } : t);
+        const t = next.find(x => x.id === newThread.id);
+        if (t) syncThreadToSupabase(t);
+        return next;
+      });
       toast("Send failed: " + err.message + (err.message.includes("Twilio not configured") ? " — add Twilio credentials in Settings" : ""), "error");
     }
     setNewDraft({ channel: "sms", to: "", phone: "", email: "", subject: "", body: "" });

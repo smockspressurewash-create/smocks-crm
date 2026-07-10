@@ -344,7 +344,7 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
   // even on a render where the data hasn't changed).
   const [, liveTeamTick] = useState(0);
   useEffect(() => {
-    const interval = setInterval(() => liveTeamTick(t => t + 1), 5000);
+    const interval = setInterval(() => liveTeamTick(t => t + 1), 3000);
     return () => clearInterval(interval);
   }, []);
   // Live team = employees currently on shift (shift timer `dayClockInAt`),
@@ -370,6 +370,18 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
     const mins = Math.floor(ms / 60000);
     const h = Math.floor(mins / 60), m = mins % 60;
     return h > 0 ? `${h}h ${m}m` : `${m}m`;
+  };
+  // FIX 3 — status label for the crew member's current job: Running Late (past
+  // scheduled start, not arrived), Just Started (arrived <15min ago), Almost
+  // Done (checklist ≥80% but not finished), otherwise On Time.
+  const crewStatusLabel = (j: any, prog: { done: number; total: number; pct: number } | null): { label: string; tone: string } => {
+    if (j?.scheduledTime && j.scheduledDate === todayStrLive && !j.arrivedAt) {
+      const scheduledMs = new Date(`${j.scheduledDate}T${j.scheduledTime}:00`).getTime();
+      if (!Number.isNaN(scheduledMs) && Date.now() > scheduledMs + 10 * 60000) return { label: "Running Late", tone: "red" };
+    }
+    if (prog && prog.pct >= 80 && prog.pct < 100) return { label: "Almost Done", tone: "blue" };
+    if (j?.arrivedAt && Date.now() - Number(j.arrivedAt) < 15 * 60000) return { label: "Just Started", tone: "blue" };
+    return { label: "On Time", tone: "green" };
   };
 
   const w: any = settings.dashboardWidgets || { quickActions: true, kpis: true, revenuePeriods: true, goals: true, outstanding: true, charts: true, activity: true };
@@ -463,6 +475,7 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
               const prog = j ? checklistProgress(j) : null;
               const photoCount = j ? (j.photos || []).length : 0;
               const mapsKey = settings.googleMapsKey || settings.mapsKey;
+              const status = crewStatusLabel(j, prog);
               return (
                 <div key={e.id} className={"flex items-center gap-3 p-3 rounded-xl border " + (onLunch ? "bg-yellow-950/20 border-yellow-700/40" : "bg-black/30 border-white/10")}>
                   {j ? <MiniStreetViewThumb address={j.address} mapsKey={mapsKey} /> : (
@@ -471,15 +484,32 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
                     </div>
                   )}
                   <div className="flex-1 min-w-0">
-                    <div className="text-sm font-medium truncate">{e.firstName} {e.lastName}{j ? ` — ${c ? c.firstName + " " + c.lastName : j.address}` : ""}</div>
-                    <div className="text-xs text-white/40 flex items-center gap-2 flex-wrap mt-0.5">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <div className="text-sm font-medium truncate">{e.firstName} {e.lastName}</div>
+                      {j && (
+                        <span className={"text-[9px] px-1.5 py-0.5 rounded-full font-bold uppercase tracking-wide flex-shrink-0 " +
+                          (status.tone === "red" ? "bg-red-900/40 text-red-300" : status.tone === "blue" ? "bg-blue-900/40 text-blue-300" : "bg-green-900/40 text-green-300")}>
+                          {status.label}
+                        </span>
+                      )}
+                    </div>
+                    <div className="text-xs text-white/50 truncate mt-0.5 flex items-center gap-1">
+                      {j ? <><MapPin size={10} className="flex-shrink-0" />{c ? `${c.firstName} ${c.lastName} — ${j.address}` : j.address}</> : <span className="text-white/30">No active job</span>}
+                    </div>
+                    <div className="text-xs text-white/40 flex items-center gap-2 flex-wrap mt-1">
                       <span className={"font-mono " + (onLunch ? "text-yellow-400" : "text-green-400")}>{onLunch ? "⏸ " : "⏱ "}{fmtElapsed(shiftMs)} shift</span>
                       {onLunch && <span className="text-yellow-400/70">on lunch</span>}
                       {j?.arrivedAt && <span className="text-green-400">✓ on site</span>}
-                      {prog && <span className="flex items-center gap-1"><CheckSquare size={10} />{prog.done}/{prog.total} checklist</span>}
                       {photoCount > 0 && <span className="flex items-center gap-1"><ImageIcon size={10} />{photoCount} photo{photoCount !== 1 ? "s" : ""}</span>}
-                      {!j && <span className="text-white/30">no active job</span>}
                     </div>
+                    {prog && (
+                      <div className="flex items-center gap-1.5 mt-1.5">
+                        <div className="flex-1 h-1.5 rounded-full bg-white/10 overflow-hidden max-w-[160px]">
+                          <div className="h-full bg-green-500 rounded-full transition-all" style={{ width: prog.pct + "%" }} />
+                        </div>
+                        <span className="text-[10px] text-white/40 flex items-center gap-1 flex-shrink-0"><CheckSquare size={10} />{prog.done}/{prog.total}</span>
+                      </div>
+                    )}
                   </div>
                   {j && <button onClick={() => onViewJob(j.id)} className="px-2.5 py-1.5 bg-white/5 border border-white/10 rounded-lg text-xs text-white/60 hover:text-white flex-shrink-0">View Details</button>}
                 </div>

@@ -98,9 +98,18 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
     // which is why it used to stay open after confirming. await + try/catch
     // avoids relying on .catch() existing on the builder at all.
     try {
-      await (supabase as any).from("jobs").delete().eq("id", jid);
-    } catch (err) {
-      console.warn("Job delete failed to save server-side:", err);
+      const { error } = await (supabase as any).from("jobs").delete().eq("id", jid);
+      if (error) {
+        console.warn("Job delete failed to save server-side:", error.message);
+        toast("Deleted locally, but failed to delete from server — " + error.message, "red");
+        setDeleteModal(null);
+        return;
+      }
+    } catch (err: any) {
+      console.warn("Job delete failed to save server-side:", err?.message);
+      toast("Deleted locally, but failed to delete from server — " + (err?.message || "unknown error"), "red");
+      setDeleteModal(null);
+      return;
     }
     setDeleteModal(null);
     toast("Job permanently deleted");
@@ -127,6 +136,10 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
   const [quickReqJobId, setQuickReqJobId] = useState<string | null>(null);
   const [quickReqEmpId, setQuickReqEmpId] = useState("");
   const [quickReqMsg, setQuickReqMsg] = useState("");
+  // FIX 6 — inline "schedule this accepted quote" picker for the Unscheduled section.
+  const [schedulingJobId, setSchedulingJobId] = useState<string | null>(null);
+  const [scheduleDate, setScheduleDate] = useState("");
+  const [scheduleTime, setScheduleTime] = useState("");
   const [quickReqSending, setQuickReqSending] = useState(false);
 
   // Live tick for any running clocks
@@ -254,6 +267,7 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
         .then((result: any) => {
           console.log("SUPABASE SAVE RESULT:", result);
           if (result?.error) toast?.("Crew assignment failed to save — " + result.error.message, "red");
+          else toast?.("Crew updated ✓", "green");
           // Verify the write actually landed — re-query the row directly.
           (supabase as any).from("jobs").select("crew").eq("id", jid).maybeSingle()
             .then((verify: any) => console.log("VERIFY CREW SAVED — job", jid, ":", verify?.data?.crew));
@@ -659,6 +673,69 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
           <button onClick={() => setBulkSelected([])} className="px-3 py-1.5 rounded-lg text-[11px] bg-white/5 border border-white/10 text-white/60"><X size={11} className="inline mr-1" />Deselect</button>
         </div>
       </Glass>}
+
+      {/* FIX 6 — Unscheduled jobs (accepted quotes with no date yet, tagged
+          "Needs Scheduling" when the estimate was approved) need a place the
+          owner will actually see and act on them, not buried in the Scheduled
+          tab looking like a normal job with a blank date. */}
+      {(() => {
+        const unscheduled = jobs.filter(j => !j.scheduledDate && j.status !== "completed" && j.status !== "cancelled");
+        if (unscheduled.length === 0) return null;
+        return (
+          <Glass className="p-4 !bg-purple-950/15 !border-purple-600/40">
+            <div className="flex items-center gap-2 mb-3">
+              <Calendar size={15} className="text-purple-400" />
+              <h3 className="font-semibold text-sm">Unscheduled — Needs a Date</h3>
+              <Badge tone="yellow">{unscheduled.length}</Badge>
+            </div>
+            <div className="space-y-2">
+              {unscheduled.map(j => {
+                const c = customers.find(x => x.id === j.customerId);
+                const isScheduling = schedulingJobId === j.id;
+                return (
+                  <div key={j.id} className="p-3 rounded-xl bg-black/30 border border-purple-700/30">
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="min-w-0 flex-1">
+                        <div className="text-sm font-medium truncate">{c ? `${c.firstName} ${c.lastName}` : j.address}</div>
+                        <div className="text-xs text-white/40 truncate">{j.address} · {fmt(j.amount)}{j.notes ? ` · ${j.notes}` : ""}</div>
+                      </div>
+                      {!isScheduling && (
+                        <GBtn onClick={() => { setSchedulingJobId(j.id); setScheduleDate(today()); setScheduleTime(""); }} className="!text-xs !py-1.5 flex-shrink-0">
+                          <Calendar size={12} className="inline mr-1" />Schedule
+                        </GBtn>
+                      )}
+                    </div>
+                    {isScheduling && (
+                      <div className="mt-3 flex items-end gap-2 flex-wrap">
+                        <div className="flex-1 min-w-[130px]">
+                          <label className="text-[10px] text-white/50 block mb-1">Date</label>
+                          <GDate value={scheduleDate} onChange={e => setScheduleDate(e.target.value)} className="!py-1.5 !text-xs" />
+                        </div>
+                        <div className="flex-1 min-w-[110px]">
+                          <label className="text-[10px] text-white/50 block mb-1">Time (optional)</label>
+                          <GInput type="time" value={scheduleTime} onChange={e => setScheduleTime(e.target.value)} className="!py-1.5 !text-xs" />
+                        </div>
+                        <GBtn
+                          disabled={!scheduleDate}
+                          onClick={() => {
+                            updateJob(j.id, { scheduledDate: scheduleDate, scheduledTime: scheduleTime, tags: (j.tags || []).filter((t: string) => t !== "Needs Scheduling") });
+                            toast(`Scheduled for ${scheduleDate}${scheduleTime ? " at " + scheduleTime : ""} ✓`, "green");
+                            setSchedulingJobId(null);
+                          }}
+                          className="!text-xs !py-1.5"
+                        >
+                          Confirm
+                        </GBtn>
+                        <button onClick={() => setSchedulingJobId(null)} className="text-xs text-white/30 hover:text-white/60 px-2 py-1.5">Cancel</button>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </Glass>
+        );
+      })()}
 
       {/* Weather risk alert — scheduled jobs in next 7 days with rain/wind/freeze */}
       {(() => {

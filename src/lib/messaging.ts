@@ -1,4 +1,5 @@
 import { supabase } from "./supabase";
+import { uid } from "./utils";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -147,6 +148,49 @@ export const twilioSend = async (
   }
 };
 
+// ─── Inbox sync (SMS) ─────────────────────────────────────────────────────────
+// Every outbound SMS sent from anywhere in the app (owner's own Inbox compose,
+// or an employee's OTW/Running Late/invoice-text from the field portal) needs
+// to show up in the owner's Inbox, on every device. The Inbox itself stores
+// each conversation as one row in `inbox_threads` with its message list in a
+// single JSONB column (mirrors how `jobs` already stores arrays like `photos`
+// as JSONB) rather than a normalized messages table — simplest schema that
+// still lets InboxPage read/poll it like any other synced table. Degrades to
+// a no-op (logged, not thrown) if the table doesn't exist yet so a missing
+// migration never breaks the actual SMS send.
+export interface InboxSyncMessage {
+  id: string;
+  dir: "in" | "out";
+  body: string;
+  ts: number;
+  status?: "sending" | "sent" | "failed";
+  subject?: string;
+}
+
+export const logOutboundSmsToInbox = async (
+  opts: { contactName: string; contactPhone: string; customerId?: string | null; body: string }
+): Promise<void> => {
+  try {
+    const normPhone = (p: string) => (p || "").replace(/\D/g, "");
+    const { data, error } = await (supabase as any).from("inbox_threads").select("*").eq("channel", "sms");
+    if (error) { console.warn("[Inbox Sync] inbox_threads unavailable — run the inbox_threads SQL:", error.message); return; }
+    const rows: any[] = Array.isArray(data) ? data : [];
+    const existing = rows.find(r => normPhone(r.contact_phone) === normPhone(opts.contactPhone) && normPhone(opts.contactPhone));
+    const newMsg: InboxSyncMessage = { id: uid(), dir: "out", body: opts.body, ts: Date.now(), status: "sent" };
+    if (existing) {
+      const messages = [...(Array.isArray(existing.messages) ? existing.messages : []), newMsg];
+      await (supabase as any).from("inbox_threads").update({ messages, unread: false, last_message_at: newMsg.ts, updated_at: new Date().toISOString() }).eq("id", existing.id);
+    } else {
+      await (supabase as any).from("inbox_threads").insert({
+        id: uid(), channel: "sms", contact_name: opts.contactName, contact_phone: opts.contactPhone,
+        customer_id: opts.customerId || null, unread: false, messages: [newMsg], last_message_at: newMsg.ts, updated_at: new Date().toISOString(),
+      });
+    }
+  } catch (e: any) {
+    console.warn("[Inbox Sync] failed to log outbound SMS:", e?.message);
+  }
+};
+
 // ─── Twilio incoming poll ─────────────────────────────────────────────────────
 
 export interface TwilioMessage {
@@ -249,6 +293,22 @@ export const sendViaGmail = async (
     const err = await res.json().catch(() => ({})) as { error?: { message?: string } };
     throw new Error(err.error?.message ?? `Gmail API error ${res.status}`);
   }
+};
+
+// Gmail-only send — no Resend fallback, ever. Used by flows that must never
+// silently default to Resend (running late, on-my-way, in-portal invoice send):
+// throws a clear, actionable error instead of falling through to a provider
+// the owner never configured.
+export const sendOwnerGmailOnly = async (
+  settings: { googleConnected?: boolean; googleProviderToken?: string; googleEmail?: string },
+  to: string,
+  subject: string,
+  html: string
+): Promise<void> => {
+  if (!settings.googleConnected || !settings.googleProviderToken || !settings.googleEmail) {
+    throw new Error("Gmail not connected — connect Google in Settings → Integrations to send email.");
+  }
+  await sendViaGmail(settings.googleProviderToken, settings.googleEmail, to, subject, html);
 };
 
 // ─── Email via Resend ─────────────────────────────────────────────────────────

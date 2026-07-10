@@ -78,7 +78,7 @@ import { ChemicalModal } from "../ui/ChemicalModal";
 import { WeeklyBusinessReview } from "../ui/WeeklyBusinessReview";
 import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 
-export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [], settings = {} as AppSettings, estimateTemplates = [], onClose, onApprove, onView = (_id: string) => {} }: { estimate?: any; customer?: any; jobs?: any[]; invoices?: any[]; settings?: AppSettings; estimateTemplates?: any[]; onClose?: any; onApprove?: any; onView?: (id: string) => void }) {
+export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [], settings = {} as AppSettings, estimateTemplates = [], onClose, onApprove, onDecline, onView = (_id: string) => {} }: { estimate?: any; customer?: any; jobs?: any[]; invoices?: any[]; settings?: AppSettings; estimateTemplates?: any[]; onClose?: any; onApprove?: any; onDecline?: any; onView?: (id: string) => void }) {
   const tpl = estimateTemplates.find((t: any) => t.id === e?.templateId);
   const headerColor = tpl?.colorHeader || "";
   const textColor = tpl?.colorText || "";
@@ -87,7 +87,9 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
   const [showAccount, setShowAccount] = useState(false);
   const [payType, setPayType] = useState("full");
   const [showStripeModal, setShowStripeModal] = useState(false);
-  const [step, setStep] = useState("view"); // view | sign | payment | done
+  const [step, setStep] = useState("view"); // view | sign | payment | done | declined
+  const [declining, setDeclining] = useState(false);
+  const [declineReason, setDeclineReason] = useState("");
   const [sigData, setSigData] = useState(null);
   const [tip, setTip] = useState(0);
   const [customTip, setCustomTip] = useState("");
@@ -204,6 +206,19 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
     const ctx = canvas.getContext("2d");
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     setSigData(null);
+  };
+
+  const handleDecline = async () => {
+    setDeclining(true);
+    try {
+      if (onDecline) await onDecline(e.id, { reason: declineReason.trim() || undefined });
+      setStep("declined");
+      if (settings?.twilioSid && settings?.myPhone) {
+        twilioSend(settings, settings.myPhone, "❌ ESTIMATE DECLINED: " + c.firstName + " " + c.lastName + " declined " + fmt(effectiveTotal) + (declineReason.trim() ? " — \"" + declineReason.trim() + "\"" : "")).catch(() => {});
+      }
+    } finally {
+      setDeclining(false);
+    }
   };
 
   const handleApprove = async (paymentIntentId?: string, payChoice: "now" | "later" | "deposit" = "now") => {
@@ -430,6 +445,43 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
               <GBtn onClick={() => setStep("sign")} className="w-full !py-3 text-base font-bold" style={accentColor ? { background: accentColor } : undefined}>
                 Review & Sign →
               </GBtn>
+              {(!e.status || e.status === "pending") && (
+                declining ? (
+                  <Glass className="p-4 !bg-black/40 space-y-3">
+                    <div className="text-sm font-medium">Decline this estimate?</div>
+                    <textarea
+                      value={declineReason}
+                      onChange={(ev: any) => setDeclineReason(ev.target.value)}
+                      rows={2}
+                      placeholder="Let us know why (optional) — helps us follow up correctly."
+                      className="w-full bg-white/5 border border-white/15 rounded-xl px-3 py-2 text-sm text-white placeholder-white/30 resize-none focus:outline-none focus:border-red-500/50"
+                    />
+                    <div className="grid grid-cols-2 gap-3">
+                      <button onClick={handleDecline} className="py-2.5 rounded-xl border border-red-700/40 bg-red-950/30 text-red-300 font-semibold hover:bg-red-900/40 transition">
+                        Confirm Decline
+                      </button>
+                      <button onClick={() => { setDeclining(false); setDeclineReason(""); }} className="py-2.5 rounded-xl border border-white/10 text-white/60 hover:text-white transition">
+                        Never mind
+                      </button>
+                    </div>
+                  </Glass>
+                ) : (
+                  <button onClick={() => setDeclining(true)} className="w-full py-2.5 text-sm text-white/40 hover:text-red-400 transition">
+                    Decline this estimate
+                  </button>
+                )
+              )}
+            </div>
+          )}
+
+          {/* STEP: Declined confirmation */}
+          {step === "declined" && (
+            <div className="text-center py-10 space-y-3">
+              <div className="w-16 h-16 rounded-full bg-red-950/40 border border-red-700/50 flex items-center justify-center mx-auto">
+                <span className="text-2xl">✕</span>
+              </div>
+              <div className="text-lg font-bold text-white">Estimate declined</div>
+              <div className="text-sm text-white/50 max-w-xs mx-auto">We've let {settings?.companyName || "the company"} know. Reach out any time if you'd like to revisit this.</div>
             </div>
           )}
 
