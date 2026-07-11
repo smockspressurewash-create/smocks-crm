@@ -1551,16 +1551,29 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
   const cur: any = (personalities as any)[active?.personality || personality] || { name: "Alfred", color: "from-red-600 to-red-900", icon: Bot };
   const CurIcon = cur.icon || Bot;
 
+  // CRASH FIX (companion to App.tsx's alfred_conversations sync) — updatedAt
+  // is a number for conversations created locally (Date.now(), see
+  // updateActive/appendMessage/etc. below) but a STRING for anything loaded
+  // back from Supabase (App.tsx normalizes it to an ISO string). Subtracting
+  // a string from a number here wouldn't crash, just silently produce NaN —
+  // every comparison returns false-equal and the "recent" sort/grouping
+  // quietly stops working the moment a conversation round-trips through
+  // Supabase. Normalize both shapes before comparing.
+  const convTs = (v: unknown): number => {
+    if (typeof v === "number") return v;
+    if (typeof v === "string" && v) { const t = new Date(v).getTime(); return Number.isNaN(t) ? 0 : t; }
+    return 0;
+  };
   const filteredConvs = conversations
     .filter(c => !convSearch.trim() || c.title.toLowerCase().includes(convSearch.toLowerCase()) || c.messages.some(m => m.content.toLowerCase().includes(convSearch.toLowerCase())))
-    .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+    .sort((a, b) => convTs(b.updatedAt) - convTs(a.updatedAt));
 
   // Group conversations by recency
   const groupConvs = list => {
     const now = Date.now();
     const today_ = [], week = [], older = [];
     list.forEach(c => {
-      const age = (now - (c.updatedAt || 0)) / 86400000;
+      const age = (now - convTs(c.updatedAt)) / 86400000;
       if (age < 1) today_.push(c);
       else if (age < 7) week.push(c);
       else older.push(c);
@@ -1570,7 +1583,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
   const convGroups = groupConvs(filteredConvs);
 
   const relTime = ts => {
-    const diff = (Date.now() - ts) / 1000;
+    const diff = (Date.now() - convTs(ts)) / 1000;
     if (diff < 60) return "just now";
     if (diff < 3600) return Math.floor(diff / 60) + "m";
     if (diff < 86400) return Math.floor(diff / 3600) + "h";

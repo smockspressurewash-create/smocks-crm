@@ -819,7 +819,21 @@ export function App() {
           // Keep any local conversation not yet confirmed server-side (just
           // created/edited, upsert still in flight) so it doesn't flicker away.
           const localOnly = prev.filter(c => !byId.has(c.id));
-          return [...fromServer, ...localOnly].sort((a, b) => (b.updatedAt || "").localeCompare(a.updatedAt || ""));
+          // CRASH FIX — fromServer above always sets updatedAt as an ISO
+          // STRING (line ~815), but AlfredPage.tsx creates/updates local
+          // conversations with `updatedAt: Date.now()` — a NUMBER — in
+          // several places (new chat, append message, morning briefing,
+          // etc.). Once a local-only numeric-updatedAt conversation got
+          // merged into this same array, (b.updatedAt || "").localeCompare(...)
+          // called .localeCompare on a number, which doesn't exist, crashing
+          // the whole render. Normalize both shapes to a comparable
+          // timestamp instead of assuming either one specifically.
+          const ts = (v: unknown): number => {
+            if (typeof v === "number") return v;
+            if (typeof v === "string" && v) { const t = new Date(v).getTime(); return Number.isNaN(t) ? 0 : t; }
+            return 0;
+          };
+          return [...fromServer, ...localOnly].sort((a, b) => ts((b as any).updatedAt) - ts((a as any).updatedAt));
         });
         alfredConvsLoadedRef.current = true;
       } catch (e: any) { console.warn("[Alfred Sync] fetch threw:", e?.message); }
