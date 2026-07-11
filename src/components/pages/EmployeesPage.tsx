@@ -265,6 +265,17 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setting
     return s + getEmployeePay(e, payPeriodStart, payPeriodEnd);
   }, 0);
 
+  // AUDIT 2 — owner's Hours/Payroll tabs read straight from the `jobs` prop
+  // (App.tsx state, kept fresh by the 3s poll); log once per jobs/employees
+  // change instead of per-render so this doesn't spam the console every
+  // keystroke while still proving the data actually reached this component.
+  useEffect(() => {
+    const totalHours = employees.reduce((s, e) => s + getEmployeeHours(e.id, payPeriodStart, payPeriodEnd), 0);
+    console.log("[Payroll] READ (owner Employees tab) — employees:", employees.length, "jobs:", jobs.length,
+      "period:", payPeriodStart, "to", payPeriodEnd, "— total hours:", Math.round(totalHours * 100) / 100,
+      "total payroll:", Math.round(totalPayroll * 100) / 100);
+  }, [jobs, employees, payPeriodStart, payPeriodEnd]); // eslint-disable-line react-hooks/exhaustive-deps
+
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between flex-wrap gap-3">

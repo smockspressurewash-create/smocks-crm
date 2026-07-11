@@ -134,7 +134,12 @@ export function AddressAutocomplete({
   const placesLibRef = useRef<any>(null);
   const debounceRef = useRef<any>(null);
   useEffect(() => {
-    if (!mapsKey || value.trim().length < 3) { setPlacePreds([]); return; }
+    if (!mapsKey) {
+      console.log("[Autocomplete] no Google Maps key configured (Settings → Company → Google Maps API Key) — local CRM matches + browser autofill only");
+      setPlacePreds([]);
+      return;
+    }
+    if (value.trim().length < 3) { setPlacePreds([]); return; }
     clearTimeout(debounceRef.current);
     debounceRef.current = setTimeout(async () => {
       try {
@@ -170,6 +175,13 @@ export function AddressAutocomplete({
   // Google predictions first (broadest), then any local CRM matches not already
   // covered, de-duplicated.
   const suggestions = Array.from(new Set([...placePreds, ...localMatches])).slice(0, 6);
+  // ITEM 9 — log which method actually produced the suggestions shown, so
+  // it's visible at a glance without having to interpret the warnings above.
+  useEffect(() => {
+    if (value.trim().length < 2) return;
+    const method = placePreds.length > 0 ? "google_places" : localMatches.length > 0 ? "local_crm_matches" : "none (browser autofill only)";
+    console.log("[Autocomplete] active method:", method, "— suggestion count:", suggestions.length);
+  }, [placePreds.length, localMatches.length, value]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const v = e.target.value;
@@ -222,6 +234,11 @@ export function AddressAutocomplete({
         <div className="text-[10px] text-yellow-400/80 mt-1 pl-1 flex items-start gap-1">
           <span>⚠️</span>
           <span>Google Places is blocking this API key (check its API restrictions in Cloud Console include "Places API (New)") — showing saved CRM addresses only for now.</span>
+        </div>
+      )}
+      {open && suggestions.length === 0 && value.trim().length >= 3 && (
+        <div className="absolute z-50 left-0 right-0 top-full mt-1 bg-black/95 border border-white/10 rounded-xl px-3 py-2 text-[10px] text-white/40">
+          No matches yet — keep typing, or just finish the address manually.
         </div>
       )}
       {open && suggestions.length > 0 && (

@@ -583,6 +583,13 @@ export interface AppSettings {
   googleCalendarId?: string;
   googleBackendUrl?: string;
   googlePlaceId?: string;
+  // ITEM 10 — the owner's OAuth provider token/refresh token, distinct from
+  // googleToken above (legacy/mock field). googleTokenExpiresAt lets Gmail
+  // sends proactively refresh before the access token actually expires
+  // instead of only reacting to a 401.
+  googleProviderToken?: string;
+  googleRefreshToken?: string;
+  googleTokenExpiresAt?: number;
 
   // Integrations
   telegramBotToken?: string;
@@ -607,6 +614,11 @@ export interface AppSettings {
   termsAndConditions?: string;
   terms?: string;
   estimateValidDays?: number;
+
+  // ITEM 2 — default travel/buffer time (minutes) inserted between
+  // back-to-back scheduled jobs. Distinct from bufferTime below, which is
+  // an unrelated field for the Buffer.com social-post scheduling integration.
+  defaultBufferMinutes?: number;
 
   // Integrations misc
   bufferTime?: number;

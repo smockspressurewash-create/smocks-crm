@@ -273,20 +273,20 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
         .catch((e: any) => toast?.("Failed to save: " + e?.message, "red"));
     }
     if (patch.crew !== undefined) {
-      console.log("SAVING JOB — crew:", patch.crew, "full job:", { ...oldJob, ...patch });
+      console.log("[CrewFlow] owner assigning crew — job:", jid, "crew:", patch.crew, "full job:", { ...oldJob, ...patch });
       const crewPatch: any = { crew: patch.crew };
       if (patch.crewAssignedAt !== undefined) crewPatch.crewAssignedAt = patch.crewAssignedAt;
       (supabase as any).from("jobs").update(crewPatch).eq("id", jid)
         .then((result: any) => {
-          console.log("SUPABASE SAVE RESULT:", result);
+          console.log("[CrewFlow] crew save result:", result?.error ? result.error.message : "success");
           if (result?.error) toast?.("Crew assignment failed to save — " + result.error.message, "red");
           else toast?.("Crew updated ✓", "green");
           // Verify the write actually landed — re-query the row directly.
           (supabase as any).from("jobs").select("crew").eq("id", jid).maybeSingle()
-            .then((verify: any) => console.log("VERIFY CREW SAVED — job", jid, ":", verify?.data?.crew));
+            .then((verify: any) => console.log("[CrewFlow] verify crew saved — job", jid, ":", verify?.data?.crew));
         })
         .catch((e: any) => {
-          console.warn("SUPABASE SAVE FAILED:", e?.message);
+          console.warn("[CrewFlow] crew save threw:", e?.message);
           toast?.("Crew assignment failed to save", "red");
         });
     }
@@ -532,6 +532,33 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
               <GInput type="time" value={newJobForm.scheduledTime} onChange={e => setNewJobForm(f => ({ ...f, scheduledTime: e.target.value }))} />
             </div>
           </div>
+          {/* ITEM 2 — warn if the picked time leaves less than the configured
+              default buffer between this job and another already scheduled
+              the same day (same crew member, if one's picked; otherwise any
+              same-day job). Informational only — does not block saving. */}
+          {newJobForm.scheduledDate && newJobForm.scheduledTime && (() => {
+            const bufferMin = Number((settings as any)?.defaultBufferMinutes) || 30;
+            const [h, m] = newJobForm.scheduledTime.split(":").map(Number);
+            const startMin = h * 60 + (m || 0);
+            const durMin = Math.round((Number(newJobForm.duration) || 2) * 60);
+            const endMin = startMin + durMin;
+            const sameDay = jobs.filter((j: any) => j.scheduledDate === newJobForm.scheduledDate && j.scheduledTime && j.status !== "cancelled");
+            const conflict = sameDay.find((j: any) => {
+              const [jh, jm] = j.scheduledTime.split(":").map(Number);
+              const jStart = jh * 60 + (jm || 0);
+              const jEnd = jStart + Math.round((Number(j.duration) || 2) * 60);
+              const gap = jStart >= endMin ? jStart - endMin : startMin - jEnd;
+              return gap < bufferMin;
+            });
+            if (!conflict) return null;
+            const cName = customers.find((c: any) => c.id === conflict.customerId);
+            return (
+              <div className="text-[11px] text-yellow-400 bg-yellow-950/20 border border-yellow-700/30 rounded-lg px-2.5 py-1.5 flex items-center gap-1.5">
+                <AlertTriangle size={11} className="flex-shrink-0" />
+                Less than {bufferMin} min of travel buffer before/after {cName?.firstName || "another job"}'s {conflict.scheduledTime} appointment
+              </div>
+            );
+          })()}
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="text-xs text-white/60 mb-1 block">Amount ($)</label>
@@ -631,10 +658,13 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
               // immediately instead, and verify with a re-fetch so a failed
               // write surfaces as a visible error rather than silent data loss.
               (async () => {
+                console.log("[CrewFlow] creating job — id:", job.id, "directAssign:", directAssign, "crew:", job.crew);
                 const { error } = await withTimeout<any>((supabase as any).from("jobs").insert(job), 15000, "Save job");
                 if (error) {
-                  console.error("New job failed to save to Supabase:", error);
+                  console.error("[CrewFlow] new job failed to save to Supabase:", error);
                   toast?.("Job created locally, but failed to save to the server — " + error.message, "red");
+                } else {
+                  console.log("[CrewFlow] job saved to Supabase:", job.id);
                 }
                 // No verify SELECT round-trip — it needs a SELECT RLS policy
                 // that may be absent, and would otherwise spuriously warn on a

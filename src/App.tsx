@@ -535,6 +535,11 @@ export function App() {
   const [estimates,       setEstimates]       = usePersistent<Estimate[]>("smocks.estimates", seedEstimates);
   const [jobs,            setJobs]            = usePersistent<Job[]>("smocks.jobs", seedJobs);
   const [employees,       setEmployees]       = usePersistent<Employee[]>("smocks.employees", seedEmployees);
+  // AUDIT ITEM 13 — lets the Dashboard show "updating…" instead of trusting
+  // (or worse, blanking) the Live Team View when the most recent employees
+  // fetch actually failed, rather than silently keeping stale cached data
+  // with no visible signal that a refresh attempt just failed.
+  const [crewFetchError, setCrewFetchError] = useState(false);
   const [vehicles,        setVehicles]        = usePersistent<Vehicle[]>("smocks.vehicles", seedVehicles);
   const [maintenance,     setMaintenance]     = usePersistent<MaintenanceRecord[]>("smocks.maintenance", seedMaintenance);
   const [expenses,        setExpenses]        = usePersistent<Expense[]>("smocks.expenses", seedExpenses);
@@ -629,8 +634,25 @@ export function App() {
       (supabase as any)
         .from("app_settings")
         .upsert({ owner_id: crmUserId, data: settings, updated_at: updatedAt }, { onConflict: "owner_id" })
-        .then((r: any) => { if (r?.error) console.warn("Settings sync failed:", r.error.message); else settingsLastSavedAtRef.current = updatedAt; })
-        .catch((e: any) => console.warn("Settings sync failed:", e?.message));
+        .then((r: any) => {
+          if (r?.error) {
+            // AUDIT ITEM 14 — SettingsModal's Save button already shows a
+            // "Settings saved" toast the instant it's clicked (purely local/
+            // optimistic), but the actual cross-device sync happens here,
+            // 1.5s later, completely out of that view. A failure here used to
+            // only log a console warning — meaning a changed API key/
+            // integration setting could silently never reach any other
+            // device, with the owner having just been told it "saved".
+            console.warn("Settings sync failed:", r.error.message);
+            toast("Settings saved on this device, but didn't sync to the server — " + r.error.message, "red");
+          } else {
+            settingsLastSavedAtRef.current = updatedAt;
+          }
+        })
+        .catch((e: any) => {
+          console.warn("Settings sync failed:", e?.message);
+          toast("Settings saved on this device, but didn't sync to the server — " + (e?.message || "check connection"), "red");
+        });
     }, 1500);
     return () => clearTimeout(settingsSaveTimerRef.current);
   }, [settings, crmUserId]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -879,6 +901,18 @@ export function App() {
   const doneMonth  = jobs.filter(j => j.status === "completed" && (j.scheduledDate ?? "").startsWith(thisMonth)).length;
   const sentEsts   = estimates.filter(e => e.sentAt).length;
   const closeRate  = sentEsts > 0 ? Math.round((estimates.filter(e => e.status === "approved").length / sentEsts) * 100) : 0;
+  // AUDIT ITEM 16 — these recompute on every render straight off the
+  // jobs/estimates state that refetchData() keeps synced from Supabase every
+  // poll (see [PhotoSync]/[Payroll] logs in refetchData above) — never from
+  // seed data (seedJobs/seedEstimates are only the usePersistent() fallback
+  // used before the first real fetch resolves). Logged once per actual
+  // change (not every render, which would flood the console) to prove the
+  // Dashboard's stats prop is always derived from live data, not a stale
+  // snapshot computed once at mount.
+  useEffect(() => {
+    console.log("[Dashboard] top-level stats recomputed — totalRev:", totalRev, "activeJobs:", activeJobs, "closeRate:", closeRate + "%",
+      "from", jobs.length, "jobs /", estimates.length, "estimates currently in state");
+  }, [totalRev, activeJobs, closeRate, jobs.length, estimates.length]);
   const overdueCount = estimates.filter(e => e.invoiced && !e.paidAt && e.invoicedAt && daysSince(e.invoicedAt) > 14).length;
   const lowStock   = chemicals.filter(c => c.stock <= c.reorderLevel).length;
 
@@ -933,17 +967,26 @@ export function App() {
   const refetchEmployees = async () => {
     try {
       const { data, error } = await (supabase as any).from("employees").select("*");
-      if (error) { console.warn("[LiveCrew] employees fetch error:", error.message, "— (RLS may be blocking reads; run the employees RLS SQL)"); return; }
+      if (error) {
+        console.warn("[LiveCrew] employees fetch error:", error.message, "— (RLS may be blocking reads; run the employees RLS SQL) — keeping cached data");
+        setCrewFetchError(true);
+        return;
+      }
       if (Array.isArray(data) && data.length > 0) {
         const normed = data.map(normalizeEmployee) as Employee[];
         const onShift = normed.filter((x: any) => !!x.dayClockInAt);
         console.log("[LiveCrew] fetched", normed.length, "employees;", onShift.length, "on shift:", onShift.map((x: any) => `${x.firstName}(${new Date(Number(x.dayClockInAt)).toLocaleTimeString()})`).join(", ") || "none");
         setEmployees(normed);
+        setCrewFetchError(false);
       } else {
         // Empty result usually means RLS is hiding the crew rows from the owner.
         console.warn("[LiveCrew] employees query returned 0 rows — keeping current state (likely RLS; owner can't read crew rows)");
+        setCrewFetchError(true);
       }
-    } catch (e: any) { console.warn("[LiveCrew] employees fetch threw:", e?.message); }
+    } catch (e: any) {
+      console.warn("[LiveCrew] employees fetch threw:", e?.message, "— keeping cached data");
+      setCrewFetchError(true);
+    }
   };
 
   // Fetch jobs + customers from Supabase and merge into local state
@@ -959,6 +1002,10 @@ export function App() {
       if (Array.isArray(sbJobs) && sbJobs.length > 0) {
         const totalPhotos = sbJobs.reduce((s: number, j: any) => s + (Array.isArray(j.photos) ? j.photos.length : 0), 0);
         console.log("[PhotoSync] refetchData — fetched", sbJobs.length, "jobs from Supabase,", totalPhotos, "total photos across all jobs");
+        const completedWithHours = sbJobs.filter((j: any) => j.status === "completed" && Number(j.loggedHours) > 0);
+        console.log("[Payroll] READ (owner poll) — refetchData fetched jobs from Supabase —", completedWithHours.length, "of", sbJobs.filter((j: any) => j.status === "completed").length,
+          "completed jobs have loggedHours > 0; total logged hours across all completed jobs:",
+          Math.round(sbJobs.reduce((s: number, j: any) => s + (j.status === "completed" ? Number(j.loggedHours || 0) : 0), 0) * 100) / 100);
         setJobs(prev => {
           const sbMap = new Map(sbJobs.map((j: any) => [j.id, j]));
           const merged = prev.map(j => sbMap.has(j.id) ? { ...j, ...sbMap.get(j.id) } : j);
@@ -1193,12 +1240,16 @@ export function App() {
       const bridgedRefreshToken = sessionStorage.getItem("smocks.grt") || "";
       if (bridgedRefreshToken) sessionStorage.removeItem("smocks.grt");
       const providerToken = bridgedToken || session.provider_token || "";
+      // ITEM 10 — Google access tokens last ~1hr; recording when we captured
+      // this one lets sendViaGmail check expiry proactively (see
+      // lib/messaging.ts) instead of only discovering it's stale after a 401.
+      if (providerToken) console.log("[GoogleToken] captured fresh provider_token — expires ~55min from now, refreshToken present:", !!bridgedRefreshToken);
       setSettings((prev: any) => ({
         ...prev,
         googleConnected: true,
         googleEmail,
         googleScopes: { gmail: true, calendar: true, drive: true, contacts: true, tasks: true },
-        ...(providerToken ? { googleProviderToken: providerToken } : {}),
+        ...(providerToken ? { googleProviderToken: providerToken, googleTokenExpiresAt: Date.now() + 55 * 60 * 1000 } : {}),
         ...(bridgedRefreshToken ? { googleRefreshToken: bridgedRefreshToken } : {}),
       }));
     };
@@ -1243,7 +1294,10 @@ export function App() {
             if (event === "TOKEN_REFRESHED") {
               const freshProviderToken = (session as any)?.provider_token;
               if (freshProviderToken) {
-                setSettings((prev: any) => ({ ...prev, googleProviderToken: freshProviderToken }));
+                console.log("[GoogleToken] TOKEN_REFRESHED event carried a fresh provider_token");
+                setSettings((prev: any) => ({ ...prev, googleProviderToken: freshProviderToken, googleTokenExpiresAt: Date.now() + 55 * 60 * 1000 }));
+              } else {
+                console.log("[GoogleToken] TOKEN_REFRESHED event fired but no provider_token included — Supabase session refresh alone doesn't reliably re-issue Google's token, this is expected");
               }
               return;
             }
@@ -2061,7 +2115,7 @@ export function App() {
           <div className="px-3 py-4 md:p-6 max-w-[1600px] mx-auto">
             <PageFade key={page}>
               <SafePage>
-                {page === "dashboard"      && <Dashboard jobs={jobs} setJobs={setJobs} customers={customers} estimates={estimates} setEstimates={setEstimates} automations={automations} stats={{ totalRev, activeJobs, pendingEst, closeRate, doneMonth }} goals={{ revenue: settings.monthlyRevenueGoal ?? 8000, jobCount: settings.monthlyJobsGoal ?? 20 }} vehicles={vehicles} maintenance={maintenance} chemicals={chemicals} settings={settings} setSettings={setSettings} onNav={setPage} toast={toast} weatherData={weatherData} inboxThreads={inboxThreads} employees={employees} reviews={reviews} onSendDailyBriefing={sendDailyBriefingNow} onViewJob={id => { setOpenJobId(id); setPage("jobs"); }} />}
+                {page === "dashboard"      && <Dashboard jobs={jobs} setJobs={setJobs} customers={customers} estimates={estimates} setEstimates={setEstimates} automations={automations} stats={{ totalRev, activeJobs, pendingEst, closeRate, doneMonth }} goals={{ revenue: settings.monthlyRevenueGoal ?? 8000, jobCount: settings.monthlyJobsGoal ?? 20 }} vehicles={vehicles} maintenance={maintenance} chemicals={chemicals} settings={settings} setSettings={setSettings} onNav={setPage} toast={toast} weatherData={weatherData} inboxThreads={inboxThreads} employees={employees} crewFetchError={crewFetchError} reviews={reviews} onSendDailyBriefing={sendDailyBriefingNow} onViewJob={id => { setOpenJobId(id); setPage("jobs"); }} />}
                 {page === "customers"      && <CustomersPage customers={customers} setCustomers={setCustomers} estimates={estimates} jobs={jobs} toast={toast} timeline={timeline} setTimeline={setTimeline} settings={settings} />}
                 {page === "estimates"      && <EstimatesPage estimates={estimates} setEstimates={setEstimates} customers={customers} services={services} settings={settings} toast={toast} onPortal={id => setPortalEstId(id)} estimateTemplates={estimateTemplates} setEstimateTemplates={setEstimateTemplates} setJobs={setJobs} onNav={setPage} />}
                 {page === "invoices"       && <InvoicesPage estimates={estimates} setEstimates={setEstimates} customers={customers} settings={settings} toast={toast} jobs={jobs} setJobs={setJobs} />}

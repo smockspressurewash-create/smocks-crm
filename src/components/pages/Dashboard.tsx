@@ -102,10 +102,22 @@ function MiniStreetViewThumb({ address, mapsKey }: { address: string; mapsKey?: 
   );
 }
 
-export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = [], estimates = [], setEstimates = (() => {}) as any, automations = [], stats, goals, vehicles = [], maintenance = [], chemicals = [], settings = {} as AppSettings, setSettings = () => {}, onNav, toast, weatherData = seedWeather, inboxThreads = [], employees = [], reviews = [], onSendDailyBriefing, onViewJob = (id: string) => {} }: { jobs?: any[]; setJobs?: any; customers?: any[]; estimates?: any[]; setEstimates?: any; automations?: any[]; stats?: any; goals?: any; vehicles?: any[]; maintenance?: any[]; chemicals?: any[]; settings?: AppSettings; setSettings?: any; onNav?: any; toast?: any; weatherData?: any; inboxThreads?: any[]; employees?: any[]; reviews?: any[]; onSendDailyBriefing?: () => Promise<void>; onViewJob?: (id: string) => void }) {
+export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = [], estimates = [], setEstimates = (() => {}) as any, automations = [], stats, goals, vehicles = [], maintenance = [], chemicals = [], settings = {} as AppSettings, setSettings = () => {}, onNav, toast, weatherData = seedWeather, inboxThreads = [], employees = [], crewFetchError = false, reviews = [], onSendDailyBriefing, onViewJob = (id: string) => {} }: { jobs?: any[]; setJobs?: any; customers?: any[]; estimates?: any[]; setEstimates?: any; automations?: any[]; stats?: any; goals?: any; vehicles?: any[]; maintenance?: any[]; chemicals?: any[]; settings?: AppSettings; setSettings?: any; onNav?: any; toast?: any; weatherData?: any; inboxThreads?: any[]; employees?: any[]; crewFetchError?: boolean; reviews?: any[]; onSendDailyBriefing?: () => Promise<void>; onViewJob?: (id: string) => void }) {
   const [sendingDashInvoiceId, setSendingDashInvoiceId] = useState<string | null>(null);
   const [needsInvoiceCollapsed, setNeedsInvoiceCollapsed] = useState(false);
   const [previewInvoiceJob, setPreviewInvoiceJob] = useState<any>(null);
+  // AUDIT ITEM 13 — an empty `employees` array on the very first render is
+  // ambiguous: it could mean "no crew configured yet" or "the initial
+  // Supabase fetch just hasn't resolved yet". Showing "No one on shift"
+  // during that brief window is exactly the flicker the owner keeps
+  // reporting. Give the first load a couple seconds' grace before trusting
+  // an empty result at all.
+  const [crewDataSettled, setCrewDataSettled] = useState(employees.length > 0);
+  useEffect(() => {
+    if (employees.length > 0) { setCrewDataSettled(true); return; }
+    const t = setTimeout(() => setCrewDataSettled(true), 2500);
+    return () => clearTimeout(t);
+  }, [employees.length > 0]); // eslint-disable-line react-hooks/exhaustive-deps
   // FIX 3 — was requiring j.clockInAt to be truthy, but Complete Job always
   // clears clockInAt to null when finishing a clocked-in job (it rolls the
   // elapsed time into loggedHours instead) — so this filter could never match
@@ -385,7 +397,11 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
   // otherwise genuinely-clocked-in employee from the whole view with no
   // error anywhere. Being clocked in (dayClockInAt truthy) already proves
   // they're on shift; only an explicit "inactive" should ever exclude them.
-  const liveEmps = employees.filter((e: any) => (e.status || "").toString().toLowerCase() !== "inactive" && !!e.dayClockInAt);
+  // AUDIT ITEM 13 — even the "not inactive" denylist could still exclude a
+  // genuinely clocked-in employee (any status value this app doesn't
+  // recognize yet). Per explicit instruction: dayClockInAt being set IS
+  // "on shift" — no other condition gates it, full stop.
+  const liveEmps = employees.filter((e: any) => !!e.dayClockInAt);
   useEffect(() => {
     console.log(
       "[LiveCrew] Dashboard poll — total employees:", employees.length,
@@ -394,7 +410,7 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
         name: `${e.firstName || "?"} ${e.lastName || ""}`.trim(),
         status: e.status,
         dayClockInAt: e.dayClockInAt,
-        onShift: (e.status || "").toString().toLowerCase() !== "inactive" && !!e.dayClockInAt,
+        onShift: !!e.dayClockInAt,
       }))
     );
   }, [employees]);
@@ -525,9 +541,12 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
           <Users2 size={15} className="text-green-400" />
           <h3 className="font-semibold text-sm">Live Team View</h3>
           {liveTeam.length > 0 && <Badge tone="green">{liveTeam.length} on shift</Badge>}
+          {crewFetchError && <Badge tone="yellow">⚠ updating… showing last known data</Badge>}
         </div>
         {liveTeam.length === 0 ? (
-          <div className="text-center py-6 text-sm text-white/40">No one on shift — waiting for crew to start their day</div>
+          <div className="text-center py-6 text-sm text-white/40">
+            {crewDataSettled ? "No one on shift — waiting for crew to start their day" : "Loading crew status…"}
+          </div>
         ) : (
           <div className="space-y-2">
             {liveTeam.map(({ emp: e, job: j, jobIndex, totalJobsToday, completedTodayCount }) => {
@@ -801,32 +820,39 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
         </div>;
       })()}
 
-      {/* Revenue collected today / this week / this month */}
+      {/* Revenue collected today / this week / this month.
+          AUDIT ITEM 16 — this widget used to recompute todayRev_/weekRev/
+          monthRev from scratch with its OWN weekStart (a UTC-shifted
+          toISOString().slice(0,10) string), completely independent from the
+          revToday/revWeek/revMonth computed above (line ~179, which compares
+          Date objects instead of strings) for the exact same "Today/This
+          Week/This Month" labels shown earlier on this same dashboard. The
+          two could disagree — most visibly on a Sunday evening in a US
+          timezone, where the UTC-derived weekStart string here could already
+          read as next week while the Date-object version above still reads
+          this week. Reusing the already-computed values instead of a second,
+          differently-buggy calculation makes them agree by construction. */}
       {w.kpis && (() => {
         const todayStr = today();
-        const weekStart = (() => { const d = new Date(); d.setDate(d.getDate() - d.getDay()); return d.toISOString().slice(0,10); })();
-        const monthStr = todayStr.slice(0, 7);
-        const todayRev_ = jobs.filter(j => j.status === "completed" && j.scheduledDate === todayStr).reduce((s,j) => s + j.amount, 0);
-        const weekRev = jobs.filter(j => j.status === "completed" && j.scheduledDate >= weekStart).reduce((s,j) => s + j.amount, 0);
-        const monthRev = jobs.filter(j => j.status === "completed" && (j.scheduledDate||"").startsWith(monthStr)).reduce((s,j) => s + j.amount, 0);
         const todayTips = jobs.filter(j => j.status === "completed" && j.scheduledDate === todayStr).reduce((s,j) => s + (Number(j.tip)||0), 0);
         const todayCash = jobs.filter(j => j.status === "completed" && j.scheduledDate === todayStr && j.isCash).reduce((s,j) => s + j.amount, 0);
+        console.log("[Dashboard] revenue widget — today:", revToday, "week:", revWeek, "month:", revMonth, "(from", completedJobs.length, "completed jobs total)");
         return <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
           <Glass className="p-5">
             <div className="text-[10px] text-white/50 uppercase tracking-wider font-semibold mb-2">💰 Today</div>
-            <div className="text-3xl font-black text-green-400">{fmt(todayRev_)}</div>
+            <div className="text-3xl font-black text-green-400">{fmt(revToday)}</div>
             {todayTips > 0 && <div className="text-[10px] text-yellow-400 mt-0.5">+{fmt(todayTips)} tips</div>}
             {todayCash > 0 && <div className="text-[10px] text-green-300/60 mt-0.5">💵 {fmt(todayCash)} cash</div>}
           </Glass>
           <Glass className="p-5">
             <div className="text-[10px] text-white/50 uppercase tracking-wider font-semibold mb-2">📅 This Week</div>
-            <div className="text-3xl font-black text-blue-400">{fmt(weekRev)}</div>
-            <div className="text-[10px] text-white/40 mt-0.5">{jobs.filter(j => j.status === "completed" && j.scheduledDate >= weekStart).length} jobs</div>
+            <div className="text-3xl font-black text-blue-400">{fmt(revWeek)}</div>
+            <div className="text-[10px] text-white/40 mt-0.5">{jobs.filter(j => new Date(j.scheduledDate) >= weekStart && j.status === "completed").length} jobs</div>
           </Glass>
           <Glass className="p-5">
             <div className="text-[10px] text-white/50 uppercase tracking-wider font-semibold mb-2">🗓️ This Month</div>
-            <div className="text-3xl font-black text-red-400">{fmt(monthRev)}</div>
-            {goals.revenue > 0 && <div className="text-[10px] text-white/40 mt-0.5">{Math.round(monthRev/goals.revenue*100)}% of goal</div>}
+            <div className="text-3xl font-black text-red-400">{fmt(revMonth)}</div>
+            {goals.revenue > 0 && <div className="text-[10px] text-white/40 mt-0.5">{Math.round(revMonth/goals.revenue*100)}% of goal</div>}
           </Glass>
         </div>;
       })()}

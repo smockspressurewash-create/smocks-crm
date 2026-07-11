@@ -142,6 +142,40 @@ export function CalendarPage({ jobs = [], setJobs, customers = [], employees = [
   const dim = new Date(y, m + 1, 0).getDate();
   const byDate = {};
   jobs.forEach(j => { if (j.scheduledDate) (byDate[j.scheduledDate] = byDate[j.scheduledDate] || []).push(j); });
+
+  // ITEM 2 — real travel/buffer time between same-day jobs, replacing the old
+  // "showBuffer" toggle which just printed a static "🚗 travel" / "⏸ buffer"
+  // label before/after every job regardless of actual scheduled times. This
+  // sorts each day's jobs by scheduledTime and flags any consecutive pair
+  // whose gap (previous job's scheduledTime + duration → next job's
+  // scheduledTime) is under the configured default buffer.
+  const bufferMinutes = Number((settings as any)?.defaultBufferMinutes) || 30;
+  const jobEndMinutes = (j: any): number | null => {
+    if (!j.scheduledTime) return null;
+    const [h, m] = j.scheduledTime.split(":").map(Number);
+    if (Number.isNaN(h)) return null;
+    return h * 60 + (m || 0) + Math.round((Number(j.duration) || 2) * 60);
+  };
+  const jobStartMinutes = (j: any): number | null => {
+    if (!j.scheduledTime) return null;
+    const [h, m] = j.scheduledTime.split(":").map(Number);
+    if (Number.isNaN(h)) return null;
+    return h * 60 + (m || 0);
+  };
+  const sortedWithGaps = (dayJobs: any[]): Array<{ job: any; gapBefore: number | null; tooTight: boolean }> => {
+    const timed = dayJobs.filter(j => j.scheduledTime).sort((a, b) => (jobStartMinutes(a)! - jobStartMinutes(b)!));
+    const untimed = dayJobs.filter(j => !j.scheduledTime);
+    const out: Array<{ job: any; gapBefore: number | null; tooTight: boolean }> = [];
+    timed.forEach((j, i) => {
+      if (i === 0) { out.push({ job: j, gapBefore: null, tooTight: false }); return; }
+      const prevEnd = jobEndMinutes(timed[i - 1]);
+      const thisStart = jobStartMinutes(j);
+      const gap = prevEnd !== null && thisStart !== null ? thisStart - prevEnd : null;
+      out.push({ job: j, gapBefore: gap, tooTight: gap !== null && gap < bufferMinutes });
+    });
+    untimed.forEach(j => out.push({ job: j, gapBefore: null, tooTight: false }));
+    return out;
+  };
   // Google events keyed by date for the calendar grid
   const gByDate: Record<string, GCalEvent[]> = {};
   gEvents.forEach(ev => {
@@ -377,7 +411,7 @@ export function CalendarPage({ jobs = [], setJobs, customers = [], employees = [
         )}
         <label className="flex items-center gap-2 ml-auto cursor-pointer px-3 py-2 bg-black/40 border border-red-900/30 rounded-xl text-xs text-white/60 hover:text-white transition">
           <input type="checkbox" checked={showBuffer} onChange={e => setShowBuffer(e.target.checked)} className="w-3.5 h-3.5 accent-red-500" />
-          🚗 30-min travel buffers
+          🚗 {bufferMinutes}-min travel buffers
         </label>
       </div>
 
@@ -425,15 +459,21 @@ export function CalendarPage({ jobs = [], setJobs, customers = [], employees = [
                     {dt > 0 && <div className="text-[8px] text-green-400/70 font-mono">${Math.round(dt)}</div>}
                   </div>
                   <div className="space-y-0.5">
-                    {dj.slice(0, 3).map(j => {
+                    {sortedWithGaps(dj).slice(0, 3).map(({ job: j, gapBefore, tooTight }) => {
                       const c = customers.find((x: any) => x.id === j.customerId);
                       const initials = crewInitials(j);
                       return <React.Fragment key={j.id}>
-                        {showBuffer && <div className="text-[8px] px-1 py-0.5 rounded bg-orange-950/50 border border-orange-800/30 text-orange-400/60 truncate">🚗 travel</div>}
+                        {showBuffer && gapBefore !== null && (
+                          <div
+                            title={tooTight ? `Only ${gapBefore}min between jobs — below your ${bufferMinutes}min buffer setting` : `${gapBefore}min gap before this job`}
+                            className={"text-[8px] px-1 py-0.5 rounded truncate " + (tooTight ? "bg-red-950/60 border border-red-700/50 text-red-300" : "bg-gray-950/50 border border-gray-800/30 text-gray-400/60")}
+                          >
+                            {tooTight ? "⚠️ " : "🚗 "}{gapBefore}min gap
+                          </div>
+                        )}
                         <div draggable onDragStart={() => setDragId(j.id)} onClick={() => setSelectedJobId(j.id)} onContextMenu={(e: React.MouseEvent) => openJobContextMenu(e, j.id)} onTouchStart={(e: React.TouchEvent) => startLongPress(e, j.id)} onTouchEnd={cancelLongPress} onTouchMove={cancelLongPress} className={"text-[9px] px-1 py-0.5 rounded truncate cursor-pointer text-white " + eventBg(j) + " " + prioRing(j.priority)} title={c?.firstName + " " + c?.lastName + " · " + fmt(j.amount) + (j.priority && j.priority !== "normal" ? " · " + j.priority : "") + (j.googleEventId ? " · synced" : "")}>
                           {j.priority === "urgent" && "🚨 "}{j.googleEventId && "☁"}{c?.firstName}{initials && <span className="opacity-60 ml-0.5">{initials}</span>}
                         </div>
-                        {showBuffer && <div className="text-[8px] px-1 py-0.5 rounded bg-gray-950/50 border border-gray-800/30 text-gray-400/60 truncate">⏸ buffer</div>}
                       </React.Fragment>;
                     })}
                     {dj.length > 3 && <div className="text-[9px] text-white/50">+{dj.length - 3} CRM</div>}

@@ -45,6 +45,7 @@ export function useAutomationEngine({
 
       const todayStr = today();
       const hour = new Date().getHours();
+      console.log("[Automations] tick — hour:", hour, "active automations:", automations.filter(a => a.active).length, "of", automations.length);
 
       for (const auto of automations) {
         if (!auto.active) continue;
@@ -66,11 +67,15 @@ export function useAutomationEngine({
               first_name: c.firstName,
               time: job.scheduledTime || "the scheduled time",
             });
+            console.log("[Automations] job_reminder — sending to", c.firstName, c.phone, "job:", job.id);
             try {
               await twilioSend(settings, c.phone, msg);
+              console.log("[Automations] job_reminder — sent to", c.firstName);
               toast(`📱 Job reminder sent to ${c.firstName}`);
               fired = true;
-            } catch { /* continue */ }
+            } catch (e: any) {
+              console.error("[Automations] job_reminder — failed for", c.firstName, ":", e?.message || e);
+            }
           }
         }
 
@@ -89,11 +94,15 @@ export function useAutomationEngine({
               first_name: c.firstName,
               amount: `$${est.total}`,
             });
+            console.log("[Automations] estimate_followup — sending to", c.firstName, c.phone, "estimate:", est.id, "daysSince sent:", daysSince(est.sentAt!));
             try {
               await twilioSend(settings, c.phone, msg);
+              console.log("[Automations] estimate_followup — sent to", c.firstName);
               toast(`📱 Estimate follow-up sent to ${c.firstName}`);
               fired = true;
-            } catch { /* continue */ }
+            } catch (e: any) {
+              console.error("[Automations] estimate_followup — failed for", c.firstName, ":", e?.message || e);
+            }
           }
         }
 
@@ -101,7 +110,13 @@ export function useAutomationEngine({
         // Prefer the real completion timestamp recorded on the customer's
         // sign-off (set the moment the employee closes out the job) over
         // scheduledDate, which can be days off if a job ran long or slipped.
-        if (auto.trigger.toLowerCase().includes("job completed") && hour >= 10 && hour < 12) {
+        // AUDIT ITEM 8 — matching on just "job completed" also matched a12's
+        // "Job completed (3rd+)" (Referral request) trigger text, meaning
+        // enabling that automation would silently send REVIEW request texts
+        // instead of referral asks (no separate handler exists for it at
+        // all). Requiring "48h" too disambiguates it from any other
+        // "job completed"-flavored trigger.
+        if (auto.trigger.toLowerCase().includes("job completed") && auto.trigger.toLowerCase().includes("48h") && hour >= 10 && hour < 12) {
           const recentJobs = jobs.filter(j => {
             if (j.status !== "completed") return false;
             const completedDate = j.signOff?.timestamp?.slice(0, 10) || j.scheduledDate;
@@ -117,11 +132,15 @@ export function useAutomationEngine({
               first_name: c.firstName,
               review_link: reviewLink,
             });
+            console.log("[Automations] review_request — sending to", c.firstName, c.phone, "job:", job.id);
             try {
               await twilioSend(settings, c.phone, msg);
+              console.log("[Automations] review_request — sent to", c.firstName);
               toast(`⭐ Review request sent to ${c.firstName}`);
               fired = true;
-            } catch { /* continue */ }
+            } catch (e: any) {
+              console.error("[Automations] review_request — failed for", c.firstName, ":", e?.message || e);
+            }
           }
         }
 
@@ -143,11 +162,15 @@ export function useAutomationEngine({
               amount: `$${est.total}`,
               payment_link: `${window.location.origin}${window.location.pathname}#/estimate/${est.id}`,
             });
+            console.log("[Automations] payment_overdue — sending to", c.firstName, c.phone, "estimate:", est.id);
             try {
               await twilioSend(settings, c.phone, msg);
+              console.log("[Automations] payment_overdue — sent to", c.firstName);
               toast(`💰 Payment reminder sent to ${c.firstName}`);
               fired = true;
-            } catch { /* continue */ }
+            } catch (e: any) {
+              console.error("[Automations] payment_overdue — failed for", c.firstName, ":", e?.message || e);
+            }
           }
         }
 
@@ -159,12 +182,30 @@ export function useAutomationEngine({
           );
           for (const c of birthdayCustomers) {
             const msg = fillTemplate(SMS_TEMPLATES.birthday, { first_name: c.firstName });
+            console.log("[Automations] birthday — sending to", c.firstName, c.phone);
             try {
               await twilioSend(settings, c.phone, msg);
+              console.log("[Automations] birthday — sent to", c.firstName);
               toast(`🎂 Birthday message sent to ${c.firstName}`);
               fired = true;
-            } catch { /* continue */ }
+            } catch (e: any) {
+              console.error("[Automations] birthday — failed for", c.firstName, ":", e?.message || e);
+            }
           }
+        }
+
+        // AUDIT ITEM 8 — several automation types the owner can toggle "active"
+        // in the Automations UI (Seasonal spring/fall, Maintenance reminder,
+        // Abandoned estimate, Re-engagement, Referral request) have no
+        // matching branch above at all, so enabling them is a silent no-op —
+        // count/lastTriggered never update and no send ever happens, with
+        // nothing telling anyone why. Surface that clearly instead of leaving
+        // it silent, once per automation per day.
+        const t = auto.trigger.toLowerCase();
+        const knownTrigger = t.includes("24h before job") || t.includes("estimate sent")
+          || (t.includes("job completed") && t.includes("48h")) || t.includes("overdue") || t.includes("birthday");
+        if (!knownTrigger) {
+          console.warn("[Automations] \"" + auto.name + "\" (trigger: \"" + auto.trigger + "\") has no matching engine handler — this automation type isn't implemented yet and will never fire.");
         }
 
         if (fired) {

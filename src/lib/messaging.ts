@@ -117,41 +117,37 @@ export const twilioSend = async (
 ): Promise<void> => {
   const { twilioSid, twilioToken, twilioBackendUrl } = settings;
   const twilioPhone = settings.twilioFrom || settings.twilioPhone;
+  console.log("[Twilio] send — to:", to, "channel:", channel, "sid set:", !!twilioSid, "token set:", !!twilioToken, "from:", twilioPhone);
   if (!twilioSid || !twilioToken || !twilioPhone) {
-    throw new Error("Twilio not configured — add SID, Token, and phone in Settings.");
+    throw new Error("Twilio not configured — add Account SID, Auth Token, and From number in Settings → Integrations.");
   }
 
   const from = channel === "whatsapp" ? `whatsapp:${twilioPhone}` : twilioPhone;
   const toNum = channel === "whatsapp" ? `whatsapp:${to}` : to;
 
-  // Try backend proxy first (avoids CORS in browser)
-  if (twilioBackendUrl) {
-    const res = await fetch(`${twilioBackendUrl}/sms`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ to: toNum, from, body }),
-    });
-    if (!res.ok) throw new Error(`SMS proxy error: ${res.status}`);
-    return;
-  }
-
-  // Direct Twilio API (works if CORS is allowed)
-  const formData = new URLSearchParams({ To: toNum, From: from, Body: body });
-  const res = await fetch(
-    `https://api.twilio.com/2010-04-01/Accounts/${twilioSid}/Messages.json`,
-    {
-      method: "POST",
-      headers: {
-        Authorization: `Basic ${btoa(`${twilioSid}:${twilioToken}`)}`,
-        "Content-Type": "application/x-www-form-urlencoded",
-      },
-      body: formData.toString(),
-    }
-  );
+  // AUDIT 6 — Twilio's REST API never returns CORS headers for browser-origin
+  // requests, so a direct fetch() from here to api.twilio.com always fails
+  // (opaque network error, not even a readable HTTP status) no matter how
+  // correct the SID/Token/From are — this was the actual reason SMS sending
+  // silently did nothing across the whole app. Route through this project's
+  // own same-origin Cloudflare Pages Function (functions/api/twilio-send.ts)
+  // by default; an explicitly configured twilioBackendUrl (self-hosted proxy)
+  // still takes priority if the owner has one.
+  const endpoint = twilioBackendUrl ? `${twilioBackendUrl}/sms` : "/api/twilio-send";
+  const payload = twilioBackendUrl
+    ? { to: toNum, from, body }
+    : { sid: twilioSid, token: twilioToken, to: toNum, from, body };
+  const res = await fetch(endpoint, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  const data = await res.json().catch(() => ({} as any));
   if (!res.ok) {
-    const err = await res.json().catch(() => ({})) as { message?: string };
-    throw new Error(err.message ?? `Twilio error ${res.status}`);
+    console.error("[Twilio] send failed:", data?.error || res.status);
+    throw new Error(data?.error || `Twilio error ${res.status}`);
   }
+  console.log("[Twilio] send success — sid:", data?.sid);
 };
 
 // ─── Inbox sync (SMS) ─────────────────────────────────────────────────────────
@@ -215,18 +211,31 @@ export const pollTwilioIncoming = async (
   if (!twilioSid || !twilioToken) return [];
 
   if (twilioBackendUrl) {
-    const res = await fetch(`${twilioBackendUrl}/sms/incoming?since=${since}`);
-    if (!res.ok) return [];
-    return res.json();
+    try {
+      const res = await fetch(`${twilioBackendUrl}/sms/incoming?since=${since}`);
+      if (!res.ok) return [];
+      return res.json();
+    } catch (e: any) {
+      console.warn("[Twilio] inbound poll (custom backend) failed:", e?.message);
+      return [];
+    }
   }
 
-  const url = `https://api.twilio.com/2010-04-01/Accounts/${twilioSid}/Messages.json?DateSent>=${since}&Direction=inbound&PageSize=50`;
-  const res = await fetch(url, {
-    headers: { Authorization: `Basic ${btoa(`${twilioSid}:${twilioToken}`)}` },
-  });
-  if (!res.ok) return [];
-  const data = await res.json() as { messages?: TwilioMessage[] };
-  return data.messages ?? [];
+  // AUDIT 6 — same CORS blocker as twilioSend; route through the same-origin
+  // Pages Function instead of api.twilio.com directly.
+  try {
+    const res = await fetch("/api/twilio-inbound", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sid: twilioSid, token: twilioToken, since }),
+    });
+    if (!res.ok) { console.warn("[Twilio] inbound poll failed:", res.status); return []; }
+    const data = await res.json() as { messages?: TwilioMessage[] };
+    return data.messages ?? [];
+  } catch (e: any) {
+    console.warn("[Twilio] inbound poll threw:", e?.message);
+    return [];
+  }
 };
 
 // ─── Email via Gmail API ──────────────────────────────────────────────────────
@@ -269,43 +278,101 @@ const sendGmailRaw = async (googleProviderToken: string, fromEmail: string, to: 
 // OAuth client secret — and retry once before giving up. Without this, every
 // Gmail send after the first hour would silently fail and fall through to
 // Resend, which is exactly the "everything uses Resend" bug this fixes.
+// ITEM 10 — a Google access token can only be refreshed with the client_id
+// + client_secret it was issued under (this project's Google Sign-In runs
+// through Supabase's own registered OAuth client), so the secret must live
+// server-side. functions/api/google-refresh.ts holds it as a Cloudflare env
+// var and does the actual token exchange; this just calls that same-origin
+// endpoint. Returns null (never throws) so callers can fall back cleanly.
+const refreshGoogleAccessToken = async (
+  refreshToken: string,
+  backendUrl?: string
+): Promise<{ token: string; expiresAt: number } | null> => {
+  const endpoint = backendUrl ? `${backendUrl}/google/refresh` : "/api/google-refresh";
+  try {
+    console.log("[GoogleToken] refreshing access token via", endpoint);
+    const res = await withTimeout(fetch(endpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ refresh_token: refreshToken }),
+    }), 8000, "Google token refresh");
+    const data = await res.json().catch(() => ({} as any));
+    if (!res.ok || !data?.access_token) {
+      console.warn("[GoogleToken] refresh failed:", data?.error || res.status);
+      return null;
+    }
+    console.log("[GoogleToken] refresh succeeded — new token expires in", data.expires_in, "s");
+    return { token: data.access_token, expiresAt: Date.now() + (Number(data.expires_in) || 3300) * 1000 };
+  } catch (e: any) {
+    console.warn("[GoogleToken] refresh threw:", e?.message);
+    return null;
+  }
+};
+
 export const sendViaGmail = async (
   googleProviderToken: string,
   fromEmail: string,
   to: string,
   subject: string,
-  html: string
+  html: string,
+  opts?: { refreshToken?: string; tokenExpiresAt?: number; backendUrl?: string; onTokenRefreshed?: (token: string, expiresAt: number) => void }
 ): Promise<void> => {
   console.log("[SendInvoice] sendViaGmail — attempting send to", to);
-  let res = await sendGmailRaw(googleProviderToken, fromEmail, to, subject, html);
+  let activeToken = googleProviderToken;
+
+  // ITEM 10 — proactive refresh: if we know this token is already past (or
+  // near) its ~1hr expiry, refresh BEFORE wasting a call that's certain to
+  // 401. This is what actually stops "token keeps expiring" from being user
+  // visible at all, rather than just reacting faster to the 401 after it
+  // already happened.
+  if (opts?.refreshToken && opts.tokenExpiresAt && Date.now() > opts.tokenExpiresAt - 2 * 60 * 1000) {
+    console.log("[GoogleToken] token is expired or expiring within 2min — refreshing proactively before send");
+    const refreshed = await refreshGoogleAccessToken(opts.refreshToken, opts.backendUrl);
+    if (refreshed) {
+      activeToken = refreshed.token;
+      opts.onTokenRefreshed?.(refreshed.token, refreshed.expiresAt);
+    }
+  }
+
+  let res = await sendGmailRaw(activeToken, fromEmail, to, subject, html);
   if (res.status === 401) {
-    console.warn("[SendInvoice] Gmail 401 — attempting session refresh");
-    // supabase.auth.refreshSession()/getSession() are documented elsewhere in
-    // this codebase (App.tsx) as able to hang indefinitely under internal
-    // navigator-lock contention rather than reject — left unwrapped, that hang
-    // would silently eat the ENTIRE outer withTimeout budget on this one
-    // refresh attempt, which is exactly what made a 401 show up alongside a
-    // timeout instead of a fast, clear "reconnect Gmail" error. A short,
-    // dedicated timeout here means a stuck refresh fails fast on its own.
+    console.warn("[SendInvoice] Gmail 401 — attempting real Google token refresh");
     let freshToken: string | undefined;
-    try {
-      const { data: refreshed } = await withTimeout(supabase.auth.refreshSession(), 6000, "Google session refresh");
-      // refreshSession()'s own return value often omits provider_token even when
-      // the refresh succeeded (a known Supabase SDK quirk) — getSession() right
-      // after tends to reflect the token the SIGNED_IN/TOKEN_REFRESHED listener
-      // in App.tsx just wrote, so check both instead of trusting one.
-      freshToken = (refreshed.session as any)?.provider_token;
-      if (!freshToken) {
-        const { data: current } = await withTimeout(supabase.auth.getSession(), 4000, "Google session check");
-        freshToken = (current.session as any)?.provider_token;
+    // ITEM 10 — the REAL fix: redeem the stored Google refresh_token via
+    // Google's own token endpoint (through our server-side proxy). This
+    // actually works, unlike supabase.auth.refreshSession() below, which
+    // only refreshes Supabase's own session JWT — it does not re-authenticate
+    // with Google, so the "fresh" provider_token it sometimes returns is
+    // usually just the same stale one, or null.
+    if (opts?.refreshToken) {
+      const refreshed = await refreshGoogleAccessToken(opts.refreshToken, opts.backendUrl);
+      if (refreshed) {
+        freshToken = refreshed.token;
+        opts.onTokenRefreshed?.(refreshed.token, refreshed.expiresAt);
       }
-    } catch (refreshErr: any) {
-      console.warn("[SendInvoice] session refresh failed or timed out:", refreshErr?.message);
+    }
+    // Fallback for accounts with no stored refresh_token yet (e.g. connected
+    // before this was tracked) — occasionally still turns up a usable token.
+    if (!freshToken) {
+      console.warn("[GoogleToken] no refresh_token available or refresh failed — falling back to Supabase session refresh (less reliable)");
+      try {
+        const { data: refreshed } = await withTimeout(supabase.auth.refreshSession(), 6000, "Google session refresh");
+        freshToken = (refreshed.session as any)?.provider_token;
+        if (!freshToken) {
+          const { data: current } = await withTimeout(supabase.auth.getSession(), 4000, "Google session check");
+          freshToken = (current.session as any)?.provider_token;
+        }
+      } catch (refreshErr: any) {
+        console.warn("[SendInvoice] session refresh failed or timed out:", refreshErr?.message);
+      }
     }
     if (freshToken) {
       console.log("[SendInvoice] got a fresh token — retrying send");
       res = await sendGmailRaw(freshToken, fromEmail, to, subject, html);
     }
+    // ITEM 10 — only surface "reconnect" once BOTH the real refresh_token
+    // exchange AND the Supabase-session fallback have failed to produce a
+    // token that actually works against Gmail.
     if (res.status === 401) {
       throw new Error("Google token expired — reconnect in Settings → Integrations.");
     }
@@ -322,7 +389,7 @@ export const sendViaGmail = async (
 // throws a clear, actionable error instead of falling through to a provider
 // the owner never configured.
 export const sendOwnerGmailOnly = async (
-  settings: { googleConnected?: boolean; googleProviderToken?: string; googleEmail?: string },
+  settings: { googleConnected?: boolean; googleProviderToken?: string; googleEmail?: string; googleRefreshToken?: string; googleTokenExpiresAt?: number; googleBackendUrl?: string },
   to: string,
   subject: string,
   html: string
@@ -330,7 +397,11 @@ export const sendOwnerGmailOnly = async (
   if (!settings.googleConnected || !settings.googleProviderToken || !settings.googleEmail) {
     throw new Error("Gmail not connected — connect Google in Settings → Integrations to send email.");
   }
-  await sendViaGmail(settings.googleProviderToken, settings.googleEmail, to, subject, html);
+  await sendViaGmail(settings.googleProviderToken, settings.googleEmail, to, subject, html, {
+    refreshToken: settings.googleRefreshToken,
+    tokenExpiresAt: settings.googleTokenExpiresAt,
+    backendUrl: settings.googleBackendUrl,
+  });
 };
 
 // ─── Email via Gmail (no Resend fallback — removed entirely, FIX 9) ───────────
@@ -341,7 +412,7 @@ export const sendOwnerGmailOnly = async (
 // (to, subject, body) positional/object-args calling convention this
 // function supports.
 export const sendEmail = async (
-  settings: EmailSettings & { googleConnected?: boolean; googleProviderToken?: string; googleEmail?: string; ownerName?: string; myEmail?: string },
+  settings: EmailSettings & { googleConnected?: boolean; googleProviderToken?: string; googleEmail?: string; ownerName?: string; myEmail?: string; googleRefreshToken?: string; googleTokenExpiresAt?: number; googleBackendUrl?: string },
   toOrOpts: string | { to: string; subject: string; body: string; [key: string]: any },
   subject?: string,
   html?: string
@@ -362,7 +433,11 @@ export const sendEmail = async (
   if (!settings.googleProviderToken || !settings.googleEmail) {
     throw new Error("Gmail not connected — connect Google in Settings → Integrations to send email.");
   }
-  await sendViaGmail(settings.googleProviderToken, settings.googleEmail, to, subj, body);
+  await sendViaGmail(settings.googleProviderToken, settings.googleEmail, to, subj, body, {
+    refreshToken: settings.googleRefreshToken,
+    tokenExpiresAt: settings.googleTokenExpiresAt,
+    backendUrl: settings.googleBackendUrl,
+  });
 };
 
 // ─── Branded HTML email shell ──────────────────────────────────────────────────

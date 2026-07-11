@@ -17,7 +17,7 @@ import { loadMapsScript, AddressAutocomplete } from "../ui/AddressAutocomplete";
 import { LiveMap } from "../ui/LiveMap";
 import { PropertyMapEmbed } from "../ui/PropertyMapEmbed";
 import { BarChart, Bar, LineChart, Line, XAxis, YAxis, ResponsiveContainer, Tooltip, CartesianGrid } from "recharts";
-import { fmt, uid, today, daysFromNow, computeJobRatingScore, setOAuthIntent, compressImageFile, getEffectiveRate } from "../../lib/utils";
+import { fmt, uid, today, localDateStr, daysFromNow, computeJobRatingScore, setOAuthIntent, compressImageFile, getEffectiveRate } from "../../lib/utils";
 import type { Job, Employee, Customer, AppSettings, JobChecklistItem } from "../../types";
 
 const PRE_DEFAULTS: JobChecklistItem[] = [
@@ -558,6 +558,7 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
       patch.loggedHours = hrs;
     }
     console.log("[HoursSync] Complete Job — jobId:", job.id, "crew:", job.crew, "clockInAt:", job.clockInAt, "arrivedAt:", job.arrivedAt, "computed loggedHours:", hrs);
+    console.log("[Payroll] WRITE (job completion) — loggedHours computed:", hrs, "for job:", job.id, "— will write to jobs.loggedHours column now");
     if (paymentStatus === "Paid") {
       patch.paymentType = (method as any) || "Cash";
       patch.paymentStatus = "Paid";
@@ -2700,10 +2701,12 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
 
   const handleAcceptRequest = async () => {
     if (!requestData || !myEmployee) return;
+    console.log("[CrewFlow] handleAcceptRequest — requestId:", requestId, "job_id:", requestData.job_id, "empId:", myEmployee.id);
     try {
-      await (supabase as any).from("job_requests")
+      const statusResult = await (supabase as any).from("job_requests")
         .update({ status: "accepted", responded_at: new Date().toISOString() })
         .eq("id", requestId);
+      if (statusResult?.error) console.warn("[CrewFlow] job_requests status update failed:", statusResult.error.message);
       if (requestData.job_id) {
         const empId = myEmployee.id;
         const empUserId = (myEmployee as any).user_id;
@@ -2711,7 +2714,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
         const currentCrew = targetJob?.crew || [];
         if (!crewIncludesEmployee(currentCrew, empId, empUserId)) {
           const newCrew = [...currentCrew, empId];
-          console.log("Accepting request job", requestData.job_id, "— crew before:", currentCrew, "after:", newCrew);
+          console.log("[CrewFlow] accepting request — job", requestData.job_id, "crew before:", currentCrew, "after:", newCrew);
           // Optimistic local update
           setJobs(prev => prev.map(j => j.id === requestData.job_id ? { ...j, crew: newCrew } : j));
           // Save MUST be awaited before refetching — otherwise the refetch below can
@@ -2719,7 +2722,10 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
           // still-empty array from Supabase, which is exactly why accepted jobs were
           // vanishing again right after acceptance.
           const saveResult = await (supabase as any).from("jobs").update({ crew: newCrew }).eq("id", requestData.job_id);
-          console.log("ACCEPT SAVE RESULT:", saveResult);
+          console.log("[CrewFlow] accept crew-write result:", saveResult?.error ? saveResult.error.message : "success");
+          if (saveResult?.error) {
+            toast("Accepted, but couldn't add you to the job's crew — " + saveResult.error.message, "red");
+          }
         }
         // Confirm against Supabase immediately rather than waiting up to 10s for the
         // next poll — the optimistic setJobs above already updated myJobs for instant
@@ -2729,20 +2735,24 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
       }
       setRequestDone("accepted");
       toast("Job accepted! You're on the crew. ✓");
-    } catch {
-      toast("Error accepting request", "red");
+    } catch (e: any) {
+      console.error("[CrewFlow] accept request failed:", e?.message || e);
+      toast("Error accepting request — " + (e?.message || "check connection"), "red");
     }
   };
 
   const handleDenyRequest = async () => {
+    console.log("[CrewFlow] handleDenyRequest — requestId:", requestId, "reason:", denyReason);
     try {
-      await (supabase as any).from("job_requests")
+      const result = await (supabase as any).from("job_requests")
         .update({ status: "denied", denial_reason: denyReason.trim(), responded_at: new Date().toISOString() })
         .eq("id", requestId);
+      if (result?.error) throw new Error(result.error.message);
       setRequestDone("denied");
       toast("Request declined.");
-    } catch {
-      toast("Error declining request", "red");
+    } catch (e: any) {
+      console.error("[CrewFlow] deny request failed:", e?.message || e);
+      toast("Error declining request — " + (e?.message || "check connection"), "red");
     }
   };
 
@@ -2941,7 +2951,21 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
         user_id: session.user.id,
         status: "active",
       };
-      (supabase as any).from("employees").insert(newEmp).then(() => {}).catch(() => {});
+      // AUDIT 9 — this insert used to be fire-and-forget with no error
+      // handling at all. If it failed (RLS, a duplicate email constraint,
+      // etc.) the new manager/employee looked signed-in in THIS browser via
+      // setLocalEmployee below, but no real employees row ever existed —
+      // meaning any other device, or this one after a cache clear, could
+      // never resolve their role again, with nothing telling anyone it
+      // failed. Await it and surface a real error instead of silently
+      // continuing as if it worked.
+      const insertResult = await (supabase as any).from("employees").insert(newEmp);
+      if (insertResult?.error) {
+        console.error("[ManagerInvite] failed to create employee record:", insertResult.error.message);
+        toast("Signed in, but couldn't create your team record — " + insertResult.error.message + ". Contact your owner.", "red");
+      } else {
+        console.log("[ManagerInvite] employee record created — role:", newEmp.role, "email:", newEmp.email);
+      }
       // Set locally so myEmployee resolves immediately without waiting for parent re-fetch
       setLocalEmployee(normalizeEmp(newEmp));
     }
@@ -3920,10 +3944,13 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                 if (!empId) return null;
                 try { return JSON.parse(localStorage.getItem("smocks.lastShift." + empId) || "null"); } catch { return null; }
               })();
-              const alreadyWorkedTodayHours = (myEmployee as any)?.lastShiftDate === today()
+              const alreadyWorkedTodayHours = (myEmployee as any)?.lastShiftDate === localDateStr()
                 ? Number((myEmployee as any)?.lastShiftHours) || 0
-                : (localLastShift?.date === today() ? Number(localLastShift?.hours) || 0 : 0);
+                : (localLastShift?.date === localDateStr() ? Number(localLastShift?.hours) || 0 : 0);
               const isResuming = !dayClockInAt && alreadyWorkedTodayHours > 0;
+              console.log("[ShiftTimer] render — dayClockInAt:", dayClockInAt, "lastShiftDate(server):", (myEmployee as any)?.lastShiftDate,
+                "lastShift(local):", localLastShift, "today(local):", localDateStr(), "alreadyWorkedTodayHours:", alreadyWorkedTodayHours,
+                "→ button will show:", dayClockInAt ? "End My Day" : isResuming ? "Resume" : "Start My Day");
               const onLunch = !!dayLunchStartAt;
               const currentPauseMs = onLunch ? Date.now() - dayLunchStartAt : 0;
               const netShiftHoursNow = dayClockInAt
@@ -3992,15 +4019,16 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                   setShiftEndedMsg(null);
                 }
                 console.log("[HoursSync] toggleDay clicked — endingDay:", endingDay, "empId:", empId, "dayClockInAt→", nextVal, "finalHours:", finalHours);
+                console.log("[Payroll] WRITE (shift timer) —", endingDay ? "clock OUT" : "clock IN", "— empId:", empId, endingDay ? `total shift hours: ${finalHours}` : "", "— writing to employees.dayClockInAt now");
                 // Always write the localStorage fallback immediately, regardless of
                 // how the Supabase write below goes — this is what guarantees
                 // Resume works on this device even if the lastShiftHours/
                 // lastShiftDate columns don't exist yet server-side.
                 if (endingDay && empId) {
-                  try { localStorage.setItem("smocks.lastShift." + empId, JSON.stringify({ hours: finalHours, date: today() })); } catch { /* ignore */ }
+                  try { localStorage.setItem("smocks.lastShift." + empId, JSON.stringify({ hours: finalHours, date: localDateStr() })); } catch { /* ignore */ }
                 }
                 const patch: any = endingDay
-                  ? { dayClockInAt: null, dayLunchStartAt: null, dayPausedMinutes: 0, lastShiftHours: finalHours, lastShiftDate: today() }
+                  ? { dayClockInAt: null, dayLunchStartAt: null, dayPausedMinutes: 0, lastShiftHours: finalHours, lastShiftDate: localDateStr() }
                   : { dayClockInAt: nextVal, dayLunchStartAt: null, dayPausedMinutes: 0 };
                 try {
                   let result = await (supabase as any).from("employees").update(patch).eq("id", empId);
@@ -4027,6 +4055,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                     toast("Saved locally, but couldn't sync to the server: " + result.error.message, "red");
                   } else {
                     console.log("[HoursSync] — success: shift data persisted to Supabase for", empId);
+                    console.log("[Payroll] WRITE (shift timer) — confirmed saved to Supabase for", empId);
                     refetchEmployees?.();
                     toast(endingDay ? `Shift ended · Total ${totalLabel} logged, summary emailed` : "Day started — owner can see you're on shift");
                   }
@@ -4961,6 +4990,9 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
             const expectedHours = 80; // typical 2-week period
             const TAX_RATE = 0.20;
             const takeHome = Math.round(current.pay * (1 - TAX_RATE) * 100) / 100;
+            console.log("[Payroll] MyPay tab render — myJobs:", myJobs.length,
+              "current period hours:", current.hours, "current period pay:", current.pay,
+              "hourlyRate:", myEmployee?.hourlyRate, "jobTypeRates:", (myEmployee as any)?.jobTypeRates);
 
             // Outstanding balance — the owner marks individual 14-day pay
             // periods as paid/unpaid (Employees → Pay), keyed by each

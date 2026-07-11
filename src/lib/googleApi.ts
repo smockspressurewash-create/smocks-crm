@@ -334,28 +334,37 @@ export const isEmpGoogleTokenValid = (t: EmpGoogleToken | null): boolean =>
   !!t && !!t.token && t.expiresAt > Date.now();
 
 // ─── Token refresh ──────────────────────────────────────────────────────────
-// Google access tokens last ~1hr; refreshing requires the OAuth client secret,
-// which never belongs in frontend code, so this calls an optional self-hosted
-// backend (the same googleBackendUrl already used for Calendar/Drive/Gmail
-// proxying) that holds the secret server-side. Without a backend configured,
-// there's no way to refresh client-side — the caller should fall back to
-// asking the user to reconnect, but only after this returns null.
+// ITEM 10 — Google access tokens last ~1hr; refreshing requires the OAuth
+// client secret, which never belongs in frontend code. This used to call
+// `${backendUrl}/google/refresh`, but backendUrl was never configurable
+// anywhere (no Settings field existed for it) — meaning this always
+// silently returned null and every employee's Google link effectively could
+// never self-heal after the first hour. Defaults to this project's own
+// same-origin Cloudflare Pages Function (functions/api/google-refresh.ts,
+// holding GOOGLE_CLIENT_ID/SECRET as env vars) unless an explicit
+// self-hosted backendUrl override is given.
 export const refreshEmpGoogleToken = async (
-  backendUrl: string,
+  backendUrl: string | undefined,
   refreshToken: string
 ): Promise<{ token: string; expiresAt: number } | null> => {
-  if (!backendUrl || !refreshToken) return null;
+  if (!refreshToken) return null;
+  const endpoint = backendUrl ? `${backendUrl}/google/refresh` : "/api/google-refresh";
   try {
-    const res = await fetch(`${backendUrl}/google/refresh`, {
+    console.log("[GoogleToken] refreshing employee token via", endpoint);
+    const res = await fetch(endpoint, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ refresh_token: refreshToken }),
     });
-    if (!res.ok) return null;
-    const data = await res.json() as { access_token?: string; expires_in?: number };
-    if (!data?.access_token) return null;
+    const data = await res.json().catch(() => ({} as any));
+    if (!res.ok || !data?.access_token) {
+      console.warn("[GoogleToken] employee token refresh failed:", data?.error || res.status);
+      return null;
+    }
+    console.log("[GoogleToken] employee token refresh succeeded");
     return { token: data.access_token, expiresAt: Date.now() + (Number(data.expires_in) || 3300) * 1000 };
-  } catch {
+  } catch (e: any) {
+    console.warn("[GoogleToken] employee token refresh threw:", e?.message);
     return null;
   }
 };
@@ -373,7 +382,7 @@ export const getValidEmpGoogleToken = async (
 ): Promise<EmpGoogleToken | null> => {
   const existing = getEmpGoogleToken(userId);
   if (isEmpGoogleTokenValid(existing)) return existing;
-  if (!existing?.refreshToken || !backendUrl) return null;
+  if (!existing?.refreshToken) return null;
   const refreshed = await refreshEmpGoogleToken(backendUrl, existing.refreshToken);
   if (!refreshed) return null;
   const updated: EmpGoogleToken = { ...existing, token: refreshed.token, expiresAt: refreshed.expiresAt };

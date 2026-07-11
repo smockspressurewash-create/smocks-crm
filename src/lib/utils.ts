@@ -69,6 +69,23 @@ export const uid = (): string => {
 
 export const today = (): string => new Date().toISOString().slice(0, 10);
 
+// AUDIT 3 — `today()` is UTC-based (toISOString), which rolls over to the
+// next calendar date at 7-8pm US local time, not local midnight. That's fine
+// for most call sites (scheduling dates set via <input type=date>, which is
+// already local and only ever compared to itself), but the shift-timer's
+// "same calendar day" check (Resume Day vs Start My Day, reset only at
+// midnight) explicitly needs the EMPLOYEE'S local day boundary — using
+// today() there meant an evening shift could get treated as spanning two
+// different "days" hours before actual local midnight, causing Resume Day
+// to incorrectly show Start My Day (which resets the clock) in the evening.
+export const localDateStr = (): string => {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+};
+
 export const daysFromNow = (n: number): string => {
   const d = new Date();
   d.setDate(d.getDate() + n);

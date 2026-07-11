@@ -85,7 +85,21 @@ export function CrewView({ jobs = [], setJobs, customers = [], employees = [], t
   const [liveDetailId, setLiveDetailId] = useState<string | null>(null);
 
   const activeEmps = employees.filter(e => e.status === "active");
-  const liveEmps = employees.filter((e: any) => e.status === "active" && !!e.dayClockInAt);
+  // AUDIT ITEM 13 — this page had its OWN separate "on shift" filter, still
+  // requiring status === "active" — the exact bug already fixed in
+  // Dashboard.tsx's Live Team View, just never applied here too. Per
+  // instruction: dayClockInAt being set IS "on shift", no other condition.
+  const liveEmps = employees.filter((e: any) => !!e.dayClockInAt);
+  console.log("[LiveCrew] CrewView page — total employees:", employees.length, "on shift:", liveEmps.length);
+  // AUDIT ITEM 13 — same first-load grace period as Dashboard.tsx's Live
+  // Team View, so a brief empty employees array before the initial Supabase
+  // fetch resolves never reads as "no one has started their shift."
+  const [crewDataSettled, setCrewDataSettled] = useState(employees.length > 0);
+  useEffect(() => {
+    if (employees.length > 0) { setCrewDataSettled(true); return; }
+    const t = setTimeout(() => setCrewDataSettled(true), 2500);
+    return () => clearTimeout(t);
+  }, [employees.length > 0]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Auto-refresh employee rows every 10s while anyone is sharing their
   // location, so the Live Now map's pins move in real time rather than only
@@ -206,7 +220,7 @@ export function CrewView({ jobs = [], setJobs, customers = [], employees = [], t
         {liveEmps.length === 0 ? (
           <div className="text-center py-6 text-white/30 text-sm">
             <Clock size={20} className="mx-auto mb-2 opacity-30" />
-            No one has started their shift yet
+            {crewDataSettled ? "No one has started their shift yet" : "Loading crew status…"}
           </div>
         ) : (
           <div className="space-y-2">
