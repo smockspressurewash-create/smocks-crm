@@ -10,6 +10,7 @@ import {
 import { useGlobalStyles } from "./hooks/useGlobalStyles";
 import { usePersistent } from "./hooks/usePersistent";
 import { usePersistentRaw } from "./hooks/usePersistentRaw";
+import { usePollGate } from "./hooks/usePollGate";
 import { useAutomationEngine } from "./hooks/useAutomationEngine";
 import { useIsMobile } from "./hooks/useIsMobile";
 import { supabase } from "./lib/supabase";
@@ -65,7 +66,7 @@ import {
 } from "./lib/seed";
 import { seedWeather } from "./lib/weather";
 import { fetchRealWeather } from "./lib/weather";
-import { fmt, uid, today, daysSince, daysFromNow, consumeOAuthIntent, getLastOwnerSessionFlag, setLastOwnerSessionFlag } from "./lib/utils";
+import { fmt, uid, today, daysSince, daysFromNow, consumeOAuthIntent, getLastOwnerSessionFlag, setLastOwnerSessionFlag, buildChecklistFromServices } from "./lib/utils";
 import { sendEmail, buildTomorrowJobsEmailHtml, buildDailyBriefingEmailHtml } from "./lib/messaging";
 import { exchangeSocialOAuthCode, type SocialPlatform } from "./lib/socialOAuth";
 import type {
@@ -444,6 +445,57 @@ export function App() {
   const [autoOpenManagerInvite, setAutoOpenManagerInvite] = useState(false);
   const [notifOpen, setNotifOpen] = useState(false);
   const [fabOpen, setFabOpen] = useState(false);
+  // FEATURE 1 — mobile FAB drag-and-drop. Hold the button for 2s to enter drag
+  // mode; pointermove repositions it (clamped to the viewport); releasing
+  // saves the position via usePersistent (localStorage key smocks.fabPosition)
+  // so it stays put across reloads. Pointer Events (not touch-only) so this
+  // also works with a mouse on desktop.
+  const [fabPosition, setFabPosition] = usePersistent<{ x: number; y: number } | null>("smocks.fabPosition", null);
+  const [fabDragging, setFabDragging] = useState(false);
+  const [fabHolding, setFabHolding] = useState(false);
+  const fabHoldTimerRef = useRef<any>(null);
+  const fabDragOffsetRef = useRef({ x: 0, y: 0 });
+  const fabWasDraggedRef = useRef(false);
+  const FAB_HOLD_MS = 2000;
+  const FAB_SIZE = 56;
+  const fabOnPointerDown = (e: React.PointerEvent<HTMLButtonElement>) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    fabDragOffsetRef.current = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+    fabWasDraggedRef.current = false;
+    setFabHolding(true);
+    console.log("[FAB] pointer down at", e.clientX, e.clientY, "— starting", FAB_HOLD_MS, "ms hold timer for drag mode");
+    clearTimeout(fabHoldTimerRef.current);
+    fabHoldTimerRef.current = setTimeout(() => {
+      fabWasDraggedRef.current = true;
+      setFabDragging(true);
+      setFabHolding(false);
+      console.log("[FAB] hold threshold reached — drag mode active");
+    }, FAB_HOLD_MS);
+  };
+  const fabCancelHold = () => {
+    if (fabHoldTimerRef.current) { clearTimeout(fabHoldTimerRef.current); fabHoldTimerRef.current = null; }
+    setFabHolding(false);
+  };
+  useEffect(() => {
+    if (!fabDragging) return;
+    const onMove = (e: PointerEvent) => {
+      const x = Math.max(4, Math.min(window.innerWidth - FAB_SIZE - 4, e.clientX - fabDragOffsetRef.current.x));
+      const y = Math.max(4, Math.min(window.innerHeight - FAB_SIZE - 4, e.clientY - fabDragOffsetRef.current.y));
+      setFabPosition({ x, y });
+    };
+    const onUp = () => {
+      console.log("[FAB] drag released — position saved to localStorage (smocks.fabPosition)");
+      setFabDragging(false);
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onUp);
+    return () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
+    };
+  }, [fabDragging]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Sync URL hash when page changes — skip if the hash carries tokens we still need
   useEffect(() => {
@@ -698,8 +750,21 @@ export function App() {
     };
     setEmployees(prev => prev.some(e => e.id === ownerId) ? prev : [...prev, ownerEmpRow as Employee]);
     (supabase as any).from("employees").upsert(ownerEmpRow, { onConflict: "id" })
-      .then((r: any) => { if (r?.error) console.warn("[Owner Self-Assign] employees upsert failed:", r.error.message); else console.log("[Owner Self-Assign] owner employee row ensured:", ownerId); })
-      .catch((e: any) => console.warn("[Owner Self-Assign] employees upsert threw:", e?.message));
+      .then((r: any) => {
+        if (r?.error) {
+          console.warn("[Owner Self-Assign] employees upsert failed:", r.error.message);
+          // FIX 5 — this row is what lets the owner appear in crew dropdowns,
+          // Live Team View/Crew View, and clock in/out at all; a silent
+          // failure here means all of that quietly never works.
+          toast("Couldn't set up your crew profile — " + r.error.message, "red");
+        } else {
+          console.log("[Owner Self-Assign] owner employee row ensured:", ownerId);
+        }
+      })
+      .catch((e: any) => {
+        console.warn("[Owner Self-Assign] employees upsert threw:", e?.message);
+        toast("Couldn't set up your crew profile — " + (e?.message || "unknown error"), "red");
+      });
   }, [crmUserId, crmUserEmail, settings.ownerName, settings.googleEmail, employees]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Owner notifications on client invoice activity (BUG 15 / FEATURE 5) ──────
@@ -1194,7 +1259,19 @@ export function App() {
   // an employee made on their phone never reached an owner's already-open
   // dashboard until they refreshed the page. Two complementary mechanisms:
   // a Supabase realtime subscription for instant updates when the table has
-  // realtime enabled, plus a 5s poll as a fallback that works regardless.
+  // realtime enabled (the actual "no polling needed" path — realtime pushes
+  // over one shared websocket instead of a fresh REST read every tick), plus
+  // a poll as a fallback for projects without realtime enabled or a dropped
+  // connection.
+  // EGRESS FIX — this poll used to run unconditionally, every 3s, for
+  // jobs+customers+estimates+employees together, all day, whether or not the
+  // tab was even visible — a full `select("*")` on 4 tables every 3 seconds
+  // is the actual source of the high Supabase egress. Now: jobs/customers/
+  // estimates (non-critical — realtime + a slower fallback is plenty) poll at
+  // 10s, only Live Crew View (employees, drives the "who's on shift right
+  // now" dashboard widget) keeps the faster 3s cadence, and BOTH skip
+  // entirely while the tab is hidden or the user has been idle 5+ minutes.
+  const shouldPollCrossDevice = usePollGate(() => { refetchData(); refetchEmployees(); });
   useEffect(() => {
     // Was gated on hasCrmSession (owner) only — an employee staying logged in
     // for a full shift never got customers refreshed after the one-time
@@ -1215,9 +1292,11 @@ export function App() {
         .on("postgres_changes", { event: "*", schema: "public", table: "employees" }, () => { refetchEmployees(); })
         .subscribe();
     } catch { /* realtime may not be enabled on this project */ }
-    const interval = setInterval(() => { refetchData(); refetchEmployees(); }, 3000);
+    const dataInterval = setInterval(() => { if (shouldPollCrossDevice()) refetchData(); }, 10000);
+    const crewInterval = setInterval(() => { if (shouldPollCrossDevice()) refetchEmployees(); }, 3000);
     return () => {
-      clearInterval(interval);
+      clearInterval(dataInterval);
+      clearInterval(crewInterval);
       try { channel?.unsubscribe(); } catch { /* ignore */ }
     };
   }, [hasCrmSession, !!empSession]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -1575,10 +1654,17 @@ export function App() {
           setJobs(prev => {
             if (prev.some(j => (j as any).estimateId === id)) return prev;
             const cust = customers.find(c => c.id === est.customerId);
+            // FEATURE 4 — combine every linked service's checklist template
+            // (instead of always starting the job with an empty checklist).
+            // Seeds BOTH job.checklist (legacy, CrewView/JobsPage progress %)
+            // AND job.preChecklist (what EmployeePortal's field-portal flow
+            // actually renders to the crew — it only falls back to hardcoded
+            // defaults when empty).
+            const combinedChecklist = buildChecklistFromServices(est.lineItems, services);
             const newJob = {
               id: uid(), customerId: est.customerId, address: cust?.address || "",
               amount: est.total, status: "scheduled", scheduledDate: "", duration: 2,
-              priority: "normal", crew: [], checklist: [], photos: [], chemicalsUsed: [],
+              priority: "normal", crew: [], checklist: combinedChecklist, preChecklist: combinedChecklist, photos: [], chemicalsUsed: [],
               equipment: [], tags: ["Needs Scheduling"], commLog: [],
               notes: "From approved estimate #" + id.slice(-4).toUpperCase(),
               createdAt: today(), estimateId: id,
@@ -2129,7 +2215,7 @@ export function App() {
           <div className="px-3 py-4 md:p-6 max-w-[1600px] mx-auto">
             <PageFade key={page}>
               <SafePage>
-                {page === "dashboard"      && <Dashboard jobs={jobs} setJobs={setJobs} customers={customers} estimates={estimates} setEstimates={setEstimates} automations={automations} stats={{ totalRev, activeJobs, pendingEst, closeRate, doneMonth }} goals={{ revenue: settings.monthlyRevenueGoal ?? 8000, jobCount: settings.monthlyJobsGoal ?? 20 }} vehicles={vehicles} maintenance={maintenance} chemicals={chemicals} settings={settings} setSettings={setSettings} onNav={setPage} toast={toast} weatherData={weatherData} inboxThreads={inboxThreads} employees={employees} crewFetchError={crewFetchError} reviews={reviews} onSendDailyBriefing={sendDailyBriefingNow} onViewJob={id => { setOpenJobId(id); setPage("jobs"); }} />}
+                {page === "dashboard"      && <Dashboard jobs={jobs} setJobs={setJobs} customers={customers} estimates={estimates} setEstimates={setEstimates} automations={automations} stats={{ totalRev, activeJobs, pendingEst, closeRate, doneMonth }} goals={{ revenue: settings.monthlyRevenueGoal ?? 8000, jobCount: settings.monthlyJobsGoal ?? 20 }} vehicles={vehicles} maintenance={maintenance} chemicals={chemicals} settings={settings} setSettings={setSettings} onNav={setPage} toast={toast} weatherData={weatherData} inboxThreads={inboxThreads} employees={employees} crewFetchError={crewFetchError} reviews={reviews} onSendDailyBriefing={sendDailyBriefingNow} onViewJob={id => { setOpenJobId(id); setPage("jobs"); }} ownerId={crmUserId} />}
                 {page === "customers"      && <CustomersPage customers={customers} setCustomers={setCustomers} estimates={estimates} jobs={jobs} toast={toast} timeline={timeline} setTimeline={setTimeline} settings={settings} />}
                 {page === "estimates"      && <EstimatesPage estimates={estimates} setEstimates={setEstimates} customers={customers} services={services} settings={settings} toast={toast} onPortal={id => setPortalEstId(id)} estimateTemplates={estimateTemplates} setEstimateTemplates={setEstimateTemplates} setJobs={setJobs} onNav={setPage} />}
                 {page === "invoices"       && <InvoicesPage estimates={estimates} setEstimates={setEstimates} customers={customers} settings={settings} toast={toast} jobs={jobs} setJobs={setJobs} />}
@@ -2238,10 +2324,11 @@ export function App() {
               const est = estimates.find(e => e.id === id);
               if (!est) return prev;
               const cust = customers.find(c => c.id === est.customerId);
+              const combinedChecklist = buildChecklistFromServices(est.lineItems, services);
               return [...prev, {
                 id: uid(), customerId: est.customerId, address: cust?.address || "",
                 amount: est.total, status: "scheduled", scheduledDate: "", duration: 2,
-                priority: "normal", crew: [], checklist: [], photos: [], chemicalsUsed: [],
+                priority: "normal", crew: [], checklist: combinedChecklist, preChecklist: combinedChecklist, photos: [], chemicalsUsed: [],
                 equipment: [], tags: ["Needs Scheduling"], commLog: [],
                 notes: "From approved estimate #" + id.slice(-4).toUpperCase(),
                 createdAt: today(), estimateId: id,
@@ -2271,8 +2358,14 @@ export function App() {
         <>
           {fabOpen && <div className="fixed inset-0 z-40" onClick={() => setFabOpen(false)} />}
           {/* Raised above the mobile bottom nav (bottom-20) so it never overlaps
-              it; drops back to bottom-6 on md+ where there's no bottom nav. */}
-          <div className="fixed bottom-20 right-5 md:bottom-6 md:right-6 z-50 flex flex-col items-end gap-2.5" style={{ marginBottom: "env(safe-area-inset-bottom)" }}>
+              it; drops back to bottom-6 on md+ where there's no bottom nav.
+              FEATURE 1 — once dragged, fabPosition overrides these default
+              corner classes with an explicit left/top so it stays wherever
+              it was dropped. */}
+          <div
+            className={"z-50 flex flex-col items-end gap-2.5 " + (fabPosition ? "fixed" : "fixed bottom-20 right-5 md:bottom-6 md:right-6")}
+            style={fabPosition ? { left: fabPosition.x, top: fabPosition.y } : { marginBottom: "env(safe-area-inset-bottom)" }}
+          >
             {fabOpen && (
               <>
                 {(() => {
@@ -2300,12 +2393,22 @@ export function App() {
               </>
             )}
             <button
-              onClick={() => setFabOpen(o => !o)}
-              className="w-14 h-14 rounded-full bg-gradient-to-br from-red-500 to-red-800 shadow-2xl shadow-red-900/60 flex items-center justify-center border border-red-400/30 hover:scale-110 active:scale-95"
-              style={{ transition: "transform 0.2s cubic-bezier(0.34,1.2,0.64,1)" }}
+              onClick={() => {
+                // FEATURE 1 — a hold-to-drag interaction ends with a pointerup
+                // that the browser also fires a click for; suppress that one
+                // click so dragging the FAB doesn't also toggle the menu open.
+                if (fabWasDraggedRef.current) { fabWasDraggedRef.current = false; return; }
+                setFabOpen(o => !o);
+              }}
+              onPointerDown={fabOnPointerDown}
+              onPointerUp={fabCancelHold}
+              onPointerLeave={fabCancelHold}
+              className={"w-14 h-14 rounded-full bg-gradient-to-br from-red-500 to-red-800 shadow-2xl shadow-red-900/60 flex items-center justify-center border border-red-400/30 touch-none " +
+                (fabDragging ? "scale-110 ring-4 ring-red-400/50 cursor-grabbing" : fabHolding ? "scale-105 ring-2 ring-red-400/40" : "hover:scale-110 active:scale-95")}
+              style={{ transition: fabDragging ? "none" : "transform 0.2s cubic-bezier(0.34,1.2,0.64,1)" }}
               aria-label="Quick actions"
             >
-              <Plus size={24} className={"text-white transition-transform duration-200 " + (fabOpen ? "rotate-45" : "")} />
+              <Plus size={24} className={"text-white transition-transform duration-200 " + (fabOpen && !fabDragging ? "rotate-45" : "")} />
             </button>
           </div>
         </>

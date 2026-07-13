@@ -20,7 +20,7 @@ import {
   Tooltip, ResponsiveContainer, Area, AreaChart, LineChart, Line,
   ComposedChart, Legend
 } from "recharts";
-import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, withTimeout, getEffectiveRate } from "../../lib/utils";
+import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, computeNextRecurringDate, isEmployeeUnavailable, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, withTimeout, getEffectiveRate } from "../../lib/utils";
 const weatherRisk = (_dateStr: string): {icon: string; level: string; reason: string} | null => null;
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
 import { twilioSend, sendEmail, emailShell, emailButton } from "../../lib/messaging";
@@ -591,7 +591,12 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
             <div className="flex gap-2">
               <GSel className="flex-1" value={newJobForm.crewEmpId} onChange={e => setNewJobForm(f => ({ ...f, crewEmpId: e.target.value }))}>
                 <option value="" className="bg-black">— No crew yet —</option>
-                {employees.filter((e: any) => e.status !== "inactive").map((e: any) => <option key={e.id} value={e.id} className="bg-black">{e.firstName} {e.lastName}</option>)}
+                {employees.filter((e: any) => e.status !== "inactive").map((e: any) => {
+                  // FEATURE 5 — surface availability right in the dropdown so
+                  // the owner sees it before assigning, not after.
+                  const unavail = newJobForm.scheduledDate && isEmployeeUnavailable(e, newJobForm.scheduledDate);
+                  return <option key={e.id} value={e.id} className="bg-black">{e.firstName} {e.lastName}{unavail ? " ⚠ unavailable" : ""}</option>;
+                })}
               </GSel>
               {newJobForm.crewEmpId && (
                 <GSel className="!w-36 flex-shrink-0" value={newJobCrewMode} onChange={e => setNewJobCrewMode(e.target.value as any)}>
@@ -600,6 +605,13 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
                 </GSel>
               )}
             </div>
+            {/* FEATURE 5 — explicit warning banner, not just the dropdown
+                annotation, so it's impossible to miss before saving. */}
+            {newJobForm.crewEmpId && newJobForm.scheduledDate && isEmployeeUnavailable(employees.find((e: any) => e.id === newJobForm.crewEmpId), newJobForm.scheduledDate) && (
+              <div className="text-[11px] text-orange-300 bg-orange-950/30 border border-orange-700/30 rounded px-2 py-1 mt-1 flex items-center gap-1">
+                <AlertTriangle size={11} />{employees.find((e: any) => e.id === newJobForm.crewEmpId)?.firstName} marked {newJobForm.scheduledDate} as unavailable
+              </div>
+            )}
             {newJobForm.crewEmpId && (
               <div className="text-[11px] text-white/30 mt-1">
                 {newJobCrewMode === "assign"
@@ -967,15 +979,16 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
                     className="w-full bg-black/60 border border-white/20 rounded-lg px-2 py-1.5 text-xs text-white focus:outline-none focus:border-yellow-500/50">
                     <option value="">Select employee…</option>
                     {employees.filter((e: any) => e.status === "active").map((e: any) => {
-                      const av: string[] = (e as any).availability || [];
-                      const unavail = j.scheduledDate && av.includes(j.scheduledDate);
+                      // FEATURE 5 — isEmployeeUnavailable also covers recurring
+                      // weekday-offs (e.g. "every Sunday"), not just specific
+                      // blocked dates.
+                      const unavail = j.scheduledDate && isEmployeeUnavailable(e, j.scheduledDate);
                       return <option key={e.id} value={e.id}>{e.firstName} {e.lastName}{unavail ? " ⚠ unavailable" : ""}</option>;
                     })}
                   </select>
                   {quickReqEmpId && (() => {
                     const emp = employees.find((e: any) => e.id === quickReqEmpId);
-                    const av: string[] = (emp as any)?.availability || [];
-                    return av.includes(j.scheduledDate) ? (
+                    return isEmployeeUnavailable(emp, j.scheduledDate) ? (
                       <div className="text-[10px] text-orange-300 bg-orange-950/30 border border-orange-700/30 rounded px-2 py-1">
                         ⚠ {(emp as any)?.firstName} marked {j.scheduledDate} as unavailable
                       </div>
@@ -1068,13 +1081,18 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
                 {tab === "in_progress" && (() => { return <><GBtn onClick={() => {
                   if (j.clockInAt) clockOut(j);
                   move(j.id, "completed");
-                  if (j.isRecurring && j.recurringFreq) {
-                    const daysMap = { daily: 1, weekly: 7, biweekly: 14, monthly: 30, quarterly: 91, annually: 365 };
-                    const days = daysMap[j.recurringFreq] || 30;
-                    const nextDate = (() => { const d = new Date(j.scheduledDate); d.setDate(d.getDate() + days); return d.toISOString().slice(0, 10); })();
+                  // FEATURE 3 — was gated on j.recurringFreq being set, which
+                  // only the "preset" schedule mode ever populates; the newer
+                  // days/weeks/months/weekdays modes have no recurringFreq at
+                  // all, so this would silently skip auto-scheduling for them.
+                  // computeNextRecurringDate (lib/utils.ts) is the single
+                  // shared calculation for every mode.
+                  if (j.isRecurring) {
+                    const nextDate = computeNextRecurringDate(j, j.scheduledDate);
                     const nextJob = { ...j, id: uid(), status: "scheduled", scheduledDate: nextDate, loggedHours: 0, clockInAt: null, checklist: (j.checklist || []).map(ck => ({ ...ck, done: false })), commLog: [], photos: [], chemicalsUsed: [] };
                     setJobs(prev => [...prev.map(x => x.id === j.id ? { ...x, status: "completed" } : x), nextJob]);
-                    toast("Next " + j.recurringFreq + " job auto-scheduled for " + nextDate);
+                    console.log("[Recurring] next job auto-scheduled — sourceJobId:", j.id, "mode:", j.recurringMode || "preset", "nextDate:", nextDate, "newJobId:", nextJob.id);
+                    toast("Next recurring job auto-scheduled for " + nextDate);
                   }
                 }} className="flex-1 text-xs !py-1.5">Complete</GBtn>
                 <button onClick={() => setJobs(jobs.map(x => x.id === j.id ? { ...x, isCash: !x.isCash } : x))} title={j.isCash ? "Mark as card/check" : "Mark as cash payment"} className={"px-2.5 py-1.5 rounded-lg border text-xs transition " + (j.isCash ? "bg-green-900/40 border-green-700/50 text-green-300" : "bg-black/40 border-white/10 text-white/50 hover:text-green-400")}>💵</button>

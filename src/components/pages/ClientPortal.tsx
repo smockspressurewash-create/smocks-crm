@@ -20,7 +20,7 @@ import {
   Tooltip, ResponsiveContainer, Area, AreaChart, LineChart, Line,
   ComposedChart, Legend
 } from "recharts";
-import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE } from "../../lib/utils";
+import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, computeDepositAmount, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE } from "../../lib/utils";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
 import { twilioSend, sendEmail } from "../../lib/messaging";
 import { supabase } from "../../lib/supabase";
@@ -142,7 +142,11 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
     ? effectiveLineItems.reduce((s: number, li: any) => s + Number(li.quantity) * Number(li.unitPrice), 0)
     : (e?.total || 0);
 
-  const depositAmt = e ? (e.depositRequired || Math.round(effectiveTotal * 0.25)) : 0;
+  // FEATURE 6 — depositRequired can now be a flat $ or a % of the total;
+  // computeDepositAmount resolves either. Falls back to the pre-existing 25%
+  // default when the owner never configured a deposit at all.
+  const depositAmt = e ? (computeDepositAmount(e, effectiveTotal) || Math.round(effectiveTotal * 0.25)) : 0;
+  const depositBalanceAmt = Math.max(0, effectiveTotal - depositAmt);
   // A deposit already on record (paidDeposit > 0, nothing paid in full yet)
   // means the customer is back to settle up — offer the actual remainder
   // instead of making them pay the deposit or full total a second time.
@@ -549,7 +553,10 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
                 {(hasRemainingBalance
                   ? [{ k: "remaining", l: "Pay Remaining Balance", sub: fmt(remainingAmt) + " due — " + fmt(alreadyPaid) + " already paid" }]
                   : [
-                      { k: "deposit", l: "Pay Deposit", sub: fmt(depositAmt) + " now, remainder on completion" },
+                      // FEATURE 6 — explicit "Deposit Due Now" / "Balance Due
+                      // After Service" wording so both figures are visible
+                      // before the client picks an option, not just the deposit.
+                      { k: "deposit", l: "Pay Deposit", sub: "Deposit Due Now: " + fmt(depositAmt) + " · Balance Due After Service: " + fmt(depositBalanceAmt) },
                       { k: "full", l: "Pay in Full", sub: fmt(e.total) + " — save time on service day" }
                     ]
                 ).map(o => (

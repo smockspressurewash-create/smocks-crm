@@ -192,6 +192,135 @@ export const recurringFreqs = [
   { key: "annual",    label: "Annual",    days: 365 },
 ];
 
+export const weekdayLabels = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+// FEATURE 6 — resolves an estimate's deposit to an actual dollar figure,
+// whether the owner configured it as a flat amount (depositType "amount",
+// the default/back-compat behavior) or a percentage of the total.
+export const computeDepositAmount = (
+  est: { depositRequired?: number; depositType?: string } | undefined | null,
+  total: number
+): number => {
+  if (!est?.depositRequired) return 0;
+  if (est.depositType === "percent") return Math.round(total * (Number(est.depositRequired) / 100) * 100) / 100;
+  return Number(est.depositRequired) || 0;
+};
+
+// FEATURE 7 — combines every stacked manual discount (each either a flat $ or
+// a % of subtotal) into one dollar total. Single shared implementation so
+// EstimateBuilder/ClientPortal/JobsPage/JobDetailModal can never disagree on
+// what a given discounts[] array actually totals to.
+export const computeDiscountsTotal = (discounts: Array<{ type?: string; value?: number }> | undefined, subtotal: number): number => {
+  return (discounts || []).reduce((sum, d) => {
+    const amt = d.type === "percent" ? subtotal * (Number(d.value) / 100) : Number(d.value) || 0;
+    return sum + Math.max(0, amt);
+  }, 0);
+};
+
+// FEATURE 5 — single shared "is this employee unavailable on this date" check
+// (specific blocked date OR a recurring weekday-off), so every place that
+// assigns crew (JobsPage's quick-request AND new-job dropdown, JobDetailModal's
+// crew section) agrees on the same answer instead of each reimplementing —
+// and possibly disagreeing on — the availability.includes() check.
+export const isEmployeeUnavailable = (emp: { availability?: string[]; recurringDaysOff?: number[] } | undefined | null, dateStr: string | undefined | null): boolean => {
+  if (!emp || !dateStr) return false;
+  if ((emp.availability || []).includes(dateStr)) return true;
+  const daysOff = emp.recurringDaysOff || [];
+  if (daysOff.length === 0) return false;
+  const day = new Date(dateStr + "T12:00:00").getDay();
+  return daysOff.includes(day);
+};
+
+// FEATURE 5 — counts days off actually taken within [startDate, endDate]
+// (inclusive, YYYY-MM-DD strings): specific blocked dates in range, plus every
+// occurrence of a recurring weekday-off within that range. Used to compare
+// against the owner-set maxDaysOffPerWeek/maxDaysOffPerMonth caps.
+export const countDaysOffInRange = (emp: { availability?: string[]; recurringDaysOff?: number[] } | undefined | null, startDate: string, endDate: string): number => {
+  if (!emp) return 0;
+  const specific = (emp.availability || []).filter(d => d >= startDate && d <= endDate);
+  const daysOff = emp.recurringDaysOff || [];
+  let recurringCount = 0;
+  if (daysOff.length > 0) {
+    const start = new Date(startDate + "T12:00:00");
+    const end = new Date(endDate + "T12:00:00");
+    for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+      const ds = d.toISOString().slice(0, 10);
+      if (daysOff.includes(d.getDay()) && !specific.includes(ds)) recurringCount++;
+    }
+  }
+  return specific.length + recurringCount;
+};
+
+// FEATURE 4 — combines every distinct linked service's checklistTemplate into
+// one flat job checklist (e.g. House Wash checklist + Deck Wash checklist),
+// deduped by serviceId so a service appearing as multiple line items (a
+// quantity split, say) doesn't duplicate its checklist. Single shared
+// implementation so every job-creation call site (new job, estimate→job
+// conversion, recurring next-occurrence) builds the same combined list the
+// same way, rather than each one reimplementing — and possibly disagreeing
+// on — the combine logic.
+export const buildChecklistFromServices = (
+  lineItems: Array<{ serviceId?: string }> | undefined,
+  services: Array<{ id: string; checklistTemplate?: Array<{ label: string; required?: boolean; photoRequired?: boolean }> }> | undefined
+): Array<{ id: string; label: string; done: boolean; required?: boolean; photoRequired?: boolean }> => {
+  // id included (not just label/done) so this same array can seed BOTH the
+  // legacy job.checklist field (CrewView/JobsPage progress %) and the real
+  // field-portal checklist (job.preChecklist, which is what EmployeePortal.tsx
+  // actually shows the crew — it only falls back to hardcoded PRE_DEFAULTS
+  // when empty, so this is what makes custom items visible in the field,
+  // not just sit unused in the legacy field).
+  const combined: Array<{ id: string; label: string; done: boolean; required?: boolean; photoRequired?: boolean }> = [];
+  const seenServiceIds = new Set<string>();
+  for (const li of lineItems || []) {
+    if (!li.serviceId || seenServiceIds.has(li.serviceId)) continue;
+    seenServiceIds.add(li.serviceId);
+    const svc = (services || []).find(s => s.id === li.serviceId);
+    for (const item of svc?.checklistTemplate || []) {
+      combined.push({ id: uid(), label: item.label, done: false, required: item.required, photoRequired: item.photoRequired });
+    }
+  }
+  return combined;
+};
+
+// FEATURE 3 — single source of truth for "what's the next occurrence date"
+// across all recurring-schedule modes, so the owner-side (JobsPage.tsx) and
+// employee-side (EmployeePortal.tsx) Complete-Job flows can never compute two
+// different next dates for the same job (the exact "two independent copies
+// of the same logic disagree" bug class this codebase has hit before).
+export const computeNextRecurringDate = (job: { recurringMode?: string; recurringFreq?: string; recurringInterval?: number; recurringWeekdays?: number[]; scheduledDate?: string }, fromDateStr?: string): string => {
+  const from = new Date((fromDateStr || job.scheduledDate || today()) + "T12:00:00");
+  const mode = job.recurringMode || "preset";
+  if (mode === "weekdays" && Array.isArray(job.recurringWeekdays) && job.recurringWeekdays.length > 0) {
+    const wanted = new Set(job.recurringWeekdays);
+    const d = new Date(from);
+    for (let i = 1; i <= 14; i++) {
+      d.setDate(from.getDate() + i);
+      if (wanted.has(d.getDay())) return d.toISOString().slice(0, 10);
+    }
+    return from.toISOString().slice(0, 10);
+  }
+  if (mode === "days") {
+    const n = Math.max(1, Number(job.recurringInterval) || 1);
+    const d = new Date(from); d.setDate(d.getDate() + n);
+    return d.toISOString().slice(0, 10);
+  }
+  if (mode === "weeks") {
+    const n = Math.max(1, Number(job.recurringInterval) || 1);
+    const d = new Date(from); d.setDate(d.getDate() + n * 7);
+    return d.toISOString().slice(0, 10);
+  }
+  if (mode === "months") {
+    const n = Math.max(1, Number(job.recurringInterval) || 1);
+    const d = new Date(from); d.setMonth(d.getMonth() + n);
+    return d.toISOString().slice(0, 10);
+  }
+  // Preset (back-compat): fixed day-count lookup, same table used before
+  // custom schedules existed.
+  const days = recurringFreqs.find(f => f.key === job.recurringFreq)?.days || 30;
+  const d = new Date(from); d.setDate(d.getDate() + days);
+  return d.toISOString().slice(0, 10);
+};
+
 export const equipmentList = [
   "4GPM Cold Water Pressure Washer",
   "8GPM Hot Water Pressure Washer",

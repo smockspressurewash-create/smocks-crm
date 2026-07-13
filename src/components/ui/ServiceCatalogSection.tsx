@@ -42,10 +42,18 @@ import { PBar } from "./PBar";
 import { PageFade } from "./PageFade";
 import { TimeframeSelector } from "./TimeframeSelector";
 
+const EMPTY_SERVICE_FORM = { name: "", description: "", customerDescription: "", internalNotes: "", price: "", minPrice: "", maxPrice: "", unit: "flat", category: "Washing", taxable: true, checklistTemplate: [] as { id: string; label: string; required?: boolean; photoRequired?: boolean }[] };
+
 export function ServiceCatalogSection({ services = [], setServices, toast }) {
-  const [f, setF] = useState({ name: "", description: "", customerDescription: "", internalNotes: "", price: "", minPrice: "", maxPrice: "", unit: "flat", category: "Washing", taxable: true });
+  const [f, setF] = useState(EMPTY_SERVICE_FORM);
   const [editId, setEditId] = useState(null);
   const [showForm, setShowForm] = useState(false);
+  // FEATURE 4 — checklist template item being added, and native HTML5
+  // drag-and-drop reorder state (this codebase has no DnD library installed;
+  // CalendarPage.tsx's month-grid drag/drop uses the same plain draggable +
+  // onDragOver/onDrop pattern).
+  const [newChecklistLabel, setNewChecklistLabel] = useState("");
+  const [ckDragIdx, setCkDragIdx] = useState<number | null>(null);
 
   const categories = ["Washing", "Sealing", "Gutter", "Roof", "Commercial", "Recurring", "Add-on", "Other"];
 
@@ -58,19 +66,43 @@ export function ServiceCatalogSection({ services = [], setServices, toast }) {
       setServices(prev => [...prev, { id: uid(), ...f, price: Number(f.price), basePrice: Number(f.price), minPrice: f.minPrice ? Number(f.minPrice) : undefined, maxPrice: f.maxPrice ? Number(f.maxPrice) : undefined }]);
       toast("Service added");
     }
-    setF({ name: "", description: "", customerDescription: "", internalNotes: "", price: "", minPrice: "", maxPrice: "", unit: "flat", category: "Washing", taxable: true });
+    setF(EMPTY_SERVICE_FORM);
     setEditId(null);
     setShowForm(false);
   };
 
-  const startEdit = s => { setF({ name: s.name, description: s.description || "", customerDescription: s.customerDescription || "", internalNotes: s.internalNotes || "", price: String(s.basePrice || s.price || ""), minPrice: String(s.minPrice || ""), maxPrice: String(s.maxPrice || ""), unit: s.unit || "flat", category: s.category || "Washing", taxable: s.taxable !== false }); setEditId(s.id); setShowForm(true); };
+  const startEdit = s => { setF({ name: s.name, description: s.description || "", customerDescription: s.customerDescription || "", internalNotes: s.internalNotes || "", price: String(s.basePrice || s.price || ""), minPrice: String(s.minPrice || ""), maxPrice: String(s.maxPrice || ""), unit: s.unit || "flat", category: s.category || "Washing", taxable: s.taxable !== false, checklistTemplate: s.checklistTemplate || [] }); setEditId(s.id); setShowForm(true); };
   const del = id => { if (confirm("Remove service?")) setServices(prev => prev.filter(s => s.id !== id)); };
+
+  // FEATURE 4 — checklist template item helpers, scoped to the form's draft
+  // (f.checklistTemplate) until Save is clicked, same as every other field here.
+  const addChecklistItem = () => {
+    if (!newChecklistLabel.trim()) return;
+    setF(prev => ({ ...prev, checklistTemplate: [...(prev.checklistTemplate || []), { id: uid(), label: newChecklistLabel.trim(), required: false, photoRequired: false }] }));
+    setNewChecklistLabel("");
+  };
+  const updateChecklistItem = (id: string, patch: any) => {
+    setF(prev => ({ ...prev, checklistTemplate: (prev.checklistTemplate || []).map(it => it.id === id ? { ...it, ...patch } : it) }));
+  };
+  const deleteChecklistItem = (id: string) => {
+    setF(prev => ({ ...prev, checklistTemplate: (prev.checklistTemplate || []).filter(it => it.id !== id) }));
+  };
+  const reorderChecklistItem = (targetIdx: number) => {
+    if (ckDragIdx === null || ckDragIdx === targetIdx) return;
+    setF(prev => {
+      const items = [...(prev.checklistTemplate || [])];
+      const [moved] = items.splice(ckDragIdx, 1);
+      items.splice(targetIdx, 0, moved);
+      return { ...prev, checklistTemplate: items };
+    });
+    setCkDragIdx(targetIdx);
+  };
 
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h4 className="font-semibold text-sm">Service Catalog</h4>
-        <GBtn onClick={() => { setF({ name: "", description: "", customerDescription: "", internalNotes: "", price: "", minPrice: "", maxPrice: "", unit: "flat", category: "Washing", taxable: true }); setEditId(null); setShowForm(!showForm); }} className="!text-xs !py-1.5"><Plus size={11} className="inline mr-1" />{showForm ? "Cancel" : "Add Service"}</GBtn>
+        <GBtn onClick={() => { setF(EMPTY_SERVICE_FORM); setEditId(null); setShowForm(!showForm); }} className="!text-xs !py-1.5"><Plus size={11} className="inline mr-1" />{showForm ? "Cancel" : "Add Service"}</GBtn>
       </div>
 
       {showForm && <Glass className="p-4 !bg-black/60">
@@ -95,8 +127,50 @@ export function ServiceCatalogSection({ services = [], setServices, toast }) {
             <option value="hour" className="bg-black">Per hour</option>
           </GSel></div>
           <label className="flex items-center gap-2 text-xs cursor-pointer"><input type="checkbox" checked={f.taxable} onChange={e => setF({ ...f, taxable: e.target.checked })} className="w-3.5 h-3.5" />Taxable service</label>
+
+          {/* FEATURE 4 — checklist template. Drag the grip handle to reorder;
+              each item can be flagged required and/or photo-required. Copied
+              into a job's checklist at creation (combined with any other
+              linked services' templates) via buildChecklistFromServices. */}
+          <div className="pt-2 border-t border-white/10">
+            <label className="text-[10px] text-white/50 mb-1.5 block flex items-center gap-1"><CheckSquare size={9} />Checklist Template <span className="text-white/30">(copied onto jobs using this service)</span></label>
+            <div className="space-y-1.5">
+              {(f.checklistTemplate || []).map((item, idx) => (
+                <div
+                  key={item.id}
+                  draggable
+                  onDragStart={() => setCkDragIdx(idx)}
+                  onDragOver={e => { e.preventDefault(); reorderChecklistItem(idx); }}
+                  onDragEnd={() => setCkDragIdx(null)}
+                  className="flex items-center gap-2 p-2 bg-black/30 border border-white/10 rounded-lg"
+                >
+                  <GripVertical size={12} className="text-white/30 cursor-grab flex-shrink-0" />
+                  <GInput value={item.label} onChange={e => updateChecklistItem(item.id, { label: e.target.value })} className="!text-xs flex-1" />
+                  <label className="flex items-center gap-1 text-[9px] text-white/50 cursor-pointer flex-shrink-0">
+                    <input type="checkbox" checked={!!item.required} onChange={e => updateChecklistItem(item.id, { required: e.target.checked })} className="w-3 h-3 accent-red-600" />Required
+                  </label>
+                  <label className="flex items-center gap-1 text-[9px] text-white/50 cursor-pointer flex-shrink-0">
+                    <input type="checkbox" checked={!!item.photoRequired} onChange={e => updateChecklistItem(item.id, { photoRequired: e.target.checked })} className="w-3 h-3 accent-blue-600" />Photo
+                  </label>
+                  <button onClick={() => deleteChecklistItem(item.id)} className="p-1 text-white/30 hover:text-red-400 flex-shrink-0"><Trash2 size={11} /></button>
+                </div>
+              ))}
+              {(f.checklistTemplate || []).length === 0 && <div className="text-[10px] text-white/30 py-1">No checklist items yet</div>}
+            </div>
+            <div className="flex gap-2 mt-1.5">
+              <GInput
+                value={newChecklistLabel}
+                onChange={e => setNewChecklistLabel(e.target.value)}
+                onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); addChecklistItem(); } }}
+                placeholder="e.g. Confirm water access"
+                className="!text-xs flex-1"
+              />
+              <GBtn variant="ghost" onClick={addChecklistItem} disabled={!newChecklistLabel.trim()} className="!text-xs !py-1.5"><Plus size={11} className="inline mr-1" />Add</GBtn>
+            </div>
+          </div>
+
           <div className="flex gap-2 justify-end pt-1">
-            <GBtn variant="ghost" onClick={() => { setShowForm(false); setEditId(null); setF({ name: "", description: "", customerDescription: "", internalNotes: "", price: "", minPrice: "", maxPrice: "", unit: "flat", category: "Washing", taxable: true }); }} className="!text-xs !py-1.5">Cancel</GBtn>
+            <GBtn variant="ghost" onClick={() => { setShowForm(false); setEditId(null); setF(EMPTY_SERVICE_FORM); }} className="!text-xs !py-1.5">Cancel</GBtn>
             <GBtn onClick={save} disabled={!f.name.trim() || !f.price} className="!text-xs !py-1.5">Save</GBtn>
           </div>
         </div>
@@ -110,6 +184,7 @@ export function ServiceCatalogSection({ services = [], setServices, toast }) {
                 <span className="font-medium text-sm">{s.name}</span>
                 {s.category && <Badge tone="blue">{s.category}</Badge>}
                 {s.taxable !== false && <span className="text-[9px] text-white/40">taxable</span>}
+                {(s.checklistTemplate || []).length > 0 && <span className="inline-flex items-center gap-0.5 text-[9px] text-blue-400"><CheckSquare size={9} />{s.checklistTemplate.length} checklist item{s.checklistTemplate.length !== 1 ? "s" : ""}</span>}
               </div>
               {s.customerDescription && <div className="text-xs text-blue-300/60 mt-0.5 truncate">📋 {s.customerDescription}</div>}
               {!s.customerDescription && s.description && <div className="text-xs text-white/50 mt-0.5">{s.description}</div>}

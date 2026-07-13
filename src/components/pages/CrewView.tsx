@@ -20,7 +20,7 @@ import {
   Tooltip, ResponsiveContainer, Area, AreaChart, LineChart, Line,
   ComposedChart, Legend
 } from "recharts";
-import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE } from "../../lib/utils";
+import { fmt, uid, today, localDateStr, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE } from "../../lib/utils";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
 import { twilioSend, sendEmail, emailShell } from "../../lib/messaging";
 import { seedWeather } from "../../lib/weather";
@@ -90,7 +90,14 @@ export function CrewView({ jobs = [], setJobs, customers = [], employees = [], t
   // Dashboard.tsx's Live Team View, just never applied here too. Per
   // instruction: dayClockInAt being set IS "on shift", no other condition.
   const liveEmps = employees.filter((e: any) => !!e.dayClockInAt);
-  console.log("[LiveCrew] CrewView page — total employees:", employees.length, "on shift:", liveEmps.length);
+  // FIX 3 — clocking out clears dayClockInAt, so someone who worked a full
+  // shift and ended it today would otherwise vanish from this view entirely.
+  // lastShiftDate is written via localDateStr() (local date), so match with
+  // the same helper rather than the UTC-based today() used elsewhere in this file.
+  const shiftEndedEmps = employees.filter((e: any) =>
+    !e.dayClockInAt && e.lastShiftDate === localDateStr() && Number(e.lastShiftHours) > 0
+  );
+  console.log("[LiveCrew] CrewView page — total employees:", employees.length, "on shift:", liveEmps.length, "shift ended today:", shiftEndedEmps.length);
   // AUDIT ITEM 13 — same first-load grace period as Dashboard.tsx's Live
   // Team View, so a brief empty employees array before the initial Supabase
   // fetch resolves never reads as "no one has started their shift."
@@ -217,12 +224,12 @@ export function CrewView({ jobs = [], setJobs, customers = [], employees = [], t
           );
         })()}
 
-        {liveEmps.length === 0 ? (
+        {liveEmps.length === 0 && shiftEndedEmps.length === 0 ? (
           <div className="text-center py-6 text-white/30 text-sm">
             <Clock size={20} className="mx-auto mb-2 opacity-30" />
             {crewDataSettled ? "No one has started their shift yet" : "Loading crew status…"}
           </div>
-        ) : (
+        ) : liveEmps.length > 0 ? (
           <div className="space-y-2">
             {liveEmps.map((e: any) => {
               const todayStr = today();
@@ -253,6 +260,27 @@ export function CrewView({ jobs = [], setJobs, customers = [], employees = [], t
                   </div>
                   {currentJob && <ChevronRight size={14} className="text-white/30 flex-shrink-0" />}
                 </button>
+              );
+            })}
+          </div>
+        ) : null}
+
+        {/* FIX 3 — employees whose shift already ended today. */}
+        {shiftEndedEmps.length > 0 && (
+          <div className="space-y-2 mt-2 pt-2 border-t border-white/5">
+            {shiftEndedEmps.map((e: any) => {
+              const h = Math.floor(Number(e.lastShiftHours) || 0);
+              const m = Math.round(((Number(e.lastShiftHours) || 0) - h) * 60);
+              return (
+                <div key={e.id} className="w-full flex items-center gap-3 p-3 rounded-xl border bg-black/10 border-white/5 opacity-70">
+                  <div className="w-10 h-10 rounded-lg bg-white/5 border border-white/10 flex items-center justify-center flex-shrink-0 font-bold text-white/40 text-sm">
+                    {(e.firstName?.[0] || "?")}{(e.lastName?.[0] || "")}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-medium text-white/70">{e.firstName} {e.lastName}</div>
+                    <div className="text-xs text-white/40 mt-0.5">Shift Ended · Total: {h}h {String(m).padStart(2, "0")}m</div>
+                  </div>
+                </div>
               );
             })}
           </div>

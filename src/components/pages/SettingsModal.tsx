@@ -28,6 +28,7 @@ import { seedWeather } from "../../lib/weather";
 import { seedCustomers, seedEstimates, seedJobs, seedEmployees, seedVehicles, seedExpenses, seedChemicals, seedServices, seedAutomations, seedEmailTemplates, seedSmsTemplates, seedRewardTiers, seedReferrals, seedMaintenance, campaignTemplates, seedSocialPosts, seedTimeline, seedGoals, seedReminders, seedAccountabilityEntries, seedMileage, seedLeadSrc, STEP_TYPES, AUTOMATION_TEMPLATES } from "../../lib/seed";
 import { callModel, MODELS } from "../../lib/api";
 import { createCalendarEvent, updateCalendarEvent, deleteCalendarEvent, fetchDriveFiles, MOCK_GOOGLE_DATA, fmtSize, fmtDate, fileIcon } from "../../lib/google";
+import { refreshEmpGoogleToken } from "../../lib/googleApi";
 import { supabase } from "../../lib/supabase";
 import { obfuscate, deobfuscate } from "../../lib/crypto";
 import { usePersistent } from "../../hooks/usePersistent";
@@ -87,6 +88,32 @@ export function SettingsModal({ open, onClose, settings, setSettings, services, 
   const [sec, setSec] = useState(restrictToProfile ? "profile" : "api");
   const [showKey, setShowKey] = useState(false);
   const [googleOAuth, setGoogleOAuth] = useState({ open: false, step: "account", email: "", selectedScopes: { gmail: true, calendar: true, drive: false, contacts: false } });
+  const [googleRetrying, setGoogleRetrying] = useState(false);
+
+  // FIX 1 — real refresh-token exchange so an expired Google token can be
+  // retried in place from Settings → Integrations, without a full
+  // disconnect/reconnect. Writes straight to live settings (like the other
+  // direct setSettings calls in this modal) so it takes effect immediately,
+  // not just after Save.
+  const retryGoogleToken = async () => {
+    setGoogleRetrying(true);
+    try {
+      if (!f.googleRefreshToken) {
+        toast?.("No refresh token on file — reconnect Google below to enable retry.", "red");
+        return;
+      }
+      const refreshed = await refreshEmpGoogleToken(f.googleBackendUrl, f.googleRefreshToken);
+      if (refreshed) {
+        setF((prev: any) => ({ ...prev, googleProviderToken: refreshed.token, googleTokenExpiresAt: refreshed.expiresAt }));
+        setSettings?.((prev: any) => ({ ...prev, googleProviderToken: refreshed.token, googleTokenExpiresAt: refreshed.expiresAt }));
+        toast?.("Google token refreshed", "green");
+      } else {
+        toast?.("Couldn't refresh automatically — the refresh function may not be deployed yet. Reconnect Google below.", "red");
+      }
+    } finally {
+      setGoogleRetrying(false);
+    }
+  };
   const [tplTab, setTplTab] = useState<"messaging" | "estimates">("messaging");
   const [bufferChannels, setBufferChannels] = useState<BufferChannel[]>([]);
   const [bufferConnecting, setBufferConnecting] = useState(false);
@@ -830,9 +857,15 @@ export function SettingsModal({ open, onClose, settings, setSettings, services, 
                     </label>
                   )}
 
-                  <GBtn variant="danger" onClick={() => setF({ ...f, googleConnected: false, googleToken: "", googleEmail: "", googleRefreshToken: "", googleScopes: {} })} className="w-full !text-xs">
-                    Disconnect Google Account
-                  </GBtn>
+                  <div className="flex gap-2">
+                    <GBtn variant="ghost" onClick={retryGoogleToken} disabled={googleRetrying} className="flex-1 !text-xs">
+                      <RefreshCw size={12} className={"inline mr-1.5 " + (googleRetrying ? "animate-spin" : "")} />
+                      {googleRetrying ? "Retrying…" : "Retry Connection"}
+                    </GBtn>
+                    <GBtn variant="danger" onClick={() => setF({ ...f, googleConnected: false, googleToken: "", googleEmail: "", googleRefreshToken: "", googleScopes: {} })} className="flex-1 !text-xs">
+                      Disconnect Google Account
+                    </GBtn>
+                  </div>
                 </div>
               ) : (
                 <div className="space-y-4">

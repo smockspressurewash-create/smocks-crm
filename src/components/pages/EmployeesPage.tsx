@@ -20,7 +20,7 @@ import {
   Tooltip, ResponsiveContainer, Area, AreaChart, LineChart, Line,
   ComposedChart, Legend
 } from "recharts";
-import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, getEffectiveRate } from "../../lib/utils";
+import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, getEffectiveRate, weekdayLabels, countDaysOffInRange } from "../../lib/utils";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
 import { twilioSend, sendEmail } from "../../lib/messaging";
 import { supabase } from "../../lib/supabase";
@@ -245,20 +245,52 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setting
 
   const roles = ["Owner", "Manager", "Lead Technician", "Technician", "Helper", "Office", "Sales"];
 
-  // Calculate real hours from jobs (loggedHours on jobs they're crewed on)
+  // FIX 4 — job.loggedHours (time on-site per job, see EmployeePortal.tsx's
+  // finalizeCompletion) is the primary source, but employees.lastShiftHours/
+  // lastShiftDate (the whole-day shift timer total, set on "End My Day") can
+  // cover time no job captured at all — e.g. a shift ended before any job was
+  // marked complete yet. The employees table only ever stores the SINGLE most
+  // recent shift (no full daily history exists server-side), so this can only
+  // top up that one day, but that's exactly the day most likely to be under-
+  // counted mid-period. Only add the shortfall (shift total minus whatever
+  // job hours already landed on that same date) so a shift that's already
+  // fully reflected via completed jobs is never double-counted.
+  const shiftTopUpHours = (emp: any, startDate: string, endDate: string): number => {
+    const shiftDate = emp?.lastShiftDate;
+    if (!shiftDate || shiftDate < startDate || shiftDate > endDate) return 0;
+    const jobHoursOnShiftDate = jobs
+      .filter((j: any) => (j.crew || []).includes(emp.id) && j.status === "completed" && j.scheduledDate === shiftDate)
+      .reduce((s: number, j: any) => s + Number(j.loggedHours || j.duration || 0), 0);
+    const shiftTotal = Number(emp.lastShiftHours) || 0;
+    return Math.max(0, shiftTotal - jobHoursOnShiftDate);
+  };
+
+  // Calculate real hours from jobs (loggedHours on jobs they're crewed on),
+  // plus any uncaptured whole-day shift time (see shiftTopUpHours above).
   const getEmployeeHours = (empId, startDate, endDate) => {
-    return jobs
+    const emp = employees.find((e: any) => e.id === empId);
+    const jobHours = jobs
       .filter(j => (j.crew || []).includes(empId) && j.status === "completed" && j.scheduledDate >= startDate && j.scheduledDate <= endDate)
       .reduce((s, j) => s + Number(j.loggedHours || j.duration || 0), 0);
+    const topUp = emp ? shiftTopUpHours(emp, startDate, endDate) : 0;
+    return jobHours + topUp;
   };
 
   // Pay must respect per-job-type rate overrides (getEffectiveRate), so it's
   // computed per-job (hours × that job's effective rate) then summed — a flat
   // hours-total × hourlyRate would ignore commercial/residential overrides.
+  // The shift-timer top-up isn't tied to any one job, so it's paid at the
+  // employee's plain hourlyRate.
   const getEmployeePay = (emp: any, startDate: string, endDate: string) => {
-    return jobs
+    const jobPay = jobs
       .filter((j: any) => (j.crew || []).includes(emp.id) && j.status === "completed" && j.scheduledDate >= startDate && j.scheduledDate <= endDate)
       .reduce((s: number, j: any) => s + Number(j.loggedHours || j.duration || 0) * getEffectiveRate(emp, j), 0);
+    const topUp = shiftTopUpHours(emp, startDate, endDate);
+    const topUpPay = topUp * (Number(emp.hourlyRate) || 0);
+    if (topUp > 0) {
+      console.log("[Payroll] shift top-up —", emp.firstName, emp.lastName, "— lastShiftDate:", emp.lastShiftDate, "lastShiftHours:", emp.lastShiftHours, "uncaptured hours:", Math.round(topUp * 100) / 100, "@ $" + (emp.hourlyRate || 0) + "/hr =", fmt(topUpPay));
+    }
+    return jobPay + topUpPay;
   };
 
   const totalPayroll = employees.filter(e => e.status === "active").reduce((s, e) => {
@@ -274,6 +306,14 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setting
     console.log("[Payroll] READ (owner Employees tab) — employees:", employees.length, "jobs:", jobs.length,
       "period:", payPeriodStart, "to", payPeriodEnd, "— total hours:", Math.round(totalHours * 100) / 100,
       "total payroll:", Math.round(totalPayroll * 100) / 100);
+    // FIX 4 — per-employee math breakdown: job hours × effective rate, plus
+    // any whole-day shift-timer top-up, so a wrong total can be traced to the
+    // exact employee/job/rate that produced it instead of just a lump sum.
+    employees.filter((e: any) => e.status === "active").forEach((e: any) => {
+      const hrs = getEmployeeHours(e.id, payPeriodStart, payPeriodEnd);
+      const pay = getEmployeePay(e, payPeriodStart, payPeriodEnd);
+      console.log("[Payroll]  ", e.firstName, e.lastName, "— hours:", Math.round(hrs * 100) / 100, "× $" + (e.hourlyRate || 0) + "/hr baseline — pay:", fmt(pay));
+    });
   }, [jobs, employees, payPeriodStart, payPeriodEnd]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
@@ -628,6 +668,42 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setting
             </div>
           )}
 
+          {/* FEATURE 5 — owner-set days-off caps. Enforcement is informational
+              (a badge comparing actual days off taken to the cap), not a hard
+              block — the employee still sets their own availability from the
+              portal Calendar tab; this just gives the owner visibility. */}
+          <div className="border border-white/10 rounded-xl p-3 space-y-2">
+            <div className="text-xs font-semibold text-white/70 flex items-center gap-1.5 mb-1"><Calendar size={12} />Days Off Limits</div>
+            <div className="grid grid-cols-2 gap-2">
+              <div><label className="text-[10px] text-white/50 mb-1 block">Max days off / week</label><GInput type="number" min="0" step="1" value={f.maxDaysOffPerWeek ?? ""} onChange={e => setF({ ...f, maxDaysOffPerWeek: e.target.value === "" ? undefined : Number(e.target.value) })} placeholder="No limit" /></div>
+              <div><label className="text-[10px] text-white/50 mb-1 block">Max days off / month</label><GInput type="number" min="0" step="1" value={f.maxDaysOffPerMonth ?? ""} onChange={e => setF({ ...f, maxDaysOffPerMonth: e.target.value === "" ? undefined : Number(e.target.value) })} placeholder="No limit" /></div>
+            </div>
+            {f.id && (() => {
+              const now = new Date();
+              const weekStart = new Date(now); weekStart.setDate(now.getDate() - now.getDay());
+              const weekStartStr = weekStart.toISOString().slice(0, 10);
+              const weekEndStr = today();
+              const monthStartStr = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().slice(0, 10);
+              const weekTaken = countDaysOffInRange(f, weekStartStr, weekEndStr);
+              const monthTaken = countDaysOffInRange(f, monthStartStr, weekEndStr);
+              const weekOver = f.maxDaysOffPerWeek != null && weekTaken > f.maxDaysOffPerWeek;
+              const monthOver = f.maxDaysOffPerMonth != null && monthTaken > f.maxDaysOffPerMonth;
+              const recurring: number[] = f.recurringDaysOff || [];
+              return (
+                <div className="text-[10px] space-y-1">
+                  <div className={weekOver ? "text-red-400" : "text-white/50"}>
+                    This week: {weekTaken}{f.maxDaysOffPerWeek != null ? ` / ${f.maxDaysOffPerWeek}` : ""} day{weekTaken !== 1 ? "s" : ""} off{weekOver ? " ⚠ over limit" : ""}
+                  </div>
+                  <div className={monthOver ? "text-red-400" : "text-white/50"}>
+                    This month: {monthTaken}{f.maxDaysOffPerMonth != null ? ` / ${f.maxDaysOffPerMonth}` : ""} day{monthTaken !== 1 ? "s" : ""} off{monthOver ? " ⚠ over limit" : ""}
+                  </div>
+                  {recurring.length > 0 && <div className="text-white/40">Recurring days off: {recurring.map((d: number) => weekdayLabels[d]).join(", ")}</div>}
+                  <div className="text-white/30">Set from the employee's own portal → Calendar → Availability.</div>
+                </div>
+              );
+            })()}
+          </div>
+
           {/* Pay — real hours pulled from this employee's completed jobs,
               broken into individually-markable 14-day pay periods. A period
               defaults to "unpaid" until the owner explicitly marks it paid;
@@ -648,9 +724,24 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setting
             }).filter(p => p.hours > 0);
             const totalPaid = periods.filter(p => p.status === "paid").reduce((s, p) => s + p.pay, 0);
             const pendingPay = periods.filter(p => p.status === "unpaid").reduce((s, p) => s + p.pay, 0);
+            // FIX 7 — "Mark Paid" previously only updated the modal's local
+            // `f` state, which was silently lost unless the owner also
+            // clicked the modal's separate Save button afterward — nothing
+            // reached Supabase, so the employee's own Pay tab (which reads
+            // straight from Supabase) never reflected it and the button
+            // looked like it "did nothing." Write straight to Supabase (and
+            // the live `employees` state) the moment it's clicked.
             const togglePeriod = (start: string) => {
               const next = { ...paidPeriods, [start]: paidPeriods[start] === "paid" ? "unpaid" as const : "paid" as const };
               setF((p: any) => ({ ...p, paidPeriods: next }));
+              setEmployees((prev: any[]) => prev.map(e => e.id === f.id ? { ...e, paidPeriods: next } : e));
+              console.log("[MarkPaid] period", start, "→", next[start], "— empId:", f.id, "— writing to employees.paidPeriods now");
+              (supabase as any).from("employees").update({ paidPeriods: next }).eq("id", f.id)
+                .then((r: any) => {
+                  if (r?.error) { console.error("[MarkPaid] failed:", r.error.message); toast?.("Failed to save pay status — " + r.error.message, "red"); }
+                  else { console.log("[MarkPaid] saved ✓"); toast?.(next[start] === "paid" ? "Marked as paid ✓" : "Marked as unpaid", "green"); }
+                })
+                .catch((e: any) => { console.error("[MarkPaid] threw:", e?.message); toast?.("Failed to save pay status — " + (e?.message || "unknown error"), "red"); });
             };
             return (
               <div className="border border-white/10 rounded-xl p-3 space-y-2">
@@ -696,9 +787,20 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setting
               const pay = Math.round(dayJobs.reduce((s: number, j: any) => s + Number(j.loggedHours || 0) * getEffectiveRate(f, j), 0) * 100) / 100;
               return { key, label: d.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" }), hours, pay, status: paidDays[key] || "unpaid" };
             }).filter(d => d.hours > 0);
+            // FIX 7 — same immediate-write fix as togglePeriod above: this
+            // must reach Supabase the moment it's clicked, not wait on the
+            // modal's separate Save button.
             const toggleDay = (key: string) => {
               const next = { ...paidDays, [key]: paidDays[key] === "paid" ? "unpaid" as const : "paid" as const };
               setF((p: any) => ({ ...p, paidDays: next }));
+              setEmployees((prev: any[]) => prev.map(e => e.id === f.id ? { ...e, paidDays: next } : e));
+              console.log("[MarkPaid] day", key, "→", next[key], "— empId:", f.id, "— writing to employees.paidDays now");
+              (supabase as any).from("employees").update({ paidDays: next }).eq("id", f.id)
+                .then((r: any) => {
+                  if (r?.error) { console.error("[MarkPaid] failed:", r.error.message); toast?.("Failed to save pay status — " + r.error.message, "red"); }
+                  else { console.log("[MarkPaid] saved ✓"); toast?.(next[key] === "paid" ? "Marked as paid ✓" : "Marked as unpaid", "green"); }
+                })
+                .catch((e: any) => { console.error("[MarkPaid] threw:", e?.message); toast?.("Failed to save pay status — " + (e?.message || "unknown error"), "red"); });
             };
             if (days.length === 0) return null;
             return (

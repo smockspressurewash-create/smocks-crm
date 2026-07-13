@@ -20,7 +20,7 @@ import {
   Tooltip, ResponsiveContainer, Area, AreaChart, LineChart, Line,
   ComposedChart, Legend
 } from "recharts";
-import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, withTimeout } from "../../lib/utils";
+import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, buildChecklistFromServices, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, withTimeout } from "../../lib/utils";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
 import { twilioSend, sendEmail } from "../../lib/messaging";
 import { supabase } from "../../lib/supabase";
@@ -172,10 +172,11 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
       const est = estimates.find((x: any) => x.id === estId);
       if (!est) return prev;
       const cust = customers.find((c: any) => c.id === est.customerId);
+      const combinedChecklist = buildChecklistFromServices(est.lineItems, services);
       return [...prev, {
         id: uid(), customerId: est.customerId, address: cust?.address || "",
         amount: est.total, status: "scheduled", scheduledDate: "", duration: 2,
-        priority: "normal", crew: [], checklist: [], photos: [], chemicalsUsed: [],
+        priority: "normal", crew: [], checklist: combinedChecklist, preChecklist: combinedChecklist, photos: [], chemicalsUsed: [],
         equipment: [], tags: ["Needs Scheduling"], commLog: [],
         notes: "From approved estimate #" + estId.slice(-4).toUpperCase(),
         createdAt: today(), estimateId: estId,
@@ -342,7 +343,8 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
         toast("Approved!");
       }} onConvert={id => { setEstimates(estimates.map(x => x.id === id ? { ...x, invoiced: true, invoicedAt: today() } : x)); setViewing(null); toast("Converted to invoice"); }} onSchedule={est => {
         const c = customers.find(x => x.id === est.customerId);
-        const newJob = { id: uid(), customerId: est.customerId, address: c?.address || "", amount: est.total, status: "scheduled", scheduledDate: today(), duration: 3, priority: "normal", checklist: [], photos: [], chemicalsUsed: [], crew: [], notes: "From estimate #" + (est.id || "").slice(-4), isRecurring: false, pipelineStage: "scheduled", createdAt: today() };
+        const combinedChecklist = buildChecklistFromServices(est.lineItems, services);
+        const newJob = { id: uid(), customerId: est.customerId, address: c?.address || "", amount: est.total, status: "scheduled", scheduledDate: today(), duration: 3, priority: "normal", checklist: combinedChecklist, preChecklist: combinedChecklist, photos: [], chemicalsUsed: [], crew: [], notes: "From estimate #" + (est.id || "").slice(-4), isRecurring: false, pipelineStage: "scheduled", createdAt: today() };
         setJobs(prev => [...prev, newJob]);
         // Auto-sync to Google Calendar if connected
         if (settings?.googleConnected && settings?.googleScopes?.calendar) {
@@ -351,6 +353,14 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
         setViewing(null);
         toast("Job scheduled from estimate ✓ — set date in Jobs");
         onNav("jobs");
+      }} onMarkDepositPaid={(id: string, amount: number) => {
+        // FEATURE 6 — manual "collected outside the CRM" deposit (cash/check),
+        // distinct from the client's own online Stripe payment in ClientPortal.
+        setEstimates(prev => prev.map(x => x.id === id ? { ...x, paidDeposit: amount, depositPaidAt: today() } : x));
+        console.log("[Deposit] marked paid — estimateId:", id, "amount:", amount);
+        (supabase as any).from("estimates").update({ paidDeposit: amount, depositPaidAt: today() }).eq("id", id)
+          .then((r: any) => { if (r?.error) { console.warn("[Deposit] save failed:", r.error.message); toast?.("Marked locally, but failed to sync — " + r.error.message, "red"); } else toast?.("Deposit marked as paid ✓", "green"); })
+          .catch((e: any) => { console.warn("[Deposit] save threw:", e?.message); toast?.("Marked locally, but failed to sync", "red"); });
       }} />
 
       <Modal open={!!sendModalEst} onClose={() => { setSendModalEst(null); setSendPreviewOn(false); }} title="Send Estimate" maxW="max-w-md">

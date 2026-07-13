@@ -14,7 +14,7 @@ import {
   fetchGmailMessages, sendGmailMessage, markGmailRead,
   fetchCalendarEvents, fetchGTasks, createGTask, patchGTask, deleteGTask,
   fetchGContacts, fetchGDriveFiles,
-  setGoogleTokenRefresher,
+  setGoogleTokenRefresher, refreshEmpGoogleToken,
   type GmailMessage, type GCalEvent, type GTask, type GContact, type GDriveFile,
 } from "../../lib/googleApi";
 
@@ -767,6 +767,9 @@ export function GoogleWorkspacePage({
   onNav?: any;
 }) {
   const [tab, setTab] = useState("overview");
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshFailed, setRefreshFailed] = useState(false);
+  const autoRefreshTried = React.useRef(false);
 
   const s = settings as any;
   const isConnected = !!s.googleConnected;
@@ -789,6 +792,71 @@ export function GoogleWorkspacePage({
     });
     return () => setGoogleTokenRefresher(null);
   }, [hasToken, setSettings]);
+
+  // FIX 1 — real refresh-token exchange (via functions/api/google-refresh.ts,
+  // same helper the employee portal uses), with a graceful message if that
+  // Cloudflare Function isn't deployed/configured rather than a dead end.
+  // Returns true on success so callers (manual button + auto-refresh below)
+  // can share the same toast/state logic.
+  const doRefreshToken = useCallback(async (silent = false): Promise<boolean> => {
+    setRefreshing(true);
+    console.log("[GoogleToken] doRefreshToken — silent:", silent, "hasRefreshToken:", !!s.googleRefreshToken);
+    try {
+      if (s.googleRefreshToken) {
+        const refreshed = await refreshEmpGoogleToken(s.googleBackendUrl, s.googleRefreshToken);
+        if (refreshed) {
+          setSettings?.((prev: any) => ({ ...prev, googleProviderToken: refreshed.token, googleTokenExpiresAt: refreshed.expiresAt }));
+          setRefreshFailed(false);
+          console.log("[GoogleToken] doRefreshToken — succeeded via refresh_token exchange");
+          if (!silent) toast?.("Google token refreshed", "green");
+          return true;
+        }
+      }
+      // Fallback: Supabase's own session refresh occasionally still turns up
+      // a usable provider_token even without a stored refresh_token.
+      const { data } = await supabase.auth.refreshSession();
+      const fallbackToken: string = (data.session as any)?.provider_token || "";
+      if (fallbackToken) {
+        setSettings?.((prev: any) => ({ ...prev, googleProviderToken: fallbackToken }));
+        setRefreshFailed(false);
+        console.log("[GoogleToken] doRefreshToken — succeeded via Supabase session fallback");
+        if (!silent) toast?.("Google token refreshed", "green");
+        return true;
+      }
+      setRefreshFailed(true);
+      console.warn("[GoogleToken] doRefreshToken — all refresh attempts failed");
+      if (!silent) {
+        toast?.(
+          s.googleRefreshToken
+            ? "Couldn't refresh automatically — the refresh function may not be deployed yet. Reconnect Google below."
+            : "No refresh token on file for this account — reconnect Google below to enable auto-refresh.",
+          "red"
+        );
+      }
+      return false;
+    } catch (e: any) {
+      setRefreshFailed(true);
+      console.warn("[GoogleToken] doRefreshToken threw:", e?.message);
+      if (!silent) toast?.("Couldn't refresh Google token — reconnect below.", "red");
+      return false;
+    } finally {
+      setRefreshing(false);
+    }
+  }, [s.googleRefreshToken, s.googleBackendUrl, setSettings, toast]);
+
+  // FIX 1 — attempt a silent auto-refresh once per page load whenever the
+  // stored token is missing or already past (or near) expiry, instead of
+  // making the owner notice the failure mid-send and hunt for Settings.
+  useEffect(() => {
+    if (!isConnected || autoRefreshTried.current) return;
+    const expiresAt = Number(s.googleTokenExpiresAt) || 0;
+    const needsRefresh = !hasToken || (expiresAt && Date.now() > expiresAt - 2 * 60 * 1000);
+    if (!needsRefresh) return;
+    autoRefreshTried.current = true;
+    console.log("[GoogleToken] auto-refresh on Google Workspace page load — hasToken:", hasToken, "expiresAt:", expiresAt);
+    doRefreshToken(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isConnected, hasToken]);
 
   const GOOGLE_SCOPES = [
     "https://www.googleapis.com/auth/calendar",
@@ -892,14 +960,15 @@ export function GoogleWorkspacePage({
           </div>
         </div>
         <div className="flex items-center gap-2">
-          {!hasToken && (
-            <button
-              onClick={doConnect}
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600/80 hover:bg-blue-600 rounded-xl text-xs text-white transition"
-            >
-              <RefreshCw size={11} />Refresh Token
-            </button>
-          )}
+          <button
+            onClick={() => doRefreshToken(false)}
+            disabled={refreshing}
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600/80 hover:bg-blue-600 disabled:opacity-50 rounded-xl text-xs text-white transition"
+            title="Retry refreshing the Google token without a full reconnect"
+          >
+            <RefreshCw size={11} className={refreshing ? "animate-spin" : ""} />
+            {refreshing ? "Refreshing…" : "Retry"}
+          </button>
           <button
             onClick={doDisconnect}
             className="px-3 py-1.5 text-xs text-red-400 hover:text-red-300 border border-red-900/30 rounded-xl transition"
@@ -914,7 +983,15 @@ export function GoogleWorkspacePage({
         <Glass className="p-3 !bg-yellow-950/20 !border-yellow-700/20 flex items-center gap-3">
           <AlertCircle size={14} className="text-yellow-400 flex-shrink-0" />
           <div className="text-xs text-yellow-300/80">
-            Google token not available in this session. Click <strong>Refresh Token</strong> to re-authorize and enable live data.
+            Google token not available in this session. Click <strong>Retry</strong> to refresh it, or re-authorize below.
+          </div>
+        </Glass>
+      )}
+      {isConnected && hasToken && refreshFailed && (
+        <Glass className="p-3 !bg-yellow-950/20 !border-yellow-700/20 flex items-center gap-3">
+          <AlertCircle size={14} className="text-yellow-400 flex-shrink-0" />
+          <div className="text-xs text-yellow-300/80">
+            Automatic token refresh failed{!s.googleRefreshToken ? " — no refresh token is on file for this account" : ""}. Emails/sync may fail until you click <strong>Retry</strong> again or reconnect Google.
           </div>
         </Glass>
       )}

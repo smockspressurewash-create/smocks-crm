@@ -20,7 +20,7 @@ import {
   Tooltip, ResponsiveContainer, Area, AreaChart, LineChart, Line,
   ComposedChart, Legend
 } from "recharts";
-import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, requiredChemicalsList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, compressImageFile, getEffectiveRate } from "../../lib/utils";
+import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, weekdayLabels, computeNextRecurringDate, isEmployeeUnavailable, computeDiscountsTotal, equipmentList, requiredChemicalsList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, compressImageFile, getEffectiveRate } from "../../lib/utils";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField, JobChecklistItem, ChecklistPhoto, JobVideo, JobSignOff } from "../../types";
 import { twilioSend, sendEmail, sendViaGmail, sendOwnerGmailOnly, emailShell, emailButton, logOutboundSmsToInbox } from "../../lib/messaging";
 import { seedWeather } from "../../lib/weather";
@@ -393,15 +393,20 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
     if (!c) return;
     setSendingInvoice(true);
     try {
+      // FEATURE 7 — fold this job's manual discounts into the generated
+      // invoice, so a discount applied on the job actually reduces what the
+      // customer is asked to pay instead of silently being dropped.
+      const jobDiscountTotal = computeDiscountsTotal(job.discounts, Number(job.amount) || 0);
       const newInv = {
         id: uid(),
         customerId: job.customerId,
         lineItems: [{ id: uid(), description: job.notes || job.address || "Service", quantity: 1, unitPrice: Number(job.amount) || 0 }],
         subtotal: Number(job.amount) || 0,
-        discount: 0,
+        discount: jobDiscountTotal,
+        discounts: job.discounts || [],
         depositRequired: 0,
         tax: 0,
-        total: Number(job.amount) || 0,
+        total: Math.max(0, (Number(job.amount) || 0) - jobDiscountTotal),
         status: "approved" as const,
         createdAt: today(),
         validUntil: daysFromNow(30),
@@ -819,7 +824,17 @@ ${job.notes ? `<div class="section"><h2>Job Notes</h2><p>${job.notes}</p></div>`
         <Glass className="p-3 !bg-black/40 space-y-1.5">
           <div className="flex items-center justify-between gap-2">
             <div className="font-semibold text-sm truncate">{c ? `${c.firstName} ${c.lastName}` : "Unknown customer"}</div>
-            {job.amount > 0 && <div className="text-lg font-bold text-green-400 flex-shrink-0">{fmt(job.amount)}</div>}
+            {job.amount > 0 && (() => {
+              // FEATURE 7 — show the discounted total up top too, not just
+              // down in the Discounts section, so it's visible at a glance.
+              const discTotal = computeDiscountsTotal(job.discounts, Number(job.amount) || 0);
+              return discTotal > 0 ? (
+                <div className="text-right flex-shrink-0">
+                  <div className="text-[10px] text-white/30 line-through">{fmt(job.amount)}</div>
+                  <div className="text-lg font-bold text-green-400">{fmt(Math.max(0, job.amount - discTotal))}</div>
+                </div>
+              ) : <div className="text-lg font-bold text-green-400 flex-shrink-0">{fmt(job.amount)}</div>;
+            })()}
           </div>
           <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-white/60">
             {c?.phone && (
@@ -847,7 +862,13 @@ ${job.notes ? `<div class="section"><h2>Job Notes</h2><p>${job.notes}</p></div>`
             </GSel>
           </div>
           <div><label className="text-xs text-white/60 mb-1 block">Est. Duration (hrs)</label><GInput type="number" step="0.25" value={job.duration || ""} onChange={e => updateJob(jobId, { duration: e.target.value })} placeholder="e.g. 3.5" /></div>
-          <div><label className="text-xs text-white/60 mb-1 block">Recurring</label><GSel value={job.recurringFreq || "monthly"} onChange={e => updateJob(jobId, { recurringFreq: e.target.value, isRecurring: true })}>{recurringFreqs.map(f => <option key={f.key} value={f.key} className="bg-black">{f.label}</option>)}</GSel></div>
+          <div>
+            <label className="text-xs text-white/60 mb-1 block">Recurring</label>
+            <label className="flex items-center gap-2 h-[34px] px-1 cursor-pointer">
+              <input type="checkbox" checked={!!job.isRecurring} onChange={e => updateJob(jobId, { isRecurring: e.target.checked, recurringMode: job.recurringMode || "preset", recurringFreq: job.recurringFreq || "monthly" })} className="accent-red-600 w-3.5 h-3.5" />
+              <span className="text-xs text-white/70">This job repeats</span>
+            </label>
+          </div>
           <div>
             <label className="text-xs text-white/60 mb-1 block">Job Type <span className="text-white/30">(drives crew pay rate)</span></label>
             <GSel value={job.jobType || "residential"} onChange={e => updateJob(jobId, { jobType: e.target.value as any })}>
@@ -856,6 +877,122 @@ ${job.notes ? `<div class="section"><h2>Job Notes</h2><p>${job.notes}</p></div>`
             </GSel>
           </div>
         </div>
+
+        {/* FEATURE 3 — customizable recurring schedule. recurringMode picks
+            which shape applies; computeNextRecurringDate (lib/utils.ts) is the
+            single shared calculation both this owner-side modal's preview AND
+            the actual next-job auto-scheduling (JobsPage.tsx + EmployeePortal.tsx
+            Complete handlers) use, so the date shown here can never disagree
+            with the date that's actually scheduled. */}
+        {job.isRecurring && (
+          <div className="p-3 rounded-xl border border-blue-700/30 bg-blue-950/10 space-y-2.5">
+            <div className="flex items-center gap-1.5 text-xs font-semibold text-blue-300"><Repeat size={12} />Repeat Schedule</div>
+            <GSel value={job.recurringMode || "preset"} onChange={e => updateJob(jobId, { recurringMode: e.target.value as any })}>
+              <option value="preset" className="bg-black">Preset (weekly, monthly, etc.)</option>
+              <option value="days" className="bg-black">Every X days</option>
+              <option value="weeks" className="bg-black">Every X weeks</option>
+              <option value="months" className="bg-black">Every X months</option>
+              <option value="weekdays" className="bg-black">Specific days of week</option>
+            </GSel>
+
+            {(!job.recurringMode || job.recurringMode === "preset") && (
+              <GSel value={job.recurringFreq || "monthly"} onChange={e => updateJob(jobId, { recurringFreq: e.target.value })}>
+                {recurringFreqs.map(f => <option key={f.key} value={f.key} className="bg-black">{f.label}</option>)}
+              </GSel>
+            )}
+
+            {(job.recurringMode === "days" || job.recurringMode === "weeks" || job.recurringMode === "months") && (
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-white/50">Every</span>
+                <GInput type="number" min="1" step="1" value={job.recurringInterval || 1} onChange={e => updateJob(jobId, { recurringInterval: Math.max(1, Number(e.target.value) || 1) })} className="!w-20" />
+                <span className="text-xs text-white/50">{job.recurringMode}</span>
+              </div>
+            )}
+
+            {job.recurringMode === "weekdays" && (
+              <div className="flex flex-wrap gap-1.5">
+                {weekdayLabels.map((lbl, i) => {
+                  const active = (job.recurringWeekdays || []).includes(i);
+                  return (
+                    <button
+                      key={i}
+                      type="button"
+                      onClick={() => {
+                        const cur: number[] = job.recurringWeekdays || [];
+                        const next = active ? cur.filter((d: number) => d !== i) : [...cur, i].sort();
+                        updateJob(jobId, { recurringWeekdays: next });
+                      }}
+                      className={"px-2.5 py-1 rounded-lg text-[11px] font-semibold border transition " + (active ? "bg-red-600 border-red-500 text-white" : "bg-black/40 border-white/10 text-white/50 hover:text-white")}
+                    >
+                      {lbl}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+
+            <div className="text-[10px] text-white/40">Next occurrence after this one: {computeNextRecurringDate(job, job.scheduledDate)}</div>
+          </div>
+        )}
+
+        {/* FEATURE 7 — manual discounts on this job, each with its own
+            title/description and $ or %, stackable. Job.amount stays the
+            list price; computeDiscountsTotal (lib/utils.ts) is the same
+            shared calculation EstimateBuilder/EstimatePreview use. */}
+        <div className="p-3 rounded-xl border border-white/10 bg-black/20 space-y-2">
+          <div className="flex items-center justify-between">
+            <div className="text-xs font-semibold text-white/70 flex items-center gap-1.5"><Percent size={12} />Discounts</div>
+            <button
+              type="button"
+              onClick={() => updateJob(jobId, { discounts: [...(job.discounts || []), { id: uid(), label: "", type: "amount", value: 0 }] })}
+              className="text-[11px] text-blue-400 hover:text-blue-300 flex items-center gap-1"
+            >
+              <Plus size={11} />Add Discount
+            </button>
+          </div>
+          {(job.discounts || []).map((d: any) => (
+            <div key={d.id} className="flex items-center gap-2">
+              <GInput
+                value={d.label}
+                onChange={e => updateJob(jobId, { discounts: (job.discounts || []).map((x: any) => x.id === d.id ? { ...x, label: e.target.value } : x) })}
+                placeholder="e.g. Veteran discount"
+                className="!text-xs flex-1"
+              />
+              <GSel
+                value={d.type}
+                onChange={e => updateJob(jobId, { discounts: (job.discounts || []).map((x: any) => x.id === d.id ? { ...x, type: e.target.value } : x) })}
+                className="!text-xs !w-20 flex-shrink-0"
+              >
+                <option value="amount" className="bg-black">$</option>
+                <option value="percent" className="bg-black">%</option>
+              </GSel>
+              <GInput
+                type="number"
+                step={d.type === "percent" ? "1" : "0.01"}
+                value={d.value}
+                onChange={e => updateJob(jobId, { discounts: (job.discounts || []).map((x: any) => x.id === d.id ? { ...x, value: Number(e.target.value) || 0 } : x) })}
+                className="!text-xs !w-24 flex-shrink-0"
+              />
+              <button
+                type="button"
+                onClick={() => updateJob(jobId, { discounts: (job.discounts || []).filter((x: any) => x.id !== d.id) })}
+                className="p-1.5 text-white/30 hover:text-red-400 flex-shrink-0"
+              >
+                <Trash2 size={12} />
+              </button>
+            </div>
+          ))}
+          {(job.discounts || []).length === 0 && <div className="text-[10px] text-white/30">No discounts on this job</div>}
+          {(job.discounts || []).length > 0 && (() => {
+            const discTotal = computeDiscountsTotal(job.discounts, Number(job.amount) || 0);
+            return (
+              <div className="text-[10px] text-green-400 pt-1 border-t border-white/5">
+                Total discount: − {fmt(discTotal)} · Amount after discount: {fmt(Math.max(0, (Number(job.amount) || 0) - discTotal))}
+              </div>
+            );
+          })()}
+        </div>
+
         {/* FIX 10 — effective pay rate for each crew member on THIS job's type */}
         {(job.crew || []).length > 0 && (
           <div className="flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-green-400/80 -mt-1">
@@ -990,9 +1127,26 @@ ${job.notes ? `<div class="section"><h2>Job Notes</h2><p>${job.notes}</p></div>`
             })()}
             {employees.filter(e => e.status === "active").map(e => {
               const sel = (job.crew || []).includes(e.id);
-              return <button key={e.id} onClick={() => toggleCrew(e.id)} className={"text-xs px-3 py-1.5 rounded-lg border transition " + (sel ? "bg-red-900/40 border-red-500/50 text-red-300" : "bg-white/5 border-white/10 text-white/60 hover:text-white")}>{e.firstName} {e.lastName[0]}.</button>;
+              // FEATURE 5 — flag unavailable crew right on the assignment
+              // button, covering both specific blocked dates and recurring
+              // weekday-offs.
+              const unavail = job.scheduledDate && isEmployeeUnavailable(e as any, job.scheduledDate);
+              return (
+                <button key={e.id} onClick={() => toggleCrew(e.id)} title={unavail ? `${e.firstName} marked ${job.scheduledDate} as unavailable` : undefined} className={"text-xs px-3 py-1.5 rounded-lg border transition " + (sel ? "bg-red-900/40 border-red-500/50 text-red-300" : unavail ? "bg-orange-950/20 border-orange-700/40 text-orange-300" : "bg-white/5 border-white/10 text-white/60 hover:text-white")}>
+                  {e.firstName} {e.lastName[0]}.{unavail ? " ⚠" : ""}
+                </button>
+              );
             })}
           </div>
+          {/* FEATURE 5 — explicit warning banner for anyone already assigned
+              whose availability conflicts with this job's date (e.g. the
+              date was set/changed after they were assigned). */}
+          {job.scheduledDate && (job.crew || []).some((eid: string) => isEmployeeUnavailable(employees.find(e => e.id === eid) as any, job.scheduledDate)) && (
+            <div className="mt-2 text-[11px] text-orange-300 bg-orange-950/30 border border-orange-700/30 rounded-lg px-2.5 py-1.5 flex items-center gap-1.5">
+              <AlertTriangle size={11} className="flex-shrink-0" />
+              {(job.crew || []).filter((eid: string) => isEmployeeUnavailable(employees.find(e => e.id === eid) as any, job.scheduledDate)).map((eid: string) => employees.find(e => e.id === eid)?.firstName).join(", ")} marked {job.scheduledDate} as unavailable
+            </div>
+          )}
           {showRequestForm && (
             <div className="mt-3 p-3 rounded-xl bg-yellow-950/20 border border-yellow-700/30 space-y-2">
               <div className="text-xs text-yellow-300 font-semibold">Request an Employee for This Job</div>

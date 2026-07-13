@@ -20,7 +20,7 @@ import {
   Tooltip, ResponsiveContainer, Area, AreaChart, LineChart, Line,
   ComposedChart, Legend
 } from "recharts";
-import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, forecastFor, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, withTimeout } from "../../lib/utils";
+import { fmt, uid, today, localDateStr, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, forecastFor, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, withTimeout } from "../../lib/utils";
 import { supabase } from "../../lib/supabase";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
 import { twilioSend, sendOwnerGmailOnly } from "../../lib/messaging";
@@ -102,7 +102,7 @@ function MiniStreetViewThumb({ address, mapsKey }: { address: string; mapsKey?: 
   );
 }
 
-export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = [], estimates = [], setEstimates = (() => {}) as any, automations = [], stats, goals, vehicles = [], maintenance = [], chemicals = [], settings = {} as AppSettings, setSettings = () => {}, onNav, toast, weatherData = seedWeather, inboxThreads = [], employees = [], crewFetchError = false, reviews = [], onSendDailyBriefing, onViewJob = (id: string) => {} }: { jobs?: any[]; setJobs?: any; customers?: any[]; estimates?: any[]; setEstimates?: any; automations?: any[]; stats?: any; goals?: any; vehicles?: any[]; maintenance?: any[]; chemicals?: any[]; settings?: AppSettings; setSettings?: any; onNav?: any; toast?: any; weatherData?: any; inboxThreads?: any[]; employees?: any[]; crewFetchError?: boolean; reviews?: any[]; onSendDailyBriefing?: () => Promise<void>; onViewJob?: (id: string) => void }) {
+export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = [], estimates = [], setEstimates = (() => {}) as any, automations = [], stats, goals, vehicles = [], maintenance = [], chemicals = [], settings = {} as AppSettings, setSettings = () => {}, onNav, toast, weatherData = seedWeather, inboxThreads = [], employees = [], crewFetchError = false, reviews = [], onSendDailyBriefing, onViewJob = (id: string) => {}, ownerId = "" }: { jobs?: any[]; setJobs?: any; customers?: any[]; estimates?: any[]; setEstimates?: any; automations?: any[]; stats?: any; goals?: any; vehicles?: any[]; maintenance?: any[]; chemicals?: any[]; settings?: AppSettings; setSettings?: any; onNav?: any; toast?: any; weatherData?: any; inboxThreads?: any[]; employees?: any[]; crewFetchError?: boolean; reviews?: any[]; onSendDailyBriefing?: () => Promise<void>; onViewJob?: (id: string) => void; ownerId?: string }) {
   const [sendingDashInvoiceId, setSendingDashInvoiceId] = useState<string | null>(null);
   const [needsInvoiceCollapsed, setNeedsInvoiceCollapsed] = useState(false);
   const [previewInvoiceJob, setPreviewInvoiceJob] = useState<any>(null);
@@ -176,7 +176,12 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
   const weekStart = new Date(nowD); weekStart.setDate(nowD.getDate() - nowD.getDay());
   const monthStart = new Date(nowD.getFullYear(), nowD.getMonth(), 1);
   const completedJobs = jobs.filter(j => j.status === "completed");
-  const revToday = completedJobs.filter(j => j.scheduledDate === today()).reduce((s, j) => s + j.amount, 0);
+  // FIX 2 — today() is UTC-derived (rolls to the next date ~4-8pm US local
+  // time), so "Today" revenue could silently drop to $0 or the wrong day's
+  // total in the evening while looking "stale" to the owner. localDateStr()
+  // uses local Date components instead, matching what the owner actually
+  // considers "today."
+  const revToday = completedJobs.filter(j => j.scheduledDate === localDateStr()).reduce((s, j) => s + j.amount, 0);
   const revWeek = completedJobs.filter(j => new Date(j.scheduledDate) >= weekStart).reduce((s, j) => s + j.amount, 0);
   const revMonth = completedJobs.filter(j => new Date(j.scheduledDate) >= monthStart).reduce((s, j) => s + j.amount, 0);
   const avgJobVal = completedJobs.length > 0 ? completedJobs.reduce((s, j) => s + j.amount, 0) / completedJobs.length : 0;
@@ -426,6 +431,15 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
     const completedTodayCount = empJobs.filter((j: any) => j.status === "completed").length;
     return { emp: e, job: currentJob, jobIndex, totalJobsToday: empJobs.length, completedTodayCount };
   });
+  // FIX 3 — an employee who clocked out today disappears from Live Team View
+  // entirely (dayClockInAt goes null on end-of-day), which reads as "nobody
+  // worked today" even though they did a full shift. toggleDay's clock-out
+  // (EmployeePortal.tsx) writes lastShiftDate via localDateStr() (LOCAL date,
+  // not the UTC-based today()/todayStrLive above), so the match here must use
+  // localDateStr() too or a clock-out near end-of-day would never match.
+  const shiftEndedTeam = employees.filter((e: any) =>
+    !e.dayClockInAt && e.lastShiftDate === localDateStr() && Number(e.lastShiftHours) > 0
+  );
   // FIX 8 — "My Hours": the owner gets a real employees row (see App.tsx
   // ownerEmpRowEnsuredRef effect) keyed `owner_<email>`, so their own clocked
   // time and crew-assigned jobs can be summarized the same way a technician's
@@ -462,6 +476,32 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
     if (prog && prog.pct >= 80 && prog.pct < 100) return { label: "Almost Done", tone: "blue" };
     if (j?.arrivedAt && Date.now() - Number(j.arrivedAt) < 15 * 60000) return { label: "Just Started", tone: "blue" };
     return { label: "On Time", tone: "green" };
+  };
+
+  // FIX 5 — the owner's own crew-assigned jobs, shown inline on the dashboard
+  // (not just a link to the Jobs page) so they get the same full checklist,
+  // customer info, and signature-capture functionality a technician gets in
+  // CrewView's "Live Now" detail modal, via the same JobDetailModal.
+  const [ownerDetailId, setOwnerDetailId] = useState<string | null>(null);
+  const ownerUpdateJob = (jid: string, patch: any) => {
+    setJobs((prev: any[]) => prev.map((j: any) => j.id === jid ? { ...j, ...patch } : j));
+    const EMPLOYEE_OWNED_FIELDS = ["clockInAt", "lunchStartAt", "lunchMinutes", "lunchExceeded", "loggedHours"] as const;
+    const ownedPatch: any = {};
+    EMPLOYEE_OWNED_FIELDS.forEach(f => { if ((patch as any)[f] !== undefined) ownedPatch[f] = (patch as any)[f]; });
+    if (Object.keys(ownedPatch).length > 0) {
+      (supabase as any).from("jobs").update(ownedPatch).eq("id", jid).then((r: any) => { if (r?.error) toast?.("Failed to save — " + r.error.message, "red"); }).catch(() => {});
+    }
+    if (patch.crew !== undefined) {
+      const crewPatch: any = { crew: patch.crew };
+      if (patch.crewAssignedAt !== undefined) crewPatch.crewAssignedAt = patch.crewAssignedAt;
+      (supabase as any).from("jobs").update(crewPatch).eq("id", jid).then((r: any) => { if (r?.error) toast?.("Crew assignment failed to save — " + r.error.message, "red"); }).catch(() => toast?.("Crew assignment failed to save", "red"));
+    }
+    const OTHER_IMMEDIATE_FIELDS = ["checklist", "preChecklist", "duringChecklist", "postChecklist", "photos", "status", "signature", "signedAt"] as const;
+    const otherPatch: any = {};
+    OTHER_IMMEDIATE_FIELDS.forEach(f => { if ((patch as any)[f] !== undefined) otherPatch[f] = (patch as any)[f]; });
+    if (Object.keys(otherPatch).length > 0) {
+      (supabase as any).from("jobs").update(otherPatch).eq("id", jid).then((r: any) => { if (r?.error) toast?.("Failed to save — " + r.error.message, "red"); }).catch(() => {});
+    }
   };
 
   const w: any = settings.dashboardWidgets || { quickActions: true, kpis: true, revenuePeriods: true, goals: true, outstanding: true, charts: true, activity: true };
@@ -614,6 +654,28 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
             })}
           </div>
         )}
+
+        {/* FIX 3 — employees whose shift already ended today, so the owner
+            can still see who worked and their total hours after clock-out. */}
+        {shiftEndedTeam.length > 0 && (
+          <div className="space-y-2 mt-2 pt-2 border-t border-white/5">
+            {shiftEndedTeam.map((e: any) => {
+              const h = Math.floor(Number(e.lastShiftHours) || 0);
+              const m = Math.round(((Number(e.lastShiftHours) || 0) - h) * 60);
+              return (
+                <div key={e.id} className="flex items-center gap-3 p-3 rounded-xl border bg-black/20 border-white/5 opacity-70">
+                  <div className="w-14 h-14 rounded-lg bg-white/5 border border-white/10 flex items-center justify-center flex-shrink-0 text-white/40 font-bold text-sm">
+                    {(e.firstName?.[0] || "?")}{(e.lastName?.[0] || "")}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-medium truncate text-white/70">{e.firstName} {e.lastName}</div>
+                    <div className="text-xs text-white/40 mt-0.5">Shift Ended · Total: {h}h {String(m).padStart(2, "0")}m</div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
       </Glass>
 
       {/* FIX 8 — My Hours: the owner's own tracked time, mirroring what a
@@ -639,9 +701,45 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
               <div className="text-lg font-bold">{ownerHoursThisWeek.toFixed(1)}h</div>
             </div>
           </div>
-          <div className="text-[10px] text-white/30 text-center mt-2">Assign yourself to a job's crew, then use its Clock In/Out to track time here.</div>
+          {ownerJobsToday.length === 0 ? (
+            <div className="text-[10px] text-white/30 text-center mt-2">Assign yourself to a job's crew, then use its Clock In/Out to track time here.</div>
+          ) : (
+            <div className="mt-3 space-y-1.5">
+              <div className="text-[10px] text-white/40 uppercase tracking-wider">My Jobs Today</div>
+              {ownerJobsToday.map((j: any) => {
+                const c = customers.find((x: any) => x.id === j.customerId);
+                const prog = checklistProgress(j);
+                return (
+                  <button key={j.id} onClick={() => setOwnerDetailId(j.id)} className="w-full flex items-center gap-3 p-2.5 rounded-xl border border-white/10 bg-black/30 hover:border-green-600/40 transition text-left">
+                    <div className="flex-1 min-w-0">
+                      <div className="text-xs font-medium truncate">{c ? `${c.firstName} ${c.lastName}` : j.address}</div>
+                      <div className="text-[10px] text-white/40 truncate flex items-center gap-2">
+                        <span className={j.status === "completed" ? "text-green-400" : "text-white/40"}>{j.status}</span>
+                        {prog && <span>{prog.done}/{prog.total} checklist</span>}
+                      </div>
+                    </div>
+                    <ChevronRight size={13} className="text-white/30 flex-shrink-0" />
+                  </button>
+                );
+              })}
+            </div>
+          )}
         </Glass>
       )}
+
+      <JobDetailModal
+        jobId={ownerDetailId}
+        job={jobs.find((j: any) => j.id === ownerDetailId)}
+        onClose={() => setOwnerDetailId(null)}
+        customers={customers}
+        employees={employees}
+        updateJob={ownerUpdateJob}
+        toast={toast}
+        settings={settings}
+        estimates={estimates}
+        setEstimates={setEstimates}
+        ownerId={ownerId}
+      />
 
       {/* Completed jobs that haven't been invoiced or marked paid yet */}
       {needsInvoiceJobs.length > 0 && (
@@ -833,10 +931,10 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
           this week. Reusing the already-computed values instead of a second,
           differently-buggy calculation makes them agree by construction. */}
       {w.kpis && (() => {
-        const todayStr = today();
+        const todayStr = localDateStr();
         const todayTips = jobs.filter(j => j.status === "completed" && j.scheduledDate === todayStr).reduce((s,j) => s + (Number(j.tip)||0), 0);
         const todayCash = jobs.filter(j => j.status === "completed" && j.scheduledDate === todayStr && j.isCash).reduce((s,j) => s + j.amount, 0);
-        console.log("[Dashboard] revenue widget — today:", revToday, "week:", revWeek, "month:", revMonth, "(from", completedJobs.length, "completed jobs total)");
+        console.log("[Dashboard] revenue widget recalculated — today:", revToday, "week:", revWeek, "month:", revMonth, "(from", completedJobs.length, "completed jobs total,", jobs.length, "total jobs in live state)");
         return <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
           <Glass className="p-5">
             <div className="text-[10px] text-white/50 uppercase tracking-wider font-semibold mb-2">💰 Today</div>

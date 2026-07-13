@@ -71,6 +71,11 @@ export interface LineItem {
   notes?: string;
   notesInternal?: boolean;
   optional?: boolean;
+  // FEATURE 4 — links this line item back to the Service catalog entry it was
+  // added from (EstimateBuilder's addSvc), so a job created from this estimate
+  // can look up and combine that service's checklistTemplate. Undefined for
+  // freeform/manually-typed line items with no catalog match.
+  serviceId?: string;
 }
 
 export interface EstimatePackage {
@@ -81,6 +86,18 @@ export interface EstimatePackage {
   subtotal: number;
 }
 
+// FEATURE 7 — a single manual discount line (title + dollar-or-percent
+// amount), stackable — an estimate/job can have several. Kept separate from
+// the legacy single `discount: number` field (still summed in for back-compat
+// with estimates/jobs created before this existed) via computeDiscountsTotal
+// (lib/utils.ts), the one place that combines both into an effective total.
+export interface Discount {
+  id: string;
+  label: string;
+  type: "amount" | "percent";
+  value: number;
+}
+
 export interface Estimate {
   id: string;
   customerId: string;
@@ -89,7 +106,13 @@ export interface Estimate {
   lineItems: LineItem[];
   subtotal: number;
   discount: number;
+  discounts?: Discount[];
   depositRequired: number;
+  // FEATURE 6 — depositRequired is either a flat dollar amount (default,
+  // back-compat) or a percentage of the total, selected by depositType.
+  // computeDepositAmount (lib/utils.ts) is the single place that resolves
+  // either representation to an actual dollar figure.
+  depositType?: "amount" | "percent";
   tax: number;
   total: number;
   status: "pending" | "approved" | "rejected" | "expired";
@@ -108,6 +131,7 @@ export interface Estimate {
   invoiced?: boolean;
   invoicedAt?: string;
   paidDeposit?: number;
+  depositPaidAt?: string;
   paidFull?: number;
   partialPaid?: number;
   googleEventId?: string;
@@ -124,6 +148,22 @@ export interface Estimate {
 export interface ChecklistItem {
   label: string;
   done: boolean;
+  // FEATURE 4 — populated when this item was copied from a Service's
+  // checklistTemplate at job-creation time; optional so hand-added ad hoc
+  // checklist items (no linked service) keep working exactly as before.
+  id?: string;
+  required?: boolean;
+  photoRequired?: boolean;
+}
+
+// FEATURE 4 — a single item in a Service's reusable checklist template
+// (Settings → Services). Copied into ChecklistItem[] on job creation via
+// buildChecklistFromServices (lib/utils.ts), then freely editable per job.
+export interface ServiceChecklistItem {
+  id: string;
+  label: string;
+  required?: boolean;
+  photoRequired?: boolean;
 }
 
 export interface Photo {
@@ -183,6 +223,11 @@ export interface Job {
   customerId: string;
   address: string;
   amount: number;
+  // FEATURE 7 — manual discounts (title + $ or % each, stackable). amount
+  // above stays the job's list price; computeDiscountsTotal (lib/utils.ts)
+  // resolves this array to a dollar total that JobsPage/JobDetailModal
+  // subtract for the actual charged amount.
+  discounts?: Discount[];
   status: "scheduled" | "in_progress" | "completed" | "cancelled";
   scheduledDate: string;
   scheduledTime?: string;
@@ -211,6 +256,14 @@ export interface Job {
   lunchExceeded?: boolean;
   isRecurring?: boolean;
   recurringFreq?: string;
+  // FEATURE 3 — custom recurring schedules, layered on top of the original
+  // preset-only recurringFreq. recurringMode selects which of these applies;
+  // "preset" (default, back-compat) keeps using recurringFreq + recurringFreqs'
+  // fixed day counts. recurringInterval is the "X" in "every X days/weeks/months".
+  // recurringWeekdays (0=Sun..6=Sat) is used only when recurringMode === "weekdays".
+  recurringMode?: "preset" | "days" | "weeks" | "months" | "weekdays";
+  recurringInterval?: number;
+  recurringWeekdays?: number[];
   isCash?: boolean;
   tip?: number;
   noShow?: boolean;
@@ -276,6 +329,14 @@ export interface Employee {
   lastLocation?: { lat: number; lng: number; updatedAt: number };
   jobTypeRates?: Record<string, number>;
   managerPermissions?: Record<string, boolean>;
+  // FEATURE 5 — employee availability & days-off limits. availability is
+  // specific blocked dates (YYYY-MM-DD); recurringDaysOff is weekday indices
+  // (0=Sun..6=Sat) blocked every week (e.g. "every Sunday"). max* are owner-set
+  // caps, surfaced as a badge in EmployeesPage rather than a hard block.
+  availability?: string[];
+  recurringDaysOff?: number[];
+  maxDaysOffPerWeek?: number;
+  maxDaysOffPerMonth?: number;
 }
 
 // ─── Vehicle / Fleet ──────────────────────────────────────────────────────────
@@ -346,6 +407,10 @@ export interface Service {
   unit?: string;
   taxable?: boolean;
   active?: boolean;
+  // FEATURE 4 — reorderable checklist items linked to this service, combined
+  // automatically (via buildChecklistFromServices) when a job/estimate has
+  // multiple services selected.
+  checklistTemplate?: ServiceChecklistItem[];
 }
 
 // ─── Campaign ─────────────────────────────────────────────────────────────────

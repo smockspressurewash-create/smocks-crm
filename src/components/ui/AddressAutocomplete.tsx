@@ -172,14 +172,19 @@ export function AddressAutocomplete({
     return () => clearTimeout(debounceRef.current);
   }, [value, mapsKey]);
 
-  // Google predictions first (broadest), then any local CRM matches not already
-  // covered, de-duplicated.
-  const suggestions = Array.from(new Set([...placePreds, ...localMatches])).slice(0, 6);
+  // FIX 6 — local CRM matches are the PRIMARY method (instant, synchronous,
+  // never blocked by a Google key restriction); Google predictions are an
+  // enhancement layered on top, not the other way around. Local matches come
+  // first and any Google predictions that duplicate one are dropped rather
+  // than the reverse, so a restricted/blocked key never costs the owner a
+  // suggestion that local data already had.
+  const dedupedPlacePreds = placePreds.filter(p => !localMatches.includes(p));
+  const suggestions = [...localMatches, ...dedupedPlacePreds].slice(0, 6);
   // ITEM 9 — log which method actually produced the suggestions shown, so
   // it's visible at a glance without having to interpret the warnings above.
   useEffect(() => {
     if (value.trim().length < 2) return;
-    const method = placePreds.length > 0 ? "google_places" : localMatches.length > 0 ? "local_crm_matches" : "none (browser autofill only)";
+    const method = localMatches.length > 0 ? "local_crm_matches (primary)" : placePreds.length > 0 ? "google_places (enhancement)" : "none (browser autofill only)";
     console.log("[Autocomplete] active method:", method, "— suggestion count:", suggestions.length);
   }, [placePreds.length, localMatches.length, value]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -227,7 +232,7 @@ export function AddressAutocomplete({
       </div>
       {!open && !value && (
         <div className="text-[9px] text-white/30 mt-1 pl-1">
-          Browser address autofill active · type 3+ chars to see saved CRM matches
+          Browser address autofill active · type 2+ chars to see saved CRM matches
         </div>
       )}
       {placesBlocked && mapsKey && (
@@ -243,19 +248,44 @@ export function AddressAutocomplete({
       )}
       {open && suggestions.length > 0 && (
         <div className="absolute z-50 left-0 right-0 top-full mt-1 bg-black/95 border border-red-900/40 rounded-xl shadow-2xl overflow-hidden">
-          <div className="px-3 py-1.5 text-[9px] text-white/40 bg-white/5 border-b border-white/10">
-            {placePreds.length > 0 ? "Google address suggestions" : "Matches from saved addresses"}
-          </div>
-          {suggestions.map((s, i) => (
-            <button
-              key={i}
-              onMouseDown={() => handleSelect(s)}
-              className="w-full text-left px-3 py-2.5 text-xs text-white/80 hover:bg-red-900/30 hover:text-white transition flex items-center gap-2 border-b border-red-900/10 last:border-0"
-            >
-              <MapPin size={11} className="text-red-400 flex-shrink-0" />
-              {s}
-            </button>
-          ))}
+          {/* FIX 6 — local CRM matches are the primary method, shown first in
+              their own group; Google predictions (enhancement only) appear
+              below in a separate group so it's never ambiguous which source
+              a suggestion came from. */}
+          {localMatches.length > 0 && (
+            <>
+              <div className="px-3 py-1.5 text-[9px] text-white/40 bg-white/5 border-b border-white/10">
+                From your customers
+              </div>
+              {localMatches.slice(0, 6).map((s, i) => (
+                <button
+                  key={"local-" + i}
+                  onMouseDown={() => handleSelect(s)}
+                  className="w-full text-left px-3 py-2.5 text-xs text-white/80 hover:bg-red-900/30 hover:text-white transition flex items-center gap-2 border-b border-red-900/10 last:border-0"
+                >
+                  <MapPin size={11} className="text-red-400 flex-shrink-0" />
+                  {s}
+                </button>
+              ))}
+            </>
+          )}
+          {dedupedPlacePreds.length > 0 && (
+            <>
+              <div className="px-3 py-1.5 text-[9px] text-white/40 bg-white/5 border-b border-white/10">
+                Google suggestions
+              </div>
+              {dedupedPlacePreds.slice(0, Math.max(0, 6 - localMatches.length)).map((s, i) => (
+                <button
+                  key={"google-" + i}
+                  onMouseDown={() => handleSelect(s)}
+                  className="w-full text-left px-3 py-2.5 text-xs text-white/80 hover:bg-red-900/30 hover:text-white transition flex items-center gap-2 border-b border-red-900/10 last:border-0"
+                >
+                  <MapPin size={11} className="text-blue-400 flex-shrink-0" />
+                  {s}
+                </button>
+              ))}
+            </>
+          )}
         </div>
       )}
     </div>

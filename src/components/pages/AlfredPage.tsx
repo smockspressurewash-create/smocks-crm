@@ -238,6 +238,11 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
     setTimeout(() => inputRef.current?.focus(), 100);
   };
 
+  // FEATURE 2 — a locally-removed conversation must also be deleted from
+  // alfred_conversations, or App.tsx's 5s cross-device sync poll treats the
+  // still-present server row as authoritative and merges it right back into
+  // local state (and it never disappears on any OTHER device either, since
+  // no device ever told Supabase it was deleted).
   const deleteConversation = cid => {
     const remaining = conversations.filter(c => c.id !== cid);
     setConversations(remaining);
@@ -248,13 +253,29 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
     }
     setConfirmDelete(null);
     toast("Conversation deleted");
+    if (ownerId) {
+      console.log("[Alfred Sync] deleting conversation from Supabase —", cid, "owner:", ownerId);
+      (supabase as any).from("alfred_conversations").delete().eq("id", cid).eq("owner_id", ownerId)
+        .then((r: any) => {
+          if (r?.error) { console.warn("[Alfred Sync] delete failed:", r.error.message); toast?.("Deleted locally, but failed to sync deletion — " + r.error.message, "red"); }
+          else console.log("[Alfred Sync] delete confirmed on server —", cid);
+        })
+        .catch((e: any) => { console.warn("[Alfred Sync] delete threw:", e?.message); toast?.("Deleted locally, but failed to sync deletion", "red"); });
+    }
   };
 
   const deleteAllConversations = () => {
+    const ids = conversations.map(c => c.id);
     setConversations([]);
     setActiveConvId(null);
     setTimeout(newConversation, 0);
     toast("All conversations cleared");
+    if (ownerId && ids.length > 0) {
+      console.log("[Alfred Sync] deleting", ids.length, "conversation(s) from Supabase — owner:", ownerId);
+      (supabase as any).from("alfred_conversations").delete().eq("owner_id", ownerId).in("id", ids)
+        .then((r: any) => { if (r?.error) { console.warn("[Alfred Sync] bulk delete failed:", r.error.message); toast?.("Cleared locally, but failed to sync deletion — " + r.error.message, "red"); } })
+        .catch((e: any) => { console.warn("[Alfred Sync] bulk delete threw:", e?.message); toast?.("Cleared locally, but failed to sync deletion", "red"); });
+    }
   };
 
   const startRename = c => { setEditingTitle(c.id); setTitleDraft(c.title); };

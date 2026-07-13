@@ -31,6 +31,7 @@ import { createCalendarEvent, updateCalendarEvent, deleteCalendarEvent, fetchDri
 import { fetchGmailMessages, sendGmailMessage, markGmailRead } from "../../lib/googleApi";
 import { usePersistent } from "../../hooks/usePersistent";
 import { usePersistentRaw } from "../../hooks/usePersistentRaw";
+import { usePollGate } from "../../hooks/usePollGate";
 import { Glass } from "../ui/Glass";
 import { GBtn } from "../ui/GBtn";
 import { GInput } from "../ui/GInput";
@@ -91,6 +92,10 @@ export function InboxPage({ threads = [], setThreads, customers = [], settings =
   const [gmailLoading, setGmailLoading] = useState(false);
   const msgEndRef = useRef(null);
   const inputRef = useRef(null);
+  // EGRESS FIX — skip the inbox_threads poll below while the tab is hidden
+  // or the owner has been idle 5+ minutes; realtime (subscribed below)
+  // already delivers new messages instantly, this is just the fallback.
+  const shouldPollInbox = usePollGate();
 
   const activeThread = threads.find(t => t.id === active) || gmailThreads.find(t => t.id === active);
 
@@ -132,7 +137,9 @@ export function InboxPage({ threads = [], setThreads, customers = [], settings =
       }
     };
     loadInboxThreads();
-    const interval = setInterval(loadInboxThreads, 3000);
+    // EGRESS FIX — was an unconditional 3s poll; realtime below already
+    // covers instant updates, this is now just the fallback.
+    const interval = setInterval(() => { if (shouldPollInbox()) loadInboxThreads(); }, 10000);
     const channel = (supabase as any)
       .channel("inbox_threads_changes")
       .on("postgres_changes", { event: "*", schema: "public", table: "inbox_threads" }, () => { loadInboxThreads(); })

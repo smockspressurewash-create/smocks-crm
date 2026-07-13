@@ -17,7 +17,8 @@ import { loadMapsScript, AddressAutocomplete } from "../ui/AddressAutocomplete";
 import { LiveMap } from "../ui/LiveMap";
 import { PropertyMapEmbed } from "../ui/PropertyMapEmbed";
 import { BarChart, Bar, LineChart, Line, XAxis, YAxis, ResponsiveContainer, Tooltip, CartesianGrid } from "recharts";
-import { fmt, uid, today, localDateStr, daysFromNow, computeJobRatingScore, setOAuthIntent, compressImageFile, getEffectiveRate } from "../../lib/utils";
+import { fmt, uid, today, localDateStr, daysFromNow, computeJobRatingScore, setOAuthIntent, compressImageFile, getEffectiveRate, computeNextRecurringDate, weekdayLabels } from "../../lib/utils";
+import { usePollGate } from "../../hooks/usePollGate";
 import type { Job, Employee, Customer, AppSettings, JobChecklistItem } from "../../types";
 
 const PRE_DEFAULTS: JobChecklistItem[] = [
@@ -1488,6 +1489,9 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   refetchEmployees?: () => Promise<void>;
   estimates?: any[]; setEstimates?: any;
 }) {
+  // EGRESS FIX — skip the jobs poll below while the tab is hidden or the
+  // employee has been idle 5+ minutes (e.g. mid-shift with the phone locked).
+  const shouldPollJobs = usePollGate();
   const TAB_TO_SLUG: Record<string, string> = { today: "", calendar: "calendar", jobs: "jobs", pay: "pay", google: "google" };
   const SLUG_TO_TAB: Record<string, "today" | "calendar" | "jobs" | "pay" | "google"> = { "": "today", calendar: "calendar", jobs: "jobs", pay: "pay", google: "google" };
   const tabFromHash = (): "today" | "calendar" | "jobs" | "pay" | "google" => {
@@ -1601,7 +1605,12 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   const [payCalMonthOffset, setPayCalMonthOffset] = useState(0);
   const [routeInfo, setRouteInfo] = useState<{ order: Job[]; totalDuration: string; totalDistance: string; etas: string[]; origin: { lat: number; lng: number } | string } | null>(null);
   const [calMode, setCalMode] = useState<"week" | "month">("month");
-  const [calSelectedDate, setCalSelectedDate] = useState(today());
+  // FIX 8 — today() is UTC-derived and rolls to the next date ~4-8pm US
+  // local time; scheduledDate is a local calendar date the owner picked, so
+  // an evening open of the Calendar tab could pre-select a day that's
+  // already "tomorrow" in UTC and show zero jobs for what the employee
+  // considers today. localDateStr() matches local Date components instead.
+  const [calSelectedDate, setCalSelectedDate] = useState(localDateStr());
   const [calWeekOffset, setCalWeekOffset] = useState(0);
   const [calMonthOffset, setCalMonthOffset] = useState(0);
   const [calDragJobId, setCalDragJobId] = useState<string | null>(null);
@@ -1648,6 +1657,9 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   const [requestDone, setRequestDone] = useState<string | null>(null);
   // Employee availability
   const [availability, setAvailability] = useState<string[]>([]);
+  // FEATURE 5 — recurring weekday unavailability (e.g. "every Sunday"),
+  // alongside the existing specific-date availability array above.
+  const [recurringDaysOff, setRecurringDaysOff] = useState<number[]>([]);
   const [autoSyncCalendar, setAutoSyncCalendar] = useState(true);
   const [showAvailability, setShowAvailability] = useState(false);
   // Optimistic override for "Start/End My Day" — if the employees table is
@@ -1886,7 +1898,10 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     if (!myEmployee) return;
     const av = (myEmployee as any).availability;
     if (Array.isArray(av) && av.length > 0) setAvailability(av);
+    const rdo = (myEmployee as any).recurringDaysOff;
+    if (Array.isArray(rdo) && rdo.length > 0) setRecurringDaysOff(rdo);
     if ((myEmployee as any).autoSyncCalendar === false) setAutoSyncCalendar(false);
+    console.log("[Availability] loaded — empId:", (myEmployee as any)?.id, "specific dates blocked:", av, "recurring days off:", rdo);
   }, [(myEmployee as any)?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Home base specifically re-syncs whenever Supabase's value changes (not
@@ -2063,7 +2078,10 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
         .on("postgres_changes", { event: "*", schema: "public", table: "jobs" }, () => { load(); })
         .subscribe();
     } catch { /* realtime may not be enabled on this project */ }
-    const interval = setInterval(load, 3000);
+    // EGRESS FIX — was an unconditional 3s poll; realtime above already
+    // covers instant updates, this is now just the fallback, and skips
+    // entirely while the tab is hidden or the employee is idle 5+ minutes.
+    const interval = setInterval(() => { if (shouldPollJobs()) load(); }, 10000);
     return () => {
       clearInterval(interval);
       try { channel?.unsubscribe(); } catch { /* ignore */ }
@@ -2165,7 +2183,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   // immediately without the employee having to navigate the calendar manually.
   // Cancelled jobs are already excluded from calVisibleJobs (see render below).
   useEffect(() => {
-    setCalSelectedDate(today());
+    setCalSelectedDate(localDateStr());
   }, [jobs.map(j => j.id + j.status).join(",")]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Real-time location sharing — runs the whole time the toggle is on (not
@@ -2234,7 +2252,10 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     return () => clearInterval(h);
   }, [(myEmployee as any)?.id, myJobs.length]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const todayStr = today();
+  // FIX 8 — same UTC-vs-local mismatch as calSelectedDate above: this feeds
+  // both the Today tab's job list and the Calendar tab's "isToday"
+  // highlighting, so it must agree with the employee's actual local date.
+  const todayStr = localDateStr();
   const todayJobs = myJobs.filter(j => j.scheduledDate === todayStr && j.status !== "cancelled");
 
   const weekStart = (() => {
@@ -2245,9 +2266,26 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   })();
   const weekJobs = myJobs.filter(j => j.scheduledDate >= weekStart && j.scheduledDate <= weekEnd);
 
-  const weekHours = weekJobs.reduce((s, j) => s + Number(j.loggedHours || 0), 0);
+  // FIX 9 — job.loggedHours (time on-site, see finalizeCompletion) is the
+  // primary source, but employees.lastShiftHours/lastShiftDate (the whole-day
+  // shift timer total, set on "End My Day") can cover time no job captured at
+  // all — e.g. a shift ended before any job was marked complete. Only the
+  // SINGLE most recent shift is ever stored server-side (no daily history),
+  // so this can only top up that one day, and only the shortfall beyond
+  // whatever job hours already landed on that same date (never double-counted).
+  const empLastShiftDate = (myEmployee as any)?.lastShiftDate;
+  const empLastShiftHours = Number((myEmployee as any)?.lastShiftHours) || 0;
+  const jobHoursOnShiftDate = empLastShiftDate
+    ? myJobs.filter(j => j.status === "completed" && j.scheduledDate === empLastShiftDate).reduce((s, j) => s + Number(j.loggedHours || 0), 0)
+    : 0;
+  const shiftTopUpHours = (empLastShiftDate && empLastShiftDate >= weekStart && empLastShiftDate <= weekEnd)
+    ? Math.max(0, empLastShiftHours - jobHoursOnShiftDate)
+    : 0;
+
+  const weekHours = weekJobs.reduce((s, j) => s + Number(j.loggedHours || 0), 0) + shiftTopUpHours;
   const weekJobsDone = weekJobs.filter(j => j.status === "completed").length;
   const weekPay = weekHours * (myEmployee?.hourlyRate || 0);
+  console.log("[EmpWidgets] recalculated — weekHours:", Math.round(weekHours * 100) / 100, "(job hours:", Math.round((weekHours - shiftTopUpHours) * 100) / 100, "+ shift top-up:", Math.round(shiftTopUpHours * 100) / 100, ") weekJobsDone:", weekJobsDone, "weekPay:", Math.round(weekPay * 100) / 100, "hourlyRate:", myEmployee?.hourlyRate, "— from", jobs.length, "total jobs in live state");
 
   const upNextJob = [...myJobs]
     .filter(j => j.scheduledDate >= todayStr && j.status !== "completed")
@@ -2304,6 +2342,36 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
         return result;
       })
       .catch((e: any) => { console.warn("[updateJob] failed to save:", e?.message); return { error: e }; });
+  };
+
+  // FEATURE 3 — the owner's own Complete button (JobsPage.tsx) already
+  // auto-schedules the next occurrence of a recurring job, but employees
+  // completing jobs through the field portal is the more common path and had
+  // no equivalent at all — a recurring job completed here would just never
+  // get its next occurrence created. Mirrors JobsPage.tsx's approach (reset
+  // status/hours/clock/checklist/logs, new id) using the same shared
+  // computeNextRecurringDate so both paths can never compute different dates
+  // for the same schedule.
+  const createRecurringJob = (sourceJob: Job) => {
+    if (!sourceJob.isRecurring) return;
+    const nextDate = computeNextRecurringDate(sourceJob, sourceJob.scheduledDate);
+    const nextJob: any = {
+      ...sourceJob, id: uid(), status: "scheduled", scheduledDate: nextDate,
+      loggedHours: 0, clockInAt: null, arrivedAt: null, completedAt: null,
+      checklist: (sourceJob.checklist || []).map((ck: any) => ({ ...ck, done: false })),
+      preChecklist: (sourceJob.preChecklist || []).map((ck: any) => ({ ...ck, done: false })),
+      duringChecklist: (sourceJob.duringChecklist || []).map((ck: any) => ({ ...ck, done: false })),
+      postChecklist: (sourceJob.postChecklist || []).map((ck: any) => ({ ...ck, done: false })),
+      commLog: [], photos: [], chemicalsUsed: [], paymentStatus: undefined, amountCollected: undefined,
+    };
+    setJobs((prev: any[]) => [...prev, nextJob]);
+    console.log("[Recurring] next job auto-scheduled from field portal — sourceJobId:", sourceJob.id, "mode:", sourceJob.recurringMode || "preset", "nextDate:", nextDate, "newJobId:", nextJob.id);
+    (supabase as any).from("jobs").insert(nextJob)
+      .then((r: any) => {
+        if (r?.error) { console.error("[Recurring] insert failed:", r.error.message); toast?.("Job completed, but couldn't auto-schedule the next occurrence — " + r.error.message, "red"); }
+        else toast?.("Next recurring job auto-scheduled for " + nextDate, "green");
+      })
+      .catch((e: any) => { console.error("[Recurring] insert threw:", e?.message); toast?.("Job completed, but couldn't auto-schedule the next occurrence", "red"); });
   };
 
   // Tick every second when any job is clocked in so card timers update live
@@ -2824,12 +2892,31 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
       ? availability.filter(d => d !== dateStr)
       : [...availability, dateStr];
     setAvailability(next);
+    console.log("[Availability] toggle specific date —", dateStr, "→ blocked dates now:", next);
     try {
       const empId = (myEmployee as any)?.id || (myEmployee as any)?.user_id;
       if (empId) {
-        await (supabase as any).from("employees").update({ availability: next }).eq("id", empId);
+        const result = await (supabase as any).from("employees").update({ availability: next }).eq("id", empId);
+        if (result?.error) { console.warn("[Availability] save failed:", result.error.message); toast?.("Failed to save availability — " + result.error.message, "red"); }
       }
-    } catch { /* ignore */ }
+    } catch (e: any) { console.warn("[Availability] save threw:", e?.message); toast?.("Failed to save availability", "red"); }
+  };
+
+  // FEATURE 5 — recurring weekday off (0=Sun..6=Sat), same persistence
+  // pattern as toggleAvailability above.
+  const toggleRecurringDayOff = async (day: number) => {
+    const next = recurringDaysOff.includes(day)
+      ? recurringDaysOff.filter(d => d !== day)
+      : [...recurringDaysOff, day].sort();
+    setRecurringDaysOff(next);
+    console.log("[Availability] toggle recurring day off —", weekdayLabels[day], "→ recurring days off now:", next.map(d => weekdayLabels[d]));
+    try {
+      const empId = (myEmployee as any)?.id || (myEmployee as any)?.user_id;
+      if (empId) {
+        const result = await (supabase as any).from("employees").update({ recurringDaysOff: next }).eq("id", empId);
+        if (result?.error) { console.warn("[Availability] recurring save failed:", result.error.message); toast?.("Failed to save recurring availability — " + result.error.message, "red"); }
+      }
+    } catch (e: any) { console.warn("[Availability] recurring save threw:", e?.message); toast?.("Failed to save recurring availability", "red"); }
   };
 
   const handleInlineAccept = async (req: any) => {
@@ -3367,7 +3454,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
         onComplete={handleJobComplete}
         perms={perms}
         maxLunchMinutes={settings.maxLunchMinutes ?? 30}
-        onJobCompleted={(j: Job) => { recordJobRating(j); syncJobToCalendar(j, { completed: true, silent: true }); }}
+        onJobCompleted={(j: Job) => { recordJobRating(j); syncJobToCalendar(j, { completed: true, silent: true }); createRecurringJob(j); }}
         googleMapsKey={settings.googleMapsKey || settings.mapsKey}
         paidLunchBreaks={!!settings.paidLunchBreaks}
         signOffDisclaimer={job.signOffTerms || settings.termsAndConditions || settings.terms || ""}
@@ -4578,6 +4665,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
             const calVisibleJobs = showCanceledJobs ? myJobs : myJobs.filter(j => j.status !== "cancelled");
             const calCanceledCount = myJobs.filter(j => j.status === "cancelled").length;
             const calDayJobs = calVisibleJobs.filter(j => j.scheduledDate === calSelectedDate);
+            console.log("[EmpCalendar] render — mode:", calMode, "selectedDate:", calSelectedDate, "myJobs total:", myJobs.length, "visible:", calVisibleJobs.length, "jobs on selected day:", calDayJobs.length);
 
             return (
               <>
@@ -4605,9 +4693,31 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                   </button>
                 )}
                 {showAvailability && (
-                  <div className="mb-3 p-2.5 rounded-xl bg-orange-950/20 border border-orange-700/30 text-xs text-orange-200/70">
-                    Tap dates to mark yourself <b>unavailable</b>. Gray dates = blocked. Owner will see these when scheduling.
-                    {availability.length > 0 && <span className="ml-2 text-orange-300">{availability.length} day{availability.length !== 1 ? "s" : ""} blocked</span>}
+                  <div className="mb-3 space-y-2">
+                    <div className="p-2.5 rounded-xl bg-orange-950/20 border border-orange-700/30 text-xs text-orange-200/70">
+                      Tap dates to mark yourself <b>unavailable</b>. Gray dates = blocked. Owner will see these when scheduling.
+                      {availability.length > 0 && <span className="ml-2 text-orange-300">{availability.length} day{availability.length !== 1 ? "s" : ""} blocked</span>}
+                    </div>
+                    {/* FEATURE 5 — recurring weekday off (e.g. "every Sunday"),
+                        separate from the specific-date picker below. */}
+                    <div className="p-2.5 rounded-xl bg-orange-950/10 border border-orange-700/20">
+                      <div className="text-xs text-orange-200/70 mb-2">Recurring days off <span className="text-white/30">(every week)</span></div>
+                      <div className="flex flex-wrap gap-1.5">
+                        {weekdayLabels.map((lbl, i) => {
+                          const active = recurringDaysOff.includes(i);
+                          return (
+                            <button
+                              key={i}
+                              type="button"
+                              onClick={() => toggleRecurringDayOff(i)}
+                              className={"px-2.5 py-1 rounded-lg text-[11px] font-semibold border transition " + (active ? "bg-orange-600 border-orange-500 text-white" : "bg-black/40 border-white/10 text-white/50 hover:text-white")}
+                            >
+                              {lbl}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
                   </div>
                 )}
 
@@ -4633,7 +4743,9 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                         const dayJobs = calVisibleJobs.filter(j => j.scheduledDate === dateStr);
                         const isToday = dateStr === todayStr;
                         const isSelected = dateStr === calSelectedDate && !showAvailability;
-                        const isUnavail = availability.includes(dateStr);
+                        // FEATURE 5 — a recurring day off (e.g. "every Sunday")
+                        // must show as blocked here too, not just specific dates.
+                        const isUnavail = availability.includes(dateStr) || recurringDaysOff.includes(d.getDay());
                         return (
                           <button key={dateStr}
                             onClick={() => showAvailability ? toggleAvailability(dateStr) : setCalSelectedDate(dateStr)}
@@ -4763,7 +4875,8 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                         const dayJobs = calVisibleJobs.filter(j => j.scheduledDate === dateStr);
                         const isToday = dateStr === todayStr;
                         const isSelected = dateStr === calSelectedDate && !showAvailability;
-                        const isUnavail = availability.includes(dateStr);
+                        // FEATURE 5 — recurring weekday off applies here too.
+                        const isUnavail = availability.includes(dateStr) || recurringDaysOff.includes(new Date(calMonthYear, calMonthMonth, day).getDay());
                         return (
                           <button key={day}
                             onClick={() => showAvailability ? toggleAvailability(dateStr) : setCalSelectedDate(dateStr)}

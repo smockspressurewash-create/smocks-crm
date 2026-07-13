@@ -20,7 +20,7 @@ import {
   Tooltip, ResponsiveContainer, Area, AreaChart, LineChart, Line,
   ComposedChart, Legend
 } from "recharts";
-import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE } from "../../lib/utils";
+import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, computeDepositAmount, computeDiscountsTotal, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE } from "../../lib/utils";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
 import { twilioSend, sendEmail } from "../../lib/messaging";
 import { seedWeather } from "../../lib/weather";
@@ -48,7 +48,14 @@ export function EstimateBuilder({ open, onClose, customers = [], services = [], 
   const [items, setItems] = useState([]);
   const [vu, setVu] = useState(daysFromNow(30));
   const [discount, setDiscount] = useState(0);
+  // FEATURE 7 — stackable named discounts (each $ or %), on top of the legacy
+  // flat `discount` number above (kept only so old templates that already
+  // set tpl.discount still apply their amount — no UI control for it anymore,
+  // superseded by this list).
+  const [discounts, setDiscounts] = useState<Array<{ id: string; label: string; type: "amount" | "percent"; value: number }>>([]);
   const [depositRequired, setDepositRequired] = useState(0);
+  // FEATURE 6 — whether depositRequired is a flat dollar amount or a % of total.
+  const [depositType, setDepositType] = useState<"amount" | "percent">("amount");
   const [terms, setTerms] = useState("");
   const [notes, setNotes] = useState("");
   const [internalNote, setInternalNote] = useState("");
@@ -70,7 +77,9 @@ export function EstimateBuilder({ open, onClose, customers = [], services = [], 
       setItems([{ id: uid(), description: "", quantity: 1, unitPrice: 0 }]);
       setVu(daysFromNow(30));
       setDiscount(0);
+      setDiscounts([]);
       setDepositRequired(0);
+      setDepositType("amount");
       setTerms("Payment due upon completion. 3-day cancellation notice requested. Weather reschedules free of charge.");
       setNotes("");
       setSavingTemplate(false);
@@ -85,9 +94,17 @@ export function EstimateBuilder({ open, onClose, customers = [], services = [], 
   }, [open, customers]);
 
   const sub = items.reduce((s, i) => s + Number(i.quantity) * Number(i.unitPrice), 0);
-  const afterDisc = Math.max(0, sub - Number(discount));
+  // FEATURE 7 — combined total of every stacked discount + the legacy flat field.
+  const discountsTotal = computeDiscountsTotal(discounts, sub) + Number(discount);
+  const afterDisc = Math.max(0, sub - discountsTotal);
   const tax = afterDisc * (taxRate / 100);
   const tot = afterDisc + tax;
+  // FEATURE 6 — actual deposit dollar figure, whichever mode is selected.
+  const depositAmt = computeDepositAmount({ depositRequired: Number(depositRequired), depositType }, tot);
+
+  const addDiscount = () => setDiscounts(prev => [...prev, { id: uid(), label: "", type: "amount", value: 0 }]);
+  const updateDiscountRow = (id: string, patch: any) => setDiscounts(prev => prev.map(d => d.id === id ? { ...d, ...patch } : d));
+  const removeDiscount = (id: string) => setDiscounts(prev => prev.filter(d => d.id !== id));
 
   const addSvc = (sid: string) => {
     const s = services.find((x: any) => x.id === sid);
@@ -96,7 +113,7 @@ export function EstimateBuilder({ open, onClose, customers = [], services = [], 
     const desc = s.name;
     const custDesc = (s as any).customerDescription || "";
     const intNotes = (s as any).internalNotes || "";
-    setItems((prev: any[]) => [...prev.filter((i: any) => i.description), { id: uid(), description: desc, quantity: 1, unitPrice: price, catalogPrice: price, notes: custDesc || undefined, notesInternal: false, _serviceInternalNotes: intNotes || undefined }]);
+    setItems((prev: any[]) => [...prev.filter((i: any) => i.description), { id: uid(), description: desc, quantity: 1, unitPrice: price, catalogPrice: price, notes: custDesc || undefined, notesInternal: false, _serviceInternalNotes: intNotes || undefined, serviceId: sid }]);
     if (intNotes && !internalNote.includes(intNotes)) {
       setInternalNote(prev => prev ? prev + "\n" + intNotes : intNotes);
     }
@@ -105,7 +122,9 @@ export function EstimateBuilder({ open, onClose, customers = [], services = [], 
   const loadTemplate = tpl => {
     setItems((tpl.lineItems || []).map(li => ({ ...li, id: uid() })));
     if (tpl.discount) setDiscount(tpl.discount);
+    if (tpl.discounts) setDiscounts(tpl.discounts.map((d: any) => ({ ...d, id: uid() })));
     if (tpl.depositRequired) setDepositRequired(tpl.depositRequired);
+    if (tpl.depositType) setDepositType(tpl.depositType);
     if (tpl.terms) setTerms(tpl.terms);
     if (tpl.notes) setNotes(tpl.notes);
     // Custom-uploaded PDF templates can't be parsed into structured line
@@ -141,7 +160,7 @@ export function EstimateBuilder({ open, onClose, customers = [], services = [], 
 
   const saveAsTemplate = () => {
     if (!templateName.trim()) return;
-    const tpl = { id: uid(), name: templateName.trim(), lineItems: items, discount: Number(discount), depositRequired: Number(depositRequired), terms, notes, createdAt: today() };
+    const tpl = { id: uid(), name: templateName.trim(), lineItems: items, discount: Number(discount), discounts, depositRequired: Number(depositRequired), depositType, terms, notes, createdAt: today() };
     setEstimateTemplates(prev => [...prev, tpl]);
     setSavingTemplate(false);
     setTemplateName("");
@@ -155,7 +174,7 @@ export function EstimateBuilder({ open, onClose, customers = [], services = [], 
       subtotal: p.lineItems.reduce((s: number, i: any) => s + Number(i.quantity) * Number(i.unitPrice), 0),
     })) : undefined;
     const usedItems = estimateType === "package" ? [] : items;
-    onSave({ id: uid(), customerId: cid, estimateType, lineItems: usedItems, packages: pkgData, subtotal: sub, discount: Number(discount), depositRequired: Number(depositRequired), tax, total: tot, status: "pending", createdAt: today(), validUntil: vu, viewed: false, viewedAt: null, terms, notes, internalNote });
+    onSave({ id: uid(), customerId: cid, estimateType, lineItems: usedItems, packages: pkgData, subtotal: sub, discount: Number(discount), discounts, depositRequired: Number(depositRequired), depositType, tax, total: tot, status: "pending", createdAt: today(), validUntil: vu, viewed: false, viewedAt: null, terms, notes, internalNote });
   };
 
   return (
@@ -374,9 +393,39 @@ export function EstimateBuilder({ open, onClose, customers = [], services = [], 
           </div>
         </div>
 
-        <div className="grid grid-cols-2 gap-3">
-          <div><label className="text-xs text-white/60 mb-1 block">Discount ($)</label><GInput type="number" step="0.01" value={discount} onChange={e => setDiscount(e.target.value)} /></div>
-          <div><label className="text-xs text-white/60 mb-1 block">Deposit Required ($)</label><GInput type="number" step="0.01" value={depositRequired} onChange={e => setDepositRequired(e.target.value)} /></div>
+        {/* FEATURE 7 — stackable named discounts (title + $ or %), each shows
+            on the estimate/invoice the client sees. */}
+        <div>
+          <div className="flex items-center justify-between mb-1">
+            <label className="text-xs text-white/60 block">Discounts</label>
+            <button type="button" onClick={addDiscount} className="text-[11px] text-blue-400 hover:text-blue-300 flex items-center gap-1"><Plus size={11} />Add Discount</button>
+          </div>
+          <div className="space-y-1.5">
+            {discounts.map(d => (
+              <div key={d.id} className="flex items-center gap-2">
+                <GInput value={d.label} onChange={e => updateDiscountRow(d.id, { label: e.target.value })} placeholder="e.g. First-time customer discount" className="!text-xs flex-1" />
+                <GSel value={d.type} onChange={e => updateDiscountRow(d.id, { type: e.target.value })} className="!text-xs !w-24 flex-shrink-0">
+                  <option value="amount" className="bg-black">$</option>
+                  <option value="percent" className="bg-black">%</option>
+                </GSel>
+                <GInput type="number" step={d.type === "percent" ? "1" : "0.01"} value={d.value} onChange={e => updateDiscountRow(d.id, { value: Number(e.target.value) || 0 })} className="!text-xs !w-24 flex-shrink-0" />
+                <button type="button" onClick={() => removeDiscount(d.id)} className="p-1.5 text-white/30 hover:text-red-400 flex-shrink-0"><Trash2 size={12} /></button>
+              </div>
+            ))}
+            {discounts.length === 0 && <div className="text-[10px] text-white/30">No discounts added</div>}
+          </div>
+        </div>
+
+        <div>
+          <label className="text-xs text-white/60 mb-1 block">Deposit Required</label>
+          <div className="flex items-center gap-2">
+            <GInput type="number" step={depositType === "percent" ? "1" : "0.01"} value={depositRequired} onChange={e => setDepositRequired(e.target.value)} className="flex-1" />
+            <GSel value={depositType} onChange={e => setDepositType(e.target.value as any)} className="!w-24 flex-shrink-0">
+              <option value="amount" className="bg-black">$</option>
+              <option value="percent" className="bg-black">%</option>
+            </GSel>
+          </div>
+          {Number(depositRequired) > 0 && <div className="text-[10px] text-white/40 mt-1">Deposit due now: {fmt(depositAmt)} · Balance due after service: {fmt(Math.max(0, tot - depositAmt))}</div>}
         </div>
 
         <div className="grid md:grid-cols-2 gap-3">
@@ -388,9 +437,18 @@ export function EstimateBuilder({ open, onClose, customers = [], services = [], 
         <Glass className="p-4 !rounded-xl bg-black/60">
           <div className="space-y-1.5 text-sm">
             <div className="flex justify-between text-white/70"><span>Subtotal</span><span>{fmt(sub)}</span></div>
+            {discounts.map(d => Number(d.value) > 0 && (
+              <div key={d.id} className="flex justify-between text-green-400"><span>{d.label || "Discount"}{d.type === "percent" ? ` (${d.value}%)` : ""}</span><span>− {fmt(d.type === "percent" ? sub * (Number(d.value) / 100) : Number(d.value))}</span></div>
+            ))}
             {Number(discount) > 0 && <div className="flex justify-between text-green-400"><span>Discount</span><span>− {fmt(Number(discount))}</span></div>}
             <div className="flex justify-between text-white/70"><span>Tax ({taxRate}%)</span><span>{fmt(tax)}</span></div>
             <div className="flex justify-between font-bold text-white text-base pt-2 border-t border-red-900/30"><span>Total</span><span className="text-red-400">{fmt(tot)}</span></div>
+            {Number(depositRequired) > 0 && (
+              <>
+                <div className="flex justify-between text-yellow-400 text-xs pt-1"><span>Deposit due now</span><span>{fmt(depositAmt)}</span></div>
+                <div className="flex justify-between text-white/50 text-xs"><span>Balance due after service</span><span>{fmt(Math.max(0, tot - depositAmt))}</span></div>
+              </>
+            )}
           </div>
         </Glass>
 

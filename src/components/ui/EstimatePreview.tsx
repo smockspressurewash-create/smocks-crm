@@ -20,7 +20,7 @@ import {
   Tooltip, ResponsiveContainer, Area, AreaChart, LineChart, Line,
   ComposedChart, Legend
 } from "recharts";
-import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE } from "../../lib/utils";
+import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, computeDepositAmount, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE } from "../../lib/utils";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
 import { twilioSend, sendEmail } from "../../lib/messaging";
 import { seedWeather } from "../../lib/weather";
@@ -42,10 +42,13 @@ import { PBar } from "./PBar";
 import { PageFade } from "./PageFade";
 import { TimeframeSelector } from "./TimeframeSelector";
 
-export function EstimatePreview({ estimate: e, customers = [], settings = {} as any, onClose, onApprove, onConvert, onSchedule = null, toast = (..._args: any[]) => {} }) {
+export function EstimatePreview({ estimate: e, customers = [], settings = {} as any, onClose, onApprove, onConvert, onSchedule = null, onMarkDepositPaid = null, toast = (..._args: any[]) => {} }) {
   if (!e) return null;
   const c = customers.find(x => x.id === e.customerId);
   const companyName = settings?.companyName || "Crew Boss";
+  // FEATURE 6 — resolves depositRequired whether it's a flat $ or a % of total.
+  const depositAmt = computeDepositAmount(e, e.total);
+  const depositBalanceAmt = Math.max(0, e.total - depositAmt);
 
   return (
     <Modal open={!!e} onClose={onClose} title={"Estimate #" + e.id.toUpperCase()} maxW="max-w-2xl">
@@ -94,10 +97,22 @@ export function EstimatePreview({ estimate: e, customers = [], settings = {} as 
 
           <div className="ml-auto w-64 text-sm space-y-1.5 bg-gray-50 rounded-xl p-4">
             <div className="flex justify-between"><span className="text-gray-500">Subtotal</span><span className="text-gray-800">{fmt(e.subtotal)}</span></div>
+            {/* FEATURE 7 — every stacked discount, each with its own label */}
+            {(e.discounts || []).map((d: any) => Number(d.value) > 0 && (
+              <div key={d.id} className="flex justify-between text-green-700"><span>{d.label || "Discount"}{d.type === "percent" ? ` (${d.value}%)` : ""}</span><span>− {fmt(d.type === "percent" ? e.subtotal * (Number(d.value) / 100) : Number(d.value))}</span></div>
+            ))}
             {e.discount > 0 && <div className="flex justify-between text-green-700"><span>Discount</span><span>− {fmt(e.discount)}</span></div>}
             <div className="flex justify-between"><span className="text-gray-500">Tax</span><span className="text-gray-800">{fmt(e.tax)}</span></div>
-            {e.depositRequired > 0 && <div className="flex justify-between text-yellow-700"><span>Deposit required</span><span>{fmt(e.depositRequired)}</span></div>}
             <div className="flex justify-between font-bold text-lg border-t-2 border-red-600 pt-2 mt-1 text-red-700"><span>Total</span><span>{fmt(e.total)}</span></div>
+            {/* FEATURE 6 — deposit shown as its resolved dollar figure
+                regardless of whether the owner configured $ or %, plus the
+                remaining balance. */}
+            {e.depositRequired > 0 && (
+              <>
+                <div className="flex justify-between text-yellow-700 pt-1"><span>Deposit due now{e.depositType === "percent" ? ` (${e.depositRequired}%)` : ""}</span><span>{fmt(depositAmt)}</span></div>
+                <div className="flex justify-between text-gray-500 text-xs"><span>Balance due after service</span><span>{fmt(depositBalanceAmt)}</span></div>
+              </>
+            )}
           </div>
 
           {e.notes && <div className="mt-6 pt-4 border-t border-gray-200"><div className="text-[10px] text-gray-400 uppercase tracking-wider font-semibold mb-1.5">Notes</div><div className="text-xs text-gray-600 whitespace-pre-wrap leading-relaxed">{e.notes}</div></div>}
@@ -112,6 +127,13 @@ export function EstimatePreview({ estimate: e, customers = [], settings = {} as 
       </div>
       <div className="mt-5 flex gap-2 flex-wrap">
         {e.status === "pending" && <GBtn onClick={() => onApprove(e.id)} className="flex-1"><CheckCircle size={14} className="inline mr-1.5" />Approve Estimate</GBtn>}
+        {/* FEATURE 6 — owner can manually mark a deposit paid (cash/check
+            collected outside the CRM), separate from the client actually
+            paying online via Stripe in ClientPortal. */}
+        {e.depositRequired > 0 && !e.paidDeposit && !e.paidFull && onMarkDepositPaid && (
+          <GBtn variant="ghost" onClick={() => onMarkDepositPaid(e.id, depositAmt)} className="flex-1 !border-yellow-700/40 !text-yellow-300"><DollarSign size={14} className="inline mr-1.5" />Mark Deposit Paid ({fmt(depositAmt)})</GBtn>
+        )}
+        {e.paidDeposit > 0 && !e.paidFull && <div className="flex-1 text-center py-2.5 rounded-xl bg-green-950/30 border border-green-700/40 text-green-300 text-sm flex items-center justify-center gap-1.5"><CheckCircle size={14} />Deposit Paid ({fmt(e.paidDeposit)})</div>}
         {e.status === "approved" && !e.invoiced && onConvert && <GBtn onClick={() => onConvert(e.id)} className="flex-1"><Receipt size={14} className="inline mr-1.5" />Convert to Invoice</GBtn>}
         {e.status === "approved" && onSchedule && <GBtn variant="ghost" onClick={() => onSchedule(e)} className="flex-1"><Briefcase size={14} className="inline mr-1.5" />Schedule Job</GBtn>}
         {e.invoiced && !e.paidAt && <GBtn variant="ghost" onClick={() => {
