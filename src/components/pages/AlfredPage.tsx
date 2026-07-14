@@ -175,25 +175,39 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
   // the user navigates away instead of running for the whole app session).
   const [alfredConvsLoaded, setAlfredConvsLoaded] = useState(false);
   const alfredConvsSaveTimerRef = useRef<any>(null);
+  // FIX 2 (mobile round 3) — tracks which conversation ids we've already sent
+  // at least one upsert for, so the save-effect below can tell "brand new
+  // conversation" apart from "edited an existing one" and save the new one
+  // immediately instead of waiting out the debounce.
+  const knownConvIdsRef = useRef<Set<string>>(new Set());
   useEffect(() => {
+    console.log("[Alfred Sync] owner_id =", ownerId || "(not set yet)");
     if (!ownerId) { console.warn("[Alfred Sync] no ownerId yet — skipping conversation fetch"); return; }
     const loadConversations = async () => {
       try {
-        const { data, error } = await (supabase as any).from("alfred_conversations").select("*").eq("owner_id", ownerId).order("updated_at", { ascending: false });
+        const res: any = await (supabase as any).from("alfred_conversations").select("*").eq("owner_id", ownerId).order("updated_at", { ascending: false });
+        const { data, error } = res;
         if (error) {
-          console.warn("[Alfred Sync] fetch failed:", error.message, "— if this says the relation doesn't exist, run supabase/migrations/0006_alfred_conversations_table.sql in the Supabase SQL editor");
+          console.warn("[Alfred Sync] fetch failed:", error.message, "— if this says the relation doesn't exist, run supabase/migrations/0011_owner_settings_and_alfred_schema_fixes.sql in the Supabase SQL editor");
           return;
         }
         if (!Array.isArray(data)) { console.warn("[Alfred Sync] fetch returned unexpected data:", data); return; }
+        console.log("[Alfred Sync] query returned", data.length, "rows");
+        if (data.length > 0) {
+          console.log("[Alfred Sync] sample conversation:", { id: data[0].id, title: data[0].title });
+        } else {
+          // FIX 2 — full raw response so a mismatched owner_id, an RLS
+          // policy silently filtering everything, or genuinely-empty data
+          // are all distinguishable from the console instead of just "0".
+          console.warn("[Alfred Sync] 0 rows for owner_id=" + ownerId + " — full response:", JSON.stringify(res));
+        }
         const fromServer: AlfredConversation[] = data.map((r: any) => ({
           id: r.id, title: r.title || "Conversation", messages: Array.isArray(r.messages) ? r.messages : [],
           createdAt: r.created_at || r.createdAt || new Date().toISOString(), updatedAt: r.updated_at || r.updatedAt || new Date().toISOString(),
         }));
-        if (fromServer.length === 0) {
-          console.warn("[Alfred Sync] table returned 0 conversations for owner_id=" + ownerId + " — either nothing has synced from any device yet, or migration 0006_alfred_conversations_table.sql / its RLS policy hasn't been applied in Supabase");
-        } else {
-          console.log("[Alfred Sync] loaded " + fromServer.length + " conversations for owner_id=" + ownerId);
-        }
+        // Anything the server already has is "known" — only conversations
+        // created locally after this point should trigger an immediate save.
+        fromServer.forEach(c => knownConvIdsRef.current.add(c.id));
         setConversations((prev: any[]) => {
           const byId = new Map(fromServer.map(c => [c.id, c]));
           // Keep any local conversation not yet confirmed server-side (just
@@ -219,17 +233,34 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
     return () => clearInterval(interval);
   }, [ownerId]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  const upsertConversation = (c: any) => {
+    (supabase as any).from("alfred_conversations").upsert({
+      id: c.id, owner_id: ownerId, title: c.title, messages: c.messages,
+      created_at: c.createdAt, updated_at: c.updatedAt || new Date().toISOString(),
+    }, { onConflict: "id" })
+      .then((r: any) => {
+        if (r?.error) console.warn("[Alfred Sync] save failed for", c.id, ":", r.error.message);
+        else console.log("[Alfred Sync] saved conversation", c.id, "to Supabase");
+      })
+      .catch((e: any) => console.warn("[Alfred Sync] save threw for", c.id, ":", e?.message));
+  };
+
   useEffect(() => {
     if (!ownerId || !alfredConvsLoaded) return;
+    // FIX 2 — save brand-new conversations immediately instead of waiting for
+    // the debounce below, so a chat created right before switching devices
+    // doesn't get lost to the 1.2s window never elapsing (tab closed, etc).
+    (conversations || []).forEach((c: any) => {
+      if (!knownConvIdsRef.current.has(c.id)) {
+        knownConvIdsRef.current.add(c.id);
+        console.log("[Alfred Sync] new conversation detected —", c.id, "— saving immediately");
+        upsertConversation(c);
+      }
+    });
     clearTimeout(alfredConvsSaveTimerRef.current);
     alfredConvsSaveTimerRef.current = setTimeout(() => {
       console.log("[Alfred Sync] saving", (conversations || []).length, "conversation(s) to Supabase for owner", ownerId);
-      (conversations || []).forEach((c: any) => {
-        (supabase as any).from("alfred_conversations").upsert({
-          id: c.id, owner_id: ownerId, title: c.title, messages: c.messages,
-          created_at: c.createdAt, updated_at: c.updatedAt || new Date().toISOString(),
-        }, { onConflict: "id" }).then((r: any) => { if (r?.error) console.warn("[Alfred Sync] save failed:", r.error.message); }).catch(() => {});
-      });
+      (conversations || []).forEach((c: any) => upsertConversation(c));
     }, 1200);
     return () => clearTimeout(alfredConvsSaveTimerRef.current);
   }, [conversations, ownerId, alfredConvsLoaded]); // eslint-disable-line react-hooks/exhaustive-deps

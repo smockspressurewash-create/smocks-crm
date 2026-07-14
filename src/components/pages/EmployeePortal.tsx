@@ -583,6 +583,7 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
         toast("Completed locally, but the server didn't confirm — " + (result.error.message || "check connection"), "red");
       } else {
         console.log("[Complete Job] — success: job", job.id, "saved as completed");
+        console.log("[Payroll] WRITE (job completion) — confirmed saved to Supabase — job:", job.id, "loggedHours:", patch.loggedHours ?? "(unchanged — no clockInAt/arrivedAt on this job)");
         toast("✅ Job completed successfully", "green");
       }
     } catch (e: any) {
@@ -2266,48 +2267,55 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   })();
   const weekJobs = myJobs.filter(j => j.scheduledDate >= weekStart && j.scheduledDate <= weekEnd);
 
-  // FIX 9 — job.loggedHours (time on-site, see finalizeCompletion) is the
-  // primary source, but employees.lastShiftHours/lastShiftDate (the whole-day
-  // shift timer total, set on "End My Day") can cover time no job captured at
-  // all — e.g. a shift ended before any job was marked complete. Only the
-  // SINGLE most recent shift is ever stored server-side (no daily history),
-  // so this can only top up that one day, and only the shortfall beyond
-  // whatever job hours already landed on that same date (never double-counted).
-  const empLastShiftDate = (myEmployee as any)?.lastShiftDate;
-  const empLastShiftHours = Number((myEmployee as any)?.lastShiftHours) || 0;
-  const jobHoursOnShiftDate = empLastShiftDate
-    ? myJobs.filter(j => j.status === "completed" && j.scheduledDate === empLastShiftDate).reduce((s, j) => s + Number(j.loggedHours || 0), 0)
-    : 0;
-  const endedShiftTopUpHours = (empLastShiftDate && empLastShiftDate >= weekStart && empLastShiftDate <= weekEnd)
-    ? Math.max(0, empLastShiftHours - jobHoursOnShiftDate)
-    : 0;
-  // FIX 7 (mobile round 2) — same gap as the owner's Employees tab: while
-  // still clocked in (dayClockInAt set, hasn't pressed "End My Day" yet),
-  // today's hours weren't reflected here at all since lastShiftHours only
-  // gets written at clock-out. Mirrors the live netShiftHoursNow formula used
-  // by this same file's own shift-timer button below.
-  const empDayClockInAtForWidget = (myEmployee as any)?.dayClockInAt;
-  const liveShiftTopUpHours = (empDayClockInAtForWidget && todayStr >= weekStart && todayStr <= weekEnd)
-    ? (() => {
-        const pausedMin = Number((myEmployee as any)?.dayPausedMinutes) || 0;
-        const lunchStart = (myEmployee as any)?.dayLunchStartAt;
-        const currentPauseMs = lunchStart ? Date.now() - lunchStart : 0;
-        const liveHours = Math.max(0, (Date.now() - empDayClockInAtForWidget - pausedMin * 60000 - currentPauseMs) / 3600000);
-        const jobHoursToday = myJobs.filter(j => j.status === "completed" && j.scheduledDate === todayStr).reduce((s, j) => s + Number(j.loggedHours || 0), 0);
-        return Math.max(0, liveHours - jobHoursToday);
-      })()
-    : 0;
-  // Avoid double-counting if lastShiftDate also happens to be today (clocked
-  // in again after already ending a shift earlier the same day) — the live
-  // figure supersedes the ended-shift one for today specifically.
-  const shiftTopUpHours = (empLastShiftDate === todayStr && empDayClockInAtForWidget)
-    ? liveShiftTopUpHours
-    : liveShiftTopUpHours + endedShiftTopUpHours;
+  // FIX 9 / FIX 5 (mobile round 3) — job.loggedHours (time on-site, see
+  // finalizeCompletion) is the primary source, but employees.lastShiftHours/
+  // lastShiftDate (the whole-day shift timer total, set on "End My Day") and
+  // a currently-in-progress shift (dayClockInAt, not ended yet) can both
+  // cover time no job captured at all. This used to be computed inline just
+  // for weekStart/weekEnd — the Pay tab further down reimplemented its own
+  // "hours in a date range" from scratch for each 14-day period WITHOUT this
+  // top-up at all, so hours/pay showed correctly on the Today tab but as $0
+  // on the Pay tab for anyone whose hours came mostly from the shift timer
+  // rather than completed jobs. Shared as one function so both call sites
+  // (and any future one) can't independently diverge again.
+  const computeEmployeeShiftTopUp = (startDate: string, endDate: string): number => {
+    const empLastShiftDate = (myEmployee as any)?.lastShiftDate;
+    const empLastShiftHours = Number((myEmployee as any)?.lastShiftHours) || 0;
+    const jobHoursOnShiftDate = empLastShiftDate
+      ? myJobs.filter(j => j.status === "completed" && j.scheduledDate === empLastShiftDate).reduce((s, j) => s + Number(j.loggedHours || 0), 0)
+      : 0;
+    // Only the SINGLE most recent shift is ever stored server-side (no daily
+    // history), so this can only top up that one day, and only the
+    // shortfall beyond whatever job hours already landed on that same date
+    // (never double-counted).
+    const endedShiftTopUp = (empLastShiftDate && empLastShiftDate >= startDate && empLastShiftDate <= endDate)
+      ? Math.max(0, empLastShiftHours - jobHoursOnShiftDate)
+      : 0;
+    // Still clocked in (dayClockInAt set, hasn't pressed "End My Day" yet) —
+    // mirrors the live netShiftHoursNow formula used by the shift-timer
+    // button below, so the two can't disagree once the shift actually ends.
+    const empDayClockInAt = (myEmployee as any)?.dayClockInAt;
+    const liveShiftTopUp = (empDayClockInAt && todayStr >= startDate && todayStr <= endDate)
+      ? (() => {
+          const pausedMin = Number((myEmployee as any)?.dayPausedMinutes) || 0;
+          const lunchStart = (myEmployee as any)?.dayLunchStartAt;
+          const currentPauseMs = lunchStart ? Date.now() - lunchStart : 0;
+          const liveHours = Math.max(0, (Date.now() - empDayClockInAt - pausedMin * 60000 - currentPauseMs) / 3600000);
+          const jobHoursToday = myJobs.filter(j => j.status === "completed" && j.scheduledDate === todayStr).reduce((s, j) => s + Number(j.loggedHours || 0), 0);
+          return Math.max(0, liveHours - jobHoursToday);
+        })()
+      : 0;
+    // Avoid double-counting if lastShiftDate also happens to be today
+    // (clocked in again after already ending a shift earlier the same day)
+    // — the live figure supersedes the ended-shift one for today specifically.
+    return (empLastShiftDate === todayStr && empDayClockInAt) ? liveShiftTopUp : liveShiftTopUp + endedShiftTopUp;
+  };
 
-  const weekHours = weekJobs.reduce((s, j) => s + Number(j.loggedHours || 0), 0) + shiftTopUpHours;
+  const weekShiftTopUpHours = computeEmployeeShiftTopUp(weekStart, weekEnd);
+  const weekHours = weekJobs.reduce((s, j) => s + Number(j.loggedHours || 0), 0) + weekShiftTopUpHours;
   const weekJobsDone = weekJobs.filter(j => j.status === "completed").length;
   const weekPay = weekHours * (myEmployee?.hourlyRate || 0);
-  console.log("[EmpWidgets] recalculated — weekHours:", Math.round(weekHours * 100) / 100, "(job hours:", Math.round((weekHours - shiftTopUpHours) * 100) / 100, "+ shift top-up:", Math.round(shiftTopUpHours * 100) / 100, ") weekJobsDone:", weekJobsDone, "weekPay:", Math.round(weekPay * 100) / 100, "hourlyRate:", myEmployee?.hourlyRate, "— from", jobs.length, "total jobs in live state");
+  console.log("[EmpWidgets] recalculated — weekHours:", Math.round(weekHours * 100) / 100, "(job hours:", Math.round((weekHours - weekShiftTopUpHours) * 100) / 100, "+ shift top-up:", Math.round(weekShiftTopUpHours * 100) / 100, ") weekJobsDone:", weekJobsDone, "weekPay:", Math.round(weekPay * 100) / 100, "hourlyRate:", myEmployee?.hourlyRate, "— from", jobs.length, "total jobs in live state");
 
   const upNextJob = [...myJobs]
     .filter(j => j.scheduledDate >= todayStr && j.status !== "completed")
@@ -5111,7 +5119,12 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
               const s = start.toISOString().slice(0, 10);
               const e = end.toISOString().slice(0, 10);
               const pJobs = myJobs.filter(j => j.scheduledDate >= s && j.scheduledDate <= e);
-              const hrs = pJobs.reduce((acc, j) => acc + Number(j.loggedHours || 0), 0);
+              // FIX 5 (mobile round 3) — this used to only count job.loggedHours,
+              // missing the shift-timer top-up (ended OR still-in-progress)
+              // that the Today tab's widget already includes — so an employee
+              // whose hours came mostly from the whole-day shift timer instead
+              // of completed jobs saw $0 here even though Today showed hours.
+              const hrs = pJobs.reduce((acc, j) => acc + Number(j.loggedHours || 0), 0) + computeEmployeeShiftTopUp(s, e);
               periods.push({
                 label: i === 0 ? "Current Period" : `${start.toLocaleDateString("en-US", { month: "short", day: "numeric" })} – ${end.toLocaleDateString("en-US", { month: "short", day: "numeric" })}`,
                 start: s, end: e,
@@ -5125,8 +5138,15 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
             const expectedHours = 80; // typical 2-week period
             const TAX_RATE = 0.20;
             const takeHome = Math.round(current.pay * (1 - TAX_RATE) * 100) / 100;
-            console.log("[Payroll] MyPay tab render — myJobs:", myJobs.length,
-              "current period hours:", current.hours, "current period pay:", current.pay,
+            // FIX 5 — "where does the Pay tab fetch hours from": the jobs
+            // table (via the `jobs` prop, polled from Supabase by App.tsx,
+            // filtered here to this employee's crew) for loggedHours, plus
+            // this employee's own dayClockInAt/lastShiftHours (via the
+            // `employees` prop) for the shift-timer top-up. No separate
+            // Supabase query happens in this component — it all reads
+            // already-fetched, live-polled parent state.
+            console.log("[Payroll] MyPay tab render — source: jobs prop (" + jobs.length + " total,", myJobs.length, "for this employee) + employees prop (dayClockInAt:", (myEmployee as any)?.dayClockInAt, "lastShiftHours:", (myEmployee as any)?.lastShiftHours, ")");
+            console.log("[Payroll] MyPay tab result — current period hours:", current.hours, "current period pay:", current.pay,
               "hourlyRate:", myEmployee?.hourlyRate, "jobTypeRates:", (myEmployee as any)?.jobTypeRates);
 
             // Outstanding balance — the owner marks individual 14-day pay

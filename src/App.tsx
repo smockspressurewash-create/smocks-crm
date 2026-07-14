@@ -438,33 +438,54 @@ export function App() {
     return valid.includes(hash) ? hash : "dashboard";
   });
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  // FIX 3 (mobile round 2) — mobile sidebar swipe, take 2. Previously
-  // evaluated the open/close threshold continuously on every touchmove,
-  // which turned out unreliable — evaluating once at touchend (comparing
-  // start vs. final position) is the simpler, standard swipe pattern and
-  // matches what was asked for. Two independent handler pairs: one on the
-  // main content area (edge-swipe-right to open, only armed if the touch
-  // actually started within 30px of the left edge), one on the sidebar
-  // itself (swipe-left anywhere on it to close).
+  // FIX 3 (mobile round 3) — the round-2 version required the swipe to stay
+  // mostly horizontal (dx > dy) and only armed within 30px of the edge,
+  // which felt picky on an actual phone (a real thumb swipe always drifts a
+  // little vertically). Widened the edge zone, lowered the distance
+  // threshold, and swapped the horizontal-dominance check for a flat 100px
+  // vertical-drift allowance so a diagonal-ish swipe still counts as long as
+  // it moved right by enough. edgeSwipeProgress drives a live shadow/
+  // gradient on the left edge while the gesture is in progress, so there's
+  // visual feedback before the sidebar actually opens.
+  const EDGE_ZONE_PX = 50;
+  const SWIPE_THRESHOLD_PX = 50;
+  const MAX_VERTICAL_DRIFT_PX = 100;
   const mainTouchStartRef = useRef<{ x: number; y: number } | null>(null);
+  const [edgeSwipeProgress, setEdgeSwipeProgress] = useState(0); // 0..1
   const handleMainTouchStart = (e: React.TouchEvent) => {
     const t = e.touches[0];
-    if (t.clientX < 30) {
+    if (t.clientX < EDGE_ZONE_PX && !sidebarOpen) {
       mainTouchStartRef.current = { x: t.clientX, y: t.clientY };
+      setEdgeSwipeProgress(0.05);
       console.log("[Sidebar] touch start near left edge (x=" + Math.round(t.clientX) + ") — armed for edge swipe");
     } else {
       mainTouchStartRef.current = null;
     }
   };
+  const handleMainTouchMove = (e: React.TouchEvent) => {
+    const start = mainTouchStartRef.current;
+    if (!start) return;
+    const t = e.touches[0];
+    const dx = t.clientX - start.x;
+    const dy = t.clientY - start.y;
+    if (Math.abs(dy) > MAX_VERTICAL_DRIFT_PX) {
+      mainTouchStartRef.current = null;
+      setEdgeSwipeProgress(0);
+      return;
+    }
+    setEdgeSwipeProgress(Math.max(0.05, Math.min(1, dx / SWIPE_THRESHOLD_PX)));
+  };
   const handleMainTouchEnd = (e: React.TouchEvent) => {
     const start = mainTouchStartRef.current;
     mainTouchStartRef.current = null;
+    setEdgeSwipeProgress(0);
     if (!start || sidebarOpen) return;
     const t = e.changedTouches[0];
     const dx = t.clientX - start.x;
     const dy = t.clientY - start.y;
-    console.log("[Sidebar] touch end — dx=" + Math.round(dx) + " dy=" + Math.round(dy));
-    if (dx > 80 && Math.abs(dx) > Math.abs(dy)) {
+    const distance = Math.round(Math.hypot(dx, dy));
+    console.log("[Sidebar] swipe detected — dx=" + Math.round(dx) + " dy=" + Math.round(dy) + " distance=" + distance + "px");
+    if (dx > SWIPE_THRESHOLD_PX && Math.abs(dy) <= MAX_VERTICAL_DRIFT_PX) {
       console.log("[Sidebar] edge swipe-right confirmed — opening sidebar");
       setSidebarOpen(true);
     }
@@ -481,8 +502,9 @@ export function App() {
     const t = e.changedTouches[0];
     const dx = start.x - t.clientX;
     const dy = t.clientY - start.y;
-    console.log("[Sidebar] sidebar touch end — dx=" + Math.round(dx) + " dy=" + Math.round(dy));
-    if (dx > 80 && Math.abs(dx) > Math.abs(dy)) {
+    const distance = Math.round(Math.hypot(dx, dy));
+    console.log("[Sidebar] swipe detected on sidebar — dx=" + Math.round(dx) + " dy=" + Math.round(dy) + " distance=" + distance + "px");
+    if (dx > SWIPE_THRESHOLD_PX && Math.abs(dy) <= MAX_VERTICAL_DRIFT_PX) {
       console.log("[Sidebar] swipe-left on sidebar confirmed — closing sidebar");
       setSidebarOpen(false);
     }
@@ -729,13 +751,20 @@ export function App() {
       try {
         const { data, error } = await (supabase as any)
           .from("app_settings").select("data").eq("owner_id", crmUserId).maybeSingle();
-        if (!error && data?.data && typeof data.data === "object") {
+        if (error) {
+          // FIX 6 (mobile round 3) — this used to fail silently (no log at
+          // all) if the table didn't exist or RLS blocked the read.
+          console.warn("[Settings Sync] error:", error.message);
+        } else if (data?.data && typeof data.data === "object") {
           // Merge server settings over local — server is the source of truth
           // for cross-device fields, but keep any local-only keys not present
           // on the server so nothing is lost.
+          console.log("[Settings Sync] loaded settings for owner_id=" + crmUserId);
           setSettings((prev: any) => ({ ...prev, ...data.data }));
+        } else {
+          console.log("[Settings Sync] no settings row yet for owner_id=" + crmUserId + " — will be created on first save");
         }
-      } catch { /* app_settings table may not exist yet */ }
+      } catch (e: any) { console.warn("[Settings Sync] error:", e?.message); }
       settingsSyncLoadedRef.current = true;
     })();
   }, [crmUserId]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -779,15 +808,20 @@ export function App() {
             // only log a console warning — meaning a changed API key/
             // integration setting could silently never reach any other
             // device, with the owner having just been told it "saved".
-            console.warn("Settings sync failed:", r.error.message);
-            toast("Settings saved on this device, but didn't sync to the server — " + r.error.message, "red");
+            // FIX 6 (mobile round 3) — hint at the exact fix if this is the
+            // table/constraint being missing (see migrations/0011).
+            const hint = /relation .* does not exist/i.test(r.error.message) || /on conflict/i.test(r.error.message)
+              ? " — run supabase/migrations/0011_owner_settings_and_alfred_schema_fixes.sql in the Supabase SQL editor"
+              : "";
+            console.warn("[Settings Sync] error:", r.error.message + hint);
+            toast("Settings saved to this device but not to the server — " + r.error.message + hint, "red");
           } else {
             settingsLastSavedAtRef.current = updatedAt;
           }
         })
         .catch((e: any) => {
-          console.warn("Settings sync failed:", e?.message);
-          toast("Settings saved on this device, but didn't sync to the server — " + (e?.message || "check connection"), "red");
+          console.warn("[Settings Sync] error:", e?.message);
+          toast("Settings saved to this device but not to the server — " + (e?.message || "check connection"), "red");
         });
     }, 1500);
     return () => clearTimeout(settingsSaveTimerRef.current);
@@ -847,11 +881,19 @@ export function App() {
     (supabase as any).from("employees").upsert(ownerEmpRow, { onConflict: "id" })
       .then((r: any) => {
         if (r?.error) {
-          console.warn("[Owner Self-Assign] employees upsert failed:", r.error.message);
+          // FIX 1 (mobile round 3) — "Could not find the 'firstName' column"
+          // means the base employees table only has snake_case columns
+          // (first_name etc.) — run supabase/migrations/0011_owner_settings_
+          // and_alfred_schema_fixes.sql, which adds the camelCase columns
+          // this app's code (everywhere, not just here) actually reads/writes.
+          const hint = /column.*schema cache/i.test(r.error.message)
+            ? " — run supabase/migrations/0011_owner_settings_and_alfred_schema_fixes.sql in the Supabase SQL editor"
+            : "";
+          console.warn("[Owner Self-Assign] employees upsert failed:", r.error.message + hint);
           // FIX 5 — this row is what lets the owner appear in crew dropdowns,
           // Live Team View/Crew View, and clock in/out at all; a silent
           // failure here means all of that quietly never works.
-          toast("Couldn't set up your crew profile — " + r.error.message, "red");
+          toast("Couldn't set up your crew profile — " + r.error.message + hint, "red");
         } else {
           console.log("[Owner Self-Assign] owner employee row ensured:", ownerId);
         }
@@ -2122,12 +2164,29 @@ export function App() {
         </div>
       </aside>
 
+      {/* Edge-swipe visual feedback — a growing shadow/gradient on the left
+          edge while an armed swipe is in progress, so there's an indication
+          the sidebar is about to open before it actually crosses the
+          threshold. Pointer-events-none so it never intercepts the touch. */}
+      {edgeSwipeProgress > 0 && !sidebarOpen && (
+        <div
+          className="md:hidden fixed inset-y-0 left-0 z-40 pointer-events-none transition-opacity"
+          style={{
+            width: 80,
+            opacity: edgeSwipeProgress,
+            background: "linear-gradient(to right, rgba(220,38,38,0.35), transparent)",
+            boxShadow: "4px 0 24px rgba(220,38,38,0.25)",
+          }}
+        />
+      )}
+
       {/* Main content — its own touch handlers open the sidebar on an
-          edge-swipe-right (only armed when the touch starts within 30px of
+          edge-swipe-right (only armed when the touch starts within 50px of
           the left edge, so normal scrolling/tapping elsewhere is untouched) */}
       <div
         className="flex-1 flex flex-col min-w-0 overflow-hidden"
         onTouchStart={handleMainTouchStart}
+        onTouchMove={handleMainTouchMove}
         onTouchEnd={handleMainTouchEnd}
       >
         {/* Header */}
