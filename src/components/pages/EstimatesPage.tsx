@@ -122,7 +122,6 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
     if (!sendModalEst) return;
     const cust = customers.find((c: any) => c.id === sendModalEst.customerId);
     if (!cust) return;
-    console.log("[SendEstimate] start — estimate:", sendModalEst.id, "channel:", sendChannel, "to:", cust.email || cust.phone);
     setSendBusy(true);
     try {
       if ((sendChannel === "email" || sendChannel === "both")) {
@@ -138,7 +137,6 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
       }
       setEstimates((prev: any[]) => prev.map((x: any) => x.id === sendModalEst.id ? { ...x, sentAt: today(), sendChannel, templateId: sendTemplateId || undefined } : x));
       (supabase as any).from("estimates").update({ sentAt: today(), sendChannel }).eq("id", sendModalEst.id).catch(() => {});
-      console.log("[SendEstimate] — success");
       toast?.(`📧 Estimate sent to ${cust.firstName} ✓`, "green");
       setSendModalEst(null);
       setSendPreviewOn(false);
@@ -152,7 +150,6 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
       toast?.(msg, "error");
     } finally {
       setSendBusy(false);
-      console.log("[SendEstimate] button reset");
     }
   };
 
@@ -383,7 +380,6 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
         // FEATURE 6 — manual "collected outside the CRM" deposit (cash/check),
         // distinct from the client's own online Stripe payment in ClientPortal.
         setEstimates(prev => prev.map(x => x.id === id ? { ...x, paidDeposit: amount, depositPaidAt: today() } : x));
-        console.log("[Deposit] marked paid — estimateId:", id, "amount:", amount);
         (supabase as any).from("estimates").update({ paidDeposit: amount, depositPaidAt: today() }).eq("id", id)
           .then((r: any) => { if (r?.error) { console.warn("[Deposit] save failed:", r.error.message); toast?.("Marked locally, but failed to sync — " + r.error.message, "red"); } else toast?.("Deposit marked as paid ✓", "green"); })
           .catch((e: any) => { console.warn("[Deposit] save threw:", e?.message); toast?.("Marked locally, but failed to sync", "red"); });

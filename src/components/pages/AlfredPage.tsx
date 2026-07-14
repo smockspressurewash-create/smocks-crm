@@ -32,6 +32,7 @@ import { createCalendarEvent, updateCalendarEvent, deleteCalendarEvent, fetchDri
 import { usePersistent } from "../../hooks/usePersistent";
 import { usePersistentRaw } from "../../hooks/usePersistentRaw";
 import { useIsMobile } from "../../hooks/useIsMobile";
+import { usePollGate } from "../../hooks/usePollGate";
 import { Glass } from "../ui/Glass";
 import { GBtn } from "../ui/GBtn";
 import { GInput } from "../ui/GInput";
@@ -180,57 +181,48 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
   // conversation" apart from "edited an existing one" and save the new one
   // immediately instead of waiting out the debounce.
   const knownConvIdsRef = useRef<Set<string>>(new Set());
-  // FIX 4 (mobile round 4) — once we've run the "table is empty for this
-  // owner_id" diagnostic for a given ownerId, don't re-run the extra
-  // unfiltered COUNT/sample queries on every 5s poll — just the one deep
-  // dive is enough to tell the user what's wrong; re-arm if ownerId changes.
-  const emptyDiagnosticRanRef = useRef<string | null>(null);
+  // FIX 4 (mobile round 5) — once we've run the mismatch check/re-key for a
+  // given ownerId, don't repeat the extra round-trips on every 5s poll —
+  // once is enough; re-arm if ownerId changes (e.g. a different session).
+  const mismatchCheckedRef = useRef<string | null>(null);
+  const shouldPollAlfred = usePollGate();
   useEffect(() => {
-    console.log("[Alfred Sync] owner_id =", ownerId || "(not set yet)", "— typeof:", typeof ownerId);
     if (!ownerId) { console.warn("[Alfred Sync] no ownerId yet — skipping conversation fetch"); return; }
     const loadConversations = async () => {
       try {
         const res: any = await (supabase as any).from("alfred_conversations").select("*").eq("owner_id", ownerId).order("updated_at", { ascending: false });
-        const { data, error } = res;
-        if (error) {
-          console.warn("[Alfred Sync] fetch failed:", error.message, "— if this says the relation doesn't exist, run supabase/migrations/0011_owner_settings_and_alfred_schema_fixes.sql in the Supabase SQL editor");
+        if (res.error) {
+          console.warn("[Alfred Sync] fetch failed:", res.error.message, "— if this says the relation doesn't exist, run supabase/migrations/0011_owner_settings_and_alfred_schema_fixes.sql in the Supabase SQL editor");
           return;
         }
-        if (!Array.isArray(data)) { console.warn("[Alfred Sync] fetch returned unexpected data:", data); return; }
-        console.log("[Alfred Sync] query returned", data.length, "rows");
-        if (data.length > 0) {
-          console.log("[Alfred Sync] sample conversation:", { id: data[0].id, title: data[0].title });
-        } else {
-          // FIX 2 — full raw response so a mismatched owner_id, an RLS
-          // policy silently filtering everything, or genuinely-empty data
-          // are all distinguishable from the console instead of just "0".
-          console.warn("[Alfred Sync] 0 rows for owner_id=" + ownerId + " — full response:", JSON.stringify(res));
-          // FIX 4 (mobile round 4) — "extreme debugging": if the filtered
-          // query came back empty, run an unfiltered COUNT(*) so we can tell
-          // "the table is genuinely empty" apart from "rows exist but none
-          // matched this owner_id" (the classic UUID-vs-string or
-          // owner_<email>-vs-raw-id format mismatch), and if rows do exist,
-          // log a sample of the owner_id values actually stored so they can
-          // be compared by eye against the ownerId this page is using.
-          if (emptyDiagnosticRanRef.current !== ownerId) {
-            emptyDiagnosticRanRef.current = ownerId;
-            try {
-              const countRes: any = await (supabase as any).from("alfred_conversations").select("*", { count: "exact", head: true });
-              console.log("[Alfred Sync] diagnostic — SELECT COUNT(*) FROM alfred_conversations (unfiltered) =", countRes?.count ?? "unknown", "— error:", countRes?.error?.message || "none");
-              if ((countRes?.count ?? 0) > 0) {
-                const sampleRes: any = await (supabase as any).from("alfred_conversations").select("owner_id").limit(5);
-                const distinctOwnerIds = Array.from(new Set((sampleRes?.data || []).map((r: any) => r.owner_id)));
-                console.warn(
-                  "[Alfred Sync] diagnostic — table is NOT empty (" + countRes.count + " row(s)) but none matched owner_id=" + JSON.stringify(ownerId) +
-                  ". owner_id values actually stored in the table:", distinctOwnerIds,
-                  "— compare the shape (raw auth uid vs 'owner_'+email vs plain email) against the ownerId above. If they don't match, conversations were saved under a different owner_id than this device is now querying with."
-                );
+        let data: any[] = Array.isArray(res.data) ? res.data : [];
+
+        // FIX 4 (mobile round 5) — "the auth user ID is a UUID, but the
+        // conversations might be saved with a different ID format": this app
+        // is single-tenant (CLAUDE.md — one owner per deployment), so if the
+        // filtered query above found nothing but rows DO exist under some
+        // OTHER owner_id value, they can only belong to this same owner
+        // (saved under a stale scheme from an earlier build). Re-key them to
+        // the current owner_id — used for the query AND every future
+        // upsert — instead of just reporting the mismatch.
+        if (data.length === 0 && mismatchCheckedRef.current !== ownerId) {
+          mismatchCheckedRef.current = ownerId;
+          try {
+            const allRes: any = await (supabase as any).from("alfred_conversations").select("owner_id").limit(1000);
+            const otherOwnerIds = Array.from(new Set((allRes?.data || []).map((r: any) => r.owner_id))).filter((v: any) => v != null && v !== ownerId) as string[];
+            console.warn("[Alfred Sync] owner_id mismatch check — query used owner_id=" + JSON.stringify(ownerId) + " — distinct owner_id value(s) actually in the table:", otherOwnerIds.length ? otherOwnerIds : "(table is empty)");
+            if (otherOwnerIds.length > 0) {
+              const migrateRes: any = await (supabase as any).from("alfred_conversations").update({ owner_id: ownerId }).in("owner_id", otherOwnerIds);
+              if (migrateRes?.error) {
+                console.warn("[Alfred Sync] re-key to current owner_id failed:", migrateRes.error.message);
               } else {
-                console.log("[Alfred Sync] diagnostic — table is genuinely empty for every owner, not just this one. No conversations have synced from ANY device yet.");
+                const retryRes: any = await (supabase as any).from("alfred_conversations").select("*").eq("owner_id", ownerId).order("updated_at", { ascending: false });
+                if (Array.isArray(retryRes?.data)) data = retryRes.data;
+                console.warn("[Alfred Sync] re-keyed", otherOwnerIds.length, "old owner_id value(s) to", JSON.stringify(ownerId), "— now showing", data.length, "conversation(s)");
               }
-            } catch (diagErr: any) {
-              console.warn("[Alfred Sync] diagnostic query threw:", diagErr?.message);
             }
+          } catch (diagErr: any) {
+            console.warn("[Alfred Sync] mismatch check threw:", diagErr?.message);
           }
         }
         const fromServer: AlfredConversation[] = data.map((r: any) => ({
@@ -261,7 +253,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
       } catch (e: any) { console.warn("[Alfred Sync] fetch threw:", e?.message); }
     };
     loadConversations();
-    const interval = setInterval(loadConversations, 5000);
+    const interval = setInterval(() => { if (shouldPollAlfred()) loadConversations(); }, 5000);
     return () => clearInterval(interval);
   }, [ownerId]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -272,7 +264,6 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
     }, { onConflict: "id" })
       .then((r: any) => {
         if (r?.error) console.warn("[Alfred Sync] save failed for", c.id, ":", r.error.message);
-        else console.log("[Alfred Sync] saved conversation", c.id, "to Supabase");
       })
       .catch((e: any) => console.warn("[Alfred Sync] save threw for", c.id, ":", e?.message));
   };
@@ -285,13 +276,11 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
     (conversations || []).forEach((c: any) => {
       if (!knownConvIdsRef.current.has(c.id)) {
         knownConvIdsRef.current.add(c.id);
-        console.log("[Alfred Sync] new conversation detected —", c.id, "— saving immediately");
         upsertConversation(c);
       }
     });
     clearTimeout(alfredConvsSaveTimerRef.current);
     alfredConvsSaveTimerRef.current = setTimeout(() => {
-      console.log("[Alfred Sync] saving", (conversations || []).length, "conversation(s) to Supabase for owner", ownerId);
       (conversations || []).forEach((c: any) => upsertConversation(c));
     }, 1200);
     return () => clearTimeout(alfredConvsSaveTimerRef.current);
@@ -390,11 +379,9 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
     setConfirmDelete(null);
     toast("Conversation deleted");
     if (ownerId) {
-      console.log("[Alfred Sync] deleting conversation from Supabase —", cid, "owner:", ownerId);
       (supabase as any).from("alfred_conversations").delete().eq("id", cid).eq("owner_id", ownerId)
         .then((r: any) => {
           if (r?.error) { console.warn("[Alfred Sync] delete failed:", r.error.message); toast?.("Deleted locally, but failed to sync deletion — " + r.error.message, "red"); }
-          else console.log("[Alfred Sync] delete confirmed on server —", cid);
         })
         .catch((e: any) => { console.warn("[Alfred Sync] delete threw:", e?.message); toast?.("Deleted locally, but failed to sync deletion", "red"); });
     }
@@ -407,7 +394,6 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
     setTimeout(newConversation, 0);
     toast("All conversations cleared");
     if (ownerId && ids.length > 0) {
-      console.log("[Alfred Sync] deleting", ids.length, "conversation(s) from Supabase — owner:", ownerId);
       (supabase as any).from("alfred_conversations").delete().eq("owner_id", ownerId).in("id", ids)
         .then((r: any) => { if (r?.error) { console.warn("[Alfred Sync] bulk delete failed:", r.error.message); toast?.("Cleared locally, but failed to sync deletion — " + r.error.message, "red"); } })
         .catch((e: any) => { console.warn("[Alfred Sync] bulk delete threw:", e?.message); toast?.("Cleared locally, but failed to sync deletion", "red"); });
@@ -908,7 +894,6 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           } catch (e: any) {
             saveError = e;
           }
-          console.log("TOOL CALL: create_customer — result:", { saved, error: saveError });
           if (saveError || !saved) {
             return { error: "Failed to create customer — " + (saveError?.message || "Supabase write did not return a row") };
           }
@@ -946,7 +931,6 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           } catch (e: any) {
             saveErrorE = e;
           }
-          console.log("TOOL CALL: create_estimate — result:", { saved: savedE, error: saveErrorE });
           if (saveErrorE || !savedE) {
             return { error: "Failed to create estimate — " + (saveErrorE?.message || "Supabase write did not return a row") };
           }
@@ -968,7 +952,6 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           // update local state immediately (optimistic) so the UI shows the job
           // right away, THEN persist to Supabase. With uid() now producing a
           // real UUID, the insert no longer fails on a uuid-typed id column.
-          console.log("[Alfred schedule_job] optimistic add + insert — id:", newJ.id, "date:", newJ.scheduledDate);
           setJobs(prev => [...prev, newJ as any]);
           let saveErrorJ: any = null;
           try {
@@ -987,7 +970,6 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
             setJobs(prev => prev.filter(x => x.id !== newJ.id));
             return { error: "Failed to schedule job — " + (saveErrorJ.message || String(saveErrorJ)) + ". If this says 'row-level security' or 'uuid', run the jobs-table SQL in Settings." };
           }
-          console.log("[Alfred schedule_job] — success: job", newJ.id, "saved to Supabase");
           toast("Alfred scheduled job for " + c.firstName + " on " + newJ.scheduledDate);
           setTimeout(() => onNav("jobs"), 1200);
           return { success: true, jobId: newJ.id, date: newJ.scheduledDate, customer: c.firstName + " " + c.lastName };
@@ -1055,7 +1037,6 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           // Supabase directly every 3s) actually sees the assignment. The old
           // code only did setJobs() locally, so Alfred's assignment never left
           // the owner's browser — the whole "Alfred can't assign crew" bug.
-          console.log("[Alfred assign_employee] writing crew to Supabase — job:", j.id, "crew:", newCrew);
           const { error: assignErr } = await withTimeout<any>(
             (supabase as any).from("jobs").update({ crew: newCrew, crewAssignedAt }).eq("id", j.id),
             15000, "Assign crew"
@@ -1064,7 +1045,6 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
             console.error("[Alfred assign_employee] — error:", assignErr.message || assignErr);
             return { error: "Could not save the assignment — " + (assignErr.message || String(assignErr)) };
           }
-          console.log("[Alfred assign_employee] — success: crew saved to Supabase");
           // Local echo so the owner UI reflects it before the next poll.
           setJobs(prev => prev.map(x => x.id === j.id ? { ...x, crew: newCrew, crewAssignedAt } : x));
           if (emp.email) {
@@ -1202,7 +1182,6 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           // actions into the "queued/staged" fallback branch below even with
           // a valid, connected, non-expired token.
           const token = settings.googleProviderToken;
-          console.log("[Audit] Google token persistence — status: bug fixed (was reading dead field settings.googleToken); note — proactive refresh-before-expiry only runs while GoogleWorkspacePage is mounted, so a long Alfred session without visiting that page can still hit an expired token after ~1hr");
           if (url && token) {
             try {
               const sendGmailEmail = async (u: string, t: string, opts: any) => { const r = await fetch(u + "/gmail/send", { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${t}` }, body: JSON.stringify(opts) }); return r.json(); };
@@ -1580,7 +1559,6 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
               localConv.push({ role: "assistant", content: result.raw });
               const toolResults = await Promise.all(result.toolUses.map(async tu => {
                 const r = await executeTool(tu.name, tu.input || {});
-                console.log("ALFRED TOOL CALL —", tu.name, "input:", tu.input, "→ result:", r, r?.error ? "(FAILED)" : "(ok)");
                 localTraces.push({ tool: tu.name, input: tu.input, result: r });
                 return { type: "tool_result", tool_use_id: tu.id, content: JSON.stringify(r) };
               }));

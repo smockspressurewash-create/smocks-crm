@@ -208,7 +208,7 @@ export function InboxPage({ threads = [], setThreads, customers = [], settings =
       } catch { /* silent */ } finally { setPolling(false); }
     };
     poll();
-    const h = setInterval(poll, 15000);
+    const h = setInterval(() => { if (shouldPollInbox()) poll(); }, 15000);
     return () => clearInterval(h);
   }, [settings.twilioSid, settings.googleBackendUrl]);
 

@@ -28,7 +28,6 @@ window.addEventListener("unhandledrejection", (e) => console.error("[Boot] unhan
 // real, visible black-screen delay, not a perceived one. Firing it without
 // awaiting removes that delay entirely; any failure is just logged, never
 // blocks rendering.
-console.log("[Boot] mounting app");
 supabase.auth.initialize().catch(err => console.error("[Boot] supabase.auth.initialize() failed:", err));
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
@@ -38,4 +37,3 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
     </ErrorBoundary>
   </React.StrictMode>
 );
-console.log("[Boot] initial render call complete");

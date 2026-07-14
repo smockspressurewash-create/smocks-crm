@@ -117,7 +117,6 @@ export const twilioSend = async (
 ): Promise<void> => {
   const { twilioSid, twilioToken, twilioBackendUrl } = settings;
   const twilioPhone = settings.twilioFrom || settings.twilioPhone;
-  console.log("[Twilio] send — to:", to, "channel:", channel, "sid set:", !!twilioSid, "token set:", !!twilioToken, "from:", twilioPhone);
   if (!twilioSid || !twilioToken || !twilioPhone) {
     throw new Error("Twilio not configured — add Account SID, Auth Token, and From number in Settings → Integrations.");
   }
@@ -147,7 +146,6 @@ export const twilioSend = async (
     console.error("[Twilio] send failed:", data?.error || res.status);
     throw new Error(data?.error || `Twilio error ${res.status}`);
   }
-  console.log("[Twilio] send success — sid:", data?.sid);
 };
 
 // ─── Inbox sync (SMS) ─────────────────────────────────────────────────────────
@@ -290,7 +288,6 @@ const refreshGoogleAccessToken = async (
 ): Promise<{ token: string; expiresAt: number } | null> => {
   const endpoint = backendUrl ? `${backendUrl}/google/refresh` : "/api/google-refresh";
   try {
-    console.log("[GoogleToken] refreshing access token via", endpoint);
     const res = await withTimeout(fetch(endpoint, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -301,7 +298,6 @@ const refreshGoogleAccessToken = async (
       console.warn("[GoogleToken] refresh failed:", data?.error || res.status);
       return null;
     }
-    console.log("[GoogleToken] refresh succeeded — new token expires in", data.expires_in, "s");
     return { token: data.access_token, expiresAt: Date.now() + (Number(data.expires_in) || 3300) * 1000 };
   } catch (e: any) {
     console.warn("[GoogleToken] refresh threw:", e?.message);
@@ -317,7 +313,6 @@ export const sendViaGmail = async (
   html: string,
   opts?: { refreshToken?: string; tokenExpiresAt?: number; backendUrl?: string; onTokenRefreshed?: (token: string, expiresAt: number) => void }
 ): Promise<void> => {
-  console.log("[SendInvoice] sendViaGmail — attempting send to", to);
   let activeToken = googleProviderToken;
 
   // ITEM 10 — proactive refresh: if we know this token is already past (or
@@ -326,7 +321,6 @@ export const sendViaGmail = async (
   // visible at all, rather than just reacting faster to the 401 after it
   // already happened.
   if (opts?.refreshToken && opts.tokenExpiresAt && Date.now() > opts.tokenExpiresAt - 2 * 60 * 1000) {
-    console.log("[GoogleToken] token is expired or expiring within 2min — refreshing proactively before send");
     const refreshed = await refreshGoogleAccessToken(opts.refreshToken, opts.backendUrl);
     if (refreshed) {
       activeToken = refreshed.token;
@@ -367,7 +361,6 @@ export const sendViaGmail = async (
       }
     }
     if (freshToken) {
-      console.log("[SendInvoice] got a fresh token — retrying send");
       res = await sendGmailRaw(freshToken, fromEmail, to, subject, html);
     }
     // ITEM 10 — only surface "reconnect" once BOTH the real refresh_token
@@ -381,7 +374,6 @@ export const sendViaGmail = async (
     const err = await res.json().catch(() => ({})) as { error?: { message?: string } };
     throw new Error(err.error?.message ?? `Gmail API error ${res.status}`);
   }
-  console.log("[SendInvoice] sendViaGmail — success, sent to", to);
 };
 
 // Gmail-only send — no Resend fallback, ever. Used by flows that must never

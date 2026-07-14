@@ -350,7 +350,6 @@ export const refreshEmpGoogleToken = async (
   if (!refreshToken) return null;
   const endpoint = backendUrl ? `${backendUrl}/google/refresh` : "/api/google-refresh";
   try {
-    console.log("[GoogleToken] refreshing employee token via", endpoint);
     const res = await fetch(endpoint, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -361,7 +360,6 @@ export const refreshEmpGoogleToken = async (
       console.warn("[GoogleToken] employee token refresh failed:", data?.error || res.status);
       return null;
     }
-    console.log("[GoogleToken] employee token refresh succeeded");
     return { token: data.access_token, expiresAt: Date.now() + (Number(data.expires_in) || 3300) * 1000 };
   } catch (e: any) {
     console.warn("[GoogleToken] employee token refresh threw:", e?.message);

@@ -66,7 +66,7 @@ import {
 } from "./lib/seed";
 import { seedWeather } from "./lib/weather";
 import { fetchRealWeather } from "./lib/weather";
-import { fmt, uid, today, daysSince, daysFromNow, consumeOAuthIntent, getLastOwnerSessionFlag, setLastOwnerSessionFlag, buildChecklistFromServices } from "./lib/utils";
+import { fmt, uid, today, daysSince, daysFromNow, consumeOAuthIntent, getLastOwnerSessionFlag, setLastOwnerSessionFlag, buildChecklistFromServices, withTimeout } from "./lib/utils";
 import { sendEmail, buildTomorrowJobsEmailHtml, buildDailyBriefingEmailHtml } from "./lib/messaging";
 import { exchangeSocialOAuthCode, type SocialPlatform } from "./lib/socialOAuth";
 import type {
@@ -195,7 +195,6 @@ async function resolveUserRole(session: any): Promise<"owner" | "manager" | "emp
 
   const cached = getCachedRole(session.user.id);
   if (cached) {
-    console.log("resolveUserRole: cached role — returning", cached);
     return cached;
   }
 
@@ -208,15 +207,12 @@ async function resolveUserRole(session: any): Promise<"owner" | "manager" | "emp
     if (data) {
       const role = (data.role || "").toLowerCase();
       if (role === "owner") {
-        console.log("resolveUserRole: employees table — role owner — returning owner");
         return "owner";
       }
       if (role === "manager") {
-        console.log("resolveUserRole: employees table — role manager — returning manager");
         setCachedRole(session.user.id, "manager");
         return "manager";
       }
-      console.log("resolveUserRole: employees table — role " + data.role + " — returning employee");
       setCachedRole(session.user.id, "employee");
       return "employee";
     }
@@ -250,18 +246,15 @@ async function resolveUserRole(session: any): Promise<"owner" | "manager" | "emp
 
   const oauthIntent = consumeOAuthIntent();
   if (oauthIntent === "employee") {
-    console.log("resolveUserRole: Google sign-in from employee portal, no employee record found — returning employee (will show Account Not Linked)");
     return "employee";
   }
 
   const identities = session.user.identities || [];
   const hasGoogle = identities.some((i: any) => i.provider === "google");
   if (hasGoogle) {
-    console.log("resolveUserRole: no employee record + Google identity — returning owner");
     return "owner";
   }
 
-  console.log("resolveUserRole: no employee record, no Google identity — returning employee");
   return "employee";
 }
 
@@ -281,7 +274,6 @@ function persistEmployeeGoogleToken(session: any): void {
   if (bridgedRefreshToken) sessionStorage.removeItem("smocks.grt");
   const googleEmail = googleId.identity_data?.email || session.user.email || "";
   const expiresAt = Date.now() + 55 * 60 * 1000; // Google access tokens last ~1hr
-  console.log("GOOGLE LINK SUCCESS — employee:", session.user.id, googleEmail);
   // Supabase is the source of truth for cross-device sync — write there
   // first and check the result explicitly (it resolves with {error} rather
   // than throwing on failure, so a bare .catch() alone would miss a real
@@ -297,9 +289,7 @@ function persistEmployeeGoogleToken(session: any): void {
         console.error("Could not persist employee Google token to Supabase:", result.error.message);
         return;
       }
-      console.log("TOKEN SAVED — Supabase employees row for", session.user.id);
       saveEmpGoogleToken(session.user.id, { token: providerToken, refreshToken: bridgedRefreshToken, email: googleEmail, expiresAt });
-      console.log("TOKEN CACHED — localStorage key smocks.empGoogle." + session.user.id);
     })
     .catch((e: any) => console.error("Could not persist employee Google token to Supabase:", e?.message));
 }
@@ -311,8 +301,6 @@ export function App() {
   // ── OAuth redirect debug ──────────────────────────────────────────────────
   useEffect(() => {
     const hash = window.location.hash;
-    console.log("HASH ON LOAD:", hash.substring(0, 100));
-    console.log("FULL URL:", window.location.href.substring(0, 200));
   }, []);
 
   // ── Manual OAuth token exchange ───────────────────────────────────────────
@@ -336,8 +324,6 @@ export function App() {
         if (error) {
           console.error("setSession failed:", error);
         } else {
-          console.log("setSession succeeded — user:", data.session?.user?.email,
-            "provider_token in hash:", !!provider_token);
           window.location.hash = "";
         }
       });
@@ -459,7 +445,6 @@ export function App() {
       // zone, not just once the finger has moved (round 3's 0.05 was almost
       // imperceptible).
       setEdgeSwipeProgress(0.12);
-      console.log("[Sidebar] touch start near left edge (x=" + Math.round(t.clientX) + ", zone=" + EDGE_ZONE_PX + "px) — armed for edge swipe");
     } else {
       mainTouchStartRef.current = null;
     }
@@ -486,28 +471,45 @@ export function App() {
     const dx = t.clientX - start.x;
     const dy = t.clientY - start.y;
     const distance = Math.round(Math.hypot(dx, dy));
-    console.log("[Sidebar] swipe detected — dx=" + Math.round(dx) + " dy=" + Math.round(dy) + " distance=" + distance + "px");
     if (dx > SWIPE_THRESHOLD_PX && Math.abs(dy) <= MAX_VERTICAL_DRIFT_PX) {
-      console.log("[Sidebar] edge swipe-right confirmed — opening sidebar");
       setSidebarOpen(true);
     }
   };
   const sidebarTouchStartRef = useRef<{ x: number; y: number } | null>(null);
+  // FIX 3 (mobile round 5) — swipe-to-close only ever checked the delta on
+  // touchend, with no touchmove handler at all, so there was no live
+  // animation and (per user report) the close gesture wasn't registering
+  // reliably. sidebarCloseProgress mirrors edgeSwipeProgress's open-gesture
+  // pattern: drives a live drag-out transform (see the <aside> style below)
+  // so the sidebar visibly slides left as the finger moves, and commits the
+  // close once the drag crosses SWIPE_THRESHOLD_PX.
+  const [sidebarCloseProgress, setSidebarCloseProgress] = useState(0); // 0..1
   const handleSidebarTouchStart = (e: React.TouchEvent) => {
     const t = e.touches[0];
     sidebarTouchStartRef.current = { x: t.clientX, y: t.clientY };
   };
+  const handleSidebarTouchMove = (e: React.TouchEvent) => {
+    const start = sidebarTouchStartRef.current;
+    if (!start) return;
+    const t = e.touches[0];
+    const dx = start.x - t.clientX; // positive = dragging left (closing)
+    const dy = t.clientY - start.y;
+    if (Math.abs(dy) > MAX_VERTICAL_DRIFT_PX) {
+      sidebarTouchStartRef.current = null;
+      setSidebarCloseProgress(0);
+      return;
+    }
+    setSidebarCloseProgress(Math.max(0, Math.min(1, dx / SWIPE_THRESHOLD_PX)));
+  };
   const handleSidebarTouchEnd = (e: React.TouchEvent) => {
     const start = sidebarTouchStartRef.current;
     sidebarTouchStartRef.current = null;
+    setSidebarCloseProgress(0);
     if (!start) return;
     const t = e.changedTouches[0];
     const dx = start.x - t.clientX;
     const dy = t.clientY - start.y;
-    const distance = Math.round(Math.hypot(dx, dy));
-    console.log("[Sidebar] swipe detected on sidebar — dx=" + Math.round(dx) + " dy=" + Math.round(dy) + " distance=" + distance + "px");
     if (dx > SWIPE_THRESHOLD_PX && Math.abs(dy) <= MAX_VERTICAL_DRIFT_PX) {
-      console.log("[Sidebar] swipe-left on sidebar confirmed — closing sidebar");
       setSidebarOpen(false);
     }
   };
@@ -538,9 +540,6 @@ export function App() {
   // timer never survives to 2s. Instead we only cancel on genuine release
   // (pointerup/pointercancel) or if the finger moves past a real tolerance.
   const FAB_MOVE_TOLERANCE = 12;
-  useEffect(() => {
-    if (fabPosition) console.log("[FAB] restored saved position from localStorage:", fabPosition);
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
   const fabOnPointerDown = (e: React.PointerEvent<HTMLButtonElement>) => {
     const rect = e.currentTarget.getBoundingClientRect();
     fabDragOffsetRef.current = { x: e.clientX - rect.left, y: e.clientY - rect.top };
@@ -548,20 +547,17 @@ export function App() {
     fabWasDraggedRef.current = false;
     try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* not supported — safe to ignore */ }
     setFabHolding(true);
-    console.log("[FAB] hold started — pointer down at", e.clientX, e.clientY, "(pointerType:", e.pointerType + "), starting", FAB_HOLD_MS, "ms timer");
     clearTimeout(fabHoldTimerRef.current);
     fabHoldTimerRef.current = setTimeout(() => {
       fabWasDraggedRef.current = true;
       setFabDragging(true);
       setFabHolding(false);
-      console.log("[FAB] drag mode entered");
     }, FAB_HOLD_MS);
   };
   const fabCancelHold = (reason: string) => {
     if (fabHoldTimerRef.current) {
       clearTimeout(fabHoldTimerRef.current);
       fabHoldTimerRef.current = null;
-      console.log("[FAB] hold canceled —", reason);
     }
     setFabHolding(false);
   };
@@ -577,7 +573,6 @@ export function App() {
       const dy = e.clientY - fabHoldStartRef.current.y;
       const dist = Math.hypot(dx, dy);
       if (dist > FAB_MOVE_TOLERANCE) {
-        console.log("[FAB] moved", Math.round(dist), "px during hold — canceling (treating as tap/scroll)");
         fabCancelHold("moved past tolerance");
       }
     };
@@ -592,7 +587,6 @@ export function App() {
       setFabPosition({ x, y });
     };
     const onUp = () => {
-      console.log("[FAB] drag released — position saved to localStorage (smocks.fabPosition)");
       setFabDragging(false);
     };
     window.addEventListener("pointermove", onMove);
@@ -747,6 +741,12 @@ export function App() {
   // (debounced). Fails silently if the table doesn't exist yet.
   const settingsSyncLoadedRef = useRef(false);
   const settingsSaveTimerRef = useRef<any>(null);
+  // FIX 6 (mobile round 5) — seeded by the load effect below so the very
+  // next save-effect run (triggered by this same load's setSettings call)
+  // sees content identical to what the server already has and skips the
+  // network round-trip entirely, instead of immediately re-uploading the
+  // exact blob it just downloaded.
+  const lastSyncedJsonRef = useRef<string | null>(null);
   useEffect(() => {
     if (!crmUserId || settingsSyncLoadedRef.current) return;
     (async () => {
@@ -761,10 +761,11 @@ export function App() {
           // Merge server settings over local — server is the source of truth
           // for cross-device fields, but keep any local-only keys not present
           // on the server so nothing is lost.
-          console.log("[Settings Sync] loaded settings for owner_id=" + crmUserId);
-          setSettings((prev: any) => ({ ...prev, ...data.data }));
-        } else {
-          console.log("[Settings Sync] no settings row yet for owner_id=" + crmUserId + " — will be created on first save");
+          setSettings((prev: any) => {
+            const merged = { ...prev, ...data.data };
+            lastSyncedJsonRef.current = JSON.stringify(merged);
+            return merged;
+          });
         }
       } catch (e: any) { console.warn("[Settings Sync] error:", e?.message); }
       settingsSyncLoadedRef.current = true;
@@ -791,40 +792,86 @@ export function App() {
   }, [page, crmUserId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const settingsLastSavedAtRef = useRef<string | null>(null);
+  // FIX 6 (mobile round 5) — "canceling statement due to statement timeout":
+  // this always upserted the ENTIRE settings blob, every time ANY field
+  // changed, even if the actual change was tiny and even if the blob hadn't
+  // meaningfully changed since the last successful sync (e.g. the load-effect
+  // merging server data back into local state re-triggers this effect too).
+  // A large field (a base64 logoUrl is the obvious candidate — easily
+  // hundreds of KB) sent on every debounce tick is a plausible cause of a
+  // slow-enough write to hit Postgres's statement_timeout. lastSyncedJsonRef
+  // (declared above, seeded by the load effect) lets a no-op change
+  // (content-identical to what's already confirmed synced) skip the network
+  // call entirely.
+  // Drop any oversized top-level field for the retry attempt — a giant
+  // logoUrl or similar shouldn't block the rest of the settings (API keys,
+  // toggles, branding colors) from reaching the server.
+  const MAX_FIELD_CHARS = 20000;
+  const shrinkSettingsPayload = (obj: any): { payload: any; dropped: string[] } => {
+    const dropped: string[] = [];
+    const payload: any = {};
+    for (const k of Object.keys(obj || {})) {
+      const v = (obj as any)[k];
+      if (typeof v === "string" && v.length > MAX_FIELD_CHARS) { dropped.push(k); continue; }
+      payload[k] = v;
+    }
+    return { payload, dropped };
+  };
+  const saveSettingsToSupabase = async (payload: any, updatedAt: string, timeoutMs: number) => {
+    return withTimeout(
+      (supabase as any).from("app_settings").upsert({ owner_id: crmUserId, data: payload, updated_at: updatedAt }, { onConflict: "owner_id" }),
+      timeoutMs,
+      "Settings sync save"
+    );
+  };
   useEffect(() => {
     // Only start saving after the initial load has run, so we never overwrite
     // the server copy with this device's pre-load defaults.
     if (!crmUserId || !settingsSyncLoadedRef.current) return;
     clearTimeout(settingsSaveTimerRef.current);
     settingsSaveTimerRef.current = setTimeout(() => {
+      const json = JSON.stringify(settings);
+      if (json === lastSyncedJsonRef.current) return; // nothing actually changed
       const updatedAt = new Date().toISOString();
-      (supabase as any)
-        .from("app_settings")
-        .upsert({ owner_id: crmUserId, data: settings, updated_at: updatedAt }, { onConflict: "owner_id" })
-        .then((r: any) => {
-          if (r?.error) {
-            // AUDIT ITEM 14 — SettingsModal's Save button already shows a
-            // "Settings saved" toast the instant it's clicked (purely local/
-            // optimistic), but the actual cross-device sync happens here,
-            // 1.5s later, completely out of that view. A failure here used to
-            // only log a console warning — meaning a changed API key/
-            // integration setting could silently never reach any other
-            // device, with the owner having just been told it "saved".
-            // FIX 6 (mobile round 3) — hint at the exact fix if this is the
-            // table/constraint being missing (see migrations/0011).
-            const hint = /relation .* does not exist/i.test(r.error.message) || /on conflict/i.test(r.error.message)
+      (async () => {
+        try {
+          const r: any = await saveSettingsToSupabase(settings, updatedAt, 8000);
+          if (!r?.error) {
+            settingsLastSavedAtRef.current = updatedAt;
+            lastSyncedJsonRef.current = json;
+            return;
+          }
+          throw new Error(r.error.message);
+        } catch (firstErr: any) {
+          // FIX 6 — retry once with a smaller payload before giving up.
+          const { payload, dropped } = shrinkSettingsPayload(settings);
+          if (dropped.length === 0) {
+            // Nothing to shrink — a second identical attempt wouldn't help.
+            const hint = /relation .* does not exist/i.test(firstErr?.message || "") || /on conflict/i.test(firstErr?.message || "")
               ? " — run supabase/migrations/0011_owner_settings_and_alfred_schema_fixes.sql in the Supabase SQL editor"
               : "";
-            console.warn("[Settings Sync] error:", r.error.message + hint);
-            toast("Settings saved to this device but not to the server — " + r.error.message + hint, "red");
-          } else {
-            settingsLastSavedAtRef.current = updatedAt;
+            console.warn("[Settings Sync] error:", firstErr?.message + hint);
+            toast("Settings saved to this device but not to the server — " + (firstErr?.message || "check connection") + hint, "red");
+            return;
           }
-        })
-        .catch((e: any) => {
-          console.warn("[Settings Sync] error:", e?.message);
-          toast("Settings saved to this device but not to the server — " + (e?.message || "check connection"), "red");
-        });
+          try {
+            const retryUpdatedAt = new Date().toISOString();
+            const r2: any = await saveSettingsToSupabase(payload, retryUpdatedAt, 8000);
+            if (!r2?.error) {
+              settingsLastSavedAtRef.current = retryUpdatedAt;
+              // Only the shrunk payload is confirmed synced — leave
+              // lastSyncedJsonRef unset so the full object (with the
+              // oversized field) is retried again on the next real change.
+              console.warn("[Settings Sync] saved with", dropped.join(", "), "dropped (too large) — retry succeeded");
+              return;
+            }
+            throw new Error(r2.error.message);
+          } catch (secondErr: any) {
+            console.warn("[Settings Sync] error (both attempts failed):", secondErr?.message);
+            toast("Settings saved to this device but not to the server — " + (secondErr?.message || "check connection"), "red");
+          }
+        }
+      })();
     }, 1500);
     return () => clearTimeout(settingsSaveTimerRef.current);
   }, [settings, crmUserId]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -836,9 +883,16 @@ export function App() {
   // and skip applying the server copy if its updated_at matches the last
   // write THIS device made (avoids clobbering a not-yet-debounced local edit
   // with what is, from the server's point of view, stale-by-a-second data).
+  // EGRESS FIX — shared with the jobs/customers/estimates/employees poll
+  // below; declared here (its first use) so every poll interval in this
+  // component agrees on one "should we even fetch right now" answer instead
+  // of drifting. onVisible refreshes cross-device data the moment the tab
+  // becomes visible again rather than waiting out a full interval.
+  const shouldPollCrossDevice = usePollGate(() => { refetchData(); refetchEmployees(); });
   useEffect(() => {
     if (!crmUserId) return;
     const pollSettings = async () => {
+      if (!shouldPollCrossDevice()) return;
       try {
         const { data, error } = await (supabase as any).from("app_settings").select("data, updated_at").eq("owner_id", crmUserId).maybeSingle();
         if (error || !data?.data) return;
@@ -875,7 +929,6 @@ export function App() {
     const rawName = settings.ownerName?.trim() || ownerEmail.split("@")[0].replace(/[._-]+/g, " ").replace(/\b\w/g, (c: string) => c.toUpperCase());
     const firstName = rawName.split(" ")[0] || "Owner";
     const lastName = rawName.split(" ").slice(1).join(" ") || "";
-    console.log("[OwnerSelfServe] ensuring owner employee row for", ownerId, "— name source:", settings.ownerName?.trim() ? "settings.ownerName" : "derived from email");
     const ownerEmpRow: any = {
       id: ownerId, firstName, lastName, role: "owner", status: "active", email: ownerEmail, hourlyRate: 0,
     };
@@ -903,7 +956,6 @@ export function App() {
           // failure here means all of that quietly never works.
           toast("Couldn't set up your crew profile — " + r.error.message + hint, "red");
         } else {
-          console.log("[OwnerSelfServe] owner employee row ensured — id:", ownerId, "role: owner, status: active — should now appear in crew dropdowns, Live Crew View, and Employees tab");
         }
       })
       .catch((e: any) => {
@@ -990,9 +1042,8 @@ export function App() {
     }
     crewActivityEmpRef.current = empSnap;
     crewActivityJobRef.current = jobSnap;
-    if (!crewActivitySeededRef.current) { crewActivitySeededRef.current = true; console.log("[Owner Notifications] seeded baseline — will notify on future changes"); return; }
+    if (!crewActivitySeededRef.current) { crewActivitySeededRef.current = true; return; }
     if (events.length) {
-      console.log("[Owner Notifications] firing", events.length, "event(s):", events.map(e => e.text).join(" | "));
       events.forEach(ev => toast(ev.text));
       setInvoiceNotifs(prev => [...events, ...prev].slice(0, 20));
     }
@@ -1037,7 +1088,6 @@ export function App() {
       if (userId) {
         const cached = getCachedRole(userId);
         if (cached) {
-          console.log("Company setup modal suppressed — cached " + cached + " role for", userId);
           return;
         }
       }
@@ -1075,18 +1125,6 @@ export function App() {
   const doneMonth  = jobs.filter(j => j.status === "completed" && (j.scheduledDate ?? "").startsWith(thisMonth)).length;
   const sentEsts   = estimates.filter(e => e.sentAt).length;
   const closeRate  = sentEsts > 0 ? Math.round((estimates.filter(e => e.status === "approved").length / sentEsts) * 100) : 0;
-  // AUDIT ITEM 16 — these recompute on every render straight off the
-  // jobs/estimates state that refetchData() keeps synced from Supabase every
-  // poll (see [PhotoSync]/[Payroll] logs in refetchData above) — never from
-  // seed data (seedJobs/seedEstimates are only the usePersistent() fallback
-  // used before the first real fetch resolves). Logged once per actual
-  // change (not every render, which would flood the console) to prove the
-  // Dashboard's stats prop is always derived from live data, not a stale
-  // snapshot computed once at mount.
-  useEffect(() => {
-    console.log("[Dashboard] top-level stats recomputed — totalRev:", totalRev, "activeJobs:", activeJobs, "closeRate:", closeRate + "%",
-      "from", jobs.length, "jobs /", estimates.length, "estimates currently in state");
-  }, [totalRev, activeJobs, closeRate, jobs.length, estimates.length]);
   const overdueCount = estimates.filter(e => e.invoiced && !e.paidAt && e.invoicedAt && daysSince(e.invoicedAt) > 14).length;
   const lowStock   = chemicals.filter(c => c.stock <= c.reorderLevel).length;
 
@@ -1149,7 +1187,6 @@ export function App() {
       if (Array.isArray(data) && data.length > 0) {
         const normed = data.map(normalizeEmployee) as Employee[];
         const onShift = normed.filter((x: any) => !!x.dayClockInAt);
-        console.log("[LiveCrew] fetched", normed.length, "employees;", onShift.length, "on shift:", onShift.map((x: any) => `${x.firstName}(${new Date(Number(x.dayClockInAt)).toLocaleTimeString()})`).join(", ") || "none");
         setEmployees(normed);
         setCrewFetchError(false);
       } else {
@@ -1175,11 +1212,7 @@ export function App() {
       ]);
       if (Array.isArray(sbJobs) && sbJobs.length > 0) {
         const totalPhotos = sbJobs.reduce((s: number, j: any) => s + (Array.isArray(j.photos) ? j.photos.length : 0), 0);
-        console.log("[PhotoSync] refetchData — fetched", sbJobs.length, "jobs from Supabase,", totalPhotos, "total photos across all jobs");
         const completedWithHours = sbJobs.filter((j: any) => j.status === "completed" && Number(j.loggedHours) > 0);
-        console.log("[Payroll] READ (owner poll) — refetchData fetched jobs from Supabase —", completedWithHours.length, "of", sbJobs.filter((j: any) => j.status === "completed").length,
-          "completed jobs have loggedHours > 0; total logged hours across all completed jobs:",
-          Math.round(sbJobs.reduce((s: number, j: any) => s + (j.status === "completed" ? Number(j.loggedHours || 0) : 0), 0) * 100) / 100);
         setJobs(prev => {
           const sbMap = new Map(sbJobs.map((j: any) => [j.id, j]));
           const merged = prev.map(j => sbMap.has(j.id) ? { ...j, ...sbMap.get(j.id) } : j);
@@ -1235,7 +1268,6 @@ export function App() {
     const stale = jobs.filter(j => j.status === "in_progress" && !j.clockInAt && j.scheduledDate && j.scheduledDate < todayStr);
     if (stale.length === 0) { pastJobSweepRef.current = true; return; }
     pastJobSweepRef.current = true;
-    console.log("[PastJobs] auto-completing", stale.length, "stale in_progress job(s) from previous days:", stale.map(j => j.id).join(", "));
     const staleIds = new Set(stale.map(j => j.id));
     setJobs(prev => prev.map(j => staleIds.has(j.id) ? { ...j, status: "completed" as const } : j));
     stale.forEach(j => {
@@ -1334,7 +1366,6 @@ export function App() {
         try {
           const { error } = await (supabase as any).from("customers").upsert(stored, { onConflict: "id" });
           if (error) console.warn("Initial customer sync failed:", error.message);
-          else console.log("Synced", stored.length, "customers to Supabase");
         } catch (err: any) { console.warn("Initial customer sync failed:", err?.message); }
       }
       const storedEst = estimates;
@@ -1342,7 +1373,6 @@ export function App() {
         try {
           const { error } = await (supabase as any).from("estimates").upsert(storedEst, { onConflict: "id" });
           if (error) console.warn("Initial estimate sync failed:", error.message);
-          else console.log("Synced", storedEst.length, "estimates to Supabase");
         } catch (err: any) { console.warn("Initial estimate sync failed:", err?.message); }
       }
     };
@@ -1366,7 +1396,8 @@ export function App() {
   // 10s, only Live Crew View (employees, drives the "who's on shift right
   // now" dashboard widget) keeps the faster 3s cadence, and BOTH skip
   // entirely while the tab is hidden or the user has been idle 5+ minutes.
-  const shouldPollCrossDevice = usePollGate(() => { refetchData(); refetchEmployees(); });
+  // shouldPollCrossDevice is declared earlier (near the settings poll) so
+  // that poll can share the same gate — see the comment there.
   useEffect(() => {
     // Was gated on hasCrmSession (owner) only — an employee staying logged in
     // for a full shift never got customers refreshed after the one-time
@@ -1431,7 +1462,6 @@ export function App() {
       // ITEM 10 — Google access tokens last ~1hr; recording when we captured
       // this one lets sendViaGmail check expiry proactively (see
       // lib/messaging.ts) instead of only discovering it's stale after a 401.
-      if (providerToken) console.log("[GoogleToken] captured fresh provider_token — expires ~55min from now, refreshToken present:", !!bridgedRefreshToken);
       setSettings((prev: any) => ({
         ...prev,
         googleConnected: true,
@@ -1462,9 +1492,6 @@ export function App() {
             // them into the CRM or employee portal.
             if (window.location.hash.replace(/^#\/?/, "").startsWith("client")) return;
 
-            console.log("AUTH CHANGE in App.tsx:", event,
-              "email:", session?.user?.email,
-              "identities:", JSON.stringify(session?.user?.identities?.map((i: any) => i.provider)));
 
             if (event === "SIGNED_OUT") {
               setEmpSession(null);
@@ -1482,10 +1509,8 @@ export function App() {
             if (event === "TOKEN_REFRESHED") {
               const freshProviderToken = (session as any)?.provider_token;
               if (freshProviderToken) {
-                console.log("[GoogleToken] TOKEN_REFRESHED event carried a fresh provider_token");
                 setSettings((prev: any) => ({ ...prev, googleProviderToken: freshProviderToken, googleTokenExpiresAt: Date.now() + 55 * 60 * 1000 }));
               } else {
-                console.log("[GoogleToken] TOKEN_REFRESHED event fired but no provider_token included — Supabase session refresh alone doesn't reliably re-issue Google's token, this is expected");
               }
               return;
             }
@@ -1550,8 +1575,6 @@ export function App() {
           return;
         }
         const { data: { session: initial } } = await supabase.auth.getSession();
-        console.log("INITIAL SESSION resolved — email:", initial?.user?.email,
-          "identities:", JSON.stringify(initial?.user?.identities?.map((i: any) => i.provider)));
         const initIsGoogle = (initial?.user?.identities || []).some((i: any) => i.provider === "google");
         const initRole = await resolveUserRole(initial);
         if (initial && initRole === "employee") {
@@ -1928,7 +1951,6 @@ export function App() {
       // onAuthStateChange handles the rest of the routing from here.
     };
     const handleForgotPassword = async () => {
-      console.log("[Forgot Password] clicked — email:", ownerEmail);
       if (!ownerEmail.trim()) { setOwnerLoginError("Enter your email first, then tap \"Forgot password?\""); toast("Enter your email first", "yellow"); return; }
       setOwnerLoginLoading(true); setOwnerLoginError("");
       const { error } = await supabase.auth.resetPasswordForEmail(ownerEmail.trim(), {
@@ -1936,7 +1958,6 @@ export function App() {
       });
       setOwnerLoginLoading(false);
       if (error) console.error("[Forgot Password] — error:", error.message);
-      else console.log("[Forgot Password] — success: reset email sent to", ownerEmail.trim());
       toast(error ? "Couldn't send reset email — " + error.message : "Check your email for the reset link ✓", error ? "red" : "green");
     };
     return (
@@ -2114,17 +2135,24 @@ export function App() {
       {/* Sidebar — its own touch handlers close it on a leftward swipe */}
       <aside
         onTouchStart={handleSidebarTouchStart}
+        onTouchMove={handleSidebarTouchMove}
         onTouchEnd={handleSidebarTouchEnd}
         className={"fixed inset-y-0 left-0 z-30 w-64 bg-black/95 border-r border-red-900/30 flex flex-col transition-transform duration-300 md:relative md:translate-x-0 " + (sidebarOpen ? "translate-x-0" : "-translate-x-full md:translate-x-0")}
-        // FIX 3 (mobile round 4) — while an edge-swipe is actively in
-        // progress (not yet open), override the class-driven transform so
-        // the sidebar peeks out proportional to swipe distance instead of
-        // staying fully hidden until the threshold is crossed. transition:
-        // "none" here so it follows the finger 1:1 with no lag; once the
-        // touch ends edgeSwipeProgress resets to 0, this inline style drops
-        // away, and the normal duration-300 class transition takes over for
-        // the final snap open/closed.
-        style={edgeSwipeProgress > 0 && !sidebarOpen ? { transform: `translateX(calc(-100% + ${Math.round(edgeSwipeProgress * SIDEBAR_WIDTH_PX)}px))`, transition: "none" } : undefined}
+        // FIX 3 (mobile round 4/5) — while an edge-swipe-open is actively in
+        // progress (not yet open), or a swipe-to-close drag is in progress
+        // (already open), override the class-driven transform so the sidebar
+        // visibly follows the finger instead of only snapping at the
+        // threshold. transition: "none" here so it tracks 1:1 with no lag;
+        // once the touch ends both progress values reset to 0, this inline
+        // style drops away, and the normal duration-300 class transition
+        // takes over for the final snap open/closed.
+        style={
+          edgeSwipeProgress > 0 && !sidebarOpen
+            ? { transform: `translateX(calc(-100% + ${Math.round(edgeSwipeProgress * SIDEBAR_WIDTH_PX)}px))`, transition: "none" }
+            : sidebarCloseProgress > 0 && sidebarOpen
+            ? { transform: `translateX(-${Math.round(sidebarCloseProgress * SIDEBAR_WIDTH_PX)}px)`, transition: "none" }
+            : undefined
+        }
       >
         {/* Logo */}
         <div className="p-4 border-b border-red-900/30 flex items-center justify-between">

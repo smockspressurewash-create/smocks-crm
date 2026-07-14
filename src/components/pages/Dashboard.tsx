@@ -128,7 +128,6 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
   const sendDashInvoice = async (job: any, subject: string, bodyHtml: string) => {
     const cust = customers.find((c: any) => c.id === job.customerId);
     if (!cust?.email) { toast?.("Customer has no email on file", "red"); return; }
-    console.log("[Send Invoice] start — job:", job.id, "to:", cust.email);
     setSendingDashInvoiceId(job.id);
     try {
       const newInv = {
@@ -149,10 +148,8 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
       // always settles so `finally` runs and the button resets. sendOwnerGmailOnly
       // (lib/messaging.ts) already auto-refreshes the Google session on a 401
       // and retries once before giving up.
-      console.log("[SendInvoice] start — job:", job.id, "to:", cust.email, "googleConnected:", !!settings?.googleConnected);
       await withTimeout(sendOwnerGmailOnly(settings as any, cust.email, subject, html), 10000, "Invoice email");
       setJobs((prev: any[]) => prev.map((j: any) => j.id === job.id ? { ...j, invoiceSentAt: today(), paymentType: "Invoice", paymentStatus: j.paymentStatus === "Paid" ? j.paymentStatus : "Pending" } : j));
-      console.log("[SendInvoice] — success: sent to", cust.email);
       toast?.(`📧 Invoice sent to ${cust.firstName} ✓`, "green");
       setPreviewInvoiceJob(null);
     } catch (e: any) {
@@ -165,7 +162,6 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
       toast?.(msg, "red");
     } finally {
       setSendingDashInvoiceId(null);
-      console.log("[SendInvoice] button reset");
     }
   };
   const pipelineVal = jobs.filter(j => j.status !== "completed").reduce((s, j) => s + j.amount, 0);
@@ -408,16 +404,6 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
   // "on shift" — no other condition gates it, full stop.
   const liveEmps = employees.filter((e: any) => !!e.dayClockInAt);
   useEffect(() => {
-    console.log(
-      "[LiveCrew] Dashboard poll — total employees:", employees.length,
-      "| on shift:", liveEmps.length,
-      "| detail:", employees.map((e: any) => ({
-        name: `${e.firstName || "?"} ${e.lastName || ""}`.trim(),
-        status: e.status,
-        dayClockInAt: e.dayClockInAt,
-        onShift: !!e.dayClockInAt,
-      }))
-    );
   }, [employees]);
   const liveTeam = liveEmps.map((e: any) => {
     const empJobs = jobs
@@ -510,6 +496,41 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
     if (Object.keys(otherPatch).length > 0) {
       (supabase as any).from("jobs").update(otherPatch).eq("id", jid).then((r: any) => { if (r?.error) toast?.("Failed to save — " + r.error.message, "red"); }).catch(() => {});
     }
+  };
+
+  // FIX 2 (mobile round 5) — "My Active Job": the single job (of the owner's
+  // crew-assigned jobs today) most likely to be what they're working on right
+  // now — an in-progress job wins outright, otherwise the earliest
+  // not-yet-completed job today by scheduled time. Drives the quick-action
+  // card below (Clock In/Out, I'm Here) so the owner doesn't have to open the
+  // full job modal just to start their clock or mark arrival, mirroring what
+  // a technician gets on their own portal's job card. Checklist/photos/
+  // signature still route through the existing JobDetailModal below (tap the
+  // card) rather than a second parallel implementation of that UI.
+  const ownerActiveJob = (() => {
+    const candidates = ownerJobsToday.filter((j: any) => j.status !== "completed" && j.status !== "cancelled");
+    if (candidates.length === 0) return null;
+    const inProgress = candidates.find((j: any) => j.status === "in_progress" || j.clockInAt);
+    if (inProgress) return inProgress;
+    return [...candidates].sort((a: any, b: any) => (a.scheduledTime || "").localeCompare(b.scheduledTime || ""))[0];
+  })();
+  const ownerActiveCustomer = ownerActiveJob ? customers.find((c: any) => c.id === ownerActiveJob.customerId) : null;
+  const ownerActiveJobProg = ownerActiveJob ? checklistProgress(ownerActiveJob) : null;
+  const ownerClockIn = () => {
+    if (!ownerActiveJob) return;
+    ownerUpdateJob(ownerActiveJob.id, { clockInAt: Date.now() });
+    toast?.("Clocked in");
+  };
+  const ownerClockOut = () => {
+    if (!ownerActiveJob?.clockInAt) return;
+    const rounded = Math.round(((Date.now() - ownerActiveJob.clockInAt) / 3600000) * 100) / 100;
+    ownerUpdateJob(ownerActiveJob.id, { clockInAt: null, loggedHours: Math.round(((Number(ownerActiveJob.loggedHours) || 0) + rounded) * 100) / 100 });
+    toast?.("+" + rounded + "h logged");
+  };
+  const ownerMarkArrived = () => {
+    if (!ownerActiveJob) return;
+    ownerUpdateJob(ownerActiveJob.id, { arrivedAt: Date.now(), status: ownerActiveJob.status === "scheduled" ? "in_progress" : ownerActiveJob.status });
+    toast?.("Marked as arrived ✓");
   };
 
   const w: any = settings.dashboardWidgets || { quickActions: true, kpis: true, revenuePeriods: true, goals: true, outstanding: true, charts: true, activity: true };
@@ -686,6 +707,44 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
         )}
       </Glass>
 
+      {/* FIX 2 (mobile round 5) — "My Active Job": the owner's own crew-
+          assigned job for today, with the same quick actions a technician
+          gets on their portal job card (Clock In/Out, I'm Here), so the
+          owner doesn't have to open the full job modal for the basics.
+          Checklist progress is shown here; the actual checklist items,
+          photo upload, and signature capture are one tap away via the
+          existing JobDetailModal below (setOwnerDetailId) rather than a
+          second, divergent copy of that UI built inline here. */}
+      {ownerActiveJob && (
+        <Glass className="p-4 !border-green-700/30">
+          <div className="flex items-center gap-2 mb-3">
+            <Briefcase size={15} className="text-green-400" />
+            <h3 className="font-semibold text-sm">My Active Job</h3>
+            {ownerActiveJob.clockInAt && <Badge tone="green">Clocked in</Badge>}
+          </div>
+          <button onClick={() => setOwnerDetailId(ownerActiveJob.id)} className="w-full text-left mb-3 p-2.5 rounded-xl border border-white/10 bg-black/30 hover:border-green-600/40 transition">
+            <div className="text-sm font-medium truncate">{ownerActiveCustomer ? `${ownerActiveCustomer.firstName} ${ownerActiveCustomer.lastName}` : "Customer"}</div>
+            <div className="text-[11px] text-white/40 flex items-center gap-1 truncate"><MapPin size={10} />{ownerActiveJob.address}</div>
+            {ownerActiveJobProg && (
+              <div className="mt-2">
+                <div className="flex items-center justify-between text-[10px] text-white/40 mb-1"><span>Checklist</span><span>{ownerActiveJobProg.done}/{ownerActiveJobProg.total}</span></div>
+                <PBar value={ownerActiveJobProg.done} max={ownerActiveJobProg.total || 1} />
+              </div>
+            )}
+          </button>
+          <div className="flex gap-2">
+            {!ownerActiveJob.arrivedAt && (
+              <GBtn onClick={ownerMarkArrived} className="flex-1 !justify-center !text-xs"><MapPin size={12} className="inline mr-1" />I'm Here</GBtn>
+            )}
+            {ownerActiveJob.clockInAt ? (
+              <GBtn variant="danger" onClick={ownerClockOut} className="flex-1 !justify-center !text-xs"><Clock size={12} className="inline mr-1" />Clock Out</GBtn>
+            ) : (
+              <GBtn onClick={ownerClockIn} className="flex-1 !justify-center !text-xs"><Clock size={12} className="inline mr-1" />Clock In</GBtn>
+            )}
+          </div>
+        </Glass>
+      )}
+
       {/* FIX 8 — My Hours: the owner's own tracked time, mirroring what a
           technician sees, computed from their own employees row + crew-assigned jobs. */}
       {ownerEmpId && (
@@ -802,7 +861,6 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
         const paymentsToday = estimates.filter((e: any) => e.paidAt === todayStr);
         const revenueToday = paymentsToday.reduce((s: number, e: any) => s + (Number(e.total) || 0), 0);
         const clockedInNow = employees.filter((e: any) => !!e.dayClockInAt).length;
-        console.log("[Audit] daily summary — recomputed from live props — jobsToday:", todaysJobs.length, "completed:", completedToday.length, "onShiftNow:", clockedInNow, "invoicesSentToday:", invoicesSentToday, "revenueToday:", revenueToday);
         return (
           <Glass className="p-4 !bg-black/40">
             <div className="flex items-center justify-between mb-3">
@@ -943,7 +1001,6 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
         const todayStr = localDateStr();
         const todayTips = jobs.filter(j => j.status === "completed" && j.scheduledDate === todayStr).reduce((s,j) => s + (Number(j.tip)||0), 0);
         const todayCash = jobs.filter(j => j.status === "completed" && j.scheduledDate === todayStr && j.isCash).reduce((s,j) => s + j.amount, 0);
-        console.log("[Dashboard] revenue widget recalculated — today:", revToday, "week:", revWeek, "month:", revMonth, "(from", completedJobs.length, "completed jobs total,", jobs.length, "total jobs in live state)");
         return <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
           <Glass className="p-5">
             <div className="text-[10px] text-white/50 uppercase tracking-wider font-semibold mb-2">💰 Today</div>

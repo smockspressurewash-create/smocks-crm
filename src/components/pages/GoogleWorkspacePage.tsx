@@ -312,7 +312,6 @@ function GCalTab({ token }: { token: string }) {
     setLoading(true); setError("");
     try {
       const result = await fetchCalendarEvents(token);
-      console.log("[GoogleCalendar] fetched", result.length, "events");
       setEvents(result);
     } catch (e: any) {
       console.error("[GoogleCalendar] fetch error:", e);
@@ -800,14 +799,12 @@ export function GoogleWorkspacePage({
   // can share the same toast/state logic.
   const doRefreshToken = useCallback(async (silent = false): Promise<boolean> => {
     setRefreshing(true);
-    console.log("[GoogleToken] doRefreshToken — silent:", silent, "hasRefreshToken:", !!s.googleRefreshToken);
     try {
       if (s.googleRefreshToken) {
         const refreshed = await refreshEmpGoogleToken(s.googleBackendUrl, s.googleRefreshToken);
         if (refreshed) {
           setSettings?.((prev: any) => ({ ...prev, googleProviderToken: refreshed.token, googleTokenExpiresAt: refreshed.expiresAt }));
           setRefreshFailed(false);
-          console.log("[GoogleToken] doRefreshToken — succeeded via refresh_token exchange");
           if (!silent) toast?.("Google token refreshed", "green");
           return true;
         }
@@ -819,7 +816,6 @@ export function GoogleWorkspacePage({
       if (fallbackToken) {
         setSettings?.((prev: any) => ({ ...prev, googleProviderToken: fallbackToken }));
         setRefreshFailed(false);
-        console.log("[GoogleToken] doRefreshToken — succeeded via Supabase session fallback");
         if (!silent) toast?.("Google token refreshed", "green");
         return true;
       }
@@ -853,7 +849,6 @@ export function GoogleWorkspacePage({
     const needsRefresh = !hasToken || (expiresAt && Date.now() > expiresAt - 2 * 60 * 1000);
     if (!needsRefresh) return;
     autoRefreshTried.current = true;
-    console.log("[GoogleToken] auto-refresh on Google Workspace page load — hasToken:", hasToken, "expiresAt:", expiresAt);
     doRefreshToken(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isConnected, hasToken]);

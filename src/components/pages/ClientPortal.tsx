@@ -160,7 +160,6 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
     : (e?.total || 0);
   useEffect(() => {
     if (!e?.id) return;
-    console.log("[Audit] discounts on client charge — estimateType:", e.estimateType, "discount:", e.discount, "discounts:", e.discounts, "effectiveTotal (charged):", effectiveTotal);
   }, [e?.id, e?.estimateType, effectiveTotal]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // FEATURE 6 — depositRequired can now be a flat $ or a % of the total;
@@ -170,7 +169,6 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
   const depositBalanceAmt = Math.max(0, effectiveTotal - depositAmt);
   useEffect(() => {
     if (!e?.id) return;
-    console.log("[Audit] deposit split — status: working — depositAmt:", depositAmt, "balanceAmt:", depositBalanceAmt, "of effectiveTotal:", effectiveTotal);
   }, [e?.id, depositAmt, depositBalanceAmt]); // eslint-disable-line react-hooks/exhaustive-deps
   // A deposit already on record (paidDeposit > 0, nothing paid in full yet)
   // means the customer is back to settle up — offer the actual remainder

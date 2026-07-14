@@ -156,7 +156,6 @@ export function InvoicesPage({ estimates = [], setEstimates, customers = [], set
       title: j.title || j.notes || (cust ? `Service at ${j.address}` : "Service"),
       items: [{ id: uid(), description: j.notes || j.address || "Service", quantity: 1, unitPrice: Number(j.amount) || 0 }],
     });
-    console.log("[New Invoice] prefilled from completed job", j.id, "amount", j.amount);
   };
   const [selected, setSelected] = useState([]);
   const [stripePayInvoice, setStripePayInvoice] = useState<any>(null);

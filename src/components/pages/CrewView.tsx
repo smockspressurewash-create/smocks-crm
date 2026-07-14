@@ -97,7 +97,6 @@ export function CrewView({ jobs = [], setJobs, customers = [], employees = [], t
   const shiftEndedEmps = employees.filter((e: any) =>
     !e.dayClockInAt && e.lastShiftDate === localDateStr() && Number(e.lastShiftHours) > 0
   );
-  console.log("[LiveCrew] CrewView page — total employees:", employees.length, "on shift:", liveEmps.length, "shift ended today:", shiftEndedEmps.length);
   // AUDIT ITEM 13 — same first-load grace period as Dashboard.tsx's Live
   // Team View, so a brief empty employees array before the initial Supabase
   // fetch resolves never reads as "no one has started their shift."

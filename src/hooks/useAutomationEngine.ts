@@ -45,7 +45,6 @@ export function useAutomationEngine({
 
       const todayStr = today();
       const hour = new Date().getHours();
-      console.log("[Automations] tick — hour:", hour, "active automations:", automations.filter(a => a.active).length, "of", automations.length);
 
       for (const auto of automations) {
         if (!auto.active) continue;
@@ -67,10 +66,8 @@ export function useAutomationEngine({
               first_name: c.firstName,
               time: job.scheduledTime || "the scheduled time",
             });
-            console.log("[Automations] job_reminder — sending to", c.firstName, c.phone, "job:", job.id);
             try {
               await twilioSend(settings, c.phone, msg);
-              console.log("[Automations] job_reminder — sent to", c.firstName);
               toast(`📱 Job reminder sent to ${c.firstName}`);
               fired = true;
             } catch (e: any) {
@@ -94,10 +91,8 @@ export function useAutomationEngine({
               first_name: c.firstName,
               amount: `$${est.total}`,
             });
-            console.log("[Automations] estimate_followup — sending to", c.firstName, c.phone, "estimate:", est.id, "daysSince sent:", daysSince(est.sentAt!));
             try {
               await twilioSend(settings, c.phone, msg);
-              console.log("[Automations] estimate_followup — sent to", c.firstName);
               toast(`📱 Estimate follow-up sent to ${c.firstName}`);
               fired = true;
             } catch (e: any) {
@@ -132,10 +127,8 @@ export function useAutomationEngine({
               first_name: c.firstName,
               review_link: reviewLink,
             });
-            console.log("[Automations] review_request — sending to", c.firstName, c.phone, "job:", job.id);
             try {
               await twilioSend(settings, c.phone, msg);
-              console.log("[Automations] review_request — sent to", c.firstName);
               toast(`⭐ Review request sent to ${c.firstName}`);
               fired = true;
             } catch (e: any) {
@@ -162,10 +155,8 @@ export function useAutomationEngine({
               amount: `$${est.total}`,
               payment_link: `${window.location.origin}${window.location.pathname}#/estimate/${est.id}`,
             });
-            console.log("[Automations] payment_overdue — sending to", c.firstName, c.phone, "estimate:", est.id);
             try {
               await twilioSend(settings, c.phone, msg);
-              console.log("[Automations] payment_overdue — sent to", c.firstName);
               toast(`💰 Payment reminder sent to ${c.firstName}`);
               fired = true;
             } catch (e: any) {
@@ -182,10 +173,8 @@ export function useAutomationEngine({
           );
           for (const c of birthdayCustomers) {
             const msg = fillTemplate(SMS_TEMPLATES.birthday, { first_name: c.firstName });
-            console.log("[Automations] birthday — sending to", c.firstName, c.phone);
             try {
               await twilioSend(settings, c.phone, msg);
-              console.log("[Automations] birthday — sent to", c.firstName);
               toast(`🎂 Birthday message sent to ${c.firstName}`);
               fired = true;
             } catch (e: any) {

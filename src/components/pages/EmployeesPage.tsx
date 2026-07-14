@@ -275,7 +275,6 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setting
         .filter((j: any) => (j.crew || []).includes(emp.id) && j.status === "completed" && j.scheduledDate === todayStr)
         .reduce((s: number, j: any) => s + Number(j.loggedHours || j.duration || 0), 0);
       liveTopUp = Math.max(0, liveShiftHours - jobHoursToday);
-      console.log("[Payroll] live shift in progress —", emp.firstName, emp.lastName, "— dayClockInAt:", new Date(emp.dayClockInAt).toLocaleTimeString(), "elapsed:", Math.round(liveShiftHours * 100) / 100, "hrs, job hours already logged today:", jobHoursToday, "— live top-up:", Math.round(liveTopUp * 100) / 100, "hrs");
     }
     const shiftDate = emp?.lastShiftDate;
     if (!shiftDate || shiftDate < startDate || shiftDate > endDate) return liveTopUp;
@@ -313,33 +312,22 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setting
     const topUp = shiftTopUpHours(emp, startDate, endDate);
     const topUpPay = topUp * (Number(emp.hourlyRate) || 0);
     if (topUp > 0) {
-      console.log("[Payroll] shift top-up —", emp.firstName, emp.lastName, "— lastShiftDate:", emp.lastShiftDate, "lastShiftHours:", emp.lastShiftHours, "uncaptured hours:", Math.round(topUp * 100) / 100, "@ $" + (emp.hourlyRate || 0) + "/hr =", fmt(topUpPay));
     }
     return jobPay + topUpPay;
   };
 
-  const totalPayroll = employees.filter(e => e.status === "active").reduce((s, e) => {
+  // FIX 5 (mobile round 5) — was a strict e.status === "active" allowlist,
+  // the same brittleness Dashboard.tsx's Live Crew View already learned not
+  // to use (see its FIX 1 comment): any employee whose status field is
+  // unset, differently-cased, or otherwise not the exact string "active"
+  // silently vanished from Hours/Payroll — while the Team list above has no
+  // status filter at all, so the same employee still showed up there,
+  // making it look like "hours aren't showing" even though the underlying
+  // job/pay math was correct the whole time. Only an explicit "inactive"
+  // should ever exclude someone.
+  const totalPayroll = employees.filter(e => e.status !== "inactive").reduce((s, e) => {
     return s + getEmployeePay(e, payPeriodStart, payPeriodEnd);
   }, 0);
-
-  // AUDIT 2 — owner's Hours/Payroll tabs read straight from the `jobs` prop
-  // (App.tsx state, kept fresh by the 3s poll); log once per jobs/employees
-  // change instead of per-render so this doesn't spam the console every
-  // keystroke while still proving the data actually reached this component.
-  useEffect(() => {
-    const totalHours = employees.reduce((s, e) => s + getEmployeeHours(e.id, payPeriodStart, payPeriodEnd), 0);
-    console.log("[Payroll] READ (owner Employees tab) — employees:", employees.length, "jobs:", jobs.length,
-      "period:", payPeriodStart, "to", payPeriodEnd, "— total hours:", Math.round(totalHours * 100) / 100,
-      "total payroll:", Math.round(totalPayroll * 100) / 100);
-    // FIX 4 — per-employee math breakdown: job hours × effective rate, plus
-    // any whole-day shift-timer top-up, so a wrong total can be traced to the
-    // exact employee/job/rate that produced it instead of just a lump sum.
-    employees.filter((e: any) => e.status === "active").forEach((e: any) => {
-      const hrs = getEmployeeHours(e.id, payPeriodStart, payPeriodEnd);
-      const pay = getEmployeePay(e, payPeriodStart, payPeriodEnd);
-      console.log("[Payroll]  ", e.firstName, e.lastName, "— hours:", Math.round(hrs * 100) / 100, "× $" + (e.hourlyRate || 0) + "/hr baseline — pay:", fmt(pay));
-    });
-  }, [jobs, employees, payPeriodStart, payPeriodEnd]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div className="space-y-4">
@@ -348,7 +336,7 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setting
           <div className="flex gap-1 bg-black/40 border border-red-900/30 rounded-xl p-1">
             {["list","hours","payroll"].map(v => <button key={v} onClick={() => setView(v)} className={"px-3 py-1.5 rounded-lg text-xs font-semibold capitalize transition " + (view === v ? "bg-gradient-to-r from-red-600 to-red-800 text-white" : "text-white/50 hover:text-white")}>{v === "hours" ? "⏱ Hours" : v === "payroll" ? "💰 Payroll" : "👥 Team"}</button>)}
           </div>
-          <div className="text-xs text-white/50">{employees.filter(e => e.status === "active").length} active</div>
+          <div className="text-xs text-white/50">{employees.filter(e => e.status !== "inactive").length} active</div>
         </div>
         <div className="flex gap-2">
           <button onClick={() => setShowPortalInfo(!showPortalInfo)} className="text-xs px-3 py-1.5 bg-black/40 border border-blue-700/40 text-blue-300 hover:bg-blue-950/30 rounded-xl transition flex items-center gap-1.5">
@@ -381,7 +369,7 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setting
         {employees.map(e => (
           <Glass key={e.id} className={"p-4 group " + (e.status === "inactive" ? "opacity-60" : "")}>
             <div className="flex items-start gap-3">
-              <div className="w-12 h-12 rounded-full bg-gradient-to-br from-red-600 to-red-900 flex items-center justify-center text-base font-bold flex-shrink-0">{e.firstName[0]}{e.lastName[0]}</div>
+              <div className="w-12 h-12 rounded-full bg-gradient-to-br from-red-600 to-red-900 flex items-center justify-center text-base font-bold flex-shrink-0">{e.firstName?.[0]}{e.lastName?.[0]}</div>
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2 flex-wrap">
                   <span className="font-semibold">{e.firstName} {e.lastName}</span>
@@ -429,9 +417,16 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setting
               <th className="text-right px-4 py-3 text-xs uppercase tracking-wider text-white/60">Est. Pay</th>
             </tr></thead>
             <tbody>
-              {employees.filter(e => e.status === "active").map(e => {
+              {employees.filter(e => e.status !== "inactive").map(e => {
                 const empJobs = jobs.filter(j => (j.crew||[]).includes(e.id) && j.status === "completed" && j.scheduledDate >= payPeriodStart && j.scheduledDate <= payPeriodEnd);
-                const hrs = empJobs.reduce((s,j) => s + Number(j.loggedHours||j.duration||0), 0);
+                // FIX 5 (mobile round 5) — was job.loggedHours only, missing
+                // the shift-timer top-up getEmployeeHours (used everywhere
+                // else in this file, e.g. the Payroll tab/CSV export below)
+                // already accounts for — an employee currently clocked in, or
+                // who ended a shift without every minute captured on a
+                // completed job, showed fewer "Period Hours" here than their
+                // actual Payroll-tab total.
+                const hrs = getEmployeeHours(e.id, payPeriodStart, payPeriodEnd);
                 const cost = getEmployeePay(e, payPeriodStart, payPeriodEnd);
                 const todayStr = today();
                 const weekStart = (() => { const d = new Date(); d.setDate(d.getDate() - d.getDay()); return d.toISOString().slice(0, 10); })();
@@ -439,7 +434,7 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setting
                 const hoursToday = allCompleted.filter((j: any) => j.scheduledDate === todayStr).reduce((s: number, j: any) => s + Number(j.loggedHours || j.duration || 0), 0);
                 const hoursWeek = allCompleted.filter((j: any) => j.scheduledDate >= weekStart).reduce((s: number, j: any) => s + Number(j.loggedHours || j.duration || 0), 0);
                 return <tr key={e.id} className="border-b border-red-900/10 hover:bg-white/5">
-                  <td className="px-4 py-3"><div className="flex items-center gap-2"><div className="w-7 h-7 rounded-full bg-gradient-to-br from-red-600 to-red-900 flex items-center justify-center text-xs font-bold">{e.firstName[0]}</div>{e.firstName} {e.lastName}{(e as any).dayClockInAt && <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" title="On the clock now" />}</div></td>
+                  <td className="px-4 py-3"><div className="flex items-center gap-2"><div className="w-7 h-7 rounded-full bg-gradient-to-br from-red-600 to-red-900 flex items-center justify-center text-xs font-bold">{e.firstName?.[0]}</div>{e.firstName} {e.lastName}{(e as any).dayClockInAt && <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" title="On the clock now" />}</div></td>
                   <td className="px-4 py-3 text-right text-white/70">{hoursToday.toFixed(1)}h</td>
                   <td className="px-4 py-3 text-right text-white/70">{hoursWeek.toFixed(1)}h</td>
                   <td className="px-4 py-3 text-right text-white/60">{empJobs.length}</td>
@@ -467,7 +462,7 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setting
             <GDate value={payPeriodEnd} onChange={e => setPayPeriodEnd(e.target.value)} className="!text-xs !py-1.5 !w-36" />
           </div>
           <button onClick={() => {
-            const rows = employees.filter(e => e.status === "active").map(e => {
+            const rows = employees.filter(e => e.status !== "inactive").map(e => {
               const hrs = getEmployeeHours(e.id, payPeriodStart, payPeriodEnd);
               const gross = getEmployeePay(e, payPeriodStart, payPeriodEnd);
               const fica = gross * 0.0765;
@@ -480,7 +475,7 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setting
           }} className="text-xs px-3 py-1.5 bg-black/40 border border-red-900/30 text-white/60 hover:text-white rounded-xl transition flex items-center gap-1"><Download size={12} />Export CSV</button>
         </div>
         <div className="grid gap-4">
-          {employees.filter(e => e.status === "active").map(e => {
+          {employees.filter(e => e.status !== "inactive").map(e => {
             const hrs = getEmployeeHours(e.id, payPeriodStart, payPeriodEnd);
             const gross = getEmployeePay(e, payPeriodStart, payPeriodEnd);
             const fica = gross * 0.0765;
@@ -488,7 +483,7 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setting
             const empJobs = jobs.filter(j => (j.crew||[]).includes(e.id) && j.status === "completed" && j.scheduledDate >= payPeriodStart && j.scheduledDate <= payPeriodEnd);
             return <Glass key={e.id} className="p-4">
               <div className="flex items-center gap-3 mb-3">
-                <div className="w-10 h-10 rounded-full bg-gradient-to-br from-red-600 to-red-900 flex items-center justify-center font-bold">{e.firstName[0]}{e.lastName[0]}</div>
+                <div className="w-10 h-10 rounded-full bg-gradient-to-br from-red-600 to-red-900 flex items-center justify-center font-bold">{e.firstName?.[0]}{e.lastName?.[0]}</div>
                 <div className="flex-1"><div className="font-semibold">{e.firstName} {e.lastName}</div><div className="text-xs text-white/50">{e.role} · {fmt(e.hourlyRate)}/hr</div></div>
                 <div className="text-right"><div className="text-xl font-black text-green-400">{fmt(net)}</div><div className="text-[10px] text-white/40">net pay</div></div>
               </div>
@@ -760,11 +755,10 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setting
               const next = { ...paidPeriods, [start]: paidPeriods[start] === "paid" ? "unpaid" as const : "paid" as const };
               setF((p: any) => ({ ...p, paidPeriods: next }));
               setEmployees((prev: any[]) => prev.map(e => e.id === f.id ? { ...e, paidPeriods: next } : e));
-              console.log("[MarkPaid] period", start, "→", next[start], "— empId:", f.id, "— writing to employees.paidPeriods now");
               (supabase as any).from("employees").update({ paidPeriods: next }).eq("id", f.id)
                 .then((r: any) => {
                   if (r?.error) { console.error("[MarkPaid] failed:", r.error.message); toast?.("Failed to save pay status — " + r.error.message, "red"); }
-                  else { console.log("[MarkPaid] saved ✓"); toast?.(next[start] === "paid" ? "Marked as paid ✓" : "Marked as unpaid", "green"); }
+                  else toast?.(next[start] === "paid" ? "Marked as paid ✓" : "Marked as unpaid", "green");
                 })
                 .catch((e: any) => { console.error("[MarkPaid] threw:", e?.message); toast?.("Failed to save pay status — " + (e?.message || "unknown error"), "red"); });
             };
@@ -819,11 +813,10 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setting
               const next = { ...paidDays, [key]: paidDays[key] === "paid" ? "unpaid" as const : "paid" as const };
               setF((p: any) => ({ ...p, paidDays: next }));
               setEmployees((prev: any[]) => prev.map(e => e.id === f.id ? { ...e, paidDays: next } : e));
-              console.log("[MarkPaid] day", key, "→", next[key], "— empId:", f.id, "— writing to employees.paidDays now");
               (supabase as any).from("employees").update({ paidDays: next }).eq("id", f.id)
                 .then((r: any) => {
                   if (r?.error) { console.error("[MarkPaid] failed:", r.error.message); toast?.("Failed to save pay status — " + r.error.message, "red"); }
-                  else { console.log("[MarkPaid] saved ✓"); toast?.(next[key] === "paid" ? "Marked as paid ✓" : "Marked as unpaid", "green"); }
+                  else toast?.(next[key] === "paid" ? "Marked as paid ✓" : "Marked as unpaid", "green");
                 })
                 .catch((e: any) => { console.error("[MarkPaid] threw:", e?.message); toast?.("Failed to save pay status — " + (e?.message || "unknown error"), "red"); });
             };

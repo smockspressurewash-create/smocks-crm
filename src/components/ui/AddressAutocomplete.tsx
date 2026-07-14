@@ -135,7 +135,6 @@ export function AddressAutocomplete({
   const debounceRef = useRef<any>(null);
   useEffect(() => {
     if (!mapsKey) {
-      console.log("[Autocomplete] no Google Maps key configured (Settings → Company → Google Maps API Key) — local CRM matches + browser autofill only");
       setPlacePreds([]);
       return;
     }
@@ -158,7 +157,6 @@ export function AddressAutocomplete({
           .map((s: any) => s.placePrediction?.text?.toString())
           .filter(Boolean)
           .slice(0, 5);
-        console.log("[Autocomplete] Places returned", texts.length, "suggestions for", JSON.stringify(value));
         setPlacePreds(texts);
         setPlacesBlocked(false);
       } catch (e: any) {
@@ -185,7 +183,6 @@ export function AddressAutocomplete({
   useEffect(() => {
     if (value.trim().length < 2) return;
     const method = localMatches.length > 0 ? "local_crm_matches (primary)" : placePreds.length > 0 ? "google_places (enhancement)" : "none (browser autofill only)";
-    console.log("[Autocomplete] active method:", method, "— suggestion count:", suggestions.length);
   }, [placePreds.length, localMatches.length, value]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {

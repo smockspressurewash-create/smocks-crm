@@ -144,7 +144,6 @@ function PortalChecklistSection({ title, emoji, items, onUpdate, allowPhotos = f
   const updateNotes = (id: string, notes: string) => onUpdate(items.map(it => it.id === id ? { ...it, notes } : it));
   const addItemPhoto = (id: string, dataUrl: string, isVideo: boolean) => {
     const media = { id: uid(), dataUrl };
-    console.log("[PhotoSync] checklist item", isVideo ? "video" : "photo", "added — item:", id, "size:", Math.round(dataUrl.length / 1024), "KB");
     onUpdate(items.map(it => it.id === id
       ? isVideo ? { ...it, videos: [...(it.videos || []), media] } : { ...it, photos: [...(it.photos || []), media] }
       : it));
@@ -294,7 +293,6 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
 
   const hasRequiredGear = (job.equipment || []).length > 0 || (job.requiredChemicals || []).length > 0;
   const sendRunningLate = async (minutes: number) => {
-    console.log("[RunningLate] send clicked — job:", job.id, "minutes:", minutes, "channel:", lateChannel);
     setSendingRunningLate(true);
     const nowMs = Date.now() + minutes * 60000;
     const newEta = new Date(nowMs).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
@@ -304,13 +302,11 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
       if (lateChannel === "sms") {
         if (!customer?.phone) throw new Error("No phone on file for this customer.");
         await withTimeout(twilioSend(settings as any, customer.phone, `Hi ${customer.firstName}, ${msg}`), 15000, "Running late SMS");
-        console.log("[RunningLate] — success: SMS sent to", customer.phone);
         logOutboundSmsToInbox({ contactName: `${customer.firstName} ${customer.lastName}`, contactPhone: customer.phone, customerId: customer.id, body: `Hi ${customer.firstName}, ${msg}` }).catch(() => {});
       } else {
         if (!customer?.email) throw new Error("No email on file for this customer.");
         const html = emailShell(companyName, "Running Late", `<p>Hi ${customer.firstName},</p><p>${msg}</p>`);
         await withTimeout(sendOwnerGmailOnly(settings as any, customer.email, "Your technician is running late", html), 15000, "Running late email");
-        console.log("[RunningLate] — success: email sent to", customer.email);
       }
       const ownerEmail = (settings as any)?.myEmail || (settings as any)?.companyEmail;
       if (ownerEmail) {
@@ -323,7 +319,6 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
         ...(newScheduledTime ? { scheduledTime: newScheduledTime } : {}),
       });
       toast(`Message sent to ${customer?.firstName || "customer"} ✓`, "green");
-      console.log("[Audit] Running Late SMS/email — status: sent via", lateChannel);
       setRunningLateOpen(false);
       setLateReasonNote("");
     } catch (e: any) {
@@ -335,24 +330,20 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
   };
 
   const sendOtw = async () => {
-    console.log("[OTW] send clicked — job:", job.id, "channel:", otwChannel);
     setSendingOtw(true);
     const msg = `Hi ${customer?.firstName || "there"}, your CrewBoss technician is on the way!`;
     try {
       if (otwChannel === "sms") {
         if (!customer?.phone) throw new Error("No phone on file for this customer.");
         await withTimeout(twilioSend(settings as any, customer.phone, msg), 15000, "OTW SMS");
-        console.log("[OTW] — success: SMS sent to", customer.phone);
         logOutboundSmsToInbox({ contactName: `${customer.firstName} ${customer.lastName}`, contactPhone: customer.phone, customerId: customer.id, body: msg }).catch(() => {});
       } else {
         if (!customer?.email) throw new Error("No email on file for this customer.");
         const html = emailShell(companyName, "On My Way", `<p>${msg}</p>`);
         await withTimeout(sendOwnerGmailOnly(settings as any, customer.email, "Your technician is on the way", html), 15000, "OTW email");
-        console.log("[OTW] — success: email sent to", customer.email);
       }
       onUpdateJob({ commLog: [...(job.commLog || []), { id: uid(), type: "note" as const, date: today(), note: `📍 On my way message sent via ${otwChannel === "sms" ? "text" : "email"}` }] });
       toast(`On the way message sent to ${customer?.firstName || "customer"} ✓`, "green");
-      console.log("[Audit] OTW SMS/email — status: sent via", otwChannel);
       setOtwOpen(false);
     } catch (e: any) {
       console.error("[OTW] — error:", e?.message || e);
@@ -365,15 +356,12 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
   const addPhoto = async (type: "before" | "after", dataUrl: string) => {
     const newPhoto = { id: uid(), type, caption: (type === "before" ? "Before" : "After") + " — " + today(), dataUrl, uploadedAt: today() };
     const nextPhotos = [...(job.photos || []), newPhoto];
-    console.log("[PhotoSync] adding", type, "photo — job:", job.id, "photo count now:", nextPhotos.length, "size:", Math.round(dataUrl.length / 1024), "KB");
     try {
       const result = await withTimeout(Promise.resolve(onUpdateJob({ photos: nextPhotos })), 15000, "Photo upload");
       if (result?.error) {
         console.error("[PhotoSync] — error:", result.error.message);
         toast("Photo saved locally, but failed to sync — " + result.error.message, "red");
       } else {
-        console.log("[PhotoSync] — success: photo saved for job", job.id);
-        console.log("[Audit] photo sync — status: written to jobs.photos, same field JobDetailModal reads on the owner side");
         toast(type === "before" ? "Before photo added ✓" : "After photo added ✓", "green");
       }
     } catch (e: any) {
@@ -527,7 +515,6 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
   const startCompleteFlow = () => { setCompleteStep("review"); setPaidChoice(""); setPaymentMethod(""); };
 
   const sendInvoiceFromPortal = async (customSubject?: string, customNote?: string) => {
-    console.log("[CompleteJob] sendInvoiceFromPortal — channel:", invoiceChannel, "job:", job.id, "customer:", customer?.id);
     if (!customer?.email && !customer?.phone) {
       toast("No contact info for this customer. Add email or phone first.", "red");
       return false;
@@ -548,18 +535,15 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
       const noteHtml = customNote?.trim() ? `<p style="font-style:italic;color:rgba(255,255,255,0.6)">${customNote.trim()}</p>` : "";
       if (invoiceChannel === "sms") {
         if (!customer.phone) throw new Error("No phone on file for this customer.");
-        console.log("[CompleteJob] sending invoice via Twilio to", customer.phone);
         await withTimeout(twilioSend(settings as any, customer.phone, `Hi ${customer.firstName}, your invoice for ${fmt(Number(job.amount) || 0)} is ready: ${payLink}`), 15000, "Invoice SMS");
         toast(`Invoice texted to ${customer.firstName} ✓`, "green");
         logOutboundSmsToInbox({ contactName: `${customer.firstName} ${customer.lastName}`, contactPhone: customer.phone, customerId: customer.id, body: `Hi ${customer.firstName}, your invoice for ${fmt(Number(job.amount) || 0)} is ready: ${payLink}` }).catch(() => {});
       } else {
         if (!customer.email) throw new Error("No email on file for this customer.");
-        console.log("[SendInvoice] sending invoice via Gmail to", customer.email);
         const html = emailShell(companyName, "Invoice", `<p>Hi ${customer.firstName},</p>${noteHtml}<p>Thanks for choosing us! Your service at <b>${job.address}</b> is complete.</p><p><b>Amount due:</b> $${(Number(job.amount) || 0).toFixed(2)}</p>` + emailButton("View & Pay Invoice", payLink));
         await withTimeout(sendOwnerGmailOnly(settings as any, customer.email, subject, html), 10000, "Invoice email");
         toast(`📧 Invoice emailed to ${customer.firstName} ✓`, "green");
       }
-      console.log("[SendInvoice] invoice send — success");
       return true;
     } catch (err: any) {
       console.error("[SendInvoice] invoice send — error:", err?.message || err);
@@ -567,12 +551,10 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
       return false;
     } finally {
       setSendingCompleteInvoice(false);
-      console.log("[SendInvoice] button reset");
     }
   };
 
   const finalizeCompletion = async (paymentStatus: "Paid" | "Pending", method?: string, invoiceSent?: boolean) => {
-    console.log("[Complete Job] Mark Complete clicked — paymentStatus:", paymentStatus, "method:", method, "invoiceSent:", invoiceSent, "jobId:", job.id);
     let hrs = Number(job.loggedHours) || 0;
     const patch: Partial<Job> = { status: "completed", completedAt: new Date().toISOString(), pipelineStage: paymentStatus === "Paid" ? "paid" : "completed" };
     if (job.clockInAt) {
@@ -592,8 +574,6 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
       hrs = added;
       patch.loggedHours = hrs;
     }
-    console.log("[HoursSync] Complete Job — jobId:", job.id, "crew:", job.crew, "clockInAt:", job.clockInAt, "arrivedAt:", job.arrivedAt, "computed loggedHours:", hrs);
-    console.log("[Payroll] WRITE (job completion) — loggedHours computed:", hrs, "for job:", job.id, "— will write to jobs.loggedHours column now");
     if (paymentStatus === "Paid") {
       patch.paymentType = (method as any) || "Cash";
       patch.paymentStatus = "Paid";
@@ -616,9 +596,6 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
         console.error("[Complete Job] — error:", result.error.message || result.error);
         toast("Completed locally, but the server didn't confirm — " + (result.error.message || "check connection"), "red");
       } else {
-        console.log("[Complete Job] — success: job", job.id, "saved as completed");
-        console.log("[Payroll] WRITE (job completion) — confirmed saved to Supabase — job:", job.id, "loggedHours:", patch.loggedHours ?? "(unchanged — no clockInAt/arrivedAt on this job)");
-        console.log("[Audit] Complete Job flow — status: fixed (sign-off and checklist saves now toast on failure instead of failing silently)");
         toast("✅ Job completed successfully", "green");
       }
     } catch (e: any) {
@@ -804,7 +781,7 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
                   <button key={m} onClick={() => setPaymentMethod(m)} className={"py-3 rounded-xl border-2 text-sm font-semibold transition " + (paymentMethod === m ? "border-green-500 bg-green-950/30 text-green-300" : "border-white/10 bg-black/40 text-white/60 hover:border-white/30")}>{m}</button>
                 ))}
               </div>
-              <GBtn onClick={() => { console.log("[CompleteJob] Mark Complete (paid) clicked — method:", paymentMethod); finalizeCompletion("Paid", paymentMethod || "Cash"); }} disabled={!paymentMethod} className="w-full !justify-center !py-3">
+              <GBtn onClick={() => finalizeCompletion("Paid", paymentMethod || "Cash")} disabled={!paymentMethod} className="w-full !justify-center !py-3">
                 <CheckCircle size={16} className="inline mr-1.5" />Mark Complete
               </GBtn>
             </>
@@ -891,9 +868,7 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
               </Glass>
               <div className="grid grid-cols-2 gap-3">
                 <GBtn onClick={async () => {
-                  console.log("[CompleteJob] Send Invoice clicked — channel:", invoiceChannel, "to:", customer?.email || customer?.phone);
                   const sent = await sendInvoiceFromPortal(invoiceEditSubject, invoiceEditNote);
-                  console.log("[CompleteJob] invoice send result:", sent);
                   if (sent) finalizeCompletion("Pending", undefined, true);
                 }} disabled={sendingCompleteInvoice} className="!py-3 !justify-center !bg-gradient-to-r !from-green-700 !to-green-900 !border-green-600/50">
                   {sendingCompleteInvoice ? "Sending…" : "Send Invoice ✓"}
@@ -1621,7 +1596,6 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     setMarkingPaidDay(dateKey);
     const current = (myEmployee as any)?.paidDays || {};
     const nextPaid = { ...current, [dateKey]: current[dateKey] === "paid" ? "unpaid" as const : "paid" as const };
-    console.log("[HoursSync] markDayPaid — empId:", empId, "date:", dateKey, "→", nextPaid[dateKey]);
     try {
       const result = await (supabase as any).from("employees").update({ paidDays: nextPaid }).eq("id", empId);
       if (result?.error) {
@@ -1756,7 +1730,6 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   useEffect(() => {
     const hash = capturedHashRef.current;
     const match = hash.match(/[?&]invite=([A-Z0-9]+)/i);
-    console.log("INVITE CODE CAPTURED:", match ? match[1] : "(none)", "from hash:", hash);
     if (!match) return;
     const code = match[1];
     setInviteCode(code);
@@ -1885,10 +1858,6 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     if (!empSession) return;
     const userId = empSession.user.id;
     const email = empSession.user.email;
-    console.log("myEmployee lookup — employees:", JSON.stringify(employees.map(e => ({ id: (e as any).id, email: e.email, user_id: (e as any).user_id }))));
-    console.log("myEmployee lookup — current email:", email, "current userId:", userId);
-    console.log("myEmployee lookup — localEmployee:", JSON.stringify(localEmployee));
-    console.log("myEmployee lookup — result:", myEmployee ? `found: ${myEmployee.firstName} ${myEmployee.lastName}` : "NOT FOUND");
 
     if (!myEmployee && !autoRetryDoneRef.current) {
       autoRetryDoneRef.current = true;
@@ -1937,7 +1906,6 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     const rdo = (myEmployee as any).recurringDaysOff;
     if (Array.isArray(rdo) && rdo.length > 0) setRecurringDaysOff(rdo);
     if ((myEmployee as any).autoSyncCalendar === false) setAutoSyncCalendar(false);
-    console.log("[Availability] loaded — empId:", (myEmployee as any)?.id, "specific dates blocked:", av, "recurring days off:", rdo);
   }, [(myEmployee as any)?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Home base specifically re-syncs whenever Supabase's value changes (not
@@ -2027,7 +1995,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
       if (incomingFirstLoadRef.current) { setIncomingLoading(false); incomingFirstLoadRef.current = false; }
     };
     load();
-    const interval = setInterval(load, 5000);
+    const interval = setInterval(() => { if (shouldPollJobs()) load(); }, 5000);
     return () => clearInterval(interval);
   }, [(myEmployee as any)?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -2051,32 +2019,23 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
         let data: any[] | null = null;
         try {
           const attempt1 = await (supabase as any).from("jobs").select("*").contains("crew", [empId]);
-          console.log("FETCH ATTEMPT 1 — contains('crew', [employeeId]):", attempt1);
           if (Array.isArray(attempt1.data) && attempt1.data.length > 0) data = attempt1.data;
         } catch (e) { console.warn("FETCH ATTEMPT 1 failed:", e); }
 
         if (!data && empUserId) {
           try {
             const attempt2 = await (supabase as any).from("jobs").select("*").contains("crew", [empUserId]);
-            console.log("FETCH ATTEMPT 2 — contains('crew', [userId]):", attempt2);
             if (Array.isArray(attempt2.data) && attempt2.data.length > 0) data = attempt2.data;
           } catch (e) { console.warn("FETCH ATTEMPT 2 failed:", e); }
         }
 
         if (!data) {
           const attempt3 = await (supabase as any).from("jobs").select("*");
-          console.log("FETCH ATTEMPT 3 — select all, filter client-side:", attempt3);
           data = Array.isArray(attempt3.data) ? attempt3.data : [];
         }
 
-        console.log("FETCHED JOBS — raw data:", JSON.stringify(data));
-        console.log("FETCHED JOBS — count:", data?.length);
-        console.log("FETCHED JOBS — first job crew:", JSON.stringify(data?.[0]?.crew));
-        console.log("MY EMPLOYEE ID:", empId, "USER_ID:", empUserId);
         if (Array.isArray(data)) {
           data.forEach((j: any) => {
-            console.log("  job", j.id, "crew:", j.crew, "— matches me?",
-              crewIncludesEmployee(j.crew, empId, empUserId));
           });
         }
         // Fields the employee's own clock/lunch actions own — an in-flight
@@ -2098,8 +2057,6 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
             const added = data.filter((j: any) => !existingIds.has(j.id));
             const result = [...merged, ...added];
             const myJobsFiltered = result.filter(j => crewIncludesEmployee(j.crew, empId, empUserId));
-            console.log("FILTERED MY JOBS — count:", myJobsFiltered.length);
-            console.log("FILTERED MY JOBS — ids:", myJobsFiltered.map((j: any) => j.id));
             return result;
           });
         }
@@ -2131,7 +2088,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   // device wrote to the same Supabase row.
   useEffect(() => {
     if (!empSession?.user?.id) return;
-    const interval = setInterval(() => { refetchEmployees?.(); }, 10000);
+    const interval = setInterval(() => { if (shouldPollJobs()) refetchEmployees?.(); }, 10000);
     return () => clearInterval(interval);
   }, [empSession?.user?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -2146,11 +2103,6 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     ? jobs.filter(j => crewIncludesEmployee(j.crew, myEmployee.id, (myEmployee as any).user_id))
     : [];
   if (empSession) {
-    console.log("ALL JOBS — total jobs:", jobs.length);
-    console.log("ALL JOBS — myEmployee:", myEmployee?.id, (myEmployee as any)?.user_id);
-    console.log("ALL JOBS — sample job crew:", jobs[0]?.crew);
-    console.log("FILTERED MY JOBS — count:", myJobs.length);
-    console.log("FILTERED MY JOBS — ids:", myJobs.map(j => j.id));
   }
 
   // Fetch any job's customer directly from Supabase when it isn't found in the
@@ -2350,7 +2302,6 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   const weekHours = weekJobs.reduce((s, j) => s + Number(j.loggedHours || 0), 0) + weekShiftTopUpHours;
   const weekJobsDone = weekJobs.filter(j => j.status === "completed").length;
   const weekPay = weekHours * (myEmployee?.hourlyRate || 0);
-  console.log("[EmpWidgets] recalculated — weekHours:", Math.round(weekHours * 100) / 100, "(job hours:", Math.round((weekHours - weekShiftTopUpHours) * 100) / 100, "+ shift top-up:", Math.round(weekShiftTopUpHours * 100) / 100, ") weekJobsDone:", weekJobsDone, "weekPay:", Math.round(weekPay * 100) / 100, "hourlyRate:", myEmployee?.hourlyRate, "— from", jobs.length, "total jobs in live state");
 
   const upNextJob = [...myJobs]
     .filter(j => j.scheduledDate >= todayStr && j.status !== "completed")
@@ -2399,7 +2350,6 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
           if (Object.keys(core).length > 0) {
             const retry = await (supabase as any).from("jobs").update(core).eq("id", jobId);
             if (retry?.error) { console.error("[updateJob] core retry failed:", retry.error.message); return retry; }
-            console.log("[updateJob] core fields saved after retry:", Object.keys(core).join(", "));
             return retry;
           }
           return result;
@@ -2430,7 +2380,6 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
       commLog: [], photos: [], chemicalsUsed: [], paymentStatus: undefined, amountCollected: undefined,
     };
     setJobs((prev: any[]) => [...prev, nextJob]);
-    console.log("[Recurring] next job auto-scheduled from field portal — sourceJobId:", sourceJob.id, "mode:", sourceJob.recurringMode || "preset", "nextDate:", nextDate, "newJobId:", nextJob.id);
     (supabase as any).from("jobs").insert(nextJob)
       .then((r: any) => {
         if (r?.error) { console.error("[Recurring] insert failed:", r.error.message); toast?.("Job completed, but couldn't auto-schedule the next occurrence — " + r.error.message, "red"); }
@@ -2715,11 +2664,9 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     const msg = lateMinutes > 0
       ? `Hi ${cust!.firstName}, running a few minutes behind — ETA ${eta}. Sorry for the delay!`
       : `Hi ${cust!.firstName}, on my way — ETA ${eta}. See you soon!`;
-    console.log("[OTW] sending — twilioConfigured:", !!settings?.twilioSid, "phone:", cust!.phone, "email:", cust!.email);
     if (settings?.twilioSid && cust!.phone) {
       try {
         await withTimeout(twilioSend(settings as any, cust!.phone, msg), 15000, "OTW SMS");
-        console.log("[OTW] — success: SMS sent");
         toast("On the way message sent to " + cust!.firstName + " ✓", "green");
         logOutboundSmsToInbox({ contactName: `${cust!.firstName} ${cust!.lastName}`, contactPhone: cust!.phone, customerId: cust!.id, body: msg }).catch(() => {});
       }
@@ -2728,12 +2675,10 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
       try {
         const html = emailShell(settings?.companyName || "Crew Boss", "On My Way", `<p>${msg}</p>`);
         await withTimeout(sendOwnerGmailOnly(settings as any, cust!.email, "Your technician is on the way", html), 15000, "OTW email");
-        console.log("[OTW] — success: email sent");
         toast("On the way message sent to " + cust!.firstName + " ✓", "green");
       } catch (e: any) { console.error("[OTW] — error:", e?.message); toast(e?.message || "Failed to send OTW email", "red"); }
     } else if (cust!.phone) {
       // No Twilio and no email on file — open the tech's own SMS app prefilled.
-      console.log("[OTW] no provider configured — opening device SMS app");
       window.location.href = "sms:" + cust!.phone.replace(/\D/g, "") + "?body=" + encodeURIComponent(msg);
       toast("Opening your texts to notify " + cust!.firstName + " — add Twilio in Settings to send automatically", "yellow");
     }
@@ -2768,7 +2713,6 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
           await (supabase as any).from("employees").update({ user_id: userId }).eq("id", byEmail.id);
         }
       }
-      console.log("doRetryLink — found:", JSON.stringify(found));
       if (found) setLocalEmployee(normalizeEmp(found));
       else toast("No employee record found for " + email + ". Ask your manager to add your email.");
     } catch (e) {
@@ -2778,7 +2722,6 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   };
 
   const doForgotPassword = async () => {
-    console.log("[Forgot Password/employee] clicked — email:", loginEmail);
     if (!loginEmail.trim()) { setLoginError("Enter your email first"); return; }
     try {
       // resetPasswordForEmail resolves with {error} rather than throwing on
@@ -2788,7 +2731,6 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
         redirectTo: `${window.location.origin}${window.location.pathname}#/reset-password`,
       });
       if (error) { console.error("[Forgot Password/employee] — error:", error.message); setLoginError("Could not send reset email — " + error.message); return; }
-      console.log("[Forgot Password/employee] — success: reset email sent");
       setForgotSent(true);
     } catch (e: any) { setLoginError("Could not send reset email — " + (e?.message || "try again")); }
   };
@@ -2834,7 +2776,6 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
 
   const handleAcceptRequest = async () => {
     if (!requestData || !myEmployee) return;
-    console.log("[CrewFlow] handleAcceptRequest — requestId:", requestId, "job_id:", requestData.job_id, "empId:", myEmployee.id);
     try {
       const statusResult = await (supabase as any).from("job_requests")
         .update({ status: "accepted", responded_at: new Date().toISOString() })
@@ -2847,7 +2788,6 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
         const currentCrew = targetJob?.crew || [];
         if (!crewIncludesEmployee(currentCrew, empId, empUserId)) {
           const newCrew = [...currentCrew, empId];
-          console.log("[CrewFlow] accepting request — job", requestData.job_id, "crew before:", currentCrew, "after:", newCrew);
           // Optimistic local update
           setJobs(prev => prev.map(j => j.id === requestData.job_id ? { ...j, crew: newCrew } : j));
           // Save MUST be awaited before refetching — otherwise the refetch below can
@@ -2855,7 +2795,6 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
           // still-empty array from Supabase, which is exactly why accepted jobs were
           // vanishing again right after acceptance.
           const saveResult = await (supabase as any).from("jobs").update({ crew: newCrew }).eq("id", requestData.job_id);
-          console.log("[CrewFlow] accept crew-write result:", saveResult?.error ? saveResult.error.message : "success");
           if (saveResult?.error) {
             toast("Accepted, but couldn't add you to the job's crew — " + saveResult.error.message, "red");
           }
@@ -2875,7 +2814,6 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   };
 
   const handleDenyRequest = async () => {
-    console.log("[CrewFlow] handleDenyRequest — requestId:", requestId, "reason:", denyReason);
     try {
       const result = await (supabase as any).from("job_requests")
         .update({ status: "denied", denial_reason: denyReason.trim(), responded_at: new Date().toISOString() })
@@ -2957,7 +2895,6 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
       ? availability.filter(d => d !== dateStr)
       : [...availability, dateStr];
     setAvailability(next);
-    console.log("[Availability] toggle specific date —", dateStr, "→ blocked dates now:", next);
     try {
       const empId = (myEmployee as any)?.id || (myEmployee as any)?.user_id;
       if (empId) {
@@ -2974,7 +2911,6 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
       ? recurringDaysOff.filter(d => d !== day)
       : [...recurringDaysOff, day].sort();
     setRecurringDaysOff(next);
-    console.log("[Availability] toggle recurring day off —", weekdayLabels[day], "→ recurring days off now:", next.map(d => weekdayLabels[d]));
     try {
       const empId = (myEmployee as any)?.id || (myEmployee as any)?.user_id;
       if (empId) {
@@ -2997,14 +2933,12 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
         const currentCrew = targetJob?.crew || [];
         if (!crewIncludesEmployee(currentCrew, empId, empUserId)) {
           const newCrew = [...currentCrew, empId];
-          console.log("Accepting job", req.job_id, "— crew before:", currentCrew, "after:", newCrew);
           // Optimistic local update
           setJobs(prev => prev.map(j => j.id === req.job_id ? { ...j, crew: newCrew } : j));
           // Must await the save before refetching — see handleAcceptRequest for why
           // an un-awaited fire-and-forget write here let the refetch race ahead and
           // clobber the optimistic crew with Supabase's still-stale (empty) row.
           const saveResult = await (supabase as any).from("jobs").update({ crew: newCrew }).eq("id", req.job_id);
-          console.log("ACCEPT SAVE RESULT:", saveResult);
         }
         // Confirm against Supabase immediately rather than waiting up to 10s for the
         // next poll — the optimistic setJobs above already updated myJobs for instant
@@ -3046,10 +2980,8 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   };
 
   const doLogin = async () => {
-    console.log("LOGIN START — email:", loginEmail);
     setLoginLoading(true); setLoginError("");
     const { data, error } = await supabase.auth.signInWithPassword({ email: loginEmail, password: loginPwd });
-    console.log("SIGNIN RESULT — error:", error?.message || null, "session user:", data?.session?.user?.id || null);
     setLoginLoading(false);
     if (error) { setLoginError(error.message); return; }
 
@@ -3057,8 +2989,6 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     const metaRole = session.user.user_metadata?.role;
     const email = session.user.email || "";
 
-    console.log("doLogin: checking email", email, "against employees:", employees.map(e => e.email));
-    console.log("doLogin: user metadata role:", metaRole);
 
     // Anyone who successfully completes signInWithPassword is an email/password user — treat as employee.
     // Google OAuth users cannot reach this path. Never sign them out here.
@@ -3116,14 +3046,12 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
         console.error("[ManagerInvite] failed to create employee record:", insertResult.error.message);
         toast("Signed in, but couldn't create your team record — " + insertResult.error.message + ". Contact your owner.", "red");
       } else {
-        console.log("[ManagerInvite] employee record created — role:", newEmp.role, "email:", newEmp.email);
       }
       // Set locally so myEmployee resolves immediately without waiting for parent re-fetch
       setLocalEmployee(normalizeEmp(newEmp));
     }
 
     refetchEmployees?.();
-    console.log("EMP SESSION SET — user:", session.user.id, "matchedEmployee:", matchedEmployee?.id || null, "isManager:", isManager);
 
     // Managers get the CRM, not the portal — once their role is established, send
     // them to the dashboard. A full reload re-runs App.tsx's session resolution
@@ -3346,7 +3274,6 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
 
   // ── Account not linked ────────────────────────────────────────────────────
   if (!myEmployee) {
-    console.log("RENDERING PORTAL — blocked: no myEmployee match for", empSession?.user?.email, "employees loaded:", employees.length);
     return (
       <div className="min-h-screen bg-black text-white flex flex-col items-center justify-center p-6 text-center">
         <AlertCircle size={40} className="text-yellow-400 mb-4" />
@@ -3573,7 +3500,6 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     const sendingOtwCard = sendingOtwJobId === job.id;
 
     const sendOTW = async () => {
-      console.log("[OTW] send clicked — job:", job.id, "channel:", otwCardChannel);
       if (!customer) { console.warn("[OTW] no customer object"); toast("No customer info for this job", "yellow"); return; }
       setSendingOtwJobId(job.id);
       const msg = `Hi ${customer.firstName || "there"}, your CrewBoss technician is on the way!`;
@@ -3581,13 +3507,11 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
         if (otwCardChannel === "sms") {
           if (!customer.phone) throw new Error("No phone on file for this customer.");
           await withTimeout(twilioSend(settings as any, customer.phone, msg), 15000, "OTW SMS");
-          console.log("[OTW] — success: SMS sent to", customer.phone);
           logOutboundSmsToInbox({ contactName: `${customer.firstName} ${customer.lastName}`, contactPhone: customer.phone, customerId: customer.id, body: msg }).catch(() => {});
         } else {
           if (!customer.email) throw new Error("No email on file for this customer.");
           const html = emailShell(settings?.companyName || "Crew Boss", "On My Way", `<p>${msg}</p>`);
           await withTimeout(sendOwnerGmailOnly(settings as any, customer.email, "Your technician is on the way", html), 15000, "OTW email");
-          console.log("[OTW] — success: email sent to", customer.email);
         }
         updateJob(job.id, { commLog: [...(job.commLog || []), { id: uid(), type: "note" as const, date: today(), note: `📍 On my way message sent via ${otwCardChannel === "sms" ? "text" : "email"}` }] });
         toast(`On the way message sent to ${customer.firstName || "customer"} ✓`, "green");
@@ -3601,7 +3525,6 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     };
     const sendRunningLateCard = async (e: React.MouseEvent, minutes: number) => {
       e.stopPropagation();
-      console.log("[RunningLate] Send pressed —", minutes, "min, reason:", lateNote || "(none)", "job:", job.id, "channel:", lateCardChannel);
       if (!customer) { console.warn("[RunningLate] no customer object"); toast("No customer info for this job", "yellow"); return; }
       if (!customer.phone && !customer.email) { console.warn("[RunningLate] customer has no phone/email"); toast("No contact info for this customer", "yellow"); return; }
       setSendingLateJobId(job.id);
@@ -3612,17 +3535,13 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
       try {
         if (lateCardChannel === "sms") {
           if (!customer.phone) throw new Error("No phone on file for this customer.");
-          console.log("[RunningLate] sending via Twilio to", customer.phone);
           await withTimeout(twilioSend(settings as any, customer.phone, `Hi ${customer.firstName}, ${msg}`), 15000, "Running late SMS");
-          console.log("[RunningLate] — success: SMS sent");
           toast(`Message sent to ${customer.firstName} ✓`, "green");
           logOutboundSmsToInbox({ contactName: `${customer.firstName} ${customer.lastName}`, contactPhone: customer.phone, customerId: customer.id, body: `Hi ${customer.firstName}, ${msg}` }).catch(() => {});
         } else {
           if (!customer.email) throw new Error("No email on file for this customer.");
-          console.log("[RunningLate] sending via email to", customer.email);
           const html = emailShell(settings?.companyName || "Crew Boss", "Running Late", `<p>Hi ${customer.firstName},</p><p>${msg}</p>`);
           await withTimeout(sendOwnerGmailOnly(settings as any, customer.email, "Your technician is running late", html), 15000, "Running late email");
-          console.log("[RunningLate] — success: email sent");
           toast(`Message sent to ${customer.firstName} ✓`, "green");
         }
         const ownerEmail = (settings as any)?.myEmail || (settings as any)?.companyEmail;
@@ -3866,7 +3785,6 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     );
   };
 
-  console.log("RENDERING PORTAL — employee:", myEmployee.firstName, myEmployee.lastName, "myJobs:", myJobs.length, "tab:", tab);
 
   return (
     <div className="min-h-screen bg-black text-white flex flex-col">
@@ -3942,19 +3860,16 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
         const locationSharing = optimisticLocationSharing !== undefined ? optimisticLocationSharing : !!(myEmployee as any)?.locationSharing;
         const empId = (myEmployee as any)?.id;
         const headerToggleLocation = async () => {
-          console.log("[Share Location] clicked — empId:", empId, "currentlySharing:", locationSharing);
           if (!empId) return;
           const turningOn = !locationSharing;
           if (turningOn && navigator.geolocation) {
             setLocationPermissionPending(true);
             let settled = false;
             const safety = setTimeout(() => { if (settled) return; settled = true; setLocationPermissionPending(false); toast("Location request timed out", "red"); }, 12000);
-            console.log("[Share Location] requesting getCurrentPosition…");
             navigator.geolocation.getCurrentPosition(
               async pos => {
                 if (settled) return; settled = true; clearTimeout(safety);
                 setLocationPermissionPending(false);
-                console.log("[Share Location] — success: coords", pos.coords.latitude, pos.coords.longitude);
                 // Optimistic flip so the "📍 Sharing" badge shows instantly.
                 setOptimisticLocationSharing(true);
                 toast("📍 Location sharing active", "green");
@@ -3963,7 +3878,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                 // update left the badge off even though coords were captured.
                 const { error } = await (supabase as any).from("employees").update({ locationSharing: true, lastLocation: { lat: pos.coords.latitude, lng: pos.coords.longitude, updatedAt: Date.now() } }).eq("id", empId);
                 if (error) console.error("[Share Location] — error saving:", error.message);
-                else { console.log("[Share Location] saved to Supabase (sharing + coords)"); refetchEmployees?.(); }
+                else refetchEmployees?.();
               },
               err => { if (settled) return; settled = true; clearTimeout(safety); setLocationPermissionPending(false); console.error("[Share Location] — error:", err.code, err.message); toast("Location denied — enable in settings (" + err.message + ")", "red"); },
               { enableHighAccuracy: true, timeout: 10000 }
@@ -3977,7 +3892,6 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
           try {
             const result = await (supabase as any).from("employees").update({ locationSharing: false }).eq("id", empId);
             if (result?.error) { toast("Failed to save — " + result.error.message, "red"); return; }
-            console.log("[Share Location] sharing turned off");
             refetchEmployees?.();
           } catch (e: any) { toast("Failed to save — " + (e?.message || "try again"), "red"); }
         };
@@ -4100,9 +4014,6 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                 ? Number((myEmployee as any)?.lastShiftHours) || 0
                 : (localLastShift?.date === localDateStr() ? Number(localLastShift?.hours) || 0 : 0);
               const isResuming = !dayClockInAt && alreadyWorkedTodayHours > 0;
-              console.log("[ShiftTimer] render — dayClockInAt:", dayClockInAt, "lastShiftDate(server):", (myEmployee as any)?.lastShiftDate,
-                "lastShift(local):", localLastShift, "today(local):", localDateStr(), "alreadyWorkedTodayHours:", alreadyWorkedTodayHours,
-                "→ button will show:", dayClockInAt ? "End My Day" : isResuming ? "Resume" : "Start My Day");
               const onLunch = !!dayLunchStartAt;
               const currentPauseMs = onLunch ? Date.now() - dayLunchStartAt : 0;
               const netShiftHoursNow = dayClockInAt
@@ -4170,8 +4081,6 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                   // Starting a fresh shift clears any prior "shift ended" banner.
                   setShiftEndedMsg(null);
                 }
-                console.log("[HoursSync] toggleDay clicked — endingDay:", endingDay, "empId:", empId, "dayClockInAt→", nextVal, "finalHours:", finalHours);
-                console.log("[Payroll] WRITE (shift timer) —", endingDay ? "clock OUT" : "clock IN", "— empId:", empId, endingDay ? `total shift hours: ${finalHours}` : "", "— writing to employees.dayClockInAt now");
                 // Always write the localStorage fallback immediately, regardless of
                 // how the Supabase write below goes — this is what guarantees
                 // Resume works on this device even if the lastShiftHours/
@@ -4206,8 +4115,6 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                     console.error("[HoursSync] — error:", result.error.message);
                     toast("Saved locally, but couldn't sync to the server: " + result.error.message, "red");
                   } else {
-                    console.log("[HoursSync] — success: shift data persisted to Supabase for", empId);
-                    console.log("[Payroll] WRITE (shift timer) — confirmed saved to Supabase for", empId);
                     refetchEmployees?.();
                     toast(endingDay ? `Shift ended · Total ${totalLabel} logged, summary emailed` : "Day started — owner can see you're on shift");
                   }
@@ -4249,7 +4156,6 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
               const lunchCountdownHHMMSS = [Math.floor(lunchRemainSecs / 3600), Math.floor((lunchRemainSecs % 3600) / 60), lunchRemainSecs % 60].map(n => String(n).padStart(2, "0")).join(":");
               const locationSharing = !!(myEmployee as any)?.locationSharing;
               const toggleLocationSharing = async () => {
-                console.log("[Share Location] clicked — empId:", empId, "currentlySharing:", locationSharing, "geolocation available:", !!navigator.geolocation);
                 if (!empId) { toast("Still loading your profile — try again in a moment", "yellow"); return; }
                 const turningOn = !locationSharing;
                 // Request the permission prompt immediately on tap — previously
@@ -4271,15 +4177,13 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                     setLocationPermissionPending(false);
                     toast("Location request timed out — try again", "red");
                   }, 12000);
-                  console.log("[Share Location] requesting getCurrentPosition…");
                   navigator.geolocation.getCurrentPosition(
                     (pos) => {
                       if (settled) return;
                       settled = true; clearTimeout(safety);
                       setLocationPermissionPending(false);
-                      console.log("[Share Location] — success: got coords", pos.coords.latitude, pos.coords.longitude);
                       toast("📍 Location sharing active");
-                      (supabase as any).from("employees").update({ lastLocation: { lat: pos.coords.latitude, lng: pos.coords.longitude, updatedAt: Date.now() }, locationSharing: true }).eq("id", empId).then((r: any) => { if (r?.error) console.error("[Share Location] — error saving coords:", r.error.message); else { console.log("[Share Location] coords saved to Supabase"); refetchEmployees?.(); } });
+                      (supabase as any).from("employees").update({ lastLocation: { lat: pos.coords.latitude, lng: pos.coords.longitude, updatedAt: Date.now() }, locationSharing: true }).eq("id", empId).then((r: any) => { if (r?.error) console.error("[Share Location] — error saving coords:", r.error.message); else refetchEmployees?.(); });
                     },
                     (err) => {
                       if (settled) return;
@@ -4730,7 +4634,6 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
             const calVisibleJobs = showCanceledJobs ? myJobs : myJobs.filter(j => j.status !== "cancelled");
             const calCanceledCount = myJobs.filter(j => j.status === "cancelled").length;
             const calDayJobs = calVisibleJobs.filter(j => j.scheduledDate === calSelectedDate);
-            console.log("[EmpCalendar] render — mode:", calMode, "selectedDate:", calSelectedDate, "myJobs total:", myJobs.length, "visible:", calVisibleJobs.length, "jobs on selected day:", calDayJobs.length);
 
             return (
               <>
@@ -5180,9 +5083,6 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
             // `employees` prop) for the shift-timer top-up. No separate
             // Supabase query happens in this component — it all reads
             // already-fetched, live-polled parent state.
-            console.log("[Payroll] MyPay tab render — source: jobs prop (" + jobs.length + " total,", myJobs.length, "for this employee) + employees prop (dayClockInAt:", (myEmployee as any)?.dayClockInAt, "lastShiftHours:", (myEmployee as any)?.lastShiftHours, ")");
-            console.log("[Payroll] MyPay tab result — current period hours:", current.hours, "current period pay:", current.pay,
-              "hourlyRate:", myEmployee?.hourlyRate, "jobTypeRates:", (myEmployee as any)?.jobTypeRates);
 
             // Outstanding balance — the owner marks individual 14-day pay
             // periods as paid/unpaid (Employees → Pay), keyed by each
@@ -5594,7 +5494,6 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
               })
               .slice(0, 20);
             const handleConnectGoogle = async () => {
-              console.log("GOOGLE LINK INITIATED — employee:", empSession?.user?.id);
               // Cache the role BEFORE redirecting — once linkIdentity/signInWithOAuth
               // navigates away, no more JS runs on this page, so this must be set
               // synchronously now, not after the redirect comes back. On return,

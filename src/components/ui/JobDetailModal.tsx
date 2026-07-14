@@ -674,19 +674,17 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
   const ownerEmpId = ownerEmployee?.id || null;
   const ownerOnCrew = !!ownerEmpId && (job.crew || []).includes(ownerEmpId);
   const clockIn = () => {
-    console.log("[Payroll] WRITE (job clock-in) — job:", jobId, "clockInAt:", Date.now(), ownerOnCrew ? "— owner is on this job's crew, also writing employees.dayClockInAt" : "");
     updateJob(jobId, { clockInAt: Date.now() });
     toast("Clocked in");
     if (ownerOnCrew) (supabase as any).from("employees").update({ dayClockInAt: Date.now() }).eq("id", ownerEmpId)
-      .then((r: any) => console.log("[Payroll] WRITE (owner dayClockInAt via job) —", r?.error ? "failed: " + r.error.message : "confirmed saved for " + ownerEmpId))
-      .catch(() => {});
+      .then((r: any) => { if (r?.error) console.warn("[Payroll] owner dayClockInAt save failed:", r.error.message); })
+      .catch((e: any) => console.warn("[Payroll] owner dayClockInAt save threw:", e?.message));
   };
   const clockOut = () => {
     const started = job.clockInAt;
     if (!started) return;
     const hrs = (Date.now() - started) / 3600000;
     const rounded = Math.round(hrs * 100) / 100;
-    console.log("[Payroll] WRITE (job clock-out) — job:", jobId, "hours this session:", rounded, "new loggedHours total:", Math.round(((Number(job.loggedHours) || 0) + rounded) * 100) / 100);
     updateJob(jobId, { clockInAt: null, loggedHours: Math.round(((Number(job.loggedHours) || 0) + rounded) * 100) / 100 });
     toast("+" + rounded + "h logged");
     if (ownerOnCrew) (supabase as any).from("employees").update({ dayClockInAt: null }).eq("id", ownerEmpId).catch(() => {});
@@ -1163,7 +1161,6 @@ ${job.notes ? `<div class="section"><h2>Job Notes</h2><p>${job.notes}</p></div>`
           {job.scheduledDate && (() => {
             const unavailNames = (job.crew || []).filter((eid: string) => isEmployeeUnavailable(employees.find(e => e.id === eid) as any, job.scheduledDate)).map((eid: string) => employees.find(e => e.id === eid)?.firstName);
             if (unavailNames.length === 0) return null;
-            console.log("[Audit] availability warning — feature: employee unavailability, status: shown for", unavailNames.join(", "), "on", job.scheduledDate);
             return (
               <div className="mt-2 text-[11px] text-yellow-300 bg-yellow-950/30 border border-yellow-700/40 rounded-lg px-2.5 py-1.5 flex items-center gap-1.5">
                 ⚠️ {unavailNames.join(", ")} is unavailable on this day. Schedule anyway?
@@ -1333,7 +1330,6 @@ ${job.notes ? `<div class="section"><h2>Job Notes</h2><p>${job.notes}</p></div>`
                   compressImageFile(f).then(dataUrl => {
                     const newPhoto = { id: uid(), type: "before", caption: "Before — " + today(), dataUrl, addedAt: today() };
                     const nextPhotos = [...(job.photos || []), newPhoto];
-                    console.log("[PhotoSync] owner adding before photo — job:", jobId, "photo count now:", nextPhotos.length);
                     updateJob(jobId, { photos: nextPhotos });
                   });
                 });
@@ -1349,7 +1345,6 @@ ${job.notes ? `<div class="section"><h2>Job Notes</h2><p>${job.notes}</p></div>`
                   compressImageFile(f).then(dataUrl => {
                     const newPhoto = { id: uid(), type: "after", caption: "After — " + today(), dataUrl, addedAt: today() };
                     const nextPhotos = [...(job.photos || []), newPhoto];
-                    console.log("[PhotoSync] owner adding after photo — job:", jobId, "photo count now:", nextPhotos.length);
                     updateJob(jobId, { photos: nextPhotos });
                   });
                 });

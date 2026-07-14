@@ -279,17 +279,12 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
         .catch((e: any) => toast?.("Failed to save: " + e?.message, "red"));
     }
     if (patch.crew !== undefined) {
-      console.log("[CrewFlow] owner assigning crew — job:", jid, "crew:", patch.crew, "full job:", { ...oldJob, ...patch });
       const crewPatch: any = { crew: patch.crew };
       if (patch.crewAssignedAt !== undefined) crewPatch.crewAssignedAt = patch.crewAssignedAt;
       (supabase as any).from("jobs").update(crewPatch).eq("id", jid)
         .then((result: any) => {
-          console.log("[CrewFlow] crew save result:", result?.error ? result.error.message : "success");
           if (result?.error) toast?.("Crew assignment failed to save — " + result.error.message, "red");
           else toast?.("Crew updated ✓", "green");
-          // Verify the write actually landed — re-query the row directly.
-          (supabase as any).from("jobs").select("crew").eq("id", jid).maybeSingle()
-            .then((verify: any) => console.log("[CrewFlow] verify crew saved — job", jid, ":", verify?.data?.crew));
         })
         .catch((e: any) => {
           console.warn("[CrewFlow] crew save threw:", e?.message);
@@ -315,7 +310,6 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
     // the live date), but we bump updated_at + write the new date so realtime
     // subscribers re-render and the record itself reflects the reschedule.
     if (patch.scheduledDate !== undefined && oldJob && patch.scheduledDate !== oldJob.scheduledDate) {
-      console.log("[Reschedule] job", jid, "date", oldJob.scheduledDate, "→", patch.scheduledDate, "— updating pending requests");
       (supabase as any).from("job_requests")
         .update({ scheduled_date: patch.scheduledDate, updated_at: new Date().toISOString() })
         .eq("job_id", jid).eq("status", "pending")
@@ -323,9 +317,7 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
           if (r?.error) {
             // scheduled_date column may not exist — retry with just updated_at.
             (supabase as any).from("job_requests").update({ updated_at: new Date().toISOString() }).eq("job_id", jid).eq("status", "pending")
-              .then((r2: any) => { if (r2?.error) console.warn("[Reschedule] could not update requests:", r2.error.message); else console.log("[Reschedule] pending requests touched"); });
-          } else {
-            console.log("[Reschedule] — success: pending requests updated to", patch.scheduledDate);
+              .then((r2: any) => { if (r2?.error) console.warn("[Reschedule] could not update requests:", r2.error.message); });
           }
         })
         .catch((e: any) => console.warn("[Reschedule] request update failed:", e?.message));
@@ -732,7 +724,6 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
                   recurringWeekdays: newJobForm.recurringWeekdays,
                 } : {}),
               };
-              if (job.isRecurring) console.log("[Audit] recurring job — mode:", job.recurringMode, "schedule:", describeRecurringSchedule(job), "next occurrence:", computeNextRecurringDate(job, job.scheduledDate));
               setJobs(prev => [...prev, job]);
               // Close the modal immediately — none of the follow-up work below
               // (Google Calendar, crew email/request) should be able to block
@@ -747,13 +738,11 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
               // immediately instead, and verify with a re-fetch so a failed
               // write surfaces as a visible error rather than silent data loss.
               (async () => {
-                console.log("[CrewFlow] creating job — id:", job.id, "directAssign:", directAssign, "crew:", job.crew);
                 const { error } = await withTimeout<any>((supabase as any).from("jobs").insert(job), 15000, "Save job");
                 if (error) {
                   console.error("[CrewFlow] new job failed to save to Supabase:", error);
                   toast?.("Job created locally, but failed to save to the server — " + error.message, "red");
                 } else {
-                  console.log("[CrewFlow] job saved to Supabase:", job.id);
                 }
                 // No verify SELECT round-trip — it needs a SELECT RLS policy
                 // that may be absent, and would otherwise spuriously warn on a
@@ -1176,7 +1165,6 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
                     const nextDate = computeNextRecurringDate(j, j.scheduledDate);
                     const nextJob = { ...j, id: uid(), status: "scheduled", scheduledDate: nextDate, loggedHours: 0, clockInAt: null, checklist: (j.checklist || []).map(ck => ({ ...ck, done: false })), commLog: [], photos: [], chemicalsUsed: [] };
                     setJobs(prev => [...prev.map(x => x.id === j.id ? { ...x, status: "completed" } : x), nextJob]);
-                    console.log("[Recurring] next job auto-scheduled — sourceJobId:", j.id, "mode:", j.recurringMode || "preset", "nextDate:", nextDate, "newJobId:", nextJob.id);
                     toast("Next recurring job auto-scheduled for " + nextDate);
                   }
                 }} className="flex-1 text-xs !py-1.5">Complete</GBtn>
