@@ -279,6 +279,7 @@ export const buildChecklistFromServices = (
       combined.push({ id: uid(), label: item.label, done: false, required: item.required, photoRequired: item.photoRequired });
     }
   }
+  console.log("[Audit] custom checklists — combined", seenServiceIds.size, "service(s) into", combined.length, "checklist item(s)");
   return combined;
 };
 
@@ -319,6 +320,25 @@ export const computeNextRecurringDate = (job: { recurringMode?: string; recurrin
   const days = recurringFreqs.find(f => f.key === job.recurringFreq)?.days || 30;
   const d = new Date(from); d.setDate(d.getDate() + days);
   return d.toISOString().slice(0, 10);
+};
+
+// AUDIT A (mobile round 4) — the Jobs list badge used to always print
+// job.recurringFreq regardless of recurringMode, so a "days"/"weeks"/
+// "months"/"weekdays" schedule (anything but the legacy "preset" mode)
+// showed a misleading label like "monthly" even when the actual schedule was
+// e.g. "every 2 weeks" or "Mon/Wed". Single shared label builder so the Jobs
+// list, Estimates list, and Calendar can't independently drift on this again.
+export const describeRecurringSchedule = (job: { recurringMode?: string; recurringFreq?: string; recurringInterval?: number; recurringWeekdays?: number[] } | undefined | null): string => {
+  if (!job) return "";
+  const mode = job.recurringMode || "preset";
+  if (mode === "weekdays") {
+    const days = (job.recurringWeekdays || []).map(i => weekdayLabels[i]).filter(Boolean);
+    return days.length ? days.join("/") : "weekly";
+  }
+  if (mode === "days") return "every " + Math.max(1, Number(job.recurringInterval) || 1) + "d";
+  if (mode === "weeks") return "every " + Math.max(1, Number(job.recurringInterval) || 1) + "wk";
+  if (mode === "months") return "every " + Math.max(1, Number(job.recurringInterval) || 1) + "mo";
+  return recurringFreqs.find(f => f.key === job.recurringFreq)?.label || job.recurringFreq || "recurring";
 };
 
 export const equipmentList = [

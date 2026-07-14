@@ -438,26 +438,28 @@ export function App() {
     return valid.includes(hash) ? hash : "dashboard";
   });
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  // FIX 3 (mobile round 3) — the round-2 version required the swipe to stay
-  // mostly horizontal (dx > dy) and only armed within 30px of the edge,
-  // which felt picky on an actual phone (a real thumb swipe always drifts a
-  // little vertically). Widened the edge zone, lowered the distance
-  // threshold, and swapped the horizontal-dominance check for a flat 100px
-  // vertical-drift allowance so a diagonal-ish swipe still counts as long as
-  // it moved right by enough. edgeSwipeProgress drives a live shadow/
-  // gradient on the left edge while the gesture is in progress, so there's
-  // visual feedback before the sidebar actually opens.
-  const EDGE_ZONE_PX = 50;
-  const SWIPE_THRESHOLD_PX = 50;
+  // FIX 3 (mobile round 4) — round 3's 50px edge zone / 50px threshold still
+  // felt too hard to trigger reliably on a real phone. Widened the edge zone
+  // further (a thumb rarely starts a swipe from the literal first 50px) and
+  // lowered the distance needed, kept the flat vertical-drift allowance from
+  // round 3. edgeSwipeProgress now also drives a live "peek" of the sidebar
+  // itself (see the <aside> style below) proportional to how far the swipe
+  // has gone, instead of only revealing it once the threshold is crossed.
+  const EDGE_ZONE_PX = 120;
+  const SWIPE_THRESHOLD_PX = 30;
   const MAX_VERTICAL_DRIFT_PX = 100;
+  const SIDEBAR_WIDTH_PX = 256; // matches the aside's w-64
   const mainTouchStartRef = useRef<{ x: number; y: number } | null>(null);
   const [edgeSwipeProgress, setEdgeSwipeProgress] = useState(0); // 0..1
   const handleMainTouchStart = (e: React.TouchEvent) => {
     const t = e.touches[0];
     if (t.clientX < EDGE_ZONE_PX && !sidebarOpen) {
       mainTouchStartRef.current = { x: t.clientX, y: t.clientY };
-      setEdgeSwipeProgress(0.05);
-      console.log("[Sidebar] touch start near left edge (x=" + Math.round(t.clientX) + ") — armed for edge swipe");
+      // FIX 3 (mobile round 4) — visible immediately on touch-down within the
+      // zone, not just once the finger has moved (round 3's 0.05 was almost
+      // imperceptible).
+      setEdgeSwipeProgress(0.12);
+      console.log("[Sidebar] touch start near left edge (x=" + Math.round(t.clientX) + ", zone=" + EDGE_ZONE_PX + "px) — armed for edge swipe");
     } else {
       mainTouchStartRef.current = null;
     }
@@ -473,7 +475,7 @@ export function App() {
       setEdgeSwipeProgress(0);
       return;
     }
-    setEdgeSwipeProgress(Math.max(0.05, Math.min(1, dx / SWIPE_THRESHOLD_PX)));
+    setEdgeSwipeProgress(Math.max(0.12, Math.min(1, dx / SWIPE_THRESHOLD_PX)));
   };
   const handleMainTouchEnd = (e: React.TouchEvent) => {
     const start = mainTouchStartRef.current;
@@ -873,7 +875,7 @@ export function App() {
     const rawName = settings.ownerName?.trim() || ownerEmail.split("@")[0].replace(/[._-]+/g, " ").replace(/\b\w/g, (c: string) => c.toUpperCase());
     const firstName = rawName.split(" ")[0] || "Owner";
     const lastName = rawName.split(" ").slice(1).join(" ") || "";
-    console.log("[Owner Self-Assign] ensuring owner employee row for", ownerId, "— name source:", settings.ownerName?.trim() ? "settings.ownerName" : "derived from email");
+    console.log("[OwnerSelfServe] ensuring owner employee row for", ownerId, "— name source:", settings.ownerName?.trim() ? "settings.ownerName" : "derived from email");
     const ownerEmpRow: any = {
       id: ownerId, firstName, lastName, role: "owner", status: "active", email: ownerEmail, hourlyRate: 0,
     };
@@ -886,20 +888,26 @@ export function App() {
           // (first_name etc.) — run supabase/migrations/0011_owner_settings_
           // and_alfred_schema_fixes.sql, which adds the camelCase columns
           // this app's code (everywhere, not just here) actually reads/writes.
+          // FIX 1 (mobile round 4) — a NOT NULL constraint on the legacy
+          // first_name/last_name/hourly_rate columns can still reject this
+          // camelCase-only upsert even after 0011 — run
+          // supabase/migrations/0012_employees_legacy_not_null_fix.sql too.
           const hint = /column.*schema cache/i.test(r.error.message)
             ? " — run supabase/migrations/0011_owner_settings_and_alfred_schema_fixes.sql in the Supabase SQL editor"
+            : /not-null constraint/i.test(r.error.message)
+            ? " — run supabase/migrations/0012_employees_legacy_not_null_fix.sql in the Supabase SQL editor"
             : "";
-          console.warn("[Owner Self-Assign] employees upsert failed:", r.error.message + hint);
+          console.warn("[OwnerSelfServe] employees upsert failed:", r.error.message + hint);
           // FIX 5 — this row is what lets the owner appear in crew dropdowns,
           // Live Team View/Crew View, and clock in/out at all; a silent
           // failure here means all of that quietly never works.
           toast("Couldn't set up your crew profile — " + r.error.message + hint, "red");
         } else {
-          console.log("[Owner Self-Assign] owner employee row ensured:", ownerId);
+          console.log("[OwnerSelfServe] owner employee row ensured — id:", ownerId, "role: owner, status: active — should now appear in crew dropdowns, Live Crew View, and Employees tab");
         }
       })
       .catch((e: any) => {
-        console.warn("[Owner Self-Assign] employees upsert threw:", e?.message);
+        console.warn("[OwnerSelfServe] employees upsert threw:", e?.message);
         toast("Couldn't set up your crew profile — " + (e?.message || "unknown error"), "red");
       });
   }, [crmUserId, crmUserEmail, settings.ownerName, settings.googleEmail, employees]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -2107,7 +2115,17 @@ export function App() {
       <aside
         onTouchStart={handleSidebarTouchStart}
         onTouchEnd={handleSidebarTouchEnd}
-        className={"fixed inset-y-0 left-0 z-30 w-64 bg-black/95 border-r border-red-900/30 flex flex-col transition-transform duration-300 md:relative md:translate-x-0 " + (sidebarOpen ? "translate-x-0" : "-translate-x-full md:translate-x-0")}>
+        className={"fixed inset-y-0 left-0 z-30 w-64 bg-black/95 border-r border-red-900/30 flex flex-col transition-transform duration-300 md:relative md:translate-x-0 " + (sidebarOpen ? "translate-x-0" : "-translate-x-full md:translate-x-0")}
+        // FIX 3 (mobile round 4) — while an edge-swipe is actively in
+        // progress (not yet open), override the class-driven transform so
+        // the sidebar peeks out proportional to swipe distance instead of
+        // staying fully hidden until the threshold is crossed. transition:
+        // "none" here so it follows the finger 1:1 with no lag; once the
+        // touch ends edgeSwipeProgress resets to 0, this inline style drops
+        // away, and the normal duration-300 class transition takes over for
+        // the final snap open/closed.
+        style={edgeSwipeProgress > 0 && !sidebarOpen ? { transform: `translateX(calc(-100% + ${Math.round(edgeSwipeProgress * SIDEBAR_WIDTH_PX)}px))`, transition: "none" } : undefined}
+      >
         {/* Logo */}
         <div className="p-4 border-b border-red-900/30 flex items-center justify-between">
           <div className="flex items-center gap-2.5">

@@ -444,8 +444,16 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
   // ownerEmpRowEnsuredRef effect) keyed `owner_<email>`, so their own clocked
   // time and crew-assigned jobs can be summarized the same way a technician's
   // can, right on the dashboard.
-  const ownerEmpId = (settings as any)?.ownerName ? `owner_${(settings as any)?.googleEmail || "owner"}` : null;
-  const ownerEmp = ownerEmpId ? employees.find((e: any) => e.id === ownerEmpId) : null;
+  // FIX 5 (mobile round 4) — this used to rebuild the id from
+  // `settings.ownerName ? owner_${settings.googleEmail || "owner"} : null`,
+  // the same divergent-copy bug found in JobDetailModal: it went null for
+  // any owner who never set settings.ownerName, and fell back to the
+  // literal "owner" (producing "owner_owner", matching nothing real) when
+  // googleEmail wasn't set. Read the real row straight off `employees` by
+  // role instead — it can't drift out of sync with what App.tsx actually
+  // created.
+  const ownerEmp = employees.find((e: any) => e.role === "owner") || null;
+  const ownerEmpId = ownerEmp?.id || null;
   const ownerOnShift = !!ownerEmp?.dayClockInAt;
   const ownerShiftMs = ownerOnShift ? Math.max(0, Date.now() - Number(ownerEmp.dayClockInAt) - (Number(ownerEmp.dayPausedMinutes) || 0) * 60000) : 0;
   const weekStartLive = (() => { const d = new Date(); d.setDate(d.getDate() - d.getDay()); return d.toISOString().slice(0, 10); })();
@@ -794,6 +802,7 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
         const paymentsToday = estimates.filter((e: any) => e.paidAt === todayStr);
         const revenueToday = paymentsToday.reduce((s: number, e: any) => s + (Number(e.total) || 0), 0);
         const clockedInNow = employees.filter((e: any) => !!e.dayClockInAt).length;
+        console.log("[Audit] daily summary — recomputed from live props — jobsToday:", todaysJobs.length, "completed:", completedToday.length, "onShiftNow:", clockedInNow, "invoicesSentToday:", invoicesSentToday, "revenueToday:", revenueToday);
         return (
           <Glass className="p-4 !bg-black/40">
             <div className="flex items-center justify-between mb-3">

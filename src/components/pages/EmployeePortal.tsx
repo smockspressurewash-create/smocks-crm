@@ -323,6 +323,7 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
         ...(newScheduledTime ? { scheduledTime: newScheduledTime } : {}),
       });
       toast(`Message sent to ${customer?.firstName || "customer"} ✓`, "green");
+      console.log("[Audit] Running Late SMS/email — status: sent via", lateChannel);
       setRunningLateOpen(false);
       setLateReasonNote("");
     } catch (e: any) {
@@ -351,6 +352,7 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
       }
       onUpdateJob({ commLog: [...(job.commLog || []), { id: uid(), type: "note" as const, date: today(), note: `📍 On my way message sent via ${otwChannel === "sms" ? "text" : "email"}` }] });
       toast(`On the way message sent to ${customer?.firstName || "customer"} ✓`, "green");
+      console.log("[Audit] OTW SMS/email — status: sent via", otwChannel);
       setOtwOpen(false);
     } catch (e: any) {
       console.error("[OTW] — error:", e?.message || e);
@@ -371,6 +373,7 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
         toast("Photo saved locally, but failed to sync — " + result.error.message, "red");
       } else {
         console.log("[PhotoSync] — success: photo saved for job", job.id);
+        console.log("[Audit] photo sync — status: written to jobs.photos, same field JobDetailModal reads on the owner side");
         toast(type === "before" ? "Before photo added ✓" : "After photo added ✓", "green");
       }
     } catch (e: any) {
@@ -420,7 +423,7 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
   // Saves the signature only — completion itself (and any payment info) is
   // handled by the separate "Complete Job" flow, so sign-off can happen
   // independently without forcing the job closed.
-  const saveSignOff = () => {
+  const saveSignOff = async () => {
     if (sigMode === "type") {
       if (!signerName.trim()) return;
     } else if (!sigDrawData) return;
@@ -430,12 +433,43 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
       sigType: sigMode,
       ...(sigMode === "draw" ? { sigData: sigDrawData } : {}),
     };
-    onUpdateJob({ signOff });
-    toast("Sign-off saved ✓", "green");
+    // AUDIT H (mobile round 4) — this used to fire onUpdateJob and
+    // unconditionally toast "saved" without awaiting the result. onUpdateJob
+    // never rejects (it resolves {error} on failure, see updateJob above), so
+    // a genuine Supabase save failure was silently swallowed — the customer's
+    // signature could be lost while the employee saw a green success toast.
+    try {
+      const result = await withTimeout(Promise.resolve(onUpdateJob({ signOff })), 15000, "Sign-off save");
+      if (result?.error) {
+        toast("Sign-off not saved — " + result.error.message, "red");
+        return;
+      }
+      toast("Sign-off saved ✓", "green");
+    } catch (e: any) {
+      toast("Sign-off not saved — " + (e?.message || "unknown error"), "red");
+      return;
+    }
     setShowSignOff(false);
     if (signOffReturnToComplete) {
       setSignOffReturnToComplete(false);
       setCompleteStep("review");
+    }
+  };
+
+  // AUDIT H (mobile round 4) — checklist toggle/notes/photo/video actions
+  // (PortalChecklistSection's onUpdate) used to call onUpdateJob completely
+  // fire-and-forget, with no toast at all on success or failure. A failed
+  // save (RLS, dropped connection, etc.) looked identical to a successful one
+  // — the checkbox visually flipped locally but nothing was actually
+  // persisted. Only toast on FAILURE here (not on every successful toggle —
+  // the checkbox itself is the success confirmation and a toast on every tap
+  // would be noisy), matching this file's other checklist-adjacent saves.
+  const saveChecklist = async (label: string, patch: Partial<Job>) => {
+    try {
+      const result = await withTimeout(Promise.resolve(onUpdateJob(patch)), 15000, label + " checklist save");
+      if (result?.error) toast(label + " checklist item didn't save — " + result.error.message, "red");
+    } catch (e: any) {
+      toast(label + " checklist item didn't save — " + (e?.message || "unknown error"), "red");
     }
   };
 
@@ -584,6 +618,7 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
       } else {
         console.log("[Complete Job] — success: job", job.id, "saved as completed");
         console.log("[Payroll] WRITE (job completion) — confirmed saved to Supabase — job:", job.id, "loggedHours:", patch.loggedHours ?? "(unchanged — no clockInAt/arrivedAt on this job)");
+        console.log("[Audit] Complete Job flow — status: fixed (sign-off and checklist saves now toast on failure instead of failing silently)");
         toast("✅ Job completed successfully", "green");
       }
     } catch (e: any) {
@@ -1235,19 +1270,19 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
           <PortalChecklistSection
             title="Pre-Job" emoji="🔵" allowPhotos
             items={preItems}
-            onUpdate={items => onUpdateJob({ preChecklist: items })}
+            onUpdate={items => saveChecklist("Pre-Job", { preChecklist: items })}
             disabled={!effPerms.can_complete_checklist}
           />
           <PortalChecklistSection
             title="During Job" emoji="🟡" allowPhotos
             items={durItems}
-            onUpdate={items => onUpdateJob({ duringChecklist: items })}
+            onUpdate={items => saveChecklist("During-Job", { duringChecklist: items })}
             disabled={!effPerms.can_complete_checklist}
           />
           <PortalChecklistSection
             title="Post-Job" emoji="🟢" allowPhotos
             items={postItems}
-            onUpdate={items => onUpdateJob({ postChecklist: items })}
+            onUpdate={items => saveChecklist("Post-Job", { postChecklist: items })}
             disabled={!effPerms.can_complete_checklist}
           />
         </Glass>

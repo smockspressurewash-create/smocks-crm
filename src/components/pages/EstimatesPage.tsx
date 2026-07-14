@@ -20,7 +20,7 @@ import {
   Tooltip, ResponsiveContainer, Area, AreaChart, LineChart, Line,
   ComposedChart, Legend
 } from "recharts";
-import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, buildChecklistFromServices, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, withTimeout } from "../../lib/utils";
+import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, describeRecurringSchedule, buildChecklistFromServices, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, withTimeout } from "../../lib/utils";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
 import { twilioSend, sendEmail } from "../../lib/messaging";
 import { supabase } from "../../lib/supabase";
@@ -311,6 +311,11 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
                   <Badge tone={e.status === "approved" ? "green" : e.status === "rejected" ? "red" : "yellow"}>{e.status === "rejected" ? "declined" : e.status}</Badge>
                   {e.invoiced && <Badge tone="blue">Invoiced</Badge>}
                   {expiry && <Badge tone={expiry.tone}>{expiry.label}</Badge>}
+                  {/* AUDIT A (mobile round 4) — recurring estimates had no
+                      indicator anywhere in this list even though the toggle/
+                      schedule picker exists in EstimateBuilder; Jobs list has
+                      had one all along. */}
+                  {(e as any).isRecurring && <span className="inline-flex items-center gap-0.5 text-[9px] text-blue-400 bg-blue-900/20 border border-blue-800/30 px-2 py-0.5 rounded-full"><Repeat size={8} />{describeRecurringSchedule(e as any)}</span>}
                 </div>
               </div>
               <div className="text-2xl font-bold cursor-pointer" onClick={() => openPreview(e)}>{fmt(e.total)}</div>

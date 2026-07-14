@@ -20,7 +20,7 @@ import {
   Tooltip, ResponsiveContainer, Area, AreaChart, LineChart, Line,
   ComposedChart, Legend
 } from "recharts";
-import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, computeDepositAmount, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE } from "../../lib/utils";
+import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, computeDepositAmount, computeDiscountsTotal, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE } from "../../lib/utils";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
 import { twilioSend, sendEmail } from "../../lib/messaging";
 import { supabase } from "../../lib/supabase";
@@ -136,17 +136,42 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
   const effectivePkg = e?.estimateType === "package"
     ? (e.packages || []).find((p: any) => p.id === selectedPkgId)
     : null;
-  const effectiveTotal = e?.estimateType === "package"
+  // AUDIT E (mobile round 4) — this used to charge the raw options/package
+  // subtotal straight through with no discount or tax applied at all, unlike
+  // the "standard" branch which reuses e.total (already discount+tax'd at
+  // save time). Any discount configured on an Options or Package estimate
+  // was silently dropped from the amount actually charged via Stripe
+  // (payAmt/totalWithTip below) and from the SMS/email confirmations quoting
+  // this figure. Apply the same discount+tax math EstimateBuilder uses for
+  // the standard type, driven off the live selection (chosen package /
+  // toggled-on options) rather than a stale saved total.
+  const effectiveSubtotal = e?.estimateType === "package"
     ? (effectivePkg?.subtotal || 0)
     : e?.estimateType === "options"
     ? effectiveLineItems.reduce((s: number, li: any) => s + Number(li.quantity) * Number(li.unitPrice), 0)
+    : (e?.subtotal ?? e?.total ?? 0);
+  const effectiveTotal = e?.estimateType === "package" || e?.estimateType === "options"
+    ? (() => {
+        const discountsTotal = computeDiscountsTotal(e?.discounts, effectiveSubtotal) + Number(e?.discount || 0);
+        const afterDisc = Math.max(0, effectiveSubtotal - discountsTotal);
+        const taxRate = Number((settings as any)?.taxRate) || 6;
+        return Math.round((afterDisc + afterDisc * (taxRate / 100)) * 100) / 100;
+      })()
     : (e?.total || 0);
+  useEffect(() => {
+    if (!e?.id) return;
+    console.log("[Audit] discounts on client charge — estimateType:", e.estimateType, "discount:", e.discount, "discounts:", e.discounts, "effectiveTotal (charged):", effectiveTotal);
+  }, [e?.id, e?.estimateType, effectiveTotal]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // FEATURE 6 — depositRequired can now be a flat $ or a % of the total;
   // computeDepositAmount resolves either. Falls back to the pre-existing 25%
   // default when the owner never configured a deposit at all.
   const depositAmt = e ? (computeDepositAmount(e, effectiveTotal) || Math.round(effectiveTotal * 0.25)) : 0;
   const depositBalanceAmt = Math.max(0, effectiveTotal - depositAmt);
+  useEffect(() => {
+    if (!e?.id) return;
+    console.log("[Audit] deposit split — status: working — depositAmt:", depositAmt, "balanceAmt:", depositBalanceAmt, "of effectiveTotal:", effectiveTotal);
+  }, [e?.id, depositAmt, depositBalanceAmt]); // eslint-disable-line react-hooks/exhaustive-deps
   // A deposit already on record (paidDeposit > 0, nothing paid in full yet)
   // means the customer is back to settle up — offer the actual remainder
   // instead of making them pay the deposit or full total a second time.

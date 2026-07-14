@@ -180,8 +180,13 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
   // conversation" apart from "edited an existing one" and save the new one
   // immediately instead of waiting out the debounce.
   const knownConvIdsRef = useRef<Set<string>>(new Set());
+  // FIX 4 (mobile round 4) — once we've run the "table is empty for this
+  // owner_id" diagnostic for a given ownerId, don't re-run the extra
+  // unfiltered COUNT/sample queries on every 5s poll — just the one deep
+  // dive is enough to tell the user what's wrong; re-arm if ownerId changes.
+  const emptyDiagnosticRanRef = useRef<string | null>(null);
   useEffect(() => {
-    console.log("[Alfred Sync] owner_id =", ownerId || "(not set yet)");
+    console.log("[Alfred Sync] owner_id =", ownerId || "(not set yet)", "— typeof:", typeof ownerId);
     if (!ownerId) { console.warn("[Alfred Sync] no ownerId yet — skipping conversation fetch"); return; }
     const loadConversations = async () => {
       try {
@@ -200,6 +205,33 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           // policy silently filtering everything, or genuinely-empty data
           // are all distinguishable from the console instead of just "0".
           console.warn("[Alfred Sync] 0 rows for owner_id=" + ownerId + " — full response:", JSON.stringify(res));
+          // FIX 4 (mobile round 4) — "extreme debugging": if the filtered
+          // query came back empty, run an unfiltered COUNT(*) so we can tell
+          // "the table is genuinely empty" apart from "rows exist but none
+          // matched this owner_id" (the classic UUID-vs-string or
+          // owner_<email>-vs-raw-id format mismatch), and if rows do exist,
+          // log a sample of the owner_id values actually stored so they can
+          // be compared by eye against the ownerId this page is using.
+          if (emptyDiagnosticRanRef.current !== ownerId) {
+            emptyDiagnosticRanRef.current = ownerId;
+            try {
+              const countRes: any = await (supabase as any).from("alfred_conversations").select("*", { count: "exact", head: true });
+              console.log("[Alfred Sync] diagnostic — SELECT COUNT(*) FROM alfred_conversations (unfiltered) =", countRes?.count ?? "unknown", "— error:", countRes?.error?.message || "none");
+              if ((countRes?.count ?? 0) > 0) {
+                const sampleRes: any = await (supabase as any).from("alfred_conversations").select("owner_id").limit(5);
+                const distinctOwnerIds = Array.from(new Set((sampleRes?.data || []).map((r: any) => r.owner_id)));
+                console.warn(
+                  "[Alfred Sync] diagnostic — table is NOT empty (" + countRes.count + " row(s)) but none matched owner_id=" + JSON.stringify(ownerId) +
+                  ". owner_id values actually stored in the table:", distinctOwnerIds,
+                  "— compare the shape (raw auth uid vs 'owner_'+email vs plain email) against the ownerId above. If they don't match, conversations were saved under a different owner_id than this device is now querying with."
+                );
+              } else {
+                console.log("[Alfred Sync] diagnostic — table is genuinely empty for every owner, not just this one. No conversations have synced from ANY device yet.");
+              }
+            } catch (diagErr: any) {
+              console.warn("[Alfred Sync] diagnostic query threw:", diagErr?.message);
+            }
+          }
         }
         const fromServer: AlfredConversation[] = data.map((r: any) => ({
           id: r.id, title: r.title || "Conversation", messages: Array.isArray(r.messages) ? r.messages : [],
@@ -1162,7 +1194,15 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           if (!settings.googleConnected || !(settings.googleScopes || {}).gmail) return { error: "Gmail not connected. Ask user to go to Settings → Integrations → Google and connect." };
           if (!inputs.to || !inputs.subject || !inputs.body) return { error: "to, subject, body required" };
           const url = settings.googleBackendUrl;
-          const token = settings.googleToken;
+          // AUDIT G (mobile round 4) — this read `settings.googleToken`, a
+          // field the OAuth connect flow never actually populates (it only
+          // ever writes `googleProviderToken` — see App.tsx). That meant
+          // `token` was always undefined here regardless of connection
+          // status, silently forcing every one of these Alfred Google
+          // actions into the "queued/staged" fallback branch below even with
+          // a valid, connected, non-expired token.
+          const token = settings.googleProviderToken;
+          console.log("[Audit] Google token persistence — status: bug fixed (was reading dead field settings.googleToken); note — proactive refresh-before-expiry only runs while GoogleWorkspacePage is mounted, so a long Alfred session without visiting that page can still hit an expired token after ~1hr");
           if (url && token) {
             try {
               const sendGmailEmail = async (u: string, t: string, opts: any) => { const r = await fetch(u + "/gmail/send", { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${t}` }, body: JSON.stringify(opts) }); return r.json(); };
@@ -1182,7 +1222,9 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           if (!settings.googleConnected || !(settings.googleScopes || {}).calendar) return { error: "Calendar not connected. Ask user to go to Settings → Integrations → Google and enable Calendar." };
           if (!inputs.title || !inputs.date) return { error: "title and date required" };
           const url = settings.googleBackendUrl;
-          const token = settings.googleToken;
+          // AUDIT G — was settings.googleToken (never populated); see the
+          // create_calendar_event case above for why.
+          const token = settings.googleProviderToken;
           const startDt = inputs.date + "T" + (inputs.time || "09:00") + ":00";
           const endMin = (inputs.duration_minutes || 60);
           const endDt = new Date(new Date(startDt).getTime() + endMin * 60000).toISOString().slice(0, 19);
@@ -1203,7 +1245,9 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           if (!settings.googleConnected || !(settings.googleScopes || {}).drive) return { error: "Drive not connected. Ask user to go to Settings → Integrations → Google and enable Drive." };
           if (!inputs.filename) return { error: "filename required" };
           const url = settings.googleBackendUrl;
-          const token = settings.googleToken;
+          // AUDIT G — was settings.googleToken (never populated); see the
+          // create_calendar_event case above for why.
+          const token = settings.googleProviderToken;
           if (url && token) {
             try {
               const uploadToDrive = async (u: string, t: string, opts: any) => { const r = await fetch(u + "/drive/upload", { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${t}` }, body: JSON.stringify(opts) }); return r.json(); };
@@ -1222,7 +1266,9 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           if (!settings.googleConnected || !(settings.googleScopes || {}).tasks) return { error: "Google Tasks not connected. Enable Tasks scope in Settings → Integrations → Google." };
           if (!inputs.title) return { error: "title required" };
           const url = settings.googleBackendUrl;
-          const token = settings.googleToken;
+          // AUDIT G — was settings.googleToken (never populated); see the
+          // create_calendar_event case above for why.
+          const token = settings.googleProviderToken;
           if (url && token) {
             try {
               const createTask = async (u: string, t: string, opts: any) => { const r = await fetch(u + "/tasks", { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${t}` }, body: JSON.stringify(opts) }); return r.json(); };

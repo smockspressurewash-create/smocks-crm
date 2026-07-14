@@ -661,18 +661,32 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
   // `owner_<email>` synthetic id the Crew toggle uses) is on this job's crew,
   // clocking in/out here also flips their employees row's dayClockInAt so they
   // show up in Live Crew View exactly like a technician on shift.
-  const ownerEmpId = settings.ownerName ? `owner_${settings.googleEmail || "owner"}` : null;
+  // FIX 2/4 (mobile round 4) — this used to rebuild the id from
+  // `settings.ownerName ? owner_${settings.googleEmail || "owner"} : null`,
+  // which (a) went null for any owner who never opened Settings → Company to
+  // set ownerName (e.g. a fresh Google OAuth signup), and (b) fell back to
+  // the literal string "owner" instead of the real account email when
+  // googleEmail wasn't set — producing "owner_owner", which never matches
+  // the real `owner_<email>` row App.tsx's self-assign effect actually
+  // creates. Read the real id straight off the owner's own employees row
+  // instead of reconstructing it from settings, which can't go stale.
+  const ownerEmployee = employees.find((e: any) => e.role === "owner");
+  const ownerEmpId = ownerEmployee?.id || null;
   const ownerOnCrew = !!ownerEmpId && (job.crew || []).includes(ownerEmpId);
   const clockIn = () => {
+    console.log("[Payroll] WRITE (job clock-in) — job:", jobId, "clockInAt:", Date.now(), ownerOnCrew ? "— owner is on this job's crew, also writing employees.dayClockInAt" : "");
     updateJob(jobId, { clockInAt: Date.now() });
     toast("Clocked in");
-    if (ownerOnCrew) (supabase as any).from("employees").update({ dayClockInAt: Date.now() }).eq("id", ownerEmpId).catch(() => {});
+    if (ownerOnCrew) (supabase as any).from("employees").update({ dayClockInAt: Date.now() }).eq("id", ownerEmpId)
+      .then((r: any) => console.log("[Payroll] WRITE (owner dayClockInAt via job) —", r?.error ? "failed: " + r.error.message : "confirmed saved for " + ownerEmpId))
+      .catch(() => {});
   };
   const clockOut = () => {
     const started = job.clockInAt;
     if (!started) return;
     const hrs = (Date.now() - started) / 3600000;
     const rounded = Math.round(hrs * 100) / 100;
+    console.log("[Payroll] WRITE (job clock-out) — job:", jobId, "hours this session:", rounded, "new loggedHours total:", Math.round(((Number(job.loggedHours) || 0) + rounded) * 100) / 100);
     updateJob(jobId, { clockInAt: null, loggedHours: Math.round(((Number(job.loggedHours) || 0) + rounded) * 100) / 100 });
     toast("+" + rounded + "h logged");
     if (ownerOnCrew) (supabase as any).from("employees").update({ dayClockInAt: null }).eq("id", ownerEmpId).catch(() => {});
@@ -1114,18 +1128,23 @@ ${job.notes ? `<div class="section"><h2>Job Notes</h2><p>${job.notes}</p></div>`
             </div>
           </div>
           <div className="flex gap-2 flex-wrap">
-            {/* Owner self-assign */}
-            {settings.ownerName && (() => {
-              const ownerId = `owner_${settings.googleEmail || "owner"}`;
-              const sel = (job.crew || []).includes(ownerId);
+            {/* Owner self-assign — uses the same ownerEmployee/ownerEmpId
+                derived above (from the real employees row, not settings) so
+                this button doesn't silently disappear for an owner who never
+                set settings.ownerName. */}
+            {ownerEmployee && (() => {
+              const sel = (job.crew || []).includes(ownerEmpId);
               return (
-                <button key="owner" onClick={() => toggleCrew(ownerId)}
+                <button key="owner" onClick={() => toggleCrew(ownerEmpId)}
                   className={"text-xs px-3 py-1.5 rounded-lg border transition " + (sel ? "bg-red-900/40 border-red-500/50 text-red-300" : "bg-white/5 border-white/10 text-white/60 hover:text-white")}>
-                  {settings.ownerName} (Owner)
+                  {ownerEmployee.firstName} {ownerEmployee.lastName} (Owner)
                 </button>
               );
             })()}
-            {employees.filter(e => e.status === "active").map(e => {
+            {/* role !== "owner" — the owner already has their own dedicated
+                button above; without this exclusion they'd be listed twice
+                once their employees row exists (post Fix 1). */}
+            {employees.filter(e => e.status === "active" && e.role !== "owner").map(e => {
               const sel = (job.crew || []).includes(e.id);
               // FEATURE 5 — flag unavailable crew right on the assignment
               // button, covering both specific blocked dates and recurring
@@ -1141,11 +1160,16 @@ ${job.notes ? `<div class="section"><h2>Job Notes</h2><p>${job.notes}</p></div>`
           {/* FEATURE 5 — explicit warning banner for anyone already assigned
               whose availability conflicts with this job's date (e.g. the
               date was set/changed after they were assigned). */}
-          {job.scheduledDate && (job.crew || []).some((eid: string) => isEmployeeUnavailable(employees.find(e => e.id === eid) as any, job.scheduledDate)) && (
-            <div className="mt-2 text-[11px] text-yellow-300 bg-yellow-950/30 border border-yellow-700/40 rounded-lg px-2.5 py-1.5 flex items-center gap-1.5">
-              ⚠️ {(job.crew || []).filter((eid: string) => isEmployeeUnavailable(employees.find(e => e.id === eid) as any, job.scheduledDate)).map((eid: string) => employees.find(e => e.id === eid)?.firstName).join(", ")} is unavailable on this day. Schedule anyway?
-            </div>
-          )}
+          {job.scheduledDate && (() => {
+            const unavailNames = (job.crew || []).filter((eid: string) => isEmployeeUnavailable(employees.find(e => e.id === eid) as any, job.scheduledDate)).map((eid: string) => employees.find(e => e.id === eid)?.firstName);
+            if (unavailNames.length === 0) return null;
+            console.log("[Audit] availability warning — feature: employee unavailability, status: shown for", unavailNames.join(", "), "on", job.scheduledDate);
+            return (
+              <div className="mt-2 text-[11px] text-yellow-300 bg-yellow-950/30 border border-yellow-700/40 rounded-lg px-2.5 py-1.5 flex items-center gap-1.5">
+                ⚠️ {unavailNames.join(", ")} is unavailable on this day. Schedule anyway?
+              </div>
+            );
+          })()}
           {showRequestForm && (
             <div className="mt-3 p-3 rounded-xl bg-yellow-950/20 border border-yellow-700/30 space-y-2">
               <div className="text-xs text-yellow-300 font-semibold">Request an Employee for This Job</div>

@@ -20,7 +20,7 @@ import {
   Tooltip, ResponsiveContainer, Area, AreaChart, LineChart, Line,
   ComposedChart, Legend
 } from "recharts";
-import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, weekdayLabels, computeNextRecurringDate, isEmployeeUnavailable, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, withTimeout, getEffectiveRate } from "../../lib/utils";
+import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, weekdayLabels, computeNextRecurringDate, describeRecurringSchedule, isEmployeeUnavailable, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, withTimeout, getEffectiveRate } from "../../lib/utils";
 const weatherRisk = (_dateStr: string): {icon: string; level: string; reason: string} | null => null;
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
 import { twilioSend, sendEmail, emailShell, emailButton } from "../../lib/messaging";
@@ -732,6 +732,7 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
                   recurringWeekdays: newJobForm.recurringWeekdays,
                 } : {}),
               };
+              if (job.isRecurring) console.log("[Audit] recurring job — mode:", job.recurringMode, "schedule:", describeRecurringSchedule(job), "next occurrence:", computeNextRecurringDate(job, job.scheduledDate));
               setJobs(prev => [...prev, job]);
               // Close the modal immediately — none of the follow-up work below
               // (Google Calendar, crew email/request) should be able to block
@@ -1008,7 +1009,7 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
                     <div className="font-semibold">{c?.firstName} {c?.lastName}</div>
                     {j.priority && j.priority !== "normal" && <Badge tone={priorityLevels.find(p => p.key === j.priority)?.tone}>{j.priority}</Badge>}
                     {j.noShow && <Badge tone="red">No-show</Badge>}
-                    {j.isRecurring && <span className="inline-flex items-center gap-0.5 text-[9px] text-blue-400 bg-blue-900/20 border border-blue-800/30 px-2 py-0.5 rounded-full"><Repeat size={8} />{j.recurringFreq}</span>}
+                    {j.isRecurring && <span className="inline-flex items-center gap-0.5 text-[9px] text-blue-400 bg-blue-900/20 border border-blue-800/30 px-2 py-0.5 rounded-full"><Repeat size={8} />{describeRecurringSchedule(j)}</span>}
                     {j.cancelReason && j.status === "cancelled" && <span className="text-[9px] text-red-400 bg-red-950/40 border border-red-800/30 px-2 py-0.5 rounded-full">{j.cancelReason}</span>}
                     {(j.tags || []).map(t => <span key={t} className="text-[9px] px-2 py-0.5 rounded-full bg-white/10 text-white/70">{t}</span>)}
                     {(() => { const wr = weatherRisk(j.scheduledDate); return wr && j.status === "scheduled" ? <span className={"inline-flex items-center gap-0.5 text-[9px] px-2 py-0.5 rounded-full border " + (wr.level === "high" ? "bg-red-950/40 border-red-700/50 text-red-300" : "bg-yellow-950/30 border-yellow-700/40 text-yellow-300")} title={"Weather risk: " + wr.reason}>{wr.icon}{wr.reason}</span> : null; })()}
