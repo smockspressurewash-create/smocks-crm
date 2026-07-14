@@ -956,7 +956,7 @@ ${job.notes ? `<div class="section"><h2>Job Notes</h2><p>${job.notes}</p></div>`
                 value={d.label}
                 onChange={e => updateJob(jobId, { discounts: (job.discounts || []).map((x: any) => x.id === d.id ? { ...x, label: e.target.value } : x) })}
                 placeholder="e.g. Veteran discount"
-                className="!text-xs flex-1"
+                className="!text-xs flex-1 min-w-0"
               />
               <GSel
                 value={d.type}

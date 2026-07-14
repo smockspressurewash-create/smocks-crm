@@ -30,6 +30,7 @@ import { supabase } from "../../lib/supabase";
 import { createCalendarEvent, updateCalendarEvent, deleteCalendarEvent, fetchDriveFiles, MOCK_GOOGLE_DATA, fmtSize, fmtDate, fileIcon } from "../../lib/google";
 import { usePersistent } from "../../hooks/usePersistent";
 import { usePersistentRaw } from "../../hooks/usePersistentRaw";
+import { useIsMobile } from "../../hooks/useIsMobile";
 import { Glass } from "../ui/Glass";
 import { GBtn } from "../ui/GBtn";
 import { GInput } from "../ui/GInput";
@@ -82,7 +83,11 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
   const [input, setInput] = useState("");
   const [voiceMode, setVoiceMode] = useState<"dictate" | "note">("dictate");
   const [loading, setLoading] = useState(false);
-  const [sidebarOpen, setSidebarOpen] = useState(false);
+  // FIX 1 — mobile layout. Sidebar defaults OPEN on desktop (typical chat-app
+  // layout) but CLOSED on mobile (< 768px) so it doesn't eat the whole screen;
+  // toggled by the hamburger button in the chat header either way.
+  const isMobile = useIsMobile();
+  const [sidebarOpen, setSidebarOpen] = useState(() => !isMobile);
   const [memoryOpen, setMemoryOpen] = useState(false);
   const [convSearch, setConvSearch] = useState("");
   const [editingTitle, setEditingTitle] = useState(null);
@@ -1611,8 +1616,17 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
     return Math.floor(diff / 86400) + "d";
   };
 
+  // FIX 1 — mobile overflow. The parent page wrapper (App.tsx's <main>)
+  // reserves an extra pb-16 (64px) on mobile only, for the fixed bottom tab
+  // bar — this container's negative margins only ever canceled its immediate
+  // parent's own py-4/p-6 padding, not that extra 64px two levels up, so on
+  // mobile this box's bottom edge (and the composer pinned to it) rendered
+  // ~64px below the real viewport, off-screen behind the bottom nav. Cancel
+  // that extra margin AND size the box to the real visible height (header +
+  // bottom nav) instead of just the header, using 100dvh so mobile browser
+  // chrome doesn't throw it off.
   return (
-    <div className="relative -mx-4 md:-mx-6 -my-4 md:-my-6 flex bg-black overflow-hidden" style={{ height: "calc(100vh - 57px)" }}>
+    <div className="relative -mx-3 md:-mx-6 -mt-4 -mb-20 md:-mt-6 md:-mb-6 flex bg-black overflow-hidden" style={{ height: isMobile ? "calc(100dvh - 113px - env(safe-area-inset-bottom))" : "calc(100dvh - 57px)" }}>
       {/* Conversation sidebar */}
       <aside className={"bg-black/80 backdrop-blur-xl border-r border-red-900/30 flex flex-col transition-all duration-300 overflow-hidden " + (sidebarOpen ? "w-[280px] md:w-[280px]" : "w-0") + " absolute md:relative h-full z-20"}>
         <div className="p-3 border-b border-red-900/30 flex items-center gap-2">
@@ -1695,14 +1709,14 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
       {/* Main chat */}
       <div className="flex-1 flex flex-col min-w-0 bg-gradient-to-b from-black to-neutral-950">
         {/* Chat header */}
-        <div className="flex items-center gap-2 p-3 border-b border-red-900/30 bg-black/40 backdrop-blur">
-          <button onClick={() => setSidebarOpen(!sidebarOpen)} className="p-2 rounded-lg hover:bg-white/5 text-white/70" title="Toggle sidebar">
+        <div className="flex items-center gap-1.5 md:gap-2 px-2 py-2 md:p-3 border-b border-red-900/30 bg-black/40 backdrop-blur">
+          <button onClick={() => setSidebarOpen(!sidebarOpen)} className="p-2 rounded-lg hover:bg-white/5 text-white/70 flex-shrink-0" title="Toggle sidebar">
             <Menu size={16} />
           </button>
-          <div className={"p-1.5 rounded-lg bg-gradient-to-br " + cur.color}><CurIcon size={12} /></div>
+          <div className={"p-1.5 rounded-lg bg-gradient-to-br flex-shrink-0 " + cur.color}><CurIcon size={12} /></div>
           <div className="flex-1 min-w-0">
             <div className="font-semibold text-sm truncate">{active?.title || "New chat"}</div>
-            <div className="text-[10px] text-white/50">Alfred · {cur.name}</div>
+            <div className="text-[10px] text-white/50 truncate">Alfred · {cur.name}</div>
           </div>
 
           {/* Model switcher */}
@@ -1719,9 +1733,9 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
               return Math.floor(m / 60) + "h " + (m % 60) + "m";
             };
             return <div className="relative">
-              <button onClick={() => setModelPickerOpen(!modelPickerOpen)} className={"flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs transition " + (activeLocked ? "bg-yellow-950/30 border-yellow-700/50 text-yellow-300" : "bg-black/40 border-red-900/30 hover:border-red-600/50 text-white/80")}>
+              <button onClick={() => setModelPickerOpen(!modelPickerOpen)} className={"flex items-center gap-1.5 px-2 py-1.5 md:px-2.5 rounded-lg border text-xs transition flex-shrink-0 " + (activeLocked ? "bg-yellow-950/30 border-yellow-700/50 text-yellow-300" : "bg-black/40 border-red-900/30 hover:border-red-600/50 text-white/80")}>
                 <div className={"w-2 h-2 rounded-full bg-gradient-to-br " + (activeM?.color || "from-gray-500 to-gray-700")} />
-                <span className="hidden sm:inline">{activeM?.name || "Model"}</span>
+                <span className="hidden md:inline">{activeM?.name || "Model"}</span>
                 {activeLocked && <span className="font-mono text-[10px] text-yellow-300">⏱{fmtShort(remaining)}</span>}
                 {settings.failoverEnabled && <Zap size={10} className="text-purple-400" />}
                 <ChevronRight size={10} className="rotate-90 opacity-60" />
@@ -1763,7 +1777,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
             </div>;
           })()}
 
-          <div className="relative">
+          <div className="relative flex-shrink-0">
             <button onClick={() => setMenuOpen(!menuOpen)} className="p-2 rounded-lg hover:bg-white/5 text-white/70" title="Menu">
               <GripVertical size={16} />
             </button>

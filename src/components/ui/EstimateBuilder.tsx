@@ -403,7 +403,7 @@ export function EstimateBuilder({ open, onClose, customers = [], services = [], 
           <div className="space-y-1.5">
             {discounts.map(d => (
               <div key={d.id} className="flex items-center gap-2">
-                <GInput value={d.label} onChange={e => updateDiscountRow(d.id, { label: e.target.value })} placeholder="e.g. First-time customer discount" className="!text-xs flex-1" />
+                <GInput value={d.label} onChange={e => updateDiscountRow(d.id, { label: e.target.value })} placeholder="e.g. First-time customer discount" className="!text-xs flex-1 min-w-0" />
                 <GSel value={d.type} onChange={e => updateDiscountRow(d.id, { type: e.target.value })} className="!text-xs !w-24 flex-shrink-0">
                   <option value="amount" className="bg-black">$</option>
                   <option value="percent" className="bg-black">%</option>

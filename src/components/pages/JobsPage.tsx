@@ -863,14 +863,14 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
       })()}
 
       {/* Page header */}
-      <div className="flex items-center justify-between mb-1">
+      <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-2 mb-1">
         <div>
           <h1 className="text-2xl font-bold">Jobs</h1>
           <div className="text-xs text-white/40 mt-0.5">{jobs.filter(j => j.status === "scheduled").length} scheduled · {jobs.filter(j => j.status === "in_progress").length} in progress</div>
         </div>
         <button
           onClick={() => { setNewJobForm({ customerId: "", address: "", amount: "", scheduledDate: today(), scheduledTime: "", priority: "normal", notes: "", duration: "", crewEmpId: "", jobType: "residential" }); setNewJobOpen(true); }}
-          className="flex items-center gap-2 px-4 py-2.5 bg-gradient-to-r from-red-600 to-red-800 border border-red-500/50 rounded-2xl text-sm font-semibold text-white shadow-lg shadow-red-900/30 hover:shadow-red-600/40 hover:scale-[1.02] active:scale-95 transition-all"
+          className="w-full md:w-auto flex items-center justify-center md:justify-start gap-2 px-4 py-2.5 bg-gradient-to-r from-red-600 to-red-800 border border-red-500/50 rounded-2xl text-sm font-semibold text-white shadow-lg shadow-red-900/30 hover:shadow-red-600/40 hover:scale-[1.02] active:scale-95 transition-all"
         >
           <Plus size={16} />Schedule Job
         </button>
@@ -890,11 +890,11 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
           <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-white/40" />
           <GInput placeholder="Search customer, address, tag..." value={search} onChange={e => setSearch(e.target.value)} className="!pl-9 !py-1.5 !text-xs" />
         </div>
-        <div className="flex gap-1 items-center">
+        <div className="flex flex-wrap gap-1 items-center">
           <span className="text-[10px] text-white/40 uppercase tracking-wider mr-1">Priority:</span>
           {["all", ...priorityLevels.map(p => p.key)].map(p => <button key={p} onClick={() => setPrioFilter(p)} className={"px-2.5 py-1 rounded-lg text-[11px] transition border capitalize " + (prioFilter === p ? "bg-red-900/40 border-red-500/50 text-white" : "bg-black/40 border-red-900/30 text-white/60 hover:text-white")}>{p}</button>)}
         </div>
-        <div className="flex gap-1 items-center">
+        <div className="flex flex-wrap gap-1 items-center">
           <span className="text-[10px] text-white/40 uppercase tracking-wider mr-1">Sort:</span>
           {[["date", "Date"], ["priority", "Priority"], ["amount", "Amount"]].map(([k, l]) => <button key={k} onClick={() => setSortBy(k)} className={"px-2.5 py-1 rounded-lg text-[11px] transition border " + (sortBy === k ? "bg-red-900/40 border-red-500/50 text-white" : "bg-black/40 border-red-900/30 text-white/60 hover:text-white")}>{l}</button>)}
         </div>

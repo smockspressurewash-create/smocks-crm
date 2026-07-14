@@ -901,7 +901,16 @@ export function App() {
   // Synced to a Supabase `alfred_conversations` table (id, owner_id, title,
   // messages JSONB, updated_at) the same way inbox_threads/employees/jobs
   // are: load once, upsert on local change, poll for changes made elsewhere.
-  const alfredConvsLoadedRef = useRef(false);
+  // FIX 3 (hardening) — this used to gate the save-effect below on a REF
+  // (alfredConvsLoadedRef), which doesn't retrigger the effect when it flips
+  // true. If a conversation was created/edited in the gap between mount and
+  // the first fetch resolving (e.g. AlfredPage's own "auto-create a chat if
+  // none exist" effect, which runs synchronously on mount), the save-effect
+  // would bail out early and then never run again until some LATER edit
+  // happened to touch alfredConversations — so that first conversation could
+  // sit unsynced indefinitely. Using state instead means the effect re-runs
+  // the moment loading finishes, flushing anything created during the gap.
+  const [alfredConvsLoaded, setAlfredConvsLoaded] = useState(false);
   const alfredConvsSaveTimerRef = useRef<any>(null);
   useEffect(() => {
     if (!crmUserId) return;
@@ -914,6 +923,7 @@ export function App() {
           id: r.id, title: r.title || "Conversation", messages: Array.isArray(r.messages) ? r.messages : [],
           createdAt: r.created_at || r.createdAt || new Date().toISOString(), updatedAt: r.updated_at || r.updatedAt || new Date().toISOString(),
         }));
+        console.log("[Alfred Sync] loaded", fromServer.length, "conversation(s) from Supabase for owner", crmUserId);
         setAlfredConversations(prev => {
           const byId = new Map(fromServer.map(c => [c.id, c]));
           // Keep any local conversation not yet confirmed server-side (just
@@ -935,7 +945,7 @@ export function App() {
           };
           return [...fromServer, ...localOnly].sort((a, b) => ts((b as any).updatedAt) - ts((a as any).updatedAt));
         });
-        alfredConvsLoadedRef.current = true;
+        setAlfredConvsLoaded(true);
       } catch (e: any) { console.warn("[Alfred Sync] fetch threw:", e?.message); }
     };
     load();
@@ -944,9 +954,10 @@ export function App() {
   }, [crmUserId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
-    if (!crmUserId || !alfredConvsLoadedRef.current) return;
+    if (!crmUserId || !alfredConvsLoaded) return;
     clearTimeout(alfredConvsSaveTimerRef.current);
     alfredConvsSaveTimerRef.current = setTimeout(() => {
+      console.log("[Alfred Sync] saving", alfredConversations.length, "conversation(s) to Supabase for owner", crmUserId);
       alfredConversations.forEach(c => {
         (supabase as any).from("alfred_conversations").upsert({
           id: c.id, owner_id: crmUserId, title: c.title, messages: c.messages,
@@ -955,7 +966,7 @@ export function App() {
       });
     }, 1200);
     return () => clearTimeout(alfredConvsSaveTimerRef.current);
-  }, [alfredConversations, crmUserId]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [alfredConversations, crmUserId, alfredConvsLoaded]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Portal
   const [portalEstId, setPortalEstId] = useState<string | null>(null);
