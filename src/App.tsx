@@ -455,27 +455,62 @@ export function App() {
   const [fabHolding, setFabHolding] = useState(false);
   const fabHoldTimerRef = useRef<any>(null);
   const fabDragOffsetRef = useRef({ x: 0, y: 0 });
+  const fabHoldStartRef = useRef({ x: 0, y: 0 });
   const fabWasDraggedRef = useRef(false);
   const FAB_HOLD_MS = 2000;
   const FAB_SIZE = 56;
+  // A real finger held "still" for 2s still drifts a few px — if we cancel the
+  // hold on any pointerleave/boundary event (the original implementation),
+  // that natural jitter fires pointerleave almost immediately on touch and the
+  // timer never survives to 2s. Instead we only cancel on genuine release
+  // (pointerup/pointercancel) or if the finger moves past a real tolerance.
+  const FAB_MOVE_TOLERANCE = 12;
+  useEffect(() => {
+    if (fabPosition) console.log("[FAB] restored saved position from localStorage:", fabPosition);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
   const fabOnPointerDown = (e: React.PointerEvent<HTMLButtonElement>) => {
     const rect = e.currentTarget.getBoundingClientRect();
     fabDragOffsetRef.current = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+    fabHoldStartRef.current = { x: e.clientX, y: e.clientY };
     fabWasDraggedRef.current = false;
+    try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* not supported — safe to ignore */ }
     setFabHolding(true);
-    console.log("[FAB] pointer down at", e.clientX, e.clientY, "— starting", FAB_HOLD_MS, "ms hold timer for drag mode");
+    console.log("[FAB] hold started — pointer down at", e.clientX, e.clientY, "(pointerType:", e.pointerType + "), starting", FAB_HOLD_MS, "ms timer");
     clearTimeout(fabHoldTimerRef.current);
     fabHoldTimerRef.current = setTimeout(() => {
       fabWasDraggedRef.current = true;
       setFabDragging(true);
       setFabHolding(false);
-      console.log("[FAB] hold threshold reached — drag mode active");
+      console.log("[FAB] drag mode entered");
     }, FAB_HOLD_MS);
   };
-  const fabCancelHold = () => {
-    if (fabHoldTimerRef.current) { clearTimeout(fabHoldTimerRef.current); fabHoldTimerRef.current = null; }
+  const fabCancelHold = (reason: string) => {
+    if (fabHoldTimerRef.current) {
+      clearTimeout(fabHoldTimerRef.current);
+      fabHoldTimerRef.current = null;
+      console.log("[FAB] hold canceled —", reason);
+    }
     setFabHolding(false);
   };
+  const fabReleasePointer = (e: React.PointerEvent<HTMLButtonElement>) => {
+    try { e.currentTarget.releasePointerCapture(e.pointerId); } catch { /* ignore */ }
+  };
+  // While holding (before the 2s threshold), track movement so a genuine
+  // drag/scroll attempt cancels the hold instead of silently doing nothing.
+  useEffect(() => {
+    if (!fabHolding) return;
+    const onMove = (e: PointerEvent) => {
+      const dx = e.clientX - fabHoldStartRef.current.x;
+      const dy = e.clientY - fabHoldStartRef.current.y;
+      const dist = Math.hypot(dx, dy);
+      if (dist > FAB_MOVE_TOLERANCE) {
+        console.log("[FAB] moved", Math.round(dist), "px during hold — canceling (treating as tap/scroll)");
+        fabCancelHold("moved past tolerance");
+      }
+    };
+    window.addEventListener("pointermove", onMove);
+    return () => window.removeEventListener("pointermove", onMove);
+  }, [fabHolding]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (!fabDragging) return;
     const onMove = (e: PointerEvent) => {
@@ -2401,11 +2436,17 @@ export function App() {
                 setFabOpen(o => !o);
               }}
               onPointerDown={fabOnPointerDown}
-              onPointerUp={fabCancelHold}
-              onPointerLeave={fabCancelHold}
-              className={"w-14 h-14 rounded-full bg-gradient-to-br from-red-500 to-red-800 shadow-2xl shadow-red-900/60 flex items-center justify-center border border-red-400/30 touch-none " +
+              onPointerUp={(e) => { fabReleasePointer(e); fabCancelHold("released"); }}
+              onPointerCancel={(e) => { fabReleasePointer(e); fabCancelHold("pointer canceled by browser"); }}
+              onContextMenu={(e) => e.preventDefault()}
+              className={"w-14 h-14 rounded-full bg-gradient-to-br from-red-500 to-red-800 shadow-2xl shadow-red-900/60 flex items-center justify-center border border-red-400/30 touch-none select-none " +
                 (fabDragging ? "scale-110 ring-4 ring-red-400/50 cursor-grabbing" : fabHolding ? "scale-105 ring-2 ring-red-400/40" : "hover:scale-110 active:scale-95")}
-              style={{ transition: fabDragging ? "none" : "transform 0.2s cubic-bezier(0.34,1.2,0.64,1)" }}
+              style={{
+                transition: fabDragging ? "none" : "transform 0.2s cubic-bezier(0.34,1.2,0.64,1)",
+                WebkitUserSelect: "none",
+                userSelect: "none",
+                WebkitTouchCallout: "none",
+              }}
               aria-label="Quick actions"
             >
               <Plus size={24} className={"text-white transition-transform duration-200 " + (fabOpen && !fabDragging ? "rotate-45" : "")} />
