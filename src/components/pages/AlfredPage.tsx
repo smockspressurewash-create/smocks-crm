@@ -1,5 +1,5 @@
 // auto-extracted from Crew Boss OS monolith
-import React, { useState, useEffect, useRef, useCallback } from "react";
+import React, { useState, useEffect, useLayoutEffect, useRef, useCallback } from "react";
 import {
   LayoutDashboard, Users, FileText, Briefcase, Bot, BarChart3,
   Settings, Bell, Menu, X, Plus, Search, Edit, Trash2, Send,
@@ -88,6 +88,30 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
   // toggled by the hamburger button in the chat header either way.
   const isMobile = useIsMobile();
   const [sidebarOpen, setSidebarOpen] = useState(() => !isMobile);
+  // FIX 1 — rather than guessing App.tsx's header height in pixels (a prior
+  // attempt hardcoded 57px, which was wrong — the header's own hamburger
+  // button alone has min-h-[44px], already taller than that guess — so the
+  // page was still a few px taller than the viewport and the outer <main>
+  // scrolled, hiding this page's own header), measure the real distance from
+  // the viewport top to THIS box at render time. That self-corrects for any
+  // header content, safe-area insets, or font-metric differences instead of
+  // relying on a number that has to be manually kept in sync.
+  const alfredRootRef = useRef<HTMLDivElement | null>(null);
+  const [chromeTop, setChromeTop] = useState(57);
+  useLayoutEffect(() => {
+    const measure = () => {
+      if (!alfredRootRef.current) return;
+      const top = alfredRootRef.current.getBoundingClientRect().top;
+      if (top > 0) setChromeTop(top);
+    };
+    measure();
+    window.addEventListener("resize", measure);
+    window.addEventListener("orientationchange", measure);
+    return () => {
+      window.removeEventListener("resize", measure);
+      window.removeEventListener("orientationchange", measure);
+    };
+  }, []);
   const [memoryOpen, setMemoryOpen] = useState(false);
   const [convSearch, setConvSearch] = useState("");
   const [editingTitle, setEditingTitle] = useState(null);
@@ -165,6 +189,69 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
   const [memFilter, setMemFilter] = useState("all");
   const scrollRef = useRef(null);
   const inputRef = useRef(null);
+
+  // FIX 2 — Alfred conversations sync with Supabase. Previously lived in
+  // App.tsx keyed off the owner's session resolving, which meant it ran (or
+  // didn't) regardless of whether this page was ever opened, and was hard to
+  // verify from here. Moved to this component's own mount so opening Alfred
+  // is what actually triggers the fetch (and the 5s poll stops the moment
+  // the user navigates away instead of running for the whole app session).
+  const [alfredConvsLoaded, setAlfredConvsLoaded] = useState(false);
+  const alfredConvsSaveTimerRef = useRef<any>(null);
+  useEffect(() => {
+    if (!ownerId) { console.warn("[Alfred Sync] no ownerId yet — skipping conversation fetch"); return; }
+    const loadConversations = async () => {
+      try {
+        const { data, error } = await (supabase as any).from("alfred_conversations").select("*").eq("owner_id", ownerId);
+        if (error) {
+          console.warn("[Alfred Sync] fetch failed:", error.message, "— if this says the relation doesn't exist, run supabase/migrations/0006_alfred_conversations_table.sql in the Supabase SQL editor");
+          return;
+        }
+        if (!Array.isArray(data)) { console.warn("[Alfred Sync] fetch returned unexpected data:", data); return; }
+        const fromServer: AlfredConversation[] = data.map((r: any) => ({
+          id: r.id, title: r.title || "Conversation", messages: Array.isArray(r.messages) ? r.messages : [],
+          createdAt: r.created_at || r.createdAt || new Date().toISOString(), updatedAt: r.updated_at || r.updatedAt || new Date().toISOString(),
+        }));
+        console.log("[Alfred Sync] loaded " + fromServer.length + " conversations" + (fromServer.length === 0 ? " (none saved yet for this owner)" : ""));
+        setConversations((prev: any[]) => {
+          const byId = new Map(fromServer.map(c => [c.id, c]));
+          // Keep any local conversation not yet confirmed server-side (just
+          // created/edited, upsert still in flight) so it doesn't flicker away.
+          const localOnly = (prev || []).filter((c: any) => !byId.has(c.id));
+          // fromServer always sets updatedAt as an ISO STRING, but local
+          // conversations get created/updated with `updatedAt: Date.now()` —
+          // a NUMBER. Normalize both shapes to a comparable timestamp instead
+          // of assuming either one specifically (mixing them crashed
+          // .localeCompare on a number before this fix existed).
+          const ts = (v: unknown): number => {
+            if (typeof v === "number") return v;
+            if (typeof v === "string" && v) { const t = new Date(v).getTime(); return Number.isNaN(t) ? 0 : t; }
+            return 0;
+          };
+          return [...fromServer, ...localOnly].sort((a, b) => ts((b as any).updatedAt) - ts((a as any).updatedAt));
+        });
+        setAlfredConvsLoaded(true);
+      } catch (e: any) { console.warn("[Alfred Sync] fetch threw:", e?.message); }
+    };
+    loadConversations();
+    const interval = setInterval(loadConversations, 5000);
+    return () => clearInterval(interval);
+  }, [ownerId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (!ownerId || !alfredConvsLoaded) return;
+    clearTimeout(alfredConvsSaveTimerRef.current);
+    alfredConvsSaveTimerRef.current = setTimeout(() => {
+      console.log("[Alfred Sync] saving", (conversations || []).length, "conversation(s) to Supabase for owner", ownerId);
+      (conversations || []).forEach((c: any) => {
+        (supabase as any).from("alfred_conversations").upsert({
+          id: c.id, owner_id: ownerId, title: c.title, messages: c.messages,
+          created_at: c.createdAt, updated_at: c.updatedAt || new Date().toISOString(),
+        }, { onConflict: "id" }).then((r: any) => { if (r?.error) console.warn("[Alfred Sync] save failed:", r.error.message); }).catch(() => {});
+      });
+    }, 1200);
+    return () => clearTimeout(alfredConvsSaveTimerRef.current);
+  }, [conversations, ownerId, alfredConvsLoaded]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const active = conversations.find(c => c.id === activeConvId) || conversations[0];
   const chats = active?.messages || [];
@@ -1622,11 +1709,11 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
   // parent's own py-4/p-6 padding, not that extra 64px two levels up, so on
   // mobile this box's bottom edge (and the composer pinned to it) rendered
   // ~64px below the real viewport, off-screen behind the bottom nav. Cancel
-  // that extra margin AND size the box to the real visible height (header +
-  // bottom nav) instead of just the header, using 100dvh so mobile browser
-  // chrome doesn't throw it off.
+  // that extra margin AND size the box to the real visible height (measured
+  // chromeTop + the bottom nav's own known 56px + safe-area) instead of just
+  // the header, using 100dvh so mobile browser chrome doesn't throw it off.
   return (
-    <div className="relative -mx-3 md:-mx-6 -mt-4 -mb-20 md:-mt-6 md:-mb-6 flex bg-black overflow-hidden" style={{ height: isMobile ? "calc(100dvh - 113px - env(safe-area-inset-bottom))" : "calc(100dvh - 57px)" }}>
+    <div ref={alfredRootRef} className="relative -mx-3 md:-mx-6 -mt-4 -mb-20 md:-mt-6 md:-mb-6 flex bg-black overflow-hidden" style={{ height: isMobile ? `calc(100dvh - ${chromeTop}px - 56px - env(safe-area-inset-bottom))` : `calc(100dvh - ${chromeTop}px)` }}>
       {/* Conversation sidebar */}
       <aside className={"bg-black/80 backdrop-blur-xl border-r border-red-900/30 flex flex-col transition-all duration-300 overflow-hidden " + (sidebarOpen ? "w-[280px] md:w-[280px]" : "w-0") + " absolute md:relative h-full z-20"}>
         <div className="p-3 border-b border-red-900/30 flex items-center gap-2">
@@ -1708,8 +1795,10 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
 
       {/* Main chat */}
       <div className="flex-1 flex flex-col min-w-0 bg-gradient-to-b from-black to-neutral-950">
-        {/* Chat header */}
-        <div className="flex items-center gap-1.5 md:gap-2 px-2 py-2 md:p-3 border-b border-red-900/30 bg-black/40 backdrop-blur">
+        {/* Chat header — sticky (belt-and-suspenders on top of the flex
+            layout, which already pins it since it's a sibling of the
+            scrollable messages div, not an ancestor of it) */}
+        <div className="sticky top-0 z-10 flex-shrink-0 flex items-center gap-1.5 md:gap-2 px-2 py-2 md:p-3 border-b border-red-900/30 bg-black/40 backdrop-blur">
           <button onClick={() => setSidebarOpen(!sidebarOpen)} className="p-2 rounded-lg hover:bg-white/5 text-white/70 flex-shrink-0" title="Toggle sidebar">
             <Menu size={16} />
           </button>
@@ -1795,8 +1884,12 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           </div>
         </div>
 
-        {/* Messages */}
-        <div ref={scrollRef} className="flex-1 overflow-y-auto">
+        {/* Messages — the ONLY scrollable area. min-h-0 is required here: a
+            flex child's default min-height is "auto" (= its content size),
+            which overrides flex-1 and lets it grow past the parent's bounded
+            height instead of actually scrolling internally — the classic
+            cause of "the whole page scrolls" in a flex chat layout. */}
+        <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto">
           {chats.length <= 1 && (
             <div className="min-h-full flex flex-col items-center justify-center p-6 max-w-2xl mx-auto">
               <div className={"p-4 rounded-2xl bg-gradient-to-br mb-5 " + cur.color}><CurIcon size={28} /></div>
@@ -1868,8 +1961,8 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           </div>
         )}
 
-        {/* Composer */}
-        <div className="border-t border-red-900/30 bg-black/40 backdrop-blur p-3 md:p-4">
+        {/* Composer — sticky bottom, same belt-and-suspenders reasoning as the header above */}
+        <div className="sticky bottom-0 z-10 flex-shrink-0 border-t border-red-900/30 bg-black/40 backdrop-blur p-3 md:p-4">
           <div className="max-w-3xl mx-auto relative">
             {/* Slash command autocomplete */}
             {showSlash && slashFiltered.length > 0 && (

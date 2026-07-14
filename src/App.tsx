@@ -438,6 +438,33 @@ export function App() {
     return valid.includes(hash) ? hash : "dashboard";
   });
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  // FIX 4 — mobile sidebar swipe. Track where a touch started; on touchmove,
+  // an edge-swipe-right opens the sidebar, a swipe-left while it's open
+  // closes it. Gated on the gesture being mostly horizontal so vertical
+  // scrolling (of the page, or of the sidebar's own nav list) isn't hijacked.
+  const sidebarTouchRef = useRef<{ x: number; y: number } | null>(null);
+  const handleSidebarTouchStart = (e: React.TouchEvent) => {
+    const t = e.touches[0];
+    sidebarTouchRef.current = { x: t.clientX, y: t.clientY };
+  };
+  const handleSidebarTouchMove = (e: React.TouchEvent) => {
+    const start = sidebarTouchRef.current;
+    if (!start) return;
+    const t = e.touches[0];
+    const dx = t.clientX - start.x;
+    const dy = t.clientY - start.y;
+    if (Math.abs(dy) > Math.abs(dx)) return; // mostly vertical — let it scroll
+    if (!sidebarOpen && start.x < 30 && dx > 80) {
+      console.log("[Sidebar Swipe] edge swipe-right detected — opening sidebar");
+      setSidebarOpen(true);
+      sidebarTouchRef.current = null;
+    } else if (sidebarOpen && dx < -80) {
+      console.log("[Sidebar Swipe] swipe-left detected — closing sidebar");
+      setSidebarOpen(false);
+      sidebarTouchRef.current = null;
+    }
+  };
+  const handleSidebarTouchEnd = () => { sidebarTouchRef.current = null; };
   const [settingsOpen, setSettingsOpen] = useState(false);
   // FIX 8 — "Add Manager" in Settings jumps to Employees with the invite
   // modal pre-opened (role defaulted to Manager) instead of duplicating the
@@ -896,77 +923,16 @@ export function App() {
   const [modelStatus, setModelStatus]                 = usePersistent<ModelStatus>("smocks.modelStatus", {});
   const [googleData, setGoogleData]                   = usePersistent("smocks.googleData", {});
 
-  // FIX 10 — Alfred conversations only ever lived in this device's
-  // localStorage, so a chat on the computer never showed up on the phone.
-  // Synced to a Supabase `alfred_conversations` table (id, owner_id, title,
-  // messages JSONB, updated_at) the same way inbox_threads/employees/jobs
-  // are: load once, upsert on local change, poll for changes made elsewhere.
-  // FIX 3 (hardening) — this used to gate the save-effect below on a REF
-  // (alfredConvsLoadedRef), which doesn't retrigger the effect when it flips
-  // true. If a conversation was created/edited in the gap between mount and
-  // the first fetch resolving (e.g. AlfredPage's own "auto-create a chat if
-  // none exist" effect, which runs synchronously on mount), the save-effect
-  // would bail out early and then never run again until some LATER edit
-  // happened to touch alfredConversations — so that first conversation could
-  // sit unsynced indefinitely. Using state instead means the effect re-runs
-  // the moment loading finishes, flushing anything created during the gap.
-  const [alfredConvsLoaded, setAlfredConvsLoaded] = useState(false);
-  const alfredConvsSaveTimerRef = useRef<any>(null);
-  useEffect(() => {
-    if (!crmUserId) return;
-    const load = async () => {
-      try {
-        const { data, error } = await (supabase as any).from("alfred_conversations").select("*").eq("owner_id", crmUserId);
-        if (error) { console.warn("[Alfred Sync] fetch failed — run the alfred_conversations SQL:", error.message); return; }
-        if (!Array.isArray(data)) return;
-        const fromServer: AlfredConversation[] = data.map((r: any) => ({
-          id: r.id, title: r.title || "Conversation", messages: Array.isArray(r.messages) ? r.messages : [],
-          createdAt: r.created_at || r.createdAt || new Date().toISOString(), updatedAt: r.updated_at || r.updatedAt || new Date().toISOString(),
-        }));
-        console.log("[Alfred Sync] loaded", fromServer.length, "conversation(s) from Supabase for owner", crmUserId);
-        setAlfredConversations(prev => {
-          const byId = new Map(fromServer.map(c => [c.id, c]));
-          // Keep any local conversation not yet confirmed server-side (just
-          // created/edited, upsert still in flight) so it doesn't flicker away.
-          const localOnly = prev.filter(c => !byId.has(c.id));
-          // CRASH FIX — fromServer above always sets updatedAt as an ISO
-          // STRING (line ~815), but AlfredPage.tsx creates/updates local
-          // conversations with `updatedAt: Date.now()` — a NUMBER — in
-          // several places (new chat, append message, morning briefing,
-          // etc.). Once a local-only numeric-updatedAt conversation got
-          // merged into this same array, (b.updatedAt || "").localeCompare(...)
-          // called .localeCompare on a number, which doesn't exist, crashing
-          // the whole render. Normalize both shapes to a comparable
-          // timestamp instead of assuming either one specifically.
-          const ts = (v: unknown): number => {
-            if (typeof v === "number") return v;
-            if (typeof v === "string" && v) { const t = new Date(v).getTime(); return Number.isNaN(t) ? 0 : t; }
-            return 0;
-          };
-          return [...fromServer, ...localOnly].sort((a, b) => ts((b as any).updatedAt) - ts((a as any).updatedAt));
-        });
-        setAlfredConvsLoaded(true);
-      } catch (e: any) { console.warn("[Alfred Sync] fetch threw:", e?.message); }
-    };
-    load();
-    const interval = setInterval(load, 5000);
-    return () => clearInterval(interval);
-  }, [crmUserId]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  useEffect(() => {
-    if (!crmUserId || !alfredConvsLoaded) return;
-    clearTimeout(alfredConvsSaveTimerRef.current);
-    alfredConvsSaveTimerRef.current = setTimeout(() => {
-      console.log("[Alfred Sync] saving", alfredConversations.length, "conversation(s) to Supabase for owner", crmUserId);
-      alfredConversations.forEach(c => {
-        (supabase as any).from("alfred_conversations").upsert({
-          id: c.id, owner_id: crmUserId, title: c.title, messages: c.messages,
-          created_at: c.createdAt, updated_at: c.updatedAt || new Date().toISOString(),
-        }, { onConflict: "id" }).then((r: any) => { if (r?.error) console.warn("[Alfred Sync] save failed:", r.error.message); }).catch(() => {});
-      });
-    }, 1200);
-    return () => clearTimeout(alfredConvsSaveTimerRef.current);
-  }, [alfredConversations, crmUserId, alfredConvsLoaded]); // eslint-disable-line react-hooks/exhaustive-deps
+  // FIX 10 / FIX 2 (mobile round) — Alfred conversations sync with Supabase.
+  // This used to live here, keyed off crmUserId, and ran for the whole app
+  // session regardless of whether Alfred was even open. Moved into
+  // AlfredPage.tsx itself (keyed off its own mount + ownerId prop) so: (a)
+  // the fetch is actually triggered by AlfredPage mounting, matching what the
+  // user asked for and making it easy to verify via the console the moment
+  // the page opens, and (b) the 5s poll only runs while Alfred is actually
+  // open, instead of forever in the background (egress win, same spirit as
+  // the polling fixes elsewhere). alfredConversations/setAlfredConversations
+  // stay here since usePersistent needs to own the localStorage-backed state.
 
   // Portal
   const [portalEstId, setPortalEstId] = useState<string | null>(null);
@@ -2061,7 +2027,12 @@ export function App() {
 
   // ── Main app ──────────────────────────────────────────────────────────────
   return (
-    <div className="flex h-screen overflow-hidden bg-black text-white">
+    <div
+      className="flex h-screen overflow-hidden bg-black text-white"
+      onTouchStart={handleSidebarTouchStart}
+      onTouchMove={handleSidebarTouchMove}
+      onTouchEnd={handleSidebarTouchEnd}
+    >
       {/* Sidebar overlay for mobile */}
       {sidebarOpen && <div className="fixed inset-0 bg-black/60 z-20 md:hidden" onClick={() => setSidebarOpen(false)} />}
 

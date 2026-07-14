@@ -876,11 +876,19 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
         </button>
       </div>
 
-      <div className="flex gap-2 overflow-x-auto pb-1">
+      {/* FIX 3 — these tabs were already overflow-x-auto + whitespace-nowrap,
+          but the buttons had no explicit flex-shrink-0/min-width, so on some
+          mobile renderers they got squeezed narrower than their text instead
+          of triggering the scroll, and the nowrap label spilled into the
+          next tab (looked like "overlap"). Locking flex-shrink to 0 and
+          giving each a floor width fixes that regardless of engine quirks,
+          and the outer -mx-3 px-3 lets the scroll area bleed to the true
+          screen edge while keeping the first/last tab clear of it. */}
+      <div className="flex gap-2 overflow-x-auto pb-1 -mx-3 px-3 md:mx-0 md:px-0">
         {Object.entries(tabs).map(([k, l]) => {
           const cnt = jobs.filter(j => j.status === k).length;
           const a = tab === k;
-          return <button key={k} onClick={() => setTab(k)} className={"px-4 py-2 rounded-xl text-sm font-medium whitespace-nowrap transition-all border " + (a ? "bg-gradient-to-r from-red-600 to-red-800 text-white border-red-500/50" : "bg-black/40 text-white/60 hover:text-white border-red-900/30")}>{l} ({cnt})</button>;
+          return <button key={k} onClick={() => setTab(k)} className={"flex-shrink-0 min-w-[92px] text-center px-4 py-2 rounded-xl text-sm font-medium whitespace-nowrap transition-all border " + (a ? "bg-gradient-to-r from-red-600 to-red-800 text-white border-red-500/50" : "bg-black/40 text-white/60 hover:text-white border-red-900/30")}>{l} ({cnt})</button>;
         })}
       </div>
 
