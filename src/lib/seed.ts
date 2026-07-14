@@ -269,6 +269,9 @@ export const seedAutomations: Automation[] = [
   { id: "a10", name: "Abandoned estimate (3d)",   trigger: "Estimate not approved 3d",  action: "3-touch nurture sequence",  active: false, lastTriggered: null,            count: 0,  steps: [] },
   { id: "a11", name: "Re-engagement (6mo)",       trigger: "No service in 6 months",    action: "Send win-back SMS",         active: false, lastTriggered: null,            count: 0,  steps: [] },
   { id: "a12", name: "Referral request",          trigger: "Job completed (3rd+)",      action: "Send referral ask",         active: false, lastTriggered: null,            count: 0,  steps: [] },
+  { id: "a13", name: "Estimate expiring (48h)",   trigger: "Estimate expiring in 48h",  action: "Send expiring reminder",     active: true,  lastTriggered: null,            count: 0,  steps: [] },
+  { id: "a14", name: "Customer anniversary",      trigger: "Customer anniversary",      action: "Send anniversary discount", active: false, lastTriggered: null,            count: 0,  steps: [] },
+  { id: "a15", name: "Referral reward earned",    trigger: "Referral reward earned",    action: "Notify referrer of reward", active: true,  lastTriggered: null,            count: 0,  steps: [] },
 ];
 
 // ─── Seed reviews ─────────────────────────────────────────────────────────────

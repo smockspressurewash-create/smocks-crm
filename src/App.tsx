@@ -764,6 +764,10 @@ export function App() {
           setSettings((prev: any) => {
             const merged = { ...prev, ...data.data };
             lastSyncedJsonRef.current = JSON.stringify(merged);
+            console.log("[Verify] settings sync across devices — working — loaded", Object.keys(data.data).length, "field(s) from server");
+            if (data.data.twilioSid || data.data.googleProviderToken || data.data.stripeSecretKey || data.data.anthropicKey) {
+              console.log("[Verify] API keys sync across devices — working");
+            }
             return merged;
           });
         }
@@ -1308,12 +1312,39 @@ export function App() {
           EMPLOYEE_OWNED_FIELDS.forEach(f => delete copy[f]);
           return copy;
         });
+        // FIX 1b (mobile round 6) — newer optional fields (recurring
+        // schedule from migration 0007, deposits/discounts from 0010) are
+        // in this bulk payload but may not exist as columns on every
+        // deployment yet. A single unrecognized column 400s the WHOLE
+        // batch — this retry drops just those optional fields (the same
+        // "safe subset" idiom EmployeePortal.tsx/JobsPage.tsx's updateJob
+        // already use for per-job writes) so the core job fields still
+        // save instead of silently failing every 30s forever.
+        const OPTIONAL_NEWER_FIELDS = [
+          "isRecurring", "recurringMode", "recurringFreq", "recurringInterval", "recurringWeekdays",
+          "depositRequired", "depositType", "discount", "discounts", "customFields",
+        ] as const;
         // Supabase-js resolves (rather than rejects) on a PostgREST error, so check
         // the returned `error` explicitly — a bare try/catch alone won't see a 400.
         const { error } = await (supabase as any).from("jobs").upsert(safeJobs, { onConflict: "id" });
         if (error) {
-          if (String(error.code) === "400" || error.message?.includes("400") || error.message?.includes("column")) {
-            console.warn("Auto-save skipped — jobs table columns missing. Run the ALTER TABLE SQL.");
+          const isColumnError = String(error.code) === "400" || error.message?.includes("400") || /column/i.test(error.message || "");
+          if (isColumnError) {
+            // Surface exactly which column PostgREST rejected, instead of a
+            // generic "columns missing" with no actionable detail.
+            const colMatch = /column ['"]?([\w.]+)['"]?/i.exec(error.message || "") || /['"]([\w]+)['"] column/i.exec(error.message || "");
+            console.warn("Auto-save — column error:", error.message, colMatch ? "(column: " + colMatch[1] + ")" : "");
+            const coreJobs = safeJobs.map(j => {
+              const copy: any = { ...j };
+              OPTIONAL_NEWER_FIELDS.forEach(f => delete copy[f]);
+              return copy;
+            });
+            const retry = await (supabase as any).from("jobs").upsert(coreJobs, { onConflict: "id" });
+            if (retry?.error) {
+              console.warn("Auto-save skipped — jobs table is missing column(s) beyond the optional set retried. Run supabase/migrations/0007_custom_recurring_schedule_columns.sql and 0010_deposits_and_discounts.sql in the Supabase SQL editor. Error:", retry.error.message);
+              return;
+            }
+            setLastSynced(new Date());
             return;
           }
           throw error;
@@ -1321,7 +1352,7 @@ export function App() {
         setLastSynced(new Date());
       } catch (err: any) {
         if (err?.code === "400" || err?.message?.includes("400")) {
-          console.warn("Auto-save skipped — jobs table columns missing. Run the ALTER TABLE SQL.");
+          console.warn("Auto-save skipped — jobs table columns missing:", err?.message);
           return; // Don't crash, just skip
         }
         console.warn("Auto-save failed:", err?.message);
@@ -1515,6 +1546,20 @@ export function App() {
               return;
             }
 
+            // FIX 12 (mobile round 6) — INITIAL_SESSION used to fall through to
+            // the exact same resolveUserRole() + state-setting logic the manual
+            // getSession()/resolveUserRole(initial) block below also runs for
+            // the very same session on every load — doubling the role-lookup
+            // network cost (up to 2 sequential Postgrest queries each) and a
+            // real contributor to "Session bootstrap exceeded 5s" firing on
+            // every load rather than only during genuine hangs. The block
+            // below already handles routing/state for the initial session;
+            // this listener only needs to unblock the OAuth-processing flag.
+            if (event === "INITIAL_SESSION") {
+              setOauthProcessing(false);
+              return;
+            }
+
             const userRole = await resolveUserRole(session);
 
             if (userRole === "employee") {
@@ -1553,10 +1598,6 @@ export function App() {
                 // the mobile layout after signing in.
                 setPage("dashboard");
               }
-              setOauthProcessing(false);
-            }
-            // Safety net: initialize() may fire INITIAL_SESSION instead of SIGNED_IN
-            if (event === "INITIAL_SESSION") {
               setOauthProcessing(false);
             }
           } catch (err) {
@@ -1693,7 +1734,7 @@ export function App() {
   };
 
   // Automation engine
-  useAutomationEngine({ automations, setAutomations, jobs, customers, estimates, settings, toast });
+  useAutomationEngine({ automations, setAutomations, jobs, customers, estimates, referrals, settings, toast });
 
   // Sign out — clears Supabase session and forces login page.
   // signOut() defaults to scope: "global", which revokes the refresh token
@@ -2137,7 +2178,7 @@ export function App() {
         onTouchStart={handleSidebarTouchStart}
         onTouchMove={handleSidebarTouchMove}
         onTouchEnd={handleSidebarTouchEnd}
-        className={"fixed inset-y-0 left-0 z-30 w-64 bg-black/95 border-r border-red-900/30 flex flex-col transition-transform duration-300 md:relative md:translate-x-0 " + (sidebarOpen ? "translate-x-0" : "-translate-x-full md:translate-x-0")}
+        className={"fixed inset-y-0 left-0 z-30 w-64 bg-black/95 border-r border-red-900/30 flex flex-col transition-transform duration-300 ease-out md:relative md:translate-x-0 " + (sidebarOpen ? "translate-x-0" : "-translate-x-full md:translate-x-0")}
         // FIX 3 (mobile round 4/5) — while an edge-swipe-open is actively in
         // progress (not yet open), or a swipe-to-close drag is in progress
         // (already open), override the class-driven transform so the sidebar
@@ -2386,7 +2427,7 @@ export function App() {
                 {page === "intake"         && <LeadIntakePage customers={customers} setCustomers={setCustomers} estimates={estimates} setEstimates={setEstimates} services={services} settings={settings} toast={toast} onNav={setPage} />}
                 {page === "alfred"         && (managerBlocked("alfred") ? <RestrictedNotice label="Alfred AI" /> : <AlfredPage conversations={alfredConversations} setConversations={setAlfredConversations} activeConvId={activeConvId} setActiveConvId={setActiveConvId} memory={alfredMemory} setMemory={setAlfredMemory} personality={personality} setPersonality={setPersonality} apiKey={settings.anthropicKey ?? settings.geminiKey ?? ""} openSettings={() => setSettingsOpen(true)} toast={toast} jobs={jobs} setJobs={setJobs} estimates={estimates} setEstimates={setEstimates} customers={customers} setCustomers={setCustomers} employees={employees} automations={automations} setAutomations={setAutomations} stats={{ totalRev, activeJobs, pendingEst, closeRate, doneMonth }} setWins={setWins} goals={goalsList} setGoals={setGoalsList} setSettings={setSettings} settings={settings} modelStatus={modelStatus} setModelStatus={setModelStatus} onNav={setPage} ownerId={crmUserId} />)}
                 {page === "google"         && (managerBlocked("google") ? <RestrictedNotice label="Google Workspace" /> : <GoogleWorkspacePage settings={settings} setSettings={setSettings} googleData={googleData as any} setGoogleData={setGoogleData} customers={customers} setCustomers={setCustomers} jobs={jobs} toast={toast} onNav={setPage} />)}
-                {page === "employees"      && <EmployeesPage employees={employees} setEmployees={setEmployees} jobs={jobs} settings={settings} toast={toast} autoOpenManagerInvite={autoOpenManagerInvite} onAutoOpenManagerInviteConsumed={() => setAutoOpenManagerInvite(false)} />}
+                {page === "employees"      && <EmployeesPage employees={employees} setEmployees={setEmployees} jobs={jobs} customers={customers} settings={settings} toast={toast} autoOpenManagerInvite={autoOpenManagerInvite} onAutoOpenManagerInviteConsumed={() => setAutoOpenManagerInvite(false)} />}
                 {page === "fleet"          && <FleetPage vehicles={vehicles} setVehicles={setVehicles} maintenance={maintenance} setMaintenance={setMaintenance} toast={toast} />}
                 {page === "expenses"       && <ExpensesPage expenses={expenses} setExpenses={setExpenses} />}
                 {page === "chemicals"      && <ChemicalsPage chemicals={chemicals} setChemicals={setChemicals} toast={toast} settings={settings} />}

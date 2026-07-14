@@ -474,6 +474,12 @@ export interface Automation {
   count?: number;
   steps: AutomationStep[];
   description?: string;
+  // FIX 1 (mobile round 6) — per-recipient send tracking (recipient key,
+  // e.g. "job-reminder:<jobId>" or "bday:<customerId>:<year>" -> ISO date
+  // last sent), so the engine can dedupe/cooldown per recipient instead of
+  // gating the whole automation on a single lastTriggered date (which used
+  // to mean only the FIRST matching recipient each day ever got messaged).
+  sentLog?: Record<string, string>;
 }
 
 // ─── Review ───────────────────────────────────────────────────────────────────

@@ -246,9 +246,21 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
         if (empRow?.autoSyncCalendar === false) continue;
         let tok = empRow?.google_token;
         const validTok = tok && empRow?.google_token_expires_at && new Date(empRow.google_token_expires_at).getTime() > Date.now();
-        if (tok && !validTok && empRow?.google_refresh_token && settings?.googleBackendUrl) {
-          const refreshed = await refreshEmpGoogleToken(settings.googleBackendUrl, empRow.google_refresh_token);
-          if (refreshed) tok = refreshed.token; else tok = null;
+        if (tok && !validTok && empRow?.google_refresh_token) {
+          const refreshed = await refreshEmpGoogleToken(settings?.googleBackendUrl, empRow.google_refresh_token);
+          if (refreshed) {
+            tok = refreshed.token;
+            // FIX 10 (mobile round 6) — this used to only keep the refreshed
+            // token in the local `tok` variable for this one calendar sync
+            // call, then discard it — unlike the other two refresh copies in
+            // this file, which persist back to the employees row. Without
+            // this, the row stayed stale and got re-refreshed from scratch
+            // on every future call here until the employee's own 5-min
+            // interval happened to catch up.
+            (supabase as any).from("employees").update({ google_token: refreshed.token, google_token_expires_at: new Date(refreshed.expiresAt).toISOString() }).eq("id", (emp as any).id).catch(() => {});
+          } else {
+            tok = null;
+          }
         } else if (!validTok) {
           tok = null;
         }
@@ -532,11 +544,13 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
           }
         }
         toast(`Request sent to ${emp.firstName} ✓`, "green");
+        console.log("[Verify] requesting employees for jobs — working");
         setShowRequestForm(false);
         setRequestMsg("");
         setRequestEmpId("");
       } else {
         toast("Request failed — run the job_requests SQL in Supabase first", "red");
+        console.warn("[Verify] requesting employees for jobs — failed:", error?.message);
       }
     } catch (err: any) {
       toast(err?.message || "Error sending request", "red");
@@ -1161,6 +1175,7 @@ ${job.notes ? `<div class="section"><h2>Job Notes</h2><p>${job.notes}</p></div>`
           {job.scheduledDate && (() => {
             const unavailNames = (job.crew || []).filter((eid: string) => isEmployeeUnavailable(employees.find(e => e.id === eid) as any, job.scheduledDate)).map((eid: string) => employees.find(e => e.id === eid)?.firstName);
             if (unavailNames.length === 0) return null;
+            console.log("[Verify] employee availability warnings — working — flagged:", unavailNames.join(", "));
             return (
               <div className="mt-2 text-[11px] text-yellow-300 bg-yellow-950/30 border border-yellow-700/40 rounded-lg px-2.5 py-1.5 flex items-center gap-1.5">
                 ⚠️ {unavailNames.join(", ")} is unavailable on this day. Schedule anyway?

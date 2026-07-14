@@ -2,6 +2,8 @@
 // All Google REST APIs support CORS for browser clients with a valid Bearer token.
 // Token comes from Supabase OAuth (supabase.auth.signInWithOAuth with Google provider).
 
+import { supabase } from "./supabase";
+
 // Module-level token refresher — set by GoogleWorkspacePage when mounted.
 // When a 401 is received, gFetch calls this to get a fresh access token before retrying.
 let _tokenRefresher: (() => Promise<string>) | null = null;
@@ -385,6 +387,16 @@ export const getValidEmpGoogleToken = async (
   if (!refreshed) return null;
   const updated: EmpGoogleToken = { ...existing, token: refreshed.token, expiresAt: refreshed.expiresAt };
   saveEmpGoogleToken(userId, updated);
+  // FIX 10 (mobile round 6) — this used to only persist to localStorage. If
+  // that browser's storage was cleared (or a second device was used) before
+  // the separate 5-minute background interval's next tick ran, this
+  // successful on-demand refresh was lost even though it worked — the
+  // employees row never learned about it. Mirror it to Supabase too, same
+  // columns/shape the background interval writes.
+  (supabase as any).from("employees")
+    .update({ google_token: refreshed.token, google_token_expires_at: new Date(refreshed.expiresAt).toISOString() })
+    .eq("user_id", userId)
+    .catch(() => {});
   return updated;
 };
 

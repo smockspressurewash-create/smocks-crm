@@ -111,7 +111,7 @@ const DEFAULT_MANAGER_PERMS: Record<string, boolean> = {
   alfred: false, inbox: false, accountability: false, google: false,
 };
 
-export function EmployeesPage({ employees = [], setEmployees, jobs = [], settings = {} as any, toast = (_msg: string, _tone?: string) => {}, autoOpenManagerInvite = false, onAutoOpenManagerInviteConsumed }: { employees?: any[]; setEmployees: any; jobs?: any[]; settings?: any; toast?: any; autoOpenManagerInvite?: boolean; onAutoOpenManagerInviteConsumed?: () => void }) {
+export function EmployeesPage({ employees = [], setEmployees, jobs = [], customers = [], settings = {} as any, toast = (_msg: string, _tone?: string) => {}, autoOpenManagerInvite = false, onAutoOpenManagerInviteConsumed }: { employees?: any[]; setEmployees: any; jobs?: any[]; customers?: any[]; settings?: any; toast?: any; autoOpenManagerInvite?: boolean; onAutoOpenManagerInviteConsumed?: () => void }) {
   const [modal, setModal] = useState({ open: false, data: null });
   const [view, setView] = useState("list"); // list | hours | payroll
   const [payPeriodStart, setPayPeriodStart] = usePersistent("smocks.payPeriodStart", (() => { const d = new Date(); d.setDate(1); return d.toISOString().slice(0,10); })());
@@ -790,6 +790,41 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setting
                     ))}
                   </div>
                 )}
+              </div>
+            );
+          })()}
+          {/* FIX 2 (mobile round 6) — "individual job breakdown with hours per
+              job": the period/day sections above only ever aggregate; this is
+              the actual per-job list (one row per completed job with logged
+              hours), most recent first. */}
+          {f.id && (() => {
+            const jobRows = jobs
+              .filter((j: any) => (j.crew || []).includes(f.id) && j.status === "completed" && Number(j.loggedHours) > 0)
+              .sort((a: any, b: any) => (b.scheduledDate || "").localeCompare(a.scheduledDate || ""))
+              .slice(0, 25);
+            if (jobRows.length === 0) return null;
+            return (
+              <div className="border border-white/10 rounded-xl p-3 space-y-1.5">
+                <div className="text-xs font-semibold text-white/70 flex items-center gap-1.5 mb-1"><Briefcase size={12} />Job Breakdown</div>
+                <div className="space-y-1 max-h-64 overflow-y-auto">
+                  {jobRows.map((j: any) => {
+                    const cust = customers?.find?.((c: any) => c.id === j.customerId);
+                    const hrs = Number(j.loggedHours) || 0;
+                    const pay = hrs * getEffectiveRate(f, j);
+                    return (
+                      <div key={j.id} className="flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg bg-black/30 border border-white/5 text-xs">
+                        <div className="min-w-0">
+                          <div className="text-white/70 truncate">{cust ? `${cust.firstName} ${cust.lastName}` : (j.address || "Job")}</div>
+                          <div className="text-[10px] text-white/40">{j.scheduledDate}</div>
+                        </div>
+                        <div className="text-right flex-shrink-0">
+                          <div className="text-white/70">{hrs.toFixed(1)}h</div>
+                          <div className="text-[10px] text-white/40">{fmt(pay)}</div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
             );
           })()}

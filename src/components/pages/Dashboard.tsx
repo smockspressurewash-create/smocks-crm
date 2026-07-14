@@ -23,7 +23,7 @@ import {
 import { fmt, uid, today, localDateStr, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, forecastFor, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, withTimeout } from "../../lib/utils";
 import { supabase } from "../../lib/supabase";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
-import { twilioSend, sendOwnerGmailOnly } from "../../lib/messaging";
+import { twilioSend, sendOwnerGmailOnly, logOutboundSmsToInbox } from "../../lib/messaging";
 import { seedWeather } from "../../lib/weather";
 
 import { callModel, MODELS } from "../../lib/api";
@@ -403,14 +403,20 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
   // recognize yet). Per explicit instruction: dayClockInAt being set IS
   // "on shift" — no other condition gates it, full stop.
   const liveEmps = employees.filter((e: any) => !!e.dayClockInAt);
-  useEffect(() => {
-  }, [employees]);
   const liveTeam = liveEmps.map((e: any) => {
     const empJobs = jobs
       .filter((j: any) => (j.crew || []).includes(e.id) && j.scheduledDate === todayStrLive)
       .sort((a: any, b: any) => (a.scheduledTime || "").localeCompare(b.scheduledTime || ""));
+    // FIX 3 (mobile round 6) — this used to fall all the way to `null` (no
+    // checklist/photo card at all) for a clocked-in employee who hasn't been
+    // marked "arrived" at any job yet (e.g. still driving to the first one).
+    // Falling back to their next not-yet-completed job today means the card
+    // still shows which job they're headed to and its checklist (0/N so
+    // far), instead of reading as "checklists/photos are broken" when
+    // there's simply nothing recorded yet.
     const currentJob = empJobs.find((j: any) => j.status === "in_progress")
       || empJobs.find((j: any) => j.arrivedAt && j.status !== "completed")
+      || empJobs.find((j: any) => j.status !== "completed" && j.status !== "cancelled")
       || null;
     // FIX 3 — "Job 2 of 3" / completed-today counters for the crew card.
     const jobIndex = currentJob ? empJobs.findIndex((j: any) => j.id === currentJob.id) + 1 : 0;
@@ -531,6 +537,44 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
     if (!ownerActiveJob) return;
     ownerUpdateJob(ownerActiveJob.id, { arrivedAt: Date.now(), status: ownerActiveJob.status === "scheduled" ? "in_progress" : ownerActiveJob.status });
     toast?.("Marked as arrived ✓");
+  };
+  // FIX 5 (mobile round 6) — "My Work": OTW/Running Late for the owner's own
+  // active job, mirroring EmployeePortal.tsx's sendOtw/sendRunningLate (same
+  // SMS-first send, same inbox logging, same toast-on-success-and-failure
+  // rule from CLAUDE.md) so the owner has the same field-communication tools
+  // a technician has, without leaving the dashboard.
+  const [ownerSendingOtw, setOwnerSendingOtw] = useState(false);
+  const [ownerSendingLate, setOwnerSendingLate] = useState(false);
+  const ownerSendOtw = async () => {
+    if (!ownerActiveJob) return;
+    if (!ownerActiveCustomer?.phone) { toast?.("No phone on file for this customer", "red"); return; }
+    setOwnerSendingOtw(true);
+    const msg = `Hi ${ownerActiveCustomer.firstName || "there"}, your Crew Boss technician is on the way!`;
+    try {
+      await withTimeout(twilioSend(settings as any, ownerActiveCustomer.phone, msg), 15000, "OTW SMS");
+      logOutboundSmsToInbox({ contactName: `${ownerActiveCustomer.firstName} ${ownerActiveCustomer.lastName}`, contactPhone: ownerActiveCustomer.phone, customerId: ownerActiveCustomer.id, body: msg }).catch(() => {});
+      toast?.(`On the way message sent to ${ownerActiveCustomer.firstName} ✓`, "green");
+    } catch (e: any) {
+      toast?.(e?.message || "Failed to send on-my-way message", "red");
+    } finally {
+      setOwnerSendingOtw(false);
+    }
+  };
+  const ownerSendRunningLate = async (minutes: number) => {
+    if (!ownerActiveJob) return;
+    if (!ownerActiveCustomer?.phone) { toast?.("No phone on file for this customer", "red"); return; }
+    setOwnerSendingLate(true);
+    const newEta = new Date(Date.now() + minutes * 60000).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    const msg = `Hi ${ownerActiveCustomer.firstName}, your Crew Boss technician is running approximately ${minutes} minutes behind. New ETA: ${newEta}. We apologize for the delay.`;
+    try {
+      await withTimeout(twilioSend(settings as any, ownerActiveCustomer.phone, msg), 15000, "Running late SMS");
+      logOutboundSmsToInbox({ contactName: `${ownerActiveCustomer.firstName} ${ownerActiveCustomer.lastName}`, contactPhone: ownerActiveCustomer.phone, customerId: ownerActiveCustomer.id, body: msg }).catch(() => {});
+      toast?.(`Message sent to ${ownerActiveCustomer.firstName} ✓`, "green");
+    } catch (e: any) {
+      toast?.(e?.message || "Failed to send running-late notice", "red");
+    } finally {
+      setOwnerSendingLate(false);
+    }
   };
 
   const w: any = settings.dashboardWidgets || { quickActions: true, kpis: true, revenuePeriods: true, goals: true, outstanding: true, charts: true, activity: true };
@@ -719,7 +763,7 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
         <Glass className="p-4 !border-green-700/30">
           <div className="flex items-center gap-2 mb-3">
             <Briefcase size={15} className="text-green-400" />
-            <h3 className="font-semibold text-sm">My Active Job</h3>
+            <h3 className="font-semibold text-sm">My Work</h3>
             {ownerActiveJob.clockInAt && <Badge tone="green">Clocked in</Badge>}
           </div>
           <button onClick={() => setOwnerDetailId(ownerActiveJob.id)} className="w-full text-left mb-3 p-2.5 rounded-xl border border-white/10 bg-black/30 hover:border-green-600/40 transition">
@@ -732,7 +776,7 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
               </div>
             )}
           </button>
-          <div className="flex gap-2">
+          <div className="flex gap-2 flex-wrap">
             {!ownerActiveJob.arrivedAt && (
               <GBtn onClick={ownerMarkArrived} className="flex-1 !justify-center !text-xs"><MapPin size={12} className="inline mr-1" />I'm Here</GBtn>
             )}
@@ -741,6 +785,12 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
             ) : (
               <GBtn onClick={ownerClockIn} className="flex-1 !justify-center !text-xs"><Clock size={12} className="inline mr-1" />Clock In</GBtn>
             )}
+          </div>
+          {/* FIX 5 (mobile round 6) — OTW/Running Late, same customer-facing
+              tools a technician has in the field portal. */}
+          <div className="flex gap-2 flex-wrap mt-2">
+            <GBtn variant="ghost" disabled={ownerSendingOtw} onClick={ownerSendOtw} className="flex-1 !justify-center !text-xs">{ownerSendingOtw ? "Sending…" : "On My Way"}</GBtn>
+            <GBtn variant="ghost" disabled={ownerSendingLate} onClick={() => ownerSendRunningLate(15)} className="flex-1 !justify-center !text-xs">{ownerSendingLate ? "Sending…" : "Running Late (+15m)"}</GBtn>
           </div>
         </Glass>
       )}
@@ -791,6 +841,37 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
               })}
             </div>
           )}
+          {/* FIX 5 (mobile round 6) — "personal calendar showing the owner's
+              assigned jobs": a compact next-7-days strip, distinct from
+              today's list above. Single-job days link straight to that job;
+              multi-job days just show the count (open Jobs/Calendar for
+              full detail) to keep this compact. */}
+          {ownerEmpId && (() => {
+            const weekAhead = Array.from({ length: 7 }, (_, i) => daysFromNow(i + 1));
+            const upcoming = weekAhead
+              .map(d => ({ date: d, jobs: jobs.filter((j: any) => (j.crew || []).includes(ownerEmpId) && j.scheduledDate === d && j.status !== "cancelled") }))
+              .filter(d => d.jobs.length > 0);
+            if (upcoming.length === 0) return null;
+            return (
+              <div className="mt-3 space-y-1.5">
+                <div className="text-[10px] text-white/40 uppercase tracking-wider">My Week Ahead</div>
+                {upcoming.map(({ date, jobs: dayJobs }) => {
+                  const single = dayJobs.length === 1 ? dayJobs[0] : null;
+                  const label = new Date(date + "T12:00:00").toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
+                  return (
+                    <button
+                      key={date}
+                      onClick={() => single && setOwnerDetailId(single.id)}
+                      className={"w-full flex items-center justify-between gap-2 p-2 rounded-xl border border-white/10 bg-black/20 text-left " + (single ? "hover:border-green-600/40 transition" : "cursor-default")}
+                    >
+                      <span className="text-xs text-white/60">{label}</span>
+                      <span className="text-[10px] text-white/40">{dayJobs.length} job{dayJobs.length > 1 ? "s" : ""}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            );
+          })()}
         </Glass>
       )}
 

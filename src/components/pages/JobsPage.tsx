@@ -283,8 +283,8 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
       if (patch.crewAssignedAt !== undefined) crewPatch.crewAssignedAt = patch.crewAssignedAt;
       (supabase as any).from("jobs").update(crewPatch).eq("id", jid)
         .then((result: any) => {
-          if (result?.error) toast?.("Crew assignment failed to save — " + result.error.message, "red");
-          else toast?.("Crew updated ✓", "green");
+          if (result?.error) { toast?.("Crew assignment failed to save — " + result.error.message, "red"); console.warn("[Verify] scheduling/assigning employees — failed:", result.error.message); }
+          else { toast?.("Crew updated ✓", "green"); console.log("[Verify] scheduling/assigning employees — working"); }
         })
         .catch((e: any) => {
           console.warn("[CrewFlow] crew save threw:", e?.message);
@@ -724,6 +724,7 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
                   recurringWeekdays: newJobForm.recurringWeekdays,
                 } : {}),
               };
+              if (job.isRecurring) console.log("[Verify] recurring jobs with custom schedules — working — mode:", job.recurringMode);
               setJobs(prev => [...prev, job]);
               // Close the modal immediately — none of the follow-up work below
               // (Google Calendar, crew email/request) should be able to block
@@ -1016,6 +1017,17 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
                   </div>
                   {j.duration && <div className="text-xs text-white/50 mt-0.5 flex items-center gap-1"><Clock size={10} />{j.duration}h est.{j.loggedHours > 0 ? " · " + j.loggedHours + "h logged" : ""}{j.clockInAt ? " · ⏱ running" : ""}</div>}
                   {(j.attachments || []).length > 0 && <div className="text-xs text-white/50 mt-0.5 flex items-center gap-1"><FileText size={10} />{j.attachments.length} attachment{j.attachments.length > 1 ? "s" : ""}</div>}
+                  {/* FIX 7 (mobile round 6) — employee-uploaded photos/videos
+                      had no visibility from this list at all; owner only
+                      ever saw them by opening the job's detail modal. */}
+                  {((j.photos || []).length > 0 || (j.videos || []).length > 0) && (
+                    <div className="text-xs text-white/50 mt-0.5 flex items-center gap-1">
+                      <ImageIcon size={10} />
+                      {(j.photos || []).length > 0 ? `${j.photos.length} photo${j.photos.length > 1 ? "s" : ""}` : ""}
+                      {(j.photos || []).length > 0 && (j.videos || []).length > 0 ? " · " : ""}
+                      {(j.videos || []).length > 0 ? `${j.videos.length} video${j.videos.length > 1 ? "s" : ""}` : ""}
+                    </div>
+                  )}
                   </div>
                 </div>
                 <div className="text-right flex-shrink-0">

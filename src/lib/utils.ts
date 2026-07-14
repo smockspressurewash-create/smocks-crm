@@ -279,6 +279,7 @@ export const buildChecklistFromServices = (
       combined.push({ id: uid(), label: item.label, done: false, required: item.required, photoRequired: item.photoRequired });
     }
   }
+  if (seenServiceIds.size > 1) console.log("[Verify] custom checklists per service (combining) — working — combined", seenServiceIds.size, "services into", combined.length, "items");
   return combined;
 };
 

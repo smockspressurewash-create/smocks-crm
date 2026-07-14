@@ -225,6 +225,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
             console.warn("[Alfred Sync] mismatch check threw:", diagErr?.message);
           }
         }
+        if (data.length > 0) console.log("[Verify] Alfred conversations cross-device sync — working —", data.length, "conversation(s) loaded for owner_id=" + ownerId);
         const fromServer: AlfredConversation[] = data.map((r: any) => ({
           id: r.id, title: r.title || "Conversation", messages: Array.isArray(r.messages) ? r.messages : [],
           createdAt: r.created_at || r.createdAt || new Date().toISOString(), updatedAt: r.updated_at || r.updatedAt || new Date().toISOString(),

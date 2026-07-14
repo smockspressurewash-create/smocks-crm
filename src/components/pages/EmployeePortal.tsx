@@ -319,6 +319,7 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
         ...(newScheduledTime ? { scheduledTime: newScheduledTime } : {}),
       });
       toast(`Message sent to ${customer?.firstName || "customer"} ✓`, "green");
+      console.log("[Verify] Running Late toast + send — working");
       setRunningLateOpen(false);
       setLateReasonNote("");
     } catch (e: any) {
@@ -344,6 +345,7 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
       }
       onUpdateJob({ commLog: [...(job.commLog || []), { id: uid(), type: "note" as const, date: today(), note: `📍 On my way message sent via ${otwChannel === "sms" ? "text" : "email"}` }] });
       toast(`On the way message sent to ${customer?.firstName || "customer"} ✓`, "green");
+      console.log("[Verify] On My Way toast + send — working");
       setOtwOpen(false);
     } catch (e: any) {
       console.error("[OTW] — error:", e?.message || e);
@@ -1336,8 +1338,8 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
 }
 
 // ── Owner Team Portal ─────────────────────────────────────────────────────────
-function OwnerTeamPortal({ jobs, employees, customers, onClose, googleMapsKey }: {
-  jobs: Job[]; employees: Employee[]; customers: Customer[]; onClose: () => void; googleMapsKey?: string;
+function OwnerTeamPortal({ jobs, employees, customers, onClose, googleMapsKey, toast }: {
+  jobs: Job[]; employees: Employee[]; customers: Customer[]; onClose: () => void; googleMapsKey?: string; toast?: (msg: string, tone?: string) => void;
 }) {
   const [selectedEmpId, setSelectedEmpId] = useState<string>("all");
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
@@ -1358,8 +1360,17 @@ function OwnerTeamPortal({ jobs, employees, customers, onClose, googleMapsKey }:
         job={job}
         customer={customer}
         onBack={() => setSelectedJobId(null)}
-        onUpdateJob={() => {}}
-        toast={() => {}}
+        // FIX 4 (mobile round 6) — this used to be a silent no-op
+        // (`() => {}`), so the owner's "Team Portal" preview let them walk
+        // through the ENTIRE Complete Job wizard (checklist, payment,
+        // signature) with nothing ever persisted and no indication any of
+        // it was inert — reads exactly like "pressing buttons does
+        // nothing." This is intentionally a read-only preview of what an
+        // employee sees (see CLAUDE.md's isOwnerView note), so make that
+        // explicit instead of pretending to work: tell them plainly and
+        // point at the real place to act.
+        onUpdateJob={() => { toast?.("Preview only — open this job from the Jobs page to make real changes.", "yellow"); return Promise.resolve({}); }}
+        toast={toast || (() => {})}
         googleMapsKey={googleMapsKey}
       />
     );
@@ -1957,10 +1968,25 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     const tryRefresh = async () => {
       const existing = getEmpGoogleToken(uid);
       if (isEmpGoogleTokenValid(existing) || !existing?.refreshToken) return;
+      // FIX 10 (mobile round 6) — this used to bail out entirely when no
+      // custom googleBackendUrl was configured, even though
+      // refreshEmpGoogleToken already falls back to this project's own
+      // same-origin /api/google-refresh Cloudflare Pages Function when
+      // backendUrl is undefined. A backendUrl is an OPTIONAL self-hosted
+      // override — requiring it here meant this refresh never even
+      // attempted for the common case (no custom backend configured),
+      // which is the actual reason tokens "kept expiring and didn't
+      // persist": nothing was ever retrying them.
       const backendUrl = settings?.googleBackendUrl;
-      if (!backendUrl) return;
       const refreshed = await refreshEmpGoogleToken(backendUrl, existing.refreshToken);
-      if (!refreshed) return; // refresh failed — fall through to the normal "reconnect" prompt
+      if (!refreshed) {
+        // A real refresh attempt (refresh_token WAS present) failed — only
+        // now is it honest to call this "expired, needs reconnect" rather
+        // than a transient, self-healing state.
+        setEmpGoogleRefreshFailed(true);
+        return;
+      }
+      setEmpGoogleRefreshFailed(false);
       saveEmpGoogleToken(uid, { ...existing, token: refreshed.token, expiresAt: refreshed.expiresAt });
       (supabase as any).from("employees")
         .update({ google_token: refreshed.token, google_token_expires_at: new Date(refreshed.expiresAt).toISOString() })
@@ -2829,6 +2855,11 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
 
   const [homeBaseAddress, setHomeBaseAddressState] = useState("");
   const [, setGoogleHydrateTick] = useState(0);
+  // FIX 10 (mobile round 6) — tracks whether the last actual refresh
+  // attempt (a real POST with a real refresh_token) failed, so the
+  // "reconnect" banner reflects a genuine failure instead of just "no
+  // refresh_token on file yet".
+  const [empGoogleRefreshFailed, setEmpGoogleRefreshFailed] = useState(false);
   const [showCanceledJobs, setShowCanceledJobs] = useState(false);
   const [pastCollapsed, setPastCollapsedState] = useState(() => {
     try { const v = localStorage.getItem("smocks.portal.pastCollapsed"); return v === null ? true : v === "1"; } catch { return true; }
@@ -3156,6 +3187,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
         customers={customers}
         onClose={onClose}
         googleMapsKey={settings?.googleMapsKey || settings?.mapsKey}
+        toast={toast}
       />
     );
   }
@@ -5478,11 +5510,15 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
               : false;
             // Linked but no valid token — only treat this as "needs reconnect" when
             // there's also no refresh_token to silently fix it with (the 5-minute
-            // background refresh effect above handles that case automatically).
-            // Showing "reconnect" the instant the 1hr access token expires, even
-            // though a refresh_token exists and will fix it within seconds, was
-            // alarming employees over a transient, self-healing state.
-            const empGoogleExpired = empGoogleIdentityLinked && !empGoogleValid && !storedToken?.refreshToken;
+            // background refresh effect above handles that case automatically), OR
+            // a real refresh attempt with that refresh_token already failed
+            // (empGoogleRefreshFailed — FIX 10, mobile round 6). Showing "reconnect"
+            // the instant the 1hr access token expires, even though a refresh_token
+            // exists and hasn't been tried/has succeeded before, was alarming
+            // employees over a transient, self-healing state — but silently retrying
+            // forever against a revoked refresh_token with no visible failure state
+            // was the opposite problem.
+            const empGoogleExpired = empGoogleIdentityLinked && !empGoogleValid && (!storedToken?.refreshToken || empGoogleRefreshFailed);
             const empGoogleEmail = storedToken?.email
               || ((empSession?.user?.identities || []).find((i: any) => i.provider === "google")?.identity_data?.email || "");
             const upcomingForCal = myJobs
