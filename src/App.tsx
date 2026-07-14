@@ -438,33 +438,55 @@ export function App() {
     return valid.includes(hash) ? hash : "dashboard";
   });
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  // FIX 4 — mobile sidebar swipe. Track where a touch started; on touchmove,
-  // an edge-swipe-right opens the sidebar, a swipe-left while it's open
-  // closes it. Gated on the gesture being mostly horizontal so vertical
-  // scrolling (of the page, or of the sidebar's own nav list) isn't hijacked.
-  const sidebarTouchRef = useRef<{ x: number; y: number } | null>(null);
-  const handleSidebarTouchStart = (e: React.TouchEvent) => {
+  // FIX 3 (mobile round 2) — mobile sidebar swipe, take 2. Previously
+  // evaluated the open/close threshold continuously on every touchmove,
+  // which turned out unreliable — evaluating once at touchend (comparing
+  // start vs. final position) is the simpler, standard swipe pattern and
+  // matches what was asked for. Two independent handler pairs: one on the
+  // main content area (edge-swipe-right to open, only armed if the touch
+  // actually started within 30px of the left edge), one on the sidebar
+  // itself (swipe-left anywhere on it to close).
+  const mainTouchStartRef = useRef<{ x: number; y: number } | null>(null);
+  const handleMainTouchStart = (e: React.TouchEvent) => {
     const t = e.touches[0];
-    sidebarTouchRef.current = { x: t.clientX, y: t.clientY };
-  };
-  const handleSidebarTouchMove = (e: React.TouchEvent) => {
-    const start = sidebarTouchRef.current;
-    if (!start) return;
-    const t = e.touches[0];
-    const dx = t.clientX - start.x;
-    const dy = t.clientY - start.y;
-    if (Math.abs(dy) > Math.abs(dx)) return; // mostly vertical — let it scroll
-    if (!sidebarOpen && start.x < 30 && dx > 80) {
-      console.log("[Sidebar Swipe] edge swipe-right detected — opening sidebar");
-      setSidebarOpen(true);
-      sidebarTouchRef.current = null;
-    } else if (sidebarOpen && dx < -80) {
-      console.log("[Sidebar Swipe] swipe-left detected — closing sidebar");
-      setSidebarOpen(false);
-      sidebarTouchRef.current = null;
+    if (t.clientX < 30) {
+      mainTouchStartRef.current = { x: t.clientX, y: t.clientY };
+      console.log("[Sidebar] touch start near left edge (x=" + Math.round(t.clientX) + ") — armed for edge swipe");
+    } else {
+      mainTouchStartRef.current = null;
     }
   };
-  const handleSidebarTouchEnd = () => { sidebarTouchRef.current = null; };
+  const handleMainTouchEnd = (e: React.TouchEvent) => {
+    const start = mainTouchStartRef.current;
+    mainTouchStartRef.current = null;
+    if (!start || sidebarOpen) return;
+    const t = e.changedTouches[0];
+    const dx = t.clientX - start.x;
+    const dy = t.clientY - start.y;
+    console.log("[Sidebar] touch end — dx=" + Math.round(dx) + " dy=" + Math.round(dy));
+    if (dx > 80 && Math.abs(dx) > Math.abs(dy)) {
+      console.log("[Sidebar] edge swipe-right confirmed — opening sidebar");
+      setSidebarOpen(true);
+    }
+  };
+  const sidebarTouchStartRef = useRef<{ x: number; y: number } | null>(null);
+  const handleSidebarTouchStart = (e: React.TouchEvent) => {
+    const t = e.touches[0];
+    sidebarTouchStartRef.current = { x: t.clientX, y: t.clientY };
+  };
+  const handleSidebarTouchEnd = (e: React.TouchEvent) => {
+    const start = sidebarTouchStartRef.current;
+    sidebarTouchStartRef.current = null;
+    if (!start) return;
+    const t = e.changedTouches[0];
+    const dx = start.x - t.clientX;
+    const dy = t.clientY - start.y;
+    console.log("[Sidebar] sidebar touch end — dx=" + Math.round(dx) + " dy=" + Math.round(dy));
+    if (dx > 80 && Math.abs(dx) > Math.abs(dy)) {
+      console.log("[Sidebar] swipe-left on sidebar confirmed — closing sidebar");
+      setSidebarOpen(false);
+    }
+  };
   const [settingsOpen, setSettingsOpen] = useState(false);
   // FIX 8 — "Add Manager" in Settings jumps to Employees with the invite
   // modal pre-opened (role defaulted to Manager) instead of duplicating the
@@ -797,16 +819,27 @@ export function App() {
   // any technician. Keyed by the same synthetic id JobDetailModal's crew
   // toggle already uses (`owner_<email>`) so existing crew-assignment code
   // and this row refer to the same employee. Runs once per session, after
-  // both the owner's Supabase session and their profile name are known.
+  // the owner's Supabase session is known.
+  // FIX 5 (round 2) — this used to ALSO require settings.ownerName to
+  // already be set before it would even attempt anything. That field is
+  // only ever populated by the email/password registration form (see
+  // handleOwnerLogin below) — Google OAuth sign-in never sets it. So any
+  // owner who signed in with Google and never separately opened Settings →
+  // Company to type their name in had this whole effect permanently no-op,
+  // and their crew profile silently never existed — exactly "owner
+  // disappeared from crew/Live Crew/Employees" with no error anywhere.
+  // Fall back to deriving a name from the email instead of requiring one.
   const ownerEmpRowEnsuredRef = useRef(false);
   useEffect(() => {
     const ownerEmail = settings.googleEmail || crmUserEmail;
-    if (!crmUserId || !settings.ownerName || !ownerEmail || ownerEmpRowEnsuredRef.current) return;
+    if (!crmUserId || !ownerEmail || ownerEmpRowEnsuredRef.current) return;
     ownerEmpRowEnsuredRef.current = true;
     const ownerId = `owner_${ownerEmail}`;
     if (employees.some(e => e.id === ownerId)) return;
-    const firstName = settings.ownerName.trim().split(" ")[0] || "Owner";
-    const lastName = settings.ownerName.trim().split(" ").slice(1).join(" ") || "";
+    const rawName = settings.ownerName?.trim() || ownerEmail.split("@")[0].replace(/[._-]+/g, " ").replace(/\b\w/g, (c: string) => c.toUpperCase());
+    const firstName = rawName.split(" ")[0] || "Owner";
+    const lastName = rawName.split(" ").slice(1).join(" ") || "";
+    console.log("[Owner Self-Assign] ensuring owner employee row for", ownerId, "— name source:", settings.ownerName?.trim() ? "settings.ownerName" : "derived from email");
     const ownerEmpRow: any = {
       id: ownerId, firstName, lastName, role: "owner", status: "active", email: ownerEmail, hourlyRate: 0,
     };
@@ -1831,20 +1864,17 @@ export function App() {
       const { data, error } = await supabase.auth.signInWithPassword({ email: ownerEmail.trim(), password: ownerPassword });
       setOwnerLoginLoading(false);
       if (error) { setOwnerLoginError(error.message); return; }
-      // Create employee record for owner on first registration
-      if (isRegistering && data.session?.user?.id) {
-        const firstName = ownerFullName.trim().split(" ")[0] || "Owner";
-        const lastName = ownerFullName.trim().split(" ").slice(1).join(" ") || "";
-        (supabase as any).from("employees").insert({
-          user_id: data.session.user.id,
-          email: ownerEmail.trim(),
-          first_name: firstName,
-          last_name: lastName,
-          role: "owner",
-          status: "active",
-          hourly_rate: 0,
-        }).catch(() => {});
-      }
+      // FIX 5 (round 2) — this used to also insert an employee row for the
+      // owner right here, using snake_case columns (user_id/first_name/
+      // last_name/hourly_rate) and a random default id, instead of the
+      // camelCase columns + owner_<email> id convention every other place in
+      // the app (crew dropdowns, Live Crew View, JobDetailModal) expects.
+      // That insert almost certainly failed against the real schema and was
+      // swallowed by a bare .catch(() => {}) with no logging — silently
+      // doing nothing. The "FIX 5" effect above (keyed on crmUserId) already
+      // creates the correctly-shaped row once the session resolves post
+      // sign-in, so this divergent duplicate is just removed rather than
+      // fixed in place.
       // onAuthStateChange handles the rest of the routing from here.
     };
     const handleForgotPassword = async () => {
@@ -2027,17 +2057,15 @@ export function App() {
 
   // ── Main app ──────────────────────────────────────────────────────────────
   return (
-    <div
-      className="flex h-screen overflow-hidden bg-black text-white"
-      onTouchStart={handleSidebarTouchStart}
-      onTouchMove={handleSidebarTouchMove}
-      onTouchEnd={handleSidebarTouchEnd}
-    >
+    <div className="flex h-screen overflow-hidden bg-black text-white">
       {/* Sidebar overlay for mobile */}
       {sidebarOpen && <div className="fixed inset-0 bg-black/60 z-20 md:hidden" onClick={() => setSidebarOpen(false)} />}
 
-      {/* Sidebar */}
-      <aside className={"fixed inset-y-0 left-0 z-30 w-64 bg-black/95 border-r border-red-900/30 flex flex-col transition-transform duration-300 md:relative md:translate-x-0 " + (sidebarOpen ? "translate-x-0" : "-translate-x-full md:translate-x-0")}>
+      {/* Sidebar — its own touch handlers close it on a leftward swipe */}
+      <aside
+        onTouchStart={handleSidebarTouchStart}
+        onTouchEnd={handleSidebarTouchEnd}
+        className={"fixed inset-y-0 left-0 z-30 w-64 bg-black/95 border-r border-red-900/30 flex flex-col transition-transform duration-300 md:relative md:translate-x-0 " + (sidebarOpen ? "translate-x-0" : "-translate-x-full md:translate-x-0")}>
         {/* Logo */}
         <div className="p-4 border-b border-red-900/30 flex items-center justify-between">
           <div className="flex items-center gap-2.5">
@@ -2094,8 +2122,14 @@ export function App() {
         </div>
       </aside>
 
-      {/* Main content */}
-      <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
+      {/* Main content — its own touch handlers open the sidebar on an
+          edge-swipe-right (only armed when the touch starts within 30px of
+          the left edge, so normal scrolling/tapping elsewhere is untouched) */}
+      <div
+        className="flex-1 flex flex-col min-w-0 overflow-hidden"
+        onTouchStart={handleMainTouchStart}
+        onTouchEnd={handleMainTouchEnd}
+      >
         {/* Header */}
         <header className="flex items-center gap-2 px-4 py-3 border-b border-red-900/30 bg-black/80 backdrop-blur flex-shrink-0 relative z-40">
           <button onClick={() => setSidebarOpen(true)} className="md:hidden p-2.5 -ml-1 text-white/50 hover:text-white min-w-[44px] min-h-[44px] flex items-center justify-center">

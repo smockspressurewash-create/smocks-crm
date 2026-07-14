@@ -20,7 +20,7 @@ import {
   Tooltip, ResponsiveContainer, Area, AreaChart, LineChart, Line,
   ComposedChart, Legend
 } from "recharts";
-import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, getEffectiveRate, weekdayLabels, countDaysOffInRange } from "../../lib/utils";
+import { fmt, uid, today, localDateStr, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, getEffectiveRate, weekdayLabels, countDaysOffInRange } from "../../lib/utils";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
 import { twilioSend, sendEmail } from "../../lib/messaging";
 import { supabase } from "../../lib/supabase";
@@ -256,13 +256,38 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setting
   // job hours already landed on that same date) so a shift that's already
   // fully reflected via completed jobs is never double-counted.
   const shiftTopUpHours = (emp: any, startDate: string, endDate: string): number => {
+    // FIX 7 — an employee still clocked in (dayClockInAt set, "End My Day"
+    // not pressed yet) previously contributed NOTHING to Hours/Payroll until
+    // they actually ended their shift — lastShiftDate/lastShiftHours only
+    // get written at that point (see EmployeePortal.tsx's toggleDay). That
+    // made payroll look "stuck"/stale for anyone currently on the clock.
+    // Mirrors EmployeePortal.tsx's own live netShiftHoursNow formula exactly
+    // (dayClockInAt → now, minus paused/lunch minutes) so the two can't
+    // disagree once the shift actually ends and lastShiftHours is written.
+    let liveTopUp = 0;
+    const todayStr = localDateStr();
+    if (emp?.dayClockInAt && todayStr >= startDate && todayStr <= endDate) {
+      const dayPausedMinutes = Number(emp.dayPausedMinutes) || 0;
+      const onLunch = !!emp.dayLunchStartAt;
+      const currentPauseMs = onLunch ? Date.now() - emp.dayLunchStartAt : 0;
+      const liveShiftHours = Math.max(0, (Date.now() - emp.dayClockInAt - dayPausedMinutes * 60000 - currentPauseMs) / 3600000);
+      const jobHoursToday = jobs
+        .filter((j: any) => (j.crew || []).includes(emp.id) && j.status === "completed" && j.scheduledDate === todayStr)
+        .reduce((s: number, j: any) => s + Number(j.loggedHours || j.duration || 0), 0);
+      liveTopUp = Math.max(0, liveShiftHours - jobHoursToday);
+      console.log("[Payroll] live shift in progress —", emp.firstName, emp.lastName, "— dayClockInAt:", new Date(emp.dayClockInAt).toLocaleTimeString(), "elapsed:", Math.round(liveShiftHours * 100) / 100, "hrs, job hours already logged today:", jobHoursToday, "— live top-up:", Math.round(liveTopUp * 100) / 100, "hrs");
+    }
     const shiftDate = emp?.lastShiftDate;
-    if (!shiftDate || shiftDate < startDate || shiftDate > endDate) return 0;
+    if (!shiftDate || shiftDate < startDate || shiftDate > endDate) return liveTopUp;
     const jobHoursOnShiftDate = jobs
       .filter((j: any) => (j.crew || []).includes(emp.id) && j.status === "completed" && j.scheduledDate === shiftDate)
       .reduce((s: number, j: any) => s + Number(j.loggedHours || j.duration || 0), 0);
     const shiftTotal = Number(emp.lastShiftHours) || 0;
-    return Math.max(0, shiftTotal - jobHoursOnShiftDate);
+    const endedShiftTopUp = Math.max(0, shiftTotal - jobHoursOnShiftDate);
+    // If the employee is currently clocked in for today AND has a
+    // lastShiftDate that's also today (started, ended, then started again the
+    // same day), don't double-count — the live figure already supersedes it.
+    return shiftDate === todayStr && emp?.dayClockInAt ? liveTopUp : liveTopUp + endedShiftTopUp;
   };
 
   // Calculate real hours from jobs (loggedHours on jobs they're crewed on),

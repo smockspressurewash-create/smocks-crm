@@ -20,7 +20,7 @@ import {
   Tooltip, ResponsiveContainer, Area, AreaChart, LineChart, Line,
   ComposedChart, Legend
 } from "recharts";
-import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, computeDepositAmount, computeDiscountsTotal, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE } from "../../lib/utils";
+import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, weekdayLabels, computeDepositAmount, computeDiscountsTotal, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE } from "../../lib/utils";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
 import { twilioSend, sendEmail } from "../../lib/messaging";
 import { seedWeather } from "../../lib/weather";
@@ -56,6 +56,14 @@ export function EstimateBuilder({ open, onClose, customers = [], services = [], 
   const [depositRequired, setDepositRequired] = useState(0);
   // FEATURE 6 — whether depositRequired is a flat dollar amount or a % of total.
   const [depositType, setDepositType] = useState<"amount" | "percent">("amount");
+  // FIX 4 (mobile round 2) — recurring services quoted at the estimate
+  // stage. Same field shape as Job's recurring fields (see types/index.ts)
+  // so createJobFromApprovedEstimate can copy these straight onto the job.
+  const [isRecurring, setIsRecurring] = useState(false);
+  const [recurringMode, setRecurringMode] = useState<"preset" | "days" | "weeks" | "months" | "weekdays">("preset");
+  const [recurringFreq, setRecurringFreq] = useState("monthly");
+  const [recurringInterval, setRecurringInterval] = useState(1);
+  const [recurringWeekdays, setRecurringWeekdays] = useState<number[]>([]);
   const [terms, setTerms] = useState("");
   const [notes, setNotes] = useState("");
   const [internalNote, setInternalNote] = useState("");
@@ -80,6 +88,11 @@ export function EstimateBuilder({ open, onClose, customers = [], services = [], 
       setDiscounts([]);
       setDepositRequired(0);
       setDepositType("amount");
+      setIsRecurring(false);
+      setRecurringMode("preset");
+      setRecurringFreq("monthly");
+      setRecurringInterval(1);
+      setRecurringWeekdays([]);
       setTerms("Payment due upon completion. 3-day cancellation notice requested. Weather reschedules free of charge.");
       setNotes("");
       setSavingTemplate(false);
@@ -125,6 +138,13 @@ export function EstimateBuilder({ open, onClose, customers = [], services = [], 
     if (tpl.discounts) setDiscounts(tpl.discounts.map((d: any) => ({ ...d, id: uid() })));
     if (tpl.depositRequired) setDepositRequired(tpl.depositRequired);
     if (tpl.depositType) setDepositType(tpl.depositType);
+    if (tpl.isRecurring) {
+      setIsRecurring(true);
+      setRecurringMode(tpl.recurringMode || "preset");
+      setRecurringFreq(tpl.recurringFreq || "monthly");
+      setRecurringInterval(tpl.recurringInterval || 1);
+      setRecurringWeekdays(tpl.recurringWeekdays || []);
+    }
     if (tpl.terms) setTerms(tpl.terms);
     if (tpl.notes) setNotes(tpl.notes);
     // Custom-uploaded PDF templates can't be parsed into structured line
@@ -160,7 +180,10 @@ export function EstimateBuilder({ open, onClose, customers = [], services = [], 
 
   const saveAsTemplate = () => {
     if (!templateName.trim()) return;
-    const tpl = { id: uid(), name: templateName.trim(), lineItems: items, discount: Number(discount), discounts, depositRequired: Number(depositRequired), depositType, terms, notes, createdAt: today() };
+    const tpl = {
+      id: uid(), name: templateName.trim(), lineItems: items, discount: Number(discount), discounts, depositRequired: Number(depositRequired), depositType, terms, notes, createdAt: today(),
+      ...(isRecurring ? { isRecurring, recurringMode, recurringFreq, recurringInterval, recurringWeekdays } : {}),
+    };
     setEstimateTemplates(prev => [...prev, tpl]);
     setSavingTemplate(false);
     setTemplateName("");
@@ -174,7 +197,10 @@ export function EstimateBuilder({ open, onClose, customers = [], services = [], 
       subtotal: p.lineItems.reduce((s: number, i: any) => s + Number(i.quantity) * Number(i.unitPrice), 0),
     })) : undefined;
     const usedItems = estimateType === "package" ? [] : items;
-    onSave({ id: uid(), customerId: cid, estimateType, lineItems: usedItems, packages: pkgData, subtotal: sub, discount: Number(discount), discounts, depositRequired: Number(depositRequired), depositType, tax, total: tot, status: "pending", createdAt: today(), validUntil: vu, viewed: false, viewedAt: null, terms, notes, internalNote });
+    onSave({
+      id: uid(), customerId: cid, estimateType, lineItems: usedItems, packages: pkgData, subtotal: sub, discount: Number(discount), discounts, depositRequired: Number(depositRequired), depositType, tax, total: tot, status: "pending", createdAt: today(), validUntil: vu, viewed: false, viewedAt: null, terms, notes, internalNote,
+      ...(isRecurring ? { isRecurring, recurringMode, recurringFreq, recurringInterval, recurringWeekdays } : {}),
+    });
   };
 
   return (
@@ -426,6 +452,60 @@ export function EstimateBuilder({ open, onClose, customers = [], services = [], 
             </GSel>
           </div>
           {Number(depositRequired) > 0 && <div className="text-[10px] text-white/40 mt-1">Deposit due now: {fmt(depositAmt)} · Balance due after service: {fmt(Math.max(0, tot - depositAmt))}</div>}
+        </div>
+
+        {/* FIX 4 (mobile round 2) — recurring option at the quote stage, so a
+            recurring service can be sold/approved before a job even exists.
+            Mirrors JobsPage/JobDetailModal's recurring editor. */}
+        <div className="p-3 rounded-xl border border-white/10 bg-black/20 space-y-2">
+          <label className="flex items-center gap-2 cursor-pointer">
+            <input type="checkbox" checked={isRecurring} onChange={e => setIsRecurring(e.target.checked)} className="accent-red-600 w-3.5 h-3.5" />
+            <span className="text-xs font-semibold text-white/80 flex items-center gap-1.5"><Repeat size={12} />This is a recurring service</span>
+          </label>
+          {isRecurring && (
+            <div className="p-3 rounded-xl border border-blue-700/30 bg-blue-950/10 space-y-2.5">
+              <GSel value={recurringMode} onChange={e => setRecurringMode(e.target.value as any)}>
+                <option value="preset" className="bg-black">Preset (weekly, monthly, etc.)</option>
+                <option value="days" className="bg-black">Every X days</option>
+                <option value="weeks" className="bg-black">Every X weeks</option>
+                <option value="months" className="bg-black">Every X months</option>
+                <option value="weekdays" className="bg-black">Specific days of week</option>
+              </GSel>
+
+              {recurringMode === "preset" && (
+                <GSel value={recurringFreq} onChange={e => setRecurringFreq(e.target.value)}>
+                  {recurringFreqs.map(f => <option key={f.key} value={f.key} className="bg-black">{f.label}</option>)}
+                </GSel>
+              )}
+
+              {(recurringMode === "days" || recurringMode === "weeks" || recurringMode === "months") && (
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-white/50">Every</span>
+                  <GInput type="number" min="1" step="1" value={recurringInterval} onChange={e => setRecurringInterval(Math.max(1, Number(e.target.value) || 1))} className="!w-20" />
+                  <span className="text-xs text-white/50">{recurringMode}</span>
+                </div>
+              )}
+
+              {recurringMode === "weekdays" && (
+                <div className="flex flex-wrap gap-1.5">
+                  {weekdayLabels.map((lbl, i) => {
+                    const active = recurringWeekdays.includes(i);
+                    return (
+                      <button
+                        key={i}
+                        type="button"
+                        onClick={() => setRecurringWeekdays(prev => active ? prev.filter(d => d !== i) : [...prev, i].sort())}
+                        className={"px-2.5 py-1 rounded-lg text-[11px] font-semibold border transition " + (active ? "bg-red-600 border-red-500 text-white" : "bg-black/40 border-white/10 text-white/50 hover:text-white")}
+                      >
+                        {lbl}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+              <div className="text-[10px] text-white/40">Once approved and scheduled, this recurring pattern carries over to the job automatically.</div>
+            </div>
+          )}
         </div>
 
         <div className="grid md:grid-cols-2 gap-3">

@@ -2278,9 +2278,31 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   const jobHoursOnShiftDate = empLastShiftDate
     ? myJobs.filter(j => j.status === "completed" && j.scheduledDate === empLastShiftDate).reduce((s, j) => s + Number(j.loggedHours || 0), 0)
     : 0;
-  const shiftTopUpHours = (empLastShiftDate && empLastShiftDate >= weekStart && empLastShiftDate <= weekEnd)
+  const endedShiftTopUpHours = (empLastShiftDate && empLastShiftDate >= weekStart && empLastShiftDate <= weekEnd)
     ? Math.max(0, empLastShiftHours - jobHoursOnShiftDate)
     : 0;
+  // FIX 7 (mobile round 2) — same gap as the owner's Employees tab: while
+  // still clocked in (dayClockInAt set, hasn't pressed "End My Day" yet),
+  // today's hours weren't reflected here at all since lastShiftHours only
+  // gets written at clock-out. Mirrors the live netShiftHoursNow formula used
+  // by this same file's own shift-timer button below.
+  const empDayClockInAtForWidget = (myEmployee as any)?.dayClockInAt;
+  const liveShiftTopUpHours = (empDayClockInAtForWidget && todayStr >= weekStart && todayStr <= weekEnd)
+    ? (() => {
+        const pausedMin = Number((myEmployee as any)?.dayPausedMinutes) || 0;
+        const lunchStart = (myEmployee as any)?.dayLunchStartAt;
+        const currentPauseMs = lunchStart ? Date.now() - lunchStart : 0;
+        const liveHours = Math.max(0, (Date.now() - empDayClockInAtForWidget - pausedMin * 60000 - currentPauseMs) / 3600000);
+        const jobHoursToday = myJobs.filter(j => j.status === "completed" && j.scheduledDate === todayStr).reduce((s, j) => s + Number(j.loggedHours || 0), 0);
+        return Math.max(0, liveHours - jobHoursToday);
+      })()
+    : 0;
+  // Avoid double-counting if lastShiftDate also happens to be today (clocked
+  // in again after already ending a shift earlier the same day) — the live
+  // figure supersedes the ended-shift one for today specifically.
+  const shiftTopUpHours = (empLastShiftDate === todayStr && empDayClockInAtForWidget)
+    ? liveShiftTopUpHours
+    : liveShiftTopUpHours + endedShiftTopUpHours;
 
   const weekHours = weekJobs.reduce((s, j) => s + Number(j.loggedHours || 0), 0) + shiftTopUpHours;
   const weekJobsDone = weekJobs.filter(j => j.status === "completed").length;

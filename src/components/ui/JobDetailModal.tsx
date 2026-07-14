@@ -1132,8 +1132,8 @@ ${job.notes ? `<div class="section"><h2>Job Notes</h2><p>${job.notes}</p></div>`
               // weekday-offs.
               const unavail = job.scheduledDate && isEmployeeUnavailable(e as any, job.scheduledDate);
               return (
-                <button key={e.id} onClick={() => toggleCrew(e.id)} title={unavail ? `${e.firstName} marked ${job.scheduledDate} as unavailable` : undefined} className={"text-xs px-3 py-1.5 rounded-lg border transition " + (sel ? "bg-red-900/40 border-red-500/50 text-red-300" : unavail ? "bg-orange-950/20 border-orange-700/40 text-orange-300" : "bg-white/5 border-white/10 text-white/60 hover:text-white")}>
-                  {e.firstName} {e.lastName[0]}.{unavail ? " ⚠" : ""}
+                <button key={e.id} onClick={() => toggleCrew(e.id)} title={unavail ? `⚠️ ${e.firstName} is unavailable on this day. Schedule anyway?` : undefined} className={"text-xs px-3 py-1.5 rounded-lg border transition " + (sel ? "bg-red-900/40 border-red-500/50 text-red-300" : unavail ? "bg-yellow-950/20 border-yellow-700/40 text-yellow-300" : "bg-white/5 border-white/10 text-white/60 hover:text-white")}>
+                  {e.firstName} {e.lastName[0]}.{unavail ? " ⚠️" : ""}
                 </button>
               );
             })}
@@ -1142,9 +1142,8 @@ ${job.notes ? `<div class="section"><h2>Job Notes</h2><p>${job.notes}</p></div>`
               whose availability conflicts with this job's date (e.g. the
               date was set/changed after they were assigned). */}
           {job.scheduledDate && (job.crew || []).some((eid: string) => isEmployeeUnavailable(employees.find(e => e.id === eid) as any, job.scheduledDate)) && (
-            <div className="mt-2 text-[11px] text-orange-300 bg-orange-950/30 border border-orange-700/30 rounded-lg px-2.5 py-1.5 flex items-center gap-1.5">
-              <AlertTriangle size={11} className="flex-shrink-0" />
-              {(job.crew || []).filter((eid: string) => isEmployeeUnavailable(employees.find(e => e.id === eid) as any, job.scheduledDate)).map((eid: string) => employees.find(e => e.id === eid)?.firstName).join(", ")} marked {job.scheduledDate} as unavailable
+            <div className="mt-2 text-[11px] text-yellow-300 bg-yellow-950/30 border border-yellow-700/40 rounded-lg px-2.5 py-1.5 flex items-center gap-1.5">
+              ⚠️ {(job.crew || []).filter((eid: string) => isEmployeeUnavailable(employees.find(e => e.id === eid) as any, job.scheduledDate)).map((eid: string) => employees.find(e => e.id === eid)?.firstName).join(", ")} is unavailable on this day. Schedule anyway?
             </div>
           )}
           {showRequestForm && (
@@ -1159,11 +1158,14 @@ ${job.notes ? `<div class="section"><h2>Job Notes</h2><p>${job.notes}</p></div>`
               </select>
               {requestEmpId && (() => {
                 const emp = employees.find(e => e.id === requestEmpId);
-                const av: string[] = (emp as any)?.availability || [];
-                const isUnavail = job.scheduledDate && av.includes(job.scheduledDate);
+                // FIX 6 — this used to check emp.availability directly, which
+                // misses recurringDaysOff (e.g. "every Sunday"); use the same
+                // shared isEmployeeUnavailable check as everywhere else so
+                // this can't silently disagree with the button badges above.
+                const isUnavail = job.scheduledDate && isEmployeeUnavailable(emp as any, job.scheduledDate);
                 return isUnavail ? (
-                  <div className="text-[10px] text-orange-300 bg-orange-950/30 border border-orange-700/30 rounded-lg px-2 py-1.5">
-                    ⚠ {emp?.firstName} marked {job.scheduledDate} as unavailable. You can still request them.
+                  <div className="text-[10px] text-yellow-300 bg-yellow-950/30 border border-yellow-700/40 rounded-lg px-2 py-1.5">
+                    ⚠️ {emp?.firstName} is unavailable on this day. Schedule anyway?
                   </div>
                 ) : null;
               })()}

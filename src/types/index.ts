@@ -141,6 +141,16 @@ export interface Estimate {
   templateId?: string;
   sendChannel?: "email" | "sms" | "both";
   payChoice?: "now" | "later" | "deposit";
+  // FIX 4 (mobile round 2) — recurring services quoted at the estimate
+  // stage, before there's a job yet. Same shape as Job's recurring fields
+  // (computeNextRecurringDate in lib/utils.ts accepts either) so converting
+  // an approved recurring estimate into a job just copies these straight
+  // across instead of re-deriving them.
+  isRecurring?: boolean;
+  recurringMode?: "preset" | "days" | "weeks" | "months" | "weekdays";
+  recurringFreq?: string;
+  recurringInterval?: number;
+  recurringWeekdays?: number[];
 }
 
 // ─── Job ──────────────────────────────────────────────────────────────────────

@@ -180,6 +180,16 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
         equipment: [], tags: ["Needs Scheduling"], commLog: [],
         notes: "From approved estimate #" + estId.slice(-4).toUpperCase(),
         createdAt: today(), estimateId: estId,
+        // FIX 4 (mobile round 2) — carry a recurring quote's pattern
+        // straight onto the job it becomes, instead of the owner having to
+        // re-enter it in JobDetailModal after the fact.
+        ...((est as any).isRecurring ? {
+          isRecurring: true,
+          recurringMode: (est as any).recurringMode,
+          recurringFreq: (est as any).recurringFreq,
+          recurringInterval: (est as any).recurringInterval,
+          recurringWeekdays: (est as any).recurringWeekdays,
+        } : {}),
       }];
     });
   };
@@ -344,7 +354,18 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
       }} onConvert={id => { setEstimates(estimates.map(x => x.id === id ? { ...x, invoiced: true, invoicedAt: today() } : x)); setViewing(null); toast("Converted to invoice"); }} onSchedule={est => {
         const c = customers.find(x => x.id === est.customerId);
         const combinedChecklist = buildChecklistFromServices(est.lineItems, services);
-        const newJob = { id: uid(), customerId: est.customerId, address: c?.address || "", amount: est.total, status: "scheduled", scheduledDate: today(), duration: 3, priority: "normal", checklist: combinedChecklist, preChecklist: combinedChecklist, photos: [], chemicalsUsed: [], crew: [], notes: "From estimate #" + (est.id || "").slice(-4), isRecurring: false, pipelineStage: "scheduled", createdAt: today() };
+        const newJob = {
+          id: uid(), customerId: est.customerId, address: c?.address || "", amount: est.total, status: "scheduled", scheduledDate: today(), duration: 3, priority: "normal", checklist: combinedChecklist, preChecklist: combinedChecklist, photos: [], chemicalsUsed: [], crew: [], notes: "From estimate #" + (est.id || "").slice(-4), pipelineStage: "scheduled", createdAt: today(),
+          // FIX 4 (mobile round 2) — carry the estimate's recurring pattern
+          // onto the job instead of always hardcoding isRecurring: false.
+          isRecurring: !!(est as any).isRecurring,
+          ...((est as any).isRecurring ? {
+            recurringMode: (est as any).recurringMode,
+            recurringFreq: (est as any).recurringFreq,
+            recurringInterval: (est as any).recurringInterval,
+            recurringWeekdays: (est as any).recurringWeekdays,
+          } : {}),
+        };
         setJobs(prev => [...prev, newJob]);
         // Auto-sync to Google Calendar if connected
         if (settings?.googleConnected && settings?.googleScopes?.calendar) {

@@ -1,5 +1,6 @@
 // auto-extracted from Crew Boss OS monolith
-import React, { useState, useEffect, useLayoutEffect, useRef, useCallback } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
+import { createPortal } from "react-dom";
 import {
   LayoutDashboard, Users, FileText, Briefcase, Bot, BarChart3,
   Settings, Bell, Menu, X, Plus, Search, Edit, Trash2, Send,
@@ -88,30 +89,6 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
   // toggled by the hamburger button in the chat header either way.
   const isMobile = useIsMobile();
   const [sidebarOpen, setSidebarOpen] = useState(() => !isMobile);
-  // FIX 1 — rather than guessing App.tsx's header height in pixels (a prior
-  // attempt hardcoded 57px, which was wrong — the header's own hamburger
-  // button alone has min-h-[44px], already taller than that guess — so the
-  // page was still a few px taller than the viewport and the outer <main>
-  // scrolled, hiding this page's own header), measure the real distance from
-  // the viewport top to THIS box at render time. That self-corrects for any
-  // header content, safe-area insets, or font-metric differences instead of
-  // relying on a number that has to be manually kept in sync.
-  const alfredRootRef = useRef<HTMLDivElement | null>(null);
-  const [chromeTop, setChromeTop] = useState(57);
-  useLayoutEffect(() => {
-    const measure = () => {
-      if (!alfredRootRef.current) return;
-      const top = alfredRootRef.current.getBoundingClientRect().top;
-      if (top > 0) setChromeTop(top);
-    };
-    measure();
-    window.addEventListener("resize", measure);
-    window.addEventListener("orientationchange", measure);
-    return () => {
-      window.removeEventListener("resize", measure);
-      window.removeEventListener("orientationchange", measure);
-    };
-  }, []);
   const [memoryOpen, setMemoryOpen] = useState(false);
   const [convSearch, setConvSearch] = useState("");
   const [editingTitle, setEditingTitle] = useState(null);
@@ -202,7 +179,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
     if (!ownerId) { console.warn("[Alfred Sync] no ownerId yet — skipping conversation fetch"); return; }
     const loadConversations = async () => {
       try {
-        const { data, error } = await (supabase as any).from("alfred_conversations").select("*").eq("owner_id", ownerId);
+        const { data, error } = await (supabase as any).from("alfred_conversations").select("*").eq("owner_id", ownerId).order("updated_at", { ascending: false });
         if (error) {
           console.warn("[Alfred Sync] fetch failed:", error.message, "— if this says the relation doesn't exist, run supabase/migrations/0006_alfred_conversations_table.sql in the Supabase SQL editor");
           return;
@@ -212,7 +189,11 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           id: r.id, title: r.title || "Conversation", messages: Array.isArray(r.messages) ? r.messages : [],
           createdAt: r.created_at || r.createdAt || new Date().toISOString(), updatedAt: r.updated_at || r.updatedAt || new Date().toISOString(),
         }));
-        console.log("[Alfred Sync] loaded " + fromServer.length + " conversations" + (fromServer.length === 0 ? " (none saved yet for this owner)" : ""));
+        if (fromServer.length === 0) {
+          console.warn("[Alfred Sync] table returned 0 conversations for owner_id=" + ownerId + " — either nothing has synced from any device yet, or migration 0006_alfred_conversations_table.sql / its RLS policy hasn't been applied in Supabase");
+        } else {
+          console.log("[Alfred Sync] loaded " + fromServer.length + " conversations for owner_id=" + ownerId);
+        }
         setConversations((prev: any[]) => {
           const byId = new Map(fromServer.map(c => [c.id, c]));
           // Keep any local conversation not yet confirmed server-side (just
@@ -1703,17 +1684,20 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
     return Math.floor(diff / 86400) + "d";
   };
 
-  // FIX 1 — mobile overflow. The parent page wrapper (App.tsx's <main>)
-  // reserves an extra pb-16 (64px) on mobile only, for the fixed bottom tab
-  // bar — this container's negative margins only ever canceled its immediate
-  // parent's own py-4/p-6 padding, not that extra 64px two levels up, so on
-  // mobile this box's bottom edge (and the composer pinned to it) rendered
-  // ~64px below the real viewport, off-screen behind the bottom nav. Cancel
-  // that extra margin AND size the box to the real visible height (measured
-  // chromeTop + the bottom nav's own known 56px + safe-area) instead of just
-  // the header, using 100dvh so mobile browser chrome doesn't throw it off.
-  return (
-    <div ref={alfredRootRef} className="relative -mx-3 md:-mx-6 -mt-4 -mb-20 md:-mt-6 md:-mb-6 flex bg-black overflow-hidden" style={{ height: isMobile ? `calc(100dvh - ${chromeTop}px - 56px - env(safe-area-inset-bottom))` : `calc(100dvh - ${chromeTop}px)` }}>
+  // FIX 1 — mobile overflow, take 3. Both a magic-number calc() and a
+  // getBoundingClientRect() measurement still left this page nested inside
+  // App.tsx's own scrollable <main>, so any mismatch between "how tall we
+  // think the chrome above us is" and reality made the OUTER page scroll
+  // instead of just our messages list. Simplest fix that always works,
+  // exactly as asked: render straight into document.body via a portal (the
+  // same trick the shared <Modal> already uses) so this container is a true
+  // fixed, full-viewport box with zero dependency on ancestor padding,
+  // headers, or scroll state — h-[100dvh]/flex/overflow-hidden on it now
+  // mean exactly what they say instead of being fought by App.tsx's layout.
+  // Portaling out from under App's own header + bottom nav means Alfred also
+  // needs its own way back — see the "Back" button in the chat header below.
+  return createPortal(
+    <div className="fixed inset-0 z-[200] h-[100dvh] flex bg-black overflow-hidden">
       {/* Conversation sidebar */}
       <aside className={"bg-black/80 backdrop-blur-xl border-r border-red-900/30 flex flex-col transition-all duration-300 overflow-hidden " + (sidebarOpen ? "w-[280px] md:w-[280px]" : "w-0") + " absolute md:relative h-full z-20"}>
         <div className="p-3 border-b border-red-900/30 flex items-center gap-2">
@@ -1799,6 +1783,12 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
             layout, which already pins it since it's a sibling of the
             scrollable messages div, not an ancestor of it) */}
         <div className="sticky top-0 z-10 flex-shrink-0 flex items-center gap-1.5 md:gap-2 px-2 py-2 md:p-3 border-b border-red-900/30 bg-black/40 backdrop-blur">
+          {/* Alfred now renders as a full-viewport portal (see FIX 1 above),
+              covering the app's own header/sidebar/bottom nav — this is the
+              only way back to the rest of the CRM while it's open. */}
+          <button onClick={() => onNav && onNav("dashboard")} className="p-2 rounded-lg hover:bg-white/5 text-white/70 flex-shrink-0" title="Back to Dashboard">
+            <ChevronLeft size={18} />
+          </button>
           <button onClick={() => setSidebarOpen(!sidebarOpen)} className="p-2 rounded-lg hover:bg-white/5 text-white/70 flex-shrink-0" title="Toggle sidebar">
             <Menu size={16} />
           </button>
@@ -2140,7 +2130,8 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           </div>
         </div>
       </Modal>
-    </div>
+    </div>,
+    document.body
   );
 }
 

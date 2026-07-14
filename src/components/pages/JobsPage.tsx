@@ -20,7 +20,7 @@ import {
   Tooltip, ResponsiveContainer, Area, AreaChart, LineChart, Line,
   ComposedChart, Legend
 } from "recharts";
-import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, computeNextRecurringDate, isEmployeeUnavailable, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, withTimeout, getEffectiveRate } from "../../lib/utils";
+import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, weekdayLabels, computeNextRecurringDate, isEmployeeUnavailable, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, withTimeout, getEffectiveRate } from "../../lib/utils";
 const weatherRisk = (_dateStr: string): {icon: string; level: string; reason: string} | null => null;
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
 import { twilioSend, sendEmail, emailShell, emailButton } from "../../lib/messaging";
@@ -131,7 +131,13 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
   const [bulkAction, setBulkAction] = useState(null);
   const [, forceTick] = useState(0);
   const [newJobOpen, setNewJobOpen] = useState(false);
-  const [newJobForm, setNewJobForm] = useState({ customerId: "", address: "", amount: "", scheduledDate: today(), scheduledTime: "", priority: "normal", notes: "", duration: "", crewEmpId: "", jobType: "residential" });
+  // FIX 4 — recurring options weren't reachable from job CREATION at all
+  // (JobDetailModal has a full recurring editor, but that's post-creation
+  // only). One shared factory for the "empty form" shape so the initial
+  // useState, and both places that reset it before opening the modal, can't
+  // drift out of sync with each other.
+  const emptyNewJobForm = () => ({ customerId: "", address: "", amount: "", scheduledDate: today(), scheduledTime: "", priority: "normal", notes: "", duration: "", crewEmpId: "", jobType: "residential", isRecurring: false, recurringMode: "preset" as "preset" | "days" | "weeks" | "months" | "weekdays", recurringFreq: "monthly", recurringInterval: 1, recurringWeekdays: [] as number[] });
+  const [newJobForm, setNewJobForm] = useState(emptyNewJobForm());
   const [newJobCrewMode, setNewJobCrewMode] = useState<"assign" | "request">("assign");
   const [quickReqJobId, setQuickReqJobId] = useState<string | null>(null);
   const [quickReqEmpId, setQuickReqEmpId] = useState("");
@@ -586,6 +592,69 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
             <label className="text-xs text-white/60 mb-1 block">Notes (optional)</label>
             <GTxt placeholder="Service details, access instructions..." value={newJobForm.notes} onChange={e => setNewJobForm(f => ({ ...f, notes: e.target.value }))} rows={3} />
           </div>
+
+          {/* FIX 4 — recurring schedule, available at CREATION time now, not
+              just when editing an existing job afterward. Mirrors
+              JobDetailModal's editor 1:1 (same recurringMode options, same
+              computeNextRecurringDate preview) so the two never disagree. */}
+          <div className="p-3 rounded-xl border border-white/10 bg-black/20 space-y-2">
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input type="checkbox" checked={newJobForm.isRecurring} onChange={e => setNewJobForm(f => ({ ...f, isRecurring: e.target.checked }))} className="accent-red-600 w-3.5 h-3.5" />
+              <span className="text-xs font-semibold text-white/80 flex items-center gap-1.5"><Repeat size={12} />This is a recurring job</span>
+            </label>
+            {newJobForm.isRecurring && (
+              <div className="p-3 rounded-xl border border-blue-700/30 bg-blue-950/10 space-y-2.5">
+                <GSel value={newJobForm.recurringMode} onChange={e => setNewJobForm(f => ({ ...f, recurringMode: e.target.value as any }))}>
+                  <option value="preset" className="bg-black">Preset (weekly, monthly, etc.)</option>
+                  <option value="days" className="bg-black">Every X days</option>
+                  <option value="weeks" className="bg-black">Every X weeks</option>
+                  <option value="months" className="bg-black">Every X months</option>
+                  <option value="weekdays" className="bg-black">Specific days of week</option>
+                </GSel>
+
+                {(!newJobForm.recurringMode || newJobForm.recurringMode === "preset") && (
+                  <GSel value={newJobForm.recurringFreq} onChange={e => setNewJobForm(f => ({ ...f, recurringFreq: e.target.value }))}>
+                    {recurringFreqs.map(f => <option key={f.key} value={f.key} className="bg-black">{f.label}</option>)}
+                  </GSel>
+                )}
+
+                {(newJobForm.recurringMode === "days" || newJobForm.recurringMode === "weeks" || newJobForm.recurringMode === "months") && (
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-white/50">Every</span>
+                    <GInput type="number" min="1" step="1" value={newJobForm.recurringInterval || 1} onChange={e => setNewJobForm(f => ({ ...f, recurringInterval: Math.max(1, Number(e.target.value) || 1) }))} className="!w-20" />
+                    <span className="text-xs text-white/50">{newJobForm.recurringMode}</span>
+                  </div>
+                )}
+
+                {newJobForm.recurringMode === "weekdays" && (
+                  <div className="flex flex-wrap gap-1.5">
+                    {weekdayLabels.map((lbl, i) => {
+                      const active = (newJobForm.recurringWeekdays || []).includes(i);
+                      return (
+                        <button
+                          key={i}
+                          type="button"
+                          onClick={() => {
+                            const cur = newJobForm.recurringWeekdays || [];
+                            const next = active ? cur.filter((d: number) => d !== i) : [...cur, i].sort();
+                            setNewJobForm(f => ({ ...f, recurringWeekdays: next }));
+                          }}
+                          className={"px-2.5 py-1 rounded-lg text-[11px] font-semibold border transition " + (active ? "bg-red-600 border-red-500 text-white" : "bg-black/40 border-white/10 text-white/50 hover:text-white")}
+                        >
+                          {lbl}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {newJobForm.scheduledDate && (
+                  <div className="text-[10px] text-white/40">Next occurrence after this one: {computeNextRecurringDate(newJobForm, newJobForm.scheduledDate)}</div>
+                )}
+              </div>
+            )}
+          </div>
+
           <div>
             <label className="text-xs text-white/60 mb-1 block">Crew (optional)</label>
             <div className="flex gap-2">
@@ -608,8 +677,8 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
             {/* FEATURE 5 — explicit warning banner, not just the dropdown
                 annotation, so it's impossible to miss before saving. */}
             {newJobForm.crewEmpId && newJobForm.scheduledDate && isEmployeeUnavailable(employees.find((e: any) => e.id === newJobForm.crewEmpId), newJobForm.scheduledDate) && (
-              <div className="text-[11px] text-orange-300 bg-orange-950/30 border border-orange-700/30 rounded px-2 py-1 mt-1 flex items-center gap-1">
-                <AlertTriangle size={11} />{employees.find((e: any) => e.id === newJobForm.crewEmpId)?.firstName} marked {newJobForm.scheduledDate} as unavailable
+              <div className="text-[11px] text-yellow-300 bg-yellow-950/30 border border-yellow-700/40 rounded px-2 py-1 mt-1 flex items-center gap-1">
+                ⚠️ {employees.find((e: any) => e.id === newJobForm.crewEmpId)?.firstName} is unavailable on this day. Schedule anyway?
               </div>
             )}
             {newJobForm.crewEmpId && (
@@ -655,6 +724,13 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
                 crew: directAssign ? [assignedEmp.id] : [], checklist: [], photos: [], commLog: [], chemicalsUsed: [], equipment: [], tags: [],
                 loggedHours: 0, createdAt: today(),
                 ...(directAssign ? { crewAssignedAt: { [assignedEmp.id]: Date.now() } } : {}),
+                ...(newJobForm.isRecurring ? {
+                  isRecurring: true,
+                  recurringMode: newJobForm.recurringMode,
+                  recurringFreq: newJobForm.recurringFreq,
+                  recurringInterval: newJobForm.recurringInterval,
+                  recurringWeekdays: newJobForm.recurringWeekdays,
+                } : {}),
               };
               setJobs(prev => [...prev, job]);
               // Close the modal immediately — none of the follow-up work below
@@ -869,7 +945,7 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
           <div className="text-xs text-white/40 mt-0.5">{jobs.filter(j => j.status === "scheduled").length} scheduled · {jobs.filter(j => j.status === "in_progress").length} in progress</div>
         </div>
         <button
-          onClick={() => { setNewJobForm({ customerId: "", address: "", amount: "", scheduledDate: today(), scheduledTime: "", priority: "normal", notes: "", duration: "", crewEmpId: "", jobType: "residential" }); setNewJobOpen(true); }}
+          onClick={() => { setNewJobForm(emptyNewJobForm()); setNewJobOpen(true); }}
           className="w-full md:w-auto flex items-center justify-center md:justify-start gap-2 px-4 py-2.5 bg-gradient-to-r from-red-600 to-red-800 border border-red-500/50 rounded-2xl text-sm font-semibold text-white shadow-lg shadow-red-900/30 hover:shadow-red-600/40 hover:scale-[1.02] active:scale-95 transition-all"
         >
           <Plus size={16} />Schedule Job
@@ -893,7 +969,7 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
       </div>
 
       <div className="flex flex-wrap gap-2 items-center">
-        <GBtn onClick={() => { setNewJobForm({ customerId: "", address: "", amount: "", scheduledDate: today(), scheduledTime: "", priority: "normal", notes: "", duration: "", crewEmpId: "", jobType: "residential" }); setNewJobOpen(true); }} className="!py-1.5 !text-xs flex-shrink-0"><Plus size={13} className="inline mr-1" />Schedule Job</GBtn>
+        <GBtn onClick={() => { setNewJobForm(emptyNewJobForm()); setNewJobOpen(true); }} className="!py-1.5 !text-xs flex-shrink-0"><Plus size={13} className="inline mr-1" />Schedule Job</GBtn>
         <div className="relative flex-1 min-w-[160px]">
           <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-white/40" />
           <GInput placeholder="Search customer, address, tag..." value={search} onChange={e => setSearch(e.target.value)} className="!pl-9 !py-1.5 !text-xs" />
@@ -997,8 +1073,8 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
                   {quickReqEmpId && (() => {
                     const emp = employees.find((e: any) => e.id === quickReqEmpId);
                     return isEmployeeUnavailable(emp, j.scheduledDate) ? (
-                      <div className="text-[10px] text-orange-300 bg-orange-950/30 border border-orange-700/30 rounded px-2 py-1">
-                        ⚠ {(emp as any)?.firstName} marked {j.scheduledDate} as unavailable
+                      <div className="text-[10px] text-yellow-300 bg-yellow-950/30 border border-yellow-700/40 rounded px-2 py-1">
+                        ⚠️ {(emp as any)?.firstName} is unavailable on this day. Schedule anyway?
                       </div>
                     ) : null;
                   })()}
