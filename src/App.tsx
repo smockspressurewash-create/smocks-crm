@@ -457,7 +457,7 @@ export function App() {
   const fabDragOffsetRef = useRef({ x: 0, y: 0 });
   const fabHoldStartRef = useRef({ x: 0, y: 0 });
   const fabWasDraggedRef = useRef(false);
-  const FAB_HOLD_MS = 2000;
+  const FAB_HOLD_MS = 500;
   const FAB_SIZE = 56;
   // A real finger held "still" for 2s still drifts a few px — if we cancel the
   // hold on any pointerleave/boundary event (the original implementation),
@@ -2440,9 +2440,10 @@ export function App() {
               onPointerCancel={(e) => { fabReleasePointer(e); fabCancelHold("pointer canceled by browser"); }}
               onContextMenu={(e) => e.preventDefault()}
               className={"w-14 h-14 rounded-full bg-gradient-to-br from-red-500 to-red-800 shadow-2xl shadow-red-900/60 flex items-center justify-center border border-red-400/30 touch-none select-none " +
-                (fabDragging ? "scale-110 ring-4 ring-red-400/50 cursor-grabbing" : fabHolding ? "scale-105 ring-2 ring-red-400/40" : "hover:scale-110 active:scale-95")}
+                (fabDragging ? "scale-110 ring-4 ring-red-400/50 cursor-grabbing" : fabHolding ? "scale-110 ring-4 ring-red-300/70" : "hover:scale-110 active:scale-95")}
               style={{
-                transition: fabDragging ? "none" : "transform 0.2s cubic-bezier(0.34,1.2,0.64,1)",
+                transition: fabDragging ? "none" : "transform 0.15s ease-out, box-shadow 0.15s ease-out",
+                boxShadow: fabHolding ? "0 0 0 8px rgba(248,113,113,0.35), 0 0 24px 4px rgba(248,113,113,0.55)" : undefined,
                 WebkitUserSelect: "none",
                 userSelect: "none",
                 WebkitTouchCallout: "none",
