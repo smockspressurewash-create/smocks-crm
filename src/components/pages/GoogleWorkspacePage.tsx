@@ -9,7 +9,7 @@ import type { AppSettings } from "../../types";
 import { Glass } from "../ui/Glass";
 import { GBtn } from "../ui/GBtn";
 import { supabase } from "../../lib/supabase";
-import { uid } from "../../lib/utils";
+import { uid, withTimeout } from "../../lib/utils";
 import {
   fetchGmailMessages, sendGmailMessage, markGmailRead,
   fetchCalendarEvents, fetchGTasks, createGTask, patchGTask, deleteGTask,
@@ -822,7 +822,13 @@ export function GoogleWorkspacePage({
   const doRefreshToken = useCallback(async (silent = false): Promise<boolean> => {
     setRefreshing(true);
     try {
-      const newToken = await getRefreshedGoogleToken();
+      // BLOCKER 3/20 (mobile round 9) — getRefreshedGoogleToken can call
+      // supabase.auth.refreshSession(), which has no built-in timeout and can
+      // hang indefinitely on a stalled network/navigator-lock. Without this,
+      // a hang here left the "Refresh" button stuck on "Refreshing…" forever
+      // since neither the try's success path nor the catch/finally below
+      // ever ran.
+      const newToken = await withTimeout(getRefreshedGoogleToken(), 10000, "GoogleRefresh");
       if (newToken) {
         setRefreshFailed(false);
         if (!silent) toast?.("Google token refreshed", "green");
@@ -883,14 +889,30 @@ export function GoogleWorkspacePage({
     let cancelled = false;
     (async () => {
       setTokenVerified(null); // "verifying…" while this runs
-      let ok = await verifyGoogleToken(token);
-      if (!ok) {
-        const refreshed = await getRefreshedGoogleToken();
-        if (refreshed) ok = await verifyGoogleToken(refreshed);
+      // BLOCKER 3/20 (mobile round 9) — root cause of "verifying connection"
+      // hanging forever after disconnect/reconnect: this chain's network
+      // calls (tokeninfo fetch, then getRefreshedGoogleToken's Google-refresh
+      // Cloudflare Function call or its supabase.auth.refreshSession()
+      // fallback) had no timeout and nothing here was wrapped in try/catch —
+      // a single stuck request left tokenVerified at null (== "Verifying
+      // connection…") with no way to reach setTokenVerified below short of a
+      // hard reload. Every step is now time-boxed and any failure — timeout
+      // or thrown error — resolves to a definite verified/not-verified state.
+      try {
+        let ok = await withTimeout(verifyGoogleToken(token), 8000, "GoogleVerify");
+        if (!ok) {
+          const refreshed = await withTimeout(getRefreshedGoogleToken(), 10000, "GoogleRefresh");
+          if (refreshed) ok = await withTimeout(verifyGoogleToken(refreshed), 8000, "GoogleVerify");
+        }
+        if (cancelled) return;
+        setTokenVerified(ok);
+        if (!ok) setRefreshFailed(true);
+      } catch (e: any) {
+        if (cancelled) return;
+        console.warn("[GoogleToken] verification chain failed or timed out:", e?.message);
+        setTokenVerified(false);
+        setRefreshFailed(true);
       }
-      if (cancelled) return;
-      setTokenVerified(ok);
-      if (!ok) setRefreshFailed(true);
     })();
     return () => { cancelled = true; };
   }, [isConnected, hasToken, token, verifyGoogleToken, getRefreshedGoogleToken]);

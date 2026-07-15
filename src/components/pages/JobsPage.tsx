@@ -1212,9 +1212,29 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
                   // shared calculation for every mode.
                   if (j.isRecurring) {
                     const nextDate = computeNextRecurringDate(j, j.scheduledDate);
-                    const nextJob = { ...j, id: uid(), status: "scheduled", scheduledDate: nextDate, loggedHours: 0, clockInAt: null, checklist: (j.checklist || []).map(ck => ({ ...ck, done: false })), commLog: [], photos: [], chemicalsUsed: [] };
+                    // BLOCKER 8 (mobile round 9) — this only ever called
+                    // setJobs (LOCAL state) with no Supabase insert at all —
+                    // unlike EmployeePortal.tsx's own createRecurringJob,
+                    // which does insert. The very next 3s/10s refetch poll
+                    // (App.tsx's refetchData, which merges Supabase's jobs
+                    // over local state) had nothing server-side to merge in,
+                    // so the "auto-scheduled" job silently vanished from the
+                    // owner's own view within seconds — and, since it never
+                    // reached the jobs table, it could never have shown up
+                    // in the employee portal (which reads straight from
+                    // Supabase) either. This is why completing a recurring
+                    // job from here specifically ("commercial jobs" are
+                    // usually owner-managed, not completed via the field
+                    // portal) never produced a job employees could see.
+                    const nextJob: any = { ...j, id: uid(), status: "scheduled", scheduledDate: nextDate, loggedHours: 0, clockInAt: null, arrivedAt: null, completedAt: null, checklist: (j.checklist || []).map(ck => ({ ...ck, done: false })), preChecklist: (j.preChecklist || []).map((ck: any) => ({ ...ck, done: false })), duringChecklist: (j.duringChecklist || []).map((ck: any) => ({ ...ck, done: false })), postChecklist: (j.postChecklist || []).map((ck: any) => ({ ...ck, done: false })), commLog: [], photos: [], videos: [], chemicalsUsed: [], paymentStatus: undefined, amountCollected: undefined };
+                    console.log("[Recurring] auto-scheduling next occurrence for", nextDate, "— crew:", nextJob.crew);
                     setJobs(prev => [...prev.map(x => x.id === j.id ? { ...x, status: "completed" } : x), nextJob]);
-                    toast("Next recurring job auto-scheduled for " + nextDate);
+                    (supabase as any).from("jobs").insert(nextJob)
+                      .then((r: any) => {
+                        if (r?.error) { console.error("[Recurring] insert failed:", r.error.message); toast("Next job auto-scheduled locally, but failed to sync — " + r.error.message, "red"); }
+                        else toast("Next recurring job auto-scheduled for " + nextDate + " ✓");
+                      })
+                      .catch((e: any) => { console.error("[Recurring] insert threw:", e?.message); toast("Next job auto-scheduled locally, but failed to sync — " + (e?.message || "unknown error"), "red"); });
                   }
                 }} className="flex-1 text-xs !py-1.5">Complete</GBtn>
                 <button onClick={() => setJobs(jobs.map(x => x.id === j.id ? { ...x, isCash: !x.isCash } : x))} title={j.isCash ? "Mark as card/check" : "Mark as cash payment"} className={"px-2.5 py-1.5 rounded-lg border text-xs transition " + (j.isCash ? "bg-green-900/40 border-green-700/50 text-green-300" : "bg-black/40 border-white/10 text-white/50 hover:text-green-400")}>💵</button>

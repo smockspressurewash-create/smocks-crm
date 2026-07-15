@@ -86,6 +86,25 @@ export const localDateStr = (): string => {
   return `${y}-${m}-${day}`;
 };
 
+// BLOCKER 13 (mobile round 9) — the whole-day shift timer's "same day" check
+// (Resume Day vs Start My Day) used localDateStr()'s plain midnight boundary,
+// so a night-shift worker who ends (or auto-resumes via "I'm Here") a shift
+// a few minutes either side of local midnight got treated as two different
+// "days" — alreadyWorkedTodayHours came back 0, isResuming flipped to false,
+// and the next clock-in silently reset the running total to zero instead of
+// continuing it. Shift-continuity checks should use a 4am cutover instead:
+// anything before 4am local still counts as part of the previous calendar
+// day for shift-tracking purposes only (job scheduling/today's-date display
+// elsewhere should keep using localDateStr()/today() unchanged).
+export const shiftDayStr = (): string => {
+  const d = new Date();
+  if (d.getHours() < 4) d.setDate(d.getDate() - 1);
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+};
+
 export const daysFromNow = (n: number): string => {
   const d = new Date();
   d.setDate(d.getDate() + n);
@@ -543,6 +562,27 @@ export const withTimeout = <T,>(p: Promise<T>, ms: number, label: string): Promi
     p,
     new Promise<T>((_, reject) => setTimeout(() => reject(new Error(label + " timed out")), ms)),
   ]);
+
+// BLOCKER 6 (mobile round 9) — Alfred's multi-step tool chains (create
+// customer → schedule job → assign employees) each write to Supabase with no
+// retry, so one transient network blip on the FIRST step ("create_customer")
+// failed the entire chain with no second attempt, even though the operation
+// itself is safely re-runnable (a fresh uid() each time means a retry can
+// never create a duplicate row from the first attempt half-succeeding).
+// `fn` is a factory (not a bare promise) since a promise can only be awaited
+// once — retrying means calling it again to get a fresh in-flight request.
+export const withTimeoutRetry = async <T,>(fn: () => Promise<T>, ms: number, label: string, retries = 1): Promise<T> => {
+  let lastErr: any;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      return await withTimeout(fn(), ms, label);
+    } catch (e: any) {
+      lastErr = e;
+      if (attempt < retries) console.warn(`[${label}] attempt ${attempt + 1} failed — retrying:`, e?.message || e);
+    }
+  }
+  throw lastErr;
+};
 
 // ─── OAuth intent flag ─────────────────────────────────────────────────────────
 // Google sign-in is shared infrastructure between the owner's login page and

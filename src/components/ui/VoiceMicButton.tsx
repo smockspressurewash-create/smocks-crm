@@ -119,12 +119,32 @@ export function VoiceMicButton({ onTranscript, apiKey, mode = "dictate" }: { onT
         setLiveText((finalTextRef.current + interim).trim());
       };
       rec.onerror = (e: any) => { if (e.error === "not-allowed" || e.error === "service-not-allowed") { keepListeningRef.current = false; alert("Microphone access denied"); } };
-      // The browser recognizer times out after a few seconds of silence even
-      // in continuous mode — restart it transparently so listening only ever
-      // stops when the user presses the button again, not on its own.
-      rec.onend = () => { if (keepListeningRef.current) startOne(); };
+      // BLOCKER 6 (mobile round 9) — root cause of "dictation cuts off the
+      // message": the browser recognizer times out after a few seconds of
+      // silence even in continuous mode, and this restart-on-end WAS the
+      // fix for that — but calling rec.start() again here can throw
+      // InvalidStateError if the previous instance hasn't fully torn down
+      // yet. That throw was completely unhandled, so it silently killed
+      // listening entirely: keepListeningRef stayed true and the UI kept
+      // showing "Listening…", but nothing was actually being captured
+      // anymore — the user kept talking into a dead recognizer. Retry once
+      // after a short delay instead of letting the exception vanish.
+      rec.onend = () => {
+        if (!keepListeningRef.current) return;
+        try {
+          startOne();
+        } catch (e: any) {
+          console.warn("[VoiceMic] restart failed, retrying in 300ms:", e?.message || e);
+          setTimeout(() => { if (keepListeningRef.current) startOne(); }, 300);
+        }
+      };
       recognitionRef.current = rec;
-      rec.start();
+      try {
+        rec.start();
+      } catch (e: any) {
+        console.warn("[VoiceMic] start failed, retrying in 300ms:", e?.message || e);
+        setTimeout(() => { if (keepListeningRef.current) startOne(); }, 300);
+      }
     };
     startOne();
     setRecording(true);

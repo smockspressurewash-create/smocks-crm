@@ -1,6 +1,5 @@
 // auto-extracted from Crew Boss OS monolith
 import React, { useState, useEffect, useRef, useCallback } from "react";
-import { createPortal } from "react-dom";
 import {
   LayoutDashboard, Users, FileText, Briefcase, Bot, BarChart3,
   Settings, Bell, Menu, X, Plus, Search, Edit, Trash2, Send,
@@ -21,7 +20,7 @@ import {
   Tooltip, ResponsiveContainer, Area, AreaChart, LineChart, Line,
   ComposedChart, Legend
 } from "recharts";
-import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, withTimeout } from "../../lib/utils";
+import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, withTimeout, withTimeoutRetry } from "../../lib/utils";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
 import { twilioSend, sendEmail, emailShell, emailButton } from "../../lib/messaging";
 import { seedWeather } from "../../lib/weather";
@@ -358,13 +357,21 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
     }
   }, [alfredConvsLoaded, ownerId]); // eslint-disable-line
 
-  // BLOCKER 5 / FEATURE 9 (mobile round 7) — was keyed only on chats.length,
-  // so switching to a DIFFERENT conversation that happened to have the same
-  // message count as the one you were just on wouldn't scroll at all, and
-  // opening a conversation with a large scrollback initially rendered at
-  // whatever scroll position was already in the DOM rather than the bottom.
-  // Including active?.id fires this on every conversation switch too.
-  useEffect(() => { scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" }); }, [chats.length, loading, active?.id]);
+  // BLOCKER 19 (mobile round 9) — FEATURE 9 (mobile round 7) deliberately
+  // added active?.id here so switching conversations always scrolled to
+  // bottom too. The owner now wants that reversed: auto-scroll should fire
+  // for the very first conversation shown on open, and for new messages
+  // arriving in whatever conversation is currently active, but NOT just
+  // because the user clicked a different thread in the sidebar — track the
+  // previous active id so a genuine switch can be told apart from "same
+  // conversation, message count changed" (a new message).
+  const prevActiveIdRef = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    const switchedConversation = prevActiveIdRef.current !== undefined && prevActiveIdRef.current !== active?.id;
+    prevActiveIdRef.current = active?.id;
+    if (switchedConversation) return;
+    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
+  }, [chats.length, loading, active?.id]);
 
   // Slash command suggestions
   const slashCmds = [
@@ -965,9 +972,12 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           let saved: any = null;
           let saveError: any = null;
           try {
-            const { data, error } = await withTimeout<any>(
-              (supabase as any).from("customers").insert(newC).select().single(),
-              8000, "Save customer"
+            // BLOCKER 6 (mobile round 9) — was an 8s timeout with no retry;
+            // this exact wording ("save customer operation timed out") is
+            // what the owner saw the tool report. 15s + one retry.
+            const { data, error } = await withTimeoutRetry<any>(
+              () => (supabase as any).from("customers").insert(newC).select().single(),
+              15000, "Save customer"
             );
             saved = data;
             saveError = error;
@@ -1002,9 +1012,9 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           let savedE: any = null;
           let saveErrorE: any = null;
           try {
-            const { data, error } = await withTimeout<any>(
-              (supabase as any).from("estimates").insert(newE).select().single(),
-              8000, "Save estimate"
+            const { data, error } = await withTimeoutRetry<any>(
+              () => (supabase as any).from("estimates").insert(newE).select().single(),
+              15000, "Save estimate"
             );
             savedE = data;
             saveErrorE = error;
@@ -1081,8 +1091,8 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           setJobs(prev => [...prev, newJ as any]);
           let saveErrorJ: any = null;
           try {
-            const { error } = await withTimeout<any>(
-              (supabase as any).from("jobs").insert(newJ),
+            const { error } = await withTimeoutRetry<any>(
+              () => (supabase as any).from("jobs").insert(newJ),
               15000, "Save job"
             );
             saveErrorJ = error;
@@ -1163,8 +1173,8 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           // Supabase directly every 3s) actually sees the assignment. The old
           // code only did setJobs() locally, so Alfred's assignment never left
           // the owner's browser — the whole "Alfred can't assign crew" bug.
-          const { error: assignErr } = await withTimeout<any>(
-            (supabase as any).from("jobs").update({ crew: newCrew, crewAssignedAt }).eq("id", j.id),
+          const { error: assignErr } = await withTimeoutRetry<any>(
+            () => (supabase as any).from("jobs").update({ crew: newCrew, crewAssignedAt }).eq("id", j.id),
             15000, "Assign crew"
           ).catch((e: any) => ({ error: e }));
           if (assignErr) {
@@ -1194,8 +1204,8 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           }
           try {
             if (!ownerId) return { error: "Still finishing sign-in — try again in a moment" };
-            const { data, error } = await withTimeout<any>(
-              (supabase as any).from("job_requests").insert({
+            const { data, error } = await withTimeoutRetry<any>(
+              () => (supabase as any).from("job_requests").insert({
                 job_id: j.id, employee_id: emp.id, owner_id: ownerId, status: "pending", message: inputs.message || null,
               }).select("id").single(),
               15000, "Save request"
@@ -1614,6 +1624,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
         ? `\n\nGoogle Workspace: CONNECTED as ${settings.googleEmail}. Backend: ${settings.googleBackendUrl ? "configured ✓" : "NOT configured — calls will be queued until backend URL is added"}. Enabled scopes: ${Object.entries(settings.googleScopes || {}).filter(([k, v]) => v).map(([k]) => k).join(", ")}. You CAN use send_email_via_gmail, create_calendar_event, create_google_task, and upload_to_drive — they will call the real Google APIs if backend is configured, or stage for later if not.`
         : `\n\nGoogle Workspace: NOT CONNECTED. If the user asks to send email, create calendar events, or manage tasks, tell them to go to Settings → Integrations → Google and connect their backend.`;
       const toolHint = `\n\nYou have tools available to READ and MODIFY the CRM. USE THEM AGGRESSIVELY — don't just describe what you would do, actually do it.\n\nRESPONSE STYLE: Do not narrate your reasoning, your plan, or which tool you're about to call ("Let me check...", "I'll create that now...", "First I need to..."). Just call the tool(s) silently and then give the user the final result in 1-3 short sentences. No step-by-step thinking out loud.\n\nVERIFY BEFORE CONFIRMING: every action tool returns either {"success": true, ...} or {"error": "..."}. NEVER say "Done" or "All set" without checking which one came back. If you see an "error" field, tell the user exactly what went wrong (the error text) and what they could try instead — do not pretend it worked, and do not retry silently. Only confirm success when the tool result actually contains "success": true.\n\nKEY TOOL RULES:\n- Customer queries → USE search_customers or get_customer_details FIRST\n- Stats requests → USE get_business_stats\n- "What's on the calendar" → USE get_calendar_summary\n- "Who's clocked in / who's working" → USE get_employee_status\n- "Remember/note/don't forget" → USE remember_fact\n- Create estimates, customers, jobs → USE create_estimate/create_customer/schedule_job
+- MULTI-STEP CHAINS (e.g. "create a customer, schedule them a job, and assign Mike"): call tools ONE AT A TIME across separate turns when a later step needs an id/result a real tool call hasn't returned yet (e.g. schedule_job needs the customerId create_customer just returned). Do NOT guess or fabricate an id and call multiple dependent tools in the same turn — wait for each real tool_result before issuing the next dependent call. If a step's result is an "error", STOP the chain right there, tell the user exactly which step failed and why, and do not attempt the remaining steps with made-up data.
 - "Send a quote/estimate to X" → USE create_estimate (if it doesn't exist yet) THEN send_estimate in the same turn — do not just create it and stop, and do not tell the user it was "sent" unless send_estimate actually returned success\n- Move or cancel a job → USE reschedule_job/cancel_job\n- Navigate somewhere → USE navigate_to (the app already auto-navigates after schedule_job/create_customer/create_estimate, but call navigate_to yourself for anything else the user asks to see)\n- Preferences/facts shared → USE remember_fact automatically\n\nAUTOMATION TOOLS (VERY IMPORTANT):\n- When user describes ANY workflow, drip sequence, reminder, or "when X do Y" scenario → USE create_automation IMMEDIATELY. Build a proper n8n-style multi-step workflow with real step types: trigger (first), then delays, conditions, actions. NEVER just describe what you'd build — actually build it with create_automation.\n- "Send review request after job complete" → trigger: Job complete, delay: 2h, action: SMS review request\n- "Follow up on unpaid invoices" → trigger: Invoice unpaid 7 days, action: polite reminder email, delay: 4 days, condition: still unpaid, action: firm SMS\n- To check existing workflows → USE list_automations\n- To enable/disable a workflow → USE toggle_automation\n\nCurrent automations: ${automations.length} total, ${automations.filter(a => a.active).length} active\n\nNAME MATCHING: if a tool result comes back with "error": "Customer not found" or "Employee not found" and includes a "suggestions" array, ask the user "Do you mean [name], or [name]?" using those exact suggested names — never ask a generic clarifying question like "who do you mean?" when real candidate names are available.`;
       const systemPrompt = prompts[activePersonality] + memoryContext + businessContext + googleStatus + toolHint;
 
@@ -1871,20 +1882,17 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
     return Math.floor(diff / 86400) + "d";
   };
 
-  // FIX 1 — mobile overflow, take 3. Both a magic-number calc() and a
-  // getBoundingClientRect() measurement still left this page nested inside
-  // App.tsx's own scrollable <main>, so any mismatch between "how tall we
-  // think the chrome above us is" and reality made the OUTER page scroll
-  // instead of just our messages list. Simplest fix that always works,
-  // exactly as asked: render straight into document.body via a portal (the
-  // same trick the shared <Modal> already uses) so this container is a true
-  // fixed, full-viewport box with zero dependency on ancestor padding,
-  // headers, or scroll state — h-[100dvh]/flex/overflow-hidden on it now
-  // mean exactly what they say instead of being fought by App.tsx's layout.
-  // Portaling out from under App's own header + bottom nav means Alfred also
-  // needs its own way back — see the "Back" button in the chat header below.
-  return createPortal(
-    <div className="fixed inset-0 z-[200] h-[100dvh] flex bg-black overflow-hidden">
+  // BLOCKER 19 (mobile round 9) — FIX 1's full-viewport portal (see git
+  // history) solved a real mobile-overflow bug (the messages list scrolling
+  // App.tsx's own <main> instead of itself) but did it by covering the
+  // ENTIRE screen, including the main sidebar and header — "clicking Alfred
+  // hides the main sidebar" was that tradeoff, not a separate bug. Rendering
+  // in place (no portal) and sizing height off the viewport instead of the
+  // parent's auto-sized content keeps the main chrome visible while still
+  // giving this container a definite height for its own internal
+  // aside/messages panes to scroll within, independent of App.tsx's <main>.
+  return (
+    <div className="relative w-full h-[calc(100dvh-150px)] md:h-[calc(100vh-160px)] flex bg-black border border-red-900/30 rounded-2xl overflow-hidden">
       {/* Conversation sidebar */}
       <aside className={"bg-black/80 backdrop-blur-xl border-r border-red-900/30 flex flex-col transition-all duration-300 overflow-hidden " + (sidebarOpen ? "w-[280px] md:w-[280px]" : "w-0") + " absolute md:relative h-full z-20"}>
         <div className="p-3 border-b border-red-900/30 flex items-center gap-2">
@@ -1970,9 +1978,6 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
             layout, which already pins it since it's a sibling of the
             scrollable messages div, not an ancestor of it) */}
         <div className="sticky top-0 z-10 flex-shrink-0 flex items-center gap-1.5 md:gap-2 px-2 py-2 md:p-3 border-b border-red-900/30 bg-black/40 backdrop-blur">
-          {/* Alfred now renders as a full-viewport portal (see FIX 1 above),
-              covering the app's own header/sidebar/bottom nav — this is the
-              only way back to the rest of the CRM while it's open. */}
           <button onClick={() => onNav && onNav("dashboard")} className="p-2 rounded-lg hover:bg-white/5 text-white/70 flex-shrink-0" title="Back to Dashboard">
             <ChevronLeft size={18} />
           </button>
@@ -2317,8 +2322,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           </div>
         </div>
       </Modal>
-    </div>,
-    document.body
+    </div>
   );
 }
 

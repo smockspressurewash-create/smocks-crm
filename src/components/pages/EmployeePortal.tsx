@@ -17,7 +17,7 @@ import { loadMapsScript, AddressAutocomplete } from "../ui/AddressAutocomplete";
 import { LiveMap } from "../ui/LiveMap";
 import { PropertyMapEmbed } from "../ui/PropertyMapEmbed";
 import { BarChart, Bar, LineChart, Line, XAxis, YAxis, ResponsiveContainer, Tooltip, CartesianGrid } from "recharts";
-import { fmt, uid, today, localDateStr, daysFromNow, computeJobRatingScore, setOAuthIntent, compressImageFile, getEffectiveRate, computeNextRecurringDate, weekdayLabels, normalizeJobRow, totalJobPhotoCount } from "../../lib/utils";
+import { fmt, uid, today, localDateStr, shiftDayStr, daysFromNow, computeJobRatingScore, setOAuthIntent, compressImageFile, getEffectiveRate, computeNextRecurringDate, weekdayLabels, normalizeJobRow, totalJobPhotoCount } from "../../lib/utils";
 import { usePollGate } from "../../hooks/usePollGate";
 import type { Job, Employee, Customer, AppSettings, JobChecklistItem } from "../../types";
 
@@ -1905,9 +1905,13 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     const localLastShift = (() => {
       try { return JSON.parse(localStorage.getItem("smocks.lastShift." + empId) || "null"); } catch { return null; }
     })();
-    const alreadyWorkedTodayHours = (myEmployee as any)?.lastShiftDate === localDateStr()
+    // BLOCKER 13 (mobile round 9) — shiftDayStr() (4am cutover), not
+    // localDateStr() (plain midnight), so a night-shift worker tapping "I'm
+    // Here" a few minutes after local midnight still resumes the same
+    // overnight shift instead of getting treated as a new calendar day.
+    const alreadyWorkedTodayHours = (myEmployee as any)?.lastShiftDate === shiftDayStr()
       ? Number((myEmployee as any)?.lastShiftHours) || 0
-      : (localLastShift?.date === localDateStr() ? Number(localLastShift?.hours) || 0 : 0);
+      : (localLastShift?.date === shiftDayStr() ? Number(localLastShift?.hours) || 0 : 0);
     const nextVal = Date.now() - Math.round(alreadyWorkedTodayHours * 3600000);
     setOptimisticDayClockInAt(nextVal);
     try {
@@ -4108,9 +4112,13 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                 if (!empId) return null;
                 try { return JSON.parse(localStorage.getItem("smocks.lastShift." + empId) || "null"); } catch { return null; }
               })();
-              const alreadyWorkedTodayHours = (myEmployee as any)?.lastShiftDate === localDateStr()
+              // BLOCKER 13 (mobile round 9) — shiftDayStr() (4am cutover)
+              // instead of localDateStr() (midnight), so ending/resuming a
+              // shift that straddles local midnight doesn't get treated as
+              // two different days and silently reset to zero.
+              const alreadyWorkedTodayHours = (myEmployee as any)?.lastShiftDate === shiftDayStr()
                 ? Number((myEmployee as any)?.lastShiftHours) || 0
-                : (localLastShift?.date === localDateStr() ? Number(localLastShift?.hours) || 0 : 0);
+                : (localLastShift?.date === shiftDayStr() ? Number(localLastShift?.hours) || 0 : 0);
               const isResuming = !dayClockInAt && alreadyWorkedTodayHours > 0;
               const onLunch = !!dayLunchStartAt;
               const currentPauseMs = onLunch ? Date.now() - dayLunchStartAt : 0;
@@ -4191,10 +4199,10 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                 // Resume works on this device even if the lastShiftHours/
                 // lastShiftDate columns don't exist yet server-side.
                 if (endingDay && empId) {
-                  try { localStorage.setItem("smocks.lastShift." + empId, JSON.stringify({ hours: finalHours, date: localDateStr() })); } catch { /* ignore */ }
+                  try { localStorage.setItem("smocks.lastShift." + empId, JSON.stringify({ hours: finalHours, date: shiftDayStr() })); } catch { /* ignore */ }
                 }
                 const patch: any = endingDay
-                  ? { dayClockInAt: null, dayLunchStartAt: null, dayPausedMinutes: 0, lastShiftHours: finalHours, lastShiftDate: localDateStr() }
+                  ? { dayClockInAt: null, dayLunchStartAt: null, dayPausedMinutes: 0, lastShiftHours: finalHours, lastShiftDate: shiftDayStr() }
                   : { dayClockInAt: nextVal, dayLunchStartAt: null, dayPausedMinutes: 0 };
                 try {
                   let result = await (supabase as any).from("employees").update(patch).eq("id", empId);

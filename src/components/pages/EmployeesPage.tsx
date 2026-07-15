@@ -20,10 +20,19 @@ import {
   Tooltip, ResponsiveContainer, Area, AreaChart, LineChart, Line,
   ComposedChart, Legend
 } from "recharts";
-import { fmt, uid, today, localDateStr, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, getEffectiveRate, weekdayLabels, countDaysOffInRange } from "../../lib/utils";
+import { fmt, uid, today, localDateStr, shiftDayStr, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, getEffectiveRate, weekdayLabels, countDaysOffInRange } from "../../lib/utils";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
 import { twilioSend, sendEmail } from "../../lib/messaging";
 import { supabase } from "../../lib/supabase";
+// BLOCKER 2/14 (mobile round 9) — crewIncludesEmployee is the same robust
+// crew-matching helper the employee portal already uses (tolerates object-
+// shaped crew entries, stringified-JSON crew columns, casing, and the
+// employees.id vs employees.user_id mismatch). This page was comparing with
+// a bare `(j.crew||[]).includes(e.id)`, which silently matched nothing
+// whenever a job's crew array was written with a different id shape than
+// this employee row's `id` — the root cause of "hours/payroll data exists
+// in the console but the tab renders empty."
+import { crewIncludesEmployee } from "./EmployeePortal";
 import { seedWeather } from "../../lib/weather";
 import { seedCustomers, seedEstimates, seedJobs, seedEmployees, seedVehicles, seedExpenses, seedChemicals, seedServices, seedAutomations, seedEmailTemplates, seedSmsTemplates, seedRewardTiers, seedReferrals, seedMaintenance, campaignTemplates, seedSocialPosts, seedTimeline, seedGoals, seedReminders, seedAccountabilityEntries, seedMileage, seedLeadSrc, STEP_TYPES, AUTOMATION_TEMPLATES } from "../../lib/seed";
 import { callModel, MODELS } from "../../lib/api";
@@ -265,21 +274,26 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], custome
     // (dayClockInAt → now, minus paused/lunch minutes) so the two can't
     // disagree once the shift actually ends and lastShiftHours is written.
     let liveTopUp = 0;
-    const todayStr = localDateStr();
+    // BLOCKER 13 (mobile round 9) — shiftDayStr() (4am cutover), matching
+    // how EmployeePortal.tsx's toggleDay now writes lastShiftDate, so a
+    // shift straddling local midnight is treated as the same shift day on
+    // both the employee and owner sides (otherwise this top-up and the
+    // employee's own Resume-Day check could disagree right around midnight).
+    const todayStr = shiftDayStr();
     if (emp?.dayClockInAt && todayStr >= startDate && todayStr <= endDate) {
       const dayPausedMinutes = Number(emp.dayPausedMinutes) || 0;
       const onLunch = !!emp.dayLunchStartAt;
       const currentPauseMs = onLunch ? Date.now() - emp.dayLunchStartAt : 0;
       const liveShiftHours = Math.max(0, (Date.now() - emp.dayClockInAt - dayPausedMinutes * 60000 - currentPauseMs) / 3600000);
       const jobHoursToday = jobs
-        .filter((j: any) => (j.crew || []).includes(emp.id) && j.status === "completed" && j.scheduledDate === todayStr)
+        .filter((j: any) => crewIncludesEmployee(j.crew, emp.id, emp.user_id) && j.status === "completed" && j.scheduledDate === todayStr)
         .reduce((s: number, j: any) => s + Number(j.loggedHours || j.duration || 0), 0);
       liveTopUp = Math.max(0, liveShiftHours - jobHoursToday);
     }
     const shiftDate = emp?.lastShiftDate;
     if (!shiftDate || shiftDate < startDate || shiftDate > endDate) return liveTopUp;
     const jobHoursOnShiftDate = jobs
-      .filter((j: any) => (j.crew || []).includes(emp.id) && j.status === "completed" && j.scheduledDate === shiftDate)
+      .filter((j: any) => crewIncludesEmployee(j.crew, emp.id, emp.user_id) && j.status === "completed" && j.scheduledDate === shiftDate)
       .reduce((s: number, j: any) => s + Number(j.loggedHours || j.duration || 0), 0);
     const shiftTotal = Number(emp.lastShiftHours) || 0;
     const endedShiftTopUp = Math.max(0, shiftTotal - jobHoursOnShiftDate);
@@ -294,7 +308,7 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], custome
   const getEmployeeHours = (empId, startDate, endDate) => {
     const emp = employees.find((e: any) => e.id === empId);
     const jobHours = jobs
-      .filter(j => (j.crew || []).includes(empId) && j.status === "completed" && j.scheduledDate >= startDate && j.scheduledDate <= endDate)
+      .filter(j => crewIncludesEmployee(j.crew, empId, emp?.user_id) && j.status === "completed" && j.scheduledDate >= startDate && j.scheduledDate <= endDate)
       .reduce((s, j) => s + Number(j.loggedHours || j.duration || 0), 0);
     const topUp = emp ? shiftTopUpHours(emp, startDate, endDate) : 0;
     return jobHours + topUp;
@@ -306,8 +320,29 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], custome
   // The shift-timer top-up isn't tied to any one job, so it's paid at the
   // employee's plain hourlyRate.
   const getEmployeePay = (emp: any, startDate: string, endDate: string) => {
+    // BLOCKER 10 (mobile round 9) — owner-only alternate pay bases. Revenue
+    // and profit are computed company-wide across all completed jobs in the
+    // pay period (not just jobs the owner personally worked), since "% of
+    // revenue/profit" describes how the business compensates its owner, not
+    // a per-job labor rate the way hourlyRate is for crew. Profit reuses the
+    // same chemCost + laborCost + materialCost formula JobsPage's own
+    // per-job "Profit breakdown" panel uses, so the two can't disagree.
+    if (emp.role === "owner" && emp.payBasis && emp.payBasis !== "hourly") {
+      if (emp.payBasis === "custom") return Number(emp.payCustomAmount) || 0;
+      const periodJobs = jobs.filter((j: any) => j.status === "completed" && j.scheduledDate >= startDate && j.scheduledDate <= endDate);
+      const revenue = periodJobs.reduce((s: number, j: any) => s + (Number(j.amount) || 0), 0);
+      const pct = (Number(emp.payPercent) || 0) / 100;
+      if (emp.payBasis === "percent_revenue") return revenue * pct;
+      if (emp.payBasis === "percent_profit") {
+        const costs = periodJobs.reduce((s: number, j: any) => {
+          const chemCost = (j.chemicalsUsed || []).reduce((cs: number, ch: any) => cs + Number(ch.cost || 0), 0);
+          return s + chemCost + Number(j.laborCost || 0) + Number(j.materialCost || 0);
+        }, 0);
+        return Math.max(0, revenue - costs) * pct;
+      }
+    }
     const jobPay = jobs
-      .filter((j: any) => (j.crew || []).includes(emp.id) && j.status === "completed" && j.scheduledDate >= startDate && j.scheduledDate <= endDate)
+      .filter((j: any) => crewIncludesEmployee(j.crew, emp.id, emp.user_id) && j.status === "completed" && j.scheduledDate >= startDate && j.scheduledDate <= endDate)
       .reduce((s: number, j: any) => s + Number(j.loggedHours || j.duration || 0) * getEffectiveRate(emp, j), 0);
     const topUp = shiftTopUpHours(emp, startDate, endDate);
     const topUpPay = topUp * (Number(emp.hourlyRate) || 0);
@@ -418,7 +453,7 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], custome
             </tr></thead>
             <tbody>
               {employees.filter(e => e.status !== "inactive").map(e => {
-                const empJobs = jobs.filter(j => (j.crew||[]).includes(e.id) && j.status === "completed" && j.scheduledDate >= payPeriodStart && j.scheduledDate <= payPeriodEnd);
+                const empJobs = jobs.filter(j => crewIncludesEmployee(j.crew, e.id, (e as any).user_id) && j.status === "completed" && j.scheduledDate >= payPeriodStart && j.scheduledDate <= payPeriodEnd);
                 // FIX 5 (mobile round 5) — was job.loggedHours only, missing
                 // the shift-timer top-up getEmployeeHours (used everywhere
                 // else in this file, e.g. the Payroll tab/CSV export below)
@@ -428,9 +463,14 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], custome
                 // actual Payroll-tab total.
                 const hrs = getEmployeeHours(e.id, payPeriodStart, payPeriodEnd);
                 const cost = getEmployeePay(e, payPeriodStart, payPeriodEnd);
+                // BLOCKER 2 (mobile round 9) — trace: confirms whether crew
+                // matching is actually finding this employee's jobs. If
+                // empJobs.length is 0 while jobs.length (all completed jobs
+                // company-wide) is nonzero, crew matching is still broken.
+                console.log("[Hours]", e.firstName, e.lastName, "— matched jobs:", empJobs.length, "of", jobs.filter((j: any) => j.status === "completed").length, "completed company-wide · period hrs:", hrs.toFixed(2), "· pay:", cost.toFixed(2));
                 const todayStr = today();
                 const weekStart = (() => { const d = new Date(); d.setDate(d.getDate() - d.getDay()); return d.toISOString().slice(0, 10); })();
-                const allCompleted = jobs.filter((j: any) => (j.crew || []).includes(e.id) && j.status === "completed");
+                const allCompleted = jobs.filter((j: any) => crewIncludesEmployee(j.crew, e.id, (e as any).user_id) && j.status === "completed");
                 const hoursToday = allCompleted.filter((j: any) => j.scheduledDate === todayStr).reduce((s: number, j: any) => s + Number(j.loggedHours || j.duration || 0), 0);
                 const hoursWeek = allCompleted.filter((j: any) => j.scheduledDate >= weekStart).reduce((s: number, j: any) => s + Number(j.loggedHours || j.duration || 0), 0);
                 return <tr key={e.id} className="border-b border-red-900/10 hover:bg-white/5">
@@ -480,7 +520,7 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], custome
             const gross = getEmployeePay(e, payPeriodStart, payPeriodEnd);
             const fica = gross * 0.0765;
             const net = gross - fica;
-            const empJobs = jobs.filter(j => (j.crew||[]).includes(e.id) && j.status === "completed" && j.scheduledDate >= payPeriodStart && j.scheduledDate <= payPeriodEnd);
+            const empJobs = jobs.filter(j => crewIncludesEmployee(j.crew, e.id, (e as any).user_id) && j.status === "completed" && j.scheduledDate >= payPeriodStart && j.scheduledDate <= payPeriodEnd);
             return <Glass key={e.id} className="p-4">
               <div className="flex items-center gap-3 mb-3">
                 <div className="w-10 h-10 rounded-full bg-gradient-to-br from-red-600 to-red-900 flex items-center justify-center font-bold">{e.firstName?.[0]}{e.lastName?.[0]}</div>
@@ -666,6 +706,39 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], custome
               ))}
             </div>
           </div>
+          {/* BLOCKER 10 (mobile round 9) — "owner can set how they pay
+              themselves (hourly, % profit, % revenue, custom)". Only shown
+              for the owner's own record — a technician's pay stays plain
+              hourly (with the job-type overrides above). getEmployeePay
+              below branches on payBasis for role === "owner" only. */}
+          {f.role === "owner" && (
+            <div className="border border-purple-700/30 rounded-xl p-3 bg-purple-950/10 space-y-2">
+              <div className="text-xs font-semibold text-purple-300 mb-1 flex items-center gap-1.5"><DollarSign size={12} />How You Get Paid</div>
+              <GSel value={f.payBasis || "hourly"} onChange={e => setF({ ...f, payBasis: e.target.value })}>
+                <option value="hourly" className="bg-black">Hourly (same as crew, rate above)</option>
+                <option value="percent_revenue" className="bg-black">% of revenue</option>
+                <option value="percent_profit" className="bg-black">% of profit</option>
+                <option value="custom" className="bg-black">Custom flat amount per period</option>
+              </GSel>
+              {(f.payBasis === "percent_revenue" || f.payBasis === "percent_profit") && (
+                <div>
+                  <label className="text-[10px] text-white/50 mb-1 block">Percent (%)</label>
+                  <GInput type="number" min="0" max="100" step="0.5" value={f.payPercent ?? ""} onChange={e => setF({ ...f, payPercent: e.target.value === "" ? undefined : Number(e.target.value) })} placeholder="e.g. 20" />
+                  <div className="text-[9px] text-white/40 mt-1">
+                    {f.payBasis === "percent_revenue"
+                      ? "% of completed-job revenue in the selected pay period."
+                      : "% of profit (completed-job revenue minus logged chemical/labor/material costs) in the selected pay period."}
+                  </div>
+                </div>
+              )}
+              {f.payBasis === "custom" && (
+                <div>
+                  <label className="text-[10px] text-white/50 mb-1 block">Flat amount per pay period ($)</label>
+                  <GInput type="number" min="0" step="10" value={f.payCustomAmount ?? ""} onChange={e => setF({ ...f, payCustomAmount: e.target.value === "" ? undefined : Number(e.target.value) })} placeholder="e.g. 1500" />
+                </div>
+              )}
+            </div>
+          )}
           <div className="grid grid-cols-2 gap-2">
             <div><label className="text-xs text-white/60 mb-1 block">Phone</label><GInput value={f.phone} onChange={e => setF({ ...f, phone: e.target.value })} placeholder="(717) 555-0100" /></div>
             <div><label className="text-xs text-white/60 mb-1 block">Email</label><GInput type="email" value={f.email} onChange={e => setF({ ...f, email: e.target.value })} /></div>
@@ -729,7 +802,7 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], custome
               defaults to "unpaid" until the owner explicitly marks it paid;
               paidPeriods is keyed by the period's start date. */}
           {f.id && (() => {
-            const empJobs = jobs.filter((j: any) => (j.crew || []).includes(f.id) && j.status === "completed" && Number(j.loggedHours) > 0);
+            const empJobs = jobs.filter((j: any) => crewIncludesEmployee(j.crew, f.id, (f as any).user_id) && j.status === "completed" && Number(j.loggedHours) > 0);
             const paidPeriods: Record<string, "paid" | "unpaid"> = f.paidPeriods || {};
             const now = new Date();
             const periods = Array.from({ length: 6 }, (_, i) => {
@@ -799,7 +872,7 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], custome
               hours), most recent first. */}
           {f.id && (() => {
             const jobRows = jobs
-              .filter((j: any) => (j.crew || []).includes(f.id) && j.status === "completed" && Number(j.loggedHours) > 0)
+              .filter((j: any) => crewIncludesEmployee(j.crew, f.id, (f as any).user_id) && j.status === "completed" && Number(j.loggedHours) > 0)
               .sort((a: any, b: any) => (b.scheduledDate || "").localeCompare(a.scheduledDate || ""))
               .slice(0, 25);
             if (jobRows.length === 0) return null;
@@ -836,7 +909,7 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], custome
             const days = Array.from({ length: 14 }, (_, i) => {
               const d = new Date(); d.setDate(d.getDate() - i);
               const key = d.toISOString().slice(0, 10);
-              const dayJobs = jobs.filter((j: any) => (j.crew || []).includes(f.id) && j.scheduledDate === key && Number(j.loggedHours) > 0);
+              const dayJobs = jobs.filter((j: any) => crewIncludesEmployee(j.crew, f.id, (f as any).user_id) && j.scheduledDate === key && Number(j.loggedHours) > 0);
               const hours = Math.round(dayJobs.reduce((s: number, j: any) => s + Number(j.loggedHours || 0), 0) * 100) / 100;
               const pay = Math.round(dayJobs.reduce((s: number, j: any) => s + Number(j.loggedHours || 0) * getEffectiveRate(f, j), 0) * 100) / 100;
               return { key, label: d.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" }), hours, pay, status: paidDays[key] || "unpaid" };

@@ -21,9 +21,18 @@ import {
   ComposedChart, Legend
 } from "recharts";
 import { fmt, uid, today, localDateStr, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, forecastFor, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, withTimeout, totalJobPhotoCount } from "../../lib/utils";
+// BLOCKER 5/9 (mobile round 9) — same robust crew-matching helper the
+// employee portal uses (tolerates object-shaped crew entries, stringified
+// JSON, casing, and the employees.id vs employees.user_id mismatch). Live
+// Crew View was matching with a bare `(j.crew||[]).includes(e.id)`, which
+// silently found no current job for a clocked-in employee whenever their
+// crew entry used a different id shape — the card then had no job to hang
+// its checklist/photo count off of, which is why Live Crew View "doesn't
+// show checklists or before/after photos" even though the data exists.
+import { crewIncludesEmployee } from "./EmployeePortal";
 import { supabase } from "../../lib/supabase";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
-import { twilioSend, sendOwnerGmailOnly, logOutboundSmsToInbox } from "../../lib/messaging";
+import { twilioSend, sendOwnerGmailOnly, logOutboundSmsToInbox, emailShell } from "../../lib/messaging";
 import { seedWeather } from "../../lib/weather";
 
 import { callModel, MODELS } from "../../lib/api";
@@ -115,7 +124,20 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
   const [crewDataSettled, setCrewDataSettled] = useState(employees.length > 0);
   useEffect(() => {
     if (employees.length > 0) { setCrewDataSettled(true); return; }
-    const t = setTimeout(() => setCrewDataSettled(true), 2500);
+    // BLOCKER 9 (mobile round 9) — "works on PC, shows nothing on phone,
+    // same account": a fixed 2.5s grace period assumes the first employees
+    // fetch always lands that fast. A PC session usually already has this
+    // data warm (recent poll/cache); a freshly-opened session on another
+    // device is doing a cold Supabase fetch over a mobile connection, which
+    // can easily take longer — the grace period expired and locked in "No
+    // one on shift" before the real data ever arrived. Longer grace period,
+    // plus a log to confirm on a real device whether this is a timing issue
+    // (log fires with employees.length still 0) or something else (fires
+    // with employees already populated, meaning this effect isn't the cause).
+    const t = setTimeout(() => {
+      console.log("[LiveCrew] grace period elapsed — employees.length:", employees.length, employees.length === 0 ? "(still empty — likely a slow/failed fetch, not a rendering bug)" : "(had data all along)");
+      setCrewDataSettled(true);
+    }, 6000);
     return () => clearTimeout(t);
   }, [employees.length > 0]); // eslint-disable-line react-hooks/exhaustive-deps
   // FIX 3 — was requiring j.clockInAt to be truthy, but Complete Job always
@@ -405,7 +427,7 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
   const liveEmps = employees.filter((e: any) => !!e.dayClockInAt);
   const liveTeam = liveEmps.map((e: any) => {
     const empJobs = jobs
-      .filter((j: any) => (j.crew || []).includes(e.id) && j.scheduledDate === todayStrLive)
+      .filter((j: any) => crewIncludesEmployee(j.crew, e.id, e.user_id) && j.scheduledDate === todayStrLive)
       .sort((a: any, b: any) => (a.scheduledTime || "").localeCompare(b.scheduledTime || ""));
     // FIX 3 (mobile round 6) — this used to fall all the way to `null` (no
     // checklist/photo card at all) for a clocked-in employee who hasn't been
@@ -449,8 +471,8 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
   const ownerOnShift = !!ownerEmp?.dayClockInAt;
   const ownerShiftMs = ownerOnShift ? Math.max(0, Date.now() - Number(ownerEmp.dayClockInAt) - (Number(ownerEmp.dayPausedMinutes) || 0) * 60000) : 0;
   const weekStartLive = (() => { const d = new Date(); d.setDate(d.getDate() - d.getDay()); return d.toISOString().slice(0, 10); })();
-  const ownerJobsToday = ownerEmpId ? jobs.filter((j: any) => (j.crew || []).includes(ownerEmpId) && j.scheduledDate === todayStrLive) : [];
-  const ownerJobsThisWeek = ownerEmpId ? jobs.filter((j: any) => (j.crew || []).includes(ownerEmpId) && j.scheduledDate >= weekStartLive) : [];
+  const ownerJobsToday = ownerEmpId ? jobs.filter((j: any) => crewIncludesEmployee(j.crew, ownerEmpId, ownerEmp?.user_id) && j.scheduledDate === todayStrLive) : [];
+  const ownerJobsThisWeek = ownerEmpId ? jobs.filter((j: any) => crewIncludesEmployee(j.crew, ownerEmpId, ownerEmp?.user_id) && j.scheduledDate >= weekStartLive) : [];
   const ownerHoursToday = ownerJobsToday.reduce((s: number, j: any) => s + (Number(j.loggedHours) || 0), 0);
   const ownerHoursThisWeek = ownerJobsThisWeek.reduce((s: number, j: any) => s + (Number(j.loggedHours) || 0), 0);
 
@@ -545,16 +567,46 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
   // a technician has, without leaving the dashboard.
   const [ownerSendingOtw, setOwnerSendingOtw] = useState(false);
   const [ownerSendingLate, setOwnerSendingLate] = useState(false);
+  // BLOCKER 11 (mobile round 9) — this owner-side copy only ever tried
+  // Twilio and gave up with "No phone on file" if the customer had only an
+  // email, or a bare Twilio-error toast if Twilio wasn't configured — no
+  // email fallback at all, unlike EmployeePortal.tsx's sendOtw/sendRunningLate
+  // (which let the tech explicitly pick Text or Email). Real customer data in
+  // this business has plenty of email-only contacts, and this deployment's
+  // console shows Twilio isn't configured yet (see BLOCKER 1) — so this
+  // button could never succeed before. Falls back to the owner's Gmail on a
+  // "Twilio not configured" error, or uses email outright when there's no
+  // phone on file, and always resolves to a definite success/failure toast.
   const ownerSendOtw = async () => {
     if (!ownerActiveJob) return;
-    if (!ownerActiveCustomer?.phone) { toast?.("No phone on file for this customer", "red"); return; }
+    if (!ownerActiveCustomer?.phone && !ownerActiveCustomer?.email) { toast?.("No phone or email on file for this customer — failed", "red"); return; }
     setOwnerSendingOtw(true);
     const msg = `Hi ${ownerActiveCustomer.firstName || "there"}, your Crew Boss technician is on the way!`;
     try {
-      await withTimeout(twilioSend(settings as any, ownerActiveCustomer.phone, msg), 15000, "OTW SMS");
-      logOutboundSmsToInbox({ contactName: `${ownerActiveCustomer.firstName} ${ownerActiveCustomer.lastName}`, contactPhone: ownerActiveCustomer.phone, customerId: ownerActiveCustomer.id, body: msg }).catch(() => {});
-      toast?.(`On the way message sent to ${ownerActiveCustomer.firstName} ✓`, "green");
+      if (ownerActiveCustomer.phone) {
+        try {
+          await withTimeout(twilioSend(settings as any, ownerActiveCustomer.phone, msg), 15000, "OTW SMS");
+          logOutboundSmsToInbox({ contactName: `${ownerActiveCustomer.firstName} ${ownerActiveCustomer.lastName}`, contactPhone: ownerActiveCustomer.phone, customerId: ownerActiveCustomer.id, body: msg }).catch(() => {});
+          console.log("[OTW] sent via SMS to", ownerActiveCustomer.firstName);
+          toast?.(`On the way message sent to ${ownerActiveCustomer.firstName} ✓`, "green");
+          return;
+        } catch (smsErr: any) {
+          const notConfigured = (smsErr?.message || "").includes("Twilio not configured");
+          if (!notConfigured || !ownerActiveCustomer.email) {
+            console.error("[OTW] — error:", smsErr?.message || smsErr);
+            toast?.(smsErr?.message || "Failed to send on-my-way message", "red");
+            return;
+          }
+          console.warn("[OTW] Twilio not configured — falling back to email");
+        }
+      }
+      if (!ownerActiveCustomer.email) { toast?.("No email on file to fall back to — failed", "red"); return; }
+      const html = emailShell(settings?.companyName || "Crew Boss", "On My Way", `<p>${msg}</p>`);
+      await withTimeout(sendOwnerGmailOnly(settings as any, ownerActiveCustomer.email, "Your technician is on the way", html), 15000, "OTW email");
+      console.log("[OTW] sent via email to", ownerActiveCustomer.firstName);
+      toast?.(`On the way message sent to ${ownerActiveCustomer.firstName} ✓ (email)`, "green");
     } catch (e: any) {
+      console.error("[OTW] — error:", e?.message || e);
       toast?.(e?.message || "Failed to send on-my-way message", "red");
     } finally {
       setOwnerSendingOtw(false);
@@ -562,15 +614,35 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
   };
   const ownerSendRunningLate = async (minutes: number) => {
     if (!ownerActiveJob) return;
-    if (!ownerActiveCustomer?.phone) { toast?.("No phone on file for this customer", "red"); return; }
+    if (!ownerActiveCustomer?.phone && !ownerActiveCustomer?.email) { toast?.("No phone or email on file for this customer — failed", "red"); return; }
     setOwnerSendingLate(true);
     const newEta = new Date(Date.now() + minutes * 60000).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
     const msg = `Hi ${ownerActiveCustomer.firstName}, your Crew Boss technician is running approximately ${minutes} minutes behind. New ETA: ${newEta}. We apologize for the delay.`;
     try {
-      await withTimeout(twilioSend(settings as any, ownerActiveCustomer.phone, msg), 15000, "Running late SMS");
-      logOutboundSmsToInbox({ contactName: `${ownerActiveCustomer.firstName} ${ownerActiveCustomer.lastName}`, contactPhone: ownerActiveCustomer.phone, customerId: ownerActiveCustomer.id, body: msg }).catch(() => {});
-      toast?.(`Message sent to ${ownerActiveCustomer.firstName} ✓`, "green");
+      if (ownerActiveCustomer.phone) {
+        try {
+          await withTimeout(twilioSend(settings as any, ownerActiveCustomer.phone, msg), 15000, "Running late SMS");
+          logOutboundSmsToInbox({ contactName: `${ownerActiveCustomer.firstName} ${ownerActiveCustomer.lastName}`, contactPhone: ownerActiveCustomer.phone, customerId: ownerActiveCustomer.id, body: msg }).catch(() => {});
+          console.log("[RunningLate] sent via SMS to", ownerActiveCustomer.firstName);
+          toast?.(`Message sent to ${ownerActiveCustomer.firstName} ✓`, "green");
+          return;
+        } catch (smsErr: any) {
+          const notConfigured = (smsErr?.message || "").includes("Twilio not configured");
+          if (!notConfigured || !ownerActiveCustomer.email) {
+            console.error("[RunningLate] — error:", smsErr?.message || smsErr);
+            toast?.(smsErr?.message || "Failed to send running-late notice", "red");
+            return;
+          }
+          console.warn("[RunningLate] Twilio not configured — falling back to email");
+        }
+      }
+      if (!ownerActiveCustomer.email) { toast?.("No email on file to fall back to — failed", "red"); return; }
+      const html = emailShell(settings?.companyName || "Crew Boss", "Running Late", `<p>${msg}</p>`);
+      await withTimeout(sendOwnerGmailOnly(settings as any, ownerActiveCustomer.email, "Your technician is running late", html), 15000, "Running late email");
+      console.log("[RunningLate] sent via email to", ownerActiveCustomer.firstName);
+      toast?.(`Message sent to ${ownerActiveCustomer.firstName} ✓ (email)`, "green");
     } catch (e: any) {
+      console.error("[RunningLate] — error:", e?.message || e);
       toast?.(e?.message || "Failed to send running-late notice", "red");
     } finally {
       setOwnerSendingLate(false);
@@ -656,6 +728,28 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
           {liveTeam.length > 0 && <Badge tone="green">{liveTeam.length} on shift</Badge>}
           {crewFetchError && <Badge tone="yellow">⚠ updating… showing last known data</Badge>}
         </div>
+        {/* BLOCKER 5 (mobile round 9) — a one-line, real-data summary of how
+            the crew's day is going, computed from the same liveTeam data
+            (status labels, job counts, checklist progress) already used for
+            each card below — not a separate LLM call, since this view
+            already polls every 3s and a network round-trip per tick would
+            make it feel laggy for something this data already answers. */}
+        {liveTeam.length > 0 && (() => {
+          const withStatus = liveTeam.map(t => ({ ...t, status: crewStatusLabel(t.job, t.job ? checklistProgress(t.job) : null) }));
+          const lateCount = withStatus.filter(t => t.status.label === "Running Late").length;
+          const totalJobsTodayAll = liveTeam.reduce((s, t) => s + t.totalJobsToday, 0);
+          const completedTodayAll = liveTeam.reduce((s, t) => s + t.completedTodayCount, 0);
+          const aheadCount = withStatus.filter(t => t.completedTodayCount > 0 && t.status.label !== "Running Late").length;
+          const parts: string[] = [];
+          parts.push(lateCount > 0 ? `⚠ ${lateCount} crew member${lateCount > 1 ? "s" : ""} running late` : "✓ Crew is on time");
+          if (totalJobsTodayAll > 0) parts.push(`${completedTodayAll} of ${totalJobsTodayAll} jobs done today`);
+          if (lateCount === 0 && aheadCount > 0) parts.push(`${aheadCount} finished ${aheadCount > 1 ? "jobs" : "a job"} ahead of schedule`);
+          return (
+            <div className={"mb-3 px-3 py-2 rounded-xl text-xs font-medium " + (lateCount > 0 ? "bg-red-950/20 border border-red-700/30 text-red-300" : "bg-green-950/20 border border-green-700/30 text-green-300")}>
+              {parts.join(" · ")}
+            </div>
+          );
+        })()}
         {liveTeam.length === 0 ? (
           <div className="text-center py-6 text-sm text-white/40">
             {crewDataSettled ? "No one on shift — waiting for crew to start their day" : "Loading crew status…"}
@@ -849,7 +943,7 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
           {ownerEmpId && (() => {
             const weekAhead = Array.from({ length: 7 }, (_, i) => daysFromNow(i + 1));
             const upcoming = weekAhead
-              .map(d => ({ date: d, jobs: jobs.filter((j: any) => (j.crew || []).includes(ownerEmpId) && j.scheduledDate === d && j.status !== "cancelled") }))
+              .map(d => ({ date: d, jobs: jobs.filter((j: any) => crewIncludesEmployee(j.crew, ownerEmpId, ownerEmp?.user_id) && j.scheduledDate === d && j.status !== "cancelled") }))
               .filter(d => d.jobs.length > 0);
             if (upcoming.length === 0) return null;
             return (

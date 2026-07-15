@@ -438,9 +438,11 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
         logOutboundSmsToInbox({ contactName: `${c.firstName} ${c.lastName}`, contactPhone: c.phone!, customerId: c.id, body: smsBody }).catch(() => {});
       }
       updateJob(jobId, { invoiceSentAt: today(), paymentType: "Invoice" as any, paymentStatus: job.paymentStatus === "Paid" ? job.paymentStatus : "Pending" as any });
+      console.log("[SendInvoice] sent via", c.email ? "email" : "SMS", "to", c.firstName);
       toast(`Invoice sent to ${c.firstName} ✓`, "green");
       setShowInvoicePreview(false);
     } catch (err: any) {
+      console.error("[SendInvoice] — error:", err?.message || err);
       toast(err?.message || "Failed to send invoice", "red");
     } finally {
       setSendingInvoice(false);
@@ -460,15 +462,32 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
       const rateLink = `${window.location.origin}${window.location.pathname}#/rate?c=${encodeURIComponent(c.id)}&n=${encodeURIComponent(c.firstName)}&g=${encodeURIComponent(settings.googlePlaceId || "")}&co=${encodeURIComponent(companyName)}`;
       if (settings.twilioSid && c.phone) {
         await withTimeout(twilioSend(settings as any, c.phone, `Hi ${c.firstName}, thanks for choosing ${companyName}! How did we do? ${rateLink}`), 10000, "Review SMS");
+        logOutboundSmsToInbox({ contactName: `${c.firstName} ${c.lastName}`, contactPhone: c.phone, customerId: c.id, body: `Hi ${c.firstName}, thanks for choosing ${companyName}! How did we do? ${rateLink}` }).catch(() => {});
+        updateJob(jobId, { reviewRequestedAt: today() } as any);
+        console.log("[ReviewRequest] sent via SMS to", c.firstName);
+        toast(`Review request sent to ${c.firstName} ✓`, "green");
       } else if (c.email) {
+        // BLOCKER 4 (mobile round 9) — was sendEmail(), which CLAUDE.md flags
+        // as the repeated-regression path (Resend fallback instead of the
+        // owner's own Gmail); every other customer-facing send in the portal
+        // already uses sendOwnerGmailOnly, this one hadn't been switched over.
         const html = emailShell(companyName, "How did we do?", `<p>Hi ${c.firstName},</p><p>Thanks for choosing ${companyName}! We'd love your feedback on your recent service.</p>` + emailButton("Leave a Review", rateLink));
-        await withTimeout(sendEmail(settings, { to: c.email, subject: `How did we do, ${c.firstName}?`, body: html }), 10000, "Review email");
+        await withTimeout(sendOwnerGmailOnly(settings as any, c.email, `How did we do, ${c.firstName}?`, html), 10000, "Review email");
+        updateJob(jobId, { reviewRequestedAt: today() } as any);
+        console.log("[ReviewRequest] sent via email to", c.firstName);
+        toast(`Review request emailed to ${c.firstName} ✓`, "green");
       } else if (c.phone) {
+        // No Twilio configured and no email on file — last resort: open the
+        // owner's own SMS app prefilled. This has NOT actually sent anything
+        // yet (the owner still has to hit send in their phone's app), so it
+        // must not claim success the way the two branches above do.
         window.location.href = "sms:" + c.phone.replace(/\D/g, "") + "?body=" + encodeURIComponent(`Hi ${c.firstName}, how did we do? ${rateLink}`);
+        updateJob(jobId, { reviewRequestedAt: today() } as any);
+        console.log("[ReviewRequest] opened native SMS composer for", c.firstName, "(Twilio not configured)");
+        toast(`Opening your texts to message ${c.firstName} — add Twilio in Settings to send automatically`, "yellow");
       }
-      updateJob(jobId, { reviewRequestedAt: today() } as any);
-      toast(`Review request sent to ${c.firstName} ✓`, "green");
     } catch (err: any) {
+      console.error("[ReviewRequest] — error:", err?.message || err);
       toast(err?.message || "Failed to send review request", "red");
     } finally {
       setSendingReview(false);

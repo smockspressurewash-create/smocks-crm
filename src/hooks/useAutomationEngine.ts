@@ -43,6 +43,16 @@ const SMS_TEMPLATES: Record<string, string> = {
   anniversary:          "Hi {{first_name}}, happy anniversary with Crew Boss! Thanks for trusting us — enjoy 10% off your next service this month. Reply BOOK.",
 };
 
+// BLOCKER 1 (mobile round 9) — module scope (not inside the hook) so it
+// survives across every 15-min engine tick within this browser session:
+// tracks which automation+failure-mode combos have already logged a
+// "not configured" warning, so a business with dozens of customers and no
+// Twilio/Gmail configured doesn't produce 50+ near-identical console errors.
+// The automation itself keeps retrying every candidate every tick (nothing
+// is skipped) — only the console noise after the first occurrence is
+// suppressed. Resets on a full page reload.
+const notConfiguredWarnedThisSession = new Set<string>();
+
 const fillTemplate = (template: string, vars: Record<string, string>): string =>
   template.replace(/\{\{(\w+)\}\}/g, (_, key) => vars[key] ?? `{{${key}}}`);
 
@@ -438,7 +448,20 @@ export function useAutomationEngine({
             toast(`📧 ${auto.name} → ${c.firstName}`);
             return true;
           } catch (e: any) {
-            console.error("[Automations]", auto.name, "— email failed for", c.firstName, ":", e?.message || e);
+            // BLOCKER 1b — same one-warning-per-automation-per-session
+            // throttle as the SMS branch below, for the "not configured"
+            // case specifically; genuine per-message failures still log
+            // every time since those are actionable per-customer issues.
+            const msg = e?.message || String(e);
+            if (msg.includes("Gmail not connected")) {
+              const key = `${auto.id}:none-configured`;
+              if (!notConfiguredWarnedThisSession.has(key)) {
+                notConfiguredWarnedThisSession.add(key);
+                console.warn(`[Automations] "${auto.name}" — email failed: ${msg} Configure Google in Settings → Integrations. (further attempts for this automation are logged only once per session)`);
+              }
+            } else {
+              console.error("[Automations]", auto.name, "— email failed for", c.firstName, ":", msg);
+            }
             return false;
           }
         }
@@ -451,7 +474,46 @@ export function useAutomationEngine({
           toast(`📱 ${auto.name} → ${c.firstName}`);
           return true;
         } catch (e: any) {
-          console.error("[Automations]", auto.name, "— failed for", c.firstName, ":", e?.message || e);
+          const msg = e?.message || String(e);
+          const isTwilioNotConfigured = msg.includes("Twilio not configured");
+          // BLOCKER 1a — SMS can't go out because Twilio isn't set up, but the
+          // automation itself still has something worth telling the customer.
+          // Fall back to the owner's Gmail rather than just failing, same as
+          // the "email" channel branch above.
+          if (isTwilioNotConfigured && c.email) {
+            const fallbackKey = `${auto.id}:twilio-fallback`;
+            if (!notConfiguredWarnedThisSession.has(fallbackKey)) {
+              notConfiguredWarnedThisSession.add(fallbackKey);
+              console.warn(`[Automations] Twilio not configured — falling back to email for ${auto.name}`);
+            }
+            try {
+              await sendOwnerGmailOnly(settings as any, c.email, subject, emailShell((settings as any).companyName || "Crew Boss", subject, `<p>${body.replace(/\n/g, "<br/>")}</p>`));
+              recordSend(auto, dedupKey, c.firstName + " " + c.lastName);
+              toast(`📧 ${auto.name} → ${c.firstName} (SMS unavailable — sent via email)`);
+              return true;
+            } catch (emailErr: any) {
+              // BLOCKER 1b — neither channel is actually usable. One warning
+              // per automation per session, not one per candidate per tick.
+              const noneKey = `${auto.id}:none-configured`;
+              if (!notConfiguredWarnedThisSession.has(noneKey)) {
+                notConfiguredWarnedThisSession.add(noneKey);
+                console.warn(`[Automations] "${auto.name}" — SMS unavailable (Twilio not configured) and email fallback also failed (${emailErr?.message || "Gmail not connected"}). Configure Twilio or Google in Settings → Integrations. (further attempts for this automation are logged only once per session)`);
+              }
+              return false;
+            }
+          }
+          if (isTwilioNotConfigured) {
+            // No email on file to fall back to, either — still throttled.
+            const noneKey = `${auto.id}:none-configured`;
+            if (!notConfiguredWarnedThisSession.has(noneKey)) {
+              notConfiguredWarnedThisSession.add(noneKey);
+              console.warn(`[Automations] "${auto.name}" — Twilio not configured, and ${c.firstName} ${c.lastName} has no email on file to fall back to. Configure Twilio in Settings → Integrations. (further attempts for this automation are logged only once per session)`);
+            }
+            return false;
+          }
+          // A genuine per-message send failure (bad number, Twilio rejected
+          // it, etc.) — not a "not configured" case, so always surface it.
+          console.error("[Automations]", auto.name, "— failed for", c.firstName, ":", msg);
           return false;
         }
       };

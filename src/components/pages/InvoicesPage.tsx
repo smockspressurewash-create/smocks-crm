@@ -314,13 +314,31 @@ export function InvoicesPage({ estimates = [], setEstimates, customers = [], set
   };
   const totalAging = aging.current + aging.days15_30 + aging.days31_60 + aging.days60plus;
 
+  // BLOCKER 14 (mobile round 10) — these only ever called setEstimates
+  // (local React state) with no Supabase write at all, and toasted "Marked
+  // paid" unconditionally regardless of whether anything actually persisted.
+  // App.tsx's own refetchData() polls the estimates table every 10s and
+  // merges the server row straight over local state — so within seconds the
+  // still-unpaid server row silently overwrote the local paidAt, snapping
+  // the invoice back to unpaid. That's exactly "Mark as Paid doesn't work."
   const markPaid = id => {
-    setEstimates(estimates.map(e => e.id === id ? { ...e, paidAt: today(), status: "approved" } : e));
-    toast("Marked paid");
+    const paidAt = today();
+    setEstimates(estimates.map(e => e.id === id ? { ...e, paidAt, status: "approved" } : e));
+    (supabase as any).from("estimates").update({ paidAt, status: "approved" }).eq("id", id)
+      .then((r: any) => {
+        if (r?.error) { console.error("[MarkPaid] failed:", r.error.message); toast("Saved locally, but failed to sync — " + r.error.message, "red"); }
+        else toast("Marked paid ✓", "green");
+      })
+      .catch((e: any) => { console.error("[MarkPaid] threw:", e?.message); toast("Saved locally, but failed to sync — " + (e?.message || "unknown error"), "red"); });
   };
   const markUnpaid = id => {
     setEstimates(estimates.map(e => e.id === id ? { ...e, paidAt: null } : e));
-    toast("Marked unpaid");
+    (supabase as any).from("estimates").update({ paidAt: null }).eq("id", id)
+      .then((r: any) => {
+        if (r?.error) { console.error("[MarkPaid] unpaid failed:", r.error.message); toast("Saved locally, but failed to sync — " + r.error.message, "red"); }
+        else toast("Marked unpaid", "green");
+      })
+      .catch((e: any) => { console.error("[MarkPaid] unpaid threw:", e?.message); toast("Saved locally, but failed to sync — " + (e?.message || "unknown error"), "red"); });
   };
   // FIX 7 — invoices are stored as estimates with invoiced:true, so deleting
   // one removes it from the shared `estimates` table (both locally and
@@ -669,9 +687,19 @@ export function InvoicesPage({ estimates = [], setEstimates, customers = [], set
                   if (!amt || isNaN(Number(amt))) return;
                   const partial = Number(amt);
                   const newBalance = Math.max(0, viewing.total - partial);
-                  setEstimates(estimates.map(e => e.id === viewing.id ? { ...e, partialPaid: (e.partialPaid || 0) + partial, paidAt: newBalance === 0 ? today() : null } : e));
-                  setViewing({ ...viewing, partialPaid: (viewing.partialPaid || 0) + partial, paidAt: newBalance === 0 ? today() : null });
-                  toast("Partial payment of " + fmt(partial) + " recorded · Balance: " + fmt(newBalance));
+                  const newPartialPaid = (viewing.partialPaid || 0) + partial;
+                  const newPaidAt = newBalance === 0 ? today() : null;
+                  // BLOCKER 14 (mobile round 10) — same missing-Supabase-write
+                  // bug as markPaid/markUnpaid: local state only, so the next
+                  // 10s poll overwrote it with the still-unpaid server row.
+                  setEstimates(estimates.map(e => e.id === viewing.id ? { ...e, partialPaid: newPartialPaid, paidAt: newPaidAt } : e));
+                  setViewing({ ...viewing, partialPaid: newPartialPaid, paidAt: newPaidAt });
+                  (supabase as any).from("estimates").update({ partialPaid: newPartialPaid, paidAt: newPaidAt }).eq("id", viewing.id)
+                    .then((r: any) => {
+                      if (r?.error) { console.error("[MarkPaid] partial payment failed:", r.error.message); toast("Saved locally, but failed to sync — " + r.error.message, "red"); }
+                      else toast("Partial payment of " + fmt(partial) + " recorded · Balance: " + fmt(newBalance), "green");
+                    })
+                    .catch((e: any) => { console.error("[MarkPaid] partial payment threw:", e?.message); toast("Saved locally, but failed to sync — " + (e?.message || "unknown error"), "red"); });
                 }} className="!text-xs"><CreditCard size={11} className="inline mr-1" />Partial Pay</GBtn>
                 <GBtn variant="ghost" onClick={() => sendReminder(viewing)}><Send size={12} className="inline mr-1.5" />Remind</GBtn>
                 {stripeReady && <GBtn onClick={() => setStripePayInvoice(viewing)} className="!bg-gradient-to-r !from-[#635BFF] !to-[#4F46E5] !border-[#635BFF]/50"><CreditCard size={12} className="inline mr-1.5" />Pay Now</GBtn>}
@@ -685,9 +713,13 @@ export function InvoicesPage({ estimates = [], setEstimates, customers = [], set
               {viewing.paidAt && <>
                 <GBtn variant="ghost" className="!text-xs !border-red-800/40 !text-red-400" onClick={() => {
                   if (!confirm("Issue a refund for this invoice? This marks it as unpaid.")) return;
+                  const refundedAt = today();
                   markUnpaid(viewing.id);
-                  setViewing({ ...viewing, paidAt: null, refundedAt: today() });
-                  toast("Refund issued — invoice marked unpaid");
+                  setEstimates(prev => prev.map(e => e.id === viewing.id ? { ...e, refundedAt } : e));
+                  setViewing({ ...viewing, paidAt: null, refundedAt });
+                  // markUnpaid already persists paidAt: null and its own toast;
+                  // refundedAt wasn't part of that write at all before — persist it too.
+                  (supabase as any).from("estimates").update({ refundedAt }).eq("id", viewing.id).catch((e: any) => console.warn("[MarkPaid] refundedAt sync failed:", e?.message));
                 }}><Undo2 size={11} className="inline mr-1" />Refund</GBtn>
                 <GBtn variant="ghost" onClick={() => { markUnpaid(viewing.id); setViewing({ ...viewing, paidAt: null }); }}><Undo2 size={12} className="inline mr-1.5" />Unpaid</GBtn>
               </>}

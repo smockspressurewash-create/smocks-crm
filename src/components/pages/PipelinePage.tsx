@@ -86,6 +86,10 @@ export function PipelinePage({ jobs = [], setJobs, customers = [], toast }) {
   // FEATURE 6 (mobile round 7) — was a hardcoded constant with no way for the
   // owner to tune it; now an editable, persisted-per-device setting.
   const [staleThreshold, setStaleThreshold] = usePersistent<number>("smocks.staleLeadThresholdDays", 14);
+  // BLOCKER 18 (mobile round 9) — same fix as staleThreshold above, applied
+  // to the "Bottleneck" avg-days-in-stage banner, which still had its "5
+  // days" trigger hardcoded with no editable setting anywhere.
+  const [bottleneckThreshold, setBottleneckThreshold] = usePersistent<number>("smocks.bottleneckThresholdDays", 5);
   // FEATURE 6 — column display limit: show max 5 cards per stage with a
   // "Show N more" expander, so a column with 40 leads doesn't turn the whole
   // board into one giant unscrollable list.
@@ -164,7 +168,7 @@ export function PipelinePage({ jobs = [], setJobs, customers = [], toast }) {
       </div>
 
       {/* Bottleneck & health bar */}
-      {bottleneck.avg >= 5 && (
+      {bottleneck.avg >= bottleneckThreshold && (
         <Glass className="p-4 !bg-yellow-950/20 !border-yellow-700/40">
           <div className="flex items-start gap-3 flex-wrap">
             <div className="flex items-center gap-2">
@@ -175,12 +179,21 @@ export function PipelinePage({ jobs = [], setJobs, customers = [], toast }) {
                 <span className="text-yellow-400/80 ml-2 text-sm">avg {bottleneck.avg}d · {bottleneck.count} job{bottleneck.count !== 1 ? "s" : ""}</span>
               </div>
             </div>
-            <div className="flex gap-2 ml-auto text-[10px]">
-              {avgDays.filter(s => s.count > 0).map(s => (
-                <div key={s.stage} className={"px-2 py-1 rounded-lg border " + (s.stage === bottleneck.stage ? "bg-yellow-950/40 border-yellow-700/50 text-yellow-300" : "bg-black/40 border-white/10 text-white/50")}>
-                  {s.stage}: <span className="font-bold">{s.avg}d</span>
-                </div>
-              ))}
+            <div className="flex items-center gap-3 ml-auto">
+              <div className="flex gap-2 text-[10px]">
+                {avgDays.filter(s => s.count > 0).map(s => (
+                  <div key={s.stage} className={"px-2 py-1 rounded-lg border " + (s.stage === bottleneck.stage ? "bg-yellow-950/40 border-yellow-700/50 text-yellow-300" : "bg-black/40 border-white/10 text-white/50")}>
+                    {s.stage}: <span className="font-bold">{s.avg}d</span>
+                  </div>
+                ))}
+              </div>
+              {/* BLOCKER 18 (mobile round 9) — editable trigger, same inline
+                  pattern as the Lead Aging Report's "Flag after" control below. */}
+              <div className="flex items-center gap-1.5 text-[10px] text-yellow-300/70 flex-shrink-0">
+                <span>Flag after</span>
+                <input type="number" min={1} max={90} value={bottleneckThreshold} onChange={e => setBottleneckThreshold(Math.max(1, Number(e.target.value) || 5))} className="w-12 bg-black/40 border border-yellow-700/40 rounded-lg px-1.5 py-0.5 text-center text-yellow-200" />
+                <span>avg days</span>
+              </div>
             </div>
           </div>
         </Glass>
@@ -260,7 +273,13 @@ export function PipelinePage({ jobs = [], setJobs, customers = [], toast }) {
                     </div>
                   </div>
                 </div>
-                <div className="p-2 space-y-2 min-h-[200px]">
+                {/* BLOCKER 18 (mobile round 9) — expanding a stage with many
+                    cards ("Show N more") used to grow this column's height
+                    with no cap, so seeing the bottom of one long column meant
+                    scrolling the WHOLE page — every other column scrolled
+                    along with it. A capped height + its own overflow-y-auto
+                    makes each column scroll independently instead. */}
+                <div className="p-2 space-y-2 min-h-[200px] max-h-[65vh] overflow-y-auto">
                   {(expandedStages[stg.key] ? sj : sj.slice(0, 5)).map(j => {
                     const cu = customers.find(c => c.id === j.customerId);
                     const prio = priorityLevels.find(p => p.key === (j.priority || "normal")) || priorityLevels[1];

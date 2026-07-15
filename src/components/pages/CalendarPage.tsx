@@ -452,6 +452,14 @@ export function CalendarPage({ jobs = [], setJobs, customers = [], employees = [
               onDragEnter={() => onDragEnterArrow("prev")}
               onDragOver={e => { e.preventDefault(); }}
               onDragLeave={onDragLeaveArrow}
+              // BLOCKER 17 (mobile round 9) — the arrow had no onDrop at all;
+              // a job released directly on the arrow (rather than dragged on
+              // past the 500ms auto-advance) never reached handleDrop, so
+              // dragId was never cleared — the app stayed in a "still
+              // dragging" state (drop-target styling lit up elsewhere) until
+              // the owner started a new drag. There's no sensible day target
+              // for a literal drop on the arrow, so just cancel cleanly.
+              onDrop={e => { e.preventDefault(); onDragLeaveArrow(); setDragId(null); }}
               title={dragId ? "Hold a job here to jump to the previous month" : "Previous month"}
               className={"flex items-center gap-1 px-5 py-3 rounded-xl border transition " + (dragHoverArrow === "prev" ? "bg-red-600 border-red-400 scale-105 shadow-lg shadow-red-900/40" : dragId ? "border-red-700/40 border-dashed bg-red-950/20 hover:bg-red-900/30" : "border-transparent hover:bg-white/5")}
             ><ChevronLeft size={18} />{dragHoverArrow === "prev" && <span className="text-[10px] font-semibold">Prev month…</span>}</button>
@@ -461,6 +469,7 @@ export function CalendarPage({ jobs = [], setJobs, customers = [], employees = [
               onDragEnter={() => onDragEnterArrow("next")}
               onDragOver={e => { e.preventDefault(); }}
               onDragLeave={onDragLeaveArrow}
+              onDrop={e => { e.preventDefault(); onDragLeaveArrow(); setDragId(null); }}
               title={dragId ? "Hold a job here to jump to the next month" : "Next month"}
               className={"flex items-center gap-1 px-5 py-3 rounded-xl border transition " + (dragHoverArrow === "next" ? "bg-red-600 border-red-400 scale-105 shadow-lg shadow-red-900/40" : dragId ? "border-red-700/40 border-dashed bg-red-950/20 hover:bg-red-900/30" : "border-transparent hover:bg-white/5")}
             >{dragHoverArrow === "next" && <span className="text-[10px] font-semibold">Next month…</span>}<ChevronRight size={18} /></button>

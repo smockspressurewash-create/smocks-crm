@@ -131,6 +131,14 @@ export function AddressAutocomplete({
   // owner has no way to discover — let alone fix — a misconfigured key
   // without opening devtools, so surface it as a small visible banner.
   const [placesBlocked, setPlacesBlocked] = useState(false);
+  // BLOCKER 7 (mobile round 9) — "the error message about API restrictions
+  // should be dismissible": this banner previously had no way to close it,
+  // so on a deployment whose key stays misconfigured it re-appeared on every
+  // focus/keystroke for the rest of the session. Dismissing hides it for
+  // this field instance; it resets (worth re-surfacing) if the key itself
+  // changes, e.g. the owner pastes in a new one.
+  const [bannerDismissed, setBannerDismissed] = useState(false);
+  useEffect(() => { setBannerDismissed(false); }, [mapsKey]);
   const placesLibRef = useRef<any>(null);
   const debounceRef = useRef<any>(null);
   useEffect(() => {
@@ -232,10 +240,11 @@ export function AddressAutocomplete({
           Browser address autofill active · type 2+ chars to see saved CRM matches
         </div>
       )}
-      {placesBlocked && mapsKey && (
+      {placesBlocked && mapsKey && !bannerDismissed && (
         <div className="text-[10px] text-yellow-400/80 mt-1 pl-1 flex items-start gap-1">
           <span>⚠️</span>
-          <span>Google Places is blocking this API key (check its API restrictions in Cloud Console include "Places API (New)") — showing saved CRM addresses only for now.</span>
+          <span className="flex-1">Google Places is blocking this API key (check its API restrictions in Cloud Console include "Places API (New)") — showing saved CRM addresses only for now.</span>
+          <button type="button" onClick={() => setBannerDismissed(true)} aria-label="Dismiss" className="flex-shrink-0 text-yellow-400/60 hover:text-yellow-300 leading-none px-0.5">✕</button>
         </div>
       )}
       {open && suggestions.length === 0 && value.trim().length >= 3 && (

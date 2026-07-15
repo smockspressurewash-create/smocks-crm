@@ -431,7 +431,10 @@ export function App() {
   // round 3. edgeSwipeProgress now also drives a live "peek" of the sidebar
   // itself (see the <aside> style below) proportional to how far the swipe
   // has gone, instead of only revealing it once the threshold is crossed.
-  const EDGE_ZONE_PX = 120;
+  // BLOCKER 16 (mobile round 9) — user report: "detection area too small" —
+  // widened from 120px to the requested 150px so a thumb swipe starting
+  // further from the literal screen edge still registers as an open-gesture.
+  const EDGE_ZONE_PX = 150;
   const SWIPE_THRESHOLD_PX = 30;
   const MAX_VERTICAL_DRIFT_PX = 100;
   const SIDEBAR_WIDTH_PX = 256; // matches the aside's w-64
@@ -1492,8 +1495,28 @@ export function App() {
     let bootstrapDone = false;
     const forceRenderTimer = setTimeout(() => {
       if (!bootstrapDone) {
-        console.warn("Session bootstrap exceeded 5s — forcing login/CRM render");
+        // BLOCKER 9 (mobile round 10) — this timer already rescues the
+        // loading SCREEN from a hung getSession()/onAuthStateChange (see the
+        // comment above), but until now it didn't rescue the DATA: everything
+        // that populates `employees`/`jobs`/`customers` — including Live Crew
+        // View's data — lives inside the same async bootstrap chain, AFTER
+        // the hung await. A permanent hang there (the exact navigator-lock/
+        // IndexedDB issue this comment already describes, which mobile
+        // Safari/Chrome hit far more often than desktop) meant the CRM
+        // rendered but silently NEVER fetched employees/jobs for the rest of
+        // the session — "works on PC, shows nothing on phone, same account"
+        // is exactly what that looks like, since the PC session's bootstrap
+        // just happened not to hang. These calls don't depend on session
+        // role-resolution (RLS is permissive per CLAUDE.md), so they can run
+        // independently the moment this ceiling fires.
+        console.warn("Session bootstrap exceeded 5s — forcing login/CRM render and fetching data directly");
         setSessionChecked(true);
+        // Matches the existing "forcing login/CRM render" behavior below —
+        // if an employee session were already active, page/routing would
+        // already reflect #/portal independently of this timer.
+        setHasCrmSession(true);
+        refetchEmployees();
+        refetchData();
       }
     }, 5000);
 
@@ -1685,9 +1708,25 @@ export function App() {
   // Fetch real weather when OWM key is set — FIX 12: location comes from
   // Settings → Company (zip or "City, ST"), defaulting to York, PA only if
   // the owner hasn't set one.
+  // BLOCKER 12 (mobile round 9) — two real bugs: (1) this only ever fetched
+  // once, whenever the key/location setting itself changed, so a session
+  // left open across the day kept showing whatever the temperature was at
+  // load time (e.g. a cool morning fetch still showing "72°" at a 94° mid-
+  // afternoon); (2) `.catch(() => {})` swallowed every failure completely
+  // silently — an invalid key, a rate limit, or a location string OWM can't
+  // geocode all fell back to seedWeather with zero visible sign anything
+  // was wrong, making "weather shows fake data" indistinguishable from "no
+  // key configured yet" when debugging a live deployment.
   useEffect(() => {
     if (!settings.owmKey) return;
-    fetchRealWeather(settings.owmKey, (settings as any).weatherLocation).then(setWeatherData).catch(() => {});
+    const run = () => {
+      fetchRealWeather(settings.owmKey, (settings as any).weatherLocation)
+        .then(w => { console.log("[Weather] refreshed —", w.current.temp + "°,", w.current.description); setWeatherData(w); })
+        .catch((e: any) => console.warn("[Weather] fetch failed — showing last known/seed data:", e?.message || e));
+    };
+    run();
+    const interval = setInterval(run, 30 * 60 * 1000);
+    return () => clearInterval(interval);
   }, [settings.owmKey, (settings as any).weatherLocation]);
 
   // "Tomorrow's Jobs" crew email — there's no server cron in a client-only app,
@@ -2610,17 +2649,23 @@ export function App() {
             className={"z-50 flex flex-col items-end gap-2.5 " + (fabPosition ? "fixed" : "fixed bottom-20 right-5 md:bottom-6 md:right-6")}
             style={fabPosition ? { left: fabPosition.x, bottom: Math.max(4, window.innerHeight - fabPosition.y - FAB_SIZE) } : { marginBottom: "env(safe-area-inset-bottom)" }}
           >
-            {/* FEATURE 8 (mobile round 7) — dragged into the bottom 20% of the
-                screen (e.g. behind the mobile bottom nav / thumb-unreachable
-                area): collapse to a small restore tab instead of the full
-                button, rather than sitting half-obscured and hard to grab. */}
+            {/* BLOCKER 15 (mobile round 9) — dragged into the bottom 20% of
+                the screen (e.g. behind the mobile bottom nav / thumb-
+                unreachable area): hide the FAB completely rather than
+                collapsing to a visible arrow tab (the previous FEATURE 8
+                behavior, which the owner found confusing — expected it to
+                just disappear). A small pulsing dot marks where it went;
+                tapping the dot restores the FAB to its default position. */}
             {fabPosition && fabPosition.y + FAB_SIZE > window.innerHeight * 0.8 ? (
               <button
                 onClick={() => setFabPosition(null)}
                 aria-label="Restore quick actions"
-                className="w-8 h-10 rounded-l-xl bg-gradient-to-br from-red-500 to-red-800 shadow-lg shadow-red-900/60 flex items-center justify-center border border-red-400/30 border-r-0 hover:w-9 transition-all"
+                className="w-4 h-4 rounded-full bg-red-500/70 hover:bg-red-500 flex items-center justify-center transition"
               >
-                <ChevronLeft size={16} className="text-white" />
+                <span className="relative flex h-2.5 w-2.5">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75" />
+                  <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-red-500" />
+                </span>
               </button>
             ) : <>
             {fabOpen && (
