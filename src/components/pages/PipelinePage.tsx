@@ -83,6 +83,13 @@ export function PipelinePage({ jobs = [], setJobs, customers = [], toast }) {
   const [lostReason, setLostReason] = useState("Price too high");
   const [priorityFilter, setPriorityFilter] = useState("all");
   const [timeframe, setTimeframe] = useState("all");
+  // FEATURE 6 (mobile round 7) — was a hardcoded constant with no way for the
+  // owner to tune it; now an editable, persisted-per-device setting.
+  const [staleThreshold, setStaleThreshold] = usePersistent<number>("smocks.staleLeadThresholdDays", 14);
+  // FEATURE 6 — column display limit: show max 5 cards per stage with a
+  // "Show N more" expander, so a column with 40 leads doesn't turn the whole
+  // board into one giant unscrollable list.
+  const [expandedStages, setExpandedStages] = useState<Record<string, boolean>>({});
   const lostReasons = ["Price too high", "Went with competitor", "Changed mind", "No response", "Not qualified", "Other"];
 
   const moveStg = (jid, stg) => {
@@ -181,18 +188,24 @@ export function PipelinePage({ jobs = [], setJobs, customers = [], toast }) {
 
       {/* Lead aging report */}
       {(() => {
-        const staleThreshold = 14;
         const activeStages = ["lead","contacted","estimate_sent"];
         const stale = filtered.filter(j => activeStages.includes(effStage(j)) && daysSince(j.stageChangedAt || j.scheduledDate || j.createdAt) >= staleThreshold);
         if (stale.length === 0) return null;
         return (
           <Glass className="p-4 !bg-orange-950/20 !border-orange-700/40">
-            <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
               <div className="flex items-center gap-2">
                 <Clock size={14} className="text-orange-400" />
                 <span className="text-orange-300 font-semibold text-sm">{stale.length} lead{stale.length !== 1 ? "s" : ""} with no activity in {staleThreshold}+ days</span>
               </div>
-              <span className="text-[10px] text-orange-400/60">Lead Aging Report</span>
+              <div className="flex items-center gap-3">
+                <div className="flex items-center gap-1.5 text-[10px] text-orange-300/70">
+                  <span>Flag after</span>
+                  <input type="number" min={1} max={90} value={staleThreshold} onChange={e => setStaleThreshold(Math.max(1, Number(e.target.value) || 14))} className="w-12 bg-black/40 border border-orange-700/40 rounded-lg px-1.5 py-0.5 text-center text-orange-200" />
+                  <span>days</span>
+                </div>
+                <span className="text-[10px] text-orange-400/60">Lead Aging Report</span>
+              </div>
             </div>
             <div className="overflow-x-auto">
               <table className="w-full text-xs">
@@ -248,7 +261,7 @@ export function PipelinePage({ jobs = [], setJobs, customers = [], toast }) {
                   </div>
                 </div>
                 <div className="p-2 space-y-2 min-h-[200px]">
-                  {sj.map(j => {
+                  {(expandedStages[stg.key] ? sj : sj.slice(0, 5)).map(j => {
                     const cu = customers.find(c => c.id === j.customerId);
                     const prio = priorityLevels.find(p => p.key === (j.priority || "normal")) || priorityLevels[1];
                     return (
@@ -282,6 +295,16 @@ export function PipelinePage({ jobs = [], setJobs, customers = [], toast }) {
                       </SwipeableCard>
                     );
                   })}
+                  {!expandedStages[stg.key] && sj.length > 5 && (
+                    <button onClick={() => setExpandedStages(prev => ({ ...prev, [stg.key]: true }))} className="w-full text-center text-[11px] text-white/40 hover:text-white/70 py-1.5 rounded-lg hover:bg-white/5 transition">
+                      Show {sj.length - 5} more…
+                    </button>
+                  )}
+                  {expandedStages[stg.key] && sj.length > 5 && (
+                    <button onClick={() => setExpandedStages(prev => ({ ...prev, [stg.key]: false }))} className="w-full text-center text-[11px] text-white/40 hover:text-white/70 py-1.5 rounded-lg hover:bg-white/5 transition">
+                      Show less
+                    </button>
+                  )}
                 </div>
               </div>
             );

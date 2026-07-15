@@ -282,7 +282,7 @@ const sendGmailRaw = async (googleProviderToken: string, fromEmail: string, to: 
 // server-side. functions/api/google-refresh.ts holds it as a Cloudflare env
 // var and does the actual token exchange; this just calls that same-origin
 // endpoint. Returns null (never throws) so callers can fall back cleanly.
-const refreshGoogleAccessToken = async (
+export const refreshGoogleAccessToken = async (
   refreshToken: string,
   backendUrl?: string
 ): Promise<{ token: string; expiresAt: number } | null> => {

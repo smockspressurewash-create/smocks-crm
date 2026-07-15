@@ -98,6 +98,47 @@ export const daysSince = (dateStr: string | null | undefined): number => {
   return Math.max(0, Math.floor(diff / 86400000));
 };
 
+// BLOCKER 2 (mobile round 7) — root cause of "Employees Hours/Payroll shows
+// zero despite the hours existing in Supabase": jobs fetched from Supabase
+// were used as-is with no casing normalization (unlike normalizeEmployee in
+// App.tsx). `loggedHours` is quoted correctly in migration 0005, but any job
+// row written before that migration ran, or a column added by hand through
+// the Supabase dashboard without quoting, folds to `loggedhours` — every
+// downstream `Number(j.loggedHours || j.duration || 0)` (EmployeesPage,
+// Dashboard, JobsPage, EmployeePortal) then silently reads undefined as 0
+// even though the real number is sitting right there under the lowercase
+// key. Shared here so every Supabase job-fetch site (App.tsx's refetchData,
+// EmployeePortal.tsx's own jobs poll) normalizes the same way.
+// BLOCKER 12 (mobile round 7) — "photo count" badges (Live Crew View,
+// Jobs list) only ever counted the top-level job.photos array (the
+// dedicated Before/After gallery), but most of the photos an employee
+// actually takes come from the per-checklist-item camera button
+// (PortalChecklistSection.addItemPhoto in EmployeePortal.tsx), which stores
+// them nested on preChecklist/duringChecklist/postChecklist items instead —
+// a genuinely separate field, not just a naming mismatch. Counting only
+// job.photos made real, saved photo activity look like it "went missing."
+export const totalJobPhotoCount = (job: any): number => {
+  if (!job) return 0;
+  const top = Array.isArray(job.photos) ? job.photos.length : 0;
+  const checklists = [job.preChecklist, job.duringChecklist, job.postChecklist, job.checklist];
+  const nested = checklists.reduce((s: number, list: any) => s + (Array.isArray(list)
+    ? list.reduce((s2: number, item: any) => s2 + (Array.isArray(item?.photos) ? item.photos.length : 0), 0)
+    : 0), 0);
+  return top + nested;
+};
+
+export const normalizeJobRow = (j: any): any => ({
+  ...j,
+  loggedHours: j.loggedHours ?? j.loggedhours ?? j.logged_hours ?? j.duration ?? 0,
+  clockInAt: j.clockInAt ?? j.clockinat ?? j.clock_in_at ?? null,
+  arrivedAt: j.arrivedAt ?? j.arrivedat ?? j.arrived_at ?? null,
+  lunchStartAt: j.lunchStartAt ?? j.lunchstartat ?? j.lunch_start_at ?? null,
+  lunchMinutes: j.lunchMinutes ?? j.lunchminutes ?? j.lunch_minutes ?? 0,
+  invoiceSentAt: j.invoiceSentAt ?? j.invoicesentat ?? j.invoice_sent_at ?? null,
+  amountCollected: j.amountCollected ?? j.amountcollected ?? j.amount_collected ?? 0,
+  scheduledTime: j.scheduledTime ?? j.scheduledtime ?? j.scheduled_time ?? "",
+});
+
 // ─── Timeframes ───────────────────────────────────────────────────────────────
 
 export interface Timeframe {

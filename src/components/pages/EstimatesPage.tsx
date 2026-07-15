@@ -194,6 +194,26 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
   const filtered = filter === "all" ? estimates : estimates.filter(e => e.status === filter);
 
   const toggleSel = id => setSelected(s => s.includes(id) ? s.filter(x => x !== id) : [...s, id]);
+  const toggleSelAll = () => setSelected(selected.length === filtered.length ? [] : filtered.map(e => e.id));
+
+  // FEATURE 5 (mobile round 7) — CSV export of the selected estimates/quotes.
+  const downloadSelectedCsv = () => {
+    const rows = selected.map(id => {
+      const e = estimates.find(x => x.id === id);
+      if (!e) return null;
+      const c = customers.find(x => x.id === e.customerId);
+      return [e.id, cn(e.customerId), e.status, e.createdAt || "", e.total, e.invoiced ? "invoice" : "estimate"]
+        .map(v => `"${String(v ?? "").replace(/"/g, '""')}"`).join(",");
+    }).filter(Boolean);
+    const csv = "ID,Customer,Status,Created,Total,Type\n" + rows.join("\n");
+    const blob = new Blob([csv], { type: "text/csv" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "estimates-" + today() + ".csv";
+    a.click();
+    URL.revokeObjectURL(a.href);
+    toast(`Downloaded ${selected.length} estimate${selected.length !== 1 ? "s" : ""}`);
+  };
 
   const duplicate = e => {
     const copy = { ...e, id: uid(), createdAt: today(), validUntil: daysFromNow(30), status: "pending", viewed: false, viewedAt: null };
@@ -251,11 +271,18 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap gap-2 items-center justify-between">
-        <div className="flex gap-2 flex-wrap">
+        <div className="flex gap-2 flex-wrap items-center">
           {["all", "pending", "approved", "rejected"].map(s => <button key={s} onClick={() => setFilter(s)} className={"px-3 py-1.5 rounded-xl text-xs font-medium transition border " + (filter === s ? "bg-red-900/40 border-red-500/50 text-white" : "bg-black/40 border-red-900/30 text-white/60 hover:text-white")}>{s === "all" ? "All (" + estimates.length + ")" : (s === "rejected" ? "declined" : s) + " (" + estimates.filter(e => e.status === s).length + ")"}</button>)}
+          {filtered.length > 0 && (
+            <label className="flex items-center gap-1.5 text-xs text-white/50 pl-2 cursor-pointer">
+              <input type="checkbox" checked={selected.length === filtered.length} onChange={toggleSelAll} className="w-4 h-4 rounded accent-red-600" />
+              Select all
+            </label>
+          )}
         </div>
         <div className="flex gap-2">
           {selected.length > 0 && <>
+            <GBtn variant="ghost" onClick={downloadSelectedCsv} className="!text-xs"><Download size={12} className="inline mr-1" />Download ({selected.length})</GBtn>
             <GBtn variant="ghost" onClick={async () => {
               let sent = 0;
               for (const id of selected) {

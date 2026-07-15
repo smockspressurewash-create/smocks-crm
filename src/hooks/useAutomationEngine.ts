@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
-import type { Automation, Job, Customer, Estimate, Referral } from "../types";
+import type { Automation, AutomationStep, Job, Customer, Estimate, Referral } from "../types";
 import { today, daysSince } from "../lib/utils";
-import { twilioSend, logOutboundSmsToInbox } from "../lib/messaging";
+import { twilioSend, logOutboundSmsToInbox, sendOwnerGmailOnly, emailShell } from "../lib/messaging";
 import type { AppSettings } from "../types";
 
 interface AutomationEngineProps {
@@ -16,14 +16,19 @@ interface AutomationEngineProps {
 }
 
 const SMS_TEMPLATES: Record<string, string> = {
-  new_lead:            "Hi {{first_name}}! Thanks for reaching out to Crew Boss. I'll send your estimate shortly. — Will",
+  new_lead:             "Hi {{first_name}}! Thanks for reaching out to Crew Boss. I'll send your estimate shortly. — Will",
   estimate_followup:    "Hi {{first_name}}, just checking in on your estimate. Any questions? Ready to schedule? — Will @ Crew Boss",
   estimate_expiring:    "Hi {{first_name}}, your Crew Boss estimate for {{amount}} expires in 48 hours. Reply BOOK to lock in this price — Crew Boss",
-  job_reminder:         "Hi {{first_name}}, reminder: your Crew Boss service is tomorrow. We'll text when on the way. — Crew Boss",
+  estimate_viewed_ack:  "Hi {{first_name}}, glad you had a chance to look over your Crew Boss estimate! Any questions before we get you scheduled? — Will",
+  estimate_accepted:    "Hi {{first_name}}, thanks for approving your Crew Boss estimate! We'll be in touch shortly to get you scheduled. — Will",
+  payment_received:     "Hi {{first_name}}, thank you for your payment! We appreciate your business. — Crew Boss",
+  job_reminder:         "Hi {{first_name}}, reminder: your Crew Boss service is coming up. We'll text when on the way. — Crew Boss",
+  job_scheduled:        "Hi {{first_name}}, you're booked with Crew Boss for {{date}}! We'll send reminders as it gets closer. — Will",
+  crew_starts:          "Hi {{first_name}}, your Crew Boss technician just started your service — we'll let you know when it's done!",
   review_request:       "Hi {{first_name}}, how did we do? A quick Google review means a lot: {{review_link}} — Will",
   payment_overdue_3:    "Hi {{first_name}}, friendly reminder — your Crew Boss invoice for {{amount}} is due. Pay here: {{payment_link}}",
   payment_overdue_7:    "Hi {{first_name}}, your Crew Boss invoice for {{amount}} is now a week overdue. Pay here: {{payment_link}}",
-  payment_overdue_14:   "Hi {{first_name}}, your invoice for {{amount}} is 2 weeks overdue. Please pay at your earliest convenience: {{payment_link}} — Crew Boss",
+  payment_overdue_14:   "Hi {{first_name}}, your invoice for {{amount}} is 2+ weeks overdue. Please pay at your earliest convenience: {{payment_link}} — Crew Boss",
   maintenance_reminder: "Hi {{first_name}}, it's been 90 days since your last Crew Boss service — ready for a refresh? Reply BOOK or call (717) 555-0100.",
   birthday:             "Hi {{first_name}}! Happy birthday 🎂 Enjoy 10% off your next service — code BDAY10. — Crew Boss",
   seasonal_spring:      "Hi {{first_name}}, spring is here! Book your house or driveway soft wash this month and save 15% — reply BOOK. — Crew Boss",
@@ -34,27 +39,165 @@ const SMS_TEMPLATES: Record<string, string> = {
   reengage:             "Hi {{first_name}}, it's been 6 months since your last Crew Boss service! Book now and save 10% — reply BOOK.",
   referral_ask:         "Hi {{first_name}}, thanks for being a loyal Crew Boss customer! Know anyone who could use a wash? Refer them and you both save — reply REFER.",
   referral_reward:      "Hi {{first_name}}, your referral just booked — you've earned ${{reward}} credit toward your next Crew Boss service! 🎉",
+  referral_booked:      "Hi {{first_name}}, your referral just booked their first Crew Boss service! Thank you for spreading the word 🎉",
   anniversary:          "Hi {{first_name}}, happy anniversary with Crew Boss! Thanks for trusting us — enjoy 10% off your next service this month. Reply BOOK.",
 };
 
 const fillTemplate = (template: string, vars: Record<string, string>): string =>
   template.replace(/\{\{(\w+)\}\}/g, (_, key) => vars[key] ?? `{{${key}}}`);
 
-// Days between now and a future date (validUntil-style "expiring in N days"),
-// the mirror image of lib/utils.ts's daysSince.
-const daysUntil = (dateStr: string | null | undefined): number => {
-  if (!dateStr) return Infinity;
-  const diff = new Date(dateStr).getTime() - Date.now();
-  return Math.floor(diff / 86400000);
-};
-
-// Most recent COMPLETED job's scheduledDate for a customer, or null if they've
-// never had one — the shared basis for both the 90-day maintenance nudge and
-// the 6-month re-engagement win-back (see FIX comments below).
 const lastServiceDate = (jobs: Job[], customerId: string): string | null => {
   const done = jobs.filter(j => j.customerId === customerId && j.status === "completed" && j.scheduledDate);
   if (done.length === 0) return null;
   return done.reduce((latest, j) => (j.scheduledDate! > latest ? j.scheduledDate! : latest), done[0].scheduledDate!);
+};
+
+// Pulls an explicit "N days" / "N hours" out of a trigger/step label so labels
+// like "Invoice unpaid 3 days" or "Job complete + 2h" drive real timing
+// instead of a one-size-fits-all constant — falls back to fallbackMinutes when
+// the label has no number in it (e.g. a bare "Estimate sent").
+const deriveDelayMinutesFromLabel = (label: string, fallbackMinutes: number): number => {
+  const t = (label || "").toLowerCase();
+  const h = t.match(/(\d+)\s*h(our)?s?\b/);
+  if (h) return parseInt(h[1], 10) * 60;
+  const d = t.match(/(\d+)\s*d(ay)?s?\b/);
+  if (d) return parseInt(d[1], 10) * 1440;
+  return fallbackMinutes;
+};
+const deriveDaysFromLabel = (label: string, fallbackDays: number): number => {
+  const t = (label || "").toLowerCase();
+  const h = t.match(/(\d+)\s*h(our)?s?\b/);
+  if (h) return Math.max(1, Math.round(parseInt(h[1], 10) / 24));
+  const d = t.match(/(\d+)\s*d(ay)?s?\b/);
+  if (d) return parseInt(d[1], 10);
+  return fallbackDays;
+};
+
+// ── Trigger classification ───────────────────────────────────────────────────
+// Every place an automation's trigger text can come from — the legacy seed
+// data (lib/seed.ts seedAutomations), the simple trigger/action dropdown
+// (ui/AutomationEditor.tsx triggerPresets), and the full n8n-style builder
+// (ui/VisualWorkflowBuilder.tsx TRIGGER_PRESETS) — all use slightly different
+// wording for the same concept ("24h before job" vs "24h before scheduled
+// job", "Job completed + 48h" vs "Job complete + 48h", etc). Matching on
+// narrow exact phrases (the previous version of this file) meant most
+// UI-created workflows fell through to "no matching engine handler" even
+// though their trigger was a perfectly valid preset. These patterns are
+// written to cover every preset string from all three sources, ordered so
+// more specific checks run before broader ones that could also match.
+type Category =
+  | "new_lead" | "estimate_expiring" | "job_reminder" | "job_reminder_morning" | "crew_starts"
+  | "referral_ask" | "review_request" | "job_scheduled" | "estimate_followup" | "estimate_viewed"
+  | "estimate_accepted" | "payment_received" | "payment_overdue" | "maintenance" | "birthday"
+  | "seasonal_spring" | "seasonal_fall" | "abandoned_estimate" | "reengage" | "anniversary"
+  | "referral_reward" | "referral_booked" | "review_good" | "review_bad" | "manual" | "weekly_scheduled";
+
+const classifyTrigger = (labelRaw: string): Category | null => {
+  const t = (labelRaw || "").toLowerCase();
+  if (/new (lead|inquiry|customer)|lead (form )?submitted|inquiry submitted/.test(t)) return "new_lead";
+  if (/expir/.test(t)) return "estimate_expiring";
+  if (/24h before|before.*scheduled job/.test(t)) return "job_reminder";
+  if (/job day morning|morning of/.test(t)) return "job_reminder_morning";
+  if (/crew start/.test(t)) return "crew_starts";
+  if (/job complete.*3rd|3rd.*job complete/.test(t)) return "referral_ask";
+  if (/job complete|post.?job review|review request/.test(t)) return "review_request";
+  if (/\bjob scheduled\b/.test(t)) return "job_scheduled";
+  if (/quote unviewed|estimate sent|quote sent/.test(t)) return "estimate_followup";
+  if (/estimate viewed/.test(t)) return "estimate_viewed";
+  if (/estimate (accepted|signed)/.test(t)) return "estimate_accepted";
+  if (/payment received/.test(t)) return "payment_received";
+  if (/invoice (unpaid|overdue)/.test(t)) return "payment_overdue";
+  if (/since service|maintenance|90 days/.test(t)) return "maintenance";
+  if (/birthday/.test(t)) return "birthday";
+  if (/march 1/.test(t)) return "seasonal_spring";
+  if (/october 1/.test(t)) return "seasonal_fall";
+  if (/not approved|abandoned|no response/.test(t)) return "abandoned_estimate";
+  if (/no service|re-?engage|6 months/.test(t)) return "reengage";
+  if (/anniversary/.test(t)) return "anniversary";
+  if (/reward earned|referr.*reward/.test(t)) return "referral_reward";
+  if (/referr.*book/.test(t)) return "referral_booked";
+  if (/review submitted|5 star/.test(t) && /review/.test(t)) return "review_good";
+  if (/negative review|≤3|low.?rating/.test(t)) return "review_bad";
+  if (/manual/.test(t)) return "manual";
+  if (/every monday|weekly/.test(t)) return "weekly_scheduled";
+  return null;
+};
+
+interface Candidate {
+  key: string;
+  customer: Customer;
+  job?: Job;
+  estimate?: Estimate;
+  referral?: Referral;
+  anchorMs: number;
+}
+type Direction = "after" | "before" | "immediate";
+interface CategorySpec {
+  direction: Direction;
+  defaultDelayMinutes: number;
+  defaultCooldownDays: number;
+  conditionKey?: string;
+  smsTemplateKey?: string;
+  extraVars?: (cand: Candidate) => Record<string, string>;
+  getCandidates: () => Candidate[];
+}
+
+const evalCondition = (key: string, cand: Candidate): boolean => {
+  switch (key) {
+    case "estimate_pending": return cand.estimate?.status === "pending";
+    case "estimate_not_viewed": return !cand.estimate?.viewed;
+    case "estimate_viewed": return !!cand.estimate?.viewed;
+    case "estimate_not_approved": return cand.estimate?.status !== "approved";
+    case "estimate_approved": return cand.estimate?.status === "approved";
+    case "invoice_unpaid": return !!cand.estimate?.invoiced && !cand.estimate?.paidAt;
+    case "invoice_paid": return !!cand.estimate?.paidAt;
+    case "job_completed": return cand.job?.status === "completed";
+    default: return true; // unrecognized custom condition keys don't block sends
+  }
+};
+
+interface Directive {
+  stepId: string;
+  delayMinutes: number;
+  explicitDelay: boolean;
+  conditions: string[];
+  channel: string;
+  messageBody?: string;
+  templateKey?: string;
+  label: string;
+}
+
+// Walks every step after the trigger, accumulating "wait" time and condition
+// checks in order, and turns each action/webhook step into its own Directive
+// carrying the cumulative delay + conditions gathered up to that point — this
+// is what lets a multi-touch drip (e.g. AUTOMATION_TEMPLATES' abandoned
+// estimate: wait 3d -> nudge -> wait 4 more days -> urgency) actually fire
+// each touch at its own real offset instead of just the first one.
+const extractDirectives = (steps: AutomationStep[]): Directive[] => {
+  const directives: Directive[] = [];
+  let delayMinutes = 0;
+  let explicitDelay = false;
+  let conditions: string[] = [];
+  for (let i = 1; i < steps.length; i++) {
+    const s: any = steps[i];
+    if (s.type === "delay") {
+      const unitMin = s.unit === "hour" ? 60 : s.unit === "week" ? 10080 : 1440;
+      delayMinutes += (s.duration || 1) * unitMin;
+      explicitDelay = true;
+    } else if (s.type === "condition") {
+      if (typeof s.delay === "number") { delayMinutes += s.delay; explicitDelay = true; }
+      if (s.check || s.condition) conditions.push(s.check || s.condition);
+    } else if (s.type === "action" || s.type === "webhook") {
+      directives.push({
+        stepId: s.id, delayMinutes, explicitDelay, conditions: [...conditions],
+        channel: s.type === "webhook" ? "webhook" : (s.channel || "sms"),
+        messageBody: s.messageBody, templateKey: s.template, label: s.label || "",
+      });
+    }
+    // branch/tag steps aren't modeled as real branching/tagging yet — later
+    // steps are still processed in sequence as a simplification.
+  }
+  return directives;
 };
 
 export function useAutomationEngine({
@@ -76,20 +219,11 @@ export function useAutomationEngine({
       lastRunRef.current = nowKey;
 
       const todayStr = today();
-      const hour = new Date().getHours();
+      const now = new Date();
+      const hour = now.getHours();
+      const mmdd = todayStr.slice(5);
 
-      // FIX 1 (mobile round 6) — this used to gate the WHOLE automation on
-      // `auto.lastTriggered === todayStr`, skipping every remaining
-      // recipient for the rest of the day the moment the FIRST one was
-      // messaged (e.g. 3 tomorrow-jobs → only the first customer ever got
-      // the 24h reminder; the other 2 got nothing, silently, every day).
-      // Per-recipient dedup via sentLog (recipientKey -> last-sent date,
-      // persisted on the automation itself) replaces that — each recipient
-      // is checked and throttled independently, so a shared trigger window
-      // can message everyone who matches it, not just whoever happened to
-      // be first in the array.
       const patchesByAutoId: Record<string, { sentTo: Record<string, string>; sent: number }> = {};
-
       const alreadySent = (auto: Automation, key: string, cooldownDays: number): boolean => {
         const last = auto.sentLog?.[key];
         return !!last && daysSince(last) < cooldownDays;
@@ -100,15 +234,220 @@ export function useAutomationEngine({
         patchesByAutoId[auto.id].sent += 1;
         console.log("[Automations] fired:", auto.name, "->", label);
       };
-      // Shared send-and-record helper for the common "SMS a customer, log it
-      // to the inbox, dedupe per recipient" shape every handler below needs.
-      const sendSms = async (auto: Automation, c: Customer, key: string, msg: string, cooldownDays: number): Promise<boolean> => {
-        if (!c?.phone || c.smsOptOut) return false;
-        if (alreadySent(auto, key, cooldownDays)) return false;
+
+      const reviewLink = (c: Customer) =>
+        `${window.location.origin}${window.location.pathname}#/rate?c=${encodeURIComponent(c.id)}&n=${encodeURIComponent(c.firstName)}&g=${encodeURIComponent((settings as any).googlePlaceId ?? "")}&co=${encodeURIComponent((settings as any).companyName ?? "Crew Boss")}`;
+      const paymentLink = (estId: string) => `${window.location.origin}${window.location.pathname}#/estimate/${estId}`;
+
+      // ── Category specs — built fresh each tick so candidate lists reflect
+      // the latest jobs/customers/estimates/referrals. ────────────────────
+      const specs: Record<Category, CategorySpec> = {
+        new_lead: {
+          direction: "after", defaultDelayMinutes: 0, defaultCooldownDays: 3650, smsTemplateKey: "new_lead",
+          getCandidates: () => customers
+            .filter(c => Date.now() - new Date(c.createdAt).getTime() < 24 * 3600000)
+            .map(c => ({ key: c.id, customer: c, anchorMs: new Date(c.createdAt).getTime() })),
+        },
+        estimate_expiring: {
+          direction: "before", defaultDelayMinutes: 2880, defaultCooldownDays: 30, smsTemplateKey: "estimate_expiring",
+          extraVars: cand => ({ payment_link: paymentLink(cand.estimate!.id) }),
+          getCandidates: () => estimates.filter(e => e.status === "pending" && e.validUntil).map(e => {
+            const c = customers.find(x => x.id === e.customerId);
+            return c ? { key: e.id, customer: c, estimate: e, anchorMs: new Date(e.validUntil).getTime() } : null;
+          }).filter(Boolean) as Candidate[],
+        },
+        job_reminder: {
+          direction: "before", defaultDelayMinutes: 1440, defaultCooldownDays: 1, smsTemplateKey: "job_reminder",
+          getCandidates: () => jobs.filter(j => j.status === "scheduled" && j.scheduledDate).map(j => {
+            const c = customers.find(x => x.id === j.customerId);
+            if (!c) return null;
+            const t = j.scheduledTime ? new Date(`${j.scheduledDate}T${j.scheduledTime}`) : new Date(`${j.scheduledDate}T08:00:00`);
+            return { key: j.id, customer: c, job: j, anchorMs: t.getTime() };
+          }).filter(Boolean) as Candidate[],
+        },
+        job_reminder_morning: {
+          direction: "immediate", defaultDelayMinutes: 0, defaultCooldownDays: 1, smsTemplateKey: "job_reminder",
+          getCandidates: () => hour >= 6 && hour < 10
+            ? jobs.filter(j => j.status === "scheduled" && j.scheduledDate === todayStr).map(j => {
+                const c = customers.find(x => x.id === j.customerId);
+                return c ? { key: j.id, customer: c, job: j, anchorMs: Date.now() } : null;
+              }).filter(Boolean) as Candidate[]
+            : [],
+        },
+        crew_starts: {
+          direction: "immediate", defaultDelayMinutes: 0, defaultCooldownDays: 1, smsTemplateKey: "crew_starts",
+          getCandidates: () => jobs.filter(j => j.status === "in_progress" && j.scheduledDate === todayStr).map(j => {
+            const c = customers.find(x => x.id === j.customerId);
+            return c ? { key: j.id, customer: c, job: j, anchorMs: Date.now() } : null;
+          }).filter(Boolean) as Candidate[],
+        },
+        job_scheduled: {
+          direction: "immediate", defaultDelayMinutes: 0, defaultCooldownDays: 3650, smsTemplateKey: "job_scheduled",
+          getCandidates: () => jobs.filter(j => j.status === "scheduled" && daysSince((j as any).createdAt || j.scheduledDate) <= 2).map(j => {
+            const c = customers.find(x => x.id === j.customerId);
+            return c ? { key: j.id, customer: c, job: j, anchorMs: Date.now() } : null;
+          }).filter(Boolean) as Candidate[],
+        },
+        review_request: {
+          direction: "after", defaultDelayMinutes: 2880, defaultCooldownDays: 3650, smsTemplateKey: "review_request",
+          extraVars: cand => ({ review_link: reviewLink(cand.customer) }),
+          getCandidates: () => jobs.filter(j => j.status === "completed").map(j => {
+            const c = customers.find(x => x.id === j.customerId);
+            if (!c) return null;
+            const completedDate = j.signOff?.timestamp?.slice(0, 10) || j.scheduledDate;
+            if (!completedDate || daysSince(completedDate) > 14) return null; // don't blast old completed-job backlog
+            if (c.reviewRequested && daysSince(c.reviewRequested) < 90) return null;
+            const anchorMs = j.signOff?.timestamp ? new Date(j.signOff.timestamp).getTime() : new Date(completedDate).getTime();
+            return { key: j.id, customer: c, job: j, anchorMs };
+          }).filter(Boolean) as Candidate[],
+        },
+        estimate_followup: {
+          direction: "after", defaultDelayMinutes: 1440, defaultCooldownDays: 3, conditionKey: "estimate_not_viewed", smsTemplateKey: "estimate_followup",
+          getCandidates: () => estimates.filter(e => e.status === "pending" && e.sentAt).map(e => {
+            const c = customers.find(x => x.id === e.customerId);
+            return c ? { key: e.id, customer: c, estimate: e, anchorMs: new Date(e.sentAt!).getTime() } : null;
+          }).filter(Boolean) as Candidate[],
+        },
+        estimate_viewed: {
+          direction: "after", defaultDelayMinutes: 0, defaultCooldownDays: 3650, smsTemplateKey: "estimate_viewed_ack",
+          getCandidates: () => estimates.filter(e => e.viewed && e.sentAt && daysSince(e.viewedAt || e.sentAt!) <= 3).map(e => {
+            const c = customers.find(x => x.id === e.customerId);
+            return c ? { key: e.id, customer: c, estimate: e, anchorMs: new Date(e.viewedAt || e.sentAt!).getTime() } : null;
+          }).filter(Boolean) as Candidate[],
+        },
+        estimate_accepted: {
+          direction: "after", defaultDelayMinutes: 0, defaultCooldownDays: 3650, smsTemplateKey: "estimate_accepted",
+          getCandidates: () => estimates.filter(e => e.status === "approved" && daysSince(e.signedAt || e.sentAt || e.createdAt) <= 3).map(e => {
+            const c = customers.find(x => x.id === e.customerId);
+            return c ? { key: e.id, customer: c, estimate: e, anchorMs: new Date(e.signedAt || e.sentAt || e.createdAt).getTime() } : null;
+          }).filter(Boolean) as Candidate[],
+        },
+        payment_received: {
+          direction: "after", defaultDelayMinutes: 0, defaultCooldownDays: 3650, smsTemplateKey: "payment_received",
+          getCandidates: () => estimates.filter(e => e.invoiced && e.paidAt && daysSince(e.paidAt) <= 3).map(e => {
+            const c = customers.find(x => x.id === e.customerId);
+            return c ? { key: e.id, customer: c, estimate: e, anchorMs: new Date(e.paidAt!).getTime() } : null;
+          }).filter(Boolean) as Candidate[],
+        },
+        payment_overdue: {
+          direction: "after", defaultDelayMinutes: 10080, defaultCooldownDays: 3650, conditionKey: "invoice_unpaid",
+          extraVars: cand => ({ payment_link: paymentLink(cand.estimate!.id) }),
+          getCandidates: () => estimates.filter(e => e.invoiced && !e.paidAt && e.invoicedAt).map(e => {
+            const c = customers.find(x => x.id === e.customerId);
+            return c ? { key: e.id, customer: c, estimate: e, anchorMs: new Date(e.invoicedAt!).getTime() } : null;
+          }).filter(Boolean) as Candidate[],
+        },
+        maintenance: {
+          direction: "after", defaultDelayMinutes: 90 * 1440, defaultCooldownDays: 90, smsTemplateKey: "maintenance_reminder",
+          getCandidates: () => customers.map(c => {
+            const last = lastServiceDate(jobs, c.id);
+            return last ? { key: c.id + ":" + last, customer: c, anchorMs: new Date(last).getTime() } : null;
+          }).filter(Boolean) as Candidate[],
+        },
+        birthday: {
+          direction: "immediate", defaultDelayMinutes: 0, defaultCooldownDays: 300, smsTemplateKey: "birthday",
+          getCandidates: () => hour >= 8 && hour < 9
+            ? customers.filter(c => c.birthday && c.birthday.slice(5) === mmdd).map(c => ({ key: c.id + ":" + now.getFullYear(), customer: c, anchorMs: Date.now() }))
+            : [],
+        },
+        seasonal_spring: {
+          direction: "immediate", defaultDelayMinutes: 0, defaultCooldownDays: 300, smsTemplateKey: "seasonal_spring",
+          getCandidates: () => (now.getMonth() === 2 && now.getDate() <= 3)
+            ? customers.map(c => ({ key: c.id + ":" + now.getFullYear(), customer: c, anchorMs: Date.now() }))
+            : [],
+        },
+        seasonal_fall: {
+          direction: "immediate", defaultDelayMinutes: 0, defaultCooldownDays: 300, smsTemplateKey: "seasonal_fall",
+          getCandidates: () => (now.getMonth() === 9 && now.getDate() <= 3)
+            ? customers.map(c => ({ key: c.id + ":" + now.getFullYear(), customer: c, anchorMs: Date.now() }))
+            : [],
+        },
+        abandoned_estimate: {
+          direction: "after", defaultDelayMinutes: 3 * 1440, defaultCooldownDays: 3650, conditionKey: "estimate_not_approved",
+          getCandidates: () => estimates.filter(e => e.status === "pending" && e.sentAt).map(e => {
+            const c = customers.find(x => x.id === e.customerId);
+            return c ? { key: e.id, customer: c, estimate: e, anchorMs: new Date(e.sentAt!).getTime() } : null;
+          }).filter(Boolean) as Candidate[],
+        },
+        reengage: {
+          direction: "after", defaultDelayMinutes: 180 * 1440, defaultCooldownDays: 90, smsTemplateKey: "reengage",
+          getCandidates: () => customers.map(c => {
+            const last = lastServiceDate(jobs, c.id);
+            return last ? { key: c.id + ":" + last, customer: c, anchorMs: new Date(last).getTime() } : null;
+          }).filter(Boolean) as Candidate[],
+        },
+        anniversary: {
+          direction: "immediate", defaultDelayMinutes: 0, defaultCooldownDays: 300, smsTemplateKey: "anniversary",
+          getCandidates: () => customers.filter(c => c.createdAt && daysSince(c.createdAt) >= 365 && c.createdAt.slice(5, 10) === mmdd)
+            .map(c => ({ key: c.id + ":" + now.getFullYear(), customer: c, anchorMs: Date.now() })),
+        },
+        referral_ask: {
+          direction: "immediate", defaultDelayMinutes: 0, defaultCooldownDays: 3650, smsTemplateKey: "referral_ask",
+          getCandidates: () => customers.filter(c => jobs.filter(j => j.customerId === c.id && j.status === "completed").length >= 3)
+            .map(c => ({ key: c.id, customer: c, anchorMs: Date.now() })),
+        },
+        referral_reward: {
+          direction: "immediate", defaultDelayMinutes: 0, defaultCooldownDays: 3650, smsTemplateKey: "referral_reward",
+          extraVars: cand => ({ reward: String(cand.referral?.reward ?? "") }),
+          getCandidates: () => referrals.filter(r => r.status === "completed" && r.reward).map(r => {
+            const c = customers.find(x => x.id === r.referrerId);
+            return c ? { key: r.id, customer: c, referral: r, anchorMs: Date.now() } : null;
+          }).filter(Boolean) as Candidate[],
+        },
+        referral_booked: {
+          direction: "immediate", defaultDelayMinutes: 0, defaultCooldownDays: 3650, smsTemplateKey: "referral_booked",
+          getCandidates: () => referrals.filter(r => r.status === "booked" && daysSince(r.createdAt) <= 14).map(r => {
+            const c = customers.find(x => x.id === r.referrerId);
+            return c ? { key: r.id, customer: c, referral: r, anchorMs: Date.now() } : null;
+          }).filter(Boolean) as Candidate[],
+        },
+        // No live "reviews" feed is wired into this hook yet — these
+        // categories classify correctly (no more console warnings) but have
+        // no candidates until a `reviews` prop is threaded through.
+        review_good: { direction: "immediate", defaultDelayMinutes: 0, defaultCooldownDays: 3650, getCandidates: () => [] },
+        review_bad: { direction: "immediate", defaultDelayMinutes: 0, defaultCooldownDays: 3650, getCandidates: () => [] },
+        manual: { direction: "immediate", defaultDelayMinutes: 0, defaultCooldownDays: 3650, getCandidates: () => [] },
+        weekly_scheduled: { direction: "immediate", defaultDelayMinutes: 0, defaultCooldownDays: 3650, getCandidates: () => [] },
+      };
+
+      const buildMessage = (auto: Automation, dir: Directive, spec: CategorySpec, cand: Candidate) => {
+        const vars: Record<string, string> = {
+          first_name: cand.customer.firstName,
+          last_name: cand.customer.lastName,
+          amount: cand.estimate ? `$${cand.estimate.total}` : "",
+          date: cand.job?.scheduledDate || "",
+          address: cand.customer.address || "",
+          review_link: "", payment_link: "", reward: "",
+          company_phone: (settings as any).companyPhone || (settings as any).twilioFrom || "",
+          ...(spec.extraVars ? spec.extraVars(cand) : {}),
+        };
+        const raw = dir.messageBody
+          || (dir.templateKey && SMS_TEMPLATES[dir.templateKey])
+          || (spec.smsTemplateKey && SMS_TEMPLATES[spec.smsTemplateKey])
+          || `Hi {{first_name}}, ${dir.label || auto.action || auto.name}. — Crew Boss`;
+        return { subject: auto.name || dir.label || "Update from Crew Boss", body: fillTemplate(raw, vars) };
+      };
+
+      const sendDirective = async (auto: Automation, channel: string, cand: Candidate, subject: string, body: string, dedupKey: string): Promise<boolean> => {
+        const c = cand.customer;
+        if (channel === "email") {
+          if (!c.email) return false;
+          try {
+            await sendOwnerGmailOnly(settings as any, c.email, subject, emailShell((settings as any).companyName || "Crew Boss", subject, `<p>${body.replace(/\n/g, "<br/>")}</p>`));
+            recordSend(auto, dedupKey, c.firstName + " " + c.lastName);
+            toast(`📧 ${auto.name} → ${c.firstName}`);
+            return true;
+          } catch (e: any) {
+            console.error("[Automations]", auto.name, "— email failed for", c.firstName, ":", e?.message || e);
+            return false;
+          }
+        }
+        if (channel === "webhook") return false; // no reliable webhook URL field wired from the builder yet
+        if (!c.phone || c.smsOptOut) return false;
         try {
-          await twilioSend(settings, c.phone, msg);
-          logOutboundSmsToInbox({ contactName: `${c.firstName} ${c.lastName}`, contactPhone: c.phone, customerId: c.id, body: msg }).catch(() => {});
-          recordSend(auto, key, c.firstName + " " + c.lastName);
+          await twilioSend(settings, c.phone, body);
+          logOutboundSmsToInbox({ contactName: `${c.firstName} ${c.lastName}`, contactPhone: c.phone, customerId: c.id, body }).catch(() => {});
+          recordSend(auto, dedupKey, c.firstName + " " + c.lastName);
           toast(`📱 ${auto.name} → ${c.firstName}`);
           return true;
         } catch (e: any) {
@@ -119,192 +458,59 @@ export function useAutomationEngine({
 
       for (const auto of automations) {
         if (!auto.active) continue;
-        const t = auto.trigger.toLowerCase();
+        const steps = auto.steps || [];
+        const isLegacy = steps.length === 0;
+        const triggerLabel = steps[0]?.label || auto.trigger || "";
+        const category = classifyTrigger(triggerLabel) || classifyTrigger(auto.trigger);
+        if (!category) {
+          console.warn(`[Automations] "${auto.name}" (trigger: "${auto.trigger}") has no matching engine handler yet.`);
+          continue;
+        }
+        const spec = specs[category];
 
-        // ── New lead auto-response (instant SMS) ────────────────────────────
-        if (t.includes("new lead")) {
-          const freshLeads = customers.filter(c => Date.now() - new Date(c.createdAt).getTime() < 20 * 60000);
-          for (const c of freshLeads) {
-            await sendSms(auto, c, "lead:" + c.id, fillTemplate(SMS_TEMPLATES.new_lead, { first_name: c.firstName }), 3650);
+        let directives: Directive[];
+        if (isLegacy) {
+          const legacy: Directive = {
+            stepId: "legacy", delayMinutes: spec.defaultDelayMinutes, explicitDelay: false,
+            conditions: spec.conditionKey ? [spec.conditionKey] : [], channel: "sms",
+            templateKey: spec.smsTemplateKey, label: auto.action || auto.name,
+          };
+          if (category === "payment_overdue") {
+            const days = deriveDaysFromLabel(triggerLabel, 7);
+            legacy.delayMinutes = days * 1440;
+            legacy.templateKey = days <= 3 ? "payment_overdue_3" : days <= 10 ? "payment_overdue_7" : "payment_overdue_14";
+          } else if (category === "abandoned_estimate") {
+            const days = deriveDaysFromLabel(triggerLabel, 3);
+            legacy.delayMinutes = days * 1440;
+            legacy.templateKey = days <= 3 ? "abandoned_estimate_1" : days <= 10 ? "abandoned_estimate_2" : "abandoned_estimate_3";
+          } else {
+            legacy.delayMinutes = deriveDelayMinutesFromLabel(triggerLabel, spec.defaultDelayMinutes);
           }
+          directives = [legacy];
+        } else {
+          directives = extractDirectives(steps);
         }
 
-        // ── Estimate follow-up (sent, still unviewed) ───────────────────────
-        if (t.includes("estimate sent")) {
-          const staleEstimates = estimates.filter(e => e.status === "pending" && e.sentAt && daysSince(e.sentAt) >= 1 && !e.viewed);
-          for (const est of staleEstimates.slice(0, 20)) {
-            const c = customers.find(x => x.id === est.customerId);
-            if (!c) continue;
-            await sendSms(auto, c, "est-followup:" + est.id, fillTemplate(SMS_TEMPLATES.estimate_followup, { first_name: c.firstName }), 3);
-          }
-        }
-
-        // ── Estimate expiring (48h before validUntil) ───────────────────────
-        if (t.includes("expiring")) {
-          const expiringSoon = estimates.filter(e => e.status === "pending" && e.validUntil && daysUntil(e.validUntil) >= 0 && daysUntil(e.validUntil) <= 2);
-          for (const est of expiringSoon.slice(0, 20)) {
-            const c = customers.find(x => x.id === est.customerId);
-            if (!c) continue;
-            await sendSms(auto, c, "expiring:" + est.id, fillTemplate(SMS_TEMPLATES.estimate_expiring, { first_name: c.firstName, amount: `$${est.total}` }), 30);
-          }
-        }
-
-        // ── Job reminder (24h before scheduled) ─────────────────────────────
-        if (t.includes("24h before job") && hour >= 7 && hour < 9) {
-          const tomorrowJobs = jobs.filter(j => j.status === "scheduled" && j.scheduledDate === new Date(Date.now() + 86400000).toISOString().slice(0, 10));
-          for (const job of tomorrowJobs) {
-            const c = customers.find(x => x.id === job.customerId);
-            if (!c) continue;
-            await sendSms(auto, c, "job-reminder:" + job.id, fillTemplate(SMS_TEMPLATES.job_reminder, { first_name: c.firstName, time: job.scheduledTime || "the scheduled time" }), 1);
-          }
-        }
-
-        // ── Review request (48h after completion) ───────────────────────────
-        // AUDIT ITEM 8 — requiring "48h" too disambiguates this from a12's
-        // "Job completed (3rd+)" referral-ask trigger, which also contains
-        // "job completed".
-        if (t.includes("job completed") && t.includes("48h")) {
-          const recentJobs = jobs.filter(j => {
-            if (j.status !== "completed") return false;
-            const completedDate = j.signOff?.timestamp?.slice(0, 10) || j.scheduledDate;
-            return completedDate && daysSince(completedDate) === 2;
-          });
-          for (const job of recentJobs) {
-            const c = customers.find(x => x.id === job.customerId);
-            if (!c) continue;
-            if (c.reviewRequested && daysSince(c.reviewRequested) < 90) continue;
-            const reviewLink = `${window.location.origin}${window.location.pathname}#/rate?c=${encodeURIComponent(c.id)}&n=${encodeURIComponent(c.firstName)}&g=${encodeURIComponent(settings.googlePlaceId ?? "")}&co=${encodeURIComponent(settings.companyName ?? "Crew Boss")}`;
-            await sendSms(auto, c, "review:" + job.id, fillTemplate(SMS_TEMPLATES.review_request, { first_name: c.firstName, review_link: reviewLink }), 90);
-          }
-        }
-
-        // ── Payment overdue — staged 3 / 7 / 14 day reminders ───────────────
-        // FIX 1 (mobile round 6) — was a single fixed >=7-day check with one
-        // message. Real invoice follow-up needs escalating touches; each
-        // stage fires exactly once (long cooldown) so a still-unpaid invoice
-        // gets 3 distinct nudges over its lifetime instead of one.
-        if (t.includes("overdue")) {
-          const unpaid = estimates.filter(e => e.invoiced && !e.paidAt && e.invoicedAt);
-          for (const est of unpaid) {
-            const c = customers.find(x => x.id === est.customerId);
-            if (!c) continue;
-            const daysOver = daysSince(est.invoicedAt);
-            const paymentLink = `${window.location.origin}${window.location.pathname}#/estimate/${est.id}`;
-            if (daysOver >= 14) {
-              await sendSms(auto, c, "overdue14:" + est.id, fillTemplate(SMS_TEMPLATES.payment_overdue_14, { first_name: c.firstName, amount: `$${est.total}`, payment_link: paymentLink }), 3650);
-            } else if (daysOver >= 7) {
-              await sendSms(auto, c, "overdue7:" + est.id, fillTemplate(SMS_TEMPLATES.payment_overdue_7, { first_name: c.firstName, amount: `$${est.total}`, payment_link: paymentLink }), 3650);
-            } else if (daysOver >= 3) {
-              await sendSms(auto, c, "overdue3:" + est.id, fillTemplate(SMS_TEMPLATES.payment_overdue_3, { first_name: c.firstName, amount: `$${est.total}`, payment_link: paymentLink }), 3650);
+        for (const dir of directives) {
+          const effectiveDelay = dir.explicitDelay ? dir.delayMinutes : dir.delayMinutes || spec.defaultDelayMinutes;
+          for (const cand of spec.getCandidates()) {
+            if (dir.conditions.some(c => !evalCondition(c, cand))) continue;
+            let ok: boolean;
+            if (spec.direction === "before") {
+              const untilMs = cand.anchorMs - Date.now();
+              ok = untilMs <= effectiveDelay * 60000 && untilMs > -3600000;
+            } else if (spec.direction === "after") {
+              ok = Date.now() - cand.anchorMs >= effectiveDelay * 60000;
+            } else {
+              ok = true;
             }
+            if (!ok) continue;
+            const dedupKey = `${category}:${dir.stepId}:${cand.key}`;
+            const cooldownDays = dir.stepId === "legacy" ? spec.defaultCooldownDays : 3650;
+            if (alreadySent(auto, dedupKey, cooldownDays)) continue;
+            const { subject, body } = buildMessage(auto, dir, spec, cand);
+            await sendDirective(auto, dir.channel, cand, subject, body, dedupKey);
           }
-        }
-
-        // ── Maintenance reminder (90 days since last completed service) ─────
-        if (t.includes("since service") || t.includes("maintenance")) {
-          for (const c of customers) {
-            const last = lastServiceDate(jobs, c.id);
-            if (!last || daysSince(last) < 90) continue;
-            await sendSms(auto, c, "maint90:" + c.id + ":" + last, fillTemplate(SMS_TEMPLATES.maintenance_reminder, { first_name: c.firstName }), 90);
-          }
-        }
-
-        // ── Birthday ─────────────────────────────────────────────────────────
-        if (t.includes("birthday") && hour >= 8 && hour < 9) {
-          const mmdd = todayStr.slice(5);
-          const birthdayCustomers = customers.filter(c => c.birthday && c.birthday.slice(5) === mmdd);
-          for (const c of birthdayCustomers) {
-            await sendSms(auto, c, "bday:" + c.id + ":" + todayStr.slice(0, 4), fillTemplate(SMS_TEMPLATES.birthday, { first_name: c.firstName }), 300);
-          }
-        }
-
-        // ── Seasonal — spring (March 1, broadcast to the whole customer list) ─
-        if (t.includes("march 1") || (t.includes("spring") && t.includes("annually"))) {
-          const now = new Date();
-          if (now.getMonth() === 2 && now.getDate() <= 3) { // March 1-3 window
-            for (const c of customers) {
-              await sendSms(auto, c, "spring:" + c.id + ":" + now.getFullYear(), fillTemplate(SMS_TEMPLATES.seasonal_spring, { first_name: c.firstName }), 300);
-            }
-          }
-        }
-
-        // ── Seasonal — fall gutter (October 1, broadcast) ───────────────────
-        if (t.includes("october 1") || (t.includes("fall") && t.includes("annually"))) {
-          const now = new Date();
-          if (now.getMonth() === 9 && now.getDate() <= 3) { // Oct 1-3 window
-            for (const c of customers) {
-              await sendSms(auto, c, "fall:" + c.id + ":" + now.getFullYear(), fillTemplate(SMS_TEMPLATES.seasonal_fall, { first_name: c.firstName }), 300);
-            }
-          }
-        }
-
-        // ── Abandoned estimate — 3-touch nurture sequence (day 3/7/14) ──────
-        // Broader than the "estimate sent, unviewed" follow-up above — this
-        // catches estimates the customer DID view but never approved or
-        // declined, not just ones never opened.
-        if (t.includes("not approved") || t.includes("abandoned")) {
-          const abandoned = estimates.filter(e => e.status === "pending" && e.sentAt);
-          for (const est of abandoned) {
-            const c = customers.find(x => x.id === est.customerId);
-            if (!c) continue;
-            const daysOld = daysSince(est.sentAt);
-            if (daysOld >= 14) {
-              await sendSms(auto, c, "nurture3:" + est.id, fillTemplate(SMS_TEMPLATES.abandoned_estimate_3, { first_name: c.firstName, amount: `$${est.total}` }), 3650);
-            } else if (daysOld >= 7) {
-              await sendSms(auto, c, "nurture2:" + est.id, fillTemplate(SMS_TEMPLATES.abandoned_estimate_2, { first_name: c.firstName, amount: `$${est.total}` }), 3650);
-            } else if (daysOld >= 3) {
-              await sendSms(auto, c, "nurture1:" + est.id, fillTemplate(SMS_TEMPLATES.abandoned_estimate_1, { first_name: c.firstName, amount: `$${est.total}` }), 3650);
-            }
-          }
-        }
-
-        // ── Recurring customer re-engagement (6 months no service) ──────────
-        if (t.includes("no service") || t.includes("re-engage") || t.includes("6 months")) {
-          for (const c of customers) {
-            const last = lastServiceDate(jobs, c.id);
-            if (!last || daysSince(last) < 180) continue;
-            await sendSms(auto, c, "reengage:" + c.id + ":" + last, fillTemplate(SMS_TEMPLATES.reengage, { first_name: c.firstName }), 90);
-          }
-        }
-
-        // ── Referral ask (3rd+ completed job) ───────────────────────────────
-        if (t.includes("job completed") && t.includes("3rd")) {
-          for (const c of customers) {
-            const completedCount = jobs.filter(j => j.customerId === c.id && j.status === "completed").length;
-            if (completedCount < 3) continue;
-            await sendSms(auto, c, "refask:" + c.id, fillTemplate(SMS_TEMPLATES.referral_ask, { first_name: c.firstName }), 3650);
-          }
-        }
-
-        // ── Customer anniversary (1yr+ since becoming a customer) ───────────
-        if (t.includes("anniversary")) {
-          const now = new Date();
-          const mmdd = todayStr.slice(5);
-          for (const c of customers) {
-            if (!c.createdAt || daysSince(c.createdAt) < 365) continue;
-            if (c.createdAt.slice(5, 10) !== mmdd) continue;
-            await sendSms(auto, c, "anniv:" + c.id + ":" + now.getFullYear(), fillTemplate(SMS_TEMPLATES.anniversary, { first_name: c.firstName }), 300);
-          }
-        }
-
-        // ── Referral reward earned (a referral of theirs completed booking) ─
-        if (t.includes("reward earned") || t.includes("referral") && t.includes("reward")) {
-          for (const ref of referrals) {
-            if (ref.status !== "completed" || !ref.reward) continue;
-            const c = customers.find(x => x.id === ref.referrerId);
-            if (!c) continue;
-            await sendSms(auto, c, "refreward:" + ref.id, fillTemplate(SMS_TEMPLATES.referral_reward, { first_name: c.firstName, reward: String(ref.reward) }), 3650);
-          }
-        }
-
-        const knownTrigger = t.includes("new lead") || t.includes("estimate sent") || t.includes("expiring")
-          || t.includes("24h before job") || (t.includes("job completed") && (t.includes("48h") || t.includes("3rd")))
-          || t.includes("overdue") || t.includes("since service") || t.includes("maintenance") || t.includes("birthday")
-          || t.includes("march 1") || t.includes("october 1") || (t.includes("spring") && t.includes("annually")) || (t.includes("fall") && t.includes("annually"))
-          || t.includes("not approved") || t.includes("abandoned") || t.includes("no service") || t.includes("re-engage") || t.includes("6 months")
-          || t.includes("anniversary") || t.includes("reward earned") || (t.includes("referral") && t.includes("reward"));
-        if (!knownTrigger) {
-          console.warn("[Automations] \"" + auto.name + "\" (trigger: \"" + auto.trigger + "\") has no matching engine handler yet.");
         }
       }
 
@@ -317,7 +523,6 @@ export function useAutomationEngine({
       }
     };
 
-    // Run immediately then every 15 minutes
     run();
     const interval = setInterval(run, 15 * 60 * 1000);
     return () => clearInterval(interval);

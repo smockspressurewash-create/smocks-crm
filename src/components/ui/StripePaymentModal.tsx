@@ -11,12 +11,12 @@ import { GBtn } from "./GBtn";
 // payment in-place without leaving the page.
 export function StripePaymentModal({
   open, onClose, publishableKey, secretKeyEnc, amount, currency = "usd", description = "",
-  onSuccess,
+  onSuccess, invoiceId,
 }: {
   open: boolean; onClose: () => void;
   publishableKey: string; secretKeyEnc: string;
   amount: number; currency?: string; description?: string;
-  onSuccess: (paymentIntentId: string) => void;
+  onSuccess: (paymentIntentId: string) => void; invoiceId?: string;
 }) {
   const [status, setStatus] = useState<"loading" | "ready" | "processing" | "success" | "error">("loading");
   const [error, setError] = useState("");
@@ -34,7 +34,11 @@ export function StripePaymentModal({
       try {
         const secretKey = deobfuscate(secretKeyEnc);
         if (!publishableKey || !secretKey) throw new Error("Stripe is not fully configured — add both keys in Settings → Integrations.");
-        const intent = await createPaymentIntent(secretKey, Math.round(amount * 100), currency, description);
+        // FIX 1 (mobile round 8) — metadata.invoiceId lets the server-side
+        // stripe-webhook function identify and mark this invoice paid itself
+        // once Stripe confirms the charge, instead of relying only on this
+        // modal's own client-side onSuccess callback.
+        const intent = await createPaymentIntent(secretKey, Math.round(amount * 100), currency, description, invoiceId ? { invoiceId } : undefined);
         if (cancelled) return;
         intentIdRef.current = intent.id;
         const stripe = await loadStripeJs(publishableKey);
@@ -50,7 +54,7 @@ export function StripePaymentModal({
       }
     })();
     return () => { cancelled = true; };
-  }, [open, publishableKey, secretKeyEnc, amount, currency, description]);
+  }, [open, publishableKey, secretKeyEnc, amount, currency, description, invoiceId]);
 
   const confirmPayment = async () => {
     if (!stripeRef.current || !elementsRef.current) return;

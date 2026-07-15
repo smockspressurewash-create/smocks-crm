@@ -198,6 +198,7 @@ export function InvoicesPage({ estimates = [], setEstimates, customers = [], set
         successUrl: `${base}?stripe_checkout=success&invoice=${inv.id}&session_id={CHECKOUT_SESSION_ID}`,
         cancelUrl: `${base}?stripe_checkout=cancel&invoice=${inv.id}`,
         customerEmail: cust?.email,
+        invoiceId: inv.id,
       });
       window.location.href = session.url;
     } catch (e: any) {
@@ -223,18 +224,48 @@ export function InvoicesPage({ estimates = [], setEstimates, customers = [], set
       cleanUrl();
       return;
     }
-    if (checkoutState === "success" && sessionId && settings?.stripeSecretKeyEnc) {
+    if (checkoutState === "success" && sessionId) {
       (async () => {
-        try {
-          const secretKey = deobfuscate(settings.stripeSecretKeyEnc!);
-          const session = await retrieveCheckoutSession(secretKey, sessionId);
-          if (session.payment_status === "paid") {
-            markPaidViaStripe(invId, session.payment_intent || session.id);
+        // FIX 1 (mobile round 8) — functions/api/stripe-webhook.ts is now the
+        // AUTHORITATIVE writer of paidAt (signature-verified server-side).
+        // It should have already fired by the time Stripe redirects the
+        // browser back here, so check Supabase directly first — a few short
+        // retries cover the small delivery delay — before falling back to
+        // the client-side Stripe session check (which trusts the browser's
+        // own read of Stripe, the weaker path this fix is meant to reduce
+        // reliance on). This is the "double-check" half of the fix; the
+        // webhook itself is what actually closes the security gap.
+        let confirmedViaWebhook = false;
+        for (let attempt = 0; attempt < 5 && !confirmedViaWebhook; attempt++) {
+          try {
+            const { data } = await (supabase as any).from("estimates").select("paidAt,stripePaymentIntentId").eq("id", invId).maybeSingle();
+            if (data?.paidAt) {
+              confirmedViaWebhook = true;
+              setEstimates(prev => prev.map(e => e.id === invId ? { ...e, paidAt: data.paidAt, status: "approved", stripePaymentStatus: "paid" as const, stripePaymentIntentId: data.stripePaymentIntentId || e.stripePaymentIntentId } : e));
+              toast?.("Payment received ✓ (confirmed by server)");
+              const invNow = estimates.find(e => e.id === invId);
+              if (invNow) sendStripeReceipt({ ...invNow, paidAt: data.paidAt });
+            }
+          } catch { /* fall through to retry / fallback below */ }
+          if (!confirmedViaWebhook && attempt < 4) await new Promise(r => setTimeout(r, 1500));
+        }
+        if (!confirmedViaWebhook) {
+          console.warn("[Stripe] webhook hasn't confirmed payment yet — falling back to client-side session check. If this keeps happening, verify STRIPE_WEBHOOK_SECRET is set in Cloudflare Pages and the webhook endpoint is registered in Stripe.");
+          if (settings?.stripeSecretKeyEnc) {
+            try {
+              const secretKey = deobfuscate(settings.stripeSecretKeyEnc!);
+              const session = await retrieveCheckoutSession(secretKey, sessionId);
+              if (session.payment_status === "paid") {
+                markPaidViaStripe(invId, session.payment_intent || session.id);
+              } else {
+                toast?.("Payment not completed", "yellow");
+              }
+            } catch (e: any) {
+              toast?.(e.message || "Couldn't verify Stripe payment", "red");
+            }
           } else {
-            toast?.("Payment not completed", "yellow");
+            toast?.("Payment may have succeeded, but couldn't be confirmed yet — check back shortly", "yellow");
           }
-        } catch (e: any) {
-          toast?.(e.message || "Couldn't verify Stripe payment", "red");
         }
         cleanUrl();
       })();
@@ -339,6 +370,35 @@ export function InvoicesPage({ estimates = [], setEstimates, customers = [], set
 
   const toggleSel = id => setSelected(s => s.includes(id) ? s.filter(x => x !== id) : [...s, id]);
   const toggleSelAll = () => setSelected(selected.length === filtered.length ? [] : filtered.map(i => i.id));
+
+  // FEATURE 5 (mobile round 7) — bulk delete + CSV export of selected invoices.
+  const downloadSelectedCsv = () => {
+    const rows = selected.map(id => {
+      const inv = estimates.find(e => e.id === id);
+      if (!inv) return null;
+      const c = customers.find(x => x.id === inv.customerId);
+      return [inv.id, c ? `${c.firstName} ${c.lastName}` : "", inv.invoicedAt || "", inv.total, inv.paidAt ? "Paid" : "Unpaid"]
+        .map(v => `"${String(v ?? "").replace(/"/g, '""')}"`).join(",");
+    }).filter(Boolean);
+    const csv = "Invoice ID,Customer,Invoiced Date,Amount,Status\n" + rows.join("\n");
+    const blob = new Blob([csv], { type: "text/csv" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "invoices-" + today() + ".csv";
+    a.click();
+    URL.revokeObjectURL(a.href);
+    toast?.(`Downloaded ${selected.length} invoice${selected.length !== 1 ? "s" : ""}`);
+  };
+  const deleteSelectedInvoices = () => {
+    if (selected.length === 0) return;
+    if (!window.confirm(`Permanently delete ${selected.length} invoice${selected.length !== 1 ? "s" : ""}? This can't be undone.`)) return;
+    const ids = [...selected];
+    setEstimates(estimates.filter(e => !ids.includes(e.id)));
+    setSelected([]);
+    (supabase as any).from("estimates").delete().in("id", ids)
+      .then((r: any) => { if (r?.error) toast?.("Deleted locally, but failed to delete from server — " + r.error.message, "red"); else toast?.(ids.length + " invoice(s) deleted"); })
+      .catch((e: any) => toast?.("Deleted locally, but failed to delete from server — " + (e?.message || ""), "red"));
+  };
 
   const statusBadge = inv => {
     const b = bucket(inv);
@@ -457,7 +517,11 @@ export function InvoicesPage({ estimates = [], setEstimates, customers = [], set
             <Search size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-white/40" />
             <input placeholder="Search invoices..." value={search} onChange={e => setSearch(e.target.value)} className="bg-black/40 border border-red-900/30 rounded-xl pl-7 pr-3 py-1.5 text-xs text-white placeholder-white/40 focus:outline-none focus:border-red-500/60 w-44" />
           </div>
-          {selected.length > 0 && <GBtn onClick={sendBulkReminders} className="!text-xs"><Send size={12} className="inline mr-1" />Remind ({selected.length})</GBtn>}
+          {selected.length > 0 && <>
+            <GBtn onClick={sendBulkReminders} className="!text-xs"><Send size={12} className="inline mr-1" />Remind ({selected.length})</GBtn>
+            <GBtn variant="ghost" onClick={downloadSelectedCsv} className="!text-xs"><Download size={12} className="inline mr-1" />Download ({selected.length})</GBtn>
+            <GBtn variant="danger" onClick={deleteSelectedInvoices} className="!text-xs"><Trash2 size={12} className="inline mr-1" />Delete ({selected.length})</GBtn>
+          </>}
         </div>
       </div>
 
@@ -641,6 +705,7 @@ export function InvoicesPage({ estimates = [], setEstimates, customers = [], set
         amount={stripePayInvoice?.total || 0}
         description={`Invoice #${stripePayInvoice?.id?.slice(-8).toUpperCase() || ""}`}
         onSuccess={(paymentIntentId) => stripePayInvoice && markPaidViaStripe(stripePayInvoice.id, paymentIntentId)}
+        invoiceId={stripePayInvoice?.id}
       />
 
       <InvoicePreviewModal

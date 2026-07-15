@@ -34,7 +34,8 @@ export const createPaymentIntent = async (
   secretKey: string,
   amountCents: number,
   currency: string,
-  description: string
+  description: string,
+  metadata?: Record<string, string>
 ): Promise<StripePaymentIntent> => {
   const body = new URLSearchParams({
     amount: String(Math.round(amountCents)),
@@ -42,6 +43,11 @@ export const createPaymentIntent = async (
     description,
     "automatic_payment_methods[enabled]": "true",
   });
+  // FIX 1 (mobile round 8) — metadata.invoiceId is how the server-side
+  // stripe-webhook function (functions/api/stripe-webhook.ts) knows which
+  // invoice a payment_intent.succeeded event belongs to, so it can mark that
+  // invoice paid itself instead of trusting the client's own claim.
+  if (metadata) Object.entries(metadata).forEach(([k, v]) => body.set(`metadata[${k}]`, v));
   const res = await fetch("https://api.stripe.com/v1/payment_intents", {
     method: "POST",
     headers: {
@@ -80,7 +86,7 @@ export interface StripeCheckoutSession {
 
 export const createCheckoutSession = async (
   secretKey: string,
-  opts: { amountCents: number; currency: string; description: string; successUrl: string; cancelUrl: string; customerEmail?: string }
+  opts: { amountCents: number; currency: string; description: string; successUrl: string; cancelUrl: string; customerEmail?: string; invoiceId?: string }
 ): Promise<StripeCheckoutSession> => {
   const body = new URLSearchParams({
     mode: "payment",
@@ -92,6 +98,13 @@ export const createCheckoutSession = async (
     "line_items[0][quantity]": "1",
   });
   if (opts.customerEmail) body.set("customer_email", opts.customerEmail);
+  // FIX 1 (mobile round 8) — client_reference_id is how the server-side
+  // stripe-webhook function identifies which invoice a checkout.session
+  // belongs to, so IT (not the client) is the one that marks the invoice paid.
+  if (opts.invoiceId) {
+    body.set("client_reference_id", opts.invoiceId);
+    body.set("metadata[invoiceId]", opts.invoiceId);
+  }
   const res = await fetch("https://api.stripe.com/v1/checkout/sessions", {
     method: "POST",
     headers: {

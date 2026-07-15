@@ -31,6 +31,16 @@ export function VoiceMicButton({ onTranscript, apiKey, mode = "dictate" }: { onT
   const audioElRef = useRef<HTMLAudioElement | null>(null);
   const timerRef = useRef<any>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  // FEATURE 10 (mobile round 7) — the "waveform" was 4 static CSS-pulsing
+  // bars with no relationship to the actual mic input; SpeechRecognition
+  // itself doesn't expose audio levels, so a real waveform needs its own
+  // getUserMedia stream feeding a Web Audio AnalyserNode, sampled on an
+  // animation frame. Falls back to a flat/idle bar set if the mic can't be
+  // opened a second time for any reason — recognition itself is unaffected.
+  const waveStreamRef = useRef<MediaStream | null>(null);
+  const waveCtxRef = useRef<AudioContext | null>(null);
+  const waveRafRef = useRef<number | null>(null);
+  const [waveLevels, setWaveLevels] = useState<number[]>([4, 4, 4, 4, 4]);
 
   const SpeechRecognitionCtor = typeof window !== "undefined" ? ((window as any).SpeechRecognition || (window as any).webkitSpeechRecognition) : null;
 
@@ -50,6 +60,43 @@ export function VoiceMicButton({ onTranscript, apiKey, mode = "dictate" }: { onT
   };
 
   const stopTimer = () => { clearInterval(timerRef.current); timerRef.current = null; };
+
+  const startWaveVisualizer = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      waveStreamRef.current = stream;
+      const Ctx = (window as any).AudioContext || (window as any).webkitAudioContext;
+      const ctx = new Ctx();
+      waveCtxRef.current = ctx;
+      const source = ctx.createMediaStreamSource(stream);
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = 64;
+      source.connect(analyser);
+      const data = new Uint8Array(analyser.frequencyBinCount);
+      const bars = 5;
+      const chunk = Math.max(1, Math.floor(data.length / bars));
+      const tick = () => {
+        analyser.getByteFrequencyData(data);
+        const levels = Array.from({ length: bars }, (_, i) => {
+          const slice = data.slice(i * chunk, (i + 1) * chunk);
+          const avg = slice.reduce((s, v) => s + v, 0) / (slice.length || 1);
+          return Math.max(4, Math.min(24, Math.round((avg / 255) * 24)));
+        });
+        setWaveLevels(levels);
+        waveRafRef.current = requestAnimationFrame(tick);
+      };
+      tick();
+    } catch { /* second mic grab failed — dictation still works, bars stay idle */ }
+  };
+  const stopWaveVisualizer = () => {
+    if (waveRafRef.current) cancelAnimationFrame(waveRafRef.current);
+    waveRafRef.current = null;
+    waveStreamRef.current?.getTracks().forEach(t => t.stop());
+    waveStreamRef.current = null;
+    try { waveCtxRef.current?.close(); } catch { /* already closed */ }
+    waveCtxRef.current = null;
+    setWaveLevels([4, 4, 4, 4, 4]);
+  };
 
   const startDictateRecognition = () => {
     if (!SpeechRecognitionCtor) { alert("Voice input isn't supported in this browser. Try Chrome, or add an OpenAI key in Settings for Whisper transcription."); return; }
@@ -81,6 +128,7 @@ export function VoiceMicButton({ onTranscript, apiKey, mode = "dictate" }: { onT
     };
     startOne();
     setRecording(true);
+    startWaveVisualizer();
   };
 
   const startNoteRecording = async () => {
@@ -134,6 +182,7 @@ export function VoiceMicButton({ onTranscript, apiKey, mode = "dictate" }: { onT
       keepListeningRef.current = false;
       recognitionRef.current?.stop();
       setRecording(false);
+      stopWaveVisualizer();
       const text = finalTextRef.current.trim() || liveText.trim();
       if (text) onTranscript?.(text, false);
       setLiveText("");
@@ -180,6 +229,7 @@ export function VoiceMicButton({ onTranscript, apiKey, mode = "dictate" }: { onT
   };
 
   useEffect(() => () => { if (pendingAudioUrl) URL.revokeObjectURL(pendingAudioUrl); }, [pendingAudioUrl]);
+  useEffect(() => () => stopWaveVisualizer(), []); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (processing) return <div className="p-2 text-white/40"><div className="w-4 h-4 border-2 border-purple-400 border-t-transparent rounded-full animate-spin" /></div>;
 
@@ -207,9 +257,9 @@ export function VoiceMicButton({ onTranscript, apiKey, mode = "dictate" }: { onT
   if (recording && mode === "dictate") {
     return (
       <div className="flex items-center gap-2 bg-red-950/30 border border-red-700/40 rounded-xl px-2.5 py-1.5 max-w-xs">
-        <div className="flex items-center gap-0.5 flex-shrink-0">
-          {[0, 1, 2, 3].map(i => (
-            <div key={i} className="w-0.5 bg-red-400 rounded-full animate-pulse" style={{ height: 8 + (i % 2) * 6, animationDelay: `${i * 120}ms` }} />
+        <div className="flex items-center gap-0.5 flex-shrink-0 h-6">
+          {waveLevels.map((h, i) => (
+            <div key={i} className="w-0.5 bg-red-400 rounded-full transition-[height] duration-75" style={{ height: h }} />
           ))}
         </div>
         <span className="text-[11px] text-red-100/80 truncate flex-1">{liveText || "Listening…"}</span>

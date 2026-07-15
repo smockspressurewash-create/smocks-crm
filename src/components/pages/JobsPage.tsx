@@ -20,7 +20,7 @@ import {
   Tooltip, ResponsiveContainer, Area, AreaChart, LineChart, Line,
   ComposedChart, Legend
 } from "recharts";
-import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, weekdayLabels, computeNextRecurringDate, describeRecurringSchedule, isEmployeeUnavailable, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, withTimeout, getEffectiveRate } from "../../lib/utils";
+import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, weekdayLabels, computeNextRecurringDate, describeRecurringSchedule, isEmployeeUnavailable, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, withTimeout, getEffectiveRate, totalJobPhotoCount } from "../../lib/utils";
 const weatherRisk = (_dateStr: string): {icon: string; level: string; reason: string} | null => null;
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
 import { twilioSend, sendEmail, emailShell, emailButton } from "../../lib/messaging";
@@ -828,6 +828,32 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
             setBulkSelected([]);
             toast("Reminders sent: " + sent + (failed > 0 ? " · " + failed + " failed" : ""));
           }} className="px-3 py-1.5 rounded-lg text-[11px] bg-blue-950/40 border border-blue-700/40 text-blue-300 hover:bg-blue-900/50"><Send size={11} className="inline mr-1" />Remind all</button>
+          {/* FEATURE 5 (mobile round 7) — Download/Delete Selected were missing;
+              only status-change bulk actions existed. */}
+          <button onClick={() => {
+            const rows = [["Address", "Customer", "Status", "Scheduled Date", "Amount"]];
+            jobs.filter(j => bulkSelected.includes(j.id)).forEach(j => {
+              const c = customers.find(x => x.id === j.customerId);
+              rows.push([j.address || "", c ? `${c.firstName} ${c.lastName}` : "", j.status || "", j.scheduledDate || "", String(j.amount ?? "")]);
+            });
+            const csv = rows.map(r => r.map(v => '"' + String(v ?? "").replace(/"/g, '""') + '"').join(",")).join("\n");
+            const blob = new Blob([csv], { type: "text/csv" });
+            const a = document.createElement("a");
+            a.href = URL.createObjectURL(blob);
+            a.download = "jobs-selected-" + today() + ".csv";
+            a.click();
+            URL.revokeObjectURL(a.href);
+            toast(`Downloaded ${bulkSelected.length} job${bulkSelected.length !== 1 ? "s" : ""}`);
+          }} className="px-3 py-1.5 rounded-lg text-[11px] bg-black/40 border border-white/10 text-white/60 hover:text-white"><Download size={11} className="inline mr-1" />Download</button>
+          <button onClick={() => {
+            if (!window.confirm(`Permanently delete ${bulkSelected.length} job${bulkSelected.length !== 1 ? "s" : ""}? This can't be undone.`)) return;
+            const ids = [...bulkSelected];
+            setJobs(jobs.filter(j => !ids.includes(j.id)));
+            setBulkSelected([]);
+            (supabase as any).from("jobs").delete().in("id", ids)
+              .then((r: any) => { if (r?.error) toast("Deleted locally, but failed to delete from server — " + r.error.message, "red"); else toast(ids.length + " job(s) deleted"); })
+              .catch((e: any) => toast("Deleted locally, but failed to delete from server — " + (e?.message || ""), "red"));
+          }} className="px-3 py-1.5 rounded-lg text-[11px] bg-red-950/40 border border-red-700/40 text-red-300 hover:bg-red-900/50"><Trash2 size={11} className="inline mr-1" />Delete</button>
           <button onClick={() => setBulkSelected([])} className="px-3 py-1.5 rounded-lg text-[11px] bg-white/5 border border-white/10 text-white/60"><X size={11} className="inline mr-1" />Deselect</button>
         </div>
       </Glass>}
@@ -1020,14 +1046,25 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
                   {/* FIX 7 (mobile round 6) — employee-uploaded photos/videos
                       had no visibility from this list at all; owner only
                       ever saw them by opening the job's detail modal. */}
-                  {((j.photos || []).length > 0 || (j.videos || []).length > 0) && (
-                    <div className="text-xs text-white/50 mt-0.5 flex items-center gap-1">
-                      <ImageIcon size={10} />
-                      {(j.photos || []).length > 0 ? `${j.photos.length} photo${j.photos.length > 1 ? "s" : ""}` : ""}
-                      {(j.photos || []).length > 0 && (j.videos || []).length > 0 ? " · " : ""}
-                      {(j.videos || []).length > 0 ? `${j.videos.length} video${j.videos.length > 1 ? "s" : ""}` : ""}
-                    </div>
-                  )}
+                  {(() => {
+                    // BLOCKER 12 (mobile round 7) — was (j.photos||[]).length
+                    // only, missing photos taken via the per-checklist-item
+                    // camera button (nested on pre/during/postChecklist
+                    // items) — the more common capture path, per the default
+                    // checklist copy ("Take photos of existing damage",
+                    // "Take after photos"). totalJobPhotoCount aggregates both.
+                    const photoCount = totalJobPhotoCount(j);
+                    const videoCount = (j.videos || []).length;
+                    if (photoCount === 0 && videoCount === 0) return null;
+                    return (
+                      <div className="text-xs text-white/50 mt-0.5 flex items-center gap-1">
+                        <ImageIcon size={10} />
+                        {photoCount > 0 ? `${photoCount} photo${photoCount > 1 ? "s" : ""}` : ""}
+                        {photoCount > 0 && videoCount > 0 ? " · " : ""}
+                        {videoCount > 0 ? `${videoCount} video${videoCount > 1 ? "s" : ""}` : ""}
+                      </div>
+                    );
+                  })()}
                   </div>
                 </div>
                 <div className="text-right flex-shrink-0">

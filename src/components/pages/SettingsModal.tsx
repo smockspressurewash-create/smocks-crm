@@ -89,6 +89,21 @@ export function SettingsModal({ open, onClose, settings, setSettings, services, 
   const [showKey, setShowKey] = useState(false);
   const [googleOAuth, setGoogleOAuth] = useState({ open: false, step: "account", email: "", selectedScopes: { gmail: true, calendar: true, drive: false, contacts: false } });
   const [googleRetrying, setGoogleRetrying] = useState(false);
+  // BLOCKER 3 (mobile round 7) — the "✓ Connected" badge below used to be a
+  // pure static read of f.googleConnected, a flag set once at OAuth login
+  // and never re-checked — so it kept saying "Connected" long after the
+  // token actually expired/was revoked, which is exactly why Gmail sends
+  // could 401 with Settings still showing green. A real (cheap, no-scope)
+  // call to Google's tokeninfo endpoint on mount/open tells the truth.
+  const [googleTokenValid, setGoogleTokenValid] = useState<null | boolean>(null);
+  useEffect(() => {
+    if (!open || !f.googleConnected || !f.googleProviderToken) { setGoogleTokenValid(null); return; }
+    let cancelled = false;
+    fetch(`https://www.googleapis.com/oauth2/v3/tokeninfo?access_token=${encodeURIComponent(f.googleProviderToken)}`)
+      .then(r => { if (!cancelled) setGoogleTokenValid(r.ok); })
+      .catch(() => { if (!cancelled) setGoogleTokenValid(null); });
+    return () => { cancelled = true; };
+  }, [open, f.googleConnected, f.googleProviderToken]);
 
   // FIX 1 — real refresh-token exchange so an expired Google token can be
   // retried in place from Settings → Integrations, without a full
@@ -767,7 +782,9 @@ export function SettingsModal({ open, onClose, settings, setSettings, services, 
                   <svg viewBox="0 0 48 48" width="18" height="18"><path fill="#FFC107" d="M43.611 20.083H42V20H24v8h11.303c-1.649 4.657-6.08 8-11.303 8c-6.627 0-12-5.373-12-12s5.373-12 12-12c3.059 0 5.842 1.154 7.961 3.039l5.657-5.657C34.046 6.053 29.268 4 24 4C12.955 4 4 12.955 4 24s8.955 20 20 20s20-8.955 20-20c0-1.341-.138-2.65-.389-3.917z"/><path fill="#FF3D00" d="m6.306 14.691l6.571 4.819C14.655 15.108 18.961 12 24 12c3.059 0 5.842 1.154 7.961 3.039l5.657-5.657C34.046 6.053 29.268 4 24 4C16.318 4 9.656 8.337 6.306 14.691z"/><path fill="#4CAF50" d="M24 44c5.166 0 9.86-1.977 13.409-5.192l-6.19-5.238A11.91 11.91 0 0 1 24 36c-5.202 0-9.619-3.317-11.283-7.946l-6.522 5.025C9.505 39.556 16.227 44 24 44z"/><path fill="#1976D2" d="M43.611 20.083H42V20H24v8h11.303a12.04 12.04 0 0 1-4.087 5.571l.003-.002l6.19 5.238C36.971 39.205 44 34 44 24c0-1.341-.138-2.65-.389-3.917z"/></svg>
                   <div className="font-semibold text-sm">Google Account</div>
                 </div>
-                <Badge tone={f.googleConnected ? "green" : "gray"}>{f.googleConnected ? "✓ " + (f.googleEmail || "Connected") : "Not connected"}</Badge>
+                <Badge tone={!f.googleConnected ? "gray" : googleTokenValid === false ? "red" : "green"}>
+                  {!f.googleConnected ? "Not connected" : googleTokenValid === false ? "⚠ Token expired — click Retry" : "✓ " + (f.googleEmail || "Connected")}
+                </Badge>
               </div>
 
               {f.googleConnected ? (

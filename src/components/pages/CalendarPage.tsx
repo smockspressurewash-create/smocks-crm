@@ -270,6 +270,27 @@ export function CalendarPage({ jobs = [], setJobs, customers = [], employees = [
     toast("Rescheduled to " + targetKey);
     setDragId(null);
 
+    // BLOCKER 6 (mobile round 7) — this used to only update local state and
+    // rely on the App-level 30s bulk autosave to eventually persist it. That
+    // interval restarts on every `jobs` reference change (a 10s poll + a
+    // realtime subscription both do that constantly) so it rarely survives
+    // long enough to fire — and the far-more-frequent poll/realtime refetch
+    // in between overwrites the local drag with the DB's still-old date,
+    // snapping the job back to where it started. Writing immediately here
+    // (same pattern as JobsPage's "Schedule" button, which never had this
+    // bug) makes a drag-drop actually stick.
+    (supabase as any).from("jobs").update({ scheduledDate: targetKey }).eq("id", jid)
+      .then((result: any) => {
+        if (result?.error) {
+          toast?.("Failed to save new date — " + result.error.message, "red");
+          setJobs((prev: any[]) => prev.map(j => j.id === jid ? { ...j, scheduledDate: oldDate } : j));
+        }
+      })
+      .catch((e: any) => {
+        toast?.("Failed to save new date — " + (e?.message || "network error"), "red");
+        setJobs((prev: any[]) => prev.map(j => j.id === jid ? { ...j, scheduledDate: oldDate } : j));
+      });
+
     // Send reschedule notification to customer
     if (job && oldDate && oldDate !== targetKey) {
       const c = customers.find(x => x.id === job.customerId);
@@ -291,8 +312,20 @@ export function CalendarPage({ jobs = [], setJobs, customers = [], employees = [
   };
   const unschedule = jid => {
     const job = jobs.find(j => j.id === jid);
+    const oldDate = job?.scheduledDate;
     setJobs(jobs.map(j => j.id === jid ? { ...j, scheduledDate: "" } : j));
     toast("Moved to unscheduled");
+    (supabase as any).from("jobs").update({ scheduledDate: "" }).eq("id", jid)
+      .then((result: any) => {
+        if (result?.error) {
+          toast?.("Failed to save — " + result.error.message, "red");
+          setJobs((prev: any[]) => prev.map(j => j.id === jid ? { ...j, scheduledDate: oldDate } : j));
+        }
+      })
+      .catch((e: any) => {
+        toast?.("Failed to save — " + (e?.message || "network error"), "red");
+        setJobs((prev: any[]) => prev.map(j => j.id === jid ? { ...j, scheduledDate: oldDate } : j));
+      });
     if (job?.googleEventId && settings?.googleConnected && (settings as any)?.googleProviderToken) {
       deleteGCalEventApi((settings as any).googleProviderToken, job.googleEventId).catch(() => {});
     }

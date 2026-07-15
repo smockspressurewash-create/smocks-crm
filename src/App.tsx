@@ -66,7 +66,7 @@ import {
 } from "./lib/seed";
 import { seedWeather } from "./lib/weather";
 import { fetchRealWeather } from "./lib/weather";
-import { fmt, uid, today, daysSince, daysFromNow, consumeOAuthIntent, getLastOwnerSessionFlag, setLastOwnerSessionFlag, buildChecklistFromServices, withTimeout } from "./lib/utils";
+import { fmt, uid, today, daysSince, daysFromNow, consumeOAuthIntent, getLastOwnerSessionFlag, setLastOwnerSessionFlag, buildChecklistFromServices, withTimeout, normalizeJobRow, totalJobPhotoCount } from "./lib/utils";
 import { sendEmail, buildTomorrowJobsEmailHtml, buildDailyBriefingEmailHtml } from "./lib/messaging";
 import { exchangeSocialOAuthCode, type SocialPlatform } from "./lib/socialOAuth";
 import type {
@@ -1018,7 +1018,7 @@ export function App() {
   // toast + bell entry the moment it happens, mirroring the invoice-activity
   // diff above. Seeded on first pass so a fresh load doesn't replay history.
   const crewActivityEmpRef = useRef<Record<string, number | null>>({});
-  const crewActivityJobRef = useRef<Record<string, { status?: string; arrivedAt?: number }>>({});
+  const crewActivityJobRef = useRef<Record<string, { status?: string; arrivedAt?: number; photoCount?: number; signed?: boolean }>>({});
   const crewActivitySeededRef = useRef(false);
   useEffect(() => {
     if (!hasCrmSession) return;
@@ -1035,7 +1035,14 @@ export function App() {
       else if (!cur && prev) events.push({ id: e.id + ":out:" + Date.now(), text: `⏹ ${empName(e)} ended their shift`, at: Date.now() });
     }
     for (const j of jobs as any[]) {
-      const cur = { status: j.status, arrivedAt: j.arrivedAt };
+      // FEATURE 4 (mobile round 7) — photo uploads and customer sign-off were
+      // never diffed here at all, so the owner never got a toast/bell entry
+      // for either, despite CLAUDE.md documenting this as an existing
+      // feature. totalJobPhotoCount aggregates top-level + checklist photos
+      // (see BLOCKER 12) so a checklist-camera upload counts too.
+      const photoCount = totalJobPhotoCount(j);
+      const signed = !!j.signOff;
+      const cur = { status: j.status, arrivedAt: j.arrivedAt, photoCount, signed };
       jobSnap[j.id] = cur;
       if (!crewActivitySeededRef.current) continue;
       const prev = crewActivityJobRef.current[j.id] || {};
@@ -1043,6 +1050,8 @@ export function App() {
       const who = cust ? `${cust.firstName} ${cust.lastName}` : j.address;
       if (cur.status === "completed" && prev.status && prev.status !== "completed") events.push({ id: j.id + ":done", text: `✅ Job completed — ${who}`, at: Date.now() });
       if (cur.arrivedAt && !prev.arrivedAt) events.push({ id: j.id + ":arrived", text: `📍 Crew arrived at ${who}`, at: Date.now() });
+      if (photoCount > (prev.photoCount ?? 0)) events.push({ id: j.id + ":photos:" + photoCount, text: `📸 ${photoCount - (prev.photoCount ?? 0)} new photo${photoCount - (prev.photoCount ?? 0) !== 1 ? "s" : ""} — ${who}`, at: Date.now() });
+      if (signed && !prev.signed) events.push({ id: j.id + ":signed", text: `✍️ Got customer sign-off — ${who}`, at: Date.now() });
     }
     crewActivityEmpRef.current = empSnap;
     crewActivityJobRef.current = jobSnap;
@@ -1128,7 +1137,17 @@ export function App() {
   const pendingEst = estimates.filter(e => e.status === "pending").length;
   const doneMonth  = jobs.filter(j => j.status === "completed" && (j.scheduledDate ?? "").startsWith(thisMonth)).length;
   const sentEsts   = estimates.filter(e => e.sentAt).length;
-  const closeRate  = sentEsts > 0 ? Math.round((estimates.filter(e => e.status === "approved").length / sentEsts) * 100) : 0;
+  // BLOCKER 4 (mobile round 7) — was approved-count / sentAt-count. Several
+  // flows (Dashboard's own "Send Invoice", EmployeePortal, InvoicesPage) set
+  // status:"approved" directly on an estimate row without ever setting
+  // sentAt, so the numerator counted every direct invoice while the
+  // denominator excluded them — trivially producing rates over 1000%. Using
+  // the full estimate count as the denominator (per spec: approved/total ×
+  // 100) and clamping to [0,100] makes this a real percentage no matter how
+  // an estimate reached "approved".
+  const closeRate  = estimates.length > 0
+    ? Math.min(100, Math.max(0, Math.round((estimates.filter(e => e.status === "approved").length / estimates.length) * 100)))
+    : 0;
   const overdueCount = estimates.filter(e => e.invoiced && !e.paidAt && e.invoicedAt && daysSince(e.invoicedAt) > 14).length;
   const lowStock   = chemicals.filter(c => c.stock <= c.reorderLevel).length;
 
@@ -1215,13 +1234,14 @@ export function App() {
         (supabase as any).from("promotions").select("*").then((r: any) => r).catch(() => ({ data: null })),
       ]);
       if (Array.isArray(sbJobs) && sbJobs.length > 0) {
-        const totalPhotos = sbJobs.reduce((s: number, j: any) => s + (Array.isArray(j.photos) ? j.photos.length : 0), 0);
-        const completedWithHours = sbJobs.filter((j: any) => j.status === "completed" && Number(j.loggedHours) > 0);
+        const normedJobs = sbJobs.map(normalizeJobRow);
+        const completedWithHours = normedJobs.filter((j: any) => j.status === "completed" && Number(j.loggedHours) > 0);
+        console.log("[Hours] completed jobs with logged hours this refetch:", completedWithHours.length, "— total:", completedWithHours.reduce((s: number, j: any) => s + Number(j.loggedHours || 0), 0).toFixed(2));
         setJobs(prev => {
-          const sbMap = new Map(sbJobs.map((j: any) => [j.id, j]));
+          const sbMap = new Map(normedJobs.map((j: any) => [j.id, j]));
           const merged = prev.map(j => sbMap.has(j.id) ? { ...j, ...sbMap.get(j.id) } : j);
           const existingIds = new Set(prev.map(j => j.id));
-          const added = sbJobs.filter((j: any) => !existingIds.has(j.id));
+          const added = normedJobs.filter((j: any) => !existingIds.has(j.id));
           return [...merged, ...added];
         });
       }
@@ -1949,6 +1969,15 @@ export function App() {
         options: {
           redirectTo: window.location.origin + window.location.pathname,
           scopes: "email profile https://www.googleapis.com/auth/calendar https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/drive.readonly",
+          // BLOCKER 3 (mobile round 7) — without access_type:"offline", Google
+          // only ever hands back an access token (good for ~1h) and no
+          // refresh_token, so once it expires the ONLY way to fix "Gmail 401"
+          // was a full manual reconnect. prompt:"consent" forces the consent
+          // screen even on a returning user, which is required for Google to
+          // actually issue a refresh_token on anything but the very first
+          // authorization ever — without it, a token that already lost its
+          // refresh_token (e.g. from before this fix) would never regain one.
+          queryParams: { access_type: "offline", prompt: "consent" },
         },
       });
     };
@@ -2187,13 +2216,22 @@ export function App() {
         // once the touch ends both progress values reset to 0, this inline
         // style drops away, and the normal duration-300 class transition
         // takes over for the final snap open/closed.
-        style={
-          edgeSwipeProgress > 0 && !sidebarOpen
+        // BLOCKER 8 (mobile round 7) — without an explicit touch-action, a
+        // touchmove that starts anywhere inside the scrollable <nav> below
+        // (overflow-y-auto) can get claimed by the browser's own native
+        // scroll-vs-gesture disambiguation before our horizontal-delta JS
+        // ever sees a clean drag, which is why swipe-to-close could feel
+        // like it "didn't work" depending on exactly where the drag started.
+        // pan-y tells the browser vertical scrolling is still native but
+        // horizontal motion is ours to interpret.
+        style={{
+          touchAction: "pan-y",
+          ...(edgeSwipeProgress > 0 && !sidebarOpen
             ? { transform: `translateX(calc(-100% + ${Math.round(edgeSwipeProgress * SIDEBAR_WIDTH_PX)}px))`, transition: "none" }
             : sidebarCloseProgress > 0 && sidebarOpen
             ? { transform: `translateX(-${Math.round(sidebarCloseProgress * SIDEBAR_WIDTH_PX)}px)`, transition: "none" }
-            : undefined
-        }
+            : {}),
+        }}
       >
         {/* Logo */}
         <div className="p-4 border-b border-red-900/30 flex items-center justify-between">
@@ -2557,12 +2595,34 @@ export function App() {
           {/* Raised above the mobile bottom nav (bottom-20) so it never overlaps
               it; drops back to bottom-6 on md+ where there's no bottom nav.
               FEATURE 1 — once dragged, fabPosition overrides these default
-              corner classes with an explicit left/top so it stays wherever
-              it was dropped. */}
+              corner classes with an explicit left/bottom so it stays wherever
+              it was dropped.
+              FEATURE 8 (mobile round 7) — this used to anchor the dragged
+              position with `top`, while the default (undragged) case anchors
+              with `bottom`. Since the button is the LAST flex child (quick
+              actions render above it), a `top`-anchored container grows
+              DOWNWARD as the menu opens — the button itself visibly jumped
+              down every time the menu opened after a drag, and the whole
+              menu could open in the wrong direction. Anchoring by `bottom`
+              in both cases keeps the button's position stable and the menu
+              always expanding upward, matching the non-dragged behavior. */}
           <div
             className={"z-50 flex flex-col items-end gap-2.5 " + (fabPosition ? "fixed" : "fixed bottom-20 right-5 md:bottom-6 md:right-6")}
-            style={fabPosition ? { left: fabPosition.x, top: fabPosition.y } : { marginBottom: "env(safe-area-inset-bottom)" }}
+            style={fabPosition ? { left: fabPosition.x, bottom: Math.max(4, window.innerHeight - fabPosition.y - FAB_SIZE) } : { marginBottom: "env(safe-area-inset-bottom)" }}
           >
+            {/* FEATURE 8 (mobile round 7) — dragged into the bottom 20% of the
+                screen (e.g. behind the mobile bottom nav / thumb-unreachable
+                area): collapse to a small restore tab instead of the full
+                button, rather than sitting half-obscured and hard to grab. */}
+            {fabPosition && fabPosition.y + FAB_SIZE > window.innerHeight * 0.8 ? (
+              <button
+                onClick={() => setFabPosition(null)}
+                aria-label="Restore quick actions"
+                className="w-8 h-10 rounded-l-xl bg-gradient-to-br from-red-500 to-red-800 shadow-lg shadow-red-900/60 flex items-center justify-center border border-red-400/30 border-r-0 hover:w-9 transition-all"
+              >
+                <ChevronLeft size={16} className="text-white" />
+              </button>
+            ) : <>
             {fabOpen && (
               <>
                 {(() => {
@@ -2614,6 +2674,7 @@ export function App() {
             >
               <Plus size={24} className={"text-white transition-transform duration-200 " + (fabOpen && !fabDragging ? "rotate-45" : "")} />
             </button>
+            </>}
           </div>
         </>
       )}

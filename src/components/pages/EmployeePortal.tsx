@@ -17,7 +17,7 @@ import { loadMapsScript, AddressAutocomplete } from "../ui/AddressAutocomplete";
 import { LiveMap } from "../ui/LiveMap";
 import { PropertyMapEmbed } from "../ui/PropertyMapEmbed";
 import { BarChart, Bar, LineChart, Line, XAxis, YAxis, ResponsiveContainer, Tooltip, CartesianGrid } from "recharts";
-import { fmt, uid, today, localDateStr, daysFromNow, computeJobRatingScore, setOAuthIntent, compressImageFile, getEffectiveRate, computeNextRecurringDate, weekdayLabels } from "../../lib/utils";
+import { fmt, uid, today, localDateStr, daysFromNow, computeJobRatingScore, setOAuthIntent, compressImageFile, getEffectiveRate, computeNextRecurringDate, weekdayLabels, normalizeJobRow, totalJobPhotoCount } from "../../lib/utils";
 import { usePollGate } from "../../hooks/usePollGate";
 import type { Job, Employee, Customer, AppSettings, JobChecklistItem } from "../../types";
 
@@ -244,13 +244,13 @@ function PortalChecklistSection({ title, emoji, items, onUpdate, allowPhotos = f
 
 const DEFAULT_SIGNOFF_DISCLAIMER = "I confirm that all services have been completed to my satisfaction. I accept the work as described and acknowledge that {{company}} is not liable for pre-existing conditions documented in the pre-job checklist. I understand that this serves as a legally binding acceptance of completed work.";
 
-function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName = "the company", onComplete, perms: permsOverride, maxLunchMinutes = 30, onJobCompleted, googleMapsKey = "", paidLunchBreaks = false, signOffDisclaimer = "", settings = {} as AppSettings, setEstimates = (() => {}) as any, nextJob = null, nextJobCustomer = null, onArrived, autoComplete = false }: {
+function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName = "the company", onComplete, perms: permsOverride, maxLunchMinutes = 30, onJobCompleted, googleMapsKey = "", paidLunchBreaks = false, signOffDisclaimer = "", settings = {} as AppSettings, setEstimates = (() => {}) as any, nextJob = null, nextJobCustomer = null, onArrived, autoComplete = false, employeeName = "", isPreview = false }: {
   job: Job; customer?: Customer; onBack: () => void;
   onUpdateJob: (patch: Partial<Job>) => void | Promise<any>; toast: (msg: string, tone?: any) => void;
   companyName?: string; onComplete?: () => void; perms?: Record<string, boolean>; maxLunchMinutes?: number;
   onJobCompleted?: (job: Job) => void; googleMapsKey?: string; paidLunchBreaks?: boolean; signOffDisclaimer?: string;
   settings?: AppSettings; setEstimates?: any; nextJob?: Job | null; nextJobCustomer?: Customer | null;
-  onArrived?: () => void; autoComplete?: boolean;
+  onArrived?: () => void; autoComplete?: boolean; employeeName?: string; isPreview?: boolean;
 }) {
   const effPerms = { ...DEFAULT_PERMISSIONS, ...(permsOverride || {}) };
   const [note, setNote] = useState("");
@@ -590,6 +590,42 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
     // calendar sync) is best-effort — a throw in there must never block the
     // screen from advancing to the summary.
     try { onJobCompleted?.({ ...job, ...patch } as Job); } catch (e) { console.warn("[Complete Job] onJobCompleted callback failed:", e); }
+    // FEATURE 3 (mobile round 7) — the owner previously got NO email at all
+    // when a job finished (only an end-of-day rollup, hours-only, no
+    // checklist/signature/photos). Best-effort, non-blocking — a failed
+    // notification email must never stop the completion flow itself.
+    // Skipped entirely in the owner's read-only "Team Portal" preview
+    // (isPreview) so walking through the wizard there doesn't fire a real
+    // "job completed" email about a completion that was never actually saved.
+    if (!isPreview) (async () => {
+      const ownerEmail = settings?.myEmail || settings?.companyEmail;
+      if (!ownerEmail) return;
+      const completedJob = { ...job, ...patch } as any;
+      const allChecklist = [...(completedJob.preChecklist || []), ...(completedJob.duringChecklist || []), ...(completedJob.postChecklist || []), ...(completedJob.checklist || [])];
+      const ckDone = allChecklist.filter((c: any) => c.done).length;
+      const empName = employeeName || "A crew member";
+      const companyName = settings?.companyName || "Crew Boss";
+      const photoCount = totalJobPhotoCount(completedJob);
+      const beforeAfterThumbs = (completedJob.photos || []).slice(0, 4).filter((p: any) => p.dataUrl)
+        .map((p: any) => `<img src="${p.dataUrl}" alt="${p.type || "photo"}" style="width:100px;height:100px;object-fit:cover;border-radius:8px;margin:0 6px 6px 0" />`).join("");
+      const sigImg = job.signOff?.sigData ? `<img src="${job.signOff.sigData}" alt="signature" style="max-width:260px;background:#fff;border-radius:6px;padding:6px;margin-top:4px" />` : "";
+      const rows = `
+        <div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #eee"><span>Technician</span><strong>${empName}</strong></div>
+        <div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #eee"><span>Address</span><strong>${job.address || ""}</strong></div>
+        <div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #eee"><span>Checklist completed</span><strong>${ckDone}/${allChecklist.length}</strong></div>
+        <div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #eee"><span>Payment status</span><strong>${patch.paymentStatus}${patch.paymentType ? " (" + patch.paymentType + ")" : ""}</strong></div>
+        <div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #eee"><span>Amount</span><strong>${fmt(patch.amountCollected ?? job.amount ?? 0)}</strong></div>
+        <div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #eee"><span>Photos attached</span><strong>${photoCount}</strong></div>
+      `;
+      const customerLine = customer ? `<p>Customer: <b>${customer.firstName} ${customer.lastName}</b></p>` : "";
+      const notesHtml = job.notes ? `<p><b>Notes:</b> ${job.notes}</p>` : "";
+      const sigHtml = job.signOff ? `<p><b>Signed by:</b> ${job.signOff.signerName || "customer"}${sigImg}</p>` : "<p style=\"color:#999\">No customer sign-off collected.</p>";
+      const photosHtml = beforeAfterThumbs ? `<p><b>Photos:</b></p><div>${beforeAfterThumbs}</div>` : "";
+      sendEmail(settings as any, {
+        to: ownerEmail, subject: `Job completed — ${empName} — ${job.address || ""}`,
+        body: emailShell(companyName, "Job Completed", `<p>${empName} just completed a job.</p>${customerLine}${rows}${notesHtml}${sigHtml}${photosHtml}`),
+      }).catch((e: any) => console.warn("[Complete Job] owner summary email failed:", e?.message));
+    })();
     setCompleteSummary({ hours: hrs, amount: Number(job.amount) || 0, paymentStatus: paymentStatus === "Paid" ? `Paid (${patch.paymentType})` : invoiceSent ? "Unpaid — Invoice Sent" : "Unpaid" });
     setCompleteStep("summary");
     try {
@@ -1338,8 +1374,8 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
 }
 
 // ── Owner Team Portal ─────────────────────────────────────────────────────────
-function OwnerTeamPortal({ jobs, employees, customers, onClose, googleMapsKey, toast }: {
-  jobs: Job[]; employees: Employee[]; customers: Customer[]; onClose: () => void; googleMapsKey?: string; toast?: (msg: string, tone?: string) => void;
+function OwnerTeamPortal({ jobs, employees, customers, onClose, googleMapsKey, toast, settings }: {
+  jobs: Job[]; employees: Employee[]; customers: Customer[]; onClose: () => void; googleMapsKey?: string; toast?: (msg: string, tone?: string) => void; settings?: any;
 }) {
   const [selectedEmpId, setSelectedEmpId] = useState<string>("all");
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
@@ -1372,6 +1408,15 @@ function OwnerTeamPortal({ jobs, employees, customers, onClose, googleMapsKey, t
         onUpdateJob={() => { toast?.("Preview only — open this job from the Jobs page to make real changes.", "yellow"); return Promise.resolve({}); }}
         toast={toast || (() => {})}
         googleMapsKey={googleMapsKey}
+        // BLOCKER 9 (mobile round 7) — this was never passed, so OTW/Send
+        // Invoice inside this preview called sendOwnerGmailOnly/twilioSend
+        // with an empty {} settings object, which always throws "not
+        // configured" regardless of the owner's real, working Twilio/Gmail
+        // setup — reading exactly like "says send but doesn't send."
+        // Threading the real settings through makes these buttons send for
+        // real, same as everywhere else in the app.
+        settings={settings}
+        isPreview
       />
     );
   }
@@ -1692,7 +1737,13 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   // FIX 5 — instant "📍 Sharing" badge before the Supabase round-trip / next poll.
   const [optimisticLocationSharing, setOptimisticLocationSharing] = useState<boolean | undefined>(undefined);
   const [optimisticDayLunchStartAt, setOptimisticDayLunchStartAt] = useState<number | null | undefined>(undefined);
-  const [payChartRange, setPayChartRange] = useState<"7d" | "4wk" | "12mo">("7d");
+  const [payChartRange, setPayChartRange] = useState<"7d" | "4wk" | "12mo" | "custom">("7d");
+  // BLOCKER 11 (mobile round 7) — the only "custom period" controls anywhere
+  // on this tab were fixed presets (7 days / 4 weeks / 12 months) or the
+  // calendar's month prev/next (capped at the current month) — there was no
+  // way to actually pick an arbitrary date range as asked for.
+  const [payCustomStart, setPayCustomStart] = useState(() => { const d = new Date(); d.setDate(d.getDate() - 30); return d.toISOString().slice(0, 10); });
+  const [payCustomEnd, setPayCustomEnd] = useState(() => today());
   // Drives a spinner on the "Share My Location" button for the window between
   // tapping it and the browser's permission prompt resolving — previously the
   // button gave zero feedback during that gap, which read as "does nothing".
@@ -1845,7 +1896,19 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     if (empDayClockInAt) return; // already running
     const empId = (myEmployee as any)?.id;
     if (!empId) return;
-    const nextVal = Date.now();
+    // BLOCKER 10 (mobile round 7) — this is the OTHER place dayClockInAt gets
+    // set fresh (auto-start via "I'm Here" on a job card). toggleDay's own
+    // Resume-Day backdating (below, in the Today tab) never applied here, so
+    // ending a shift and then just tapping "I'm Here" on the next job — the
+    // more common flow than opening the Today tab and pressing Start My Day —
+    // silently restarted the whole-day timer at zero instead of resuming.
+    const localLastShift = (() => {
+      try { return JSON.parse(localStorage.getItem("smocks.lastShift." + empId) || "null"); } catch { return null; }
+    })();
+    const alreadyWorkedTodayHours = (myEmployee as any)?.lastShiftDate === localDateStr()
+      ? Number((myEmployee as any)?.lastShiftHours) || 0
+      : (localLastShift?.date === localDateStr() ? Number(localLastShift?.hours) || 0 : 0);
+    const nextVal = Date.now() - Math.round(alreadyWorkedTodayHours * 3600000);
     setOptimisticDayClockInAt(nextVal);
     try {
       const result = await (supabase as any)
@@ -1856,7 +1919,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
         console.warn("Auto-start shift failed:", result.error.message);
       } else {
         refetchEmployees?.();
-        toast("Shift started automatically ✓");
+        toast(alreadyWorkedTodayHours > 0 ? "Shift resumed ✓" : "Shift started automatically ✓");
       }
     } catch (e: any) {
       console.warn("Auto-start shift failed:", e?.message);
@@ -2036,34 +2099,27 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     const empUserId = (myEmployee as any).user_id;
     const load = async () => {
       try {
-        // Layered fetch: an RLS policy filtering by org_id could legitimately return
-        // [] from a plain select even for jobs this employee IS assigned to, if those
-        // jobs are missing org_id. Try narrowing by crew membership first (two id
-        // shapes, since crew entries may store either), then fall back to fetching
-        // everything and filtering client-side — logging each attempt so it's clear
-        // which path actually returned data.
-        let data: any[] | null = null;
-        try {
-          const attempt1 = await (supabase as any).from("jobs").select("*").contains("crew", [empId]);
-          if (Array.isArray(attempt1.data) && attempt1.data.length > 0) data = attempt1.data;
-        } catch (e) { console.warn("FETCH ATTEMPT 1 failed:", e); }
+        // FIX 3 (mobile round 8) — root cause of "not all assigned jobs show
+        // on the calendar": this used to try narrowing by crew membership
+        // first (two separate queries, since crew entries may store either
+        // the employee's `id` or their `user_id`), and only fell through to
+        // fetching everything if BOTH narrow queries came back empty. But if
+        // attempt1 (crew contains `id`) found ANY jobs at all, attempt2 (crew
+        // contains `user_id`) — and therefore attempt3, the fetch-everything
+        // fallback — never ran, silently dropping every job crewed under the
+        // OTHER id shape from local state entirely. myJobs' client-side
+        // filter (crewIncludesEmployee) already correctly checks both id
+        // shapes, so the fix is to just always fetch everything and let that
+        // filter do its job, rather than trying to out-guess it with a
+        // narrower server-side query that can silently short-circuit.
+        const { data: allData } = await (supabase as any).from("jobs").select("*");
+        let data: any[] = Array.isArray(allData) ? allData : [];
 
-        if (!data && empUserId) {
-          try {
-            const attempt2 = await (supabase as any).from("jobs").select("*").contains("crew", [empUserId]);
-            if (Array.isArray(attempt2.data) && attempt2.data.length > 0) data = attempt2.data;
-          } catch (e) { console.warn("FETCH ATTEMPT 2 failed:", e); }
-        }
-
-        if (!data) {
-          const attempt3 = await (supabase as any).from("jobs").select("*");
-          data = Array.isArray(attempt3.data) ? attempt3.data : [];
-        }
-
-        if (Array.isArray(data)) {
-          data.forEach((j: any) => {
-          });
-        }
+        // BLOCKER 2 (mobile round 7) — casing-normalize every job row coming
+        // out of Supabase (loggedHours/clockInAt/etc can fold to lowercase —
+        // see normalizeJobRow), or the employee's own Pay tab silently reads
+        // 0 hours even though the real number is on the row already.
+        if (Array.isArray(data)) data = data.map(normalizeJobRow);
         // Fields the employee's own clock/lunch actions own — an in-flight
         // Supabase write for one of these (or a stale/slow row read) must never
         // win against a more recent local change, or the clock-out → clock-in
@@ -2076,7 +2132,15 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
               if (!supabaseMap.has(j.id)) return j;
               const remote = supabaseMap.get(j.id);
               const next = { ...j, ...remote };
-              EMPLOYEE_OWNED_FIELDS.forEach(f => { next[f] = (j as any)[f]; });
+              // BLOCKER 2 fix — only let the local copy win when it actually
+              // HAS a value; previously this always overwrote with the local
+              // value even when undefined (e.g. right after a fresh page
+              // load before local state was populated), discarding perfectly
+              // good remote hours/clock data and making them look zeroed.
+              EMPLOYEE_OWNED_FIELDS.forEach(f => {
+                const localVal = (j as any)[f];
+                if (localVal !== undefined && localVal !== null) next[f] = localVal;
+              });
               return next;
             });
             const existingIds = new Set(prev.map(j => j.id));
@@ -3188,6 +3252,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
         onClose={onClose}
         googleMapsKey={settings?.googleMapsKey || settings?.mapsKey}
         toast={toast}
+        settings={settings}
       />
     );
   }
@@ -3488,6 +3553,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
         nextJobCustomer={nextJobCustomer}
         onArrived={startDayShiftIfNeeded}
         autoComplete={pendingCompleteJobId === selectedJobId}
+        employeeName={myEmployee ? `${myEmployee.firstName} ${myEmployee.lastName || ""}`.trim() : ""}
       />
     );
   }
@@ -4093,6 +4159,13 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                 // spent "ended" in between is simply not counted, which is correct.
                 const nextVal = endingDay ? null : Date.now() - Math.round(alreadyWorkedTodayHours * 3600000);
                 const finalHours = Math.round(netShiftHoursNow * 100) / 100;
+                // FIX 2 (mobile round 8) — confirms the Resume flow actually
+                // continued from the prior total rather than restarting at
+                // zero; alreadyWorkedTodayHours/isResuming are read straight
+                // off myEmployee (Supabase-backed), so this is correct
+                // whether the employee stayed on this tab, switched tabs and
+                // came back, or reloaded the app entirely.
+                if (!endingDay && isResuming) console.log("[Verify] Resume Day — continuing from", alreadyWorkedTodayHours.toFixed(2), "h already logged today (not resetting to 0)");
                 // Flip immediately — a Supabase update() call resolves with an
                 // {error} object on a 400 rather than throwing, so a try/catch
                 // around it alone was silently swallowing real failures (the
@@ -4666,6 +4739,12 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
             const calVisibleJobs = showCanceledJobs ? myJobs : myJobs.filter(j => j.status !== "cancelled");
             const calCanceledCount = myJobs.filter(j => j.status === "cancelled").length;
             const calDayJobs = calVisibleJobs.filter(j => j.scheduledDate === calSelectedDate);
+            // FIX 3 (mobile round 8) — traces the calendar's job pipeline:
+            // total jobs the app knows about -> all jobs this employee is
+            // crewed on (any status) -> what's actually visible after the
+            // cancelled-jobs toggle. If totalJobs is high but myJobs is low,
+            // the bug is upstream in the crew fetch/filter, not the calendar.
+            console.log("[EmpCalendar] total jobs:", jobs.length, "· assigned to me (any status):", myJobs.length, "· visible after cancelled filter:", calVisibleJobs.length, "· cancelled hidden:", showCanceledJobs ? 0 : calCanceledCount);
 
             return (
               <>
@@ -5353,11 +5432,23 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                     of truth as the pay periods above). */}
                 {(() => {
                   const rate = myEmployee?.hourlyRate || 0;
+                  // BLOCKER 11 (mobile round 7) — bucketed hours used to be
+                  // job.loggedHours only, unlike the Pay Period table above
+                  // which already includes computeEmployeeShiftTopUp — so an
+                  // employee whose hours came mostly from the whole-day
+                  // shift timer (not a completed job) saw this chart
+                  // under-report vs. the numbers just above it. Adding the
+                  // top-up on whichever single bucket contains lastShiftDate
+                  // keeps both sections consistent.
                   const bucketHours = (dateKeys: string[]): { name: string; hours: number; earnings: number }[] =>
                     dateKeys.map(key => {
-                      const hrs = myJobs.filter(j => (j.scheduledDate || "").startsWith(key)).reduce((s, j) => s + (Number(j.loggedHours) || 0), 0);
+                      const jobHrs = myJobs.filter(j => (j.scheduledDate || "").startsWith(key)).reduce((s, j) => s + (Number(j.loggedHours) || 0), 0);
+                      const topUp = computeEmployeeShiftTopUp(key, key);
+                      const hrs = jobHrs + topUp;
                       return { name: key, hours: Math.round(hrs * 100) / 100, earnings: Math.round(hrs * rate * 100) / 100 };
                     });
+                  const bucketRangeHours = (s: string, e: string): number =>
+                    myJobs.filter(j => j.scheduledDate >= s && j.scheduledDate <= e).reduce((acc, j) => acc + (Number(j.loggedHours) || 0), 0) + computeEmployeeShiftTopUp(s, e);
                   let chartData: { name: string; hours: number; earnings: number }[];
                   let ChartComp: any = BarChart;
                   if (payChartRange === "7d") {
@@ -5368,29 +5459,54 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                       const end = new Date(); end.setDate(end.getDate() - (3 - i) * 7);
                       const start = new Date(end); start.setDate(start.getDate() - 6);
                       const s = start.toISOString().slice(0, 10), e = end.toISOString().slice(0, 10);
-                      const hrs = myJobs.filter(j => j.scheduledDate >= s && j.scheduledDate <= e).reduce((acc, j) => acc + (Number(j.loggedHours) || 0), 0);
+                      const hrs = bucketRangeHours(s, e);
                       return { name: `${start.getMonth() + 1}/${start.getDate()}`, hours: Math.round(hrs * 100) / 100, earnings: Math.round(hrs * rate * 100) / 100 };
                     });
+                  } else if (payChartRange === "custom") {
+                    const s = payCustomStart, e = payCustomEnd > payCustomStart ? payCustomEnd : payCustomStart;
+                    const spanDays = Math.max(1, Math.round((new Date(e).getTime() - new Date(s).getTime()) / 86400000) + 1);
+                    if (spanDays <= 31) {
+                      const days = Array.from({ length: spanDays }, (_, i) => { const d = new Date(s); d.setDate(d.getDate() + i); return d.toISOString().slice(0, 10); });
+                      chartData = bucketHours(days).map((d, i) => ({ ...d, name: new Date(days[i] + "T12:00:00").toLocaleDateString("en-US", { month: "numeric", day: "numeric" }) }));
+                    } else {
+                      const weeks = Math.ceil(spanDays / 7);
+                      chartData = Array.from({ length: weeks }, (_, i) => {
+                        const wStart = new Date(s); wStart.setDate(wStart.getDate() + i * 7);
+                        const wEnd = new Date(wStart); wEnd.setDate(wEnd.getDate() + 6);
+                        const ws = wStart.toISOString().slice(0, 10), we = (wEnd.toISOString().slice(0, 10) > e ? e : wEnd.toISOString().slice(0, 10));
+                        const hrs = bucketRangeHours(ws, we);
+                        return { name: `${wStart.getMonth() + 1}/${wStart.getDate()}`, hours: Math.round(hrs * 100) / 100, earnings: Math.round(hrs * rate * 100) / 100 };
+                      });
+                    }
                   } else {
                     ChartComp = LineChart;
                     chartData = Array.from({ length: 12 }, (_, i) => {
                       const d = new Date(); d.setMonth(d.getMonth() - (11 - i)); d.setDate(1);
                       const key = d.toISOString().slice(0, 7);
-                      const hrs = myJobs.filter(j => (j.scheduledDate || "").startsWith(key)).reduce((acc, j) => acc + (Number(j.loggedHours) || 0), 0);
+                      const monthStart = key + "-01";
+                      const monthEnd = new Date(d.getFullYear(), d.getMonth() + 1, 0).toISOString().slice(0, 10);
+                      const hrs = bucketRangeHours(monthStart, monthEnd);
                       return { name: d.toLocaleDateString("en-US", { month: "short" }), hours: Math.round(hrs * 100) / 100, earnings: Math.round(hrs * rate * 100) / 100 };
                     });
                   }
                   const DataComp: any = payChartRange === "12mo" ? Line : Bar;
                   return (
                     <Glass className="p-4 !bg-black/40 space-y-3">
-                      <div className="flex items-center justify-between">
+                      <div className="flex items-center justify-between flex-wrap gap-2">
                         <div className="text-xs text-white/50 uppercase tracking-wider">Hours & Earnings</div>
                         <div className="flex gap-1 p-0.5 bg-black/40 border border-white/10 rounded-lg">
-                          {([["7d", "7 Days"], ["4wk", "4 Weeks"], ["12mo", "12 Months"]] as const).map(([k, l]) => (
+                          {([["7d", "7 Days"], ["4wk", "4 Weeks"], ["12mo", "12 Months"], ["custom", "Custom"]] as const).map(([k, l]) => (
                             <button key={k} onClick={() => setPayChartRange(k)} className={"px-2 py-1 rounded text-[10px] font-medium transition " + (payChartRange === k ? "bg-red-700/40 text-white" : "text-white/40")}>{l}</button>
                           ))}
                         </div>
                       </div>
+                      {payChartRange === "custom" && (
+                        <div className="flex items-center gap-2 text-xs text-white/60">
+                          <input type="date" value={payCustomStart} max={payCustomEnd} onChange={e => setPayCustomStart(e.target.value)} className="bg-black/40 border border-white/10 rounded-lg px-2 py-1 text-xs text-white" />
+                          <span>to</span>
+                          <input type="date" value={payCustomEnd} min={payCustomStart} max={today()} onChange={e => setPayCustomEnd(e.target.value)} className="bg-black/40 border border-white/10 rounded-lg px-2 py-1 text-xs text-white" />
+                        </div>
+                      )}
                       <div>
                         <div className="text-[10px] text-white/40 mb-1">Hours</div>
                         <div style={{ width: "100%", height: 130 }}>

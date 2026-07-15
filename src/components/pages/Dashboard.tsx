@@ -20,7 +20,7 @@ import {
   Tooltip, ResponsiveContainer, Area, AreaChart, LineChart, Line,
   ComposedChart, Legend
 } from "recharts";
-import { fmt, uid, today, localDateStr, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, forecastFor, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, withTimeout } from "../../lib/utils";
+import { fmt, uid, today, localDateStr, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, forecastFor, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, withTimeout, totalJobPhotoCount } from "../../lib/utils";
 import { supabase } from "../../lib/supabase";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
 import { twilioSend, sendOwnerGmailOnly, logOutboundSmsToInbox } from "../../lib/messaging";
@@ -669,7 +669,7 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
               const lunchMs = onLunch ? Math.max(0, Date.now() - Number(e.dayLunchStartAt)) : 0;
               const shiftMs = Math.max(0, Date.now() - Number(e.dayClockInAt) - pausedMs - lunchMs);
               const prog = j ? checklistProgress(j) : null;
-              const photoCount = j ? (j.photos || []).length : 0;
+              const photoCount = j ? totalJobPhotoCount(j) : 0;
               const mapsKey = settings.googleMapsKey || settings.mapsKey;
               const status = crewStatusLabel(j, prog);
               return (

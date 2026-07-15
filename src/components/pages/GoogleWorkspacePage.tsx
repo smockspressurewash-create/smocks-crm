@@ -776,21 +776,43 @@ export function GoogleWorkspacePage({
   const token: string = s.googleProviderToken || "";
   const hasToken = !!token;
 
+  // BLOCKER 3 (mobile round 7) — core refresh logic shared by the manual
+  // "Refresh" button, the once-per-load auto-refresh, AND the module-level
+  // refresher gFetch calls on a live 401. Tries the real Google refresh_token
+  // exchange first (functions/api/google-refresh.ts) and only falls back to
+  // Supabase's session refresh — which its own comments elsewhere note is
+  // unreliable (it re-fetches the Supabase JWT, not a fresh Google token) —
+  // when no refresh_token is on file. Previously the registered
+  // setGoogleTokenRefresher (used by every in-session Calendar/Drive/Gmail
+  // 401) used ONLY the weak Supabase path, so "Settings shows Connected but
+  // Gmail returns 401" never actually got fixed by anything running mid-session.
+  const getRefreshedGoogleToken = useCallback(async (): Promise<string | null> => {
+    if (s.googleRefreshToken) {
+      const refreshed = await refreshEmpGoogleToken(s.googleBackendUrl, s.googleRefreshToken);
+      if (refreshed) {
+        setSettings?.((prev: any) => ({ ...prev, googleProviderToken: refreshed.token, googleTokenExpiresAt: refreshed.expiresAt }));
+        return refreshed.token;
+      }
+    }
+    const { data } = await supabase.auth.refreshSession();
+    const fallbackToken: string = (data.session as any)?.provider_token || "";
+    if (fallbackToken) {
+      setSettings?.((prev: any) => ({ ...prev, googleProviderToken: fallbackToken }));
+      return fallbackToken;
+    }
+    return null;
+  }, [s.googleRefreshToken, s.googleBackendUrl, setSettings]);
+
   // Register a token refresher with the googleApi module so any 401 auto-retries.
-  // Uses Supabase refreshSession which internally re-fetches the provider_token.
   useEffect(() => {
     if (!hasToken) { setGoogleTokenRefresher(null); return; }
     setGoogleTokenRefresher(async () => {
-      const { data, error } = await supabase.auth.refreshSession();
-      const newToken: string = (data.session as any)?.provider_token || "";
-      if (error || !newToken) {
-        throw new Error("Refresh failed");
-      }
-      setSettings?.((prev: any) => ({ ...prev, googleProviderToken: newToken }));
+      const newToken = await getRefreshedGoogleToken();
+      if (!newToken) throw new Error("Refresh failed");
       return newToken;
     });
     return () => setGoogleTokenRefresher(null);
-  }, [hasToken, setSettings]);
+  }, [hasToken, getRefreshedGoogleToken]);
 
   // FIX 1 — real refresh-token exchange (via functions/api/google-refresh.ts,
   // same helper the employee portal uses), with a graceful message if that
@@ -800,21 +822,8 @@ export function GoogleWorkspacePage({
   const doRefreshToken = useCallback(async (silent = false): Promise<boolean> => {
     setRefreshing(true);
     try {
-      if (s.googleRefreshToken) {
-        const refreshed = await refreshEmpGoogleToken(s.googleBackendUrl, s.googleRefreshToken);
-        if (refreshed) {
-          setSettings?.((prev: any) => ({ ...prev, googleProviderToken: refreshed.token, googleTokenExpiresAt: refreshed.expiresAt }));
-          setRefreshFailed(false);
-          if (!silent) toast?.("Google token refreshed", "green");
-          return true;
-        }
-      }
-      // Fallback: Supabase's own session refresh occasionally still turns up
-      // a usable provider_token even without a stored refresh_token.
-      const { data } = await supabase.auth.refreshSession();
-      const fallbackToken: string = (data.session as any)?.provider_token || "";
-      if (fallbackToken) {
-        setSettings?.((prev: any) => ({ ...prev, googleProviderToken: fallbackToken }));
+      const newToken = await getRefreshedGoogleToken();
+      if (newToken) {
         setRefreshFailed(false);
         if (!silent) toast?.("Google token refreshed", "green");
         return true;
@@ -838,7 +847,7 @@ export function GoogleWorkspacePage({
     } finally {
       setRefreshing(false);
     }
-  }, [s.googleRefreshToken, s.googleBackendUrl, setSettings, toast]);
+  }, [getRefreshedGoogleToken, s.googleRefreshToken, toast]);
 
   // FIX 1 — attempt a silent auto-refresh once per page load whenever the
   // stored token is missing or already past (or near) expiry, instead of
@@ -852,6 +861,39 @@ export function GoogleWorkspacePage({
     doRefreshToken(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isConnected, hasToken]);
+
+  // FIX 4 (mobile round 8) — the header below used to show "✓ Connected"
+  // purely because googleConnected/googleProviderToken existed in settings,
+  // with no actual proof the token still works. This makes a real, live API
+  // call on page load (Google's tokeninfo endpoint — cheap, no scopes
+  // needed) instead of trusting stored expiry metadata alone: if it 401s,
+  // try a real refresh, re-verify with the refreshed token, and only THEN
+  // report success. `tokenVerified` (null = still checking) drives the badge.
+  const [tokenVerified, setTokenVerified] = useState<boolean | null>(null);
+  const verifyGoogleToken = useCallback(async (tok: string): Promise<boolean> => {
+    try {
+      const res = await fetch(`https://www.googleapis.com/oauth2/v3/tokeninfo?access_token=${encodeURIComponent(tok)}`);
+      return res.ok;
+    } catch {
+      return false;
+    }
+  }, []);
+  useEffect(() => {
+    if (!isConnected || !hasToken) { setTokenVerified(isConnected ? false : null); return; }
+    let cancelled = false;
+    (async () => {
+      setTokenVerified(null); // "verifying…" while this runs
+      let ok = await verifyGoogleToken(token);
+      if (!ok) {
+        const refreshed = await getRefreshedGoogleToken();
+        if (refreshed) ok = await verifyGoogleToken(refreshed);
+      }
+      if (cancelled) return;
+      setTokenVerified(ok);
+      if (!ok) setRefreshFailed(true);
+    })();
+    return () => { cancelled = true; };
+  }, [isConnected, hasToken, token, verifyGoogleToken, getRefreshedGoogleToken]);
 
   const GOOGLE_SCOPES = [
     "https://www.googleapis.com/auth/calendar",
@@ -951,7 +993,12 @@ export function GoogleWorkspacePage({
           </div>
           <div>
             <div className="font-bold">Google Workspace</div>
-            <div className="text-[11px] text-green-400">✓ Connected as {googleEmail}</div>
+            {/* FIX 4 (mobile round 8) — only ever say "Connected" once
+                tokenVerified is actually true; null = still checking,
+                false = a live API call (and a refresh attempt) both failed. */}
+            <div className={"text-[11px] " + (tokenVerified === false ? "text-red-400" : tokenVerified === true ? "text-green-400" : "text-white/40")}>
+              {tokenVerified === false ? "⚠ Token expired — Reconnect" : tokenVerified === true ? `✓ Connected as ${googleEmail}` : "Verifying connection…"}
+            </div>
           </div>
         </div>
         <div className="flex items-center gap-2">

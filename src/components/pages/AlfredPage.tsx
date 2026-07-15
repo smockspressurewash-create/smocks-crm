@@ -258,6 +258,51 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
     return () => clearInterval(interval);
   }, [ownerId]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // FEATURE 2 (mobile round 7) — Alfred's remember_fact tool used to only
+  // write to local usePersistent state, so anything the owner told Alfred to
+  // remember never left the device it was said on. Mirrors the
+  // alfred_conversations sync immediately above: fetch + 5s poll + upsert,
+  // keyed by the same ownerId.
+  const [alfredMemoryLoaded, setAlfredMemoryLoaded] = useState(false);
+  const knownMemIdsRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (!ownerId) return;
+    const loadMemory = async () => {
+      try {
+        const res: any = await (supabase as any).from("alfred_memory").select("*").eq("owner_id", ownerId).order("created_at", { ascending: true });
+        if (res.error) {
+          console.warn("[Alfred Memory Sync] fetch failed:", res.error.message, "— run supabase/migrations/0014_alfred_memory_table.sql in the Supabase SQL editor");
+          return;
+        }
+        const data: any[] = Array.isArray(res.data) ? res.data : [];
+        data.forEach(m => knownMemIdsRef.current.add(m.id));
+        const fromServer = data.map(m => ({ id: m.id, text: m.text, category: m.category || "general", createdAt: m.created_at || today() }));
+        setMemory((prev: any[]) => {
+          const byId = new Map(fromServer.map(m => [m.id, m]));
+          const localOnly = (prev || []).filter((m: any) => !byId.has(m.id));
+          return [...fromServer, ...localOnly];
+        });
+        setAlfredMemoryLoaded(true);
+        if (data.length > 0) console.log("[Verify] Alfred memory cross-device sync — working —", data.length, "fact(s) loaded for owner_id=" + ownerId);
+      } catch (e: any) { console.warn("[Alfred Memory Sync] fetch threw:", e?.message); }
+    };
+    loadMemory();
+    const interval = setInterval(() => { if (shouldPollAlfred()) loadMemory(); }, 5000);
+    return () => clearInterval(interval);
+  }, [ownerId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (!ownerId || !alfredMemoryLoaded) return;
+    (memory || []).forEach((m: any) => {
+      if (!knownMemIdsRef.current.has(m.id)) {
+        knownMemIdsRef.current.add(m.id);
+        (supabase as any).from("alfred_memory").upsert({
+          id: m.id, owner_id: ownerId, text: m.text, category: m.category || "general", created_at: m.createdAt || new Date().toISOString(),
+        }, { onConflict: "id" }).then((r: any) => { if (r?.error) console.warn("[Alfred Memory Sync] save failed:", r.error.message); });
+      }
+    });
+  }, [memory, ownerId, alfredMemoryLoaded]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const upsertConversation = (c: any) => {
     (supabase as any).from("alfred_conversations").upsert({
       id: c.id, owner_id: ownerId, title: c.title, messages: c.messages,
@@ -291,7 +336,19 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
   const chats = active?.messages || [];
 
   // Auto-initialize: if no conversations exist, create one so appendMessage always has a target
+  // BLOCKER 5 (mobile round 7) — this ran on mount with empty deps, BEFORE
+  // the Supabase fetch above (async, keyed on ownerId) had any chance to
+  // land. On a fresh browser/device with no local conversations yet (e.g.
+  // opening Alfred on a phone for the first time), this fired first, created
+  // a brand-new blank "New chat", and set IT active — so even once the real
+  // PC conversations synced in moments later, the phone kept showing the new
+  // empty chat instead of them. Looked exactly like "sync isn't working"
+  // even though the synced data really was there in the (unselected) list.
+  // Waiting for alfredConvsLoaded before deciding "there's really nothing
+  // here" fixes that, while still working immediately if there's no owner
+  // session at all (fetch will never run).
   useEffect(() => {
+    if (ownerId && !alfredConvsLoaded) return;
     if (!conversations || conversations.length === 0) {
       const cid = uid();
       const greeting = (personalities as any)[personality]?.greeting || "Hey. What do we need to handle today? Alfred out.";
@@ -299,9 +356,15 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
       setConversations([newConv]);
       setActiveConvId(cid);
     }
-  }, []); // eslint-disable-line
+  }, [alfredConvsLoaded, ownerId]); // eslint-disable-line
 
-  useEffect(() => { scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" }); }, [chats.length, loading]);
+  // BLOCKER 5 / FEATURE 9 (mobile round 7) — was keyed only on chats.length,
+  // so switching to a DIFFERENT conversation that happened to have the same
+  // message count as the one you were just on wouldn't scroll at all, and
+  // opening a conversation with a large scrollback initially rendered at
+  // whatever scroll position was already in the DOM rather than the bottom.
+  // Including active?.id fires this on every conversation switch too.
+  useEffect(() => { scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" }); }, [chats.length, loading, active?.id]);
 
   // Slash command suggestions
   const slashCmds = [
@@ -421,8 +484,24 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
     setMemory([...memory, { id: uid(), text: newMemoryText.trim(), category: newMemoryCat, createdAt: today() }]);
     setNewMemoryText("");
   };
-  const removeMemory = id => setMemory(memory.filter(m => m.id !== id));
-  const clearMemory = () => { if (confirm("Wipe all Alfred memory?")) { setMemory([]); toast("Memory cleared"); } };
+  // FEATURE 2 (mobile round 7) — these only removed memories from local
+  // state, so a deleted fact silently reappeared on the next 5s sync poll
+  // (or on another device) since the row was still sitting in alfred_memory.
+  const removeMemory = id => {
+    setMemory(memory.filter(m => m.id !== id));
+    (supabase as any).from("alfred_memory").delete().eq("id", id)
+      .then((r: any) => { if (r?.error) console.warn("[Alfred Memory Sync] delete failed:", r.error.message); });
+  };
+  const clearMemory = () => {
+    if (!confirm("Wipe all Alfred memory?")) return;
+    const ids = memory.map((m: any) => m.id);
+    setMemory([]);
+    toast("Memory cleared");
+    if (ids.length > 0) {
+      (supabase as any).from("alfred_memory").delete().in("id", ids)
+        .then((r: any) => { if (r?.error) console.warn("[Alfred Memory Sync] bulk delete failed:", r.error.message); });
+    }
+  };
 
   const runSlash = async text => {
     const [cmd, ...rest] = text.trim().split(/\s+/);
@@ -940,6 +1019,52 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           setTimeout(() => onNav("estimates"), 1200);
           return { success: true, estimateId: savedE.id, total, customer: c.firstName + " " + c.lastName };
         }
+        case "send_estimate": {
+          let est: any = inputs.estimateId ? estimates.find(x => x.id === inputs.estimateId) : null;
+          let sc: any = est ? customers.find(x => x.id === est.customerId) : null;
+          // create_estimate (above) never mutates local `estimates` state —
+          // it relies on the next Supabase poll — so a same-turn chain of
+          // create_estimate -> send_estimate won't find the new row in the
+          // local array yet. Fetch it directly by id as a fallback.
+          if (!est && inputs.estimateId) {
+            try {
+              const { data } = await (supabase as any).from("estimates").select("*").eq("id", inputs.estimateId).maybeSingle();
+              if (data) { est = data; sc = customers.find(x => x.id === data.customerId); }
+            } catch { /* fall through to not-found below */ }
+          }
+          if (!est) {
+            const byName = customers.find(x => x.id === inputs.customerId || (x.firstName + " " + x.lastName).toLowerCase() === (inputs.customerName || "").toLowerCase());
+            if (byName) {
+              sc = byName;
+              est = estimates.filter(x => x.customerId === byName.id && x.status === "pending").sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""))[0] || null;
+            }
+          }
+          if (!est) return { error: "No matching pending estimate found — create one first with create_estimate." };
+          if (!sc) sc = customers.find(x => x.id === est.customerId);
+          if (!sc) return { error: "Customer not found for this estimate." };
+          const channel = inputs.channel || "both";
+          const link = `${window.location.origin}${window.location.pathname}#/estimate/${est.id}`;
+          let sentEmail = false, sentSms = false;
+          const errs: string[] = [];
+          if ((channel === "email" || channel === "both") && sc.email) {
+            try {
+              await sendEmail(settings, { to: sc.email, subject: "Your Crew Boss estimate", body: emailShell(settings?.companyName || "Crew Boss", "Your Estimate", `<p>Hi ${sc.firstName}, here's your estimate for ${fmt(est.total)}.</p>` + emailButton("View & Sign Estimate", link)) });
+              sentEmail = true;
+            } catch (e: any) { errs.push("email: " + e.message); }
+          }
+          if ((channel === "sms" || channel === "both") && sc.phone) {
+            try {
+              await twilioSend(settings, sc.phone, `Hi ${sc.firstName}! Your Crew Boss estimate for ${fmt(est.total)} is ready: ${link}`);
+              sentSms = true;
+            } catch (e: any) { errs.push("sms: " + e.message); }
+          }
+          if (!sentEmail && !sentSms) return { error: "Failed to send — " + (errs.join("; ") || "no email/phone on file for this customer") };
+          const sentAt = today();
+          (supabase as any).from("estimates").update({ sentAt, sendChannel: channel }).eq("id", est.id).catch(() => {});
+          setEstimates((prev: any[]) => prev.map(x => x.id === est.id ? { ...x, sentAt, sendChannel: channel } : x));
+          toast("Alfred sent the estimate to " + sc.firstName + (errs.length ? " (partial)" : ""));
+          return { success: true, estimateId: est.id, customer: sc.firstName + " " + sc.lastName, sentEmail, sentSms, warnings: errs.length ? errs : undefined };
+        }
         case "schedule_job": {
           const c = customers.find(x => x.id === inputs.customerId || (x.firstName + " " + x.lastName).toLowerCase() === (inputs.customerName || "").toLowerCase());
           if (!c) {
@@ -1303,6 +1428,11 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
       input_schema: { type: "object", properties: { customerId: { type: "string" }, customerName: { type: "string" }, lineItems: { type: "array", items: { type: "object", properties: { description: { type: "string" }, quantity: { type: "number" }, unitPrice: { type: "number" } }, required: ["description", "unitPrice"] } }, notes: { type: "string" } }, required: ["lineItems"] }
     },
     {
+      name: "send_estimate",
+      description: "Send an existing estimate/quote to its customer via email and/or SMS with a link to view and sign it. Use right after create_estimate if the user asked to 'send' or 'quote' the customer, or when asked to send an already-existing pending estimate.",
+      input_schema: { type: "object", properties: { estimateId: { type: "string", description: "Optional — if omitted, sends the customer's most recent pending estimate" }, customerId: { type: "string" }, customerName: { type: "string" }, channel: { type: "string", enum: ["email", "sms", "both"] } } }
+    },
+    {
       name: "schedule_job",
       description: "Schedule a new job for a customer on a specific date (YYYY-MM-DD).",
       input_schema: { type: "object", properties: { customerId: { type: "string" }, customerName: { type: "string" }, date: { type: "string" }, amount: { type: "number" }, duration: { type: "number" }, priority: { type: "string", enum: ["low", "normal", "high", "urgent"] }, tags: { type: "array", items: { type: "string" } }, checklist: { type: "array", items: { type: "string" } }, notes: { type: "string" } } }
@@ -1344,7 +1474,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
     },
     {
       name: "send_reminder",
-      description: "Send a payment or appointment reminder to a customer (mocked).",
+      description: "Send a real payment or appointment reminder to a customer via SMS or email (requires Twilio/Gmail configured in Settings).",
       input_schema: { type: "object", properties: { customerId: { type: "string" }, channel: { type: "string", enum: ["email", "sms"] } }, required: ["customerId"] }
     },
     {
@@ -1483,7 +1613,8 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
       const googleStatus = settings.googleConnected
         ? `\n\nGoogle Workspace: CONNECTED as ${settings.googleEmail}. Backend: ${settings.googleBackendUrl ? "configured ✓" : "NOT configured — calls will be queued until backend URL is added"}. Enabled scopes: ${Object.entries(settings.googleScopes || {}).filter(([k, v]) => v).map(([k]) => k).join(", ")}. You CAN use send_email_via_gmail, create_calendar_event, create_google_task, and upload_to_drive — they will call the real Google APIs if backend is configured, or stage for later if not.`
         : `\n\nGoogle Workspace: NOT CONNECTED. If the user asks to send email, create calendar events, or manage tasks, tell them to go to Settings → Integrations → Google and connect their backend.`;
-      const toolHint = `\n\nYou have tools available to READ and MODIFY the CRM. USE THEM AGGRESSIVELY — don't just describe what you would do, actually do it.\n\nRESPONSE STYLE: Do not narrate your reasoning, your plan, or which tool you're about to call ("Let me check...", "I'll create that now...", "First I need to..."). Just call the tool(s) silently and then give the user the final result in 1-3 short sentences. No step-by-step thinking out loud.\n\nVERIFY BEFORE CONFIRMING: every action tool returns either {"success": true, ...} or {"error": "..."}. NEVER say "Done" or "All set" without checking which one came back. If you see an "error" field, tell the user exactly what went wrong (the error text) and what they could try instead — do not pretend it worked, and do not retry silently. Only confirm success when the tool result actually contains "success": true.\n\nKEY TOOL RULES:\n- Customer queries → USE search_customers or get_customer_details FIRST\n- Stats requests → USE get_business_stats\n- "What's on the calendar" → USE get_calendar_summary\n- "Who's clocked in / who's working" → USE get_employee_status\n- "Remember/note/don't forget" → USE remember_fact\n- Create estimates, customers, jobs → USE create_estimate/create_customer/schedule_job\n- Move or cancel a job → USE reschedule_job/cancel_job\n- Navigate somewhere → USE navigate_to (the app already auto-navigates after schedule_job/create_customer/create_estimate, but call navigate_to yourself for anything else the user asks to see)\n- Preferences/facts shared → USE remember_fact automatically\n\nAUTOMATION TOOLS (VERY IMPORTANT):\n- When user describes ANY workflow, drip sequence, reminder, or "when X do Y" scenario → USE create_automation IMMEDIATELY. Build a proper n8n-style multi-step workflow with real step types: trigger (first), then delays, conditions, actions. NEVER just describe what you'd build — actually build it with create_automation.\n- "Send review request after job complete" → trigger: Job complete, delay: 2h, action: SMS review request\n- "Follow up on unpaid invoices" → trigger: Invoice unpaid 7 days, action: polite reminder email, delay: 4 days, condition: still unpaid, action: firm SMS\n- To check existing workflows → USE list_automations\n- To enable/disable a workflow → USE toggle_automation\n\nCurrent automations: ${automations.length} total, ${automations.filter(a => a.active).length} active\n\nNAME MATCHING: if a tool result comes back with "error": "Customer not found" or "Employee not found" and includes a "suggestions" array, ask the user "Do you mean [name], or [name]?" using those exact suggested names — never ask a generic clarifying question like "who do you mean?" when real candidate names are available.`;
+      const toolHint = `\n\nYou have tools available to READ and MODIFY the CRM. USE THEM AGGRESSIVELY — don't just describe what you would do, actually do it.\n\nRESPONSE STYLE: Do not narrate your reasoning, your plan, or which tool you're about to call ("Let me check...", "I'll create that now...", "First I need to..."). Just call the tool(s) silently and then give the user the final result in 1-3 short sentences. No step-by-step thinking out loud.\n\nVERIFY BEFORE CONFIRMING: every action tool returns either {"success": true, ...} or {"error": "..."}. NEVER say "Done" or "All set" without checking which one came back. If you see an "error" field, tell the user exactly what went wrong (the error text) and what they could try instead — do not pretend it worked, and do not retry silently. Only confirm success when the tool result actually contains "success": true.\n\nKEY TOOL RULES:\n- Customer queries → USE search_customers or get_customer_details FIRST\n- Stats requests → USE get_business_stats\n- "What's on the calendar" → USE get_calendar_summary\n- "Who's clocked in / who's working" → USE get_employee_status\n- "Remember/note/don't forget" → USE remember_fact\n- Create estimates, customers, jobs → USE create_estimate/create_customer/schedule_job
+- "Send a quote/estimate to X" → USE create_estimate (if it doesn't exist yet) THEN send_estimate in the same turn — do not just create it and stop, and do not tell the user it was "sent" unless send_estimate actually returned success\n- Move or cancel a job → USE reschedule_job/cancel_job\n- Navigate somewhere → USE navigate_to (the app already auto-navigates after schedule_job/create_customer/create_estimate, but call navigate_to yourself for anything else the user asks to see)\n- Preferences/facts shared → USE remember_fact automatically\n\nAUTOMATION TOOLS (VERY IMPORTANT):\n- When user describes ANY workflow, drip sequence, reminder, or "when X do Y" scenario → USE create_automation IMMEDIATELY. Build a proper n8n-style multi-step workflow with real step types: trigger (first), then delays, conditions, actions. NEVER just describe what you'd build — actually build it with create_automation.\n- "Send review request after job complete" → trigger: Job complete, delay: 2h, action: SMS review request\n- "Follow up on unpaid invoices" → trigger: Invoice unpaid 7 days, action: polite reminder email, delay: 4 days, condition: still unpaid, action: firm SMS\n- To check existing workflows → USE list_automations\n- To enable/disable a workflow → USE toggle_automation\n\nCurrent automations: ${automations.length} total, ${automations.filter(a => a.active).length} active\n\nNAME MATCHING: if a tool result comes back with "error": "Customer not found" or "Employee not found" and includes a "suggestions" array, ask the user "Do you mean [name], or [name]?" using those exact suggested names — never ask a generic clarifying question like "who do you mean?" when real candidate names are available.`;
       const systemPrompt = prompts[activePersonality] + memoryContext + businessContext + googleStatus + toolHint;
 
       // Build initial message list — allow multi-turn tool calls up to 5 rounds

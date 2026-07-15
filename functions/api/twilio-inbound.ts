@@ -12,7 +12,12 @@ export const onRequestPost = async (context: { request: Request }) => {
         status: 400, headers: { "Content-Type": "application/json" },
       });
     }
-    const sinceParam = since ? `&DateSent>=${encodeURIComponent(since)}` : "";
+    // FEATURE 7 (mobile round 7) — Twilio's Messages List Resource only
+    // supports DateSent, DateSent<, and DateSent> as filter params; DateSent>=
+    // isn't a real Twilio operator (unrecognized query params are silently
+    // ignored), so this "since" filter never actually narrowed the request —
+    // every poll re-fetched the same last-50 messages regardless.
+    const sinceParam = since ? `&DateSent>${encodeURIComponent(since)}` : "";
     const url = `https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json?Direction=inbound&PageSize=50${sinceParam}`;
     const twilioRes = await fetch(url, {
       headers: { Authorization: `Basic ${btoa(`${sid}:${token}`)}` },

@@ -89,6 +89,11 @@ export function CustomersPage({ customers = [], setCustomers, estimates = [], jo
   const [mergeMode, setMergeMode] = useState(false);
   const [mergePair, setMergePair] = useState([]);
   const fileRef = useRef(null);
+  // FEATURE 5 (mobile round 7) — bulk select mode, separate from mergeMode
+  // (which is capped at exactly 2 rows for a different purpose).
+  const [bulkMode, setBulkMode] = useState(false);
+  const [bulkSelected, setBulkSelected] = useState<string[]>([]);
+  const toggleBulk = (id: string) => setBulkSelected(s => s.includes(id) ? s.filter(x => x !== id) : [...s, id]);
 
   const toggleMerge = id => setMergePair(prev => prev.includes(id) ? prev.filter(x => x !== id) : prev.length < 2 ? [...prev, id] : prev);
 
@@ -106,6 +111,30 @@ export function CustomersPage({ customers = [], setCustomers, estimates = [], jo
   };
 
   const filtered = customers.filter(c => (c.firstName + " " + c.lastName + " " + c.email + " " + c.phone).toLowerCase().includes(search.toLowerCase()));
+  const toggleBulkAll = () => setBulkSelected(bulkSelected.length === filtered.length ? [] : filtered.map(c => c.id));
+
+  const downloadSelectedCsv = () => {
+    const rows = [["firstName", "lastName", "email", "phone", "address", "totalSpent", "createdAt"]];
+    customers.filter(c => bulkSelected.includes(c.id)).forEach(c => rows.push([c.firstName, c.lastName, c.email, c.phone, c.address, c.totalSpent, c.createdAt]));
+    const csv = rows.map(r => r.map(v => '"' + String(v ?? "").replace(/"/g, '""') + '"').join(",")).join("\n");
+    const b = new Blob([csv], { type: "text/csv" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(b);
+    a.download = "customers-selected-" + today() + ".csv";
+    a.click();
+    URL.revokeObjectURL(a.href);
+    toast(`Downloaded ${bulkSelected.length} customer${bulkSelected.length !== 1 ? "s" : ""}`);
+  };
+  const deleteSelectedCustomers = () => {
+    if (bulkSelected.length === 0) return;
+    if (!window.confirm(`Permanently delete ${bulkSelected.length} customer${bulkSelected.length !== 1 ? "s" : ""}? This can't be undone.`)) return;
+    const ids = [...bulkSelected];
+    setCustomers(customers.filter(c => !ids.includes(c.id)));
+    setBulkSelected([]);
+    (supabase as any).from("customers").delete().in("id", ids)
+      .then((r: any) => { if (r?.error) toast("Deleted locally, but failed to delete from server — " + r.error.message, "red"); else toast(ids.length + " customer(s) deleted"); })
+      .catch((e: any) => toast("Deleted locally, but failed to delete from server — " + (e?.message || ""), "red"));
+  };
 
   const save = d => {
     if (d.id) setCustomers(customers.map(c => c.id === d.id ? d : c));
@@ -293,9 +322,25 @@ export function CustomersPage({ customers = [], setCustomers, estimates = [], jo
           <GBtn variant="ghost" onClick={() => fileRef.current?.click()}><Download size={14} className="inline mr-1.5 rotate-180" />Import</GBtn>
           <GBtn variant="ghost" onClick={exportCSV}><Download size={14} className="inline mr-1.5" />Export</GBtn>
           <GBtn variant={mergeMode ? "danger" : "ghost"} onClick={() => { setMergeMode(!mergeMode); setMergePair([]); }}><UserCheck size={14} className="inline mr-1.5" />{mergeMode ? "Cancel Merge" : "Merge"}</GBtn>
+          <GBtn variant={bulkMode ? "danger" : "ghost"} onClick={() => { setBulkMode(!bulkMode); setBulkSelected([]); }}><CheckSquare size={14} className="inline mr-1.5" />{bulkMode ? "Cancel Select" : "Select"}</GBtn>
           <GBtn onClick={() => setModal({ open: true, data: null })}><Plus size={14} className="inline mr-1.5" />Add</GBtn>
         </div>
       </div>
+
+      {bulkMode && pageTab === "list" && (
+        <Glass className="p-3 !bg-red-950/15 !border-red-700/30 flex items-center justify-between flex-wrap gap-2">
+          <label className="flex items-center gap-2 text-xs text-white/60 cursor-pointer">
+            <input type="checkbox" checked={filtered.length > 0 && bulkSelected.length === filtered.length} onChange={toggleBulkAll} className="w-4 h-4 rounded accent-red-600" />
+            Select all ({bulkSelected.length}/{filtered.length})
+          </label>
+          {bulkSelected.length > 0 && (
+            <div className="flex gap-2">
+              <GBtn variant="ghost" onClick={downloadSelectedCsv} className="!text-xs"><Download size={12} className="inline mr-1" />Download ({bulkSelected.length})</GBtn>
+              <GBtn variant="danger" onClick={deleteSelectedCustomers} className="!text-xs"><Trash2 size={12} className="inline mr-1" />Delete ({bulkSelected.length})</GBtn>
+            </div>
+          )}
+        </Glass>
+      )}
 
       {/* LTV Analytics tab */}
       {pageTab === "analytics" && <CustomerAnalytics customers={customers} jobs={jobs} estimates={estimates} />}
@@ -378,6 +423,7 @@ export function CustomersPage({ customers = [], setCustomers, estimates = [], jo
             <thead>
               <tr className="border-b border-red-900/30 bg-black/40">
                 {mergeMode && <th className="px-4 py-3"></th>}
+                {bulkMode && <th className="px-4 py-3"></th>}
                 <th className="text-left px-5 py-3 font-medium text-white/60 text-xs uppercase tracking-wider">Name</th>
                 <th className="text-left px-5 py-3 font-medium text-white/60 text-xs uppercase tracking-wider hidden lg:table-cell">Phone</th>
                 <th className="text-right px-5 py-3 font-medium text-white/60 text-xs uppercase tracking-wider">Spent</th>
@@ -390,7 +436,8 @@ export function CustomersPage({ customers = [], setCustomers, estimates = [], jo
                 return (
                   <tr key={c.id} className={"border-b border-red-900/10 hover:bg-white/5 transition " + (sel ? "bg-yellow-950/20" : "")}>
                     {mergeMode && <td className="px-4 py-4"><input type="checkbox" checked={sel} onChange={() => toggleMerge(c.id)} className="w-4 h-4 accent-red-600" /></td>}
-                    <td className="px-5 py-4 cursor-pointer" onClick={() => !mergeMode && setDetail(c)}>
+                    {bulkMode && <td className="px-4 py-4"><input type="checkbox" checked={bulkSelected.includes(c.id)} onChange={() => toggleBulk(c.id)} className="w-4 h-4 rounded accent-red-600" /></td>}
+                    <td className="px-5 py-4 cursor-pointer" onClick={() => !mergeMode && !bulkMode && setDetail(c)}>
                       <div className="flex items-center gap-2">
                         <div className="font-medium">{c.firstName} {c.lastName}</div>
                         {c.hasDog && <span title={"Dog: " + c.dogName} className="text-[10px]">🐕</span>}
@@ -398,8 +445,8 @@ export function CustomersPage({ customers = [], setCustomers, estimates = [], jo
                       </div>
                       <div className="text-xs text-white/50">{c.email}</div>
                     </td>
-                    <td className="px-5 py-4 text-white/70 hidden lg:table-cell cursor-pointer" onClick={() => !mergeMode && setDetail(c)}>{c.phone}</td>
-                    <td className="px-5 py-4 text-right font-semibold text-red-400 cursor-pointer" onClick={() => !mergeMode && setDetail(c)}>{fmt(c.totalSpent)}</td>
+                    <td className="px-5 py-4 text-white/70 hidden lg:table-cell cursor-pointer" onClick={() => !mergeMode && !bulkMode && setDetail(c)}>{c.phone}</td>
+                    <td className="px-5 py-4 text-right font-semibold text-red-400 cursor-pointer" onClick={() => !mergeMode && !bulkMode && setDetail(c)}>{fmt(c.totalSpent)}</td>
                     <td className="px-5 py-4">
                       <div className="flex items-center justify-end gap-1">
                         <button onClick={() => quickAction("call", c)} className="p-1.5 rounded-lg hover:bg-green-900/30 text-white/60 hover:text-green-400 transition"><Phone size={14} /></button>
