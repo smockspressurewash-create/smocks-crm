@@ -123,7 +123,14 @@ const classifyTrigger = (labelRaw: string): Category | null => {
   if (/october 1/.test(t)) return "seasonal_fall";
   if (/not approved|abandoned|no response/.test(t)) return "abandoned_estimate";
   if (/no service|re-?engage|6 months/.test(t)) return "reengage";
-  if (/anniversary/.test(t)) return "anniversary";
+  // AutomationEditor.tsx's simple dropdown labels this trigger "1 year since
+  // first service" (no literal "anniversary" in the text at all — and it
+  // doesn't match the "maintenance" pattern above either, since that requires
+  // the exact substring "since service", not "since first service") — that
+  // mismatch was the actual reason "Customer anniversary" kept logging "no
+  // matching engine handler yet" even though the anniversary category/spec
+  // below has always existed and works fine once classified correctly.
+  if (/anniversary|1 year since|year since first service/.test(t)) return "anniversary";
   if (/reward earned|referr.*reward/.test(t)) return "referral_reward";
   if (/referr.*book/.test(t)) return "referral_booked";
   if (/review submitted|5 star/.test(t) && /review/.test(t)) return "review_good";
@@ -221,12 +228,62 @@ export function useAutomationEngine({
   toast,
 }: AutomationEngineProps): void {
   const lastRunRef = useRef<string>("");
+  // FIX 1 (automations firing repeatedly for the same person) — root cause:
+  // this effect used to depend directly on [automations, jobs, customers,
+  // estimates, referrals, settings], and jobs/customers/estimates/settings
+  // all get brand-new array/object references on every 3-10s poll refresh
+  // (App.tsx's refetchData/refetchEmployees). Every one of those poll ticks
+  // tore this effect down and re-ran it — and re-running called run()
+  // immediately, so the 15-minute setInterval never actually governed
+  // anything; only the minute-precision lastRunRef guard did, meaning the
+  // engine could really fire again every time a new calendar minute rolled
+  // around. Worse, setAutomations() (called at the end of a successful send)
+  // itself changes the `automations` reference, which was ALSO a dep — so a
+  // send's own state update could retrigger the effect and start a new run()
+  // before the previous run's sentLog patch had committed to state, reading a
+  // stale sentLog that didn't yet know the message had just gone out. That's
+  // what let "Payment overdue 3-day -> Tom Wilson" fire multiple times.
+  // Fix: the interval is now set up once ([] deps) and reads the latest
+  // jobs/customers/estimates/referrals/settings/automations from refs at
+  // execution time, so fresh poll data no longer restarts the timer, and an
+  // isRunningRef guard blocks a new run from overlapping a still-in-flight
+  // one entirely.
+  const isRunningRef = useRef(false);
+  const automationsRef = useRef(automations);
+  const jobsRef = useRef(jobs);
+  const customersRef = useRef(customers);
+  const estimatesRef = useRef(estimates);
+  const referralsRef = useRef(referrals);
+  const settingsRef = useRef(settings);
+  const toastRef = useRef(toast);
+  const setAutomationsRef = useRef(setAutomations);
+  automationsRef.current = automations;
+  jobsRef.current = jobs;
+  customersRef.current = customers;
+  estimatesRef.current = estimates;
+  referralsRef.current = referrals;
+  settingsRef.current = settings;
+  toastRef.current = toast;
+  setAutomationsRef.current = setAutomations;
 
   useEffect(() => {
     const run = async () => {
       const nowKey = new Date().toISOString().slice(0, 16); // minute precision
       if (lastRunRef.current === nowKey) return;
+      if (isRunningRef.current) return; // a previous tick is still sending — never overlap
       lastRunRef.current = nowKey;
+      isRunningRef.current = true;
+
+      const automations = automationsRef.current;
+      const jobs = jobsRef.current;
+      const customers = customersRef.current;
+      const estimates = estimatesRef.current;
+      const referrals = referralsRef.current;
+      const settings = settingsRef.current;
+      const toast = toastRef.current;
+      const setAutomations = setAutomationsRef.current;
+
+      try {
 
       const todayStr = today();
       const now = new Date();
@@ -583,10 +640,13 @@ export function useAutomationEngine({
           return { ...a, lastTriggered: todayStr, count: (a.count ?? 0) + patch.sent, sentLog: { ...(a.sentLog || {}), ...patch.sentTo } };
         }));
       }
+      } finally {
+        isRunningRef.current = false;
+      }
     };
 
     run();
     const interval = setInterval(run, 15 * 60 * 1000);
     return () => clearInterval(interval);
-  }, [automations, jobs, customers, estimates, referrals, settings]); // eslint-disable-line
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 }

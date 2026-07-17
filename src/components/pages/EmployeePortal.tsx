@@ -2427,7 +2427,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   const CORE_JOB_COLUMNS = [
     "status", "paymentStatus", "paymentType", "loggedHours", "amountCollected", "invoiceSentAt", "arrivedAt",
     "crew", "clockInAt", "lunchStartAt", "pipelineStage", "photos", "videos", "preChecklist", "duringChecklist",
-    "postChecklist", "signOff", "scheduledTime", "commLog", "equipmentChecked", "notes",
+    "postChecklist", "signOff", "scheduledTime", "commLog", "equipmentChecked", "notes", "completedAt",
   ] as const;
   const updateJob = (jobId: string, patch: Partial<Job>): Promise<any> => {
     setJobs(prev => prev.map(j => j.id === jobId ? { ...j, ...patch } : j));

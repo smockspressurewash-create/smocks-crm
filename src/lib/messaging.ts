@@ -332,12 +332,21 @@ export const refreshGoogleAccessToken = async (
 // without requiring a full page reload.
 let gmailRefreshFailureStreak = 0;
 let gmailCircuitOpenedAt = 0;
+// FIX 3 — gmailCircuitOpen() is checked on every single send attempt while
+// the circuit is open (could be dozens across a busy shift), but the
+// "circuit open" state itself only actually CHANGES twice: the moment it
+// opens, and the moment the cooldown lets it reset. Log only on those two
+// transitions instead of every check, or a stuck Gmail connection floods the
+// console with the identical warning on every OTW/invoice/reminder attempt.
+let gmailCircuitWarned = false;
 const GMAIL_REFRESH_MAX_ATTEMPTS = 2;
 const GMAIL_CIRCUIT_COOLDOWN_MS = 10 * 60 * 1000;
 const gmailCircuitOpen = (): boolean => {
   if (gmailRefreshFailureStreak < GMAIL_REFRESH_MAX_ATTEMPTS) return false;
   if (Date.now() - gmailCircuitOpenedAt > GMAIL_CIRCUIT_COOLDOWN_MS) {
+    console.log("[GoogleToken] Gmail refresh circuit reset — cooldown elapsed, allowing retries again");
     gmailRefreshFailureStreak = 0; // cooldown elapsed — allow one more attempt
+    gmailCircuitWarned = false;
     return false;
   }
   return true;
@@ -373,7 +382,10 @@ export const sendViaGmail = async (
     // the refresh chain entirely and fail fast instead of repeating the same
     // doomed 401 → refresh-fail → Supabase-session-refresh sequence forever.
     if (gmailCircuitOpen()) {
-      console.warn("[SendInvoice] Gmail refresh circuit open (failed", gmailRefreshFailureStreak, "times in a row) — skipping retry chain");
+      if (!gmailCircuitWarned) {
+        gmailCircuitWarned = true;
+        console.warn("[SendInvoice] Gmail refresh circuit open (failed", gmailRefreshFailureStreak, "times in a row) — further sends fail fast until", new Date(gmailCircuitOpenedAt + GMAIL_CIRCUIT_COOLDOWN_MS).toLocaleTimeString(), "(not logged again until then)");
+      }
       throw new Error(GMAIL_UNAVAILABLE_MSG);
     }
     console.warn("[SendInvoice] Gmail 401 — attempting real Google token refresh");
