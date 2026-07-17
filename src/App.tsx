@@ -1509,12 +1509,23 @@ export function App() {
         // just happened not to hang. These calls don't depend on session
         // role-resolution (RLS is permissive per CLAUDE.md), so they can run
         // independently the moment this ceiling fires.
-        console.warn("Session bootstrap exceeded 5s — forcing login/CRM render and fetching data directly");
+        //
+        // CRITICAL FIX (employee-logout regression) — this used to also call
+        // setHasCrmSession(true) here, on the assumption that a slow
+        // bootstrap must belong to an owner. That assumption is wrong: at the
+        // 5s mark we genuinely don't know yet whether the pending session (if
+        // any) is an owner's or an employee's. An employee opening #/portal
+        // has page==="portal" from the URL hash immediately, while empSession
+        // is still null during resolution — forcing hasCrmSession true made
+        // isOwnerView (below) — `!empSession && page==="portal" &&
+        // hasCrmSession` — flip true, swapping their real portal for the
+        // read-only OwnerTeamPortal preview stub the instant this timer
+        // fired. That is what "employee signs in, sees the portal, then gets
+        // kicked out ~5s later" actually was: not a real sign-out, but this
+        // timer misclassifying an unresolved employee session as an owner.
+        // Only fetch data here — never guess session type from a timeout.
+        console.warn("Session bootstrap exceeded 5s — releasing loading screen and fetching data directly");
         setSessionChecked(true);
-        // Matches the existing "forcing login/CRM render" behavior below —
-        // if an employee session were already active, page/routing would
-        // already reflect #/portal independently of this timer.
-        setHasCrmSession(true);
         refetchEmployees();
         refetchData();
       }
