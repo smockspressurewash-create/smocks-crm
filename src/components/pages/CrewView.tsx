@@ -140,8 +140,29 @@ export function CrewView({ jobs = [], setJobs, customers = [], employees = [], t
     .filter(j => empFilter === "all" || (j.crew || []).includes(empFilter))
     .sort((a, b) => { const po = { urgent: 0, high: 1, normal: 2, low: 3 }; return (po[a.priority || "normal"] - po[b.priority || "normal"]); });
 
-  const updateJob = (jid, patch) => setJobs(prev => prev.map(j => j.id === jid ? { ...j, ...patch } : j));
-  const toggleCk = (jid, idx) => setJobs(prev => prev.map(j => j.id === jid ? { ...j, checklist: (j.checklist || []).map((c, i) => i === idx ? { ...c, done: !c.done } : c) } : j));
+  // FIX 8 — this used to be local-state-only (plain setJobs, no Supabase
+  // write at all), directly violating CLAUDE.md's documented "checklist sync
+  // ... written immediately on toggle, not batched" invariant. A checklist
+  // tick, photo add, or "Mark Complete" from this page's Stops view looked
+  // like it worked (local state updated) but silently reverted on the next
+  // poll since the server row never changed — and never reached the
+  // employee portal or the owner's other views either.
+  const updateJob = (jid: string, patch: any) => {
+    setJobs((prev: any[]) => prev.map(j => j.id === jid ? { ...j, ...patch } : j));
+    (supabase as any).from("jobs").update(patch).eq("id", jid)
+      .then((r: any) => { if (r?.error) { console.error("[CrewView] updateJob failed:", r.error.message); toast?.("Failed to save — " + r.error.message, "red"); } })
+      .catch((e: any) => { console.error("[CrewView] updateJob threw:", e?.message); toast?.("Failed to save — " + (e?.message || "unknown error"), "red"); });
+  };
+  // FIX 8 — phase-aware so a tick actually lands in whichever of
+  // preChecklist/duringChecklist/postChecklist/checklist the item came from
+  // (see the combined allChecklistItems list below), instead of always
+  // writing to the legacy `checklist` array no matter where the item lives.
+  const toggleCk = (jid: string, phase: "preChecklist" | "duringChecklist" | "postChecklist" | "checklist", idx: number) => {
+    const j = jobs.find((x: any) => x.id === jid);
+    if (!j) return;
+    const updated = ((j as any)[phase] || []).map((c: any, i: number) => i === idx ? { ...c, done: !c.done } : c);
+    updateJob(jid, { [phase]: updated });
+  };
   const clockIn = jid => { updateJob(jid, { clockInAt: Date.now() }); toast("Clocked in ✓"); };
   const clockOut = j => {
     if (!j.clockInAt) return;
@@ -327,8 +348,22 @@ export function CrewView({ jobs = [], setJobs, customers = [], employees = [], t
 
       {dayJobs.map((j, stopIdx) => {
         const c = customers.find(x => x.id === j.customerId);
-        const doneCount = (j.checklist || []).filter(ck => ck.done).length;
-        const pct = (j.checklist || []).length ? Math.round((doneCount / (j.checklist || []).length) * 100) : 0;
+        // FIX 8 — this only ever read the legacy single `checklist` array.
+        // Jobs use the 3-phase preChecklist/duringChecklist/postChecklist
+        // arrays (see CLAUDE.md), which is where real checklist data actually
+        // lives for any job created under the current system — `checklist`
+        // is empty for those, so this always showed "0/0" regardless of true
+        // progress. Combine all four sources, same pattern Dashboard.tsx's
+        // checklistProgress already uses.
+        const allChecklistItems = [
+          ...(j.preChecklist || []).map((it: any, i: number) => ({ ...it, _phase: "preChecklist" as const, _idx: i })),
+          ...(j.duringChecklist || []).map((it: any, i: number) => ({ ...it, _phase: "duringChecklist" as const, _idx: i })),
+          ...(j.postChecklist || []).map((it: any, i: number) => ({ ...it, _phase: "postChecklist" as const, _idx: i })),
+          ...(j.checklist || []).map((it: any, i: number) => ({ ...it, _phase: "checklist" as const, _idx: i })),
+        ];
+        const doneCount = allChecklistItems.filter((ck: any) => ck.done).length;
+        const pct = allChecklistItems.length ? Math.round((doneCount / allChecklistItems.length) * 100) : 0;
+        const videoCount = (j.videos || []).length;
         const isClockedIn = !!j.clockInAt;
         const liveHrs = isClockedIn ? ((Date.now() - j.clockInAt) / 3600000) : 0;
         const prioColor = { urgent: "border-l-red-500", high: "border-l-yellow-500", normal: "border-l-transparent", low: "border-l-transparent" }[j.priority || "normal"];
@@ -418,9 +453,10 @@ export function CrewView({ jobs = [], setJobs, customers = [], employees = [], t
               <div className="h-full bg-gradient-to-r from-red-500 to-green-500 transition-all" style={{ width: pct + "%" }} />
             </div>
             <div className="space-y-2">
-              {(j.checklist || []).map((ck, idx) => (
-                <label key={idx} className={"flex items-start gap-3 p-3 rounded-xl cursor-pointer transition active:scale-95 " + (ck.done ? "bg-green-950/20 border border-green-700/30" : "bg-white/5 border border-white/10")}>
-                  <input type="checkbox" checked={ck.done} onChange={() => toggleCk(j.id, idx)} className="w-5 h-5 rounded accent-green-500 flex-shrink-0 mt-0.5" />
+              {allChecklistItems.length === 0 && <div className="text-xs text-white/30 italic">No checklist items on this job.</div>}
+              {allChecklistItems.map((ck: any) => (
+                <label key={ck._phase + ck._idx} className={"flex items-start gap-3 p-3 rounded-xl cursor-pointer transition active:scale-95 " + (ck.done ? "bg-green-950/20 border border-green-700/30" : "bg-white/5 border border-white/10")}>
+                  <input type="checkbox" checked={ck.done} onChange={() => toggleCk(j.id, ck._phase, ck._idx)} className="w-5 h-5 rounded accent-green-500 flex-shrink-0 mt-0.5" />
                   <span className={"text-sm " + (ck.done ? "line-through text-white/50" : "text-white/90")}>{ck.label}</span>
                 </label>
               ))}

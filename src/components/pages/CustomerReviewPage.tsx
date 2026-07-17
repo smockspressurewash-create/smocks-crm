@@ -4,8 +4,8 @@ import { supabase } from "../../lib/supabase";
 import { uid, today } from "../../lib/utils";
 
 // Public-facing customer review page — no auth required.
-// URL: #/rate?c=CUSTOMER_ID&n=CUSTOMER_FIRST_NAME&g=GOOGLE_PLACE_ID&co=COMPANY_NAME
-// 4–5 stars → redirects to Google Maps review.
+// URL: #/rate?c=CUSTOMER_ID&n=CUSTOMER_FIRST_NAME&g=GOOGLE_PLACE_ID&rl=GOOGLE_REVIEW_LINK&co=COMPANY_NAME
+// 4–5 stars → offers a Google Maps review link, if one is configured.
 // 1–3 stars → private feedback form saved to Supabase reviews table.
 
 function hashParam(key: string): string {
@@ -19,10 +19,16 @@ export function CustomerReviewPage() {
   const firstName = decodeURIComponent(hashParam("n") || "there");
   const googlePlaceId = hashParam("g");
   const companyName = decodeURIComponent(hashParam("co") || "Crew Boss");
-
-  const googleUrl = googlePlaceId
-    ? `https://search.google.com/local/writereview?placeid=${googlePlaceId}`
-    : "https://g.page/r/smocks-pressure-washing/review";
+  // FIX 13 — this used to fall back to a hardcoded
+  // "g.page/r/smocks-pressure-washing/review" link whenever no Place ID was
+  // set, which sent every OTHER deployment's customers to a specific
+  // different business's review page. A directly pasted review link (see
+  // Settings → Company → "Google Maps Review Link") is now preferred; the
+  // Place-ID-constructed URL is a fallback for anyone who already set that
+  // instead; if genuinely neither is configured, there's no Google link to
+  // offer at all — better than sending customers somewhere wrong.
+  const googleReviewLink = decodeURIComponent(hashParam("rl") || "");
+  const googleUrl = googleReviewLink || (googlePlaceId ? `https://search.google.com/local/writereview?placeid=${googlePlaceId}` : "");
 
   const [step, setStep] = useState<"rate" | "happy" | "unhappy" | "done">("rate");
   const [rating, setRating] = useState(0);
@@ -113,24 +119,28 @@ export function CustomerReviewPage() {
               <div className="text-5xl">🎉</div>
               <div>
                 <div className="text-xl font-bold text-yellow-400">Awesome — thank you!</div>
-                <div className="text-white/60 text-sm mt-1">Your {rating}-star experience means the world to us. Would you share it on Google? It helps other homeowners find us.</div>
+                <div className="text-white/60 text-sm mt-1">
+                  {googleUrl ? `Your ${rating}-star experience means the world to us. Would you share it on Google? It helps other homeowners find us.` : `Your ${rating}-star experience means the world to us — thank you for taking the time!`}
+                </div>
               </div>
               <div className="flex justify-center gap-1">{stars(22)}</div>
-              <a
-                href={googleUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                onClick={() => { saveToSupabase(rating, "", "pending"); setTimeout(() => setStep("done"), 600); }}
-                className="flex items-center justify-center gap-2 w-full py-4 bg-white text-gray-900 font-bold rounded-xl hover:bg-gray-100 transition text-base"
-              >
-                <img src="https://www.google.com/images/branding/googleg/1x/googleg_standard_color_128dp.png" alt="G" className="w-5 h-5" />
-                Leave a Google Review
-              </a>
+              {googleUrl && (
+                <a
+                  href={googleUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  onClick={() => { saveToSupabase(rating, "", "pending"); setTimeout(() => setStep("done"), 600); }}
+                  className="flex items-center justify-center gap-2 w-full py-4 bg-white text-gray-900 font-bold rounded-xl hover:bg-gray-100 transition text-base"
+                >
+                  <img src="https://www.google.com/images/branding/googleg/1x/googleg_standard_color_128dp.png" alt="G" className="w-5 h-5" />
+                  Leave a Google Review
+                </a>
+              )}
               <button
-                onClick={() => { saveToSupabase(rating, "declined-google", "pending"); setStep("done"); }}
+                onClick={() => { saveToSupabase(rating, googleUrl ? "declined-google" : "", "pending"); setStep("done"); }}
                 className="text-xs text-white/30 hover:text-white/60 transition"
               >
-                Maybe later
+                {googleUrl ? "Maybe later" : "Done"}
               </button>
             </div>
           )}

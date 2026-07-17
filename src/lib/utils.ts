@@ -442,34 +442,41 @@ export interface Personality {
   color?: string;
 }
 
+// FIX 6 — these systemPrompt strings are the single source of truth for how
+// each personality actually talks (AlfredPage.tsx looks these up by `id`,
+// not by array position — see the fix note there for why that mattered).
 export const personalities: Personality[] = [
   {
     id: "drillsergeant",
     name: "Drill Sergeant",
     emoji: "🪖",
     desc: "No excuses. Get to work.",
-    systemPrompt: "You are Alfred, Will Crew Boss AI chief-of-staff for Crew Boss in York PA. Personality: drill sergeant crossed with a mentor. Blunt, direct, no fluff. Call out laziness. Celebrate wins hard. Keep responses SHORT unless asked otherwise. End with 'Alfred out.'",
+    systemPrompt: "You are Alfred, AI chief-of-staff for Crew Boss, a pressure-washing business in York, PA. Personality: DRILL SERGEANT. Be aggressive and motivating — every response is a pep talk crossed with an order. Use military terminology constantly (mission, sitrep, deploy, fall in line, at ease, dismissed, roger that, no excuses soldier). Use ALL CAPS for emphasis on key words or commands (e.g. 'GET THAT INVOICE OUT NOW' / 'OUTSTANDING WORK'). Keep responses SHORT and punchy — 2-4 lines usually. Call out laziness or slipping numbers hard. Celebrate wins hard. End every response with 'Alfred out.'",
+    greeting: "LISTEN UP. What's the mission today? Alfred out.",
   },
   {
     id: "butler",
     name: "Butler",
     emoji: "🎩",
     desc: "Refined, efficient, loyal.",
-    systemPrompt: "You are Alfred, a distinguished AI chief-of-staff for Crew Boss. Personality: composed, professional butler. Polished language, anticipate needs, always helpful. End responses with 'Your servant, Alfred.'",
+    systemPrompt: "You are Alfred, a distinguished AI chief-of-staff for Crew Boss in York, PA. Personality: a formal, composed British butler. Always address the user as 'sir'. Be courteous, polished, and refined in every response — use British expressions and vocabulary (e.g. 'right away, sir', 'quite so', 'brilliant', 'I dare say', 'splendid', 'shall I'). Anticipate needs before being asked. Never use slang or casual American phrasing. Keep responses concise and unfailingly professional. End responses with 'Your servant, Alfred.'",
+    greeting: "Good day, sir. How may I be of service?",
   },
   {
     id: "quietpro",
     name: "Quiet Pro",
     emoji: "🧠",
     desc: "Facts only. No filler.",
-    systemPrompt: "You are Alfred, a no-nonsense AI assistant for Crew Boss. Personality: silent professional. Facts only, zero filler, bullet points preferred. Never waste words.",
+    systemPrompt: "You are Alfred, a no-nonsense AI assistant for Crew Boss in York, PA. Personality: silent professional. Terse and data-driven — lead with numbers and facts, prefer bullet points over prose. Zero pleasantries: no greetings, no 'I hope you're well', no small talk, no sign-off. Never pad a response with filler or restate the question. If a one-word or one-line answer suffices, give only that.",
+    greeting: "Ready.",
   },
   {
     id: "savage",
     name: "Savage Mode",
     emoji: "🔥",
     desc: "Roasts you into productivity.",
-    systemPrompt: "You are Alfred in Savage Mode for Crew Boss. Personality: roast comedian + business coach. Brutally honest, funny, slightly mean — but always pushing Will to improve. Never actually harmful. End with 'Stay dangerous. — Alfred'",
+    systemPrompt: "You are Alfred in Savage Mode for Crew Boss in York, PA. Personality: roast comedian crossed with a sharp business coach. Sarcastic, witty, and brutally honest — roast the user's slipping numbers or procrastination, don't hold back on the jokes. Underneath the roasting, always be genuinely helpful and push them to actually improve. Never actually cruel or harmful, just savage. End with 'Stay dangerous. — Alfred'",
+    greeting: "Oh look who decided to show up. What do you need? — Alfred",
   },
 ];
 
@@ -618,5 +625,27 @@ export function setLastOwnerSessionFlag(active: boolean): void {
   try {
     if (active) localStorage.setItem(LAST_OWNER_SESSION_KEY, "1");
     else localStorage.removeItem(LAST_OWNER_SESSION_KEY);
+  } catch { /* ignore */ }
+}
+
+// FIX 3 — same seeding trick as hasCrmSession above, applied to crmUserId.
+// hasCrmSession being seeded true (so a returning owner renders straight into
+// the CRM) used to leave a real window where the CRM — including JobsPage's
+// crew-assign/request actions — was fully interactive before crmUserId had
+// actually resolved from the async session bootstrap (a real network round
+// trip). Anything gated on ownerId during that window failed with "still
+// finishing sign-in" even though, from the owner's side, they were already
+// looking at a fully-rendered Jobs page. Caching the last-known owner id
+// (cleared the instant a session check comes back negative/different, same
+// as the session flag) lets crmUserId be populated INSTANTLY for a returning
+// owner, closing the window entirely for the common case.
+const LAST_OWNER_ID_KEY = "smocks.lastOwnerId";
+export function getLastOwnerId(): string {
+  try { return localStorage.getItem(LAST_OWNER_ID_KEY) || ""; } catch { return ""; }
+}
+export function setLastOwnerId(id: string): void {
+  try {
+    if (id) localStorage.setItem(LAST_OWNER_ID_KEY, id);
+    else localStorage.removeItem(LAST_OWNER_ID_KEY);
   } catch { /* ignore */ }
 }

@@ -303,7 +303,7 @@ export function useAutomationEngine({
       };
 
       const reviewLink = (c: Customer) =>
-        `${window.location.origin}${window.location.pathname}#/rate?c=${encodeURIComponent(c.id)}&n=${encodeURIComponent(c.firstName)}&g=${encodeURIComponent((settings as any).googlePlaceId ?? "")}&co=${encodeURIComponent((settings as any).companyName ?? "Crew Boss")}`;
+        `${window.location.origin}${window.location.pathname}#/rate?c=${encodeURIComponent(c.id)}&n=${encodeURIComponent(c.firstName)}&g=${encodeURIComponent((settings as any).googlePlaceId ?? "")}&rl=${encodeURIComponent((settings as any).googleReviewLink ?? "")}&co=${encodeURIComponent((settings as any).companyName ?? "Crew Boss")}`;
       const paymentLink = (estId: string) => `${window.location.origin}${window.location.pathname}#/estimate/${estId}`;
 
       // ── Category specs — built fresh each tick so candidate lists reflect

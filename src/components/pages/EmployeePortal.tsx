@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from "react";
 import {
   Clock, Briefcase, Calendar, ChevronLeft, CheckSquare, Camera,
   LogOut, MapPin, Phone, User, Play, Pause, Square, Plus, X, Eye, EyeOff, DollarSign,
-  ChevronRight, Home, List, CheckCircle, AlertCircle, Image, FileText,
+  ChevronRight, Home, List, CheckCircle, AlertCircle, AlertTriangle, Image, FileText,
   Video, PenLine, Shield, Navigation, Database, Route, ToggleRight, ToggleLeft, Download, Bell
 } from "lucide-react";
 import { supabase } from "../../lib/supabase";
@@ -263,6 +263,14 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
   const [otwOpen, setOtwOpen] = useState(false);
   const [otwChannel, setOtwChannel] = useState<"sms" | "email">(customer?.phone ? "sms" : "email");
   const [sendingOtw, setSendingOtw] = useState(false);
+  // FIX 8 — "Report Problem": lets the employee flag an issue (broken
+  // equipment, property damage, etc.) straight from the job, the same way
+  // OTW/Running Late already notify the customer — this notifies the owner
+  // instead, and leaves a permanent record on the job so it shows up in Live
+  // Crew View.
+  const [reportProblemOpen, setReportProblemOpen] = useState(false);
+  const [reportProblemText, setReportProblemText] = useState("");
+  const [sendingReportProblem, setSendingReportProblem] = useState(false);
   const [, forceTick] = useState(0);
   const [showSignOff, setShowSignOff] = useState(false);
   // Tracks whether Sign-Off was opened from mid-way through the Complete Job
@@ -352,6 +360,38 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
       toast(e?.message || "Failed to send on-my-way message", "red");
     } finally {
       setSendingOtw(false);
+    }
+  };
+
+  // FIX 8 — "Report Problem": logs to commLog (so it's visible to the owner
+  // wherever job activity already shows, including Live Crew View) AND emails
+  // the owner immediately, matching the toast-on-success-and-failure
+  // convention every other send action in this file follows.
+  const sendReportProblem = async () => {
+    if (!reportProblemText.trim()) { toast("Describe the issue first", "red"); return; }
+    setSendingReportProblem(true);
+    const note = `🚨 ISSUE REPORTED by ${employeeName || "crew"}: ${reportProblemText.trim()}`;
+    try {
+      const result = await withTimeout(Promise.resolve(onUpdateJob({ commLog: [...(job.commLog || []), { id: uid(), type: "note" as const, date: today(), note }] })), 15000, "Report problem save");
+      if (result?.error) {
+        console.error("[ReportProblem] — error:", result.error.message);
+        toast("Saved locally, but failed to sync — " + result.error.message, "red");
+        return;
+      }
+      const ownerEmail = (settings as any)?.myEmail || (settings as any)?.companyEmail;
+      if (ownerEmail) {
+        const html = emailShell(companyName, "Issue Reported", `<p><b>${employeeName || "A crew member"}</b> reported an issue on the job at <b>${job.address || "a job"}</b>:</p><p style="background:#fff3cd;color:#333;padding:10px;border-radius:6px">${reportProblemText.trim()}</p>`);
+        sendOwnerGmailOnly(settings as any, ownerEmail, `⚠️ Issue reported — ${job.address || "job"}`, html).catch((e: any) => console.warn("[ReportProblem] owner email failed:", e?.message));
+      }
+      toast("Problem reported to the owner ✓", "green");
+      console.log("[ReportProblem] logged for job", job.id);
+      setReportProblemOpen(false);
+      setReportProblemText("");
+    } catch (e: any) {
+      console.error("[ReportProblem] — error:", e?.message || e);
+      toast("Saved locally, but failed to sync — " + (e?.message || "unknown error"), "red");
+    } finally {
+      setSendingReportProblem(false);
     }
   };
 
@@ -517,7 +557,9 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
   const startCompleteFlow = () => { setCompleteStep("review"); setPaidChoice(""); setPaymentMethod(""); };
 
   const sendInvoiceFromPortal = async (customSubject?: string, customNote?: string) => {
+    console.log("[SendInvoice] sendInvoiceFromPortal called — channel:", invoiceChannel, "job:", job.id, "customer:", customer?.id);
     if (!customer?.email && !customer?.phone) {
+      console.warn("[SendInvoice] aborting — no email or phone on file for customer", customer?.id);
       toast("No contact info for this customer. Add email or phone first.", "red");
       return false;
     }
@@ -529,6 +571,24 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
         subtotal: Number(job.amount) || 0, discount: 0, depositRequired: 0, tax: 0, total: Number(job.amount) || 0,
         status: "approved" as const, createdAt: today(), validUntil: daysFromNow(30), invoiced: true, invoicedAt: today(),
       };
+      // [SendInvoice] this used to ONLY call setEstimates (local React state)
+      // with no Supabase insert at all — the same "local-state-only mutation"
+      // anti-pattern already found and fixed in InvoicesPage.tsx's markPaid.
+      // The payLink texted/emailed to the customer points at
+      // #/estimate/{newInv.id}; if that row never reaches Supabase, the
+      // customer's link 404s and the invoice never appears anywhere in the
+      // owner's CRM (InvoicesPage reads straight from Supabase) — from the
+      // owner's side that's indistinguishable from "Send Invoice did
+      // nothing," even though the employee's own screen shows a success
+      // toast. Insert BEFORE sending so a save failure fails loud (via the
+      // catch below) instead of handing the customer a dead link.
+      console.log("[SendInvoice] inserting new invoice", newInv.id, "for customer", customer?.id, "amount", newInv.total);
+      const insertResult = await (supabase as any).from("estimates").insert(newInv);
+      if (insertResult?.error) {
+        console.error("[SendInvoice] estimate insert failed:", insertResult.error.message);
+        throw new Error("Couldn't save invoice — " + insertResult.error.message);
+      }
+      console.log("[SendInvoice] invoice saved to Supabase ✓");
       setEstimates((prev: any[]) => [...prev, newInv]);
       // FIX 17 — #/portal/ID is the employee portal's route, not a customer
       // invoice view; #/estimate/ID is the public no-login pay/sign portal.
@@ -537,13 +597,17 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
       const noteHtml = customNote?.trim() ? `<p style="font-style:italic;color:rgba(255,255,255,0.6)">${customNote.trim()}</p>` : "";
       if (invoiceChannel === "sms") {
         if (!customer.phone) throw new Error("No phone on file for this customer.");
+        console.log("[SendInvoice] sending via SMS to", customer.phone);
         await withTimeout(twilioSend(settings as any, customer.phone, `Hi ${customer.firstName}, your invoice for ${fmt(Number(job.amount) || 0)} is ready: ${payLink}`), 15000, "Invoice SMS");
+        console.log("[SendInvoice] SMS send resolved ✓");
         toast(`Invoice texted to ${customer.firstName} ✓`, "green");
         logOutboundSmsToInbox({ contactName: `${customer.firstName} ${customer.lastName}`, contactPhone: customer.phone, customerId: customer.id, body: `Hi ${customer.firstName}, your invoice for ${fmt(Number(job.amount) || 0)} is ready: ${payLink}` }).catch(() => {});
       } else {
         if (!customer.email) throw new Error("No email on file for this customer.");
         const html = emailShell(companyName, "Invoice", `<p>Hi ${customer.firstName},</p>${noteHtml}<p>Thanks for choosing us! Your service at <b>${job.address}</b> is complete.</p><p><b>Amount due:</b> $${(Number(job.amount) || 0).toFixed(2)}</p>` + emailButton("View & Pay Invoice", payLink));
+        console.log("[SendInvoice] sending via Gmail to", customer.email);
         await withTimeout(sendOwnerGmailOnly(settings as any, customer.email, subject, html), 10000, "Invoice email");
+        console.log("[SendInvoice] Gmail send resolved ✓");
         toast(`📧 Invoice emailed to ${customer.firstName} ✓`, "green");
       }
       return true;
@@ -553,6 +617,7 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
       return false;
     } finally {
       setSendingCompleteInvoice(false);
+      console.log("[SendInvoice] sendInvoiceFromPortal finished, sendingCompleteInvoice reset to false");
     }
   };
 
@@ -860,11 +925,28 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
               )}
               <div className="grid grid-cols-2 gap-3">
                 <GBtn onClick={() => {
+                  // [SendInvoice] — this used to be a *silently disabled*
+                  // button (no onClick fires at all on a disabled element)
+                  // whenever the customer had no email/phone on file for the
+                  // selected channel. From the employee's side that reads as
+                  // "I pressed Send Invoice and nothing happened at all" —
+                  // no toast, no error, because the click never even
+                  // registered. Always clickable now; if contact info is
+                  // genuinely missing, say so out loud instead of just
+                  // dimming the button.
+                  console.log("[SendInvoice] 'Yes — Preview' clicked — channel:", invoiceChannel, "customer:", customer?.id, "email:", customer?.email, "phone:", customer?.phone);
+                  if (invoiceChannel === "email" && !customer?.email) {
+                    toast("No email on file for this customer — add one or switch to Text.", "red");
+                    return;
+                  }
+                  if (invoiceChannel === "sms" && !customer?.phone) {
+                    toast("No phone on file for this customer — add one or switch to Email.", "red");
+                    return;
+                  }
                   setInvoiceEditSubject(`Invoice — ${companyName}`);
                   setInvoiceEditNote("");
                   setCompleteStep("invoice-preview");
-                }} className="!py-3 !justify-center"
-                  disabled={invoiceChannel === "email" ? !customer?.email : !customer?.phone}>
+                }} className="!py-3 !justify-center">
                   Yes — Preview
                 </GBtn>
                 <GBtn variant="ghost" onClick={() => finalizeCompletion("Pending", undefined, false)} className="!py-3 !justify-center">
@@ -906,7 +988,9 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
               </Glass>
               <div className="grid grid-cols-2 gap-3">
                 <GBtn onClick={async () => {
+                  console.log("[SendInvoice] 'Send Invoice ✓' clicked");
                   const sent = await sendInvoiceFromPortal(invoiceEditSubject, invoiceEditNote);
+                  console.log("[SendInvoice] sendInvoiceFromPortal returned:", sent);
                   if (sent) finalizeCompletion("Pending", undefined, true);
                 }} disabled={sendingCompleteInvoice} className="!py-3 !justify-center !bg-gradient-to-r !from-green-700 !to-green-900 !border-green-600/50">
                   {sendingCompleteInvoice ? "Sending…" : "Send Invoice ✓"}
@@ -1167,6 +1251,40 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
           </Glass>
         )}
 
+        {/* FIX 8 — Report Problem: unlike OTW/Running Late, this doesn't need
+            customer contact info at all — it goes to the owner, not the
+            customer — so it's available on any active job regardless of
+            whether the customer has a phone/email on file. */}
+        {job.status !== "completed" && job.status !== "cancelled" && (
+          <Glass className="p-3 !bg-red-950/15 !border-red-700/30">
+            {reportProblemOpen ? (
+              <div className="space-y-3">
+                <div className="text-xs font-semibold text-red-300">Report a Problem to the Owner</div>
+                <textarea
+                  value={reportProblemText}
+                  onChange={e => setReportProblemText(e.target.value)}
+                  rows={3}
+                  placeholder="What's wrong? (e.g. broken equipment, property damage, safety issue...)"
+                  className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-xs text-white placeholder-white/30 resize-none focus:outline-none focus:border-red-700/60"
+                />
+                <div className="flex gap-2">
+                  <button
+                    disabled={sendingReportProblem}
+                    onClick={sendReportProblem}
+                    className="flex-1 py-2 rounded-lg bg-gradient-to-r from-red-600 to-red-800 border border-red-500/60 text-white text-xs font-bold disabled:opacity-40 transition">
+                    {sendingReportProblem ? "Sending…" : "Send Report"}
+                  </button>
+                  <button onClick={() => { setReportProblemOpen(false); setReportProblemText(""); }} className="text-[11px] text-white/30 hover:text-white/60 px-2">Cancel</button>
+                </div>
+              </div>
+            ) : (
+              <button onClick={() => setReportProblemOpen(true)} className="w-full flex items-center justify-center gap-1.5 py-1.5 text-xs text-red-300 hover:text-red-200 transition">
+                <AlertTriangle size={12} />Report Problem
+              </button>
+            )}
+          </Glass>
+        )}
+
         {/* I'm Here — mark arrival at this job location (active/today jobs only) */}
         {job.status !== "completed" && (
           <Glass className={"p-4 " + (job.arrivedAt ? "!bg-green-950/20 !border-green-700/40" : "!bg-black/40")}>
@@ -1382,9 +1500,16 @@ function OwnerTeamPortal({ jobs, employees, customers, onClose, googleMapsKey, t
   const todayStr = today();
 
   const viewEmp = selectedEmpId === "all" ? null : employees.find(e => e.id === selectedEmpId);
+  const viewEmpForFilter = selectedEmpId === "all" ? null : employees.find(e => e.id === selectedEmpId);
   const visibleJobs = selectedEmpId === "all"
     ? jobs
-    : jobs.filter(j => (j.crew || []).includes(selectedEmpId));
+    // FIX 14 — same crew-matching bug class already fixed everywhere else
+    // (naive .includes(id) silently misses object-shaped/stringified crew
+    // entries or an employees.id vs employees.user_id mismatch) — here it
+    // meant the owner's Team Portal preview, filtered to one employee,
+    // could fail to show jobs (including recurring ones) that WERE actually
+    // assigned to them.
+    : jobs.filter(j => crewIncludesEmployee(j.crew, selectedEmpId, (viewEmpForFilter as any)?.user_id));
   const todayJobs = visibleJobs.filter(j => j.scheduledDate === todayStr && j.status !== "cancelled");
 
   if (selectedJobId) {
@@ -1454,7 +1579,7 @@ function OwnerTeamPortal({ jobs, employees, customers, onClose, googleMapsKey, t
         {selectedEmpId === "all" && (
           <div className="grid grid-cols-2 gap-3">
             {employees.filter(e => e.status === "active").map(emp => {
-              const empJobs = jobs.filter(j => (j.crew || []).includes(emp.id));
+              const empJobs = jobs.filter(j => crewIncludesEmployee(j.crew, emp.id, (emp as any).user_id));
               const empTodayJobs = empJobs.filter(j => j.scheduledDate === todayStr);
               const active = empJobs.find(j => j.clockInAt);
               return (
@@ -2424,10 +2549,21 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   // PostgREST — which silently drops critical fields like `status`. To stop a
   // "Mark Complete" from reverting on the next 3s poll, retry with just this
   // safe subset so the important fields always land.
+  // [FIXHOURS] — completedAt must NOT be added here. It was added briefly in
+  // a previous round, which defeated the entire point of this fallback list:
+  // completedAt is an OPTIONAL column (see supabase/migrations/0015) that
+  // isn't guaranteed to exist yet on every deployment. With it in this list,
+  // any owner who hasn't run that migration got the retry-with-safe-columns
+  // ALSO fail (PostgREST rejects the whole patch if ANY column is unknown) —
+  // silently dropping `status`/`loggedHours` too, which is exactly what
+  // "hours show in the employee portal (local state) but never reach the
+  // owner CRM" looks like. Once the migration is run, completedAt reaches
+  // Supabase fine on the FIRST attempt (the full, unfiltered patch below) —
+  // it never needed to be in this fallback-only list at all.
   const CORE_JOB_COLUMNS = [
     "status", "paymentStatus", "paymentType", "loggedHours", "amountCollected", "invoiceSentAt", "arrivedAt",
     "crew", "clockInAt", "lunchStartAt", "pipelineStage", "photos", "videos", "preChecklist", "duringChecklist",
-    "postChecklist", "signOff", "scheduledTime", "commLog", "equipmentChecked", "notes", "completedAt",
+    "postChecklist", "signOff", "scheduledTime", "commLog", "equipmentChecked", "notes",
   ] as const;
   const updateJob = (jobId: string, patch: Partial<Job>): Promise<any> => {
     setJobs(prev => prev.map(j => j.id === jobId ? { ...j, ...patch } : j));
@@ -2444,6 +2580,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
           if (Object.keys(core).length > 0) {
             const retry = await (supabase as any).from("jobs").update(core).eq("id", jobId);
             if (retry?.error) { console.error("[updateJob] core retry failed:", retry.error.message); return retry; }
+            console.log("[FIXHOURS] core-columns retry succeeded — status/hours/pay synced to Supabase despite full-patch rejection:", Object.keys(core));
             return retry;
           }
           return result;
@@ -2475,8 +2612,19 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     };
     setJobs((prev: any[]) => [...prev, nextJob]);
     (supabase as any).from("jobs").insert(nextJob)
-      .then((r: any) => {
-        if (r?.error) { console.error("[Recurring] insert failed:", r.error.message); toast?.("Job completed, but couldn't auto-schedule the next occurrence — " + r.error.message, "red"); }
+      .then(async (r: any) => {
+        if (r?.error) {
+          // FIX 14 — completedAt is a newer, optional column (migration
+          // 0015); if it isn't there yet, PostgREST rejects the whole insert
+          // — including `crew` — so the recurring job never reached Supabase
+          // and the employee (who reads jobs straight from Supabase) never
+          // saw it at all. Retry without it so the job still lands.
+          console.error("[Recurring] insert failed:", r.error.message, "— retrying with core columns");
+          const { completedAt, ...coreJob } = nextJob;
+          const retry = await (supabase as any).from("jobs").insert(coreJob);
+          if (retry?.error) { console.error("[Recurring] core-column retry also failed:", retry.error.message); toast?.("Job completed, but couldn't auto-schedule the next occurrence — " + retry.error.message, "red"); }
+          else toast?.("Next recurring job auto-scheduled for " + nextDate, "green");
+        }
         else toast?.("Next recurring job auto-scheduled for " + nextDate, "green");
       })
       .catch((e: any) => { console.error("[Recurring] insert threw:", e?.message); toast?.("Job completed, but couldn't auto-schedule the next occurrence", "red"); });

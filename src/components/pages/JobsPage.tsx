@@ -367,7 +367,9 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
       // supabase.auth.getSession() itself, since that call is known to hang
       // indefinitely under Supabase internal navigator-lock contention, which
       // is exactly what left this button stuck on "Sending…" forever.
+      console.log("[CrewRequest] quick-request ownerId:", ownerId || "(empty)");
       if (!ownerId) {
+        console.warn("[CrewRequest] quick-request blocked — ownerId still empty");
         toast?.("Still finishing sign-in — wait a moment and try again", "red");
         return;
       }
@@ -778,7 +780,9 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
                 } else {
                   (async () => {
                     try {
+                      console.log("[CrewRequest] ownerId at request time:", ownerId || "(empty)");
                       if (!ownerId) {
+                        console.warn("[CrewRequest] blocked — ownerId still empty (session bootstrap not resolved yet)");
                         toast?.("Job saved, but the crew request failed — still finishing sign-in, try again in a moment", "red");
                         return;
                       }
@@ -1230,8 +1234,24 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
                     console.log("[Recurring] auto-scheduling next occurrence for", nextDate, "— crew:", nextJob.crew);
                     setJobs(prev => [...prev.map(x => x.id === j.id ? { ...x, status: "completed" } : x), nextJob]);
                     (supabase as any).from("jobs").insert(nextJob)
-                      .then((r: any) => {
-                        if (r?.error) { console.error("[Recurring] insert failed:", r.error.message); toast("Next job auto-scheduled locally, but failed to sync — " + r.error.message, "red"); }
+                      .then(async (r: any) => {
+                        if (r?.error) {
+                          // FIX 14 — an unrecognized column (completedAt/videos
+                          // are newer, optional additions — see migration
+                          // 0015) makes PostgREST reject the WHOLE row, not
+                          // just that field, so the recurring job never
+                          // reached Supabase at all and the employee (who
+                          // reads jobs straight from Supabase) never saw it —
+                          // even though "crew" was populated correctly the
+                          // whole time. Retry with a conservative column set
+                          // known to exist so the job (and its crew) still
+                          // lands even before that migration is run.
+                          console.error("[Recurring] insert failed:", r.error.message, "— retrying with core columns");
+                          const { completedAt, videos, ...coreJob } = nextJob;
+                          const retry = await (supabase as any).from("jobs").insert(coreJob);
+                          if (retry?.error) { console.error("[Recurring] core-column retry also failed:", retry.error.message); toast("Next job auto-scheduled locally, but failed to sync — " + retry.error.message, "red"); }
+                          else toast("Next recurring job auto-scheduled for " + nextDate + " ✓");
+                        }
                         else toast("Next recurring job auto-scheduled for " + nextDate + " ✓");
                       })
                       .catch((e: any) => { console.error("[Recurring] insert threw:", e?.message); toast("Next job auto-scheduled locally, but failed to sync — " + (e?.message || "unknown error"), "red"); });

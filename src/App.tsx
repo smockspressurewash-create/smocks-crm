@@ -66,7 +66,7 @@ import {
 } from "./lib/seed";
 import { seedWeather } from "./lib/weather";
 import { fetchRealWeather } from "./lib/weather";
-import { fmt, uid, today, daysSince, daysFromNow, consumeOAuthIntent, getLastOwnerSessionFlag, setLastOwnerSessionFlag, buildChecklistFromServices, withTimeout, normalizeJobRow, totalJobPhotoCount } from "./lib/utils";
+import { fmt, uid, today, daysSince, daysFromNow, consumeOAuthIntent, getLastOwnerSessionFlag, setLastOwnerSessionFlag, getLastOwnerId, setLastOwnerId, buildChecklistFromServices, withTimeout, normalizeJobRow, totalJobPhotoCount } from "./lib/utils";
 import { sendEmail, buildTomorrowJobsEmailHtml, buildDailyBriefingEmailHtml } from "./lib/messaging";
 import { exchangeSocialOAuthCode, type SocialPlatform } from "./lib/socialOAuth";
 import type {
@@ -345,7 +345,16 @@ export function App() {
   // to call supabase.auth.getSession() themselves — that call is known to hang
   // indefinitely under certain Supabase internal navigator-lock contention,
   // which is what caused "Request Crew" to stick on "Sending…" forever.
-  const [crmUserId, setCrmUserId] = useState("");
+  // FIX 3 — seeded from the cached last-known owner id (same trick as
+  // hasCrmSession/getLastOwnerSessionFlag below) so a RETURNING owner has
+  // ownerId populated instantly, not just once the async session bootstrap's
+  // network round trip resolves. Without this, hasCrmSession being seeded
+  // true rendered a fully-interactive Jobs page (crew assign/request
+  // buttons and all) during a real window where crmUserId was still "" —
+  // any action gated on it failed with "still finishing sign-in" even
+  // though, from the owner's screen, they were already looking at a
+  // seemingly-ready CRM.
+  const [crmUserId, setCrmUserId] = useState(() => getLastOwnerId());
   const [profileDropOpen, setProfileDropOpen] = useState(false);
   // True once we've checked Supabase for an existing session on first load.
   // Prevents the CRM flashing briefly before the employee session is restored.
@@ -1582,6 +1591,8 @@ export function App() {
               setEmpSession(null);
               setHasCrmSession(false);
               setLastOwnerSessionFlag(false);
+              setCrmUserId("");
+              setLastOwnerId("");
               setCrmRole("owner");
               setOauthProcessing(false);
               return;
@@ -1638,7 +1649,7 @@ export function App() {
             else { setHasCrmSession(false); setLastOwnerSessionFlag(false); }
             setCrmRole(userRole === "manager" ? "manager" : "owner");
             if (session?.user?.email) setCrmUserEmail(session.user.email);
-            if (session?.user?.id) setCrmUserId(session.user.id);
+            if (session?.user?.id) { setCrmUserId(session.user.id); setLastOwnerId(session.user.id); }
             applyGoogleIdentity(session);
 
             if (event === "SIGNED_IN" || (event as string) === "IDENTITY_LINKED") {
@@ -1682,7 +1693,7 @@ export function App() {
           if (initial) { setHasCrmSession(true); setLastOwnerSessionFlag(true); }
           else { setHasCrmSession(false); setLastOwnerSessionFlag(false); }
           setCrmRole(initRole === "manager" ? "manager" : "owner");
-          if (initial?.user?.id) setCrmUserId(initial.user.id);
+          if (initial?.user?.id) { setCrmUserId(initial.user.id); setLastOwnerId(initial.user.id); }
           applyGoogleIdentity(initial);
           if (isOAuthCallback && initIsGoogle) {
             setPage("google");
@@ -2501,7 +2512,7 @@ export function App() {
             <PageFade key={page}>
               <SafePage>
                 {page === "dashboard"      && <Dashboard jobs={jobs} setJobs={setJobs} customers={customers} estimates={estimates} setEstimates={setEstimates} automations={automations} stats={{ totalRev, activeJobs, pendingEst, closeRate, doneMonth }} goals={{ revenue: settings.monthlyRevenueGoal ?? 8000, jobCount: settings.monthlyJobsGoal ?? 20 }} vehicles={vehicles} maintenance={maintenance} chemicals={chemicals} settings={settings} setSettings={setSettings} onNav={setPage} toast={toast} weatherData={weatherData} inboxThreads={inboxThreads} employees={employees} crewFetchError={crewFetchError} reviews={reviews} onSendDailyBriefing={sendDailyBriefingNow} onViewJob={id => { setOpenJobId(id); setPage("jobs"); }} ownerId={crmUserId} />}
-                {page === "customers"      && <CustomersPage customers={customers} setCustomers={setCustomers} estimates={estimates} jobs={jobs} toast={toast} timeline={timeline} setTimeline={setTimeline} settings={settings} />}
+                {page === "customers"      && <CustomersPage customers={customers} setCustomers={setCustomers} estimates={estimates} jobs={jobs} employees={employees} toast={toast} timeline={timeline} setTimeline={setTimeline} settings={settings} />}
                 {page === "estimates"      && <EstimatesPage estimates={estimates} setEstimates={setEstimates} customers={customers} services={services} settings={settings} toast={toast} onPortal={id => setPortalEstId(id)} estimateTemplates={estimateTemplates} setEstimateTemplates={setEstimateTemplates} setJobs={setJobs} onNav={setPage} />}
                 {page === "invoices"       && <InvoicesPage estimates={estimates} setEstimates={setEstimates} customers={customers} settings={settings} toast={toast} jobs={jobs} setJobs={setJobs} />}
                 {page === "jobs"           && <JobsPage jobs={jobs} setJobs={setJobs} customers={customers} setCustomers={setCustomers} employees={employees} estimates={estimates} setEstimates={setEstimates} settings={settings} toast={toast} posts={socialPosts} setPosts={setSocialPosts} setTimeline={setTimeline} initialDetailId={openJobId} onInitialDetailIdConsumed={() => setOpenJobId(null)} onPortal={id => setPortalEstId(id)} ownerId={crmUserId} />}

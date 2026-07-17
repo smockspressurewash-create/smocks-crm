@@ -414,7 +414,22 @@ export function SettingsModal({ open, onClose, settings, setSettings, services, 
               <div className="text-[10px] text-white/30 mt-1">Defaults to York, PA if left blank.</div>
             </div>
             <div><label className="text-xs text-white/60 mb-1 block flex items-center gap-1"><Phone size={10} />Your Mobile # <span className="text-white/30 font-normal">(for Alfred SMS summaries)</span></label><GInput type="tel" value={f.myPhone || ""} onChange={e => setF({ ...f, myPhone: e.target.value })} placeholder="+17175550100" className="!text-xs" /></div>
-            <div><label className="text-xs text-white/60 mb-1 block flex items-center gap-1"><Star size={10} />Google Place ID <span className="text-white/30 font-normal">(for review links)</span></label><GInput value={f.googlePlaceId || ""} onChange={e => setF({ ...f, googlePlaceId: e.target.value })} placeholder="ChIJ..." className="!text-xs" /><div className="text-[10px] text-white/30 mt-1">Find at <a href="https://developers.google.com/maps/documentation/places/web-service/place-id" target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:underline">developers.google.com/maps/…/place-id</a></div></div>
+            <div>
+              {/* FIX 13 — the review landing page (#/rate) falls back to a
+                  hardcoded "smocks-pressure-washing" Google review link when
+                  no Place ID is set, which points EVERY deployment's
+                  customers at a specific other business's review page if
+                  left unconfigured. A direct, pasteable review link is also
+                  far easier for a non-technical owner to get (Google Business
+                  Profile → "Ask for reviews" → Copy link) than hunting down a
+                  Place ID through Google's developer docs — this is now the
+                  preferred field; Place ID below still works as a fallback
+                  for anyone who already has one set. */}
+              <label className="text-xs text-white/60 mb-1 block flex items-center gap-1"><Star size={10} />Google Maps Review Link</label>
+              <GInput value={f.googleReviewLink || ""} onChange={e => setF({ ...f, googleReviewLink: e.target.value })} placeholder="https://g.page/r/.../review" className="!text-xs" />
+              <div className="text-[10px] text-white/30 mt-1">From your Google Business Profile: "Ask for reviews" → Copy link. Customers who rate 4-5 stars are sent here.</div>
+            </div>
+            <div><label className="text-xs text-white/60 mb-1 block flex items-center gap-1"><Star size={10} />Google Place ID <span className="text-white/30 font-normal">(fallback if no review link above)</span></label><GInput value={f.googlePlaceId || ""} onChange={e => setF({ ...f, googlePlaceId: e.target.value })} placeholder="ChIJ..." className="!text-xs" /><div className="text-[10px] text-white/30 mt-1">Find at <a href="https://developers.google.com/maps/documentation/places/web-service/place-id" target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:underline">developers.google.com/maps/…/place-id</a></div></div>
             <div><label className="text-xs text-white/60 mb-1 block flex items-center gap-1"><Clock size={10} />Max Lunch Break <span className="text-white/30 font-normal">(minutes)</span></label><GInput type="number" value={f.maxLunchMinutes ?? 30} onChange={e => setF({ ...f, maxLunchMinutes: Number(e.target.value) || 0 })} placeholder="30" className="!text-xs" /><div className="text-[10px] text-white/30 mt-1">Crew lunch breaks longer than this are flagged on the job</div></div>
             <div><label className="text-xs text-white/60 mb-1 block flex items-center gap-1"><Truck size={10} />Default Travel Buffer <span className="text-white/30 font-normal">(minutes between jobs)</span></label><GInput type="number" min="0" step="5" value={f.defaultBufferMinutes ?? 30} onChange={e => setF({ ...f, defaultBufferMinutes: Number(e.target.value) || 0 })} placeholder="30" className="!text-xs" /><div className="text-[10px] text-white/30 mt-1">Jobs scheduled the same day get flagged on the Calendar if there isn't this much time between them</div></div>
             <div>

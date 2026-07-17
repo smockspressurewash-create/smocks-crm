@@ -78,7 +78,7 @@ import { ChemicalModal } from "../ui/ChemicalModal";
 import { WeeklyBusinessReview } from "../ui/WeeklyBusinessReview";
 import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 
-export function CustomersPage({ customers = [], setCustomers, estimates = [], jobs = [], toast, timeline = {}, setTimeline = () => {}, settings = {} as AppSettings }: { customers?: any[]; setCustomers?: any; estimates?: any[]; jobs?: any[]; toast?: any; timeline?: any; setTimeline?: any; settings?: AppSettings }) {
+export function CustomersPage({ customers = [], setCustomers, estimates = [], jobs = [], employees = [], toast, timeline = {}, setTimeline = () => {}, settings = {} as AppSettings }: { customers?: any[]; setCustomers?: any; estimates?: any[]; jobs?: any[]; employees?: any[]; toast?: any; timeline?: any; setTimeline?: any; settings?: AppSettings }) {
   const [search, setSearch] = useState("");
   const [modal, setModal] = useState({ open: false, data: null });
   const [detail, setDetail] = useState(null);
@@ -465,7 +465,7 @@ export function CustomersPage({ customers = [], setCustomers, estimates = [], jo
       </Glass>
 
       <CustomerModal open={modal.open} onClose={() => setModal({ open: false, data: null })} data={modal.data} onSave={save} mapsKey={settings.googleMapsKey || (settings as any).mapsKey || ""} customers={customers} />
-      <CustomerDetail customer={detail} onClose={() => setDetail(null)} onDelete={deleteCustomer} estimates={estimates} jobs={jobs} timeline={timeline} setTimeline={setTimeline} settings={settings} />
+      <CustomerDetail customer={detail} onClose={() => setDetail(null)} onDelete={deleteCustomer} estimates={estimates} jobs={jobs} employees={employees} timeline={timeline} setTimeline={setTimeline} settings={settings} />
       </>}
     </div>
   );

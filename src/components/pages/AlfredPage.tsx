@@ -80,6 +80,20 @@ import { ChemicalModal } from "../ui/ChemicalModal";
 import { WeeklyBusinessReview } from "../ui/WeeklyBusinessReview";
 import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 
+// FIX 6 — `personalities` (lib/utils.ts) is an ARRAY keyed by each entry's
+// `id` field ("drillsergeant"/"butler"/"quietpro"/"savage"), not by array
+// position. This file used to look personalities up with plain index syntax
+// ((personalities as any)[personality]) and build the switcher itself via
+// Object.entries(personalities) — on an array, Object.entries yields numeric-
+// string keys ("0","1","2","3"), not each entry's real id. personality state
+// defaults to "drillsergeant" (App.tsx), so even the DEFAULT personality
+// never matched anything looked up this way, and clicking the switcher only
+// ever set personality to "0".."3", which matched even less. The single
+// visible symptom was that Alfred's system prompt silently became
+// "undefined" + (shared context) regardless of which personality was
+// selected — the personality never actually reached the model at all.
+const getPersonality = (id: string) => personalities.find(p => p.id === id) || personalities[0];
+
 export function AlfredPage({ conversations, setConversations, activeConvId, setActiveConvId, memory = [], setMemory, personality, setPersonality, apiKey, openSettings, toast, jobs = [], setJobs, estimates = [], setEstimates, customers = [], setCustomers, employees = [], automations = [], setAutomations = () => {}, stats, setWins, goals = [], setGoals, setSettings, settings = {} as AppSettings, modelStatus = {}, setModelStatus = () => {}, onNav, expenses = [], entries = [], ownerId = "" }: { conversations?: any; setConversations?: any; activeConvId?: any; setActiveConvId?: any; memory?: any; setMemory?: any; personality?: any; setPersonality?: any; apiKey?: any; openSettings?: any; toast?: any; jobs?: any; setJobs?: any; estimates?: any; setEstimates?: any; customers?: any; setCustomers?: any; employees?: any; automations?: any; setAutomations?: any; stats?: any; setWins?: any; goals?: any; setGoals?: any; setSettings?: any; settings?: AppSettings; modelStatus?: any; setModelStatus?: any; onNav?: any; expenses?: any[]; entries?: any[]; ownerId?: string }) {
   const [input, setInput] = useState("");
   const [voiceMode, setVoiceMode] = useState<"dictate" | "note">("dictate");
@@ -160,6 +174,56 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
       setConversations(prev => [newConv, ...prev]);
     }, 1000);
   }, []); // eslint-disable-line
+
+  // FIX 7 — general proactive check-in system, distinct from the two narrow
+  // time-boxed nudges above (which only fire on specific hours/conditions).
+  // This is the broader "checking in on you" ping the owner asked for —
+  // personal goals, stale customers needing a follow-up, overdue invoices —
+  // gated to at most 3/day and spaced at least 3 hours apart. Gating state
+  // (date/count/last-fired-at) lives in `settings` (via setSettings) rather
+  // than localStorage specifically because settings already round-trips
+  // through Supabase's app_settings table (see App.tsx's debounced upsert
+  // effect) — that's what makes this survive a cleared cache and stay
+  // consistent if the owner opens Alfred from more than one device, which
+  // pure localStorage gating (like the two effects above) cannot do.
+  useEffect(() => {
+    if (!ownerId) return;
+    const todayStr = today();
+    const checkinDate = (settings as any)?.alfredCheckinDate;
+    const countToday = checkinDate === todayStr ? ((settings as any)?.alfredCheckinsToday || 0) : 0;
+    if (countToday >= 3) { console.log("[AlfredCheckin] skipped — already hit 3 check-ins today"); return; }
+    const lastAt = (settings as any)?.alfredLastCheckinAt || 0;
+    const hoursSinceLast = lastAt ? (Date.now() - lastAt) / 3600000 : Infinity;
+    if (hoursSinceLast < 3) { console.log("[AlfredCheckin] skipped — last check-in", hoursSinceLast.toFixed(1), "h ago, waiting for 3h gap"); return; }
+    const hour = new Date().getHours();
+    if (hour < 8 || hour > 20) { console.log("[AlfredCheckin] skipped — outside 8am-8pm window"); return; }
+
+    const openGoals = (goals || []).filter((g: any) => !g.completed && !g.achieved);
+    const staleEstimates = estimates.filter(e => e.status === "pending" && daysSince(e.createdAt) >= 5);
+    const overdueInvoices = estimates.filter(e => e.invoiced && !e.paidAt && e.invoicedAt && daysSince(e.invoicedAt) > 7);
+    const incompleteJobsToday = jobs.filter(j => j.scheduledDate === todayStr && j.status !== "completed" && j.status !== "cancelled");
+    const hasSomethingToSay = openGoals.length > 0 || staleEstimates.length > 0 || overdueInvoices.length > 0 || incompleteJobsToday.length > 0;
+    if (!hasSomethingToSay) { console.log("[AlfredCheckin] skipped — nothing worth checking in about right now"); return; }
+
+    const t = setTimeout(() => {
+      const lines = [
+        "👋 Checking in on you.",
+        "",
+        openGoals.length > 0 ? "🎯 " + openGoals.length + " personal goal" + (openGoals.length !== 1 ? "s" : "") + " still open." : "",
+        incompleteJobsToday.length > 0 ? "🧰 " + incompleteJobsToday.length + " job" + (incompleteJobsToday.length !== 1 ? "s" : "") + " today not marked complete yet." : "",
+        staleEstimates.length > 0 ? "💬 Clients waiting on a follow-up: " + staleEstimates.slice(0, 3).map(e => { const c = customers.find(x => x.id === e.customerId); return c ? c.firstName + " " + c.lastName : "?"; }).join(", ") + (staleEstimates.length > 3 ? " +" + (staleEstimates.length - 3) + " more" : "") + "." : "",
+        overdueInvoices.length > 0 ? "💸 " + overdueInvoices.length + " overdue invoice" + (overdueInvoices.length !== 1 ? "s" : "") + " to collect on." : "",
+        "",
+        "Anything you want help tackling right now?",
+      ].filter(Boolean);
+      const msg = lines.join("\n");
+      const newConv = { id: uid(), title: "Check-in — " + new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }), personality: active?.personality || personality, messages: [{ id: uid(), role: "alfred", content: msg, timestamp: Date.now() }], createdAt: Date.now(), updatedAt: Date.now() };
+      console.log("[AlfredCheckin] firing check-in", countToday + 1, "of 3 for", todayStr);
+      setConversations(prev => [newConv, ...prev]);
+      setSettings?.((prev: any) => ({ ...prev, alfredCheckinDate: todayStr, alfredCheckinsToday: countToday + 1, alfredLastCheckinAt: Date.now() }));
+    }, 1500);
+    return () => clearTimeout(t);
+  }, [ownerId]); // eslint-disable-line react-hooks/exhaustive-deps
   const [showSlash, setShowSlash] = useState(false);
   const [newMemoryText, setNewMemoryText] = useState("");
   const [newMemoryCat, setNewMemoryCat] = useState("general");
@@ -350,27 +414,25 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
     if (ownerId && !alfredConvsLoaded) return;
     if (!conversations || conversations.length === 0) {
       const cid = uid();
-      const greeting = (personalities as any)[personality]?.greeting || "Hey. What do we need to handle today? Alfred out.";
+      const greeting = getPersonality(personality)?.greeting || "Hey. What do we need to handle today? Alfred out.";
       const newConv = { id: cid, title: "New chat", personality, createdAt: today(), updatedAt: Date.now(), messages: [{ id: uid(), role: "alfred", content: greeting, timestamp: Date.now() }] };
       setConversations([newConv]);
       setActiveConvId(cid);
     }
   }, [alfredConvsLoaded, ownerId]); // eslint-disable-line
 
-  // BLOCKER 19 (mobile round 9) — FEATURE 9 (mobile round 7) deliberately
-  // added active?.id here so switching conversations always scrolled to
-  // bottom too. The owner now wants that reversed: auto-scroll should fire
-  // for the very first conversation shown on open, and for new messages
-  // arriving in whatever conversation is currently active, but NOT just
-  // because the user clicked a different thread in the sidebar — track the
-  // previous active id so a genuine switch can be told apart from "same
-  // conversation, message count changed" (a new message).
-  const prevActiveIdRef = useRef<string | undefined>(undefined);
+  // FIX 5 — reverses BLOCKER 19 (mobile round 9), which deliberately
+  // suppressed auto-scroll when switching conversations. The explicit ask now
+  // is to scroll to bottom on mount AND on every conversation switch, not
+  // just for new messages arriving in the already-active thread — a stale
+  // "arrived at the top" was reported for the initial open specifically, and
+  // `behavior: "smooth"` animated scrolls could visibly get cut short/reset
+  // by a re-render landing mid-animation (e.g. a poll-driven prop update),
+  // which reads exactly like "scrolls from the top and stays there." Setting
+  // scrollTop = scrollHeight directly is instant — nothing to interrupt.
   useEffect(() => {
-    const switchedConversation = prevActiveIdRef.current !== undefined && prevActiveIdRef.current !== active?.id;
-    prevActiveIdRef.current = active?.id;
-    if (switchedConversation) return;
-    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
+    if (!scrollRef.current) return;
+    scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
   }, [chats.length, loading, active?.id]);
 
   // Slash command suggestions
@@ -425,7 +487,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
       personality,
       createdAt: today(),
       updatedAt: Date.now(),
-      messages: [{ id: uid(), role: "alfred", content: (personalities as any)[personality]?.greeting || "Hello! How can I help?", timestamp: Date.now() }]
+      messages: [{ id: uid(), role: "alfred", content: getPersonality(personality)?.greeting || "Hello! How can I help?", timestamp: Date.now() }]
     };
     setConversations([newConv, ...conversations]);
     setActiveConvId(cid);
@@ -481,7 +543,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
 
   const clearChat = () => {
     if (!active) return;
-    replaceMessages([{ id: uid(), role: "alfred", content: (personalities as any)[active.personality || personality]?.greeting || "Hello! How can I help?", timestamp: Date.now() }]);
+    replaceMessages([{ id: uid(), role: "alfred", content: getPersonality(active.personality || personality)?.greeting || "Hello! How can I help?", timestamp: Date.now() }]);
     setMenuOpen(false);
     toast("Chat cleared");
   };
@@ -1083,16 +1145,38 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
               ? { error: "Customer not found", suggestions, instruction: "Ask the user 'Do you mean " + suggestions.join(", or ") + "?' — do not ask a generic follow-up question." }
               : { error: "Customer not found" };
           }
-          const newJ = { id: uid(), customerId: c.id, scheduledDate: inputs.date || daysFromNow(3), status: "scheduled", pipelineStage: "scheduled", address: c.address, amount: inputs.amount || 0, photos: [], checklist: (inputs.checklist || ["Confirm water access"]).map(t => ({ label: t, done: false })), isRecurring: false, recurringFreq: "monthly", cancelReason: "", noShow: false, crew: [], duration: inputs.duration || 2, internalNotes: inputs.notes || "", chemicalsUsed: [], equipment: [], commLog: [], priority: inputs.priority || "normal", tags: inputs.tags || [], loggedHours: 0, clockInAt: null, attachments: [] };
+          // [Alfred schedule_job] FIX 4 — this used to send extra columns the
+          // manual "Schedule Job" form (JobsPage.tsx) never sends on creation
+          // (pipelineStage, isRecurring, recurringFreq, cancelReason, noShow,
+          // clockInAt, attachments, internalNotes instead of notes) — a
+          // different shape/code path from the one proven to work. If any one
+          // of those isn't an actual column in this deployment's jobs table,
+          // PostgREST rejects the WHOLE insert (see CLAUDE.md's "safe column"
+          // note). It also retried via withTimeoutRetry, which — for a plain
+          // INSERT with a fixed id — replays the identical row on a slow-but-
+          // not-actually-failed first attempt, hitting a duplicate-key error
+          // that then also reads as "still fails after retrying." Matching
+          // the manual form's exact field set and its single withTimeout (no
+          // retry) call now.
+          const newJ = {
+            id: uid(), customerId: c.id, address: c.address, amount: inputs.amount || 0,
+            status: "scheduled" as const, scheduledDate: inputs.date || daysFromNow(3), scheduledTime: inputs.time || "",
+            priority: inputs.priority || "normal", notes: inputs.notes || "", duration: inputs.duration || 2,
+            crew: [] as any[], checklist: (inputs.checklist || ["Confirm water access"]).map((t: string) => ({ label: t, done: false })),
+            photos: [], commLog: [], chemicalsUsed: [], equipment: [], tags: inputs.tags || [],
+            loggedHours: 0, createdAt: today(),
+          };
+          console.log("[Alfred schedule_job] built job payload:", newJ);
           // EXACT same pattern as the manual "Schedule Job" form in JobsPage:
           // update local state immediately (optimistic) so the UI shows the job
           // right away, THEN persist to Supabase. With uid() now producing a
           // real UUID, the insert no longer fails on a uuid-typed id column.
           setJobs(prev => [...prev, newJ as any]);
+          console.log("[Alfred schedule_job] optimistic local job added, inserting to Supabase...");
           let saveErrorJ: any = null;
           try {
-            const { error } = await withTimeoutRetry<any>(
-              () => (supabase as any).from("jobs").insert(newJ),
+            const { error } = await withTimeout<any>(
+              (supabase as any).from("jobs").insert(newJ),
               15000, "Save job"
             );
             saveErrorJ = error;
@@ -1106,6 +1190,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
             setJobs(prev => prev.filter(x => x.id !== newJ.id));
             return { error: "Failed to schedule job — " + (saveErrorJ.message || String(saveErrorJ)) + ". If this says 'row-level security' or 'uuid', run the jobs-table SQL in Settings." };
           }
+          console.log("[Alfred schedule_job] insert succeeded ✓ jobId:", newJ.id);
           toast("Alfred scheduled job for " + c.firstName + " on " + newJ.scheduledDate);
           setTimeout(() => onNav("jobs"), 1200);
           return { success: true, jobId: newJ.id, date: newJ.scheduledDate, customer: c.firstName + " " + c.lastName };
@@ -1575,7 +1660,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
     // If no conversation exists yet (edge case on first render), create one now
     if (!active) {
       const cid = uid();
-      const greeting = (personalities as any)[personality]?.greeting || "Hey. What do we need to handle today? Alfred out.";
+      const greeting = getPersonality(personality)?.greeting || "Hey. What do we need to handle today? Alfred out.";
       const newConv = { id: cid, title: text.slice(0, 42) + (text.length > 42 ? "…" : ""), personality, createdAt: today(), updatedAt: Date.now(), messages: [] };
       setConversations([newConv]);
       setActiveConvId(cid);
@@ -1610,13 +1695,8 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
     setLoading(true);
 
     try {
-      const prompts = {
-        drill: "You are Alfred, a gruff drill sergeant who manages Crew Boss, a pressure washing business in York, PA. Be aggressive, motivating, use military terminology. Keep responses short and punchy (2-4 short lines usually). End every response with 'Alfred out.'",
-        butler: "You are Alfred, a polished British butler at Crew Boss in York, PA. Be formal, courteous, and refined. Use 'sir' and British expressions. Keep responses concise and professional.",
-        quiet: "You are Alfred, a stoic operations manager at Crew Boss in York, PA. Be terse, data-driven, and matter-of-fact. No pleasantries. Just facts and actions. Keep it short.",
-        savage: "You are Alfred, a sarcastic but brilliant assistant at Crew Boss in York, PA. Roast the user occasionally but always be helpful underneath. Be witty and sharp."
-      };
       const activePersonality = active?.personality || personality;
+      console.log("[Personality] active personality for this send:", activePersonality);
       const memByCat: Record<string, string[]> = memory.reduce((acc: Record<string, string[]>, m: any) => { const k = m.category || "general"; (acc[k] = acc[k] || []).push(m.text); return acc; }, {});
       const memoryContext = memory.length > 0 ? "\n\nWhat you remember about the user (organized by category):\n" + Object.entries(memByCat).map(([k, list]) => "  [" + k + "]: " + list.join("; ")).join("\n") : "";
       const businessContext = "\n\nCurrent business snapshot:\n- Active jobs: " + stats.activeJobs + "\n- Pending quotes: " + stats.pendingEst + "\n- Revenue MTD: " + fmt(stats.totalRev) + "\n- Close rate: " + stats.closeRate + "%\n- Jobs completed this month: " + stats.doneMonth + "\n- Total customers: " + customers.length;
@@ -1626,7 +1706,8 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
       const toolHint = `\n\nYou have tools available to READ and MODIFY the CRM. USE THEM AGGRESSIVELY — don't just describe what you would do, actually do it.\n\nRESPONSE STYLE: Do not narrate your reasoning, your plan, or which tool you're about to call ("Let me check...", "I'll create that now...", "First I need to..."). Just call the tool(s) silently and then give the user the final result in 1-3 short sentences. No step-by-step thinking out loud.\n\nVERIFY BEFORE CONFIRMING: every action tool returns either {"success": true, ...} or {"error": "..."}. NEVER say "Done" or "All set" without checking which one came back. If you see an "error" field, tell the user exactly what went wrong (the error text) and what they could try instead — do not pretend it worked, and do not retry silently. Only confirm success when the tool result actually contains "success": true.\n\nKEY TOOL RULES:\n- Customer queries → USE search_customers or get_customer_details FIRST\n- Stats requests → USE get_business_stats\n- "What's on the calendar" → USE get_calendar_summary\n- "Who's clocked in / who's working" → USE get_employee_status\n- "Remember/note/don't forget" → USE remember_fact\n- Create estimates, customers, jobs → USE create_estimate/create_customer/schedule_job
 - MULTI-STEP CHAINS (e.g. "create a customer, schedule them a job, and assign Mike"): call tools ONE AT A TIME across separate turns when a later step needs an id/result a real tool call hasn't returned yet (e.g. schedule_job needs the customerId create_customer just returned). Do NOT guess or fabricate an id and call multiple dependent tools in the same turn — wait for each real tool_result before issuing the next dependent call. If a step's result is an "error", STOP the chain right there, tell the user exactly which step failed and why, and do not attempt the remaining steps with made-up data.
 - "Send a quote/estimate to X" → USE create_estimate (if it doesn't exist yet) THEN send_estimate in the same turn — do not just create it and stop, and do not tell the user it was "sent" unless send_estimate actually returned success\n- Move or cancel a job → USE reschedule_job/cancel_job\n- Navigate somewhere → USE navigate_to (the app already auto-navigates after schedule_job/create_customer/create_estimate, but call navigate_to yourself for anything else the user asks to see)\n- Preferences/facts shared → USE remember_fact automatically\n\nAUTOMATION TOOLS (VERY IMPORTANT):\n- When user describes ANY workflow, drip sequence, reminder, or "when X do Y" scenario → USE create_automation IMMEDIATELY. Build a proper n8n-style multi-step workflow with real step types: trigger (first), then delays, conditions, actions. NEVER just describe what you'd build — actually build it with create_automation.\n- "Send review request after job complete" → trigger: Job complete, delay: 2h, action: SMS review request\n- "Follow up on unpaid invoices" → trigger: Invoice unpaid 7 days, action: polite reminder email, delay: 4 days, condition: still unpaid, action: firm SMS\n- To check existing workflows → USE list_automations\n- To enable/disable a workflow → USE toggle_automation\n\nCurrent automations: ${automations.length} total, ${automations.filter(a => a.active).length} active\n\nNAME MATCHING: if a tool result comes back with "error": "Customer not found" or "Employee not found" and includes a "suggestions" array, ask the user "Do you mean [name], or [name]?" using those exact suggested names — never ask a generic clarifying question like "who do you mean?" when real candidate names are available.`;
-      const systemPrompt = prompts[activePersonality] + memoryContext + businessContext + googleStatus + toolHint;
+      const systemPrompt = getPersonality(activePersonality).systemPrompt + memoryContext + businessContext + googleStatus + toolHint;
+      console.log("[Personality] systemPrompt personality clause:", getPersonality(activePersonality).systemPrompt.slice(0, 80) + "…");
 
       // Build initial message list — allow multi-turn tool calls up to 5 rounds
       let convMessages = [...chats, userMsg].slice(-12).map(m => ({ role: m.role === "user" ? "user" : "assistant", content: m.content }));
@@ -1840,7 +1921,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
     inputRef.current?.focus();
   };
 
-  const cur: any = (personalities as any)[active?.personality || personality] || { name: "Alfred", color: "from-red-600 to-red-900", icon: Bot };
+  const cur: any = getPersonality(active?.personality || personality) || { name: "Alfred", color: "from-red-600 to-red-900", icon: Bot };
   const CurIcon = cur.icon || Bot;
 
   // CRASH FIX (companion to App.tsx's alfred_conversations sync) — updatedAt
@@ -1952,10 +2033,11 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           <div className="px-2.5 py-2">
             <div className="text-[10px] uppercase tracking-wider text-white/40 mb-1.5">Personality</div>
             <div className="grid grid-cols-2 gap-1">
-              {Object.entries(personalities as any).map(([k, p]: [string, any]) => {
+              {personalities.map((p: any) => {
+                const k = p.id;
                 const Icon = p.icon;
                 const a = (active?.personality || personality) === k;
-                return <button key={k} onClick={() => { setPersonality(k); if (active) updateActive({ personality: k }); }} className={"flex items-center gap-1.5 px-2 py-1.5 rounded-lg text-[11px] transition border " + (a ? "bg-gradient-to-r " + p.color + " border-red-500/50" : "bg-white/5 hover:bg-white/10 border-transparent text-white/60")}>{Icon && <Icon size={10} />}{p.name}</button>;
+                return <button key={k} onClick={() => { console.log("[Personality] switched to", k); setPersonality(k); if (active) updateActive({ personality: k }); }} className={"flex items-center gap-1.5 px-2 py-1.5 rounded-lg text-[11px] transition border " + (a ? "bg-gradient-to-r " + p.color + " border-red-500/50" : "bg-white/5 hover:bg-white/10 border-transparent text-white/60")}>{Icon && <Icon size={10} />}{p.name}</button>;
               })}
             </div>
           </div>

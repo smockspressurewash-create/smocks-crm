@@ -13,7 +13,7 @@ import {
   Globe, Share2, Trophy, ExternalLink, Workflow, ToggleLeft, ToggleRight,
   Navigation, TrendingDown, PieChart as PieIcon, Package, Wrench,
   CheckSquare, Route, Users2, Layers, ArrowRight, BarChart2, Filter,
-  Paperclip, ImageIcon, FileImage, MoreVertical, Mic, Upload, Link, Lock, User
+  Paperclip, ImageIcon, FileImage, MoreVertical, Mic, Upload, Link, Lock, User, Video, Square
 } from "lucide-react";
 import {
   BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid,
@@ -322,8 +322,11 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
   const staleQuotes = estimates.filter(e => e.status === "pending" && daysSince(e.createdAt) >= 7);
   if (staleQuotes.length > 0) alerts.push({ key: "stale", icon: FileText, tone: "yellow", msg: staleQuotes.length + " quote" + (staleQuotes.length > 1 ? "s" : "") + " over 7 days old — follow up", action: () => onNav("estimates") });
 
-  // Weather
-  if (settings.notifyWeather !== false) {
+  // Weather — FIX 10: wForecast falls back to seedWeather's fake forecast
+  // (which includes a hardcoded "70% rain Wednesday") when no OWM key is
+  // configured; gating on settings.owmKey stops this alert from firing off
+  // of made-up data.
+  if (settings.notifyWeather !== false && settings.owmKey) {
     const rainyDays = wForecast.filter(f => f.rainChance >= 70).map(f => f.day);
     if (rainyDays.length > 0) {
       const atRisk = jobs.filter(j => j.status === "scheduled").length;
@@ -505,6 +508,12 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
   // customer info, and signature-capture functionality a technician gets in
   // CrewView's "Live Now" detail modal, via the same JobDetailModal.
   const [ownerDetailId, setOwnerDetailId] = useState<string | null>(null);
+  // FIX 8 — Live Team View previously only ever showed a done/total COUNT for
+  // checklists, never the actual items — "0/0" (or any count) with nothing to
+  // click into wasn't distinguishable from "checklist data isn't loading" at
+  // a glance. Click the progress badge to expand the real item list (done
+  // AND not-done) inline, without needing the separate Job Detail modal.
+  const [expandedChecklistJobId, setExpandedChecklistJobId] = useState<string | null>(null);
   const ownerUpdateJob = (jid: string, patch: any) => {
     setJobs((prev: any[]) => prev.map((j: any) => j.id === jid ? { ...j, ...patch } : j));
     const EMPLOYEE_OWNED_FIELDS = ["clockInAt", "lunchStartAt", "lunchMinutes", "lunchExceeded", "loggedHours"] as const;
@@ -764,8 +773,17 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
               const shiftMs = Math.max(0, Date.now() - Number(e.dayClockInAt) - pausedMs - lunchMs);
               const prog = j ? checklistProgress(j) : null;
               const photoCount = j ? totalJobPhotoCount(j) : 0;
+              const videoCount = j ? (j.videos || []).length : 0;
               const mapsKey = settings.googleMapsKey || settings.mapsKey;
               const status = crewStatusLabel(j, prog);
+              // FIX 8 — surface a reported problem (EmployeePortal.tsx's
+              // "Report Problem" button) right on the Live Team card, not
+              // just buried in the job's comm log. commLog entries only
+              // carry a day-granularity `date` (today(), matching every
+              // other commLog entry in this codebase — see OTW/Running Late),
+              // so "today's" reports is the most precise freshness check
+              // available, rather than a misleading hour-precision window.
+              const reportedIssue = j ? [...(j.commLog || [])].reverse().find((c: any) => typeof c.note === "string" && c.note.startsWith("🚨 ISSUE REPORTED") && c.date === todayStrLive) : null;
               return (
                 <div key={e.id} className={"flex items-center gap-3 p-3 rounded-xl border " + (onLunch ? "bg-yellow-950/20 border-yellow-700/40" : "bg-black/30 border-white/10")}>
                   {j ? <MiniStreetViewThumb address={j.address} mapsKey={mapsKey} /> : (
@@ -782,10 +800,20 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
                           {status.label}
                         </span>
                       )}
+                      {reportedIssue && (
+                        <span className="text-[9px] px-1.5 py-0.5 rounded-full font-bold uppercase tracking-wide flex-shrink-0 bg-red-600/40 text-red-200 border border-red-500/50 animate-pulse">
+                          ⚠️ Issue Reported
+                        </span>
+                      )}
                     </div>
                     <div className="text-xs text-white/50 truncate mt-0.5 flex items-center gap-1">
                       {j ? <><MapPin size={10} className="flex-shrink-0" />{c ? `${c.firstName} ${c.lastName} — ${j.address}` : j.address}</> : <span className="text-white/30">No active job</span>}
                     </div>
+                    {reportedIssue && (
+                      <div className="text-[11px] text-red-300 bg-red-950/30 border border-red-700/40 rounded-lg px-2 py-1 mt-1">
+                        {reportedIssue.note.replace("🚨 ISSUE REPORTED", "🚨").trim()}
+                      </div>
+                    )}
                     <div className="text-xs text-white/40 flex items-center gap-2 flex-wrap mt-1">
                       <span className={"font-mono " + (onLunch ? "text-yellow-400" : "text-green-400")}>{onLunch ? "⏸ " : "⏱ "}{fmtElapsed(shiftMs)} shift</span>
                       {onLunch && <span className="text-yellow-400/70">on lunch</span>}
@@ -796,6 +824,7 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
                         </span>
                       )}
                       {photoCount > 0 && <span className="flex items-center gap-1"><ImageIcon size={10} />{photoCount} photo{photoCount !== 1 ? "s" : ""}</span>}
+                      {videoCount > 0 && <span className="flex items-center gap-1"><Video size={10} />{videoCount} video{videoCount !== 1 ? "s" : ""}</span>}
                       {/* FIX 11 — a simple always-available badge, independent of
                           whether a Google Maps key is configured (CrewView's
                           "Live Now" map is the full-map view when a key exists). */}
@@ -807,11 +836,23 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
                       )}
                     </div>
                     {prog && (
-                      <div className="flex items-center gap-1.5 mt-1.5">
-                        <div className="flex-1 h-1.5 rounded-full bg-white/10 overflow-hidden max-w-[160px]">
-                          <div className="h-full bg-green-500 rounded-full transition-all" style={{ width: prog.pct + "%" }} />
-                        </div>
-                        <span className="text-[10px] text-white/40 flex items-center gap-1 flex-shrink-0"><CheckSquare size={10} />{prog.done}/{prog.total}</span>
+                      <div className="mt-1.5">
+                        <button onClick={() => setExpandedChecklistJobId(id => id === j.id ? null : j.id)} className="w-full flex items-center gap-1.5">
+                          <div className="flex-1 h-1.5 rounded-full bg-white/10 overflow-hidden max-w-[160px]">
+                            <div className="h-full bg-green-500 rounded-full transition-all" style={{ width: prog.pct + "%" }} />
+                          </div>
+                          <span className="text-[10px] text-white/40 flex items-center gap-1 flex-shrink-0 hover:text-white/70"><CheckSquare size={10} />{prog.done}/{prog.total}</span>
+                        </button>
+                        {expandedChecklistJobId === j.id && (
+                          <div className="mt-1.5 space-y-1 max-h-40 overflow-y-auto pr-1">
+                            {[...(j.preChecklist || []), ...(j.duringChecklist || []), ...(j.postChecklist || []), ...(j.checklist || [])].map((ck: any, i: number) => (
+                              <div key={i} className={"text-[10px] flex items-center gap-1.5 " + (ck.done ? "text-white/40 line-through" : "text-white/70")}>
+                                {ck.done ? <CheckSquare size={10} className="text-green-500 flex-shrink-0" /> : <Square size={10} className="text-white/30 flex-shrink-0" />}
+                                {ck.label}
+                              </div>
+                            ))}
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>
@@ -1261,7 +1302,21 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
       })()}
 
       {/* Weather Widget — today's job impact */}
-      {(w.weather ?? true) && (() => {
+      {/* FIX 10 — this used to render wCurrent (seedWeather's hardcoded 72°F
+          fallback) as if it were a real reading whenever no OWM key was set,
+          with only a tiny "Forecast" label (easy to miss) hinting it wasn't
+          live. Show an explicit setup prompt instead — never a fake
+          temperature — so there's no ambiguity about whether a number on
+          screen is real. */}
+      {(w.weather ?? true) && !settings.owmKey && (
+        <Glass className="p-4 !bg-white/5">
+          <div className="flex items-center gap-2 text-sm text-white/50">
+            <Cloud size={13} className="text-white/30 flex-shrink-0" />
+            Add an OpenWeatherMap API key in Settings → Integrations to see real weather here.
+          </div>
+        </Glass>
+      )}
+      {(w.weather ?? true) && settings.owmKey && (() => {
         const todayJobs_ = jobs.filter(j => j.scheduledDate === today() && j.status === "scheduled");
         const rainRisk = wCurrent.rainChance > 50;
         const freezeRisk = wCurrent.temp < 35;
@@ -1272,7 +1327,7 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
             <div className="font-semibold text-sm flex items-center gap-2"><Cloud size={13} className="text-blue-400" />Today's Weather Impact</div>
             <div className="flex items-center gap-3">
               <div className="text-xl font-bold">{wCurrent.temp}°F</div>
-              {settings.owmKey ? <span className="text-[10px] text-green-400">● Live</span> : <span className="text-[10px] text-white/30">Forecast</span>}
+              <span className="text-[10px] text-green-400">● Live</span>
             </div>
           </div>
           <div className="flex items-center gap-4 text-xs mb-2">
@@ -1371,7 +1426,7 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
             <div className="space-y-2">
               {upcoming.slice(0, 4).map(j => {
                 const c = customers.find(x => x.id === j.customerId);
-                const risk = forecastFor(wForecast, j.scheduledDate) as any;
+                const risk = settings.owmKey ? (forecastFor(wForecast, j.scheduledDate) as any) : null;
                 const isToday = j.scheduledDate === tKey;
                 return <div key={j.id} className={"flex items-center gap-3 py-3 border-b border-red-900/10 last:border-0 rounded-lg px-2 -mx-2 " + (isToday ? "bg-red-950/20" : "")}>
                   <div className={"w-1 self-stretch rounded-full flex-shrink-0 " + (isToday ? "bg-red-500" : j.priority === "urgent" ? "bg-orange-500" : "bg-red-900/60")} />
@@ -1447,11 +1502,20 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
 
         {/* Right: weather */}
         <div className="flex flex-col gap-4">
-          {/* Weather */}
-          {w.charts && <Glass className="p-4 flex-1">
+          {/* Weather — FIX 10: never render a fake temperature when no OWM
+              key is configured; show a setup prompt instead. */}
+          {w.charts && !settings.owmKey && (
+            <Glass className="p-4 flex-1 flex items-center">
+              <div className="flex items-center gap-2 text-sm text-white/50">
+                <Cloud size={13} className="text-white/30 flex-shrink-0" />
+                Add an OpenWeatherMap API key in Settings → Integrations to see real weather here.
+              </div>
+            </Glass>
+          )}
+          {w.charts && settings.owmKey && <Glass className="p-4 flex-1">
             <div className="flex items-center justify-between mb-3">
               <div className="font-semibold text-sm flex items-center gap-2"><Cloud size={13} className="text-blue-400" />Weather</div>
-              {settings.owmKey ? <span className="text-[10px] text-green-400">● Live</span> : <span className="text-[10px] text-white/30">Forecast</span>}
+              <span className="text-[10px] text-green-400">● Live</span>
             </div>
             <div className="flex items-end gap-4 mb-3">
               <div>

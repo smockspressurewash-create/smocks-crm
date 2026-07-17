@@ -664,6 +664,7 @@ export interface AppSettings {
   googleCalendarId?: string;
   googleBackendUrl?: string;
   googlePlaceId?: string;
+  googleReviewLink?: string;
   // ITEM 10 — the owner's OAuth provider token/refresh token, distinct from
   // googleToken above (legacy/mock field). googleTokenExpiresAt lets Gmail
   // sends proactively refresh before the access token actually expires

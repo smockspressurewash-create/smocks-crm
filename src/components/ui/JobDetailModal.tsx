@@ -459,7 +459,7 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
     setSendingReview(true);
     try {
       const companyName = settings.companyName || "Crew Boss";
-      const rateLink = `${window.location.origin}${window.location.pathname}#/rate?c=${encodeURIComponent(c.id)}&n=${encodeURIComponent(c.firstName)}&g=${encodeURIComponent(settings.googlePlaceId || "")}&co=${encodeURIComponent(companyName)}`;
+      const rateLink = `${window.location.origin}${window.location.pathname}#/rate?c=${encodeURIComponent(c.id)}&n=${encodeURIComponent(c.firstName)}&g=${encodeURIComponent(settings.googlePlaceId || "")}&rl=${encodeURIComponent((settings as any).googleReviewLink || "")}&co=${encodeURIComponent(companyName)}`;
       if (settings.twilioSid && c.phone) {
         await withTimeout(twilioSend(settings as any, c.phone, `Hi ${c.firstName}, thanks for choosing ${companyName}! How did we do? ${rateLink}`), 10000, "Review SMS");
         logOutboundSmsToInbox({ contactName: `${c.firstName} ${c.lastName}`, contactPhone: c.phone, customerId: c.id, body: `Hi ${c.firstName}, thanks for choosing ${companyName}! How did we do? ${rateLink}` }).catch(() => {});

@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from "react";
+import React, { useState } from "react";
 import { MapPin, ExternalLink } from "lucide-react";
 import { GInput } from "./GInput";
 
@@ -83,23 +83,26 @@ function matchKnownAddresses(q: string, knownAddresses: string[]): string[] {
   return out;
 }
 
-// Both the Places (New) Autocomplete API and the Geocoding API fallback kept
-// failing with key-restriction errors (403 "not authorized to use this
-// service") regardless of which Google address API was tried — the key's API
-// restrictions in Cloud Console don't reliably cover every address-lookup
-// product. Rather than keep chasing which specific API is allowed, this
-// component no longer calls ANY Google address API: it's a plain text input
-// using the browser's own address autofill (autoComplete="street-address",
-// works in Chrome/Safari/Edge without any API key), plus suggestions matched
-// locally against addresses already saved in the CRM, plus a button that
-// opens Google Maps in a new tab so the address can be visually verified —
-// none of which can ever be blocked by a Cloud Console key restriction.
+// FIX 9 — after 10+ rounds of chasing which specific Google address API a
+// given key was/wasn't restricted to (Places (New), AutocompleteService,
+// Geocoding — every one eventually hit a 403 "not authorized"/"blocked" error
+// for this key), the Google Places dependency is removed entirely rather than
+// patched again. This component now makes NO Google address API call of any
+// kind: it's a plain text input using the browser's own address autofill
+// (autoComplete="street-address", works in Chrome/Safari/Edge with no API
+// key), suggestions matched locally against addresses already saved in the
+// CRM (the ONLY suggestion source now), plus a button that opens Google Maps
+// in a new tab so the address can be visually verified — a plain link, not
+// an API call, so it can never be blocked by a Cloud Console key restriction.
+// With no API call left to fail, there is also nothing left to show a
+// "blocked" banner about — mapsKey is accepted for API compatibility with
+// existing callers but is otherwise unused here.
 export function AddressAutocomplete({
   value = "",
   onChange,
   onPlaceSelect: _onPlaceSelect,
   placeholder = "Start typing an address...",
-  mapsKey = "",
+  mapsKey: _mapsKey = "",
   className = "",
   knownAddresses = [],
 }: {
@@ -112,86 +115,9 @@ export function AddressAutocomplete({
   knownAddresses?: string[];
 }) {
   const [open, setOpen] = useState(false);
-  // Local CRM matches — instant, synchronous, always available.
-  const localMatches = value.trim().length >= 2 ? matchKnownAddresses(value, knownAddresses) : [];
-
-  // FIX 9 — Google Places predictions when a Maps key is configured, via the
-  // new AutocompleteSuggestion API. AutocompleteService (the old callback-based
-  // API used here previously) is not available to Google Cloud projects created
-  // after March 2025 — it throws "AutocompleteService is not available to new
-  // customers. Please use AutocompleteSuggestion" — so this uses the newer
-  // Promise-based `AutocompleteSuggestion.fetchAutocompleteSuggestions` from the
-  // "places" library instead. If the key is missing or the API errors (e.g. a
-  // restricted key), this stays empty and the local CRM matches are shown
-  // instead — never blocks the input.
-  const [placePreds, setPlacePreds] = useState<string[]>([]);
-  // FIX 11 — a restricted/blocked API key (Google's error: "Requests to this
-  // API ... are blocked") previously only ever showed up in the browser
-  // console. Local CRM matches already cover the input either way, but the
-  // owner has no way to discover — let alone fix — a misconfigured key
-  // without opening devtools, so surface it as a small visible banner.
-  const [placesBlocked, setPlacesBlocked] = useState(false);
-  // BLOCKER 7 (mobile round 9) — "the error message about API restrictions
-  // should be dismissible": this banner previously had no way to close it,
-  // so on a deployment whose key stays misconfigured it re-appeared on every
-  // focus/keystroke for the rest of the session. Dismissing hides it for
-  // this field instance; it resets (worth re-surfacing) if the key itself
-  // changes, e.g. the owner pastes in a new one.
-  const [bannerDismissed, setBannerDismissed] = useState(false);
-  useEffect(() => { setBannerDismissed(false); }, [mapsKey]);
-  const placesLibRef = useRef<any>(null);
-  const debounceRef = useRef<any>(null);
-  useEffect(() => {
-    if (!mapsKey) {
-      setPlacePreds([]);
-      return;
-    }
-    if (value.trim().length < 3) { setPlacePreds([]); return; }
-    clearTimeout(debounceRef.current);
-    debounceRef.current = setTimeout(async () => {
-      try {
-        if (!placesLibRef.current) {
-          await loadMapsScript(mapsKey);
-          const g = (window as any).google;
-          if (!g?.maps?.importLibrary) { console.warn("[Autocomplete] Maps JS API unavailable — using local matches"); return; }
-          placesLibRef.current = await g.maps.importLibrary("places");
-        }
-        const { AutocompleteSuggestion } = placesLibRef.current;
-        if (!AutocompleteSuggestion?.fetchAutocompleteSuggestions) { console.warn("[Autocomplete] AutocompleteSuggestion unavailable — using local matches"); setPlacePreds([]); return; }
-        const { suggestions } = await AutocompleteSuggestion.fetchAutocompleteSuggestions({
-          input: value, includedRegionCodes: ["us"], includedPrimaryTypes: ["street_address", "route", "premise"],
-        });
-        const texts = (suggestions || [])
-          .map((s: any) => s.placePrediction?.text?.toString())
-          .filter(Boolean)
-          .slice(0, 5);
-        setPlacePreds(texts);
-        setPlacesBlocked(false);
-      } catch (e: any) {
-        const msg = String(e?.message || e || "");
-        const blocked = /blocked|forbidden|403|not authorized|REQUEST_DENIED/i.test(msg);
-        console.warn("[Autocomplete] Places lookup failed — using local matches:", msg);
-        if (blocked) setPlacesBlocked(true);
-        setPlacePreds([]);
-      }
-    }, 250);
-    return () => clearTimeout(debounceRef.current);
-  }, [value, mapsKey]);
-
-  // FIX 6 — local CRM matches are the PRIMARY method (instant, synchronous,
-  // never blocked by a Google key restriction); Google predictions are an
-  // enhancement layered on top, not the other way around. Local matches come
-  // first and any Google predictions that duplicate one are dropped rather
-  // than the reverse, so a restricted/blocked key never costs the owner a
-  // suggestion that local data already had.
-  const dedupedPlacePreds = placePreds.filter(p => !localMatches.includes(p));
-  const suggestions = [...localMatches, ...dedupedPlacePreds].slice(0, 6);
-  // ITEM 9 — log which method actually produced the suggestions shown, so
-  // it's visible at a glance without having to interpret the warnings above.
-  useEffect(() => {
-    if (value.trim().length < 2) return;
-    const method = localMatches.length > 0 ? "local_crm_matches (primary)" : placePreds.length > 0 ? "google_places (enhancement)" : "none (browser autofill only)";
-  }, [placePreds.length, localMatches.length, value]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Local CRM matches — instant, synchronous, always available, and now the
+  // only suggestion source.
+  const suggestions = value.trim().length >= 2 ? matchKnownAddresses(value, knownAddresses) : [];
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const v = e.target.value;
@@ -240,13 +166,6 @@ export function AddressAutocomplete({
           Browser address autofill active · type 2+ chars to see saved CRM matches
         </div>
       )}
-      {placesBlocked && mapsKey && !bannerDismissed && (
-        <div className="text-[10px] text-yellow-400/80 mt-1 pl-1 flex items-start gap-1">
-          <span>⚠️</span>
-          <span className="flex-1">Google Places is blocking this API key (check its API restrictions in Cloud Console include "Places API (New)") — showing saved CRM addresses only for now.</span>
-          <button type="button" onClick={() => setBannerDismissed(true)} aria-label="Dismiss" className="flex-shrink-0 text-yellow-400/60 hover:text-yellow-300 leading-none px-0.5">✕</button>
-        </div>
-      )}
       {open && suggestions.length === 0 && value.trim().length >= 3 && (
         <div className="absolute z-50 left-0 right-0 top-full mt-1 bg-black/95 border border-white/10 rounded-xl px-3 py-2 text-[10px] text-white/40">
           No matches yet — keep typing, or just finish the address manually.
@@ -254,44 +173,19 @@ export function AddressAutocomplete({
       )}
       {open && suggestions.length > 0 && (
         <div className="absolute z-50 left-0 right-0 top-full mt-1 bg-black/95 border border-red-900/40 rounded-xl shadow-2xl overflow-hidden">
-          {/* FIX 6 — local CRM matches are the primary method, shown first in
-              their own group; Google predictions (enhancement only) appear
-              below in a separate group so it's never ambiguous which source
-              a suggestion came from. */}
-          {localMatches.length > 0 && (
-            <>
-              <div className="px-3 py-1.5 text-[9px] text-white/40 bg-white/5 border-b border-white/10">
-                From your customers
-              </div>
-              {localMatches.slice(0, 6).map((s, i) => (
-                <button
-                  key={"local-" + i}
-                  onMouseDown={() => handleSelect(s)}
-                  className="w-full text-left px-3 py-2.5 text-xs text-white/80 hover:bg-red-900/30 hover:text-white transition flex items-center gap-2 border-b border-red-900/10 last:border-0"
-                >
-                  <MapPin size={11} className="text-red-400 flex-shrink-0" />
-                  {s}
-                </button>
-              ))}
-            </>
-          )}
-          {dedupedPlacePreds.length > 0 && (
-            <>
-              <div className="px-3 py-1.5 text-[9px] text-white/40 bg-white/5 border-b border-white/10">
-                Google suggestions
-              </div>
-              {dedupedPlacePreds.slice(0, Math.max(0, 6 - localMatches.length)).map((s, i) => (
-                <button
-                  key={"google-" + i}
-                  onMouseDown={() => handleSelect(s)}
-                  className="w-full text-left px-3 py-2.5 text-xs text-white/80 hover:bg-red-900/30 hover:text-white transition flex items-center gap-2 border-b border-red-900/10 last:border-0"
-                >
-                  <MapPin size={11} className="text-blue-400 flex-shrink-0" />
-                  {s}
-                </button>
-              ))}
-            </>
-          )}
+          <div className="px-3 py-1.5 text-[9px] text-white/40 bg-white/5 border-b border-white/10">
+            From your customers
+          </div>
+          {suggestions.slice(0, 6).map((s, i) => (
+            <button
+              key={i}
+              onMouseDown={() => handleSelect(s)}
+              className="w-full text-left px-3 py-2.5 text-xs text-white/80 hover:bg-red-900/30 hover:text-white transition flex items-center gap-2 border-b border-red-900/10 last:border-0"
+            >
+              <MapPin size={11} className="text-red-400 flex-shrink-0" />
+              {s}
+            </button>
+          ))}
         </div>
       )}
     </div>

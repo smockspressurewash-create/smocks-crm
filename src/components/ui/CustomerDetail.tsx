@@ -42,11 +42,17 @@ import { PBar } from "./PBar";
 import { PageFade } from "./PageFade";
 import { TimeframeSelector } from "./TimeframeSelector";
 import { DocumentVault } from "./DocumentVault";
+import { crewIncludesEmployee } from "../pages/EmployeePortal";
 
-export function CustomerDetail({ customer: c, onClose, onDelete, estimates = [], jobs = [], timeline = {}, setTimeline = (..._args: any[]) => {}, settings = {} as any, toast = (..._args: any[]) => {} }) {
+export function CustomerDetail({ customer: c, onClose, onDelete, estimates = [], jobs = [], employees = [], timeline = {}, setTimeline = (..._args: any[]) => {}, settings = {} as any, toast = (..._args: any[]) => {} }) {
   const [tab, setTab] = useState("info");
   const [note, setNote] = useState("");
   const [noteType, setNoteType] = useState("note");
+  // FIX 11 — past-jobs rows were plain, unclickable divs (address/date/amount/
+  // status only) — clicking one did nothing, so photos, checklist, notes, and
+  // which employee worked it were only ever visible from the Jobs page
+  // itself. Click-to-expand shows all of that inline instead.
+  const [expandedJobId, setExpandedJobId] = useState<string | null>(null);
 
   useEffect(() => { if (c) { setTab("info"); setNote(""); } }, [c]);
 
@@ -202,7 +208,22 @@ export function CustomerDetail({ customer: c, onClose, onDelete, estimates = [],
             <div className="grid grid-cols-3 gap-2">
               <button onClick={() => window.open("tel:" + c.phone)} className="flex flex-col items-center gap-1 p-3 bg-green-950/20 border border-green-700/30 rounded-xl hover:bg-green-950/40 transition text-xs text-green-300"><Phone size={16} />Call</button>
               <button onClick={() => window.open("sms:" + c.phone)} className="flex flex-col items-center gap-1 p-3 bg-blue-950/20 border border-blue-700/30 rounded-xl hover:bg-blue-950/40 transition text-xs text-blue-300"><MessageSquare size={16} />Text</button>
-              <button onClick={() => window.open("mailto:" + c.email)} className="flex flex-col items-center gap-1 p-3 bg-purple-950/20 border border-purple-700/30 rounded-xl hover:bg-purple-950/40 transition text-xs text-purple-300"><Mail size={16} />Email</button>
+              <button onClick={() => {
+                // FIX 12 — window.open("mailto:...") hands off to whatever the
+                // OS has registered as the default mail handler, which is
+                // Outlook on a lot of Windows machines regardless of what the
+                // owner actually uses day-to-day. If they've connected Gmail
+                // in Settings → Integrations, open Gmail's own web compose
+                // (in-browser, no native app involved) instead — otherwise
+                // fall back to a plain mailto: via location.href (window.open
+                // on a mailto: URL can leave a stray blank tab behind in some
+                // browsers; setting location.href does not).
+                if ((settings as any)?.googleConnected && (settings as any)?.googleEmail) {
+                  window.open(`https://mail.google.com/mail/?view=cm&fs=1&to=${encodeURIComponent(c.email)}`, "_blank", "noopener,noreferrer");
+                } else {
+                  window.location.href = "mailto:" + c.email;
+                }
+              }} className="flex flex-col items-center gap-1 p-3 bg-purple-950/20 border border-purple-700/30 rounded-xl hover:bg-purple-950/40 transition text-xs text-purple-300"><Mail size={16} />Email</button>
             </div>
           </div>}
           {tab === "estimates" && <div className="space-y-2">{ce.length ? ce.map(e => <div key={e.id} className="flex items-center justify-between p-3 rounded-xl bg-white/5 border border-white/5"><div><div className="text-sm font-medium">#{e.id.toUpperCase()}</div><div className="text-xs text-white/50">{e.createdAt}</div></div><div className="flex items-center gap-3"><Badge tone={e.status === "approved" ? "green" : "yellow"}>{e.status}</Badge><span className="font-semibold text-red-400">{fmt(e.total)}</span></div></div>) : <div className="text-center py-6 text-white/40 text-sm">None</div>}</div>}
@@ -254,7 +275,7 @@ export function CustomerDetail({ customer: c, onClose, onDelete, estimates = [],
                 <span className="text-[10px] text-white/30">{cj.reduce((s,j) => s + (j.photos?.filter(p=>p.dataUrl).length||0), 0)} photos</span>
               </div>
               {/* All photos flat grid */}
-              {cj.some(j => j.photos?.some(p => p.dataUrl)) ? <>
+              {cj.some(j => j.photos?.some(p => p.dataUrl)) && (
                 <div className="grid grid-cols-3 gap-1.5 mb-3">
                   {cj.flatMap(j => (j.photos||[]).filter(p=>p.dataUrl).map((p,i) => ({
                     ...p, jobDate: j.scheduledDate, jobAddr: j.address?.split(",")[0], jobAmt: j.amount
@@ -268,17 +289,75 @@ export function CustomerDetail({ customer: c, onClose, onDelete, estimates = [],
                     </div>
                   ))}
                 </div>
-                {/* Job list with status */}
+              )}
+              {/* FIX 11 — job rows used to be plain unclickable divs, and (a
+                  separate bug) the WHOLE list was hidden behind "does any job
+                  have a photo" — a customer with jobs but no photos yet saw
+                  no job history at all. Now always shown when jobs exist;
+                  click a row to expand full checklist/photos/notes/crew. */}
+              {cj.length > 0 ? (
                 <div className="space-y-2">
-                  {cj.slice(0,6).map(j => <div key={j.id} className="flex items-center gap-3 p-2.5 bg-black/40 border border-red-900/10 rounded-xl text-xs">
-                    <div className="flex-1"><div className="font-medium">{j.address?.split(",")[0]}</div><div className="text-white/40">{j.scheduledDate} · {fmt(j.amount)}</div></div>
-                    <div className="flex items-center gap-1.5">
-                      {j.photos?.filter(p=>p.dataUrl).length > 0 && <span className="text-[10px] text-white/40">{j.photos.filter(p=>p.dataUrl).length}📸</span>}
-                      <Badge tone={j.status==="completed"?"green":j.status==="scheduled"?"blue":"gray"}>{j.status}</Badge>
-                    </div>
-                  </div>)}
+                  {cj.slice(0,6).map(j => {
+                    const isOpen = expandedJobId === j.id;
+                    const allChecklist = [...(j.preChecklist||[]), ...(j.duringChecklist||[]), ...(j.postChecklist||[]), ...(j.checklist||[])];
+                    const ckDone = allChecklist.filter((it: any) => it.done).length;
+                    const crewNames = employees
+                      .filter((e: any) => crewIncludesEmployee(j.crew, e.id, e.user_id))
+                      .map((e: any) => `${e.firstName} ${e.lastName}`);
+                    return (
+                      <div key={j.id} className="bg-black/40 border border-red-900/10 rounded-xl text-xs overflow-hidden">
+                        <button onClick={() => setExpandedJobId(isOpen ? null : j.id)} className="w-full flex items-center gap-3 p-2.5 text-left hover:bg-white/5 transition">
+                          <div className="flex-1 min-w-0"><div className="font-medium truncate">{j.address?.split(",")[0]}</div><div className="text-white/40">{j.scheduledDate} · {fmt(j.amount)}</div></div>
+                          <div className="flex items-center gap-1.5 flex-shrink-0">
+                            {j.photos?.filter((p: any)=>p.dataUrl).length > 0 && <span className="text-[10px] text-white/40">{j.photos.filter((p: any)=>p.dataUrl).length}📸</span>}
+                            <Badge tone={j.status==="completed"?"green":j.status==="scheduled"?"blue":"gray"}>{j.status}</Badge>
+                            <ChevronRight size={12} className={"text-white/30 transition-transform " + (isOpen ? "rotate-90" : "")} />
+                          </div>
+                        </button>
+                        {isOpen && (
+                          <div className="px-3 pb-3 pt-1 space-y-2 border-t border-white/5">
+                            <div className="text-[11px] text-white/50">
+                              <span className="text-white/70 font-medium">Crew: </span>{crewNames.length > 0 ? crewNames.join(", ") : "Not assigned"}
+                            </div>
+                            {allChecklist.length > 0 && (
+                              <div>
+                                <div className="text-[10px] text-white/40 uppercase tracking-wider mb-1">Checklist ({ckDone}/{allChecklist.length})</div>
+                                <div className="space-y-1">
+                                  {allChecklist.map((ck: any, i: number) => (
+                                    <div key={i} className={"flex items-center gap-1.5 text-[11px] " + (ck.done ? "text-white/40 line-through" : "text-white/70")}>
+                                      {ck.done ? <CheckSquare size={11} className="text-green-500 flex-shrink-0" /> : <span className="w-[11px] h-[11px] rounded border border-white/30 flex-shrink-0" />}
+                                      {ck.label}
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
+                            {(j.notes || j.internalNotes) && (
+                              <div>
+                                <div className="text-[10px] text-white/40 uppercase tracking-wider mb-1">Notes</div>
+                                <div className="text-[11px] text-white/70">{j.notes || j.internalNotes}</div>
+                              </div>
+                            )}
+                            {(j.photos||[]).some((p: any) => p.dataUrl) && (
+                              <div>
+                                <div className="text-[10px] text-white/40 uppercase tracking-wider mb-1">Photos</div>
+                                <div className="grid grid-cols-4 gap-1.5">
+                                  {(j.photos||[]).filter((p: any)=>p.dataUrl).map((p: any, i: number) => (
+                                    <div key={i} className="relative aspect-square rounded-lg overflow-hidden bg-black/40 cursor-pointer" onClick={() => window.open(p.dataUrl, "_blank")}>
+                                      <img src={p.dataUrl} alt={p.type} className="absolute inset-0 w-full h-full object-cover" />
+                                      <div className={"absolute top-0.5 left-0.5 text-[7px] px-1 py-0.5 rounded-full font-bold " + (p.type === "before" ? "bg-blue-600 text-white" : "bg-green-600 text-white")}>{p.type}</div>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
-              </> : <div className="text-xs text-white/40 py-3 text-center">No job photos uploaded yet</div>}
+              ) : <div className="text-xs text-white/40 py-3 text-center">No jobs yet</div>}
             </div>
             {/* Outstanding balance */}
             {(() => {
