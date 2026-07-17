@@ -282,10 +282,19 @@ const sendGmailRaw = async (googleProviderToken: string, fromEmail: string, to: 
 // server-side. functions/api/google-refresh.ts holds it as a Cloudflare env
 // var and does the actual token exchange; this just calls that same-origin
 // endpoint. Returns null (never throws) so callers can fall back cleanly.
+// FIX 2 (Gmail infinite-retry loop) — functions/api/google-refresh.ts returns a
+// specific, recognizable error ("...missing GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET
+// env vars...") when the Cloudflare Pages env vars simply haven't been set yet.
+// That's a permanent config gap, not a transient failure — until the owner adds
+// those vars in the Cloudflare dashboard, EVERY call here will fail the exact
+// same way. Tagging that case as `configMissing` lets callers (sendViaGmail
+// below) stop treating it like an ordinary retryable 401 and fail fast with a
+// clear message instead of falling through to the much slower/riskier
+// supabase.auth.refreshSession() fallback on every single send.
 export const refreshGoogleAccessToken = async (
   refreshToken: string,
   backendUrl?: string
-): Promise<{ token: string; expiresAt: number } | null> => {
+): Promise<{ token: string; expiresAt: number; configMissing: boolean } | null> => {
   const endpoint = backendUrl ? `${backendUrl}/google/refresh` : "/api/google-refresh";
   try {
     const res = await withTimeout(fetch(endpoint, {
@@ -295,15 +304,45 @@ export const refreshGoogleAccessToken = async (
     }), 8000, "Google token refresh");
     const data = await res.json().catch(() => ({} as any));
     if (!res.ok || !data?.access_token) {
-      console.warn("[GoogleToken] refresh failed:", data?.error || res.status);
-      return null;
+      const errMsg = String(data?.error || res.status);
+      const configMissing = /GOOGLE_CLIENT_ID|GOOGLE_CLIENT_SECRET/i.test(errMsg);
+      console.warn("[GoogleToken] refresh failed:", errMsg, configMissing ? "— Cloudflare env vars not set" : "");
+      return configMissing ? { token: "", expiresAt: 0, configMissing: true } : null;
     }
-    return { token: data.access_token, expiresAt: Date.now() + (Number(data.expires_in) || 3300) * 1000 };
+    return { token: data.access_token, expiresAt: Date.now() + (Number(data.expires_in) || 3300) * 1000, configMissing: false };
   } catch (e: any) {
     console.warn("[GoogleToken] refresh threw:", e?.message);
     return null;
   }
 };
+
+// FIX 1 (Gmail infinite-retry loop) — every Gmail 401 used to re-run the full
+// refresh chain (Cloudflare token exchange, then a supabase.auth.refreshSession()
+// fallback) with no memory of past failures. When the Cloudflare Function is
+// missing its env vars (see refreshGoogleAccessToken above), that chain is
+// guaranteed to fail every time — so every OTW/Running Late/invoice send
+// repeated the identical doomed "[SendInvoice] Gmail 401" → "[GoogleToken]
+// refresh failed" sequence back-to-back, and each one also called
+// supabase.auth.refreshSession() — which operates on whichever session (owner
+// OR employee) happened to trigger the send, and is a likely contributor to
+// destabilizing an active employee session under repeated concurrent calls.
+// After 2 consecutive failures this circuit opens and further sends fail
+// immediately with a clear message instead of retrying — it self-resets after
+// a cooldown so a later fix (e.g. reconnecting Google) can succeed again
+// without requiring a full page reload.
+let gmailRefreshFailureStreak = 0;
+let gmailCircuitOpenedAt = 0;
+const GMAIL_REFRESH_MAX_ATTEMPTS = 2;
+const GMAIL_CIRCUIT_COOLDOWN_MS = 10 * 60 * 1000;
+const gmailCircuitOpen = (): boolean => {
+  if (gmailRefreshFailureStreak < GMAIL_REFRESH_MAX_ATTEMPTS) return false;
+  if (Date.now() - gmailCircuitOpenedAt > GMAIL_CIRCUIT_COOLDOWN_MS) {
+    gmailRefreshFailureStreak = 0; // cooldown elapsed — allow one more attempt
+    return false;
+  }
+  return true;
+};
+const GMAIL_UNAVAILABLE_MSG = "Gmail unavailable — check Google connection in Settings.";
 
 export const sendViaGmail = async (
   googleProviderToken: string,
@@ -320,9 +359,9 @@ export const sendViaGmail = async (
   // 401. This is what actually stops "token keeps expiring" from being user
   // visible at all, rather than just reacting faster to the 401 after it
   // already happened.
-  if (opts?.refreshToken && opts.tokenExpiresAt && Date.now() > opts.tokenExpiresAt - 2 * 60 * 1000) {
+  if (opts?.refreshToken && opts.tokenExpiresAt && Date.now() > opts.tokenExpiresAt - 2 * 60 * 1000 && !gmailCircuitOpen()) {
     const refreshed = await refreshGoogleAccessToken(opts.refreshToken, opts.backendUrl);
-    if (refreshed) {
+    if (refreshed?.token) {
       activeToken = refreshed.token;
       opts.onTokenRefreshed?.(refreshed.token, refreshed.expiresAt);
     }
@@ -330,8 +369,16 @@ export const sendViaGmail = async (
 
   let res = await sendGmailRaw(activeToken, fromEmail, to, subject, html);
   if (res.status === 401) {
+    // FIX 1 — circuit breaker: after 2 consecutive failures, stop attempting
+    // the refresh chain entirely and fail fast instead of repeating the same
+    // doomed 401 → refresh-fail → Supabase-session-refresh sequence forever.
+    if (gmailCircuitOpen()) {
+      console.warn("[SendInvoice] Gmail refresh circuit open (failed", gmailRefreshFailureStreak, "times in a row) — skipping retry chain");
+      throw new Error(GMAIL_UNAVAILABLE_MSG);
+    }
     console.warn("[SendInvoice] Gmail 401 — attempting real Google token refresh");
     let freshToken: string | undefined;
+    let configMissing = false;
     // ITEM 10 — the REAL fix: redeem the stored Google refresh_token via
     // Google's own token endpoint (through our server-side proxy). This
     // actually works, unlike supabase.auth.refreshSession() below, which
@@ -340,10 +387,22 @@ export const sendViaGmail = async (
     // usually just the same stale one, or null.
     if (opts?.refreshToken) {
       const refreshed = await refreshGoogleAccessToken(opts.refreshToken, opts.backendUrl);
-      if (refreshed) {
+      if (refreshed?.token) {
         freshToken = refreshed.token;
         opts.onTokenRefreshed?.(refreshed.token, refreshed.expiresAt);
+      } else if (refreshed?.configMissing) {
+        configMissing = true;
       }
+    }
+    // FIX 2 — the Cloudflare Function reported its own config is incomplete
+    // (GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET not set). That's not recoverable
+    // by retrying — skip the Supabase-session fallback below entirely (it was
+    // never going to produce a real Google token anyway) and fail fast with a
+    // clear, actionable message.
+    if (!freshToken && configMissing) {
+      gmailRefreshFailureStreak++;
+      if (gmailRefreshFailureStreak >= GMAIL_REFRESH_MAX_ATTEMPTS) gmailCircuitOpenedAt = Date.now();
+      throw new Error(GMAIL_UNAVAILABLE_MSG);
     }
     // Fallback for accounts with no stored refresh_token yet (e.g. connected
     // before this was tracked) — occasionally still turns up a usable token.
@@ -367,8 +426,14 @@ export const sendViaGmail = async (
     // exchange AND the Supabase-session fallback have failed to produce a
     // token that actually works against Gmail.
     if (res.status === 401) {
+      gmailRefreshFailureStreak++;
+      if (gmailRefreshFailureStreak >= GMAIL_REFRESH_MAX_ATTEMPTS) {
+        gmailCircuitOpenedAt = Date.now();
+        throw new Error(GMAIL_UNAVAILABLE_MSG);
+      }
       throw new Error("Google token expired — reconnect in Settings → Integrations.");
     }
+    gmailRefreshFailureStreak = 0;
   }
   if (!res.ok) {
     const err = await res.json().catch(() => ({})) as { error?: { message?: string } };

@@ -248,7 +248,7 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
         const validTok = tok && empRow?.google_token_expires_at && new Date(empRow.google_token_expires_at).getTime() > Date.now();
         if (tok && !validTok && empRow?.google_refresh_token) {
           const refreshed = await refreshEmpGoogleToken(settings?.googleBackendUrl, empRow.google_refresh_token);
-          if (refreshed) {
+          if (refreshed?.token) {
             tok = refreshed.token;
             // FIX 10 (mobile round 6) — this used to only keep the refreshed
             // token in the local `tok` variable for this one calendar sync
@@ -365,7 +365,7 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
           // the owner's session, so the owner-side supabase.auth.refreshSession()
           // retry inside sendViaGmail would refresh the wrong account's token.
           const refreshed = await refreshEmpGoogleToken(settings.googleBackendUrl, empRow.google_refresh_token);
-          if (refreshed) {
+          if (refreshed?.token) {
             tok = refreshed.token;
             (supabase as any).from("employees").update({ google_token: refreshed.token, google_token_expires_at: new Date(refreshed.expiresAt).toISOString() }).eq("id", emp.id).catch(() => {});
           } else tok = null;
@@ -607,7 +607,7 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
           const validTok = tok && empRow?.google_token_expires_at && new Date(empRow.google_token_expires_at).getTime() > Date.now();
           if (tok && !validTok && empRow?.google_refresh_token && settings?.googleBackendUrl) {
             const refreshed = await refreshEmpGoogleToken(settings.googleBackendUrl, empRow.google_refresh_token);
-            if (refreshed) {
+            if (refreshed?.token) {
               tok = refreshed.token;
               (supabase as any).from("employees").update({ google_token: refreshed.token, google_token_expires_at: new Date(refreshed.expiresAt).toISOString() }).eq("id", emp.id).catch(() => {});
             } else tok = null;

@@ -118,10 +118,12 @@ export function SettingsModal({ open, onClose, settings, setSettings, services, 
         return;
       }
       const refreshed = await refreshEmpGoogleToken(f.googleBackendUrl, f.googleRefreshToken);
-      if (refreshed) {
+      if (refreshed?.token) {
         setF((prev: any) => ({ ...prev, googleProviderToken: refreshed.token, googleTokenExpiresAt: refreshed.expiresAt }));
         setSettings?.((prev: any) => ({ ...prev, googleProviderToken: refreshed.token, googleTokenExpiresAt: refreshed.expiresAt }));
         toast?.("Google token refreshed", "green");
+      } else if (refreshed?.configMissing) {
+        toast?.("Gmail unavailable — Google reconnect isn't fully configured yet (missing server env vars). Contact your admin.", "red");
       } else {
         toast?.("Couldn't refresh automatically — the refresh function may not be deployed yet. Reconnect Google below.", "red");
       }

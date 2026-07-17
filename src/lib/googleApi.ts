@@ -345,10 +345,18 @@ export const isEmpGoogleTokenValid = (t: EmpGoogleToken | null): boolean =>
 // same-origin Cloudflare Pages Function (functions/api/google-refresh.ts,
 // holding GOOGLE_CLIENT_ID/SECRET as env vars) unless an explicit
 // self-hosted backendUrl override is given.
+// FIX 2 (Gmail/Google infinite-retry loop) — same Cloudflare Function as
+// lib/messaging.ts's refreshGoogleAccessToken; it returns a recognizable error
+// when GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET simply haven't been set in the
+// Cloudflare Pages dashboard yet. That's a permanent config gap (every call
+// fails identically until it's fixed), not a transient one — tag it so callers
+// (the periodic refresh interval in EmployeePortal, GoogleWorkspacePage, etc.)
+// can show a clear "reconnect isn't configured yet" message instead of
+// silently retrying forever on their own timers.
 export const refreshEmpGoogleToken = async (
   backendUrl: string | undefined,
   refreshToken: string
-): Promise<{ token: string; expiresAt: number } | null> => {
+): Promise<{ token: string; expiresAt: number; configMissing: boolean } | null> => {
   if (!refreshToken) return null;
   const endpoint = backendUrl ? `${backendUrl}/google/refresh` : "/api/google-refresh";
   try {
@@ -359,10 +367,12 @@ export const refreshEmpGoogleToken = async (
     });
     const data = await res.json().catch(() => ({} as any));
     if (!res.ok || !data?.access_token) {
-      console.warn("[GoogleToken] employee token refresh failed:", data?.error || res.status);
-      return null;
+      const errMsg = String(data?.error || res.status);
+      const configMissing = /GOOGLE_CLIENT_ID|GOOGLE_CLIENT_SECRET/i.test(errMsg);
+      console.warn("[GoogleToken] employee token refresh failed:", errMsg, configMissing ? "— Cloudflare env vars not set" : "");
+      return configMissing ? { token: "", expiresAt: 0, configMissing: true } : null;
     }
-    return { token: data.access_token, expiresAt: Date.now() + (Number(data.expires_in) || 3300) * 1000 };
+    return { token: data.access_token, expiresAt: Date.now() + (Number(data.expires_in) || 3300) * 1000, configMissing: false };
   } catch (e: any) {
     console.warn("[GoogleToken] employee token refresh threw:", e?.message);
     return null;
@@ -384,7 +394,7 @@ export const getValidEmpGoogleToken = async (
   if (isEmpGoogleTokenValid(existing)) return existing;
   if (!existing?.refreshToken) return null;
   const refreshed = await refreshEmpGoogleToken(backendUrl, existing.refreshToken);
-  if (!refreshed) return null;
+  if (!refreshed?.token) return null;
   const updated: EmpGoogleToken = { ...existing, token: refreshed.token, expiresAt: refreshed.expiresAt };
   saveEmpGoogleToken(userId, updated);
   // FIX 10 (mobile round 6) — this used to only persist to localStorage. If

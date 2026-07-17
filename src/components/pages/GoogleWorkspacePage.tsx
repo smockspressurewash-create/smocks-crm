@@ -789,7 +789,7 @@ export function GoogleWorkspacePage({
   const getRefreshedGoogleToken = useCallback(async (): Promise<string | null> => {
     if (s.googleRefreshToken) {
       const refreshed = await refreshEmpGoogleToken(s.googleBackendUrl, s.googleRefreshToken);
-      if (refreshed) {
+      if (refreshed?.token) {
         setSettings?.((prev: any) => ({ ...prev, googleProviderToken: refreshed.token, googleTokenExpiresAt: refreshed.expiresAt }));
         return refreshed.token;
       }

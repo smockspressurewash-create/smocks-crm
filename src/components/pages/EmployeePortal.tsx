@@ -2046,7 +2046,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
       // persist": nothing was ever retrying them.
       const backendUrl = settings?.googleBackendUrl;
       const refreshed = await refreshEmpGoogleToken(backendUrl, existing.refreshToken);
-      if (!refreshed) {
+      if (!refreshed?.token) {
         // A real refresh attempt (refresh_token WAS present) failed — only
         // now is it honest to call this "expired, needs reconnect" rather
         // than a transient, self-healing state.
