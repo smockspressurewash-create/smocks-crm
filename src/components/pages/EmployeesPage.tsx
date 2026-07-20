@@ -494,11 +494,11 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], custome
                 // actual Payroll-tab total.
                 const hrs = getEmployeeHours(e.id, payPeriodStart, payPeriodEnd);
                 const cost = getEmployeePay(e, payPeriodStart, payPeriodEnd);
-                // BLOCKER 2 (mobile round 9) — trace: confirms whether crew
-                // matching is actually finding this employee's jobs. If
-                // empJobs.length is 0 while jobs.length (all completed jobs
-                // company-wide) is nonzero, crew matching is still broken.
-                console.log("[Hours]", e.firstName, e.lastName, "— matched jobs:", empJobs.length, "of", jobs.filter((j: any) => j.status === "completed").length, "completed company-wide · period hrs:", hrs.toFixed(2), "· pay:", cost.toFixed(2));
+                // AUDIT — this [Hours] trace (BLOCKER 2, mobile round 9)
+                // logged once per employee on every render of this table,
+                // which re-renders on every jobs/employees poll while the
+                // Hours tab is open — a real console flood, multiplied by
+                // headcount. Crew matching is confirmed working; removed.
                 const todayStr = today();
                 const weekStart = (() => { const d = new Date(); d.setDate(d.getDate() - d.getDay()); return d.toISOString().slice(0, 10); })();
                 const allCompleted = jobs.filter((j: any) => crewIncludesEmployee(j.crew, e.id, (e as any).user_id) && j.status === "completed");

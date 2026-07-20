@@ -816,8 +816,22 @@ export function App() {
   // payment/company-name would be blank. This is a single-tenant app (one
   // business per deployment), so grab whichever single app_settings row
   // exists, no owner_id filter needed.
+  // AUDIT — this same gap applies to the EMPLOYEE portal (#/portal), and it's
+  // far more consequential there: crmUserId is only ever set when the OWNER
+  // has authenticated on THIS device (see setCrmUserId call sites — the
+  // employee-role branch of onAuthStateChange returns immediately without
+  // ever setting it). A technician's own phone almost never has an owner
+  // session on it, so `settings` was silently stuck on this device's empty
+  // localStorage defaults for the entire life of that session — no Twilio
+  // SID/token, no Google connection, no company name. That's not a "some
+  // logging would help" bug, it's the actual reason OTW/Running Late/Send
+  // Invoice-from-portal (all gated on settings.twilioSid /
+  // settings.googleConnected) failed with "not configured" for every real
+  // employee on their own device, no matter how correct the send logic
+  // itself was. Portal now uses the exact same no-owner-id fallback as the
+  // public estimate/client pages.
   useEffect(() => {
-    if (crmUserId || (page !== "estimate" && page !== "client") || settingsSyncLoadedRef.current) return;
+    if (crmUserId || (page !== "estimate" && page !== "client" && page !== "portal") || settingsSyncLoadedRef.current) return;
     (async () => {
       try {
         const { data, error } = await (supabase as any).from("app_settings").select("data").limit(1).maybeSingle();
@@ -1342,8 +1356,11 @@ export function App() {
       ]);
       if (Array.isArray(sbJobs) && sbJobs.length > 0) {
         const normedJobs = sbJobs.map(normalizeJobRow);
-        const completedWithHours = normedJobs.filter((j: any) => j.status === "completed" && Number(j.loggedHours) > 0);
-        console.log("[Hours] completed jobs with logged hours this refetch:", completedWithHours.length, "— total:", completedWithHours.reduce((s: number, j: any) => s + Number(j.loggedHours || 0), 0).toFixed(2));
+        // AUDIT — this [Hours] log was a one-time diagnostic for FIX 7
+        // (Hours/Payroll tabs pulling real data), but refetchData runs every
+        // 10s PLUS on every realtime jobs/customers/estimates change, so it
+        // was printing continuously all day long. That's confirmed working
+        // now — removed rather than left flooding the console.
         setJobs(prev => {
           const sbMap = new Map(normedJobs.map((j: any) => [j.id, j]));
           const merged = prev.map(j => sbMap.has(j.id) ? { ...j, ...sbMap.get(j.id) } : j);

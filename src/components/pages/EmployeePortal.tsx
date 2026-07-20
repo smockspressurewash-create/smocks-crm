@@ -2185,9 +2185,11 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
         // now is it honest to call this "expired, needs reconnect" rather
         // than a transient, self-healing state.
         setEmpGoogleRefreshFailed(true);
+        setEmpGoogleConfigMissing(!!refreshed?.configMissing);
         return;
       }
       setEmpGoogleRefreshFailed(false);
+      setEmpGoogleConfigMissing(false);
       saveEmpGoogleToken(uid, { ...existing, token: refreshed.token, expiresAt: refreshed.expiresAt });
       (supabase as any).from("employees")
         .update({ google_token: refreshed.token, google_token_expires_at: new Date(refreshed.expiresAt).toISOString() })
@@ -3085,6 +3087,14 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   // "reconnect" banner reflects a genuine failure instead of just "no
   // refresh_token on file yet".
   const [empGoogleRefreshFailed, setEmpGoogleRefreshFailed] = useState(false);
+  // AUDIT — refreshEmpGoogleToken tags a failure as configMissing when the
+  // Cloudflare Pages Function reports GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET
+  // aren't set. That's a permanent server-side gap no amount of employee
+  // "Reconnect" clicking can fix, but the banner below used to show the same
+  // generic "token expired, reconnect" message either way — tracked
+  // separately so the employee (and whoever they forward the screenshot to)
+  // knows to escalate instead of retrying forever.
+  const [empGoogleConfigMissing, setEmpGoogleConfigMissing] = useState(false);
   const [showCanceledJobs, setShowCanceledJobs] = useState(false);
   const [pastCollapsed, setPastCollapsedState] = useState(() => {
     try { const v = localStorage.getItem("smocks.portal.pastCollapsed"); return v === null ? true : v === "1"; } catch { return true; }
@@ -4904,12 +4914,12 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
             const calVisibleJobs = showCanceledJobs ? myJobs : myJobs.filter(j => j.status !== "cancelled");
             const calCanceledCount = myJobs.filter(j => j.status === "cancelled").length;
             const calDayJobs = calVisibleJobs.filter(j => j.scheduledDate === calSelectedDate);
-            // FIX 3 (mobile round 8) — traces the calendar's job pipeline:
-            // total jobs the app knows about -> all jobs this employee is
-            // crewed on (any status) -> what's actually visible after the
-            // cancelled-jobs toggle. If totalJobs is high but myJobs is low,
-            // the bug is upstream in the crew fetch/filter, not the calendar.
-            console.log("[EmpCalendar] total jobs:", jobs.length, "· assigned to me (any status):", myJobs.length, "· visible after cancelled filter:", calVisibleJobs.length, "· cancelled hidden:", showCanceledJobs ? 0 : calCanceledCount);
+            // AUDIT — the [EmpCalendar] trace log here (FIX 3, mobile round
+            // 8) ran on every render of this tab, which re-renders on every
+            // 3s/10s jobs poll and realtime update while an employee has the
+            // Calendar tab open — flooding the console all day. The pipeline
+            // bug it was tracing is confirmed fixed; removed rather than left
+            // logging continuously.
 
             return (
               <>
@@ -5857,13 +5867,26 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                     </div>
                   </Glass>
                 ) : empGoogleExpired ? (
-                  <Glass className="p-4 !bg-yellow-950/20 !border-yellow-700/30">
+                  <Glass className={"p-4 " + (empGoogleConfigMissing ? "!bg-red-950/20 !border-red-700/30" : "!bg-yellow-950/20 !border-yellow-700/30")}>
                     <div className="flex items-center gap-3 mb-3">
-                      <AlertCircle size={18} className="text-yellow-400 flex-shrink-0" />
+                      <AlertCircle size={18} className={(empGoogleConfigMissing ? "text-red-400" : "text-yellow-400") + " flex-shrink-0"} />
                       <div className="flex-1 min-w-0">
-                        <div className="font-semibold text-sm text-yellow-300">Google Connection Expired</div>
+                        <div className={"font-semibold text-sm " + (empGoogleConfigMissing ? "text-red-300" : "text-yellow-300")}>
+                          {empGoogleConfigMissing ? "Google Sync Unavailable — Server Setup Needed" : "Google Connection Expired"}
+                        </div>
                         {empGoogleEmail && <div className="text-xs text-white/50 mt-0.5">{empGoogleEmail}</div>}
-                        <div className="text-xs text-white/40 mt-0.5">Your access token expired — reconnect to resume calendar sync</div>
+                        {/* AUDIT — reconnecting can't fix a missing
+                            GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET on the
+                            server; every "expired" banner used to say the
+                            same generic thing regardless of cause, so an
+                            employee (and the owner they escalated to) had no
+                            way to tell "just expired" from "will never work
+                            until an admin fixes Cloudflare." */}
+                        <div className="text-xs text-white/40 mt-0.5">
+                          {empGoogleConfigMissing
+                            ? "This isn't something reconnecting will fix — ask the business owner to check Settings → Integrations → Google."
+                            : "Your access token expired — reconnect to resume calendar sync"}
+                        </div>
                       </div>
                     </div>
                     <button

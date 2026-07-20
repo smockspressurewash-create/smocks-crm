@@ -1006,6 +1006,22 @@ export function SettingsModal({ open, onClose, settings, setSettings, services, 
                   </div>
                   <div className="text-[10px] text-white/30 mt-1">Stored obfuscated in localStorage — not real encryption. For production use, keys belong behind a backend.</div>
                 </div>
+                {/* AUDIT — functions/api/stripe-webhook.ts (a server-side,
+                    signature-verified backup for marking invoices paid) has
+                    never had any in-app setup instructions anywhere in
+                    Settings, even though it needs its own Cloudflare env var
+                    and Stripe dashboard configuration. Payments still get
+                    marked paid without this (the client-side confirmation in
+                    ClientPortal.tsx already handles the golden path) — this
+                    just adds tamper-resistant server verification on top. */}
+                <div className="p-3 bg-black/60 rounded-xl border border-white/5 text-[10px] text-white/50 space-y-1">
+                  <div className="font-semibold text-white/70">Optional: Server-Verified Payment Webhook</div>
+                  <div>Payments already get marked paid automatically when a customer completes checkout. For extra tamper-resistance (a signature-verified check that can't be spoofed from a browser), also set up the Stripe webhook:</div>
+                  <div className="mt-1">1. Cloudflare Pages → this project → Settings → Environment variables → add <span className="font-mono text-blue-400">STRIPE_WEBHOOK_SECRET</span>.</div>
+                  <div>2. Stripe Dashboard → Developers → Webhooks → Add endpoint → <span className="font-mono text-blue-400 break-all">{window.location.origin}/api/stripe-webhook</span></div>
+                  <div>3. Select events: checkout.session.completed, checkout.session.async_payment_succeeded, payment_intent.succeeded.</div>
+                  <div>4. Stripe shows a signing secret ("whsec_…") when you create the endpoint — that's the value for step 1.</div>
+                </div>
               </div>
             </Glass>
 
