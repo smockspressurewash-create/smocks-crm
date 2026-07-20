@@ -20,7 +20,7 @@ import {
   Tooltip, ResponsiveContainer, Area, AreaChart, LineChart, Line,
   ComposedChart, Legend
 } from "recharts";
-import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE } from "../../lib/utils";
+import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, withTimeout } from "../../lib/utils";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
 import { twilioSend, sendEmail } from "../../lib/messaging";
 import { seedWeather } from "../../lib/weather";
@@ -97,8 +97,9 @@ export function InvoicesPage({ estimates = [], setEstimates, customers = [], set
 
   const [previewInvoiceJob, setPreviewInvoiceJob] = useState<any>(null);
   const sendInvoiceForJob = async (job: any, subject: string, bodyHtml: string) => {
+    console.log("[SendInvoice] sendInvoiceForJob called — job:", job.id, "customer:", job.customerId);
     const cust = customers.find(c => c.id === job.customerId);
-    if (!cust?.email) { toast?.("Customer has no email on file", "red"); return; }
+    if (!cust?.email) { console.warn("[SendInvoice] aborting — no email on file for customer", job.customerId); toast?.("Customer has no email on file", "red"); return; }
     setSendingJobInvoiceId(job.id);
     try {
       const newInv = {
@@ -107,19 +108,40 @@ export function InvoicesPage({ estimates = [], setEstimates, customers = [], set
         subtotal: Number(job.amount) || 0, discount: 0, depositRequired: 0, tax: 0, total: Number(job.amount) || 0,
         status: "approved" as const, createdAt: today(), validUntil: daysFromNow(30), invoiced: true, invoicedAt: today(),
       };
+      // [SendInvoice] this used to only call setEstimates (local React state)
+      // with no Supabase write at all — the payLink texted/emailed to the
+      // customer points at #/estimate/{newInv.id}; if that row never reaches
+      // Supabase the link 404s and the invoice never shows up anywhere else
+      // in the CRM. Insert BEFORE sending, and wrap in withTimeout so a hung
+      // Supabase call can't leave the button stuck on "Sending…" forever.
+      console.log("[SendInvoice] inserting new invoice", newInv.id, "amount", newInv.total);
+      const insertResult = await withTimeout<any>((supabase as any).from("estimates").insert(newInv), 10000, "Invoice save");
+      if (insertResult?.error) {
+        console.error("[SendInvoice] estimate insert failed:", insertResult.error.message);
+        throw new Error("Couldn't save invoice — " + insertResult.error.message);
+      }
+      console.log("[SendInvoice] invoice saved to Supabase ✓");
       setEstimates((prev: any[]) => [...prev, newInv]);
       // FIX 17 — #/portal/ID is the employee portal's route, not a customer
       // invoice view; #/estimate/ID is the public no-login pay/sign portal.
       const payLink = `${window.location.origin}${window.location.pathname}#/estimate/${newInv.id}`;
       const html = bodyHtml + `<div style="text-align:center;margin:22px 0 4px"><a href="${payLink}" style="display:inline-block;background:#dc2626;color:#fff;text-decoration:none;font-weight:700;font-size:14px;padding:13px 30px;border-radius:10px">View & Pay Invoice</a></div>`;
-      await sendEmail(settings as any, { to: cust.email, subject, body: html });
-      setJobs((prev: any[]) => prev.map(j => j.id === job.id ? { ...j, invoiceSentAt: today(), paymentType: "Invoice", paymentStatus: j.paymentStatus === "Paid" ? j.paymentStatus : "Pending" } : j));
+      console.log("[SendInvoice] sending via Gmail to", cust.email);
+      await withTimeout(sendEmail(settings as any, { to: cust.email, subject, body: html }), 10000, "Invoice email");
+      console.log("[SendInvoice] Gmail send resolved ✓");
+      const jobPatch = { invoiceSentAt: today(), paymentType: "Invoice", paymentStatus: job.paymentStatus === "Paid" ? job.paymentStatus : "Pending" };
+      setJobs((prev: any[]) => prev.map(j => j.id === job.id ? { ...j, ...jobPatch } : j));
+      (supabase as any).from("jobs").update(jobPatch).eq("id", job.id)
+        .then((r: any) => { if (r?.error) console.error("[SendInvoice] job patch (invoiceSentAt) failed:", r.error.message); })
+        .catch((e: any) => console.error("[SendInvoice] job patch (invoiceSentAt) threw:", e?.message));
       toast?.(`Invoice sent to ${cust.firstName} ✓`, "green");
       setPreviewInvoiceJob(null);
     } catch (e: any) {
+      console.error("[SendInvoice] sendInvoiceForJob — error:", e?.message || e);
       toast?.(e?.message || "Failed to send invoice", "red");
     } finally {
       setSendingJobInvoiceId(null);
+      console.log("[SendInvoice] sendInvoiceForJob finished, sendingJobInvoiceId reset");
     }
   };
   const [filter, setFilter] = useState("all");

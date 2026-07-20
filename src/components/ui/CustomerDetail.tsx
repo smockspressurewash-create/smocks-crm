@@ -338,6 +338,22 @@ export function CustomerDetail({ customer: c, onClose, onDelete, estimates = [],
                                 <div className="text-[11px] text-white/70">{j.notes || j.internalNotes}</div>
                               </div>
                             )}
+                            {/* FIX 11 — customer sign-off, if collected, wasn't
+                                shown here at all — signerName plus the drawn
+                                signature image (job.signOff.sigData), same
+                                data the field portal's own sign-off screen
+                                collects and the invoice PDF embeds. */}
+                            {j.signOff && (
+                              <div>
+                                <div className="text-[10px] text-white/40 uppercase tracking-wider mb-1">Signature</div>
+                                <div className="text-[11px] text-white/70">
+                                  Signed by {j.signOff.signerName || "customer"}{j.signOff.timestamp ? ` on ${new Date(j.signOff.timestamp).toLocaleDateString()}` : ""}
+                                </div>
+                                {j.signOff.sigData && (
+                                  <img src={j.signOff.sigData} alt="signature" className="mt-1 max-w-[200px] bg-white rounded-lg p-1.5" />
+                                )}
+                              </div>
+                            )}
                             {(j.photos||[]).some((p: any) => p.dataUrl) && (
                               <div>
                                 <div className="text-[10px] text-white/40 uppercase tracking-wider mb-1">Photos</div>

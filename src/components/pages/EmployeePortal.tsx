@@ -244,7 +244,11 @@ function PortalChecklistSection({ title, emoji, items, onUpdate, allowPhotos = f
 
 const DEFAULT_SIGNOFF_DISCLAIMER = "I confirm that all services have been completed to my satisfaction. I accept the work as described and acknowledge that {{company}} is not liable for pre-existing conditions documented in the pre-job checklist. I understand that this serves as a legally binding acceptance of completed work.";
 
-function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName = "the company", onComplete, perms: permsOverride, maxLunchMinutes = 30, onJobCompleted, googleMapsKey = "", paidLunchBreaks = false, signOffDisclaimer = "", settings = {} as AppSettings, setEstimates = (() => {}) as any, nextJob = null, nextJobCustomer = null, onArrived, autoComplete = false, employeeName = "", isPreview = false }: {
+// FIX 13 — exported so the owner's Dashboard can reuse the exact same
+// streamlined, mobile-optimized job view a field employee sees (sign-off,
+// checklist with photo upload, clock in/out — no admin fields) instead of
+// opening the full JobDetailModal for a job the OWNER is personally working.
+export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName = "the company", onComplete, perms: permsOverride, maxLunchMinutes = 30, onJobCompleted, googleMapsKey = "", paidLunchBreaks = false, signOffDisclaimer = "", settings = {} as AppSettings, setEstimates = (() => {}) as any, nextJob = null, nextJobCustomer = null, onArrived, autoComplete = false, employeeName = "", isPreview = false }: {
   job: Job; customer?: Customer; onBack: () => void;
   onUpdateJob: (patch: Partial<Job>) => void | Promise<any>; toast: (msg: string, tone?: any) => void;
   companyName?: string; onComplete?: () => void; perms?: Record<string, boolean>; maxLunchMinutes?: number;
@@ -583,7 +587,12 @@ function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName 
       // toast. Insert BEFORE sending so a save failure fails loud (via the
       // catch below) instead of handing the customer a dead link.
       console.log("[SendInvoice] inserting new invoice", newInv.id, "for customer", customer?.id, "amount", newInv.total);
-      const insertResult = await (supabase as any).from("estimates").insert(newInv);
+      // [SendInvoice] this insert previously had no timeout guard — if Supabase
+      // hung (e.g. a stuck internal navigator-lock, the exact scenario
+      // withTimeout's own doc comment describes), this await never resolved OR
+      // rejected, so the function never reached the catch/finally below and the
+      // button was stuck on "Sending…" forever with no toast, no error, nothing.
+      const insertResult = await withTimeout<any>((supabase as any).from("estimates").insert(newInv), 10000, "Invoice save");
       if (insertResult?.error) {
         console.error("[SendInvoice] estimate insert failed:", insertResult.error.message);
         throw new Error("Couldn't save invoice — " + insertResult.error.message);

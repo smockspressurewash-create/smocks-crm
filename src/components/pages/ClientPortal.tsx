@@ -574,9 +574,18 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
           {step === "payment" && (
             <div className="space-y-4">
               <div className="font-semibold">Payment Options</div>
-              <div className={"grid gap-3 " + (hasRemainingBalance ? "grid-cols-1" : "grid-cols-2")}>
+              {/* FIX 21 — a deposit secures a FUTURE job; once e.invoiced is
+                  true the job is already done and the customer owes the full
+                  (or remaining) amount for completed work, not a deposit
+                  toward it. Offering "Pay Deposit" here read as "why is it
+                  letting me pay only part of a bill for work that's already
+                  finished?" — only estimates (not-yet-invoiced, job still
+                  ahead of them) should ever offer the deposit choice. */}
+              <div className={"grid gap-3 " + (hasRemainingBalance || e?.invoiced ? "grid-cols-1" : "grid-cols-2")}>
                 {(hasRemainingBalance
                   ? [{ k: "remaining", l: "Pay Remaining Balance", sub: fmt(remainingAmt) + " due — " + fmt(alreadyPaid) + " already paid" }]
+                  : e?.invoiced
+                  ? [{ k: "full", l: "Pay in Full", sub: fmt(e.total) + " due for completed service" }]
                   : [
                       // FEATURE 6 — explicit "Deposit Due Now" / "Balance Due
                       // After Service" wording so both figures are visible

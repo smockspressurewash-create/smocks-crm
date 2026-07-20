@@ -125,7 +125,11 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
   }, [initialDetailId]); // eslint-disable-line react-hooks/exhaustive-deps
   const [prioFilter, setPrioFilter] = useState("all");
   const [search, setSearch] = useState("");
-  const [sortBy, setSortBy] = useState("date");
+  // FIX 12 — was only 3 sort buttons (Date/Priority/Amount), each with a
+  // single fixed direction and no Status option. Full dropdown with the
+  // exact options requested; "Recently Scheduled" (newest date first) is
+  // the default.
+  const [sortBy, setSortBy] = useState("date_desc");
   const [routeOpen, setRouteOpen] = useState(false);
   const [bulkSelected, setBulkSelected] = useState([]);
   const [bulkAction, setBulkAction] = useState(null);
@@ -136,7 +140,10 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
   // only). One shared factory for the "empty form" shape so the initial
   // useState, and both places that reset it before opening the modal, can't
   // drift out of sync with each other.
-  const emptyNewJobForm = () => ({ customerId: "", address: "", amount: "", scheduledDate: today(), scheduledTime: "", priority: "normal", notes: "", duration: "", crewEmpId: "", jobType: "residential", isRecurring: false, recurringMode: "preset" as "preset" | "days" | "weeks" | "months" | "weekdays", recurringFreq: "monthly", recurringInterval: 1, recurringWeekdays: [] as number[] });
+  // FIX 5 — crewEmpId (singular) only ever let the owner pick ONE crew member
+  // when scheduling a job; crewEmpIds (array) lets multiple be selected at
+  // once, all saved to the job's crew array together.
+  const emptyNewJobForm = () => ({ customerId: "", address: "", amount: "", scheduledDate: today(), scheduledTime: "", priority: "normal", notes: "", duration: "", crewEmpIds: [] as string[], jobType: "residential", isRecurring: false, recurringMode: "preset" as "preset" | "days" | "weeks" | "months" | "weekdays", recurringFreq: "monthly", recurringInterval: 1, recurringWeekdays: [] as number[] });
   const [newJobForm, setNewJobForm] = useState(emptyNewJobForm());
   const [newJobCrewMode, setNewJobCrewMode] = useState<"assign" | "request">("assign");
   const [quickReqJobId, setQuickReqJobId] = useState<string | null>(null);
@@ -192,10 +199,13 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
       return (c?.firstName + " " + c?.lastName).toLowerCase().includes(q) || (j.address || "").toLowerCase().includes(q) || (j.tags || []).some(t => t.toLowerCase().includes(q));
     })
     .sort((a, b) => {
-      if (sortBy === "amount") return b.amount - a.amount;
+      if (sortBy === "amount_desc") return b.amount - a.amount;
+      if (sortBy === "amount_asc") return a.amount - b.amount;
       if (sortBy === "priority") return (prioOrder[a.priority || "normal"] - prioOrder[b.priority || "normal"]) || a.scheduledDate.localeCompare(b.scheduledDate);
-      // default: date, then priority
-      return a.scheduledDate.localeCompare(b.scheduledDate) || (prioOrder[a.priority || "normal"] - prioOrder[b.priority || "normal"]);
+      if (sortBy === "status") return String(a.status || "").localeCompare(String(b.status || "")) || a.scheduledDate.localeCompare(b.scheduledDate);
+      if (sortBy === "date_asc") return a.scheduledDate.localeCompare(b.scheduledDate) || (prioOrder[a.priority || "normal"] - prioOrder[b.priority || "normal"]);
+      // "date_desc" (Recently Scheduled — default): newest scheduled date first.
+      return b.scheduledDate.localeCompare(a.scheduledDate) || (prioOrder[a.priority || "normal"] - prioOrder[b.priority || "normal"]);
     });
 
   const move = (jid, ns) => {
@@ -650,60 +660,93 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
           </div>
 
           <div>
-            <label className="text-xs text-white/60 mb-1 block">Crew (optional)</label>
-            <div className="flex gap-2">
-              <GSel className="flex-1" value={newJobForm.crewEmpId} onChange={e => setNewJobForm(f => ({ ...f, crewEmpId: e.target.value }))}>
-                <option value="" className="bg-black">— No crew yet —</option>
-                {employees.filter((e: any) => e.status !== "inactive").map((e: any) => {
-                  // FEATURE 5 — surface availability right in the dropdown so
-                  // the owner sees it before assigning, not after.
-                  const unavail = newJobForm.scheduledDate && isEmployeeUnavailable(e, newJobForm.scheduledDate);
-                  return <option key={e.id} value={e.id} className="bg-black">{e.firstName} {e.lastName}{unavail ? " ⚠ unavailable" : ""}</option>;
-                })}
-              </GSel>
-              {newJobForm.crewEmpId && (
-                <GSel className="!w-36 flex-shrink-0" value={newJobCrewMode} onChange={e => setNewJobCrewMode(e.target.value as any)}>
+            <div className="flex items-center justify-between mb-1">
+              <label className="text-xs text-white/60 block">Crew (optional, select multiple)</label>
+              {newJobForm.crewEmpIds.length > 0 && (
+                <GSel className="!w-32 !py-1 !text-xs" value={newJobCrewMode} onChange={e => setNewJobCrewMode(e.target.value as any)}>
                   <option value="assign" className="bg-black">Assign</option>
                   <option value="request" className="bg-black">Request</option>
                 </GSel>
               )}
             </div>
-            {/* FEATURE 5 — explicit warning banner, not just the dropdown
+            {/* FIX 5 — was a single-select <GSel>, so only one crew member
+                could ever be picked when scheduling a job. Toggle-button pills
+                (same pattern JobDetailModal already uses for editing an
+                existing job's crew) let any number be selected at once, all
+                saved to the job's crew array together on save. */}
+            <div className="flex gap-1.5 flex-wrap">
+              {employees.filter((e: any) => e.status !== "inactive").map((e: any) => {
+                const sel = newJobForm.crewEmpIds.includes(e.id);
+                const unavail = newJobForm.scheduledDate && isEmployeeUnavailable(e, newJobForm.scheduledDate);
+                return (
+                  <button key={e.id} type="button"
+                    onClick={() => setNewJobForm(f => ({ ...f, crewEmpIds: f.crewEmpIds.includes(e.id) ? f.crewEmpIds.filter(id => id !== e.id) : [...f.crewEmpIds, e.id] }))}
+                    title={unavail ? `⚠️ ${e.firstName} is unavailable on this day. Schedule anyway?` : undefined}
+                    className={"text-xs px-3 py-1.5 rounded-lg border transition " + (sel ? "bg-red-900/40 border-red-500/50 text-red-300" : unavail ? "bg-yellow-950/20 border-yellow-700/40 text-yellow-300" : "bg-white/5 border-white/10 text-white/60 hover:text-white")}>
+                    {e.firstName} {e.lastName[0]}.{unavail ? " ⚠️" : ""}
+                  </button>
+                );
+              })}
+              {employees.filter((e: any) => e.status !== "inactive").length === 0 && <div className="text-[11px] text-white/30">No active employees yet</div>}
+            </div>
+            {/* FEATURE 5 — explicit warning banner, not just the pill
                 annotation, so it's impossible to miss before saving. */}
-            {newJobForm.crewEmpId && newJobForm.scheduledDate && isEmployeeUnavailable(employees.find((e: any) => e.id === newJobForm.crewEmpId), newJobForm.scheduledDate) && (
-              <div className="text-[11px] text-yellow-300 bg-yellow-950/30 border border-yellow-700/40 rounded px-2 py-1 mt-1 flex items-center gap-1">
-                ⚠️ {employees.find((e: any) => e.id === newJobForm.crewEmpId)?.firstName} is unavailable on this day. Schedule anyway?
-              </div>
-            )}
-            {newJobForm.crewEmpId && (
+            {(() => {
+              const unavailNames = newJobForm.crewEmpIds
+                .map(id => employees.find((e: any) => e.id === id))
+                .filter((e: any) => e && newJobForm.scheduledDate && isEmployeeUnavailable(e, newJobForm.scheduledDate))
+                .map((e: any) => e.firstName);
+              return unavailNames.length > 0 ? (
+                <div className="text-[11px] text-yellow-300 bg-yellow-950/30 border border-yellow-700/40 rounded px-2 py-1 mt-1 flex items-center gap-1">
+                  ⚠️ {unavailNames.join(", ")} {unavailNames.length > 1 ? "are" : "is"} unavailable on this day. Schedule anyway?
+                </div>
+              ) : null;
+            })()}
+            {newJobForm.crewEmpIds.length > 0 && (
               <div className="text-[11px] text-white/30 mt-1">
                 {newJobCrewMode === "assign"
                   ? "Adds them to the crew immediately and emails them — no response needed."
-                  : "Sends a request they must accept or decline before they're on the crew."}
+                  : "Sends a request each must accept or decline before they're on the crew."}
               </div>
             )}
-            {/* FIX 10 — show the assigned employee's effective pay rate for
+            {/* FIX 4 — "Request" mode writes to job_requests with owner_id:
+                ownerId; if the session bootstrap hasn't resolved it yet, warn
+                up front instead of letting the owner hit save and find out via
+                an error toast after the fact. */}
+            {newJobForm.crewEmpIds.length > 0 && newJobCrewMode === "request" && !ownerId && (
+              <div className="text-[11px] text-yellow-300 bg-yellow-950/30 border border-yellow-700/40 rounded px-2 py-1 mt-1 flex items-center gap-1">
+                ⏳ Still finishing sign-in — the job will save, but wait a few seconds before requesting crew.
+              </div>
+            )}
+            {/* FIX 10 — show each selected employee's effective pay rate for
                 THIS job's type, so the owner can see at a glance whether the
                 residential/commercial override applies before saving. */}
-            {newJobForm.crewEmpId && (() => {
-              const emp = employees.find((e: any) => e.id === newJobForm.crewEmpId);
-              if (!emp) return null;
-              const rate = getEffectiveRate(emp, { jobType: newJobForm.jobType });
-              const hasOverride = (emp as any).jobTypeRates?.[newJobForm.jobType] != null;
-              return (
-                <div className="text-[11px] text-green-400/80 mt-1 flex items-center gap-1">
-                  <DollarSign size={10} />{emp.firstName}'s {newJobForm.jobType} rate: {fmt(rate)}/hr{hasOverride ? " (override)" : " (default)"}
-                </div>
-              );
-            })()}
+            {newJobForm.crewEmpIds.length > 0 && (
+              <div className="flex flex-wrap gap-x-3 gap-y-1 mt-1">
+                {newJobForm.crewEmpIds.map(id => {
+                  const emp = employees.find((e: any) => e.id === id);
+                  if (!emp) return null;
+                  const rate = getEffectiveRate(emp, { jobType: newJobForm.jobType });
+                  const hasOverride = (emp as any).jobTypeRates?.[newJobForm.jobType] != null;
+                  return (
+                    <div key={id} className="text-[11px] text-green-400/80 flex items-center gap-1">
+                      <DollarSign size={10} />{emp.firstName}'s {newJobForm.jobType} rate: {fmt(rate)}/hr{hasOverride ? " (override)" : " (default)"}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
           <div className="flex gap-2 justify-end pt-2">
             <GBtn variant="ghost" onClick={() => setNewJobOpen(false)}>Cancel</GBtn>
             <GBtn onClick={async () => {
               if (!newJobForm.customerId) { toast("Select a customer", "error"); return; }
               if (!newJobForm.scheduledDate) { toast("Enter a date", "error"); return; }
-              const assignedEmp = newJobForm.crewEmpId ? employees.find((e: any) => e.id === newJobForm.crewEmpId) : null;
-              const directAssign = !!assignedEmp && newJobCrewMode === "assign";
+              // FIX 5 — assignedEmps is now potentially several employees, not
+              // just one; directAssign/request applies to the whole batch
+              // (the shared newJobCrewMode toggle above the pill list).
+              const assignedEmps = newJobForm.crewEmpIds.map(id => employees.find((e: any) => e.id === id)).filter(Boolean) as any[];
+              const directAssign = assignedEmps.length > 0 && newJobCrewMode === "assign";
               const job = {
                 id: uid(), customerId: newJobForm.customerId,
                 address: newJobForm.address || customers.find(c => c.id === newJobForm.customerId)?.address || "",
@@ -715,9 +758,9 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
                 jobType: newJobForm.jobType as any,
                 notes: newJobForm.notes,
                 duration: newJobForm.duration ? Number(newJobForm.duration) : undefined,
-                crew: directAssign ? [assignedEmp.id] : [], checklist: [], photos: [], commLog: [], chemicalsUsed: [], equipment: [], tags: [],
+                crew: directAssign ? assignedEmps.map(e => e.id) : [], checklist: [], photos: [], commLog: [], chemicalsUsed: [], equipment: [], tags: [],
                 loggedHours: 0, createdAt: today(),
-                ...(directAssign ? { crewAssignedAt: { [assignedEmp.id]: Date.now() } } : {}),
+                ...(directAssign ? { crewAssignedAt: Object.fromEntries(assignedEmps.map(e => [e.id, Date.now()])) } : {}),
                 ...(newJobForm.isRecurring ? {
                   isRecurring: true,
                   recurringMode: newJobForm.recurringMode,
@@ -727,12 +770,13 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
                 } : {}),
               };
               if (job.isRecurring) console.log("[Verify] recurring jobs with custom schedules — working — mode:", job.recurringMode);
+              console.log("[CrewFlow] scheduling job with crew:", assignedEmps.map(e => e.firstName), "mode:", newJobCrewMode);
               setJobs(prev => [...prev, job]);
               // Close the modal immediately — none of the follow-up work below
               // (Google Calendar, crew email/request) should be able to block
               // the UI if a network call hangs.
               setNewJobOpen(false);
-              setNewJobForm(f => ({ ...f, crewEmpId: "" }));
+              setNewJobForm(f => ({ ...f, crewEmpIds: [] }));
               toast("Job scheduled for " + newJobForm.scheduledDate);
               // A brand-new job previously only reached Supabase via the
               // 30s app-level auto-save batch — the employee's portal polls
@@ -741,11 +785,31 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
               // immediately instead, and verify with a re-fetch so a failed
               // write surfaces as a visible error rather than silent data loss.
               (async () => {
+                console.log("[Recurring] saving new job", job.id, "isRecurring:", (job as any).isRecurring, "crew:", job.crew);
                 const { error } = await withTimeout<any>((supabase as any).from("jobs").insert(job), 15000, "Save job");
                 if (error) {
-                  console.error("[CrewFlow] new job failed to save to Supabase:", error);
-                  toast?.("Job created locally, but failed to save to the server — " + error.message, "red");
+                  // FIX G — recurring jobs add isRecurring/recurringMode/
+                  // recurringFreq/recurringInterval/recurringWeekdays columns
+                  // (migration 0007) on top of the normal job payload. If that
+                  // migration hasn't been run yet, PostgREST rejects the WHOLE
+                  // insert (not just those columns) — so the job never reached
+                  // Supabase at all, and the employee portal (which reads jobs
+                  // straight from Supabase) never saw it, even though the
+                  // owner's own screen showed "Job scheduled" from the
+                  // optimistic local state above. Retry with those columns
+                  // stripped so the job (and its crew) still lands.
+                  console.error("[Recurring] new job insert failed:", error.message, "— retrying without recurring-schedule columns");
+                  const { isRecurring, recurringMode, recurringFreq, recurringInterval, recurringWeekdays, ...coreJob } = job as any;
+                  const retry = await (supabase as any).from("jobs").insert(coreJob);
+                  if (retry?.error) {
+                    console.error("[Recurring] core-column retry also failed:", retry.error.message);
+                    toast?.("Job created locally, but failed to save to the server — " + retry.error.message, "red");
+                  } else if ((job as any).isRecurring) {
+                    console.warn("[Recurring] job saved without its recurring-schedule columns — run supabase/migrations/0007_custom_recurring_schedule_columns.sql to enable auto-scheduling.");
+                    toast?.("Job saved, but recurring schedule couldn't be saved — ask your admin to run the pending database migration.", "yellow");
+                  }
                 } else {
+                  console.log("[Recurring] new job saved to Supabase ✓", job.id);
                 }
                 // No verify SELECT round-trip — it needs a SELECT RLS policy
                 // that may be absent, and would otherwise spuriously warn on a
@@ -769,21 +833,22 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
                   setJobs(prev => prev.map(j => j.id === job.id ? { ...j, googleEventId: eventId } : j));
                 }).catch(() => {});
               }
-              // Notify the crew member — assigned (no response needed) or requested (accept/decline).
-              if (assignedEmp?.email) {
-                const cust = customers.find(c => c.id === job.customerId);
-                const custLine = cust ? `<li><b>Customer:</b> ${cust.firstName} ${cust.lastName}</li>` : "";
+              // Notify each selected crew member — assigned (no response needed) or requested (accept/decline).
+              const cust = customers.find(c => c.id === job.customerId);
+              const custLine = cust ? `<li><b>Customer:</b> ${cust.firstName} ${cust.lastName}</li>` : "";
+              for (const assignedEmp of assignedEmps) {
+                if (!assignedEmp?.email) continue;
                 if (directAssign) {
                   const portalLink = `${window.location.origin}${window.location.pathname}#/portal`;
                   const html = emailShell(settings.companyName || "Crew Boss", "Job Assignment", `<p>Hi ${assignedEmp.firstName},</p><p>You've been assigned to a new job:</p><ul><li><b>Date:</b> ${job.scheduledDate}${job.scheduledTime ? " at " + job.scheduledTime : ""}</li><li><b>Address:</b> ${job.address}</li>${custLine}</ul>` + emailButton("Open Crew Portal", portalLink));
-                  withTimeout(sendEmail(settings, { to: assignedEmp.email, subject: `You've Been Assigned — ${job.scheduledDate}`, body: html }), 8000, "Email send").catch((e: any) => { console.warn("Assignment email failed — job still assigned:", e?.message); toast?.("Assigned, but the notification email failed to send", "red"); });
+                  withTimeout(sendEmail(settings, { to: assignedEmp.email, subject: `You've Been Assigned — ${job.scheduledDate}`, body: html }), 8000, "Email send").catch((e: any) => { console.warn("Assignment email failed — job still assigned:", e?.message); toast?.(`Assigned ${assignedEmp.firstName}, but the notification email failed to send`, "red"); });
                 } else {
                   (async () => {
                     try {
-                      console.log("[CrewRequest] ownerId at request time:", ownerId || "(empty)");
+                      console.log("[CrewRequest] ownerId at request time:", ownerId || "(empty)", "employee:", assignedEmp.firstName);
                       if (!ownerId) {
                         console.warn("[CrewRequest] blocked — ownerId still empty (session bootstrap not resolved yet)");
-                        toast?.("Job saved, but the crew request failed — still finishing sign-in, try again in a moment", "red");
+                        toast?.(`Job saved, but the request to ${assignedEmp.firstName} failed — still finishing sign-in, try again in a moment`, "red");
                         return;
                       }
                       const { data, error } = await withTimeout<any>(
@@ -794,7 +859,7 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
                       );
                       if (error || !data?.id) {
                         console.error("Failed to create job_request:", error);
-                        toast?.("Job saved, but the crew request failed — " + (error?.message || "run the job_requests SQL in Supabase first"), "red");
+                        toast?.(`Job saved, but the request to ${assignedEmp.firstName} failed — ` + (error?.message || "run the job_requests SQL in Supabase first"), "red");
                         return;
                       }
                       const reqUrl = `${window.location.origin}${window.location.pathname}#/portal?request=${data.id}`;
@@ -802,7 +867,7 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
                       withTimeout(sendEmail(settings, { to: assignedEmp.email, subject: `Job Request — ${job.scheduledDate}`, body: html }), 8000, "Email send").catch((e: any) => console.warn("Job request email failed — request still saved:", e?.message));
                     } catch (e: any) {
                       console.error("Crew request failed:", e);
-                      toast?.("Job saved, but the crew request failed — " + (e?.message || "try again"), "red");
+                      toast?.(`Job saved, but the request to ${assignedEmp.firstName} failed — ` + (e?.message || "try again"), "red");
                     }
                   })();
                 }
@@ -999,9 +1064,16 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
           <span className="text-[10px] text-white/40 uppercase tracking-wider mr-1">Priority:</span>
           {["all", ...priorityLevels.map(p => p.key)].map(p => <button key={p} onClick={() => setPrioFilter(p)} className={"px-2.5 py-1 rounded-lg text-[11px] transition border capitalize " + (prioFilter === p ? "bg-red-900/40 border-red-500/50 text-white" : "bg-black/40 border-red-900/30 text-white/60 hover:text-white")}>{p}</button>)}
         </div>
-        <div className="flex flex-wrap gap-1 items-center">
-          <span className="text-[10px] text-white/40 uppercase tracking-wider mr-1">Sort:</span>
-          {[["date", "Date"], ["priority", "Priority"], ["amount", "Amount"]].map(([k, l]) => <button key={k} onClick={() => setSortBy(k)} className={"px-2.5 py-1 rounded-lg text-[11px] transition border " + (sortBy === k ? "bg-red-900/40 border-red-500/50 text-white" : "bg-black/40 border-red-900/30 text-white/60 hover:text-white")}>{l}</button>)}
+        <div className="flex items-center gap-1.5">
+          <span className="text-[10px] text-white/40 uppercase tracking-wider">Sort:</span>
+          <GSel value={sortBy} onChange={e => setSortBy(e.target.value)} className="!text-xs !py-1.5 !w-44">
+            <option value="date_desc" className="bg-black">Recently Scheduled</option>
+            <option value="date_asc" className="bg-black">Date (Oldest)</option>
+            <option value="amount_desc" className="bg-black">Amount (Highest)</option>
+            <option value="amount_asc" className="bg-black">Amount (Lowest)</option>
+            <option value="priority" className="bg-black">Priority (Urgent First)</option>
+            <option value="status" className="bg-black">Status</option>
+          </GSel>
         </div>
         <GBtn onClick={() => setRouteOpen(true)} variant="ghost" className="!text-xs !py-1.5"><Navigation size={12} className="inline mr-1.5" />Route ({todayScheduled.length})</GBtn>
         <button onClick={() => { const all = filtered.map(j => j.id); setBulkSelected(bulkSelected.length === all.length ? [] : all); }} className="px-2.5 py-1.5 rounded-lg text-[11px] border border-red-900/30 bg-black/40 text-white/60 hover:text-white flex items-center gap-1">
@@ -1124,10 +1196,18 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
                   <textarea value={quickReqMsg} onChange={e => setQuickReqMsg(e.target.value)}
                     placeholder="Optional message…" rows={2}
                     className="w-full bg-black/60 border border-white/20 rounded-lg px-2 py-1.5 text-xs text-white placeholder-white/30 focus:outline-none focus:border-yellow-500/50 resize-none" />
+                  {/* FIX 4 — ownerId is seeded from getLastOwnerId() on mount but a
+                      brand-new device/session still has a real, if short, window
+                      where it's genuinely empty. Disabling here (instead of only
+                      erroring after the click, as sendQuickJobRequest still does
+                      as a defense-in-depth backstop) means the owner sees a
+                      "finishing sign-in" state up front rather than a request
+                      that appears to fire and then fails. */}
                   <div className="flex gap-2">
-                    <button onClick={() => sendQuickJobRequest(j)} disabled={!quickReqEmpId || quickReqSending}
+                    <button onClick={() => sendQuickJobRequest(j)} disabled={!quickReqEmpId || quickReqSending || !ownerId}
+                      title={!ownerId ? "Still finishing sign-in — wait a moment" : undefined}
                       className="flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-lg bg-yellow-600 hover:bg-yellow-500 disabled:opacity-40 text-black text-xs font-bold transition">
-                      <Send size={10} />{quickReqSending ? "Sending…" : "Send Request"}
+                      <Send size={10} />{quickReqSending ? "Sending…" : !ownerId ? "Finishing sign-in…" : "Send Request"}
                     </button>
                     <button onClick={() => setQuickReqJobId(null)}
                       className="px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-white/60 text-xs transition">

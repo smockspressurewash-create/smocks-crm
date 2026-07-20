@@ -179,8 +179,13 @@ export function PipelinePage({ jobs = [], setJobs, customers = [], toast }) {
                 <span className="text-yellow-400/80 ml-2 text-sm">avg {bottleneck.avg}d · {bottleneck.count} job{bottleneck.count !== 1 ? "s" : ""}</span>
               </div>
             </div>
-            <div className="flex items-center gap-3 ml-auto">
-              <div className="flex gap-2 text-[10px]">
+            <div className="flex items-center gap-3 ml-auto flex-wrap">
+              {/* FIX 17 — no flex-wrap here meant this row of per-stage
+                  pills (one per pipeline stage with jobs in it — commonly
+                  6-7) could overflow past the screen edge with no scroll
+                  affordance on mobile, since the page's ancestor clips
+                  overflow rather than showing a scrollbar. */}
+              <div className="flex gap-2 text-[10px] flex-wrap">
                 {avgDays.filter(s => s.count > 0).map(s => (
                   <div key={s.stage} className={"px-2 py-1 rounded-lg border " + (s.stage === bottleneck.stage ? "bg-yellow-950/40 border-yellow-700/50 text-yellow-300" : "bg-black/40 border-white/10 text-white/50")}>
                     {s.stage}: <span className="font-bold">{s.avg}d</span>

@@ -29,11 +29,34 @@ import { fmt, uid, today, localDateStr, daysFromNow, daysSince, filterByTimefram
 // crew entry used a different id shape — the card then had no job to hang
 // its checklist/photo count off of, which is why Live Crew View "doesn't
 // show checklists or before/after photos" even though the data exists.
-import { crewIncludesEmployee } from "./EmployeePortal";
+import { crewIncludesEmployee, JobDetailView } from "./EmployeePortal";
 import { supabase } from "../../lib/supabase";
+
+// FIX 8 — same default checklist items JobDetailModal.tsx/EmployeePortal.tsx/
+// CrewView.tsx fall back to when a job's checklist arrays are still empty. A
+// freshly-scheduled job never has preChecklist/duringChecklist/postChecklist
+// populated in Supabase until an employee checks an item in the field — so
+// without this same fallback, Live Team View showed "0/0" for every job that
+// hadn't been touched yet in the field, not just ones with no checklist at all.
+const DASH_PRE_DEFAULTS = [
+  { id: "pre1", label: "Take photos of existing damage", done: false },
+  { id: "pre2", label: "Confirm water access", done: false },
+  { id: "pre3", label: "Check weather conditions", done: false },
+  { id: "pre4", label: "Note any pre-existing issues", done: false },
+];
+const DASH_DURING_DEFAULTS = [
+  { id: "dur1", label: "Apply cleaning solution", done: false },
+  { id: "dur2", label: "Scrub affected areas", done: false },
+  { id: "dur3", label: "Rinse thoroughly", done: false },
+];
+const DASH_POST_DEFAULTS = [
+  { id: "post1", label: "Customer walkthrough", done: false },
+  { id: "post2", label: "Collect payment", done: false },
+  { id: "post3", label: "Get customer signature", done: false },
+  { id: "post4", label: "Take after photos", done: false },
+];
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
 import { twilioSend, sendOwnerGmailOnly, logOutboundSmsToInbox, emailShell } from "../../lib/messaging";
-import { seedWeather } from "../../lib/weather";
 
 import { callModel, MODELS } from "../../lib/api";
 import { createCalendarEvent, updateCalendarEvent, deleteCalendarEvent, fetchDriveFiles, MOCK_GOOGLE_DATA, fmtSize, fmtDate, fileIcon } from "../../lib/google";
@@ -59,7 +82,6 @@ import { CustomerDetail } from "../ui/CustomerDetail";
 import { CustomerAnalytics } from "../ui/CustomerAnalytics";
 import { EstimateBuilder } from "../ui/EstimateBuilder";
 import { EstimatePreview } from "../ui/EstimatePreview";
-import { JobDetailModal } from "../ui/JobDetailModal";
 import { PipelineScrollContainer } from "../ui/PipelineScrollContainer";
 import { SwipeableCard } from "../ui/SwipeableCard";
 import { ReviewMonitor } from "../ui/ReviewMonitor";
@@ -111,7 +133,7 @@ function MiniStreetViewThumb({ address, mapsKey }: { address: string; mapsKey?: 
   );
 }
 
-export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = [], estimates = [], setEstimates = (() => {}) as any, automations = [], stats, goals, vehicles = [], maintenance = [], chemicals = [], settings = {} as AppSettings, setSettings = () => {}, onNav, toast, weatherData = seedWeather, inboxThreads = [], employees = [], crewFetchError = false, reviews = [], onSendDailyBriefing, onViewJob = (id: string) => {}, ownerId = "" }: { jobs?: any[]; setJobs?: any; customers?: any[]; estimates?: any[]; setEstimates?: any; automations?: any[]; stats?: any; goals?: any; vehicles?: any[]; maintenance?: any[]; chemicals?: any[]; settings?: AppSettings; setSettings?: any; onNav?: any; toast?: any; weatherData?: any; inboxThreads?: any[]; employees?: any[]; crewFetchError?: boolean; reviews?: any[]; onSendDailyBriefing?: () => Promise<void>; onViewJob?: (id: string) => void; ownerId?: string }) {
+export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = [], estimates = [], setEstimates = (() => {}) as any, automations = [], stats, goals, vehicles = [], maintenance = [], chemicals = [], settings = {} as AppSettings, setSettings = () => {}, onNav, toast, weatherData = null, weatherFetchError = null, inboxThreads = [], employees = [], crewFetchError = false, reviews = [], onSendDailyBriefing, onViewJob = (id: string) => {}, ownerId = "" }: { jobs?: any[]; setJobs?: any; customers?: any[]; estimates?: any[]; setEstimates?: any; automations?: any[]; stats?: any; goals?: any; vehicles?: any[]; maintenance?: any[]; chemicals?: any[]; settings?: AppSettings; setSettings?: any; onNav?: any; toast?: any; weatherData?: any; weatherFetchError?: string | null; inboxThreads?: any[]; employees?: any[]; crewFetchError?: boolean; reviews?: any[]; onSendDailyBriefing?: () => Promise<void>; onViewJob?: (id: string) => void; ownerId?: string }) {
   const [sendingDashInvoiceId, setSendingDashInvoiceId] = useState<string | null>(null);
   const [needsInvoiceCollapsed, setNeedsInvoiceCollapsed] = useState(false);
   const [previewInvoiceJob, setPreviewInvoiceJob] = useState<any>(null);
@@ -148,8 +170,9 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
   // invoice" actually means.
   const needsInvoiceJobs = jobs.filter((j: any) => j.status === "completed" && j.paymentStatus !== "Paid" && !j.invoiceSentAt);
   const sendDashInvoice = async (job: any, subject: string, bodyHtml: string) => {
+    console.log("[SendInvoice] sendDashInvoice called — job:", job.id, "customer:", job.customerId);
     const cust = customers.find((c: any) => c.id === job.customerId);
-    if (!cust?.email) { toast?.("Customer has no email on file", "red"); return; }
+    if (!cust?.email) { console.warn("[SendInvoice] aborting — no email on file for customer", job.customerId); toast?.("Customer has no email on file", "red"); return; }
     setSendingDashInvoiceId(job.id);
     try {
       const newInv = {
@@ -158,8 +181,20 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
         subtotal: Number(job.amount) || 0, discount: 0, depositRequired: 0, tax: 0, total: Number(job.amount) || 0,
         status: "approved" as const, createdAt: today(), validUntil: daysFromNow(30), invoiced: true, invoicedAt: today(),
       };
+      // [SendInvoice] this insert used to be fire-and-forget (not awaited) —
+      // a failed save only logged a console.warn while the function carried
+      // on building a payLink for a row that never reached Supabase, then
+      // reported success anyway. Await it (with a timeout so a hung request
+      // can't strand the button on "Sending…") and throw on failure so the
+      // owner actually sees it didn't work.
+      console.log("[SendInvoice] inserting new invoice", newInv.id, "amount", newInv.total);
+      const insertResult = await withTimeout<any>((supabase as any).from("estimates").insert(newInv), 10000, "Invoice save");
+      if (insertResult?.error) {
+        console.error("[SendInvoice] estimate insert failed:", insertResult.error.message);
+        throw new Error("Couldn't save invoice — " + insertResult.error.message);
+      }
+      console.log("[SendInvoice] invoice saved to Supabase ✓");
       setEstimates((prev: any[]) => [...prev, newInv]);
-      (supabase as any).from("estimates").insert(newInv).then((r: any) => { if (r?.error) console.warn("[Send Invoice] estimate save failed:", r.error.message); }).catch(() => {});
       // FIX 17 — #/portal/ID is the EMPLOYEE portal's route, not a customer
       // invoice view; #/estimate/ID is the public, no-login single-estimate
       // pay/sign portal (ClientPortal).
@@ -170,8 +205,14 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
       // always settles so `finally` runs and the button resets. sendOwnerGmailOnly
       // (lib/messaging.ts) already auto-refreshes the Google session on a 401
       // and retries once before giving up.
+      console.log("[SendInvoice] sending via Gmail to", cust.email);
       await withTimeout(sendOwnerGmailOnly(settings as any, cust.email, subject, html), 10000, "Invoice email");
-      setJobs((prev: any[]) => prev.map((j: any) => j.id === job.id ? { ...j, invoiceSentAt: today(), paymentType: "Invoice", paymentStatus: j.paymentStatus === "Paid" ? j.paymentStatus : "Pending" } : j));
+      console.log("[SendInvoice] Gmail send resolved ✓");
+      const jobPatch = { invoiceSentAt: today(), paymentType: "Invoice", paymentStatus: job.paymentStatus === "Paid" ? job.paymentStatus : "Pending" };
+      setJobs((prev: any[]) => prev.map((j: any) => j.id === job.id ? { ...j, ...jobPatch } : j));
+      (supabase as any).from("jobs").update(jobPatch).eq("id", job.id)
+        .then((r: any) => { if (r?.error) console.error("[SendInvoice] job patch (invoiceSentAt) failed:", r.error.message); })
+        .catch((e: any) => console.error("[SendInvoice] job patch (invoiceSentAt) threw:", e?.message));
       toast?.(`📧 Invoice sent to ${cust.firstName} ✓`, "green");
       setPreviewInvoiceJob(null);
     } catch (e: any) {
@@ -184,6 +225,7 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
       toast?.(msg, "red");
     } finally {
       setSendingDashInvoiceId(null);
+      console.log("[SendInvoice] sendDashInvoice finished, sendingDashInvoiceId reset");
     }
   };
   const pipelineVal = jobs.filter(j => j.status !== "completed").reduce((s, j) => s + j.amount, 0);
@@ -274,8 +316,15 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
   })();
 
   const wAlerts = [];
-  const wForecast = (weatherData?.forecast || seedWeather.forecast);
-  const wCurrent = (weatherData?.current || seedWeather.current);
+  // FIX 10 — this used to fall back to seedWeather's hardcoded fake forecast
+  // whenever weatherData was falsy (no key, still loading, or a failed
+  // fetch) — meaning a real OWM key that was merely invalid, rate-limited,
+  // or pointed at a location OWM couldn't geocode still produced "real-
+  // looking" rain/wind/heat alerts built entirely from fake seed numbers.
+  // Falls back to an empty forecast instead — every consumer below already
+  // handles zero days/no current reading by simply not alerting/badging.
+  const wForecast = weatherData?.forecast ?? [];
+  const wCurrent = weatherData?.current ?? null;
   wForecast.forEach(f => {
     if (f.rainChance > 50) wAlerts.push({ type: "rain", day: f.day, msg: f.rainChance + "% rain", icon: "🌧️" });
     if ((f.lowTemp || f.temp) <= 32) wAlerts.push({ type: "freeze", day: f.day, msg: "Freeze " + (f.lowTemp || f.temp) + "°F", icon: "🥶" });
@@ -322,10 +371,9 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
   const staleQuotes = estimates.filter(e => e.status === "pending" && daysSince(e.createdAt) >= 7);
   if (staleQuotes.length > 0) alerts.push({ key: "stale", icon: FileText, tone: "yellow", msg: staleQuotes.length + " quote" + (staleQuotes.length > 1 ? "s" : "") + " over 7 days old — follow up", action: () => onNav("estimates") });
 
-  // Weather — FIX 10: wForecast falls back to seedWeather's fake forecast
-  // (which includes a hardcoded "70% rain Wednesday") when no OWM key is
-  // configured; gating on settings.owmKey stops this alert from firing off
-  // of made-up data.
+  // Weather — wForecast is now [] (never fake seed data) whenever there's no
+  // key or no successful fetch yet, so this naturally can't fire on made-up
+  // data; the owmKey gate just avoids computing it for nothing.
   if (settings.notifyWeather !== false && settings.owmKey) {
     const rainyDays = wForecast.filter(f => f.rainChance >= 70).map(f => f.day);
     if (rainyDays.length > 0) {
@@ -480,7 +528,14 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
   const ownerHoursThisWeek = ownerJobsThisWeek.reduce((s: number, j: any) => s + (Number(j.loggedHours) || 0), 0);
 
   const checklistProgress = (j: any) => {
-    const items = [...(j.preChecklist || []), ...(j.duringChecklist || []), ...(j.postChecklist || []), ...(j.checklist || [])];
+    // FIX 8 — fall back to defaults so a not-yet-touched job shows its real
+    // (default) checklist progress instead of "0/0" — see DASH_*_DEFAULTS above.
+    const items = [
+      ...(j.preChecklist?.length ? j.preChecklist : DASH_PRE_DEFAULTS),
+      ...(j.duringChecklist?.length ? j.duringChecklist : DASH_DURING_DEFAULTS),
+      ...(j.postChecklist?.length ? j.postChecklist : DASH_POST_DEFAULTS),
+      ...(j.checklist || []),
+    ];
     if (items.length === 0) return null;
     const done = items.filter((it: any) => it.done).length;
     return { done, total: items.length, pct: Math.round((done / items.length) * 100) };
@@ -514,25 +569,42 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
   // a glance. Click the progress badge to expand the real item list (done
   // AND not-done) inline, without needing the separate Job Detail modal.
   const [expandedChecklistJobId, setExpandedChecklistJobId] = useState<string | null>(null);
-  const ownerUpdateJob = (jid: string, patch: any) => {
+  // FIX 13 — this used to only write a hardcoded, narrow whitelist of fields
+  // (clock/crew/checklist/status/signature) straight to Supabase — fine for
+  // the handful of actions Dashboard.tsx itself triggered directly, but the
+  // streamlined JobDetailView (below) sends many other patch shapes this
+  // whitelist never anticipated: signOff (not "signature"), completedAt,
+  // pipelineStage, paymentStatus/paymentType/amountCollected, invoiceSentAt,
+  // commLog, arrivedAt — every one of those would have been silently
+  // dropped, never reaching Supabase, with no error surfaced at all. Mirrors
+  // EmployeePortal.tsx's own updateJob: write the FULL patch first, and only
+  // fall back to a conservative core-column subset if PostgREST rejects the
+  // whole thing (e.g. an optional column that doesn't exist on this
+  // deployment yet — see CLAUDE.md's "safe column" note).
+  const OWNER_CORE_JOB_COLUMNS = [
+    "status", "paymentStatus", "paymentType", "loggedHours", "amountCollected", "invoiceSentAt", "arrivedAt",
+    "crew", "clockInAt", "lunchStartAt", "lunchMinutes", "lunchExceeded", "pipelineStage", "photos", "videos",
+    "preChecklist", "duringChecklist", "postChecklist", "signOff", "commLog", "notes",
+  ] as const;
+  const ownerUpdateJob = (jid: string, patch: any): Promise<any> => {
     setJobs((prev: any[]) => prev.map((j: any) => j.id === jid ? { ...j, ...patch } : j));
-    const EMPLOYEE_OWNED_FIELDS = ["clockInAt", "lunchStartAt", "lunchMinutes", "lunchExceeded", "loggedHours"] as const;
-    const ownedPatch: any = {};
-    EMPLOYEE_OWNED_FIELDS.forEach(f => { if ((patch as any)[f] !== undefined) ownedPatch[f] = (patch as any)[f]; });
-    if (Object.keys(ownedPatch).length > 0) {
-      (supabase as any).from("jobs").update(ownedPatch).eq("id", jid).then((r: any) => { if (r?.error) toast?.("Failed to save — " + r.error.message, "red"); }).catch(() => {});
-    }
-    if (patch.crew !== undefined) {
-      const crewPatch: any = { crew: patch.crew };
-      if (patch.crewAssignedAt !== undefined) crewPatch.crewAssignedAt = patch.crewAssignedAt;
-      (supabase as any).from("jobs").update(crewPatch).eq("id", jid).then((r: any) => { if (r?.error) toast?.("Crew assignment failed to save — " + r.error.message, "red"); }).catch(() => toast?.("Crew assignment failed to save", "red"));
-    }
-    const OTHER_IMMEDIATE_FIELDS = ["checklist", "preChecklist", "duringChecklist", "postChecklist", "photos", "status", "signature", "signedAt"] as const;
-    const otherPatch: any = {};
-    OTHER_IMMEDIATE_FIELDS.forEach(f => { if ((patch as any)[f] !== undefined) otherPatch[f] = (patch as any)[f]; });
-    if (Object.keys(otherPatch).length > 0) {
-      (supabase as any).from("jobs").update(otherPatch).eq("id", jid).then((r: any) => { if (r?.error) toast?.("Failed to save — " + r.error.message, "red"); }).catch(() => {});
-    }
+    return (supabase as any).from("jobs").update(patch).eq("id", jid)
+      .then(async (result: any) => {
+        if (result?.error) {
+          console.warn("[ownerUpdateJob] full patch failed:", result.error.message, "— retrying core fields only");
+          const core: any = {};
+          OWNER_CORE_JOB_COLUMNS.forEach(k => { if ((patch as any)[k] !== undefined) core[k] = (patch as any)[k]; });
+          if (Object.keys(core).length > 0) {
+            const retry = await (supabase as any).from("jobs").update(core).eq("id", jid);
+            if (retry?.error) { console.error("[ownerUpdateJob] core retry failed:", retry.error.message); toast?.("Failed to save — " + retry.error.message, "red"); }
+            return retry;
+          }
+          toast?.("Failed to save — " + result.error.message, "red");
+          return result;
+        }
+        return result;
+      })
+      .catch((e: any) => { console.error("[ownerUpdateJob] threw:", e?.message); toast?.("Failed to save — " + (e?.message || "unknown error"), "red"); return { error: e }; });
   };
 
   // FIX 2 (mobile round 5) — "My Active Job": the single job (of the owner's
@@ -845,7 +917,7 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
                         </button>
                         {expandedChecklistJobId === j.id && (
                           <div className="mt-1.5 space-y-1 max-h-40 overflow-y-auto pr-1">
-                            {[...(j.preChecklist || []), ...(j.duringChecklist || []), ...(j.postChecklist || []), ...(j.checklist || [])].map((ck: any, i: number) => (
+                            {[...(j.preChecklist?.length ? j.preChecklist : DASH_PRE_DEFAULTS), ...(j.duringChecklist?.length ? j.duringChecklist : DASH_DURING_DEFAULTS), ...(j.postChecklist?.length ? j.postChecklist : DASH_POST_DEFAULTS), ...(j.checklist || [])].map((ck: any, i: number) => (
                               <div key={i} className={"text-[10px] flex items-center gap-1.5 " + (ck.done ? "text-white/40 line-through" : "text-white/70")}>
                                 {ck.done ? <CheckSquare size={10} className="text-green-500 flex-shrink-0" /> : <Square size={10} className="text-white/30 flex-shrink-0" />}
                                 {ck.label}
@@ -1010,19 +1082,38 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
         </Glass>
       )}
 
-      <JobDetailModal
-        jobId={ownerDetailId}
-        job={jobs.find((j: any) => j.id === ownerDetailId)}
-        onClose={() => setOwnerDetailId(null)}
-        customers={customers}
-        employees={employees}
-        updateJob={ownerUpdateJob}
-        toast={toast}
-        settings={settings}
-        estimates={estimates}
-        setEstimates={setEstimates}
-        ownerId={ownerId}
-      />
+      {/* FIX 13 — this used to be the full admin JobDetailModal (every field:
+          pipeline stage, tags, equipment, chemicals, discounts, Google Calendar
+          sync, etc.) even though this popup only ever opens for a job the
+          OWNER is personally out working — all that admin surface is exactly
+          what "shows too much info" was about. JobDetailView is the same
+          streamlined, mobile-optimized view a field employee gets (sign-off,
+          checklist with photo upload, clock in/out, OTW/Running Late, Report
+          Problem) with no admin-only fields at all. */}
+      {ownerDetailId && (() => {
+        const j = jobs.find((x: any) => x.id === ownerDetailId);
+        if (!j) return null;
+        const c = customers.find((x: any) => x.id === j.customerId);
+        return (
+          <div className="fixed inset-0 z-50 overflow-y-auto">
+            <JobDetailView
+              job={j}
+              customer={c}
+              onBack={() => setOwnerDetailId(null)}
+              onUpdateJob={patch => ownerUpdateJob(j.id, patch)}
+              toast={toast}
+              companyName={settings.companyName || "Crew Boss"}
+              maxLunchMinutes={(settings as any).maxLunchMinutes ?? 30}
+              googleMapsKey={(settings as any).googleMapsKey || (settings as any).mapsKey}
+              paidLunchBreaks={!!(settings as any).paidLunchBreaks}
+              signOffDisclaimer={j.signOffTerms || (settings as any).termsAndConditions || (settings as any).terms || ""}
+              settings={settings as any}
+              setEstimates={setEstimates}
+              employeeName={ownerEmp?.firstName || (settings as any).ownerName || "Owner"}
+            />
+          </div>
+        );
+      })()}
 
       {/* Completed jobs that haven't been invoiced or marked paid yet */}
       {needsInvoiceJobs.length > 0 && (
@@ -1312,11 +1403,32 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
         <Glass className="p-4 !bg-white/5">
           <div className="flex items-center gap-2 text-sm text-white/50">
             <Cloud size={13} className="text-white/30 flex-shrink-0" />
-            Add an OpenWeatherMap API key in Settings → Integrations to see real weather here.
+            Add an OpenWeatherMap API key in Settings → API Keys to see real weather here.
           </div>
         </Glass>
       )}
-      {(w.weather ?? true) && settings.owmKey && (() => {
+      {/* FIX 10 — a key being SET is not the same as the fetch having
+          SUCCEEDED (invalid key, bad/ungeocodable location, rate limit, etc.
+          all fail). Show the actual failure instead of quietly falling back
+          to fake seed numbers, and show an explicit loading state instead of
+          rendering wCurrent fields against a null value. */}
+      {(w.weather ?? true) && settings.owmKey && weatherFetchError && !wCurrent && (
+        <Glass className="p-4 !bg-red-950/15 !border-red-700/30">
+          <div className="flex items-center gap-2 text-sm text-red-300">
+            <Cloud size={13} className="text-red-400 flex-shrink-0" />
+            Weather fetch failed — {weatherFetchError}. Check your OpenWeatherMap key in Settings → API Keys and your location in Settings → Company.
+          </div>
+        </Glass>
+      )}
+      {(w.weather ?? true) && settings.owmKey && !wCurrent && !weatherFetchError && (
+        <Glass className="p-4 !bg-white/5">
+          <div className="flex items-center gap-2 text-sm text-white/50">
+            <Cloud size={13} className="text-white/30 flex-shrink-0 animate-pulse" />
+            Loading live weather…
+          </div>
+        </Glass>
+      )}
+      {(w.weather ?? true) && settings.owmKey && wCurrent && (() => {
         const todayJobs_ = jobs.filter(j => j.scheduledDate === today() && j.status === "scheduled");
         const rainRisk = wCurrent.rainChance > 50;
         const freezeRisk = wCurrent.temp < 35;
@@ -1336,6 +1448,13 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
             {windRisk && <span className="text-yellow-400">💨 {wCurrent.wind}mph winds</span>}
             <span className="text-white/40">💦 {wCurrent.humidity}% humidity</span>
           </div>
+          {/* FIX A — settings.owmKey being valid doesn't mean weatherLocation
+              is set; fetchRealWeather silently falls back to York, PA when
+              it's blank. Flag that here so the owner knows this reading
+              isn't for their actual jobs' location. */}
+          {!((settings as any).weatherLocation || "").trim() && (
+            <div className="text-[10px] text-yellow-400/80 mb-2">⚠ Using default location (York, PA) — add your business location in Settings → Company.</div>
+          )}
           {todayJobs_.length > 0 ? <div className="pt-2 border-t border-white/5">
             <div className="text-[10px] text-white/50 mb-1">{todayJobs_.length} job{todayJobs_.length !== 1 ? "s" : ""} scheduled today</div>
             {(rainRisk || freezeRisk || windRisk)
@@ -1508,11 +1627,27 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
             <Glass className="p-4 flex-1 flex items-center">
               <div className="flex items-center gap-2 text-sm text-white/50">
                 <Cloud size={13} className="text-white/30 flex-shrink-0" />
-                Add an OpenWeatherMap API key in Settings → Integrations to see real weather here.
+                Add an OpenWeatherMap API key in Settings → API Keys to see real weather here.
               </div>
             </Glass>
           )}
-          {w.charts && settings.owmKey && <Glass className="p-4 flex-1">
+          {w.charts && settings.owmKey && weatherFetchError && !wCurrent && (
+            <Glass className="p-4 flex-1 flex items-center !bg-red-950/15 !border-red-700/30">
+              <div className="flex items-center gap-2 text-sm text-red-300">
+                <Cloud size={13} className="text-red-400 flex-shrink-0" />
+                Weather fetch failed — {weatherFetchError}. Check your OpenWeatherMap key in Settings → API Keys and your location in Settings → Company.
+              </div>
+            </Glass>
+          )}
+          {w.charts && settings.owmKey && !wCurrent && !weatherFetchError && (
+            <Glass className="p-4 flex-1 flex items-center">
+              <div className="flex items-center gap-2 text-sm text-white/50">
+                <Cloud size={13} className="text-white/30 flex-shrink-0 animate-pulse" />
+                Loading live weather…
+              </div>
+            </Glass>
+          )}
+          {w.charts && settings.owmKey && wCurrent && <Glass className="p-4 flex-1">
             <div className="flex items-center justify-between mb-3">
               <div className="font-semibold text-sm flex items-center gap-2"><Cloud size={13} className="text-blue-400" />Weather</div>
               <span className="text-[10px] text-green-400">● Live</span>
@@ -1528,6 +1663,9 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
                 <div>💦 {wCurrent.humidity}% humidity</div>
               </div>
             </div>
+            {!((settings as any).weatherLocation || "").trim() && (
+              <div className="text-[10px] text-yellow-400/80 mb-2">⚠ Using default location (York, PA) — add your business location in Settings → Company.</div>
+            )}
             {wAlerts.length > 0 && <div className="mb-3 p-2 bg-yellow-950/30 border border-yellow-700/40 rounded-lg flex flex-wrap gap-1.5">
               {wAlerts.map((a, i) => <span key={i} className="text-[10px] text-yellow-300">{a.icon || "⚠️"} {a.day}: {a.msg}</span>)}
             </div>}

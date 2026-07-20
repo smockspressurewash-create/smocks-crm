@@ -401,6 +401,7 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
     setShowInvoicePreview(true);
   };
   const confirmSendInvoice = async (subject: string, bodyHtml: string) => {
+    console.log("[SendInvoice] confirmSendInvoice called — job:", jobId, "customer:", job.customerId);
     const c = customers.find(x => x.id === job.customerId);
     if (!c) return;
     setSendingInvoice(true);
@@ -425,6 +426,18 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
         invoiced: true,
         invoicedAt: today(),
       };
+      // [SendInvoice] this used to only call setEstimates (local React state)
+      // with no Supabase write — the payLink texted/emailed to the customer
+      // points at #/estimate/{newInv.id}; if that row never reaches Supabase
+      // the link 404s and the invoice never shows up in InvoicesPage (which
+      // reads straight from Supabase), even though this screen shows success.
+      console.log("[SendInvoice] inserting new invoice", newInv.id, "amount", newInv.total);
+      const insertResult = await withTimeout<any>((supabase as any).from("estimates").insert(newInv), 10000, "Invoice save");
+      if (insertResult?.error) {
+        console.error("[SendInvoice] estimate insert failed:", insertResult.error.message);
+        throw new Error("Couldn't save invoice — " + insertResult.error.message);
+      }
+      console.log("[SendInvoice] invoice saved to Supabase ✓");
       setEstimates((prev: any[]) => [...prev, newInv]);
       // FIX 17 — #/portal/ID is the employee portal's route, not a customer
       // invoice view; #/estimate/ID is the public no-login pay/sign portal.
@@ -1158,31 +1171,56 @@ ${job.notes ? `<div class="section"><h2>Job Notes</h2><p>${job.notes}</p></div>`
               </button>
             </div>
           </div>
+          {/* FIX 6 — the toggle pills below already removed someone on a second
+              click, but nothing signaled that a red/selected pill WAS a
+              "click to remove" control — from the owner's side this read as
+              "no way to unschedule/remove crew." An explicit "Assigned Crew"
+              row with a literal X button makes removal a discoverable, named
+              action distinct from the "pick more crew" pills underneath. */}
+          {(job.crew || []).length > 0 && (
+            <div className="mb-2">
+              <div className="text-[10px] text-white/40 uppercase tracking-wider mb-1">Assigned Crew</div>
+              <div className="flex gap-1.5 flex-wrap">
+                {(job.crew || []).map((eid: string) => {
+                  const emp = eid === ownerEmpId ? ownerEmployee : employees.find(e => e.id === eid);
+                  if (!emp) return null;
+                  return (
+                    <span key={eid} className="inline-flex items-center gap-1.5 text-xs pl-3 pr-1.5 py-1.5 rounded-lg border bg-red-900/40 border-red-500/50 text-red-300">
+                      {emp.firstName} {emp.lastName}{eid === ownerEmpId ? " (Owner)" : ""}
+                      <button onClick={() => toggleCrew(eid)} title={`Remove ${emp.firstName} from this job`}
+                        className="p-0.5 rounded hover:bg-red-800/60 text-red-300 hover:text-white transition">
+                        <X size={11} />
+                      </button>
+                    </span>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+          <div className="text-[10px] text-white/40 uppercase tracking-wider mb-1">{(job.crew || []).length > 0 ? "Add More" : "Assign Crew"}</div>
           <div className="flex gap-2 flex-wrap">
             {/* Owner self-assign — uses the same ownerEmployee/ownerEmpId
                 derived above (from the real employees row, not settings) so
                 this button doesn't silently disappear for an owner who never
                 set settings.ownerName. */}
-            {ownerEmployee && (() => {
-              const sel = (job.crew || []).includes(ownerEmpId);
-              return (
-                <button key="owner" onClick={() => toggleCrew(ownerEmpId)}
-                  className={"text-xs px-3 py-1.5 rounded-lg border transition " + (sel ? "bg-red-900/40 border-red-500/50 text-red-300" : "bg-white/5 border-white/10 text-white/60 hover:text-white")}>
-                  {ownerEmployee.firstName} {ownerEmployee.lastName} (Owner)
-                </button>
-              );
-            })()}
+            {ownerEmployee && !(job.crew || []).includes(ownerEmpId) && (
+              <button key="owner" onClick={() => toggleCrew(ownerEmpId)}
+                className="text-xs px-3 py-1.5 rounded-lg border transition bg-white/5 border-white/10 text-white/60 hover:text-white">
+                {ownerEmployee.firstName} {ownerEmployee.lastName} (Owner)
+              </button>
+            )}
             {/* role !== "owner" — the owner already has their own dedicated
                 button above; without this exclusion they'd be listed twice
-                once their employees row exists (post Fix 1). */}
-            {employees.filter(e => e.status === "active" && e.role !== "owner").map(e => {
-              const sel = (job.crew || []).includes(e.id);
+                once their employees row exists (post Fix 1). Already-assigned
+                crew are excluded here too — removal now happens via the
+                explicit X above, not by re-clicking this pill. */}
+            {employees.filter(e => e.status === "active" && e.role !== "owner" && !(job.crew || []).includes(e.id)).map(e => {
               // FEATURE 5 — flag unavailable crew right on the assignment
               // button, covering both specific blocked dates and recurring
               // weekday-offs.
               const unavail = job.scheduledDate && isEmployeeUnavailable(e as any, job.scheduledDate);
               return (
-                <button key={e.id} onClick={() => toggleCrew(e.id)} title={unavail ? `⚠️ ${e.firstName} is unavailable on this day. Schedule anyway?` : undefined} className={"text-xs px-3 py-1.5 rounded-lg border transition " + (sel ? "bg-red-900/40 border-red-500/50 text-red-300" : unavail ? "bg-yellow-950/20 border-yellow-700/40 text-yellow-300" : "bg-white/5 border-white/10 text-white/60 hover:text-white")}>
+                <button key={e.id} onClick={() => toggleCrew(e.id)} title={unavail ? `⚠️ ${e.firstName} is unavailable on this day. Schedule anyway?` : undefined} className={"text-xs px-3 py-1.5 rounded-lg border transition " + (unavail ? "bg-yellow-950/20 border-yellow-700/40 text-yellow-300" : "bg-white/5 border-white/10 text-white/60 hover:text-white")}>
                   {e.firstName} {e.lastName[0]}.{unavail ? " ⚠️" : ""}
                 </button>
               );
@@ -1228,9 +1266,13 @@ ${job.notes ? `<div class="section"><h2>Job Notes</h2><p>${job.notes}</p></div>`
                 placeholder="Message to employee (optional)…" rows={2}
                 className="w-full bg-black/60 border border-white/20 rounded-lg px-3 py-2 text-xs text-white placeholder-white/30 focus:outline-none focus:border-yellow-500/50 resize-none" />
               <div className="flex gap-2">
-                <button onClick={sendJobRequest} disabled={!requestEmpId || requestSending}
+                {/* FIX 4 — disable up front instead of only erroring after the
+                    click when ownerId (seeded from getLastOwnerId() at
+                    App.tsx bootstrap) hasn't resolved yet. */}
+                <button onClick={sendJobRequest} disabled={!requestEmpId || requestSending || !ownerId}
+                  title={!ownerId ? "Still finishing sign-in — wait a moment" : undefined}
                   className="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg bg-yellow-600 hover:bg-yellow-500 disabled:opacity-40 text-black text-xs font-bold transition">
-                  <Send size={11} />{requestSending ? "Sending…" : "Send Request"}
+                  <Send size={11} />{requestSending ? "Sending…" : !ownerId ? "Finishing sign-in…" : "Send Request"}
                 </button>
                 <button onClick={() => setShowRequestForm(false)}
                   className="px-3 py-2 rounded-lg bg-white/5 hover:bg-white/10 text-white/60 text-xs transition">

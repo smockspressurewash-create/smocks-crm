@@ -1,0 +1,151 @@
+import React, { useState } from "react";
+import { CheckCircle } from "lucide-react";
+import { supabase } from "../../lib/supabase";
+import { uid, today } from "../../lib/utils";
+
+// Public-facing lead intake form — no auth required, meant to be embedded via
+// iframe on the owner's own website (see LeadIntakePage.tsx's "Get Embed
+// Code"). URL: #/lead-form?co=COMPANY_NAME&ph=COMPANY_PHONE
+//
+// FIX 18 — the previous embed code pointed at a hardcoded, nonexistent URL
+// ("https://smocks.com/lead-form") that isn't part of this app at all —
+// pasting it into any real website would show a blank/404 iframe forever,
+// so leads submitted through it could never reach the CRM. This is a real
+// route in this app, reachable standalone with no owner session.
+//
+// This inserts DIRECTLY into Supabase's `customers` table (single-tenant per
+// deployment — see CLAUDE.md — so there's exactly one business per Supabase
+// project, no owner_id needed to route the write to the right account).
+// Deliberately does NOT read `app_settings` — that table holds live secrets
+// (Twilio auth token, Stripe secret key, Google OAuth token, AI API keys)
+// behind a permissive `USING (true)` RLS policy; exposing it to an
+// unauthenticated public page would leak every one of those to anyone who
+// opens the embed's network tab. Company name/phone are passed as plain,
+// non-secret query params instead (baked into the embed snippet at copy
+// time, from the owner's own already-loaded settings).
+
+function hashParam(key: string): string {
+  const hash = window.location.hash;
+  const q = hash.includes("?") ? hash.slice(hash.indexOf("?") + 1) : "";
+  return new URLSearchParams(q).get(key) || "";
+}
+
+const COMMON_SERVICES = ["Pressure Washing", "House Washing", "Roof Cleaning", "Gutter Cleaning", "Window Cleaning", "Driveway/Concrete Cleaning", "Deck/Fence Cleaning", "Not sure yet"];
+
+export function LeadFormPage() {
+  const companyName = decodeURIComponent(hashParam("co") || "") || "Get a Free Quote";
+  const companyPhone = decodeURIComponent(hashParam("ph") || "");
+
+  const [f, setF] = useState({ firstName: "", lastName: "", email: "", phone: "", address: "", service: "", message: "" });
+  const [submitting, setSubmitting] = useState(false);
+  const [submitted, setSubmitted] = useState(false);
+  const [error, setError] = useState("");
+
+  const utmParams = (() => {
+    try {
+      const hash = window.location.hash;
+      const q = hash.includes("?") ? hash.slice(hash.indexOf("?") + 1) : "";
+      const p = new URLSearchParams(q);
+      return { utm_source: p.get("utm_source"), utm_medium: p.get("utm_medium"), utm_campaign: p.get("utm_campaign") };
+    } catch { return { utm_source: null, utm_medium: null, utm_campaign: null }; }
+  })();
+
+  const handleSubmit = async () => {
+    if (!f.firstName.trim() || !f.phone.trim()) return;
+    setSubmitting(true);
+    setError("");
+    try {
+      const newCustomer = {
+        id: uid(), firstName: f.firstName.trim(), lastName: f.lastName.trim(), email: f.email.trim(), phone: f.phone.trim(),
+        address: f.address.trim(), leadSource: utmParams.utm_source || "Website", notes: (f.service ? `Service: ${f.service}. ` : "") + f.message.trim(),
+        tags: [], createdAt: today(), totalSpent: 0, pipelineStage: "lead",
+        utmSource: utmParams.utm_source, utmMedium: utmParams.utm_medium, utmCampaign: utmParams.utm_campaign,
+      };
+      console.log("[LeadForm] submitting new lead:", newCustomer.firstName, newCustomer.lastName);
+      const { error: insertError } = await (supabase as any).from("customers").insert(newCustomer);
+      if (insertError) {
+        console.error("[LeadForm] insert failed:", insertError.message);
+        setError("Something went wrong submitting your request — please call or text us instead.");
+        setSubmitting(false);
+        return;
+      }
+      console.log("[LeadForm] lead saved to Supabase ✓");
+      setSubmitted(true);
+    } catch (e: any) {
+      console.error("[LeadForm] insert threw:", e?.message);
+      setError("Something went wrong submitting your request — please call or text us instead.");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  if (submitted) {
+    return (
+      <div className="min-h-screen bg-neutral-950 text-white flex flex-col items-center justify-center p-6 text-center">
+        <CheckCircle size={48} className="text-green-400 mb-3" />
+        <div className="text-xl font-bold text-green-400">We got your request!</div>
+        <div className="text-white/60 text-sm mt-1">We'll call or text you shortly to schedule your free estimate.</div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen bg-neutral-950 text-white">
+      <div className="bg-gradient-to-r from-red-600 to-red-800 px-6 py-5">
+        <div className="font-bold text-lg text-white">{companyName}</div>
+        <div className="text-red-200 text-xs mt-0.5">Get a free estimate — we respond fast{companyPhone ? ` · ${companyPhone}` : ""}</div>
+      </div>
+      <div className="p-6 max-w-lg mx-auto space-y-4">
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className="text-xs text-white/60 mb-1 block">First Name *</label>
+            <input value={f.firstName} onChange={e => setF({ ...f, firstName: e.target.value })} placeholder="Jennifer"
+              className="w-full bg-white/5 border border-white/15 rounded-xl px-3 py-2.5 text-sm text-white placeholder-white/25 focus:outline-none focus:border-red-500/50" />
+          </div>
+          <div>
+            <label className="text-xs text-white/60 mb-1 block">Last Name</label>
+            <input value={f.lastName} onChange={e => setF({ ...f, lastName: e.target.value })} placeholder="Walsh"
+              className="w-full bg-white/5 border border-white/15 rounded-xl px-3 py-2.5 text-sm text-white placeholder-white/25 focus:outline-none focus:border-red-500/50" />
+          </div>
+        </div>
+        <div>
+          <label className="text-xs text-white/60 mb-1 block">Phone Number *</label>
+          <input type="tel" value={f.phone} onChange={e => setF({ ...f, phone: e.target.value })} placeholder="(717) 555-0100"
+            className="w-full bg-white/5 border border-white/15 rounded-xl px-3 py-2.5 text-sm text-white placeholder-white/25 focus:outline-none focus:border-red-500/50" />
+        </div>
+        <div>
+          <label className="text-xs text-white/60 mb-1 block">Email</label>
+          <input type="email" value={f.email} onChange={e => setF({ ...f, email: e.target.value })} placeholder="jen@email.com"
+            className="w-full bg-white/5 border border-white/15 rounded-xl px-3 py-2.5 text-sm text-white placeholder-white/25 focus:outline-none focus:border-red-500/50" />
+        </div>
+        <div>
+          <label className="text-xs text-white/60 mb-1 block">Property Address</label>
+          <input value={f.address} onChange={e => setF({ ...f, address: e.target.value })} placeholder="412 Oak Ridge Ln, York PA"
+            className="w-full bg-white/5 border border-white/15 rounded-xl px-3 py-2.5 text-sm text-white placeholder-white/25 focus:outline-none focus:border-red-500/50" />
+        </div>
+        <div>
+          <label className="text-xs text-white/60 mb-1 block">Service Needed</label>
+          <select value={f.service} onChange={e => setF({ ...f, service: e.target.value })}
+            className="w-full bg-white/5 border border-white/15 rounded-xl px-3 py-2.5 text-sm text-white focus:outline-none focus:border-red-500/50">
+            <option value="" className="bg-black">Select service…</option>
+            {COMMON_SERVICES.map(s => <option key={s} value={s} className="bg-black">{s}</option>)}
+          </select>
+        </div>
+        <div>
+          <label className="text-xs text-white/60 mb-1 block">Anything else we should know?</label>
+          <textarea rows={3} value={f.message} onChange={e => setF({ ...f, message: e.target.value })} placeholder="Gate code, dog on property, specific concerns..."
+            className="w-full bg-white/5 border border-white/15 rounded-xl px-3 py-2.5 text-sm text-white placeholder-white/25 resize-none focus:outline-none focus:border-red-500/50" />
+        </div>
+        {error && <div className="text-xs text-red-400 bg-red-950/20 border border-red-700/30 rounded-xl px-3 py-2">{error}</div>}
+        <button
+          onClick={handleSubmit}
+          disabled={!f.firstName.trim() || !f.phone.trim() || submitting}
+          className="w-full py-4 bg-gradient-to-r from-red-600 to-red-800 text-white font-bold rounded-xl hover:from-red-500 hover:to-red-700 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          {submitting ? "Submitting…" : "Get My Free Estimate →"}
+        </button>
+        <div className="text-center text-[10px] text-white/30">🔒 We never share your info · No spam</div>
+      </div>
+    </div>
+  );
+}

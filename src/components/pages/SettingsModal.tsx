@@ -89,6 +89,13 @@ export function SettingsModal({ open, onClose, settings, setSettings, services, 
   const [showKey, setShowKey] = useState(false);
   const [googleOAuth, setGoogleOAuth] = useState({ open: false, step: "account", email: "", selectedScopes: { gmail: true, calendar: true, drive: false, contacts: false } });
   const [googleRetrying, setGoogleRetrying] = useState(false);
+  // FIX D — refreshEmpGoogleToken/refreshGoogleAccessToken tag a failed
+  // refresh as configMissing when the Cloudflare Pages Function reports
+  // GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET aren't set as env vars there. That
+  // used to only ever surface as a one-off toast from Retry Connection —
+  // easy to miss and gone the moment the toast faded, with no persistent
+  // sign in Settings itself that server setup was incomplete.
+  const [googleConfigMissing, setGoogleConfigMissing] = useState(false);
   // BLOCKER 3 (mobile round 7) — the "✓ Connected" badge below used to be a
   // pure static read of f.googleConnected, a flag set once at OAuth login
   // and never re-checked — so it kept saying "Connected" long after the
@@ -119,11 +126,13 @@ export function SettingsModal({ open, onClose, settings, setSettings, services, 
       }
       const refreshed = await refreshEmpGoogleToken(f.googleBackendUrl, f.googleRefreshToken);
       if (refreshed?.token) {
+        setGoogleConfigMissing(false);
         setF((prev: any) => ({ ...prev, googleProviderToken: refreshed.token, googleTokenExpiresAt: refreshed.expiresAt }));
         setSettings?.((prev: any) => ({ ...prev, googleProviderToken: refreshed.token, googleTokenExpiresAt: refreshed.expiresAt }));
         toast?.("Google token refreshed", "green");
       } else if (refreshed?.configMissing) {
-        toast?.("Gmail unavailable — Google reconnect isn't fully configured yet (missing server env vars). Contact your admin.", "red");
+        setGoogleConfigMissing(true);
+        toast?.("Gmail unavailable — Google reconnect isn't fully configured yet (missing server env vars). See the notice below.", "red");
       } else {
         toast?.("Couldn't refresh automatically — the refresh function may not be deployed yet. Reconnect Google below.", "red");
       }
@@ -802,6 +811,29 @@ export function SettingsModal({ open, onClose, settings, setSettings, services, 
                 <Badge tone={!f.googleConnected ? "gray" : googleTokenValid === false ? "red" : "green"}>
                   {!f.googleConnected ? "Not connected" : googleTokenValid === false ? "⚠ Token expired — click Retry" : "✓ " + (f.googleEmail || "Connected")}
                 </Badge>
+              </div>
+
+              {/* FIX D — Google sign-in/token refresh runs through a
+                  Cloudflare Pages Function (functions/api/google-refresh.ts)
+                  that needs GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET set as
+                  env vars in the Cloudflare dashboard — there's no
+                  wrangler.toml in this repo, so nothing sets these
+                  automatically. Always-visible so the owner sees it during
+                  initial setup, not just after a failed refresh. */}
+              <div className={"mb-3 p-3 rounded-xl border text-[11px] leading-relaxed " + (googleConfigMissing ? "bg-red-950/25 border-red-700/40 text-red-200" : "bg-blue-950/15 border-blue-700/25 text-white/60")}>
+                <div className={"font-semibold mb-1 " + (googleConfigMissing ? "text-red-300" : "text-blue-300")}>
+                  {googleConfigMissing ? "⚠ Google reconnect is failing — server isn't configured" : "Server setup required for Gmail send & token refresh"}
+                </div>
+                <div>
+                  Add two environment variables to this project in the <strong>Cloudflare Pages dashboard</strong> (Workers &amp; Pages → your project → Settings → Environment variables):
+                </div>
+                <div className="mt-1.5 space-y-0.5 font-mono">
+                  <div className="bg-black/30 rounded px-2 py-1">GOOGLE_CLIENT_ID</div>
+                  <div className="bg-black/30 rounded px-2 py-1">GOOGLE_CLIENT_SECRET</div>
+                </div>
+                <div className="mt-1.5">
+                  Get both values from <strong>Google Cloud Console → APIs &amp; Services → Credentials</strong>, under the OAuth 2.0 Client ID used for this app's Google sign-in. After adding them, redeploy the Pages project for the env vars to take effect.
+                </div>
               </div>
 
               {f.googleConnected ? (

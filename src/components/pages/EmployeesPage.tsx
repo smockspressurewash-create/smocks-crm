@@ -364,6 +364,37 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], custome
     return s + getEmployeePay(e, payPeriodStart, payPeriodEnd);
   }, 0);
 
+  // FIX 7 — the only "Mark as Paid" control in this whole page used to live
+  // inside the per-employee Edit modal (opened via the pencil icon on a Team
+  // card) — the Payroll tab itself, where the owner is actually looking at
+  // pay period data, had no way to mark anything paid at all. Same rolling
+  // 14-day-period math and the same paidPeriods JSONB key (period start
+  // date) as the modal's togglePeriod, so marking paid here and there can
+  // never disagree — just usable directly from the Payroll tab.
+  const getCurrentPayPeriod = (emp: any) => {
+    const empJobs = jobs.filter((j: any) => crewIncludesEmployee(j.crew, emp.id, emp.user_id) && j.status === "completed" && Number(j.loggedHours) > 0);
+    const now = new Date();
+    const end = new Date(now);
+    const start = new Date(end); start.setDate(start.getDate() - 13);
+    const s = start.toISOString().slice(0, 10);
+    const e = end.toISOString().slice(0, 10);
+    const pJobs = empJobs.filter((j: any) => j.scheduledDate >= s && j.scheduledDate <= e);
+    const hrs = Math.round(pJobs.reduce((acc: number, j: any) => acc + Number(j.loggedHours || 0), 0) * 10) / 10;
+    const pay = Math.round(pJobs.reduce((acc: number, j: any) => acc + Number(j.loggedHours || 0) * getEffectiveRate(emp, j), 0) * 100) / 100;
+    const paidPeriods: Record<string, "paid" | "unpaid"> = emp.paidPeriods || {};
+    return { start: s, end: e, hours: hrs, pay, status: paidPeriods[s] || "unpaid" };
+  };
+  const markPeriodPaidFor = (emp: any, periodStart: string, nextStatus: "paid" | "unpaid") => {
+    const next = { ...(emp.paidPeriods || {}), [periodStart]: nextStatus };
+    setEmployees((prev: any[]) => prev.map(x => x.id === emp.id ? { ...x, paidPeriods: next } : x));
+    (supabase as any).from("employees").update({ paidPeriods: next }).eq("id", emp.id)
+      .then((r: any) => {
+        if (r?.error) { console.error("[MarkPaid] failed:", r.error.message); toast?.("Failed to save pay status — " + r.error.message, "red"); }
+        else toast?.(nextStatus === "paid" ? `${emp.firstName} marked as paid ✓` : `${emp.firstName} marked as unpaid`, "green");
+      })
+      .catch((e: any) => { console.error("[MarkPaid] threw:", e?.message); toast?.("Failed to save pay status — " + (e?.message || "unknown error"), "red"); });
+  };
+
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between flex-wrap gap-3">
@@ -521,6 +552,10 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], custome
             const fica = gross * 0.0765;
             const net = gross - fica;
             const empJobs = jobs.filter(j => crewIncludesEmployee(j.crew, e.id, (e as any).user_id) && j.status === "completed" && j.scheduledDate >= payPeriodStart && j.scheduledDate <= payPeriodEnd);
+            // FIX 7 — current rolling 14-day pay period + paid/unpaid status,
+            // so "Mark as Paid" is available right here instead of only
+            // inside the separate per-employee Edit modal.
+            const currentPeriod = getCurrentPayPeriod(e);
             return <Glass key={e.id} className="p-4">
               <div className="flex items-center gap-3 mb-3">
                 <div className="w-10 h-10 rounded-full bg-gradient-to-br from-red-600 to-red-900 flex items-center justify-center font-bold">{e.firstName?.[0]}{e.lastName?.[0]}</div>
@@ -534,6 +569,15 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], custome
                 <div className="p-2 bg-black/40 rounded-xl"><div className="text-white/50 mb-0.5">FICA</div><div className="font-bold text-yellow-400">-{fmt(fica)}</div></div>
               </div>
               {empJobs.length > 0 && <div className="mt-3 text-[10px] text-white/40">Jobs: {empJobs.map(j => j.scheduledDate).join(", ")}</div>}
+              {currentPeriod.hours > 0 && (
+                <div className="mt-3 pt-3 border-t border-white/10 flex items-center justify-between gap-2">
+                  <div className="text-[11px] text-white/50">Current period ({currentPeriod.start} – {currentPeriod.end}): <span className="text-white/80 font-semibold">{currentPeriod.hours}h · {fmt(currentPeriod.pay)}</span></div>
+                  <button onClick={() => markPeriodPaidFor(e, currentPeriod.start, currentPeriod.status === "paid" ? "unpaid" : "paid")}
+                    className={"text-[10px] font-bold px-2.5 py-1 rounded-full flex-shrink-0 transition " + (currentPeriod.status === "paid" ? "bg-green-700 text-white" : "bg-yellow-950/40 border border-yellow-700/40 text-yellow-300 hover:bg-yellow-900/40")}>
+                    {currentPeriod.status === "paid" ? "✓ Paid" : "Mark Paid"}
+                  </button>
+                </div>
+              )}
             </Glass>;
           })}
         </div>

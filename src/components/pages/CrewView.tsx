@@ -79,6 +79,33 @@ import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 import { LiveMap } from "../ui/LiveMap";
 import { supabase } from "../../lib/supabase";
 
+// FIX 8 — same default checklist items JobDetailModal.tsx/EmployeePortal.tsx
+// fall back to when a job's preChecklist/duringChecklist/postChecklist are
+// still empty. A brand-new job (from the manual "Schedule Job" form or
+// Alfred's schedule_job) never writes these columns at all — they only get
+// populated in Supabase the first time someone actually checks an item in
+// the field portal — so without this same fallback here, every job that
+// hasn't been touched yet in the field showed "No checklist items on this
+// job" / 0/0 in the owner's Crew View, even though a default checklist is
+// exactly what the assigned employee will see and work through.
+const CREW_PRE_DEFAULTS = [
+  { id: "pre1", label: "Take photos of existing damage", done: false },
+  { id: "pre2", label: "Confirm water access", done: false },
+  { id: "pre3", label: "Check weather conditions", done: false },
+  { id: "pre4", label: "Note any pre-existing issues", done: false },
+];
+const CREW_DURING_DEFAULTS = [
+  { id: "dur1", label: "Apply cleaning solution", done: false },
+  { id: "dur2", label: "Scrub affected areas", done: false },
+  { id: "dur3", label: "Rinse thoroughly", done: false },
+];
+const CREW_POST_DEFAULTS = [
+  { id: "post1", label: "Customer walkthrough", done: false },
+  { id: "post2", label: "Collect payment", done: false },
+  { id: "post3", label: "Get customer signature", done: false },
+  { id: "post4", label: "Take after photos", done: false },
+];
+
 export function CrewView({ jobs = [], setJobs, customers = [], employees = [], toast, settings = {} as any, estimates = [], setEstimates = (() => {}) as any, refetchEmployees = (() => {}) as any, ownerId = "" }: { jobs?: any[]; setJobs?: any; customers?: any[]; employees?: any[]; toast?: any; settings?: any; estimates?: any[]; setEstimates?: any; refetchEmployees?: any; ownerId?: string }) {
   const [empFilter, setEmpFilter] = useState("all");
   const [crewDate, setCrewDate] = useState(today());
@@ -160,7 +187,16 @@ export function CrewView({ jobs = [], setJobs, customers = [], employees = [], t
   const toggleCk = (jid: string, phase: "preChecklist" | "duringChecklist" | "postChecklist" | "checklist", idx: number) => {
     const j = jobs.find((x: any) => x.id === jid);
     if (!j) return;
-    const updated = ((j as any)[phase] || []).map((c: any, i: number) => i === idx ? { ...c, done: !c.done } : c);
+    // FIX 8 — allChecklistItems (above) displays CREW_*_DEFAULTS whenever the
+    // job's own array is still empty, but this used to toggle against
+    // `(j as any)[phase] || []` — an empty array for any job that hasn't
+    // been touched yet — so ticking a DEFAULT item persisted `{ [phase]: [] }`
+    // to Supabase, silently erasing the default checklist (and the tick)
+    // instead of seeding it. Fall back to the same defaults here so the full
+    // list (with the toggle applied) is what actually gets saved.
+    const defaults = phase === "preChecklist" ? CREW_PRE_DEFAULTS : phase === "duringChecklist" ? CREW_DURING_DEFAULTS : phase === "postChecklist" ? CREW_POST_DEFAULTS : [];
+    const current = (j as any)[phase]?.length ? (j as any)[phase] : defaults;
+    const updated = current.map((c: any, i: number) => i === idx ? { ...c, done: !c.done } : c);
     updateJob(jid, { [phase]: updated });
   };
   const clockIn = jid => { updateJob(jid, { clockInAt: Date.now() }); toast("Clocked in ✓"); };
@@ -355,10 +391,16 @@ export function CrewView({ jobs = [], setJobs, customers = [], employees = [], t
         // is empty for those, so this always showed "0/0" regardless of true
         // progress. Combine all four sources, same pattern Dashboard.tsx's
         // checklistProgress already uses.
+        // FIX 8 — fall back to the same default checklist the field portal
+        // shows when a job hasn't had any items persisted to Supabase yet
+        // (see CREW_*_DEFAULTS above) — matches JobDetailModal.tsx's and
+        // EmployeePortal.tsx's own `job.preChecklist?.length ? ... : DEFAULTS`
+        // pattern so a freshly-scheduled, not-yet-touched job still shows its
+        // real checklist instead of "0/0."
         const allChecklistItems = [
-          ...(j.preChecklist || []).map((it: any, i: number) => ({ ...it, _phase: "preChecklist" as const, _idx: i })),
-          ...(j.duringChecklist || []).map((it: any, i: number) => ({ ...it, _phase: "duringChecklist" as const, _idx: i })),
-          ...(j.postChecklist || []).map((it: any, i: number) => ({ ...it, _phase: "postChecklist" as const, _idx: i })),
+          ...(j.preChecklist?.length ? j.preChecklist : CREW_PRE_DEFAULTS).map((it: any, i: number) => ({ ...it, _phase: "preChecklist" as const, _idx: i })),
+          ...(j.duringChecklist?.length ? j.duringChecklist : CREW_DURING_DEFAULTS).map((it: any, i: number) => ({ ...it, _phase: "duringChecklist" as const, _idx: i })),
+          ...(j.postChecklist?.length ? j.postChecklist : CREW_POST_DEFAULTS).map((it: any, i: number) => ({ ...it, _phase: "postChecklist" as const, _idx: i })),
           ...(j.checklist || []).map((it: any, i: number) => ({ ...it, _phase: "checklist" as const, _idx: i })),
         ];
         const doneCount = allChecklistItems.filter((ck: any) => ck.done).length;

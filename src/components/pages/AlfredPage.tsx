@@ -175,55 +175,14 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
     }, 1000);
   }, []); // eslint-disable-line
 
-  // FIX 7 — general proactive check-in system, distinct from the two narrow
-  // time-boxed nudges above (which only fire on specific hours/conditions).
-  // This is the broader "checking in on you" ping the owner asked for —
-  // personal goals, stale customers needing a follow-up, overdue invoices —
-  // gated to at most 3/day and spaced at least 3 hours apart. Gating state
-  // (date/count/last-fired-at) lives in `settings` (via setSettings) rather
-  // than localStorage specifically because settings already round-trips
-  // through Supabase's app_settings table (see App.tsx's debounced upsert
-  // effect) — that's what makes this survive a cleared cache and stay
-  // consistent if the owner opens Alfred from more than one device, which
-  // pure localStorage gating (like the two effects above) cannot do.
-  useEffect(() => {
-    if (!ownerId) return;
-    const todayStr = today();
-    const checkinDate = (settings as any)?.alfredCheckinDate;
-    const countToday = checkinDate === todayStr ? ((settings as any)?.alfredCheckinsToday || 0) : 0;
-    if (countToday >= 3) { console.log("[AlfredCheckin] skipped — already hit 3 check-ins today"); return; }
-    const lastAt = (settings as any)?.alfredLastCheckinAt || 0;
-    const hoursSinceLast = lastAt ? (Date.now() - lastAt) / 3600000 : Infinity;
-    if (hoursSinceLast < 3) { console.log("[AlfredCheckin] skipped — last check-in", hoursSinceLast.toFixed(1), "h ago, waiting for 3h gap"); return; }
-    const hour = new Date().getHours();
-    if (hour < 8 || hour > 20) { console.log("[AlfredCheckin] skipped — outside 8am-8pm window"); return; }
-
-    const openGoals = (goals || []).filter((g: any) => !g.completed && !g.achieved);
-    const staleEstimates = estimates.filter(e => e.status === "pending" && daysSince(e.createdAt) >= 5);
-    const overdueInvoices = estimates.filter(e => e.invoiced && !e.paidAt && e.invoicedAt && daysSince(e.invoicedAt) > 7);
-    const incompleteJobsToday = jobs.filter(j => j.scheduledDate === todayStr && j.status !== "completed" && j.status !== "cancelled");
-    const hasSomethingToSay = openGoals.length > 0 || staleEstimates.length > 0 || overdueInvoices.length > 0 || incompleteJobsToday.length > 0;
-    if (!hasSomethingToSay) { console.log("[AlfredCheckin] skipped — nothing worth checking in about right now"); return; }
-
-    const t = setTimeout(() => {
-      const lines = [
-        "👋 Checking in on you.",
-        "",
-        openGoals.length > 0 ? "🎯 " + openGoals.length + " personal goal" + (openGoals.length !== 1 ? "s" : "") + " still open." : "",
-        incompleteJobsToday.length > 0 ? "🧰 " + incompleteJobsToday.length + " job" + (incompleteJobsToday.length !== 1 ? "s" : "") + " today not marked complete yet." : "",
-        staleEstimates.length > 0 ? "💬 Clients waiting on a follow-up: " + staleEstimates.slice(0, 3).map(e => { const c = customers.find(x => x.id === e.customerId); return c ? c.firstName + " " + c.lastName : "?"; }).join(", ") + (staleEstimates.length > 3 ? " +" + (staleEstimates.length - 3) + " more" : "") + "." : "",
-        overdueInvoices.length > 0 ? "💸 " + overdueInvoices.length + " overdue invoice" + (overdueInvoices.length !== 1 ? "s" : "") + " to collect on." : "",
-        "",
-        "Anything you want help tackling right now?",
-      ].filter(Boolean);
-      const msg = lines.join("\n");
-      const newConv = { id: uid(), title: "Check-in — " + new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }), personality: active?.personality || personality, messages: [{ id: uid(), role: "alfred", content: msg, timestamp: Date.now() }], createdAt: Date.now(), updatedAt: Date.now() };
-      console.log("[AlfredCheckin] firing check-in", countToday + 1, "of 3 for", todayStr);
-      setConversations(prev => [newConv, ...prev]);
-      setSettings?.((prev: any) => ({ ...prev, alfredCheckinDate: todayStr, alfredCheckinsToday: countToday + 1, alfredLastCheckinAt: Date.now() }));
-    }, 1500);
-    return () => clearTimeout(t);
-  }, [ownerId]); // eslint-disable-line react-hooks/exhaustive-deps
+  // FIX 14 — the general proactive check-in system (originally added here as
+  // FIX 7) has been MOVED to App.tsx. This component only mounts when
+  // page === "alfred", so a check-in effect that lived here could only ever
+  // fire while the owner was already looking at Alfred — never actually
+  // "proactive." App.tsx is mounted for the whole session regardless of
+  // page, so it can genuinely check in unprompted; see the effect there
+  // (keyed off crmUserId, same alfredCheckinDate/alfredCheckinsToday/
+  // alfredLastCheckinAt gating in settings) for the real implementation.
   const [showSlash, setShowSlash] = useState(false);
   const [newMemoryText, setNewMemoryText] = useState("");
   const [newMemoryCat, setNewMemoryCat] = useState("general");
@@ -1167,30 +1126,36 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
             loggedHours: 0, createdAt: today(),
           };
           console.log("[Alfred schedule_job] built job payload:", newJ);
-          // EXACT same pattern as the manual "Schedule Job" form in JobsPage:
-          // update local state immediately (optimistic) so the UI shows the job
-          // right away, THEN persist to Supabase. With uid() now producing a
-          // real UUID, the insert no longer fails on a uuid-typed id column.
+          // [Alfred schedule_job] FIX 2 (round 2) — the previous fix matched the
+          // manual form's PAYLOAD but not its actual SAVE PATTERN: the manual
+          // "Schedule Job" form (JobsPage.tsx ~line 730-754) updates local state
+          // and toasts success IMMEDIATELY, then fires the Supabase insert in a
+          // detached async IIFE that nothing awaits — so a slow/hung insert (the
+          // same "stuck navigator-lock" class of issue withTimeout's doc comment
+          // describes) is completely invisible to the user; it just resolves
+          // whenever it resolves. Alfred's version instead AWAITED that same
+          // insert before returning its tool result, so the exact same slow
+          // insert that the manual form silently rides out is what surfaced as
+          // "save job operation timed out" here. Match the manual form exactly:
+          // optimistic local add, return success right away, persist in the
+          // background, toast-only (not roll back) on a later failure.
           setJobs(prev => [...prev, newJ as any]);
-          console.log("[Alfred schedule_job] optimistic local job added, inserting to Supabase...");
-          let saveErrorJ: any = null;
-          try {
+          console.log("[Alfred schedule_job] optimistic local job added, inserting to Supabase in background...");
+          (async () => {
             const { error } = await withTimeout<any>(
               (supabase as any).from("jobs").insert(newJ),
               15000, "Save job"
             );
-            saveErrorJ = error;
-          } catch (e: any) {
-            saveErrorJ = e;
-          }
-          if (saveErrorJ) {
-            console.error("[Alfred schedule_job] — error:", saveErrorJ.message || saveErrorJ);
-            // Roll back the optimistic add so the UI doesn't show a job that
-            // never persisted.
-            setJobs(prev => prev.filter(x => x.id !== newJ.id));
-            return { error: "Failed to schedule job — " + (saveErrorJ.message || String(saveErrorJ)) + ". If this says 'row-level security' or 'uuid', run the jobs-table SQL in Settings." };
-          }
-          console.log("[Alfred schedule_job] insert succeeded ✓ jobId:", newJ.id);
+            if (error) {
+              console.error("[Alfred schedule_job] background insert failed:", error.message);
+              toast?.("Job scheduled locally, but failed to save to the server — " + error.message, "red");
+            } else {
+              console.log("[Alfred schedule_job] background insert succeeded ✓ jobId:", newJ.id);
+            }
+          })().catch((e: any) => {
+            console.error("[Alfred schedule_job] background insert threw:", e?.message);
+            toast?.("Job scheduled locally, but failed to save to the server — " + (e?.message || "unknown error"), "red");
+          });
           toast("Alfred scheduled job for " + c.firstName + " on " + newJ.scheduledDate);
           setTimeout(() => onNav("jobs"), 1200);
           return { success: true, jobId: newJ.id, date: newJ.scheduledDate, customer: c.firstName + " " + c.lastName };
@@ -1703,7 +1668,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
       const googleStatus = settings.googleConnected
         ? `\n\nGoogle Workspace: CONNECTED as ${settings.googleEmail}. Backend: ${settings.googleBackendUrl ? "configured ✓" : "NOT configured — calls will be queued until backend URL is added"}. Enabled scopes: ${Object.entries(settings.googleScopes || {}).filter(([k, v]) => v).map(([k]) => k).join(", ")}. You CAN use send_email_via_gmail, create_calendar_event, create_google_task, and upload_to_drive — they will call the real Google APIs if backend is configured, or stage for later if not.`
         : `\n\nGoogle Workspace: NOT CONNECTED. If the user asks to send email, create calendar events, or manage tasks, tell them to go to Settings → Integrations → Google and connect their backend.`;
-      const toolHint = `\n\nYou have tools available to READ and MODIFY the CRM. USE THEM AGGRESSIVELY — don't just describe what you would do, actually do it.\n\nRESPONSE STYLE: Do not narrate your reasoning, your plan, or which tool you're about to call ("Let me check...", "I'll create that now...", "First I need to..."). Just call the tool(s) silently and then give the user the final result in 1-3 short sentences. No step-by-step thinking out loud.\n\nVERIFY BEFORE CONFIRMING: every action tool returns either {"success": true, ...} or {"error": "..."}. NEVER say "Done" or "All set" without checking which one came back. If you see an "error" field, tell the user exactly what went wrong (the error text) and what they could try instead — do not pretend it worked, and do not retry silently. Only confirm success when the tool result actually contains "success": true.\n\nKEY TOOL RULES:\n- Customer queries → USE search_customers or get_customer_details FIRST\n- Stats requests → USE get_business_stats\n- "What's on the calendar" → USE get_calendar_summary\n- "Who's clocked in / who's working" → USE get_employee_status\n- "Remember/note/don't forget" → USE remember_fact\n- Create estimates, customers, jobs → USE create_estimate/create_customer/schedule_job
+      const toolHint = `\n\nYou have tools available to READ and MODIFY the CRM. USE THEM AGGRESSIVELY — don't just describe what you would do, actually do it.\n\nRESPONSE STYLE: Do not narrate your reasoning, your plan, or which tool you're about to call ("Let me check...", "I'll create that now...", "First I need to..."). Just call the tool(s) silently and then give the user the final result in 1-3 short sentences. No step-by-step thinking out loud.\n\nVERIFY BEFORE CONFIRMING: every action tool returns either {"success": true, ...} or {"error": "..."}. NEVER say "Done" or "All set" without checking which one came back. If you see an "error" field, tell the user exactly what went wrong (the error text) and what they could try instead — do not pretend it worked, and do not retry silently. Only confirm success when the tool result actually contains "success": true.\n\nTASK RESULT REPORTING — NO PERSONALITY FLAIR: your personality (drill sergeant / butler / quiet pro / savage) shapes how you TALK, not whether a task result is reported straight. The moment you report the outcome of an action tool (schedule_job, create_customer, create_estimate, send_estimate, assign/request crew, etc.), drop the persona voice entirely and state the plain fact: "Job scheduled successfully" / "Failed — [exact error text]" / "Estimate sent to [name] successfully" / "Failed — [exact error text]". No jokes, no military barking, no "sir", no sarcasm on the result line itself — save the personality for ordinary conversation, small talk, and check-ins, never for whether something actually saved.\n\nKEY TOOL RULES:\n- Customer queries → USE search_customers or get_customer_details FIRST\n- Stats requests → USE get_business_stats\n- "What's on the calendar" → USE get_calendar_summary\n- "Who's clocked in / who's working" → USE get_employee_status\n- "Remember/note/don't forget" → USE remember_fact\n- Create estimates, customers, jobs → USE create_estimate/create_customer/schedule_job
 - MULTI-STEP CHAINS (e.g. "create a customer, schedule them a job, and assign Mike"): call tools ONE AT A TIME across separate turns when a later step needs an id/result a real tool call hasn't returned yet (e.g. schedule_job needs the customerId create_customer just returned). Do NOT guess or fabricate an id and call multiple dependent tools in the same turn — wait for each real tool_result before issuing the next dependent call. If a step's result is an "error", STOP the chain right there, tell the user exactly which step failed and why, and do not attempt the remaining steps with made-up data.
 - "Send a quote/estimate to X" → USE create_estimate (if it doesn't exist yet) THEN send_estimate in the same turn — do not just create it and stop, and do not tell the user it was "sent" unless send_estimate actually returned success\n- Move or cancel a job → USE reschedule_job/cancel_job\n- Navigate somewhere → USE navigate_to (the app already auto-navigates after schedule_job/create_customer/create_estimate, but call navigate_to yourself for anything else the user asks to see)\n- Preferences/facts shared → USE remember_fact automatically\n\nAUTOMATION TOOLS (VERY IMPORTANT):\n- When user describes ANY workflow, drip sequence, reminder, or "when X do Y" scenario → USE create_automation IMMEDIATELY. Build a proper n8n-style multi-step workflow with real step types: trigger (first), then delays, conditions, actions. NEVER just describe what you'd build — actually build it with create_automation.\n- "Send review request after job complete" → trigger: Job complete, delay: 2h, action: SMS review request\n- "Follow up on unpaid invoices" → trigger: Invoice unpaid 7 days, action: polite reminder email, delay: 4 days, condition: still unpaid, action: firm SMS\n- To check existing workflows → USE list_automations\n- To enable/disable a workflow → USE toggle_automation\n\nCurrent automations: ${automations.length} total, ${automations.filter(a => a.active).length} active\n\nNAME MATCHING: if a tool result comes back with "error": "Customer not found" or "Employee not found" and includes a "suggestions" array, ask the user "Do you mean [name], or [name]?" using those exact suggested names — never ask a generic clarifying question like "who do you mean?" when real candidate names are available.`;
       const systemPrompt = getPersonality(activePersonality).systemPrompt + memoryContext + businessContext + googleStatus + toolHint;
@@ -1717,18 +1682,24 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
       let modelUsed = settings.activeModel || "claude";
       const failoverChain = [];
 
-      // Build the ordered list of candidates: try active model first, then priority chain (skipping missing keys).
-      // Locked (rate-limited) models are excluded from the initial list but will be detected mid-chain.
+      // FIX 20 — this used to try settings.activeModel FIRST, no matter what
+      // order the owner configured in Settings → AI Models, and only fall
+      // back to `priority` for everything after that — so setting Gemini
+      // first in the priority list did nothing as long as activeModel was
+      // still "claude" (its default). The failover chain must be the EXACT
+      // order from settings.modelPriority; activeModel no longer jumps the
+      // queue. Locked (rate-limited) models are excluded from the initial
+      // list but will be detected mid-chain.
       const priority = settings.modelPriority || ["claude", "openai", "gemini", "groq", "mistral"];
       const now = Date.now();
       const MODELS_MAP: any = MODELS;
       // Also include any model with a valid key not in the priority list (e.g. OpenRouter, NVIDIA models)
       const extraModels = Object.keys(MODELS_MAP).filter(mid => {
-        if (priority.includes(mid) || mid === modelUsed) return false;
+        if (priority.includes(mid)) return false;
         const m = MODELS_MAP[mid];
         return m && m.needsKey && !!(settings.modelKeys || {})[mid];
       });
-      const tryOrder = [modelUsed, ...priority.filter(m => m !== modelUsed), ...extraModels];
+      const tryOrder = [...priority, ...extraModels];
       const viableModels = tryOrder.filter(mid => {
         const m = MODELS_MAP[mid];
         if (!m) return false;
@@ -1972,8 +1943,16 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
   // parent's auto-sized content keeps the main chrome visible while still
   // giving this container a definite height for its own internal
   // aside/messages panes to scroll within, independent of App.tsx's <main>.
+  // FIX 19 — was a hardcoded h-[calc(100dvh-150px)]/[...-160px)] guess at
+  // "everything else on screen," which doesn't match App.tsx's actual
+  // header/padding/mobile-bottom-nav chrome — sometimes shorter than the
+  // real remaining space (dead space below), sometimes taller (forcing the
+  // outer page to ALSO scroll, on top of this component's own internal
+  // message-list scroll). App.tsx now gives this component's actual parent
+  // chain (main → wrapper div → PageFade) a real flex height for the alfred
+  // page specifically, so flex-1 here fills it exactly with no guesswork.
   return (
-    <div className="relative w-full h-[calc(100dvh-150px)] md:h-[calc(100vh-160px)] flex bg-black border border-red-900/30 rounded-2xl overflow-hidden">
+    <div className="relative w-full flex-1 min-h-0 flex bg-black border border-red-900/30 rounded-2xl overflow-hidden">
       {/* Conversation sidebar */}
       <aside className={"bg-black/80 backdrop-blur-xl border-r border-red-900/30 flex flex-col transition-all duration-300 overflow-hidden " + (sidebarOpen ? "w-[280px] md:w-[280px]" : "w-0") + " absolute md:relative h-full z-20"}>
         <div className="p-3 border-b border-red-900/30 flex items-center gap-2">

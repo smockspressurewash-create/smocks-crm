@@ -508,7 +508,26 @@ export function CalendarPage({ jobs = [], setJobs, customers = [], employees = [
                             {tooTight ? "⚠️ " : "🚗 "}{gapBefore}min gap
                           </div>
                         )}
-                        <div draggable onDragStart={() => setDragId(j.id)} onClick={() => setSelectedJobId(j.id)} onContextMenu={(e: React.MouseEvent) => openJobContextMenu(e, j.id)} onTouchStart={(e: React.TouchEvent) => startLongPress(e, j.id)} onTouchEnd={cancelLongPress} onTouchMove={cancelLongPress} className={"text-[9px] px-1 py-0.5 rounded truncate cursor-pointer text-white " + eventBg(j) + " " + prioRing(j.priority)} title={c?.firstName + " " + c?.lastName + " · " + fmt(j.amount) + (j.priority && j.priority !== "normal" ? " · " + j.priority : "") + (j.googleEventId ? " · synced" : "")}>
+                        {/* FIX 16 — this pill (an ALREADY-SCHEDULED job on the
+                            month grid) only ever wired up long-press (context
+                            menu) for touch — draggable/onDragStart is a
+                            mouse-only API that never fires from touch input,
+                            so rescheduling a job by dragging it to a
+                            different day (the whole point of the drag-drop
+                            calendar) silently didn't work on a phone; only
+                            unscheduled-list-to-day drag did. Layers the same
+                            touch-drag tracking used there on top of the
+                            existing long-press: a still touch still opens the
+                            quick-actions menu, a touch that moves past the
+                            drag threshold cancels the long-press and drags
+                            the job to another day (or the unschedule zone)
+                            instead. */}
+                        <div draggable onDragStart={() => setDragId(j.id)} onClick={() => setSelectedJobId(j.id)} onContextMenu={(e: React.MouseEvent) => openJobContextMenu(e, j.id)}
+                          onTouchStart={(e: React.TouchEvent) => { startLongPress(e, j.id); handleUnscheduledTouchStart(e, j.id); }}
+                          onTouchMove={(e: React.TouchEvent) => { cancelLongPress(); handleTouchDragMove(e); }}
+                          onTouchEnd={() => { cancelLongPress(); handleTouchDragEnd(); }}
+                          style={{ opacity: touchDragJobId === j.id ? 0.3 : 1 }}
+                          className={"text-[9px] px-1 py-0.5 rounded truncate cursor-pointer text-white " + eventBg(j) + " " + prioRing(j.priority)} title={c?.firstName + " " + c?.lastName + " · " + fmt(j.amount) + (j.priority && j.priority !== "normal" ? " · " + j.priority : "") + (j.googleEventId ? " · synced" : "")}>
                           {j.priority === "urgent" && "🚨 "}{j.googleEventId && "☁"}{c?.firstName}{initials && <span className="opacity-60 ml-0.5">{initials}</span>}
                         </div>
                       </React.Fragment>;
@@ -597,7 +616,17 @@ export function CalendarPage({ jobs = [], setJobs, customers = [], employees = [
                     {dj.map(j => {
                       const c = customers.find((x: any) => x.id === j.customerId);
                       const initials = crewInitials(j);
-                      return <div key={j.id} draggable onDragStart={() => setDragId(j.id)} onClick={() => setSelectedJobId(j.id)} className={"text-[10px] p-1.5 rounded cursor-pointer " + eventBg(j) + " text-white"}>
+                      // FIX 16 — same touch-drag gap as the month view above:
+                      // this pill had no touch handling at all (draggable is
+                      // mouse-only), so a scheduled job couldn't be moved to
+                      // another day via touch in week view either.
+                      return <div key={j.id} draggable onDragStart={() => setDragId(j.id)} onClick={() => setSelectedJobId(j.id)}
+                        onContextMenu={(e: React.MouseEvent) => openJobContextMenu(e, j.id)}
+                        onTouchStart={(e: React.TouchEvent) => { startLongPress(e, j.id); handleUnscheduledTouchStart(e, j.id); }}
+                        onTouchMove={(e: React.TouchEvent) => { cancelLongPress(); handleTouchDragMove(e); }}
+                        onTouchEnd={() => { cancelLongPress(); handleTouchDragEnd(); }}
+                        style={{ opacity: touchDragJobId === j.id ? 0.3 : 1 }}
+                        className={"text-[10px] p-1.5 rounded cursor-pointer " + eventBg(j) + " text-white"}>
                         <div className="font-semibold truncate">{j.googleEventId && "☁ "}{c?.firstName}</div>
                         <div className="opacity-75">{fmt(j.amount)}</div>
                         {initials && <div className="text-[8px] opacity-60 mt-0.5">{initials}</div>}

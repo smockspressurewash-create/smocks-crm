@@ -80,6 +80,7 @@ import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 export function LeadIntakePage({ customers = [], setCustomers, estimates = [], setEstimates, services = [], jobs = [], settings = {} as AppSettings, toast, onNav }: { customers?: any[]; setCustomers?: any; estimates?: any[]; setEstimates?: any; services?: any[]; jobs?: any[]; settings?: AppSettings; toast?: any; onNav?: any }) {
   const [submissions, setSubmissions] = usePersistent("smocks.intakeLeads", []);
   const [preview, setPreview] = useState(false);
+  const [embedOpen, setEmbedOpen] = useState(false);
   const [f, setF] = useState({ firstName: "", lastName: "", email: "", phone: "", address: "", service: "", message: "", source: "Website", sqFootage: "" });
   const [submitting, setSubmitting] = useState(false);
   const [submitted, setSubmitted] = useState(false);
@@ -158,14 +159,39 @@ export function LeadIntakePage({ customers = [], setCustomers, estimates = [], s
           </div>
           <div className="flex items-center gap-2">
             <GBtn variant="ghost" onClick={() => setPreview(!preview)} className="!text-xs"><Globe size={12} className="inline mr-1" />{preview ? "Hide Form" : "Preview Form"}</GBtn>
-            <GBtn onClick={() => {
-              const embedHtml = `<!-- Crew Boss Lead Form -->\n<iframe\n  src="https://smocks.com/lead-form"\n  width="100%"\n  height="620"\n  frameborder="0"\n  style="border-radius:12px;box-shadow:0 4px 20px rgba(0,0,0,0.15)"\n  title="Request a Quote"\n></iframe>`;
-              navigator.clipboard?.writeText(embedHtml).catch(()=>{});
-              toast("Embed code copied! Paste into your website's HTML ✓");
-            }} className="!text-xs"><Copy size={12} className="inline mr-1" />Copy Embed</GBtn>
+            <GBtn onClick={() => setEmbedOpen(o => !o)} className="!text-xs"><Copy size={12} className="inline mr-1" />Get Embed Code</GBtn>
           </div>
         </div>
       </Glass>
+
+      {/* FIX 18 — the old "Copy Embed" button silently copied an iframe
+          pointed at a hardcoded, nonexistent URL (https://smocks.com/lead-form
+          isn't a real page anywhere) — pasting it into a real website showed a
+          blank/permanent-404 iframe, so no lead submitted through it could
+          ever reach the CRM. #/lead-form is now a real public route
+          (LeadFormPage.tsx) that inserts straight into Supabase's customers
+          table with no owner session required. */}
+      {embedOpen && (() => {
+        const embedUrl = `${window.location.origin}${window.location.pathname}#/lead-form?co=${encodeURIComponent(companyName)}&ph=${encodeURIComponent(settings?.companyPhone || "")}`;
+        const embedHtml = `<!-- ${companyName} — Request a Quote -->\n<iframe\n  src="${embedUrl}"\n  width="100%"\n  height="720"\n  frameborder="0"\n  style="border-radius:12px;box-shadow:0 4px 20px rgba(0,0,0,0.15)"\n  title="Request a Quote"\n></iframe>`;
+        return (
+          <Glass className="p-5 space-y-3">
+            <div className="text-sm font-semibold">Embed on your website</div>
+            <div className="text-xs text-white/60 leading-relaxed">
+              Paste this snippet into your website's HTML (most site builders — Wix, Squarespace, WordPress — have an "Embed HTML" or "Custom Code" block). Every submission creates a customer record in this CRM automatically — no setup needed on your end.
+            </div>
+            <pre className="text-[11px] bg-black/60 border border-white/10 rounded-xl p-3 overflow-x-auto whitespace-pre-wrap break-all text-white/80">{embedHtml}</pre>
+            <div className="flex gap-2">
+              <GBtn onClick={() => { navigator.clipboard?.writeText(embedHtml).catch(() => {}); toast("Embed code copied! Paste into your website's HTML ✓"); }} className="!text-xs">
+                <Copy size={12} className="inline mr-1" />Copy Code
+              </GBtn>
+              <GBtn variant="ghost" onClick={() => window.open(embedUrl, "_blank", "noopener,noreferrer")} className="!text-xs">
+                <ExternalLink size={12} className="inline mr-1" />Open Form in New Tab
+              </GBtn>
+            </div>
+          </Glass>
+        );
+      })()}
 
       {/* New Submissions */}
       {submissions.length > 0 && (

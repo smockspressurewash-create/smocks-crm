@@ -51,6 +51,7 @@ import { ClientPortal } from "./components/pages/ClientPortal";
 import { ClientAuthPortal } from "./components/pages/ClientAuthPortal";
 import { ReferralLanding } from "./components/pages/ReferralLanding";
 import { CustomerReviewPage } from "./components/pages/CustomerReviewPage";
+import { LeadFormPage } from "./components/pages/LeadFormPage";
 import { EmployeePortal } from "./components/pages/EmployeePortal";
 import { saveEmpGoogleToken } from "./lib/googleApi";
 import { ResetPassword } from "./components/pages/ResetPassword";
@@ -411,6 +412,11 @@ export function App() {
     if (hash === "portal" || hash.startsWith("portal/")) return "portal";
     if (hash === "referral" || hash.startsWith("r/")) return "referral";
     if (hash === "rate" || hash.startsWith("rate?")) return "rate";
+    // FIX 18 — public, unauthenticated lead-intake form meant to be embedded
+    // via iframe on the owner's own website (see LeadIntakePage.tsx's "Get
+    // Embed Code"). No owner session/auth — see LeadFormPage.tsx for why it
+    // deliberately never reads app_settings (secrets exposure).
+    if (hash === "lead-form" || hash.startsWith("lead-form?")) return "lead-form";
     // FIX 17/20 — public, unauthenticated single-estimate view (sign/decline a
     // quote, or pay an invoice) reached via #/estimate/ID. This used to be
     // #/portal/ID, but "portal" is the EMPLOYEE portal's own route — it has no
@@ -552,6 +558,15 @@ export function App() {
   // timer never survives to 2s. Instead we only cancel on genuine release
   // (pointerup/pointercancel) or if the finger moves past a real tolerance.
   const FAB_MOVE_TOLERANCE = 12;
+  // FIX 15 — window.innerHeight on mobile Safari/Chrome reflects the LAYOUT
+  // viewport, which can be taller than what's actually visible/reachable by
+  // a thumb once the address bar or bottom toolbar is showing (the visual
+  // viewport). A touch drag's clientY is relative to the VISUAL viewport, so
+  // comparing it against window.innerHeight's "bottom 20%" threshold could
+  // require dragging past the bottom of the actually-visible screen — the
+  // FAB would never reach the hide zone no matter how far down it's
+  // dragged. window.visualViewport.height is the accurate reachable height.
+  const getViewportHeight = () => window.visualViewport?.height ?? window.innerHeight;
   const fabOnPointerDown = (e: React.PointerEvent<HTMLButtonElement>) => {
     const rect = e.currentTarget.getBoundingClientRect();
     fabDragOffsetRef.current = { x: e.clientX - rect.left, y: e.clientY - rect.top };
@@ -595,7 +610,7 @@ export function App() {
     if (!fabDragging) return;
     const onMove = (e: PointerEvent) => {
       const x = Math.max(4, Math.min(window.innerWidth - FAB_SIZE - 4, e.clientX - fabDragOffsetRef.current.x));
-      const y = Math.max(4, Math.min(window.innerHeight - FAB_SIZE - 4, e.clientY - fabDragOffsetRef.current.y));
+      const y = Math.max(4, Math.min(getViewportHeight() - FAB_SIZE - 4, e.clientY - fabDragOffsetRef.current.y));
       setFabPosition({ x, y });
     };
     const onUp = () => {
@@ -659,12 +674,13 @@ export function App() {
 
   // Listen for browser back/forward
   useEffect(() => {
-    const valid = ["dashboard","alfred","inbox","customers","estimates","invoices","pipeline","intake","jobs","calendar","crew","campaigns","reviews","automations","social","referrals","promotions","expenses","reports","analytics","budget","personal","accountability","employees","fleet","chemicals","google","portal","reset-password","client","referral","rate"];
+    const valid = ["dashboard","alfred","inbox","customers","estimates","invoices","pipeline","intake","jobs","calendar","crew","campaigns","reviews","automations","social","referrals","promotions","expenses","reports","analytics","budget","personal","accountability","employees","fleet","chemicals","google","portal","reset-password","client","referral","rate","lead-form"];
     const handler = () => {
       const hash = window.location.hash.replace(/^#\/?/, "").split("?")[0];
       if (hash === "portal" || hash.startsWith("portal/")) { setPage("portal"); return; }
       if (hash === "referral" || hash.startsWith("r/")) { setPage("referral"); return; }
       if (hash === "rate" || hash.startsWith("rate?")) { setPage("rate"); return; }
+      if (hash === "lead-form" || hash.startsWith("lead-form?")) { setPage("lead-form"); return; }
       if (hash.startsWith("estimate/")) { setPage("estimate"); return; }
       if (hash === "reset-password" || hash.startsWith("reset-password&") || hash.startsWith("reset-password?")) { setPage("reset-password"); return; }
       if (valid.includes(hash)) setPage(hash);
@@ -743,6 +759,12 @@ export function App() {
     notifyWeather: true,
     reviewShowcaseMinRating: 5,
   });
+  // FIX 14 — lets effects (e.g. the Alfred check-in interval below) read the
+  // latest settings at fire-time without depending on `settings` directly,
+  // which would otherwise reset their setInterval every time any setting
+  // changes.
+  const settingsRef = useRef(settings);
+  useEffect(() => { settingsRef.current = settings; }, [settings]);
 
   // ── Cross-device settings sync (BUG 9) ──────────────────────────────────────
   // Settings (API keys, model prefs, integrations, branding) live in
@@ -1093,6 +1115,70 @@ export function App() {
   // the polling fixes elsewhere). alfredConversations/setAlfredConversations
   // stay here since usePersistent needs to own the localStorage-backed state.
 
+  // FIX 14 — the general proactive check-in system (originally FIX 7) lived
+  // entirely inside AlfredPage.tsx, gated on `[ownerId]` — but AlfredPage
+  // itself only ever mounts when `page === "alfred"` (see the routing switch
+  // below). A "proactive" check-in that can only fire while the owner is
+  // ALREADY looking at Alfred never actually initiates anything — it's
+  // structurally impossible for it to have fired unprompted. Moved the
+  // trigger here (App.tsx is mounted for the whole session regardless of
+  // page) so it can genuinely check in on its own; AlfredPage.tsx still owns
+  // the conversation list's Supabase sync (that stays gated on Alfred being
+  // open, on purpose, for the egress reason above) — a conversation created
+  // here while Alfred isn't open is picked up and pushed to Supabase the
+  // next time AlfredPage mounts (its own sync effect preserves any local
+  // conversation not yet known server-side). A toast fires alongside it so
+  // the owner notices even without opening the Alfred tab.
+  useEffect(() => {
+    if (!crmUserId) return;
+    // Re-evaluated on mount AND hourly thereafter (no server cron in a
+    // client-only app — same pattern the "Tomorrow's Jobs" email effect
+    // uses below) so a session left open all day still gets its up-to-3
+    // check-ins spread across the day, not just a single mount-time check.
+    const tryCheckin = () => {
+      const todayStr = today();
+      const checkinDate = (settingsRef.current as any)?.alfredCheckinDate;
+      const countToday = checkinDate === todayStr ? ((settingsRef.current as any)?.alfredCheckinsToday || 0) : 0;
+      if (countToday >= 3) { console.log("[AlfredCheckin] skipped — already hit 3 check-ins today"); return; }
+      const lastAt = (settingsRef.current as any)?.alfredLastCheckinAt || 0;
+      const hoursSinceLast = lastAt ? (Date.now() - lastAt) / 3600000 : Infinity;
+      if (hoursSinceLast < 3) { console.log("[AlfredCheckin] skipped —", hoursSinceLast.toFixed(1), "h since last, waiting for 3h gap"); return; }
+      const hour = new Date().getHours();
+      if (hour < 8 || hour > 20) { console.log("[AlfredCheckin] skipped — outside 8am-8pm window"); return; }
+
+      const openGoals = (goalsList || []).filter((g: any) => !g.completed && !g.achieved);
+      const staleEstimates = estimates.filter(e => e.status === "pending" && daysSince(e.createdAt) >= 5);
+      const overdueInvoices = estimates.filter(e => e.invoiced && !e.paidAt && e.invoicedAt && daysSince(e.invoicedAt) > 7);
+      const incompleteJobsToday = jobs.filter(j => j.scheduledDate === todayStr && j.status !== "completed" && j.status !== "cancelled");
+      const hasSomethingToSay = openGoals.length > 0 || staleEstimates.length > 0 || overdueInvoices.length > 0 || incompleteJobsToday.length > 0;
+      if (!hasSomethingToSay) { console.log("[AlfredCheckin] skipped — nothing worth checking in about right now"); return; }
+
+      const lines = [
+        "👋 Checking in on you.",
+        "",
+        openGoals.length > 0 ? "🎯 " + openGoals.length + " personal goal" + (openGoals.length !== 1 ? "s" : "") + " still open." : "",
+        incompleteJobsToday.length > 0 ? "🧰 " + incompleteJobsToday.length + " job" + (incompleteJobsToday.length !== 1 ? "s" : "") + " today not marked complete yet." : "",
+        staleEstimates.length > 0 ? "💬 Clients waiting on a follow-up: " + staleEstimates.slice(0, 3).map(e => { const c = customers.find(x => x.id === e.customerId); return c ? c.firstName + " " + c.lastName : "?"; }).join(", ") + (staleEstimates.length > 3 ? " +" + (staleEstimates.length - 3) + " more" : "") + "." : "",
+        overdueInvoices.length > 0 ? "💸 " + overdueInvoices.length + " overdue invoice" + (overdueInvoices.length !== 1 ? "s" : "") + " to collect on." : "",
+        "",
+        "Anything you want help tackling right now?",
+      ].filter(Boolean);
+      const msg = lines.join("\n");
+      const newConv = { id: uid(), title: "Check-in — " + new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }), personality, messages: [{ id: uid(), role: "alfred", content: msg, timestamp: Date.now() }], createdAt: Date.now(), updatedAt: Date.now() };
+      console.log("[AlfredCheckin] firing check-in", countToday + 1, "of 3 for", todayStr);
+      setAlfredConversations((prev: any[]) => [newConv, ...(prev || [])]);
+      setSettings?.((prev: any) => ({ ...prev, alfredCheckinDate: todayStr, alfredCheckinsToday: countToday + 1, alfredLastCheckinAt: Date.now() }));
+      toast?.("🤖 Alfred checked in — see the Alfred tab", "green");
+    };
+    const t = setTimeout(tryCheckin, 1500);
+    const interval = setInterval(tryCheckin, 60 * 60 * 1000);
+    return () => { clearTimeout(t); clearInterval(interval); };
+    // Deliberately keyed only on crmUserId, not jobs/estimates/goalsList/
+    // settings — tryCheckin reads settingsRef.current for the latest gating
+    // state at fire-time without needing to re-subscribe this effect (and
+    // therefore reset the hourly interval) on every unrelated data change.
+  }, [crmUserId]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Portal
   const [portalEstId, setPortalEstId] = useState<string | null>(null);
   const [openJobId, setOpenJobId] = useState<string | null>(null);
@@ -1140,7 +1226,16 @@ export function App() {
   };
 
   // Weather
-  const [weatherData, setWeatherData] = useState(seedWeather);
+  // FIX 10 — weatherData used to initialize to (and, on any fetch failure,
+  // stay stuck at) seedWeather's hardcoded 72°F with zero visible sign
+  // anything was wrong — the Dashboard widget only ever gated on "is a key
+  // configured," not "did the fetch actually succeed," so an invalid key, a
+  // location OWM can't geocode, or a rate limit all silently displayed fake
+  // seed data as if it were real. weatherData now starts null (no real data
+  // yet) and weatherFetchError tracks the last failure so the UI can show an
+  // explicit error instead of ever falling back to seedWeather silently.
+  const [weatherData, setWeatherData] = useState<typeof seedWeather | null>(null);
+  const [weatherFetchError, setWeatherFetchError] = useState<string | null>(null);
 
   // Computed stats
   const thisMonth = today().slice(0, 7);
@@ -1740,11 +1835,18 @@ export function App() {
   // was wrong, making "weather shows fake data" indistinguishable from "no
   // key configured yet" when debugging a live deployment.
   useEffect(() => {
-    if (!settings.owmKey) return;
+    if (!settings.owmKey) { setWeatherData(null); setWeatherFetchError(null); return; }
     const run = () => {
       fetchRealWeather(settings.owmKey, (settings as any).weatherLocation)
-        .then(w => { console.log("[Weather] refreshed —", w.current.temp + "°,", w.current.description); setWeatherData(w); })
-        .catch((e: any) => console.warn("[Weather] fetch failed — showing last known/seed data:", e?.message || e));
+        .then(w => { console.log("[Weather] refreshed —", w.current.temp + "°,", w.current.description); setWeatherData(w); setWeatherFetchError(null); })
+        .catch((e: any) => {
+          const msg = e?.message || String(e);
+          console.error("[Weather] fetch failed:", msg);
+          setWeatherFetchError(msg);
+          // Deliberately NOT falling back to seedWeather here — showing last
+          // known REAL data (if any) is fine, but fake seed data disguised as
+          // real is exactly what this fix is required to eliminate.
+        });
     };
     run();
     const interval = setInterval(run, 30 * 60 * 1000);
@@ -1933,6 +2035,13 @@ export function App() {
   // URL: #/rate?c=CUSTOMER_ID&n=FIRST_NAME&g=GOOGLE_PLACE_ID&co=COMPANY_NAME
   if (page === "rate") {
     return <CustomerReviewPage />;
+  }
+
+  // ── Public lead intake form — no auth, embeddable via iframe. See
+  // LeadFormPage.tsx and LeadIntakePage.tsx's "Get Embed Code".
+  // URL: #/lead-form?co=COMPANY_NAME&ph=COMPANY_PHONE
+  if (page === "lead-form") {
+    return <LeadFormPage />;
   }
 
   // No top-level loading gate — render immediately with whatever's already
@@ -2507,11 +2616,25 @@ export function App() {
         </header>
 
         {/* Page content */}
-        <main className="flex-1 overflow-y-auto pb-16 md:pb-0">
-          <div className="px-3 py-4 md:p-6 max-w-[1600px] mx-auto">
-            <PageFade key={page}>
+        {/* FIX 19 — AlfredPage used to size itself with a hardcoded
+            h-[calc(100dvh-150px)] guess at "everything else on screen" —
+            wrong on any layout where the header/padding/mobile bottom nav
+            don't add up to exactly 150px (they don't, especially with this
+            wrapper's own py-4/p-6 padding stacked on top), so Alfred was
+            sometimes shorter than the actual remaining space (extra empty
+            page scroll below it) and sometimes taller (forcing the outer
+            page to ALSO scroll to see the rest of the chat — a scroll-
+            inside-a-scroll that read as "doesn't fill the screen"). For the
+            alfred page specifically, main becomes a flex column with no
+            padding/max-width constraint so AlfredPage's own flex-1 container
+            (see AlfredPage.tsx) fills exactly the remaining space next to
+            the (still fully visible, unaffected — it's a sibling <aside>,
+            not replaced) main sidebar, with no double scroll. */}
+        <main className={"flex-1 pb-16 md:pb-0 " + (page === "alfred" ? "flex flex-col overflow-hidden" : "overflow-y-auto")}>
+          <div className={page === "alfred" ? "flex-1 flex flex-col min-h-0 p-2 md:p-3" : "px-3 py-4 md:p-6 max-w-[1600px] mx-auto"}>
+            <PageFade key={page} className={page === "alfred" ? "flex-1 min-h-0 flex flex-col" : ""}>
               <SafePage>
-                {page === "dashboard"      && <Dashboard jobs={jobs} setJobs={setJobs} customers={customers} estimates={estimates} setEstimates={setEstimates} automations={automations} stats={{ totalRev, activeJobs, pendingEst, closeRate, doneMonth }} goals={{ revenue: settings.monthlyRevenueGoal ?? 8000, jobCount: settings.monthlyJobsGoal ?? 20 }} vehicles={vehicles} maintenance={maintenance} chemicals={chemicals} settings={settings} setSettings={setSettings} onNav={setPage} toast={toast} weatherData={weatherData} inboxThreads={inboxThreads} employees={employees} crewFetchError={crewFetchError} reviews={reviews} onSendDailyBriefing={sendDailyBriefingNow} onViewJob={id => { setOpenJobId(id); setPage("jobs"); }} ownerId={crmUserId} />}
+                {page === "dashboard"      && <Dashboard jobs={jobs} setJobs={setJobs} customers={customers} estimates={estimates} setEstimates={setEstimates} automations={automations} stats={{ totalRev, activeJobs, pendingEst, closeRate, doneMonth }} goals={{ revenue: settings.monthlyRevenueGoal ?? 8000, jobCount: settings.monthlyJobsGoal ?? 20 }} vehicles={vehicles} maintenance={maintenance} chemicals={chemicals} settings={settings} setSettings={setSettings} onNav={setPage} toast={toast} weatherData={weatherData} weatherFetchError={weatherFetchError} inboxThreads={inboxThreads} employees={employees} crewFetchError={crewFetchError} reviews={reviews} onSendDailyBriefing={sendDailyBriefingNow} onViewJob={id => { setOpenJobId(id); setPage("jobs"); }} ownerId={crmUserId} />}
                 {page === "customers"      && <CustomersPage customers={customers} setCustomers={setCustomers} estimates={estimates} jobs={jobs} employees={employees} toast={toast} timeline={timeline} setTimeline={setTimeline} settings={settings} />}
                 {page === "estimates"      && <EstimatesPage estimates={estimates} setEstimates={setEstimates} customers={customers} services={services} settings={settings} toast={toast} onPortal={id => setPortalEstId(id)} estimateTemplates={estimateTemplates} setEstimateTemplates={setEstimateTemplates} setJobs={setJobs} onNav={setPage} />}
                 {page === "invoices"       && <InvoicesPage estimates={estimates} setEstimates={setEstimates} customers={customers} settings={settings} toast={toast} jobs={jobs} setJobs={setJobs} />}
@@ -2669,7 +2792,7 @@ export function App() {
               always expanding upward, matching the non-dragged behavior. */}
           <div
             className={"z-50 flex flex-col items-end gap-2.5 " + (fabPosition ? "fixed" : "fixed bottom-20 right-5 md:bottom-6 md:right-6")}
-            style={fabPosition ? { left: fabPosition.x, bottom: Math.max(4, window.innerHeight - fabPosition.y - FAB_SIZE) } : { marginBottom: "env(safe-area-inset-bottom)" }}
+            style={fabPosition ? { left: fabPosition.x, bottom: Math.max(4, getViewportHeight() - fabPosition.y - FAB_SIZE) } : { marginBottom: "env(safe-area-inset-bottom)" }}
           >
             {/* BLOCKER 15 (mobile round 9) — dragged into the bottom 20% of
                 the screen (e.g. behind the mobile bottom nav / thumb-
@@ -2678,7 +2801,7 @@ export function App() {
                 behavior, which the owner found confusing — expected it to
                 just disappear). A small pulsing dot marks where it went;
                 tapping the dot restores the FAB to its default position. */}
-            {fabPosition && fabPosition.y + FAB_SIZE > window.innerHeight * 0.8 ? (
+            {fabPosition && fabPosition.y + FAB_SIZE > getViewportHeight() * 0.8 ? (
               <button
                 onClick={() => setFabPosition(null)}
                 aria-label="Restore quick actions"

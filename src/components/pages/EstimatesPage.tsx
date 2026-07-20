@@ -164,13 +164,14 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
   // Guarded by estimateId so re-approving (or both the owner's "Approve"
   // button and the client portal's own approve path) never double-creates.
   const createJobFromApprovedEstimate = (estId: string) => {
+    let created: any = null;
     setJobs((prev: any[]) => {
       if (prev.some((j: any) => j.estimateId === estId)) return prev;
       const est = estimates.find((x: any) => x.id === estId);
       if (!est) return prev;
       const cust = customers.find((c: any) => c.id === est.customerId);
       const combinedChecklist = buildChecklistFromServices(est.lineItems, services);
-      return [...prev, {
+      created = {
         id: uid(), customerId: est.customerId, address: cust?.address || "",
         amount: est.total, status: "scheduled", scheduledDate: "", duration: 2,
         priority: "normal", crew: [], checklist: combinedChecklist, preChecklist: combinedChecklist, photos: [], chemicalsUsed: [],
@@ -187,8 +188,35 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
           recurringInterval: (est as any).recurringInterval,
           recurringWeekdays: (est as any).recurringWeekdays,
         } : {}),
-      }];
+      };
+      return [...prev, created];
     });
+    // FIX G — same missing-Supabase-insert bug as onSchedule below: this used
+    // to be local-state-only, so a job created here (recurring quotes
+    // included) never reached the jobs table until the owner later gave it a
+    // scheduledDate/crew through JobDetailModal (whose own updateJob call
+    // does insert/save correctly) — but if the row itself never existed in
+    // Supabase, that update had nothing to attach to. Safe-column retry
+    // matches the same pattern used for new jobs in JobsPage.tsx.
+    if (created) {
+      console.log("[Recurring] saving job from approved estimate", created.id, "isRecurring:", created.isRecurring);
+      (async () => {
+        const { error } = await withTimeout<any>((supabase as any).from("jobs").insert(created), 15000, "Save job from approved estimate");
+        if (error) {
+          console.error("[Recurring] job-from-approved-estimate insert failed:", error.message, "— retrying without recurring-schedule columns");
+          const { isRecurring, recurringMode, recurringFreq, recurringInterval, recurringWeekdays, ...coreJob } = created;
+          const retry = await (supabase as any).from("jobs").insert(coreJob);
+          if (retry?.error) {
+            console.error("[Recurring] core-column retry also failed:", retry.error.message);
+            toast?.("Job created locally, but failed to save to the server — " + retry.error.message, "red");
+          } else if (created.isRecurring) {
+            toast?.("Job saved, but recurring schedule couldn't be saved — ask your admin to run the pending database migration.", "yellow");
+          }
+        } else {
+          console.log("[Recurring] job from approved estimate saved to Supabase ✓", created.id);
+        }
+      })();
+    }
   };
   const cn = id => { const c = customers.find(x => x.id === id); return c ? c.firstName + " " + c.lastName : "Unknown"; };
   const filtered = filter === "all" ? estimates : estimates.filter(e => e.status === filter);
@@ -396,6 +424,34 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
           } : {}),
         };
         setJobs(prev => [...prev, newJob]);
+        // FIX G — this used to ONLY call setJobs (local React state), the
+        // same "local-state-only mutation" bug already found and fixed for
+        // invoice inserts (FIX 1). With no Supabase insert at all, a job
+        // scheduled from an estimate — recurring ones included, since
+        // isRecurring/recurringFreq/etc. are carried over above — never
+        // reached the jobs table, so the employee portal (which reads jobs
+        // straight from Supabase) never saw it, no matter who was later
+        // assigned to the crew. Insert immediately, with a safe-column retry
+        // for isRecurring/recurringMode/recurringFreq/recurringInterval/
+        // recurringWeekdays in case migration 0007 hasn't been run yet —
+        // matching the same pattern already used for new jobs in JobsPage.tsx.
+        console.log("[Recurring] saving job scheduled from estimate", newJob.id, "isRecurring:", (newJob as any).isRecurring);
+        (async () => {
+          const { error } = await withTimeout<any>((supabase as any).from("jobs").insert(newJob), 15000, "Save job from estimate");
+          if (error) {
+            console.error("[Recurring] job-from-estimate insert failed:", error.message, "— retrying without recurring-schedule columns");
+            const { isRecurring, recurringMode, recurringFreq, recurringInterval, recurringWeekdays, ...coreJob } = newJob as any;
+            const retry = await (supabase as any).from("jobs").insert(coreJob);
+            if (retry?.error) {
+              console.error("[Recurring] core-column retry also failed:", retry.error.message);
+              toast?.("Job created locally, but failed to save to the server — " + retry.error.message, "red");
+            } else if ((newJob as any).isRecurring) {
+              toast?.("Job saved, but recurring schedule couldn't be saved — ask your admin to run the pending database migration.", "yellow");
+            }
+          } else {
+            console.log("[Recurring] job from estimate saved to Supabase ✓", newJob.id);
+          }
+        })();
         // Auto-sync to Google Calendar if connected
         if (settings?.googleConnected && settings?.googleScopes?.calendar) {
           createGoogleCalendarEvent(settings, newJob, c).then(ev => { if (ev) toast("📅 Synced to Google Calendar ✓"); });

@@ -52,9 +52,16 @@ export function ReviewLandingPage({ review, customer, settings = {} as any, onCl
 
   const companyName = settings?.companyName || "Crew Boss";
   const googlePlaceId = settings?.googlePlaceId || "";
-  const googleReviewUrl = googlePlaceId
-    ? `https://search.google.com/local/writereview?placeid=${googlePlaceId}`
-    : "https://g.page/r/smocks-pressure-washing/review";
+  // FIX 22 — this fell back to a hardcoded "g.page/r/smocks-pressure-
+  // washing/review" whenever no Place ID was set — sending every OTHER
+  // deployment's customers (in this owner-facing preview, but the same
+  // pattern already existed on the real public page before it was fixed —
+  // see CustomerReviewPage.tsx) to a specific, different business's review
+  // page. Prefers the directly-pasted review link (Settings → Company →
+  // "Google Maps Review Link"), falls back to the Place-ID-constructed URL,
+  // and is empty (button hidden below) if genuinely neither is configured —
+  // better than sending customers somewhere wrong.
+  const googleReviewUrl = settings?.googleReviewLink || (googlePlaceId ? `https://search.google.com/local/writereview?placeid=${googlePlaceId}` : "");
 
   const handleRating = r => {
     setRating(r);
@@ -118,22 +125,24 @@ export function ReviewLandingPage({ review, customer, settings = {} as any, onCl
               <div className="text-4xl">🎉</div>
               <div>
                 <div className="text-xl font-bold text-yellow-400">Awesome — thank you!</div>
-                <div className="text-white/60 text-sm mt-1">Your {rating}-star review means the world to us. Would you mind sharing it on Google?</div>
+                <div className="text-white/60 text-sm mt-1">{googleReviewUrl ? `Your ${rating}-star review means the world to us. Would you mind sharing it on Google?` : `Your ${rating}-star review means the world to us — thank you!`}</div>
               </div>
               <div className="flex justify-center gap-1">
                 {[1,2,3,4,5].map(s => <Star key={s} size={20} className={s <= rating ? "text-yellow-400 fill-yellow-400" : "text-white/20"} />)}
               </div>
-              <a
-                href={googleReviewUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                onClick={() => { onSubmit?.(rating, ""); setTimeout(() => setStep("done"), 500); }}
-                className="flex items-center justify-center gap-2 w-full py-3.5 bg-white text-gray-900 font-bold rounded-xl hover:bg-gray-50 transition"
-              >
-                <img src="https://www.google.com/images/branding/googleg/1x/googleg_standard_color_128dp.png" alt="G" className="w-5 h-5" />
-                Leave a Google Review
-              </a>
-              <button onClick={() => { onSubmit?.(rating, "declined"); setStep("done"); }} className="text-xs text-white/40 hover:text-white/60 transition">No thanks, maybe later</button>
+              {googleReviewUrl && (
+                <a
+                  href={googleReviewUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  onClick={() => { onSubmit?.(rating, ""); setTimeout(() => setStep("done"), 500); }}
+                  className="flex items-center justify-center gap-2 w-full py-3.5 bg-white text-gray-900 font-bold rounded-xl hover:bg-gray-50 transition"
+                >
+                  <img src="https://www.google.com/images/branding/googleg/1x/googleg_standard_color_128dp.png" alt="G" className="w-5 h-5" />
+                  Leave a Google Review
+                </a>
+              )}
+              <button onClick={() => { onSubmit?.(rating, googleReviewUrl ? "declined" : ""); setStep("done"); }} className="text-xs text-white/40 hover:text-white/60 transition">{googleReviewUrl ? "No thanks, maybe later" : "Done"}</button>
             </div>
           )}
 

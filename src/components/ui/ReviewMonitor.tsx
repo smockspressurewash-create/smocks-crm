@@ -63,7 +63,14 @@ export function ReviewMonitor({ settings = {} as any, toast }) {
           <div className="font-semibold text-sm">Quick Links</div>
           {settings.googlePlaceId ? <>
             <a href={"https://search.google.com/local/reviews?placeid=" + settings.googlePlaceId} target="_blank" rel="noopener noreferrer" className="w-full flex items-center gap-2 py-2.5 bg-blue-950/30 border border-blue-700/40 text-blue-300 rounded-xl hover:bg-blue-900/40 transition text-xs font-medium px-3"><ExternalLink size={12} />Open Google Reviews</a>
-            <a href={"https://www.google.com/maps/search/?api=1&query=smocks+pressure+washing&query_place_id=" + settings.googlePlaceId} target="_blank" rel="noopener noreferrer" className="w-full flex items-center gap-2 py-2.5 bg-black/40 border border-white/10 text-white/60 rounded-xl hover:text-white transition text-xs px-3"><ExternalLink size={12} />View on Google Maps</a>
+            {/* FIX 22 — this was hardcoded to "smocks+pressure+washing"
+                regardless of the actual owner's company name, so on any
+                deployment for a business that ISN'T literally Smock's, this
+                link searched Google Maps for the wrong business entirely
+                (query_place_id would still resolve the correct pin, but the
+                query text shown/used in the search itself was wrong). Uses
+                the configured company name instead. */}
+            <a href={"https://www.google.com/maps/search/?api=1&query=" + encodeURIComponent(settings.companyName || "our business") + "&query_place_id=" + settings.googlePlaceId} target="_blank" rel="noopener noreferrer" className="w-full flex items-center gap-2 py-2.5 bg-black/40 border border-white/10 text-white/60 rounded-xl hover:text-white transition text-xs px-3"><ExternalLink size={12} />View on Google Maps</a>
             <button onClick={() => { navigator.clipboard?.writeText("https://search.google.com/local/reviews?placeid=" + settings.googlePlaceId); toast("Review link copied ✓"); }} className="w-full flex items-center gap-2 py-2 bg-black/40 border border-white/10 text-white/50 rounded-xl hover:text-white transition text-xs px-3"><Link size={12} />Copy review request link</button>
           </> : <div className="text-xs text-yellow-400 p-3 bg-yellow-950/20 border border-yellow-700/30 rounded-xl">Add your Google Place ID in Settings → Company → Google Place ID to enable monitoring links.</div>}
           <div className="text-[10px] text-white/30 pt-2 border-t border-white/5">Best practice: respond to every Google review within 24 hours for maximum ranking signals.</div>
