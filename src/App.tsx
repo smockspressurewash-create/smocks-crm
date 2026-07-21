@@ -2201,29 +2201,50 @@ export function App() {
 
   // ── Employee portal — takes over when an employee is authenticated ────────
   if (empSession || page === "portal") {
+    // CRITICAL FIX (Running Late / OTW — and every other action in the
+    // portal — showing NO toast at all) — this is an early return from
+    // App's render, entirely separate from the main JSX return further down
+    // that owns the `{toasts.map(...)}` overlay (see near the bottom of this
+    // component). EmployeePortal only ever received the `toast` FUNCTION as a
+    // prop (which correctly appends to this component's `toasts` state) but
+    // never had anywhere to actually render that state — every toast call
+    // anywhere in the ~5300-line EmployeePortal (Running Late, OTW, Complete
+    // Job, checklist toggles, clock in/out failures, all of it) was updating
+    // state that nothing ever displayed. Render the identical toast overlay
+    // here too so employees on their own devices actually see feedback.
     return (
-      <EmployeePortal
-        empSession={empSession}
-        setEmpSession={setEmpSession}
-        jobs={jobs}
-        setJobs={setJobs}
-        employees={employees}
-        customers={customers}
-        setCustomers={setCustomers}
-        settings={settings}
-        estimates={estimates}
-        setEstimates={setEstimates}
-        toast={toast}
-        // hasCrmSession (a verified, currently-active owner session) is the correct signal
-        // here — settings.googleConnected is a sticky per-browser localStorage flag that
-        // stays true forever after the owner's first Google sign-in on that machine. Using
-        // it meant any employee opening #/portal on a shared/non-incognito browser the
-        // owner had used before got shown the owner's stripped-down team-preview stub
-        // (OwnerTeamPortal) instead of their own login screen and full portal.
-        isOwnerView={!empSession && page === "portal" && !window.location.hash.includes("invite=") && hasCrmSession}
-        onClose={() => setPage("dashboard")}
-        refetchEmployees={refetchEmployees}
-      />
+      <>
+        <EmployeePortal
+          empSession={empSession}
+          setEmpSession={setEmpSession}
+          jobs={jobs}
+          setJobs={setJobs}
+          employees={employees}
+          customers={customers}
+          setCustomers={setCustomers}
+          settings={settings}
+          estimates={estimates}
+          setEstimates={setEstimates}
+          toast={toast}
+          // hasCrmSession (a verified, currently-active owner session) is the correct signal
+          // here — settings.googleConnected is a sticky per-browser localStorage flag that
+          // stays true forever after the owner's first Google sign-in on that machine. Using
+          // it meant any employee opening #/portal on a shared/non-incognito browser the
+          // owner had used before got shown the owner's stripped-down team-preview stub
+          // (OwnerTeamPortal) instead of their own login screen and full portal.
+          isOwnerView={!empSession && page === "portal" && !window.location.hash.includes("invite=") && hasCrmSession}
+          onClose={() => setPage("dashboard")}
+          refetchEmployees={refetchEmployees}
+        />
+        <div className="fixed bottom-20 left-4 right-4 md:bottom-4 md:right-auto z-50 space-y-2 pointer-events-none">
+          {toasts.map(t => (
+            <div key={t.id} className={"pointer-events-auto flex items-center gap-2.5 px-4 py-3 rounded-xl shadow-xl text-sm font-medium backdrop-blur animate-fade-in border " + (t.tone === "red" ? "bg-red-950/90 border-red-700/50 text-red-200" : t.tone === "yellow" ? "bg-yellow-950/90 border-yellow-700/50 text-yellow-200" : "bg-black/90 border-green-700/50 text-green-200")}>
+              <div className={"w-1.5 h-1.5 rounded-full flex-shrink-0 " + (t.tone === "red" ? "bg-red-400" : t.tone === "yellow" ? "bg-yellow-400" : "bg-green-400")} />
+              {t.msg}
+            </div>
+          ))}
+        </div>
+      </>
     );
   }
 

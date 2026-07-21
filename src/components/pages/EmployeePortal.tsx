@@ -330,13 +330,13 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
         commLog: [...(job.commLog || []), { id: uid(), type: "note" as const, date: today(), note: `⏱ Running late +${minutes}min — notified customer via ${lateChannel === "sms" ? "text" : "email"}${lateReasonNote.trim() ? ` (${lateReasonNote.trim()})` : ""}` }],
         ...(newScheduledTime ? { scheduledTime: newScheduledTime } : {}),
       });
-      toast(`Message sent to ${customer?.firstName || "customer"} ✓`, "green");
+      toast(`✅ Message sent to ${customer?.firstName || "customer"}`, "green");
       console.log("[Verify] Running Late toast + send — working");
       setRunningLateOpen(false);
       setLateReasonNote("");
     } catch (e: any) {
       console.error("[RunningLate] — error:", e?.message || e);
-      toast(e?.message || "Failed to send running-late notice", "red");
+      toast(`❌ Failed to send — ${e?.message || "reason unknown"}`, "red");
     } finally {
       setSendingRunningLate(false);
     }
@@ -356,12 +356,12 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
         await withTimeout(sendOwnerGmailOnly(settings as any, customer.email, "Your technician is on the way", html), 15000, "OTW email");
       }
       onUpdateJob({ commLog: [...(job.commLog || []), { id: uid(), type: "note" as const, date: today(), note: `📍 On my way message sent via ${otwChannel === "sms" ? "text" : "email"}` }] });
-      toast(`On the way message sent to ${customer?.firstName || "customer"} ✓`, "green");
+      toast(`✅ Message sent to ${customer?.firstName || "customer"}`, "green");
       console.log("[Verify] On My Way toast + send — working");
       setOtwOpen(false);
     } catch (e: any) {
       console.error("[OTW] — error:", e?.message || e);
-      toast(e?.message || "Failed to send on-my-way message", "red");
+      toast(`❌ Failed to send — ${e?.message || "reason unknown"}`, "red");
     } finally {
       setSendingOtw(false);
     }
@@ -3783,11 +3783,11 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
           await withTimeout(sendOwnerGmailOnly(settings as any, customer.email, "Your technician is on the way", html), 15000, "OTW email");
         }
         updateJob(job.id, { commLog: [...(job.commLog || []), { id: uid(), type: "note" as const, date: today(), note: `📍 On my way message sent via ${otwCardChannel === "sms" ? "text" : "email"}` }] });
-        toast(`On the way message sent to ${customer.firstName || "customer"} ✓`, "green");
+        toast(`✅ Message sent to ${customer.firstName || "customer"}`, "green");
         setOtwOpenJobId(null);
       } catch (err: any) {
         console.error("[OTW] — error:", err?.message || err);
-        toast(err?.message || "Failed to send on-my-way message", "red");
+        toast(`❌ Failed to send — ${err?.message || "reason unknown"}`, "red");
       } finally {
         setSendingOtwJobId(null);
       }
@@ -3805,13 +3805,13 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
         if (lateCardChannel === "sms") {
           if (!customer.phone) throw new Error("No phone on file for this customer.");
           await withTimeout(twilioSend(settings as any, customer.phone, `Hi ${customer.firstName}, ${msg}`), 15000, "Running late SMS");
-          toast(`Message sent to ${customer.firstName} ✓`, "green");
+          toast(`✅ Message sent to ${customer.firstName}`, "green");
           logOutboundSmsToInbox({ contactName: `${customer.firstName} ${customer.lastName}`, contactPhone: customer.phone, customerId: customer.id, body: `Hi ${customer.firstName}, ${msg}` }).catch(() => {});
         } else {
           if (!customer.email) throw new Error("No email on file for this customer.");
           const html = emailShell(settings?.companyName || "Crew Boss", "Running Late", `<p>Hi ${customer.firstName},</p><p>${msg}</p>`);
           await withTimeout(sendOwnerGmailOnly(settings as any, customer.email, "Your technician is running late", html), 15000, "Running late email");
-          toast(`Message sent to ${customer.firstName} ✓`, "green");
+          toast(`✅ Message sent to ${customer.firstName}`, "green");
         }
         const ownerEmail = (settings as any)?.myEmail || (settings as any)?.companyEmail;
         if (ownerEmail) {
@@ -3826,8 +3826,8 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
       } catch (err: any) {
         const errMsg = err?.message || "";
         console.error("[RunningLate] — error:", errMsg);
-        if (/401|expired|reconnect/i.test(errMsg)) toast("Google token expired. Reconnect Google in Settings.", "red");
-        else toast(errMsg || "Failed to send running-late notice", "red");
+        if (/401|expired|reconnect/i.test(errMsg)) toast("❌ Failed to send — Google token expired, reconnect Google in Settings.", "red");
+        else toast(`❌ Failed to send — ${errMsg || "reason unknown"}`, "red");
       } finally {
         setSendingLateJobId(null);
         setLateOpenJobId(null);
