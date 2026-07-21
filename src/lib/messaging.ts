@@ -1,4 +1,4 @@
-import { supabase, getStoredGoogleConnection, setStoredGoogleToken } from "./supabase";
+import { supabase, getStoredGoogleConnection, setStoredGoogleToken, fetchOwnerGoogleToken } from "./supabase";
 import { uid, withTimeout } from "./utils";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -467,26 +467,53 @@ export const sendOwnerGmailOnly = async (
   // state (App.tsx's applyGoogleIdentity / the app_settings cross-device
   // sync), which several rounds of testing showed can lag or race behind the
   // actual connection. localStorage (written synchronously the instant the
-  // OAuth hash is seen, see lib/supabase.ts) is the authoritative record —
-  // check it FIRST and only fall back to the settings object for a
-  // connection made before this mechanism existed.
+  // OAuth hash is seen, see lib/supabase.ts) is the authoritative record for
+  // the ONE browser that ran the OAuth flow — check it first.
   const stored = getStoredGoogleConnection();
-  const providerToken = stored?.token || settings.googleProviderToken;
-  const email = stored?.email || settings.googleEmail;
-  const refreshToken = stored?.refreshToken || settings.googleRefreshToken;
-  console.log("[GoogleConnect] sendOwnerGmailOnly — token source:", stored?.token ? "localStorage" : settings.googleProviderToken ? "settings (legacy)" : "none");
+  let providerToken = stored?.token;
+  let email = stored?.email;
+  let refreshToken = stored?.refreshToken;
+  let tokenExpiresAt = stored?.expiresAt;
+  let tokenSource = stored?.token ? "localStorage" : "none";
+
+  // CROSS-DEVICE — an employee's own phone/laptop never ran the owner's
+  // OAuth flow, so it has no localStorage entry at all; this is the field
+  // portal's OTW/Running Late/invoice-send path calling this function, so
+  // that's the common case, not an edge case. Fetch the live token from the
+  // shared app_settings row before falling back to whatever (possibly stale,
+  // possibly never-populated) value happened to be on the `settings` prop.
+  if (!providerToken) {
+    const cloud = await fetchOwnerGoogleToken();
+    if (cloud?.token) {
+      providerToken = cloud.token;
+      email = cloud.email;
+      refreshToken = cloud.refreshToken;
+      tokenExpiresAt = cloud.expiresAt;
+      tokenSource = "supabase (cross-device)";
+    }
+  }
+
+  if (!providerToken && settings.googleProviderToken) {
+    providerToken = settings.googleProviderToken;
+    email = settings.googleEmail;
+    refreshToken = settings.googleRefreshToken;
+    tokenExpiresAt = settings.googleTokenExpiresAt;
+    tokenSource = "settings (legacy fallback)";
+  }
+
+  console.log("[GoogleConnect] sendOwnerGmailOnly — token source:", tokenSource);
   if (!providerToken || !email) {
     throw new Error("Gmail not connected — connect Google in Settings → Integrations to send email.");
   }
   await sendViaGmail(providerToken, email, to, subject, html, {
     refreshToken,
-    tokenExpiresAt: stored?.expiresAt || settings.googleTokenExpiresAt,
+    tokenExpiresAt,
     backendUrl: settings.googleBackendUrl,
     // A 401 mid-send triggers an automatic refresh inside sendViaGmail —
-    // persist that fresh token straight to localStorage so it's still there
-    // for the next send and Settings reflects it immediately, instead of
-    // only living in this one function call's local variable.
-    onTokenRefreshed: (token, expiresAt) => setStoredGoogleToken(token, expiresAt),
+    // persist that fresh token to localStorage AND the shared app_settings
+    // row (see setStoredGoogleToken) so every device — not just this one —
+    // has the current token for its next send.
+    onTokenRefreshed: (token, expiresAt) => setStoredGoogleToken(token, expiresAt, email),
   });
 };
 
@@ -516,18 +543,39 @@ export const sendEmail = async (
     subj = subject!;
     body = html!;
   }
-  // GoogleConnect ask #3 — same localStorage-first lookup as sendOwnerGmailOnly.
+  // GoogleConnect ask #3 — same localStorage → Supabase → settings fallback
+  // chain as sendOwnerGmailOnly (see the comments there).
   const stored = getStoredGoogleConnection();
-  const providerToken = stored?.token || settings.googleProviderToken;
-  const email = stored?.email || settings.googleEmail;
+  let providerToken = stored?.token;
+  let email = stored?.email;
+  let refreshToken = stored?.refreshToken;
+  let tokenExpiresAt = stored?.expiresAt;
+
+  if (!providerToken) {
+    const cloud = await fetchOwnerGoogleToken();
+    if (cloud?.token) {
+      providerToken = cloud.token;
+      email = cloud.email;
+      refreshToken = cloud.refreshToken;
+      tokenExpiresAt = cloud.expiresAt;
+    }
+  }
+
+  if (!providerToken && settings.googleProviderToken) {
+    providerToken = settings.googleProviderToken;
+    email = settings.googleEmail;
+    refreshToken = settings.googleRefreshToken;
+    tokenExpiresAt = settings.googleTokenExpiresAt;
+  }
+
   if (!providerToken || !email) {
     throw new Error("Gmail not connected — connect Google in Settings → Integrations to send email.");
   }
   await sendViaGmail(providerToken, email, to, subj, body, {
-    refreshToken: stored?.refreshToken || settings.googleRefreshToken,
-    tokenExpiresAt: stored?.expiresAt || settings.googleTokenExpiresAt,
+    refreshToken,
+    tokenExpiresAt,
     backendUrl: settings.googleBackendUrl,
-    onTokenRefreshed: (token, expiresAt) => setStoredGoogleToken(token, expiresAt),
+    onTokenRefreshed: (token, expiresAt) => setStoredGoogleToken(token, expiresAt, email),
   });
 };
 
