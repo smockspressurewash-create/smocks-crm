@@ -103,43 +103,68 @@ export function SettingsModal({ open, onClose, settings, setSettings, services, 
   // could 401 with Settings still showing green. A real (cheap, no-scope)
   // call to Google's tokeninfo endpoint on mount/open tells the truth.
   const [googleTokenValid, setGoogleTokenValid] = useState<null | boolean>(null);
-  useEffect(() => {
-    if (!open || !f.googleConnected || !f.googleProviderToken) { setGoogleTokenValid(null); return; }
-    let cancelled = false;
-    fetch(`https://www.googleapis.com/oauth2/v3/tokeninfo?access_token=${encodeURIComponent(f.googleProviderToken)}`)
-      .then(r => { if (!cancelled) setGoogleTokenValid(r.ok); })
-      .catch(() => { if (!cancelled) setGoogleTokenValid(null); });
-    return () => { cancelled = true; };
-  }, [open, f.googleConnected, f.googleProviderToken]);
 
   // FIX 1 — real refresh-token exchange so an expired Google token can be
   // retried in place from Settings → Integrations, without a full
   // disconnect/reconnect. Writes straight to live settings (like the other
   // direct setSettings calls in this modal) so it takes effect immediately,
-  // not just after Save.
-  const retryGoogleToken = async () => {
+  // not just after Save. `silent` (GoogleConnect ask #3) suppresses the
+  // success/no-op toasts for the automatic background retry the tokenValid
+  // effect below fires — a failure still toasts either way, since a
+  // silently-swallowed failure is exactly the "why didn't this work" class
+  // of bug this whole feature keeps getting re-reported for.
+  const retryGoogleToken = async (opts?: { silent?: boolean }) => {
+    const silent = !!opts?.silent;
+    console.log("[GoogleConnect] retryGoogleToken —", silent ? "auto (silent)" : "manual click", "· has refresh token:", !!f.googleRefreshToken);
     setGoogleRetrying(true);
     try {
       if (!f.googleRefreshToken) {
-        toast?.("No refresh token on file — reconnect Google below to enable retry.", "red");
+        console.warn("[GoogleConnect] no refresh token on file — cannot refresh, owner must fully reconnect");
+        if (!silent) toast?.("No refresh token on file — reconnect Google below to enable retry.", "red");
         return;
       }
+      console.log("[GoogleConnect] calling /api/google-refresh via refreshEmpGoogleToken —  backendUrl:", f.googleBackendUrl || "(default same-origin)");
       const refreshed = await refreshEmpGoogleToken(f.googleBackendUrl, f.googleRefreshToken);
       if (refreshed?.token) {
+        console.log("[GoogleConnect] refresh succeeded — new token expires", new Date(refreshed.expiresAt).toLocaleTimeString());
         setGoogleConfigMissing(false);
+        setGoogleTokenValid(true);
         setF((prev: any) => ({ ...prev, googleProviderToken: refreshed.token, googleTokenExpiresAt: refreshed.expiresAt }));
         setSettings?.((prev: any) => ({ ...prev, googleProviderToken: refreshed.token, googleTokenExpiresAt: refreshed.expiresAt }));
-        toast?.("Google token refreshed", "green");
+        if (!silent) toast?.("Google token refreshed", "green");
       } else if (refreshed?.configMissing) {
+        console.warn("[GoogleConnect] refresh failed — Cloudflare Function reports GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET missing");
         setGoogleConfigMissing(true);
-        toast?.("Gmail unavailable — Google reconnect isn't fully configured yet (missing server env vars). See the notice below.", "red");
+        if (!silent) toast?.("Gmail unavailable — Google reconnect isn't fully configured yet (missing server env vars). See the notice below.", "red");
       } else {
-        toast?.("Couldn't refresh automatically — the refresh function may not be deployed yet. Reconnect Google below.", "red");
+        console.warn("[GoogleConnect] refresh failed — function may not be deployed, or refresh token itself was rejected");
+        if (!silent) toast?.("Couldn't refresh automatically — the refresh function may not be deployed yet. Reconnect Google below.", "red");
       }
     } finally {
       setGoogleRetrying(false);
     }
   };
+
+  useEffect(() => {
+    if (!open || !f.googleConnected || !f.googleProviderToken) { setGoogleTokenValid(null); return; }
+    let cancelled = false;
+    console.log("[GoogleConnect] verifying token via tokeninfo endpoint...");
+    fetch(`https://www.googleapis.com/oauth2/v3/tokeninfo?access_token=${encodeURIComponent(f.googleProviderToken)}`)
+      .then(r => {
+        if (cancelled) return;
+        console.log("[GoogleConnect] tokeninfo check —", r.ok ? "valid ✓" : "invalid/expired");
+        setGoogleTokenValid(r.ok);
+        // GoogleConnect ask #3 — auto-refresh silently instead of leaving the
+        // owner staring at an "⚠ Token expired — click Retry" badge until
+        // they notice and click it themselves.
+        if (!r.ok && f.googleRefreshToken) {
+          console.log("[GoogleConnect] token invalid — attempting silent auto-refresh");
+          retryGoogleToken({ silent: true });
+        }
+      })
+      .catch((e: any) => { if (!cancelled) { console.warn("[GoogleConnect] tokeninfo check failed:", e?.message); setGoogleTokenValid(null); } });
+    return () => { cancelled = true; };
+  }, [open, f.googleConnected, f.googleProviderToken]); // eslint-disable-line react-hooks/exhaustive-deps
   const [tplTab, setTplTab] = useState<"messaging" | "estimates">("messaging");
   const [bufferChannels, setBufferChannels] = useState<BufferChannel[]>([]);
   const [bufferConnecting, setBufferConnecting] = useState(false);
@@ -809,7 +834,7 @@ export function SettingsModal({ open, onClose, settings, setSettings, services, 
                   <div className="font-semibold text-sm">Google Account</div>
                 </div>
                 <Badge tone={!f.googleConnected ? "gray" : googleTokenValid === false ? "red" : "green"}>
-                  {!f.googleConnected ? "Not connected" : googleTokenValid === false ? "⚠ Token expired — click Retry" : "✓ " + (f.googleEmail || "Connected")}
+                  {!f.googleConnected ? "Not connected" : googleTokenValid === false ? "⚠ Token expired — click Retry" : "✓ Connected as " + (f.googleEmail || "unknown")}
                 </Badge>
               </div>
 
@@ -960,10 +985,12 @@ export function SettingsModal({ open, onClose, settings, setSettings, services, 
                         scopes: GOOGLE_SCOPES,
                         redirectTo: window.location.origin + window.location.pathname,
                       };
+                      console.log("[GoogleConnect] OAuth start — redirectTo:", opts.redirectTo, "· scopes:", GOOGLE_SCOPES);
                       try {
                         const { error } = await supabase.auth.signInWithOAuth({ provider: "google", options: opts });
-                        if (error) toast("Google connect failed: " + error.message, "red");
+                        if (error) { console.error("[GoogleConnect] signInWithOAuth failed:", error.message); toast("Google connect failed: " + error.message, "red"); }
                       } catch (e: any) {
+                        console.error("[GoogleConnect] signInWithOAuth threw:", e?.message);
                         toast("Google connect failed: " + e.message, "red");
                       }
                     }}

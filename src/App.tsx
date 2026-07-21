@@ -311,20 +311,31 @@ export function App() {
   // applyGoogleIdentity (which has setSettings) can persist it.
   useEffect(() => {
     const hash = window.location.hash;
-    if (!hash.includes("access_token")) return;
+    if (!hash.includes("access_token")) {
+      console.log("[GoogleConnect] mount — no access_token in hash (not an OAuth callback, or lib/supabase.ts's pre-init bridge already consumed it)");
+      return;
+    }
     const params = new URLSearchParams(hash.substring(1));
     const access_token = params.get("access_token");
     const refresh_token = params.get("refresh_token");
     const provider_token = params.get("provider_token");
     const provider_refresh_token = params.get("provider_refresh_token");
-    // Bridge Google tokens to applyGoogleIdentity via sessionStorage
+    console.log("[GoogleConnect] OAuth callback hash detected — provider_token present:", !!provider_token, "· access_token present:", !!access_token);
+    // Bridge Google tokens to applyGoogleIdentity via sessionStorage. This is
+    // a defensive second write — lib/supabase.ts already does this same
+    // bridge synchronously at module load (before Supabase's own
+    // detectSessionInUrl can race it), so this is normally a harmless no-op
+    // re-write of the same value; it only matters if this effect somehow
+    // runs before that module-level code did (it shouldn't, given import
+    // order, but costs nothing to keep both).
     if (provider_token) sessionStorage.setItem("smocks.gpt", provider_token);
     if (provider_refresh_token) sessionStorage.setItem("smocks.grt", provider_refresh_token);
     if (access_token && refresh_token) {
       supabase.auth.setSession({ access_token, refresh_token }).then(({ data, error }) => {
         if (error) {
-          console.error("setSession failed:", error);
+          console.error("[GoogleConnect] setSession failed:", error.message);
         } else {
+          console.log("[GoogleConnect] setSession succeeded — session established, clearing hash");
           window.location.hash = "";
         }
       });
@@ -1653,9 +1664,9 @@ export function App() {
     }, 5000);
 
     const applyGoogleIdentity = (session: any) => {
-      if (!session?.user) return;
+      if (!session?.user) { console.log("[GoogleConnect] applyGoogleIdentity — no session, skipping"); return; }
       const googleId = (session.user.identities || []).find((i: any) => i.provider === "google");
-      if (!googleId) return;
+      if (!googleId) { console.log("[GoogleConnect] applyGoogleIdentity — session has no google identity, skipping"); return; }
       const googleEmail = googleId.identity_data?.email || session.user.email || "";
       // Pick up the Google OAuth tokens bridged from the hash via sessionStorage.
       // session.provider_token is only populated immediately after setSession with the
@@ -1665,6 +1676,7 @@ export function App() {
       const bridgedRefreshToken = sessionStorage.getItem("smocks.grt") || "";
       if (bridgedRefreshToken) sessionStorage.removeItem("smocks.grt");
       const providerToken = bridgedToken || session.provider_token || "";
+      console.log("[GoogleConnect] applyGoogleIdentity — email:", googleEmail, "· token source:", bridgedToken ? "sessionStorage bridge" : session.provider_token ? "session.provider_token" : "NONE (will show connected but token-less until next reconnect/refresh)", "· has refresh token:", !!bridgedRefreshToken);
       // ITEM 10 — Google access tokens last ~1hr; recording when we captured
       // this one lets sendViaGmail check expiry proactively (see
       // lib/messaging.ts) instead of only discovering it's stale after a 401.
@@ -1676,6 +1688,7 @@ export function App() {
         ...(providerToken ? { googleProviderToken: providerToken, googleTokenExpiresAt: Date.now() + 55 * 60 * 1000 } : {}),
         ...(bridgedRefreshToken ? { googleRefreshToken: bridgedRefreshToken } : {}),
       }));
+      console.log("[GoogleConnect] settings updated — googleConnected: true, googleEmail:", googleEmail, "· googleProviderToken set:", !!providerToken);
     };
 
     (async () => {
@@ -1698,6 +1711,9 @@ export function App() {
             // them into the CRM or employee portal.
             if (window.location.hash.replace(/^#\/?/, "").startsWith("client")) return;
 
+            if (event === "SIGNED_IN" || event === "TOKEN_REFRESHED" || event === "INITIAL_SESSION") {
+              console.log("[GoogleConnect] onAuthStateChange —", event, "· has provider_token on session:", !!(session as any)?.provider_token);
+            }
 
             if (event === "SIGNED_OUT") {
               setEmpSession(null);
@@ -1717,8 +1733,8 @@ export function App() {
             if (event === "TOKEN_REFRESHED") {
               const freshProviderToken = (session as any)?.provider_token;
               if (freshProviderToken) {
+                console.log("[GoogleConnect] TOKEN_REFRESHED carried a fresh provider_token — updating settings");
                 setSettings((prev: any) => ({ ...prev, googleProviderToken: freshProviderToken, googleTokenExpiresAt: Date.now() + 55 * 60 * 1000 }));
-              } else {
               }
               return;
             }

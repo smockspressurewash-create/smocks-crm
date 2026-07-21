@@ -359,6 +359,7 @@ export const refreshEmpGoogleToken = async (
 ): Promise<{ token: string; expiresAt: number; configMissing: boolean } | null> => {
   if (!refreshToken) return null;
   const endpoint = backendUrl ? `${backendUrl}/google/refresh` : "/api/google-refresh";
+  console.log("[GoogleConnect] calling Cloudflare Function:", endpoint);
   try {
     const res = await fetch(endpoint, {
       method: "POST",
@@ -372,6 +373,7 @@ export const refreshEmpGoogleToken = async (
       console.warn("[GoogleToken] employee token refresh failed:", errMsg, configMissing ? "— Cloudflare env vars not set" : "");
       return configMissing ? { token: "", expiresAt: 0, configMissing: true } : null;
     }
+    console.log("[GoogleConnect] Cloudflare Function responded with a fresh access_token, expires_in:", data.expires_in);
     return { token: data.access_token, expiresAt: Date.now() + (Number(data.expires_in) || 3300) * 1000, configMissing: false };
   } catch (e: any) {
     console.warn("[GoogleToken] employee token refresh threw:", e?.message);
