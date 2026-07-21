@@ -23,7 +23,7 @@ import {
 import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE } from "../../lib/utils";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
 import { twilioSend, sendEmail, pollTwilioIncoming } from "../../lib/messaging";
-import { supabase } from "../../lib/supabase";
+import { supabase, getStoredGoogleConnection } from "../../lib/supabase";
 import { seedWeather } from "../../lib/weather";
 import { seedCustomers, seedEstimates, seedJobs, seedEmployees, seedVehicles, seedExpenses, seedChemicals, seedServices, seedAutomations, seedEmailTemplates, seedSmsTemplates, seedRewardTiers, seedReferrals, seedMaintenance, campaignTemplates, seedSocialPosts, seedTimeline, seedGoals, seedReminders, seedAccountabilityEntries, seedMileage, seedLeadSrc, STEP_TYPES, AUTOMATION_TEMPLATES } from "../../lib/seed";
 import { callModel, MODELS } from "../../lib/api";
@@ -90,6 +90,20 @@ export function InboxPage({ threads = [], setThreads, customers = [], settings =
   const [polling, setPolling] = useState(false);
   const [gmailThreads, setGmailThreads] = useState<any[]>([]);
   const [gmailLoading, setGmailLoading] = useState(false);
+  // GoogleConnect — this page used to read `settings.googleToken`, a field
+  // NOTHING in the app ever writes (the real field everywhere else is
+  // googleProviderToken) — so Gmail-in-Inbox was silently non-functional
+  // regardless of connection state. Also switched to getStoredGoogleConnection()
+  // (localStorage), the same authoritative source Settings and Google
+  // Workspace now use, instead of trusting settings/React state alone.
+  const [storedGoogle, setStoredGoogle] = useState(() => getStoredGoogleConnection());
+  useEffect(() => {
+    const refresh = () => setStoredGoogle(getStoredGoogleConnection());
+    refresh();
+    window.addEventListener("focus", refresh);
+    return () => window.removeEventListener("focus", refresh);
+  }, []);
+  const gmailToken = storedGoogle?.token || (settings as any)?.googleProviderToken || "";
   const msgEndRef = useRef(null);
   const inputRef = useRef(null);
   // EGRESS FIX — skip the inbox_threads poll below while the tab is hidden
@@ -214,10 +228,10 @@ export function InboxPage({ threads = [], setThreads, customers = [], settings =
 
   // Load Gmail messages when Google is connected
   useEffect(() => {
-    const token = (settings as any)?.googleToken;
-    if (!settings?.googleConnected || !token) return;
+    if (!gmailToken) { console.log("[GoogleConnect] Inbox — no gmail token available, skipping Gmail load"); return; }
+    console.log("[GoogleConnect] Inbox — loading Gmail messages, token source:", storedGoogle?.token ? "localStorage" : "settings (legacy)");
     setGmailLoading(true);
-    fetchGmailMessages(token)
+    fetchGmailMessages(gmailToken)
       .then(msgs => {
         const gThreads = msgs.map(m => {
           const nameMatch = m.from.match(/^(.+?)\s*<(.+?)>$/);
@@ -245,13 +259,13 @@ export function InboxPage({ threads = [], setThreads, customers = [], settings =
       })
       .catch(() => {})
       .finally(() => setGmailLoading(false));
-  }, [(settings as any)?.googleToken]);
+  }, [gmailToken]);
 
   const markRead = id => {
     if (id.startsWith("gmail-")) {
       const gThread = gmailThreads.find(t => t.id === id);
-      if (gThread?.gmailMessageId && (settings as any)?.googleToken) {
-        markGmailRead((settings as any).googleToken, gThread.gmailMessageId).catch(() => {});
+      if (gThread?.gmailMessageId && gmailToken) {
+        markGmailRead(gmailToken, gThread.gmailMessageId).catch(() => {});
       }
       setGmailThreads(prev => prev.map(t => t.id === id ? { ...t, unread: false } : t));
     } else {
@@ -296,8 +310,8 @@ export function InboxPage({ threads = [], setThreads, customers = [], settings =
       } else {
         if (!activeThread.contactEmail) throw new Error("No email for this contact");
         const lastSubject = activeThread.messages.find(m => m.subject)?.subject || "";
-        if (isGmail && (settings as any)?.googleToken) {
-          await sendGmailMessage((settings as any).googleToken, activeThread.contactEmail, "Re: " + lastSubject, msgText);
+        if (isGmail && gmailToken) {
+          await sendGmailMessage(gmailToken, activeThread.contactEmail, "Re: " + lastSubject, msgText);
         } else {
           await sendEmail(settings, { to: activeThread.contactEmail, subject: "Re: " + lastSubject, body: msgText });
         }
@@ -348,7 +362,7 @@ export function InboxPage({ threads = [], setThreads, customers = [], settings =
   const allThreads = [...threads, ...gmailThreads];
   const filteredThreads = allThreads.filter(t => !search || (t.contactName || "").toLowerCase().includes(search.toLowerCase()) || t.messages.some(m => (m.body || "").toLowerCase().includes(search.toLowerCase())));
   const twilioReady = !!(settings.twilioSid && settings.twilioToken && settings.twilioFrom);
-  const emailReady = !!(settings.googleConnected && settings.googleScopes?.gmail);
+  const emailReady = !!gmailToken;
   const relTime = ts => { const s = Math.floor((Date.now() - ts) / 1000); if (s < 60) return "now"; if (s < 3600) return Math.floor(s/60)+"m"; if (s < 86400) return Math.floor(s/3600)+"h"; return Math.floor(s/86400)+"d"; };
 
   return (

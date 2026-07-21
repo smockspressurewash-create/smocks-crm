@@ -8,7 +8,7 @@ import {
 import type { AppSettings } from "../../types";
 import { Glass } from "../ui/Glass";
 import { GBtn } from "../ui/GBtn";
-import { supabase } from "../../lib/supabase";
+import { supabase, getStoredGoogleConnection, setStoredGoogleToken, clearStoredGoogleConnection } from "../../lib/supabase";
 import { uid, withTimeout } from "../../lib/utils";
 import {
   fetchGmailMessages, sendGmailMessage, markGmailRead,
@@ -771,9 +771,30 @@ export function GoogleWorkspacePage({
   const autoRefreshTried = React.useRef(false);
 
   const s = settings as any;
-  const isConnected = !!s.googleConnected;
-  const googleEmail: string = s.googleEmail || "";
-  const token: string = s.googleProviderToken || "";
+  // GoogleConnect — this page had its OWN parallel copy of "is Google
+  // connected," reading settings.googleConnected/googleProviderToken
+  // straight from React state/props. That's exactly the path several
+  // rounds of fixes on Settings → Integrations moved AWAY from in favor of
+  // getStoredGoogleConnection() (localStorage, written synchronously the
+  // instant the OAuth hash is seen — see lib/supabase.ts) — Settings and
+  // this page were reading two different sources of truth, so Settings
+  // could correctly show "Connected" while this page still showed "Not
+  // connected". `settings`-derived fields are kept only as a fallback for a
+  // connection made before this mechanism existed.
+  const [storedGoogle, setStoredGoogle] = useState(() => getStoredGoogleConnection());
+  useEffect(() => {
+    const refresh = () => {
+      const stored = getStoredGoogleConnection();
+      console.log("[GoogleConnect] GoogleWorkspacePage — localStorage check — connected:", !!stored, stored?.email ? "· email: " + stored.email : "");
+      setStoredGoogle(stored);
+    };
+    refresh();
+    window.addEventListener("focus", refresh);
+    return () => window.removeEventListener("focus", refresh);
+  }, []);
+  const isConnected = !!(storedGoogle?.token || (s.googleConnected && s.googleProviderToken));
+  const googleEmail: string = storedGoogle?.email || s.googleEmail || "";
+  const token: string = storedGoogle?.token || s.googleProviderToken || "";
   const hasToken = !!token;
 
   // BLOCKER 3 (mobile round 7) — core refresh logic shared by the manual
@@ -787,9 +808,13 @@ export function GoogleWorkspacePage({
   // 401) used ONLY the weak Supabase path, so "Settings shows Connected but
   // Gmail returns 401" never actually got fixed by anything running mid-session.
   const getRefreshedGoogleToken = useCallback(async (): Promise<string | null> => {
-    if (s.googleRefreshToken) {
-      const refreshed = await refreshEmpGoogleToken(s.googleBackendUrl, s.googleRefreshToken);
+    const refreshToken = storedGoogle?.refreshToken || s.googleRefreshToken;
+    if (refreshToken) {
+      const refreshed = await refreshEmpGoogleToken(s.googleBackendUrl, refreshToken);
       if (refreshed?.token) {
+        console.log("[GoogleConnect] GoogleWorkspacePage — token refreshed, saving to localStorage");
+        setStoredGoogleToken(refreshed.token, refreshed.expiresAt);
+        setStoredGoogle(getStoredGoogleConnection());
         setSettings?.((prev: any) => ({ ...prev, googleProviderToken: refreshed.token, googleTokenExpiresAt: refreshed.expiresAt }));
         return refreshed.token;
       }
@@ -797,11 +822,13 @@ export function GoogleWorkspacePage({
     const { data } = await supabase.auth.refreshSession();
     const fallbackToken: string = (data.session as any)?.provider_token || "";
     if (fallbackToken) {
+      setStoredGoogleToken(fallbackToken, Date.now() + 55 * 60 * 1000);
+      setStoredGoogle(getStoredGoogleConnection());
       setSettings?.((prev: any) => ({ ...prev, googleProviderToken: fallbackToken }));
       return fallbackToken;
     }
     return null;
-  }, [s.googleRefreshToken, s.googleBackendUrl, setSettings]);
+  }, [storedGoogle?.refreshToken, s.googleRefreshToken, s.googleBackendUrl, setSettings]);
 
   // Register a token refresher with the googleApi module so any 401 auto-retries.
   useEffect(() => {
@@ -949,6 +976,9 @@ export function GoogleWorkspacePage({
       fetch(`https://oauth2.googleapis.com/revoke?token=${encodeURIComponent(token)}`, { method: "POST" })
         .catch(() => {});
     }
+    console.log("[GoogleConnect] GoogleWorkspacePage — disconnect clicked, clearing localStorage + settings");
+    clearStoredGoogleConnection();
+    setStoredGoogle(null);
     setSettings?.((prev: any) => ({
       ...prev,
       googleConnected: false,
