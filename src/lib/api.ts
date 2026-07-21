@@ -332,7 +332,15 @@ export const callModel = async (opts: {
       body: JSON.stringify({
         contents,
         ...(geminiTools ? { tools: geminiTools } : {}),
-        generationConfig: { maxOutputTokens: maxTokens },
+        // Disable thinking for tool-calling: gemini-2.5-flash defaults to
+        // spending part (sometimes all) of maxOutputTokens on invisible
+        // reasoning before emitting text/functionCall parts. With a 1500-
+        // token cap and 25+ tool definitions in the system prompt, that can
+        // exhaust the whole budget and finish with empty parts (finishReason
+        // MAX_TOKENS) — matching the observed stopReason:"end_turn" with
+        // both text and toolUses empty. Tool-calling doesn't need visible
+        // chain-of-thought, so budget=0 removes the failure mode entirely.
+        generationConfig: { maxOutputTokens: maxTokens, thinkingConfig: { thinkingBudget: 0 } },
         ...(opts.systemPrompt ? { systemInstruction: { parts: [{ text: opts.systemPrompt }] } } : {}),
       }),
     }) as { candidates?: Array<{ content?: { parts?: Array<Record<string, unknown>> }; finishReason?: string; safetyRatings?: unknown }>; promptFeedback?: { blockReason?: string; safetyRatings?: unknown } };
