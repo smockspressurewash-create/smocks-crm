@@ -335,17 +335,24 @@ export const callModel = async (opts: {
         generationConfig: { maxOutputTokens: maxTokens },
         ...(opts.systemPrompt ? { systemInstruction: { parts: [{ text: opts.systemPrompt }] } } : {}),
       }),
-    }) as { candidates?: Array<{ content?: { parts?: Array<{ text?: string; functionCall?: { name: string; args?: Record<string, unknown> } }>; finishReason?: string }>; promptFeedback?: { blockReason?: string } };
+    }) as { candidates?: Array<{ content?: { parts?: Array<Record<string, unknown>> }; finishReason?: string; safetyRatings?: unknown }>; promptFeedback?: { blockReason?: string; safetyRatings?: unknown } };
 
     const parts = data.candidates?.[0]?.content?.parts ?? [];
-    const text = parts.filter(p => p.text).map(p => p.text).join("");
+    const text = parts.filter(p => typeof p.text === "string" && p.text).map(p => p.text as string).join("");
     const toolUses = parts
       .filter(p => p.functionCall)
-      .map(p => ({ id: p.functionCall!.name, name: p.functionCall!.name, input: p.functionCall!.args ?? {} }));
+      .map(p => {
+        const fc = p.functionCall as { name: string; args?: Record<string, unknown> };
+        return { id: fc.name, name: fc.name, input: fc.args ?? {} };
+      });
     const stopReason = toolUses.length > 0 ? "tool_use" : "end_turn";
-    if (parts.length === 0) {
-      console.warn("[Gemini] empty response parts — finishReason:", data.candidates?.[0]?.finishReason, "promptFeedback:", data.promptFeedback, "full response:", JSON.stringify(data));
-    }
+    console.log(
+      "[Gemini] finishReason:", data.candidates?.[0]?.finishReason,
+      "· partKinds:", parts.map(p => Object.keys(p).join("+")),
+      "· promptFeedback:", data.promptFeedback,
+      "· safetyRatings:", data.candidates?.[0]?.safetyRatings,
+      "· raw response (first 500 chars):", JSON.stringify(data).slice(0, 500)
+    );
     // raw must be non-empty parts so pushing it back as the next model turn
     // is valid — Gemini rejects a content object with an empty parts array.
     return { text, toolUses, stopReason, raw: parts.length ? parts : [{ text }] };
