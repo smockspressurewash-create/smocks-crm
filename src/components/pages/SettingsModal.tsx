@@ -29,7 +29,7 @@ import { seedCustomers, seedEstimates, seedJobs, seedEmployees, seedVehicles, se
 import { callModel, MODELS } from "../../lib/api";
 import { createCalendarEvent, updateCalendarEvent, deleteCalendarEvent, fetchDriveFiles, MOCK_GOOGLE_DATA, fmtSize, fmtDate, fileIcon } from "../../lib/google";
 import { refreshEmpGoogleToken } from "../../lib/googleApi";
-import { supabase } from "../../lib/supabase";
+import { supabase, getStoredGoogleConnection, setStoredGoogleToken, clearStoredGoogleConnection } from "../../lib/supabase";
 import { obfuscate, deobfuscate } from "../../lib/crypto";
 import { usePersistent } from "../../hooks/usePersistent";
 import { usePersistentRaw } from "../../hooks/usePersistentRaw";
@@ -104,6 +104,24 @@ export function SettingsModal({ open, onClose, settings, setSettings, services, 
   // call to Google's tokeninfo endpoint on mount/open tells the truth.
   const [googleTokenValid, setGoogleTokenValid] = useState<null | boolean>(null);
 
+  // GoogleConnect — after repeated failures making React state/session
+  // events the source of truth for "is Google connected" (see the long
+  // comment in lib/supabase.ts), localStorage is now authoritative. Read
+  // directly on mount/open and on window focus (covers "just came back from
+  // the Google consent screen, tab regained focus") rather than depending on
+  // any Supabase auth event having fired correctly this page load.
+  const [storedGoogle, setStoredGoogle] = useState(() => getStoredGoogleConnection());
+  useEffect(() => {
+    const refresh = () => {
+      const stored = getStoredGoogleConnection();
+      console.log("[GoogleConnect] Settings — localStorage check — connected:", !!stored, stored?.email ? "· email: " + stored.email : "");
+      setStoredGoogle(stored);
+    };
+    if (open) refresh();
+    window.addEventListener("focus", refresh);
+    return () => window.removeEventListener("focus", refresh);
+  }, [open]);
+
   // FIX 1 — real refresh-token exchange so an expired Google token can be
   // retried in place from Settings → Integrations, without a full
   // disconnect/reconnect. Writes straight to live settings (like the other
@@ -115,20 +133,26 @@ export function SettingsModal({ open, onClose, settings, setSettings, services, 
   // of bug this whole feature keeps getting re-reported for.
   const retryGoogleToken = async (opts?: { silent?: boolean }) => {
     const silent = !!opts?.silent;
-    console.log("[GoogleConnect] retryGoogleToken —", silent ? "auto (silent)" : "manual click", "· has refresh token:", !!f.googleRefreshToken);
+    // localStorage (storedGoogle) is authoritative; f.googleRefreshToken is
+    // kept only as a fallback for a connection made before this mechanism
+    // existed and never re-connected since.
+    const refreshToken = storedGoogle?.refreshToken || f.googleRefreshToken;
+    console.log("[GoogleConnect] retryGoogleToken —", silent ? "auto (silent)" : "manual click", "· has refresh token:", !!refreshToken, "· source:", storedGoogle?.refreshToken ? "localStorage" : f.googleRefreshToken ? "settings (legacy)" : "none");
     setGoogleRetrying(true);
     try {
-      if (!f.googleRefreshToken) {
+      if (!refreshToken) {
         console.warn("[GoogleConnect] no refresh token on file — cannot refresh, owner must fully reconnect");
         if (!silent) toast?.("No refresh token on file — reconnect Google below to enable retry.", "red");
         return;
       }
       console.log("[GoogleConnect] calling /api/google-refresh via refreshEmpGoogleToken —  backendUrl:", f.googleBackendUrl || "(default same-origin)");
-      const refreshed = await refreshEmpGoogleToken(f.googleBackendUrl, f.googleRefreshToken);
+      const refreshed = await refreshEmpGoogleToken(f.googleBackendUrl, refreshToken);
       if (refreshed?.token) {
         console.log("[GoogleConnect] refresh succeeded — new token expires", new Date(refreshed.expiresAt).toLocaleTimeString());
         setGoogleConfigMissing(false);
         setGoogleTokenValid(true);
+        setStoredGoogleToken(refreshed.token, refreshed.expiresAt);
+        setStoredGoogle(getStoredGoogleConnection());
         setF((prev: any) => ({ ...prev, googleProviderToken: refreshed.token, googleTokenExpiresAt: refreshed.expiresAt }));
         setSettings?.((prev: any) => ({ ...prev, googleProviderToken: refreshed.token, googleTokenExpiresAt: refreshed.expiresAt }));
         if (!silent) toast?.("Google token refreshed", "green");
@@ -146,10 +170,11 @@ export function SettingsModal({ open, onClose, settings, setSettings, services, 
   };
 
   useEffect(() => {
-    if (!open || !f.googleConnected || !f.googleProviderToken) { setGoogleTokenValid(null); return; }
+    const activeToken = storedGoogle?.token || f.googleProviderToken;
+    if (!open || !activeToken) { setGoogleTokenValid(null); return; }
     let cancelled = false;
-    console.log("[GoogleConnect] verifying token via tokeninfo endpoint...");
-    fetch(`https://www.googleapis.com/oauth2/v3/tokeninfo?access_token=${encodeURIComponent(f.googleProviderToken)}`)
+    console.log("[GoogleConnect] verifying token via tokeninfo endpoint... source:", storedGoogle?.token ? "localStorage" : "settings (legacy)");
+    fetch(`https://www.googleapis.com/oauth2/v3/tokeninfo?access_token=${encodeURIComponent(activeToken)}`)
       .then(r => {
         if (cancelled) return;
         console.log("[GoogleConnect] tokeninfo check —", r.ok ? "valid ✓" : "invalid/expired");
@@ -157,14 +182,15 @@ export function SettingsModal({ open, onClose, settings, setSettings, services, 
         // GoogleConnect ask #3 — auto-refresh silently instead of leaving the
         // owner staring at an "⚠ Token expired — click Retry" badge until
         // they notice and click it themselves.
-        if (!r.ok && f.googleRefreshToken) {
+        const refreshToken = storedGoogle?.refreshToken || f.googleRefreshToken;
+        if (!r.ok && refreshToken) {
           console.log("[GoogleConnect] token invalid — attempting silent auto-refresh");
           retryGoogleToken({ silent: true });
         }
       })
       .catch((e: any) => { if (!cancelled) { console.warn("[GoogleConnect] tokeninfo check failed:", e?.message); setGoogleTokenValid(null); } });
     return () => { cancelled = true; };
-  }, [open, f.googleConnected, f.googleProviderToken]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [open, storedGoogle?.token, f.googleProviderToken]); // eslint-disable-line react-hooks/exhaustive-deps
   const [tplTab, setTplTab] = useState<"messaging" | "estimates">("messaging");
   const [bufferChannels, setBufferChannels] = useState<BufferChannel[]>([]);
   const [bufferConnecting, setBufferConnecting] = useState(false);
@@ -827,22 +853,28 @@ export function SettingsModal({ open, onClose, settings, setSettings, services, 
             <h4 className="font-semibold text-sm">Integrations</h4>
 
             {/* Google — OAuth for Maps, Tasks, Calendar, Gmail, Drive */}
-            <Glass className={"p-4 " + (f.googleConnected ? "!bg-gradient-to-br !from-blue-950/30 !to-black/60 !border-blue-600/40" : "!bg-black/40")}>
+            {/* GoogleConnect — connection status now comes from
+                getStoredGoogleConnection() (plain localStorage, written
+                synchronously in lib/supabase.ts the instant the OAuth
+                redirect hash is seen — before React even mounts), NOT from
+                settings.googleConnected/React state or any Supabase auth
+                event. f.googleConnected/f.googleProviderToken are kept only
+                as a fallback for a connection made before this mechanism
+                existed. This is deliberately independent of everything else
+                in this file that has already tried and failed to get this
+                right through the session-event path. */}
+            {(() => {
+              const isGoogleConnected = !!(storedGoogle?.token || (f.googleConnected && f.googleProviderToken));
+              const googleEmailDisplay = storedGoogle?.email || f.googleEmail || "unknown";
+              return (
+            <Glass className={"p-4 " + (isGoogleConnected ? "!bg-gradient-to-br !from-blue-950/30 !to-black/60 !border-blue-600/40" : "!bg-black/40")}>
               <div className="flex items-center justify-between mb-3">
                 <div className="flex items-center gap-2">
                   <svg viewBox="0 0 48 48" width="18" height="18"><path fill="#FFC107" d="M43.611 20.083H42V20H24v8h11.303c-1.649 4.657-6.08 8-11.303 8c-6.627 0-12-5.373-12-12s5.373-12 12-12c3.059 0 5.842 1.154 7.961 3.039l5.657-5.657C34.046 6.053 29.268 4 24 4C12.955 4 4 12.955 4 24s8.955 20 20 20s20-8.955 20-20c0-1.341-.138-2.65-.389-3.917z"/><path fill="#FF3D00" d="m6.306 14.691l6.571 4.819C14.655 15.108 18.961 12 24 12c3.059 0 5.842 1.154 7.961 3.039l5.657-5.657C34.046 6.053 29.268 4 24 4C16.318 4 9.656 8.337 6.306 14.691z"/><path fill="#4CAF50" d="M24 44c5.166 0 9.86-1.977 13.409-5.192l-6.19-5.238A11.91 11.91 0 0 1 24 36c-5.202 0-9.619-3.317-11.283-7.946l-6.522 5.025C9.505 39.556 16.227 44 24 44z"/><path fill="#1976D2" d="M43.611 20.083H42V20H24v8h11.303a12.04 12.04 0 0 1-4.087 5.571l.003-.002l6.19 5.238C36.971 39.205 44 34 44 24c0-1.341-.138-2.65-.389-3.917z"/></svg>
                   <div className="font-semibold text-sm">Google Account</div>
                 </div>
-                {/* GoogleConnect — this badge must reflect a REAL stored
-                    provider_token (persisted in `settings`, read here from
-                    the localStorage-backed `f`), not just the googleConnected
-                    boolean — that flag alone can't tell "genuinely connected"
-                    apart from "connected flag set but the token capture
-                    never landed," and it never depends on a SIGNED_IN event
-                    having fired THIS page load; a returning session shows
-                    the correct badge immediately from persisted state. */}
-                <Badge tone={!f.googleConnected ? "gray" : !f.googleProviderToken ? "red" : googleTokenValid === false ? "red" : "green"}>
-                  {!f.googleConnected ? "Not connected" : !f.googleProviderToken ? "⚠ No token on file — reconnect" : googleTokenValid === false ? "⚠ Token expired — click Retry" : "✓ Connected as " + (f.googleEmail || "unknown")}
+                <Badge tone={!isGoogleConnected ? "gray" : googleTokenValid === false ? "red" : "green"}>
+                  {!isGoogleConnected ? "Not connected" : googleTokenValid === false ? "⚠ Token expired — click Retry" : "✓ Connected as " + googleEmailDisplay}
                 </Badge>
               </div>
 
@@ -869,13 +901,13 @@ export function SettingsModal({ open, onClose, settings, setSettings, services, 
                 </div>
               </div>
 
-              {f.googleConnected ? (
+              {isGoogleConnected ? (
                 <div className="space-y-3">
                   {/* Connected status */}
                   <div className="p-3 bg-green-950/20 border border-green-700/30 rounded-xl flex items-center gap-3">
-                    <div className="w-8 h-8 rounded-full bg-gradient-to-br from-blue-500 to-blue-700 flex items-center justify-center text-sm font-bold">{(f.googleEmail || "?")[0]?.toUpperCase()}</div>
+                    <div className="w-8 h-8 rounded-full bg-gradient-to-br from-blue-500 to-blue-700 flex items-center justify-center text-sm font-bold">{(googleEmailDisplay || "?")[0]?.toUpperCase()}</div>
                     <div className="flex-1 min-w-0">
-                      <div className="text-sm font-semibold">{f.googleEmail}</div>
+                      <div className="text-sm font-semibold">{googleEmailDisplay}</div>
                       <div className="text-[10px] text-white/50">Signed in with Google</div>
                     </div>
                   </div>
@@ -973,7 +1005,9 @@ export function SettingsModal({ open, onClose, settings, setSettings, services, 
                       // Save was clicked. Per the fix requirement, THIS is
                       // the only place googleConnected/the token should ever
                       // be cleared — so it must actually work, immediately.
-                      console.log("[GoogleConnect] Disconnect Google Account clicked — clearing all google fields");
+                      console.log("[GoogleConnect] Disconnect Google Account clicked — clearing all google fields (localStorage + settings)");
+                      clearStoredGoogleConnection();
+                      setStoredGoogle(null);
                       const cleared = { googleConnected: false, googleProviderToken: "", googleRefreshToken: "", googleTokenExpiresAt: 0, googleEmail: "", googleScopes: {} };
                       setF((prev: any) => ({ ...prev, ...cleared }));
                       setSettings?.((prev: any) => ({ ...prev, ...cleared }));
@@ -1033,6 +1067,8 @@ export function SettingsModal({ open, onClose, settings, setSettings, services, 
                 </div>
               )}
             </Glass>
+              );
+            })()}
 
             {/* Stripe */}
             <Glass className="p-4 !bg-black/40">
