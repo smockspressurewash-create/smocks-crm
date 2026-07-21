@@ -335,7 +335,7 @@ export const callModel = async (opts: {
         generationConfig: { maxOutputTokens: maxTokens },
         ...(opts.systemPrompt ? { systemInstruction: { parts: [{ text: opts.systemPrompt }] } } : {}),
       }),
-    }) as { candidates?: Array<{ content?: { parts?: Array<{ text?: string; functionCall?: { name: string; args?: Record<string, unknown> } }> } }> };
+    }) as { candidates?: Array<{ content?: { parts?: Array<{ text?: string; functionCall?: { name: string; args?: Record<string, unknown> } }>; finishReason?: string }>; promptFeedback?: { blockReason?: string } };
 
     const parts = data.candidates?.[0]?.content?.parts ?? [];
     const text = parts.filter(p => p.text).map(p => p.text).join("");
@@ -343,6 +343,9 @@ export const callModel = async (opts: {
       .filter(p => p.functionCall)
       .map(p => ({ id: p.functionCall!.name, name: p.functionCall!.name, input: p.functionCall!.args ?? {} }));
     const stopReason = toolUses.length > 0 ? "tool_use" : "end_turn";
+    if (parts.length === 0) {
+      console.warn("[Gemini] empty response parts — finishReason:", data.candidates?.[0]?.finishReason, "promptFeedback:", data.promptFeedback, "full response:", JSON.stringify(data));
+    }
     // raw must be non-empty parts so pushing it back as the next model turn
     // is valid — Gemini rejects a content object with an empty parts array.
     return { text, toolUses, stopReason, raw: parts.length ? parts : [{ text }] };
