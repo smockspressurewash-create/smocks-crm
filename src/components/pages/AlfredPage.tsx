@@ -1241,7 +1241,60 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           setJobs(prev => [...prev, newJ as any]);
           toast("Alfred scheduled job for " + c.firstName + " on " + newJ.scheduledDate);
           setTimeout(() => onNav("jobs"), 1200);
-          return { success: true, jobId: newJ.id, date: newJ.scheduledDate, customer: c.firstName + " " + c.lastName };
+
+          // Optional same-call crew assignment — the job itself is already
+          // saved at this point, so a failure here must never be reported as
+          // the whole tool call failing; it's a warning attached to an
+          // otherwise-successful result. Uses the exact same fields the
+          // manual form and assign_employee tool write (crew/crewAssignedAt —
+          // see CLAUDE.md and assign_employee above), not anything invented.
+          let assignedEmployee: string | undefined;
+          let assignWarning: string | undefined;
+          let assignSuggestions: string[] | undefined;
+          if (inputs.employeeName) {
+            const wantedEmpName = String(inputs.employeeName).trim().toLowerCase();
+            const emp = employees.find((e: any) => (e.firstName + " " + e.lastName).trim().toLowerCase() === wantedEmpName);
+            console.log("[AlfredTool schedule_job] employee lookup for assignment — searched for:", inputs.employeeName, "→ found:", emp ? emp.id + " (" + emp.firstName + " " + emp.lastName + ")" : "NONE");
+            if (!emp) {
+              assignSuggestions = suggestNames(inputs.employeeName, employees, (e: any) => `${e.firstName} ${e.lastName}`);
+              assignWarning = "No employee matching \"" + inputs.employeeName + "\" was found to assign.";
+              console.warn("[AlfredTool schedule_job] " + assignWarning, "suggestions:", assignSuggestions);
+            } else {
+              const crewAssignedAt = { [emp.id]: Date.now() };
+              const { error: assignErr } = await withTimeoutRetry<any>(
+                () => (supabase as any).from("jobs").update({ crew: [emp.id], crewAssignedAt }).eq("id", newJ.id),
+                15000, "Assign crew"
+              ).catch((e: any) => ({ error: e }));
+              console.log("[AlfredTool schedule_job] crew assignment Supabase response — error:", assignErr);
+              if (assignErr) {
+                assignWarning = "Assigning " + emp.firstName + " failed — " + (assignErr.message || String(assignErr));
+                console.error("[AlfredTool schedule_job] " + assignWarning);
+              } else {
+                setJobs((prev: any[]) => prev.map((x: any) => x.id === newJ.id ? { ...x, crew: [emp.id], crewAssignedAt } : x));
+                assignedEmployee = emp.firstName + " " + emp.lastName;
+                toast("Alfred assigned " + emp.firstName + " to the " + newJ.scheduledDate + " job");
+              }
+            }
+          }
+
+          // success stays true — the job itself was confirmed saved above,
+          // and a failed/ambiguous ASSIGNMENT must never be reported as the
+          // whole schedule_job call failing (the job really does exist).
+          // assignmentSuggestions/instruction follow the exact same shape
+          // the customer/employee "not found" lookups use elsewhere so the
+          // model's existing NAME MATCHING rule (ask "Do you mean X?") kicks
+          // in the same way here too.
+          return {
+            success: true, jobId: newJ.id, date: newJ.scheduledDate, customer: c.firstName + " " + c.lastName,
+            ...(assignedEmployee ? { assignedEmployee } : {}),
+            ...(assignWarning ? {
+              assignmentWarning: assignWarning,
+              ...(assignSuggestions?.length ? {
+                assignmentSuggestions: assignSuggestions,
+                instruction: "The job itself was scheduled successfully. Tell the user that, then separately ask 'Do you mean " + assignSuggestions.join(", or ") + "?' to assign crew — do not ask a generic follow-up question.",
+              } : {}),
+            } : {}),
+          };
         }
         case "update_job_priority": {
           const j = jobs.find(x => x.id === inputs.jobId);
@@ -1719,8 +1772,8 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
     },
     {
       name: "schedule_job",
-      description: "Schedule a new job for a customer on a specific date (YYYY-MM-DD) and time (HH:MM 24h).",
-      input_schema: { type: "object", properties: { customerId: { type: "string" }, customerName: { type: "string" }, date: { type: "string", description: "YYYY-MM-DD" }, time: { type: "string", description: "HH:MM 24h, e.g. '14:00' for 2pm" }, amount: { type: "number" }, address: { type: "string", description: "Defaults to the customer's address on file if omitted" }, duration: { type: "number", description: "Estimated hours" }, jobType: { type: "string", enum: ["residential", "commercial"], description: "Drives crew pay-rate overrides; defaults to residential" }, priority: { type: "string", enum: ["low", "normal", "high", "urgent"] }, notes: { type: "string" } } }
+      description: "Schedule a new job for a customer on a specific date (YYYY-MM-DD) and time (HH:MM 24h). Optionally assign one crew member in the same call via employeeName — this writes the same crew/crewAssignedAt fields assign_employee does, so a separate assign_employee call afterward is unnecessary (and would just no-op with 'Already assigned').",
+      input_schema: { type: "object", properties: { customerId: { type: "string" }, customerName: { type: "string" }, date: { type: "string", description: "YYYY-MM-DD" }, time: { type: "string", description: "HH:MM 24h, e.g. '14:00' for 2pm" }, amount: { type: "number" }, address: { type: "string", description: "Defaults to the customer's address on file if omitted" }, duration: { type: "number", description: "Estimated hours" }, jobType: { type: "string", enum: ["residential", "commercial"], description: "Drives crew pay-rate overrides; defaults to residential" }, priority: { type: "string", enum: ["low", "normal", "high", "urgent"] }, notes: { type: "string" }, employeeName: { type: "string", description: "Full name like 'Luke Smith' — if provided, assigns this employee to the job immediately after it's created" } } }
     },
     {
       name: "update_job_priority",
