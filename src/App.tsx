@@ -1663,6 +1663,19 @@ export function App() {
       }
     }, 5000);
 
+    // GoogleConnect — detectSessionInUrl (still enabled, for password-reset
+    // hashes) and this file's own manual setSession() call both end up
+    // processing the SAME OAuth-callback hash, which fires onAuthStateChange
+    // TWICE for one real connect: once from whichever one actually parsed the
+    // original hash (session carries provider_token), and again from the
+    // other's redundant re-establish of the same tokens (session does NOT
+    // carry provider_token — Supabase's setSession() never attaches it,
+    // that field only exists on the session object produced by parsing the
+    // original hash). Once a real provider_token has been captured for this
+    // page load, a later token-less firing must never be allowed to clobber
+    // it — this flag is the guard.
+    let googleTokenCapturedThisLoad = false;
+
     const applyGoogleIdentity = (session: any) => {
       if (!session?.user) { console.log("[GoogleConnect] applyGoogleIdentity — no session, skipping"); return; }
       const googleId = (session.user.identities || []).find((i: any) => i.provider === "google");
@@ -1676,7 +1689,20 @@ export function App() {
       const bridgedRefreshToken = sessionStorage.getItem("smocks.grt") || "";
       if (bridgedRefreshToken) sessionStorage.removeItem("smocks.grt");
       const providerToken = bridgedToken || session.provider_token || "";
-      console.log("[GoogleConnect] applyGoogleIdentity — email:", googleEmail, "· token source:", bridgedToken ? "sessionStorage bridge" : session.provider_token ? "session.provider_token" : "NONE (will show connected but token-less until next reconnect/refresh)", "· has refresh token:", !!bridgedRefreshToken);
+
+      if (!providerToken && googleTokenCapturedThisLoad) {
+        // A good token was already captured earlier this page load (from an
+        // earlier firing of this same OAuth callback) — this later,
+        // token-less firing is the redundant duplicate, not a real
+        // disconnect. Only googleEmail/googleScopes would change here, and
+        // they're already correct from the first call — skip entirely so
+        // there is zero chance of touching googleProviderToken.
+        console.log("[GoogleConnect] applyGoogleIdentity — no provider_token on this event, but one was already captured this page load — ignoring duplicate firing, connection preserved");
+        return;
+      }
+
+      console.log("[GoogleConnect] applyGoogleIdentity — email:", googleEmail, "· token source:", bridgedToken ? "sessionStorage bridge" : session.provider_token ? "session.provider_token" : "NONE (returning session, not a fresh OAuth redirect — keeping previously persisted token)", "· has refresh token:", !!bridgedRefreshToken);
+      if (providerToken) googleTokenCapturedThisLoad = true;
       // ITEM 10 — Google access tokens last ~1hr; recording when we captured
       // this one lets sendViaGmail check expiry proactively (see
       // lib/messaging.ts) instead of only discovering it's stale after a 401.
