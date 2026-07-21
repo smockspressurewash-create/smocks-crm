@@ -2042,6 +2042,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
               tools: toolsForModel,
               maxTokens: 1500
             });
+            console.log("[AlfredModel] round", rounds, "model:", mid, "stopReason:", result.stopReason, "toolUses:", (result.toolUses || []).map((tu: any) => tu.name), "textPreview:", (result.text || "").slice(0, 120));
             if (result.text) localFinal = result.text;
             if (result.toolUses.length > 0 && result.stopReason === "tool_use" && toolsForModel) {
               localConv.push({ role: "assistant", content: result.raw });
