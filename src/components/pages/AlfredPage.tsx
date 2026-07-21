@@ -22,7 +22,7 @@ import {
 } from "recharts";
 import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, withTimeout, withTimeoutRetry } from "../../lib/utils";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
-import { twilioSend, sendEmail, emailShell, emailButton } from "../../lib/messaging";
+import { twilioSend, sendEmail, emailShell, emailButton, logOutboundSmsToInbox } from "../../lib/messaging";
 import { seedWeather } from "../../lib/weather";
 import { seedCustomers, seedEstimates, seedJobs, seedEmployees, seedVehicles, seedExpenses, seedChemicals, seedServices, seedAutomations, seedEmailTemplates, seedSmsTemplates, seedRewardTiers, seedReferrals, seedMaintenance, campaignTemplates, seedSocialPosts, seedTimeline, seedGoals, seedReminders, seedAccountabilityEntries, seedMileage, seedLeadSrc, STEP_TYPES, AUTOMATION_TEMPLATES } from "../../lib/seed";
 import { callModel, MODELS, parseRateLimitError } from "../../lib/api";
@@ -940,7 +940,31 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
 
   // ===== ALFRED TOOL DEFINITIONS =====
   // Tools Alfred can invoke to read/modify the CRM. Each returns a JSON-serializable result.
+  // CRITICAL — every single call funnels through this one wrapper (not
+  // scattered per-case logging) so "[AlfredTool] logs for EVERY tool call"
+  // is actually guaranteed rather than depending on each of the 25+ cases
+  // remembering to log itself. Logs name + inputs before dispatch, then the
+  // real outcome (the tool's actual return value, which for write tools IS
+  // the Supabase response or an error derived from it) after.
   const executeTool = async (name, inputs) => {
+    const __t0 = Date.now();
+    console.log("[AlfredTool] → call:", name, "input:", inputs);
+    let __result;
+    try {
+      __result = await executeToolCore(name, inputs);
+    } catch (err: any) {
+      __result = { error: err?.message || String(err) };
+    }
+    const __ms = Date.now() - __t0;
+    if (__result && __result.error) {
+      console.error("[AlfredTool] ✗ FAILED:", name, "(" + __ms + "ms) — error:", __result.error, "· full result:", __result);
+    } else {
+      console.log("[AlfredTool] ✓ OK:", name, "(" + __ms + "ms) — result:", __result);
+    }
+    return __result;
+  };
+
+  const executeToolCore = async (name, inputs) => {
     try {
       switch (name) {
         case "search_customers": {
@@ -1125,52 +1149,66 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
             photos: [], commLog: [], chemicalsUsed: [], equipment: [], tags: inputs.tags || [],
             loggedHours: 0, createdAt: today(),
           };
-          console.log("[Alfred schedule_job] built job payload:", newJ);
-          // [Alfred schedule_job] FIX 2 (round 2) — the previous fix matched the
-          // manual form's PAYLOAD but not its actual SAVE PATTERN: the manual
-          // "Schedule Job" form (JobsPage.tsx ~line 730-754) updates local state
-          // and toasts success IMMEDIATELY, then fires the Supabase insert in a
-          // detached async IIFE that nothing awaits — so a slow/hung insert (the
-          // same "stuck navigator-lock" class of issue withTimeout's doc comment
-          // describes) is completely invisible to the user; it just resolves
-          // whenever it resolves. Alfred's version instead AWAITED that same
-          // insert before returning its tool result, so the exact same slow
-          // insert that the manual form silently rides out is what surfaced as
-          // "save job operation timed out" here. Match the manual form exactly:
-          // optimistic local add, return success right away, persist in the
-          // background, toast-only (not roll back) on a later failure.
-          setJobs(prev => [...prev, newJ as any]);
-          console.log("[Alfred schedule_job] optimistic local job added, inserting to Supabase in background...");
-          (async () => {
-            const { error } = await withTimeout<any>(
-              (supabase as any).from("jobs").insert(newJ),
-              15000, "Save job"
-            );
-            if (error) {
-              console.error("[Alfred schedule_job] background insert failed:", error.message);
-              toast?.("Job scheduled locally, but failed to save to the server — " + error.message, "red");
-            } else {
-              console.log("[Alfred schedule_job] background insert succeeded ✓ jobId:", newJ.id);
-            }
-          })().catch((e: any) => {
-            console.error("[Alfred schedule_job] background insert threw:", e?.message);
-            toast?.("Job scheduled locally, but failed to save to the server — " + (e?.message || "unknown error"), "red");
-          });
+          console.log("[AlfredTool schedule_job] built job payload:", newJ);
+          // CRITICAL (Alfred functionality audit) — this used to be an
+          // optimistic local setJobs() + fire-and-forget background insert,
+          // returning {success:true} before Supabase had even been asked to
+          // save the row. That's exactly the "claims to do things but
+          // doesn't actually execute them" failure mode: if the insert later
+          // failed, Alfred had already told the user it worked, and the only
+          // sign of trouble was a toast that could easily be missed. Await a
+          // SINGLE attempt (no retry — retrying this exact insert would
+          // replay the same fixed id and hit a duplicate-key error on a
+          // slow-but-not-actually-failed first try) and only report success
+          // once Supabase actually confirms the row was written.
+          const { data: savedJ, error: jobErr } = await withTimeout<any>(
+            (supabase as any).from("jobs").insert(newJ).select().single(),
+            15000, "Save job"
+          );
+          console.log("[AlfredTool schedule_job] Supabase response — data:", savedJ, "error:", jobErr);
+          if (jobErr || !savedJ) {
+            return { error: "Failed to schedule job — " + (jobErr?.message || "Supabase write did not return a row") };
+          }
+          // No local setJobs — Supabase is the source of truth here (same
+          // reasoning as create_customer/create_estimate above); App.tsx's
+          // cross-device poll/realtime picks the new row up on its own.
           toast("Alfred scheduled job for " + c.firstName + " on " + newJ.scheduledDate);
           setTimeout(() => onNav("jobs"), 1200);
-          return { success: true, jobId: newJ.id, date: newJ.scheduledDate, customer: c.firstName + " " + c.lastName };
+          return { success: true, jobId: savedJ.id, date: savedJ.scheduledDate, customer: c.firstName + " " + c.lastName };
         }
         case "update_job_priority": {
           const j = jobs.find(x => x.id === inputs.jobId);
           if (!j) return { error: "Job not found" };
+          const { error: prioErr } = await withTimeoutRetry<any>(
+            () => (supabase as any).from("jobs").update({ priority: inputs.priority }).eq("id", inputs.jobId),
+            15000, "Save priority"
+          ).catch((e: any) => ({ error: e }));
+          console.log("[AlfredTool update_job_priority] Supabase response — error:", prioErr);
+          if (prioErr) return { error: "Could not update priority — " + (prioErr.message || String(prioErr)) };
           setJobs(prev => prev.map(x => x.id === inputs.jobId ? { ...x, priority: inputs.priority } : x));
+          toast("Alfred set priority to " + inputs.priority);
           return { success: true, jobId: inputs.jobId, newPriority: inputs.priority };
         }
         case "reschedule_job": {
           const j = jobs.find(x => x.id === inputs.jobId);
           if (!j) return { error: "Job not found" };
           if (!inputs.date) return { error: "date is required" };
-          setJobs(prev => prev.map(x => x.id === inputs.jobId ? { ...x, scheduledDate: inputs.date, ...(inputs.time ? { scheduledTime: inputs.time } : {}) } : x));
+          // CRITICAL (Alfred functionality audit) — this ONLY called
+          // setJobs() (local React state) and reported success unconditionally
+          // — the exact same silent no-op bug this whole audit exists to root
+          // out. Nothing was ever written to Supabase, so the owner's OTHER
+          // devices, and the assigned employee's own portal (which reads jobs
+          // straight from Supabase), never saw the move at all. Same fix
+          // pattern as assign_employee: await the real write, only report
+          // success once Supabase confirms it.
+          const patch: any = { scheduledDate: inputs.date, ...(inputs.time ? { scheduledTime: inputs.time } : {}) };
+          const { error: reschedErr } = await withTimeoutRetry<any>(
+            () => (supabase as any).from("jobs").update(patch).eq("id", inputs.jobId),
+            15000, "Reschedule job"
+          ).catch((e: any) => ({ error: e }));
+          console.log("[AlfredTool reschedule_job] Supabase response — error:", reschedErr);
+          if (reschedErr) return { error: "Could not reschedule — " + (reschedErr.message || String(reschedErr)) };
+          setJobs(prev => prev.map(x => x.id === inputs.jobId ? { ...x, ...patch } : x));
           toast("Alfred rescheduled job to " + inputs.date + (inputs.time ? " at " + inputs.time : ""));
           setTimeout(() => onNav("jobs"), 1200);
           return { success: true, jobId: inputs.jobId, newDate: inputs.date, newTime: inputs.time || j.scheduledTime };
@@ -1178,10 +1216,113 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
         case "cancel_job": {
           const j = jobs.find(x => x.id === inputs.jobId);
           if (!j) return { error: "Job not found" };
-          setJobs(prev => prev.map(x => x.id === inputs.jobId ? { ...x, status: "cancelled", cancelReason: inputs.reason || "" } : x));
+          // CRITICAL (Alfred functionality audit) — same bug as
+          // reschedule_job above: local-only setJobs(), no Supabase write,
+          // unconditional "success". Fixed the same way.
+          const patch = { status: "cancelled" as const, cancelReason: inputs.reason || "" };
+          const { error: cancelErr } = await withTimeoutRetry<any>(
+            () => (supabase as any).from("jobs").update(patch).eq("id", inputs.jobId),
+            15000, "Cancel job"
+          ).catch((e: any) => ({ error: e }));
+          console.log("[AlfredTool cancel_job] Supabase response — error:", cancelErr);
+          if (cancelErr) return { error: "Could not cancel job — " + (cancelErr.message || String(cancelErr)) };
+          setJobs(prev => prev.map(x => x.id === inputs.jobId ? { ...x, ...patch } : x));
           toast("Alfred cancelled the " + (j.scheduledDate || "") + " job");
           setTimeout(() => onNav("jobs"), 1200);
           return { success: true, jobId: inputs.jobId, status: "cancelled" };
+        }
+        // NEW (Alfred functionality audit) — "Show me the details for
+        // [customer]'s job" had no dedicated tool; get_customer_details only
+        // surfaces a thin recentJobs summary (date/amount/status), not
+        // enough to actually answer a "what's going on with this job"
+        // question (address, crew, checklist progress, photos, payment).
+        case "get_job_details": {
+          let j: any = inputs.jobId ? jobs.find(x => x.id === inputs.jobId) : null;
+          let matchedCustomer: any = null;
+          if (!j && inputs.customerName) {
+            matchedCustomer = customers.find(x => (x.firstName + " " + x.lastName).toLowerCase() === (inputs.customerName || "").toLowerCase());
+            if (!matchedCustomer) {
+              const suggestions = suggestNames(inputs.customerName, customers, x => `${x.firstName} ${x.lastName}`);
+              return suggestions.length
+                ? { error: "Customer not found", suggestions, instruction: "Ask the user 'Do you mean " + suggestions.join(", or ") + "?' — do not ask a generic follow-up question." }
+                : { error: "Customer not found" };
+            }
+            const cJobs = jobs.filter(x => x.customerId === matchedCustomer.id && x.status !== "cancelled")
+              .sort((a, b) => (b.scheduledDate || "").localeCompare(a.scheduledDate || ""));
+            j = cJobs[0] || null;
+          }
+          if (!j) return { error: "Job not found — provide jobId, or a customerName with a job on file." };
+          const jc = matchedCustomer || customers.find(x => x.id === j.customerId);
+          const crewNames = (j.crew || []).map((id: string) => { const e = employees.find((x: any) => x.id === id); return e ? e.firstName + " " + e.lastName : id; });
+          const allCk = [...(j.preChecklist || []), ...(j.duringChecklist || []), ...(j.postChecklist || []), ...(j.checklist || [])];
+          return {
+            jobId: j.id, customer: jc ? jc.firstName + " " + jc.lastName : "Unknown", address: j.address,
+            date: j.scheduledDate, time: j.scheduledTime, status: j.status, amount: j.amount,
+            priority: j.priority, notes: j.notes, crew: crewNames,
+            checklist: { totalItems: allCk.length, completed: allCk.filter((i: any) => i.done).length },
+            photoCount: (j.photos || []).length,
+            paymentStatus: j.paymentStatus || (j.invoiced ? (j.paidAt ? "Paid" : "Invoiced, unpaid") : "Not invoiced"),
+          };
+        }
+        // NEW (Alfred functionality audit) — "Add [item] to the checklist
+        // for [job]" had no tool at all. Writes to preChecklist/
+        // duringChecklist/postChecklist — the arrays the field portal
+        // actually renders and lets employees check off (see
+        // EmployeePortal.tsx) — NOT the legacy top-level `checklist` field,
+        // which is only ever read for historical record-keeping, never shown
+        // as an interactive list to employees.
+        case "add_checklist_item": {
+          const j = jobs.find(x => x.id === inputs.jobId);
+          if (!j) return { error: "Job not found" };
+          if (!inputs.item) return { error: "item text required" };
+          const phase = inputs.phase === "during" ? "duringChecklist" : inputs.phase === "post" ? "postChecklist" : "preChecklist";
+          const updatedList = [...((j as any)[phase] || []), { id: uid(), label: inputs.item, done: false }];
+          const { error: ckErr } = await withTimeoutRetry<any>(
+            () => (supabase as any).from("jobs").update({ [phase]: updatedList }).eq("id", j.id),
+            15000, "Save checklist item"
+          ).catch((e: any) => ({ error: e }));
+          console.log("[AlfredTool add_checklist_item] Supabase response — error:", ckErr);
+          if (ckErr) return { error: "Could not save checklist item — " + (ckErr.message || String(ckErr)) };
+          setJobs(prev => prev.map(x => x.id === j.id ? { ...x, [phase]: updatedList } : x));
+          toast("Alfred added \"" + inputs.item + "\" to the checklist");
+          return { success: true, jobId: j.id, phase, item: inputs.item, checklistLength: updatedList.length };
+        }
+        // NEW (Alfred functionality audit) — "Send an invoice to [customer]
+        // for $[amount]" had no tool. Per CLAUDE.md, an invoice IS an
+        // estimate row with invoiced:true — reuses the exact same table and
+        // the existing send_estimate tool (which doesn't care whether a row
+        // is a quote or an invoice) handles actually delivering it, so
+        // "create_invoice then send_estimate" mirrors "create_estimate then
+        // send_estimate" exactly.
+        case "create_invoice": {
+          const c = customers.find(x => x.id === inputs.customerId || (x.firstName + " " + x.lastName).toLowerCase() === (inputs.customerName || "").toLowerCase());
+          if (!c) {
+            const suggestions = suggestNames(inputs.customerName || "", customers, x => `${x.firstName} ${x.lastName}`);
+            return suggestions.length
+              ? { error: "Customer not found", suggestions, instruction: "Ask the user 'Do you mean " + suggestions.join(", or ") + "?' — do not ask a generic follow-up question." }
+              : { error: "Customer not found. Create customer first or provide valid customerId." };
+          }
+          if (!inputs.amount && !(inputs.lineItems && inputs.lineItems.length)) return { error: "amount or lineItems required" };
+          const items = (inputs.lineItems && inputs.lineItems.length)
+            ? inputs.lineItems.map((li: any) => ({ id: uid(), description: li.description, quantity: li.quantity || 1, unitPrice: li.unitPrice || 0 }))
+            : [{ id: uid(), description: inputs.description || "Service", quantity: 1, unitPrice: Number(inputs.amount) || 0 }];
+          const subtotal = items.reduce((s: number, i: any) => s + i.quantity * i.unitPrice, 0);
+          const tax = subtotal * ((Number(settings.taxRate) || 6) / 100);
+          const total = subtotal + tax;
+          const newInv = {
+            id: uid(), customerId: c.id, lineItems: items, subtotal, discount: 0, depositRequired: 0, tax, total,
+            status: "approved", createdAt: today(), validUntil: daysFromNow(30), viewed: false, viewedAt: null,
+            terms: "Payment due upon receipt.", notes: inputs.notes || "", invoiced: true, invoicedAt: today(),
+          };
+          const { data: savedInv, error: invErr } = await withTimeoutRetry<any>(
+            () => (supabase as any).from("estimates").insert(newInv).select().single(),
+            15000, "Save invoice"
+          ).catch((e: any) => ({ data: null, error: e }));
+          console.log("[AlfredTool create_invoice] Supabase response — data:", savedInv, "error:", invErr);
+          if (invErr || !savedInv) return { error: "Failed to create invoice — " + (invErr?.message || "Supabase write did not return a row") };
+          toast("Alfred created invoice for " + c.firstName + " · " + fmt(total));
+          setTimeout(() => onNav("invoices"), 1200);
+          return { success: true, invoiceId: savedInv.id, total, customer: c.firstName + " " + c.lastName };
         }
         case "get_calendar_summary": {
           const from = inputs.from || today();
@@ -1274,22 +1415,39 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           }
         }
         case "send_reminder": {
-          const c = customers.find(x => x.id === inputs.customerId);
-          if (!c) return { error: "Customer not found" };
-          const msg = inputs.message || ("Hi " + c.firstName + ", a quick reminder from Crew Boss. Reply or call (717) 555-0100.");
-          const channel = inputs.channel || "sms";
-          if (channel === "sms" && c.phone) {
-            if (settings?.twilioSid) {
-              try { await twilioSend(settings, c.phone, msg); }
-              catch(e) { return { error: "SMS failed: " + e.message }; }
-            } else {
-              return { success: false, note: "Twilio not configured — add credentials in Settings to send real SMS", draft: msg };
-            }
-          } else if (channel === "email" && c.email) {
-            try { await sendEmail(settings, { to: c.email, subject: inputs.subject || "Reminder from Crew Boss", body: emailShell(settings?.companyName || "Crew Boss", "Reminder", `<p>${msg}</p>`) }); }
-            catch(e) { return { error: "Email failed: " + e.message }; }
+          // CRITICAL (Alfred functionality audit) — this used to look up
+          // ONLY by customerId (no name fallback, unlike every other tool
+          // here), and its schema didn't even declare `message`/`customerName`
+          // as accepted params — so "Text John and tell him X" had no real
+          // way to reach this tool correctly. Worse: if the chosen channel
+          // had no matching contact info (e.g. channel="sms" but the
+          // customer has no phone), the whole if/else block was silently
+          // skipped and it STILL reported {success:true} and toasted
+          // "sent" — a genuine claims-to-but-doesn't bug, not just a missing
+          // feature.
+          const c = customers.find(x => x.id === inputs.customerId || (x.firstName + " " + x.lastName).toLowerCase() === (inputs.customerName || "").toLowerCase());
+          if (!c) {
+            const suggestions = suggestNames(inputs.customerName || "", customers, x => `${x.firstName} ${x.lastName}`);
+            return suggestions.length
+              ? { error: "Customer not found", suggestions, instruction: "Ask the user 'Do you mean " + suggestions.join(", or ") + "?' — do not ask a generic follow-up question." }
+              : { error: "Customer not found" };
           }
-          toast("Reminder sent to " + c.firstName + " via " + channel + " ✓");
+          const msg = inputs.message || ("Hi " + c.firstName + ", a quick reminder from Crew Boss. Reply or call (717) 555-0100.");
+          const channel = inputs.channel || (c.phone ? "sms" : "email");
+          if (channel === "sms") {
+            if (!c.phone) return { error: "No phone on file for " + c.firstName + " — use channel: email, or add a phone number first." };
+            if (!settings?.twilioSid) return { error: "Twilio isn't configured — add credentials in Settings → API Keys to send real SMS." };
+            try {
+              await twilioSend(settings, c.phone, msg);
+              logOutboundSmsToInbox({ contactName: c.firstName + " " + c.lastName, contactPhone: c.phone, customerId: c.id, body: msg }).catch(() => {});
+            } catch (e: any) { return { error: "SMS failed: " + (e?.message || String(e)) }; }
+          } else {
+            if (!c.email) return { error: "No email on file for " + c.firstName + " — use channel: sms, or add an email first." };
+            try {
+              await sendEmail(settings, { to: c.email, subject: inputs.subject || "Message from " + (settings?.companyName || "Crew Boss"), body: emailShell(settings?.companyName || "Crew Boss", "Message", `<p>${msg}</p>`) });
+            } catch (e: any) { return { error: "Email failed: " + (e?.message || String(e)) }; }
+          }
+          toast("Alfred sent a message to " + c.firstName + " via " + channel + " ✓");
           return { success: true, sentTo: c.firstName + " " + c.lastName, channel, message: msg };
         }
         case "remember_fact": {
@@ -1513,6 +1671,21 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
       input_schema: { type: "object", properties: { jobId: { type: "string" }, reason: { type: "string" } }, required: ["jobId"] }
     },
     {
+      name: "get_job_details",
+      description: "Get full details for one job — address, date/time, status, amount, assigned crew, checklist progress, photo count, payment status. Use for 'show me the details for [customer]'s job' style questions. If jobId isn't known yet, provide customerName and it resolves their most recent non-cancelled job.",
+      input_schema: { type: "object", properties: { jobId: { type: "string" }, customerName: { type: "string", description: "Full name like 'Mike Harrison' as alternative to jobId" } } }
+    },
+    {
+      name: "add_checklist_item",
+      description: "Add an item to a job's checklist. `phase` selects which checklist: 'pre' (before starting, default), 'during' (while working), or 'post' (before leaving).",
+      input_schema: { type: "object", properties: { jobId: { type: "string" }, item: { type: "string", description: "The checklist item text" }, phase: { type: "string", enum: ["pre", "during", "post"] } }, required: ["jobId", "item"] }
+    },
+    {
+      name: "create_invoice",
+      description: "Create and save an invoice for a customer for a flat amount or itemized line items — this is a bill for completed work, due immediately (unlike create_estimate, which is a pending quote awaiting approval). After creating it, call send_estimate — pass the returned invoiceId AS send_estimate's estimateId param — to actually deliver it to the customer. Creating alone does not notify the customer.",
+      input_schema: { type: "object", properties: { customerId: { type: "string" }, customerName: { type: "string" }, amount: { type: "number", description: "Flat total if not using itemized lineItems" }, description: { type: "string", description: "Line description when using a flat amount, e.g. 'House wash'" }, lineItems: { type: "array", items: { type: "object", properties: { description: { type: "string" }, quantity: { type: "number" }, unitPrice: { type: "number" } }, required: ["description", "unitPrice"] } }, notes: { type: "string" } } }
+    },
+    {
       name: "get_calendar_summary",
       description: "Get what's scheduled for a date range — use for 'what's on the calendar today/this week' questions.",
       input_schema: { type: "object", properties: { from: { type: "string", description: "YYYY-MM-DD, defaults to today" }, to: { type: "string", description: "YYYY-MM-DD, defaults to 7 days from 'from'" } } }
@@ -1534,8 +1707,8 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
     },
     {
       name: "send_reminder",
-      description: "Send a real payment or appointment reminder to a customer via SMS or email (requires Twilio/Gmail configured in Settings).",
-      input_schema: { type: "object", properties: { customerId: { type: "string" }, channel: { type: "string", enum: ["email", "sms"] } }, required: ["customerId"] }
+      description: "Send a real, custom text or email message to a customer via SMS or email (requires Twilio/Gmail configured in Settings). Use this for 'text/email [customer] and tell them [anything]' as well as payment/appointment reminders — pass the exact wording as `message`.",
+      input_schema: { type: "object", properties: { customerId: { type: "string" }, customerName: { type: "string", description: "Full name like 'Mike Harrison' as alternative to customerId" }, message: { type: "string", description: "The exact message body to send. If omitted, a generic reminder is sent." }, subject: { type: "string", description: "Email subject line, only used when channel is email" }, channel: { type: "string", enum: ["email", "sms"], description: "Defaults to sms if the customer has a phone on file, otherwise email" } } }
     },
     {
       name: "remember_fact",
@@ -1670,7 +1843,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
         : `\n\nGoogle Workspace: NOT CONNECTED. If the user asks to send email, create calendar events, or manage tasks, tell them to go to Settings → Integrations → Google and connect their backend.`;
       const toolHint = `\n\nYou have tools available to READ and MODIFY the CRM. USE THEM AGGRESSIVELY — don't just describe what you would do, actually do it.\n\nRESPONSE STYLE: Do not narrate your reasoning, your plan, or which tool you're about to call ("Let me check...", "I'll create that now...", "First I need to..."). Just call the tool(s) silently and then give the user the final result in 1-3 short sentences. No step-by-step thinking out loud.\n\nVERIFY BEFORE CONFIRMING: every action tool returns either {"success": true, ...} or {"error": "..."}. NEVER say "Done" or "All set" without checking which one came back. If you see an "error" field, tell the user exactly what went wrong (the error text) and what they could try instead — do not pretend it worked, and do not retry silently. Only confirm success when the tool result actually contains "success": true.\n\nTASK RESULT REPORTING — NO PERSONALITY FLAIR: your personality (drill sergeant / butler / quiet pro / savage) shapes how you TALK, not whether a task result is reported straight. The moment you report the outcome of an action tool (schedule_job, create_customer, create_estimate, send_estimate, assign/request crew, etc.), drop the persona voice entirely and state the plain fact: "Job scheduled successfully" / "Failed — [exact error text]" / "Estimate sent to [name] successfully" / "Failed — [exact error text]". No jokes, no military barking, no "sir", no sarcasm on the result line itself — save the personality for ordinary conversation, small talk, and check-ins, never for whether something actually saved.\n\nKEY TOOL RULES:\n- Customer queries → USE search_customers or get_customer_details FIRST\n- Stats requests → USE get_business_stats\n- "What's on the calendar" → USE get_calendar_summary\n- "Who's clocked in / who's working" → USE get_employee_status\n- "Remember/note/don't forget" → USE remember_fact\n- Create estimates, customers, jobs → USE create_estimate/create_customer/schedule_job
 - MULTI-STEP CHAINS (e.g. "create a customer, schedule them a job, and assign Mike"): call tools ONE AT A TIME across separate turns when a later step needs an id/result a real tool call hasn't returned yet (e.g. schedule_job needs the customerId create_customer just returned). Do NOT guess or fabricate an id and call multiple dependent tools in the same turn — wait for each real tool_result before issuing the next dependent call. If a step's result is an "error", STOP the chain right there, tell the user exactly which step failed and why, and do not attempt the remaining steps with made-up data.
-- "Send a quote/estimate to X" → USE create_estimate (if it doesn't exist yet) THEN send_estimate in the same turn — do not just create it and stop, and do not tell the user it was "sent" unless send_estimate actually returned success\n- Move or cancel a job → USE reschedule_job/cancel_job\n- Navigate somewhere → USE navigate_to (the app already auto-navigates after schedule_job/create_customer/create_estimate, but call navigate_to yourself for anything else the user asks to see)\n- Preferences/facts shared → USE remember_fact automatically\n\nAUTOMATION TOOLS (VERY IMPORTANT):\n- When user describes ANY workflow, drip sequence, reminder, or "when X do Y" scenario → USE create_automation IMMEDIATELY. Build a proper n8n-style multi-step workflow with real step types: trigger (first), then delays, conditions, actions. NEVER just describe what you'd build — actually build it with create_automation.\n- "Send review request after job complete" → trigger: Job complete, delay: 2h, action: SMS review request\n- "Follow up on unpaid invoices" → trigger: Invoice unpaid 7 days, action: polite reminder email, delay: 4 days, condition: still unpaid, action: firm SMS\n- To check existing workflows → USE list_automations\n- To enable/disable a workflow → USE toggle_automation\n\nCurrent automations: ${automations.length} total, ${automations.filter(a => a.active).length} active\n\nNAME MATCHING: if a tool result comes back with "error": "Customer not found" or "Employee not found" and includes a "suggestions" array, ask the user "Do you mean [name], or [name]?" using those exact suggested names — never ask a generic clarifying question like "who do you mean?" when real candidate names are available.`;
+- "Send a quote/estimate to X" → USE create_estimate (if it doesn't exist yet) THEN send_estimate in the same turn — do not just create it and stop, and do not tell the user it was "sent" unless send_estimate actually returned success\n- "Send an invoice to X for $Y" → USE create_invoice THEN send_estimate (pass the returned invoiceId as send_estimate's estimateId) — same two-step pattern as quotes. create_invoice alone does NOT notify the customer.\n- Move or cancel a job → USE reschedule_job/cancel_job\n- "Add [item] to the checklist" → USE add_checklist_item\n- "Show me the details for X's job" → USE get_job_details\n- "Text/email X and tell them [anything]" → USE send_reminder with the exact wording as the message param — this is not just for payment reminders, use it for any custom message the user dictates\n- Navigate somewhere → USE navigate_to (the app already auto-navigates after schedule_job/create_customer/create_estimate, but call navigate_to yourself for anything else the user asks to see)\n- Preferences/facts shared → USE remember_fact automatically\n- RESOLVING "that job" / "the job we just scheduled" / references to something from an earlier message: a tool result's exact jobId/customerId is only visible to you within the SAME turn it was returned — your own past replies (in the chat history) are plain text, not structured data, so they do NOT reliably carry the real id forward. Before calling assign_employee/request_employee/reschedule_job/cancel_job/add_checklist_item on something referenced from an earlier turn, first call list_jobs or get_calendar_summary (or get_job_details with the customer's name) to look up the real current jobId — never guess, reuse an id from your own prior wording, or fabricate one.\n\nAUTOMATION TOOLS (VERY IMPORTANT):\n- When user describes ANY workflow, drip sequence, reminder, or "when X do Y" scenario → USE create_automation IMMEDIATELY. Build a proper n8n-style multi-step workflow with real step types: trigger (first), then delays, conditions, actions. NEVER just describe what you'd build — actually build it with create_automation.\n- "Send review request after job complete" → trigger: Job complete, delay: 2h, action: SMS review request\n- "Follow up on unpaid invoices" → trigger: Invoice unpaid 7 days, action: polite reminder email, delay: 4 days, condition: still unpaid, action: firm SMS\n- To check existing workflows → USE list_automations\n- To enable/disable a workflow → USE toggle_automation\n\nCurrent automations: ${automations.length} total, ${automations.filter(a => a.active).length} active\n\nNAME MATCHING: if a tool result comes back with "error": "Customer not found" or "Employee not found" and includes a "suggestions" array, ask the user "Do you mean [name], or [name]?" using those exact suggested names — never ask a generic clarifying question like "who do you mean?" when real candidate names are available.`;
       const systemPrompt = getPersonality(activePersonality).systemPrompt + memoryContext + businessContext + googleStatus + toolHint;
       console.log("[Personality] systemPrompt personality clause:", getPersonality(activePersonality).systemPrompt.slice(0, 80) + "…");
 
