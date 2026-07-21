@@ -5,7 +5,7 @@ import {
   ChevronRight, Home, List, CheckCircle, AlertCircle, AlertTriangle, Image, FileText,
   Video, PenLine, Shield, Navigation, Database, Route, ToggleRight, ToggleLeft, Download, Bell
 } from "lucide-react";
-import { supabase } from "../../lib/supabase";
+import { supabase, getStoredGoogleConnection, fetchOwnerGoogleToken } from "../../lib/supabase";
 import { getEmpGoogleToken, isEmpGoogleTokenValid, saveEmpGoogleToken, refreshEmpGoogleToken, getValidEmpGoogleToken, createGCalEvent, updateGCalEvent } from "../../lib/googleApi";
 import { sendViaGmail, sendEmail, sendOwnerGmailOnly, emailShell, emailButton, twilioSend, logOutboundSmsToInbox } from "../../lib/messaging";
 import { Glass } from "../ui/Glass";
@@ -291,6 +291,29 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
   const [invoiceEditSubject, setInvoiceEditSubject] = useState("");
   const [invoiceEditNote, setInvoiceEditNote] = useState("");
   const [invoiceChannel, setInvoiceChannel] = useState<"email" | "sms">("email");
+
+  // CRITICAL FIX — Complete Job wizard's "Google isn't connected" banner (and
+  // the same banner on Running Late/OTW below) used to check
+  // settings.googleConnected, which is only ever true on the owner's OWN
+  // device (set by applyGoogleIdentity in App.tsx from that device's
+  // Supabase auth session). An employee's phone never has that flag, even
+  // though sendOwnerGmailOnly/sendInvoiceFromPortal already fetch a working
+  // token cross-device via getStoredGoogleConnection() → fetchOwnerGoogleToken()
+  // (see lib/messaging.ts) — so the send actually works while this banner
+  // wrongly claimed it wouldn't. Check the SAME two sources the real send
+  // path uses, so the banner reflects reality instead of a device-local flag.
+  const [googleLive, setGoogleLive] = useState<boolean>(() => !!getStoredGoogleConnection()?.token);
+  useEffect(() => {
+    let cancelled = false;
+    const check = async () => {
+      if (getStoredGoogleConnection()?.token) { if (!cancelled) setGoogleLive(true); return; }
+      const cloud = await fetchOwnerGoogleToken();
+      if (!cancelled) setGoogleLive(!!cloud?.token);
+    };
+    check();
+    window.addEventListener("focus", check);
+    return () => { cancelled = true; window.removeEventListener("focus", check); };
+  }, []);
 
   // Auto-start the complete flow when the parent tells us to (e.g. tapping
   // "Complete" directly on a Today-tab job card rather than going through
@@ -922,7 +945,7 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
                   No phone on file — add one in customer settings or switch to Email.
                 </div>
               )}
-              {invoiceChannel === "email" && customer?.email && !(settings as any)?.googleConnected && (
+              {invoiceChannel === "email" && customer?.email && !googleLive && (
                 <div className="text-xs text-yellow-400/80 bg-yellow-950/20 border border-yellow-700/30 rounded-xl px-3 py-2">
                   Google isn't connected — connect it in Settings → Integrations, or switch to Text.
                 </div>
@@ -1173,7 +1196,7 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
                   {lateChannel === "sms" && !settings?.twilioSid && (
                     <div className="text-[10px] text-yellow-400/80 mt-1">Twilio isn't configured — add it in Settings → Integrations, or switch to Email.</div>
                   )}
-                  {lateChannel === "email" && !(settings as any)?.googleConnected && (
+                  {lateChannel === "email" && !googleLive && (
                     <div className="text-[10px] text-yellow-400/80 mt-1">Google isn't connected — connect it in Settings → Integrations, or switch to Text.</div>
                   )}
                 </div>
@@ -1238,7 +1261,7 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
                   {otwChannel === "sms" && !settings?.twilioSid && (
                     <div className="text-[10px] text-yellow-400/80 mt-1">Twilio isn't configured — add it in Settings → Integrations, or switch to Email.</div>
                   )}
-                  {otwChannel === "email" && !(settings as any)?.googleConnected && (
+                  {otwChannel === "email" && !googleLive && (
                     <div className="text-[10px] text-yellow-400/80 mt-1">Google isn't connected — connect it in Settings → Integrations, or switch to Text.</div>
                   )}
                 </div>
@@ -1751,6 +1774,22 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   const [otwOpenJobId, setOtwOpenJobId] = useState<string | null>(null);
   const [otwCardChannel, setOtwCardChannel] = useState<"sms" | "email">("sms");
   const [sendingOtwJobId, setSendingOtwJobId] = useState<string | null>(null);
+  // CRITICAL FIX — same googleLive check as JobDetailView above: the job-card
+  // OTW/Running Late banners used settings.googleConnected (owner-device-only)
+  // instead of the actual cross-device token lookup the real send already
+  // uses (sendOwnerGmailOnly → getStoredGoogleConnection/fetchOwnerGoogleToken).
+  const [googleLiveCard, setGoogleLiveCard] = useState<boolean>(() => !!getStoredGoogleConnection()?.token);
+  useEffect(() => {
+    let cancelled = false;
+    const check = async () => {
+      if (getStoredGoogleConnection()?.token) { if (!cancelled) setGoogleLiveCard(true); return; }
+      const cloud = await fetchOwnerGoogleToken();
+      if (!cancelled) setGoogleLiveCard(!!cloud?.token);
+    };
+    check();
+    window.addEventListener("focus", check);
+    return () => { cancelled = true; window.removeEventListener("focus", check); };
+  }, []);
   const [routeLoading, setRouteLoading] = useState(false);
   // FIX 10 — employee-side "Mark as Paid" confirmation, synced to the same
   // employees.paidPeriods JSONB the owner's Employees > Payroll view reads,
@@ -3951,7 +3990,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                 {lateCardChannel === "sms" && !settings?.twilioSid && (
                   <div className="text-[9px] text-yellow-400/80">Twilio isn't configured — add it in Settings, or switch to Email.</div>
                 )}
-                {lateCardChannel === "email" && !(settings as any)?.googleConnected && (
+                {lateCardChannel === "email" && !googleLiveCard && (
                   <div className="text-[9px] text-yellow-400/80">Google isn't connected — connect it in Settings, or switch to Text.</div>
                 )}
                 {/* Reason templates */}
@@ -4006,7 +4045,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                 {otwCardChannel === "sms" && !settings?.twilioSid && (
                   <div className="text-[9px] text-yellow-400/80">Twilio isn't configured — add it in Settings, or switch to Email.</div>
                 )}
-                {otwCardChannel === "email" && !(settings as any)?.googleConnected && (
+                {otwCardChannel === "email" && !googleLiveCard && (
                   <div className="text-[9px] text-yellow-400/80">Google isn't connected — connect it in Settings, or switch to Text.</div>
                 )}
                 <div className="flex gap-1">
