@@ -758,6 +758,11 @@ export interface AppSettings {
   lateThresholdMinutes?: number;
   lateNotifyTemplate?: string;
 
+  // Automations kill switch — `undefined`/anything but `false` means paused.
+  // Defaults every existing owner to paused after the automation-spam
+  // incident; see AutomationsPage.tsx's banner and useAutomationEngine.ts.
+  automationsPaused?: boolean;
+
   [key: string]: any;
 }
 

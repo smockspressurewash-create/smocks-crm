@@ -205,6 +205,35 @@ export function AutomationsPage({ automations = [], setAutomations, jobs = [], c
         </div>
       </div>
 
+      {/* CRITICAL — kill switch (automation spam incident). Defaults to
+          PAUSED for every existing owner (settings.automationsPaused is
+          undefined until someone touches this toggle, and `!== false` reads
+          undefined as paused) — the repeat-send bug meant real customers got
+          messaged 10+ times, so automations stay off until the owner
+          consciously flips this back on having read what changed. The engine
+          (useAutomationEngine.ts) checks this exact same flag and skips
+          every send entirely while paused — this isn't just a UI hint. */}
+      <Glass className={"p-4 " + (settings?.automationsPaused === false ? "!bg-emerald-950/10 !border-emerald-700/20" : "!bg-red-950/20 !border-red-700/40")}>
+        <div className="flex items-center justify-between gap-3 flex-wrap">
+          <div>
+            <div className="text-sm font-semibold flex items-center gap-1.5">
+              {settings?.automationsPaused === false ? "🟢 Automations are running" : "⏸ All automations are paused"}
+            </div>
+            <div className="text-xs text-white/60 mt-0.5 max-w-xl">
+              {settings?.automationsPaused === false
+                ? "Workflows send automatically as events happen. Use this switch any time to stop every automation instantly."
+                : "A bug let editing a workflow silently reset its \"already sent\" memory, causing repeat messages to the same customers. That's fixed (edits now preserve send history, and a session-level guard blocks any duplicate send). Automations stay off until you turn them back on here."}
+            </div>
+          </div>
+          <button
+            onClick={() => setSettings((s: any) => ({ ...s, automationsPaused: s?.automationsPaused === false }))}
+            className={"flex-shrink-0 px-4 py-2 rounded-lg text-xs font-semibold transition " + (settings?.automationsPaused === false ? "bg-white/10 hover:bg-red-900/30 text-white/70 hover:text-red-300" : "bg-emerald-600 hover:bg-emerald-500 text-white")}
+          >
+            {settings?.automationsPaused === false ? "Pause All Automations" : "Enable Automations"}
+          </button>
+        </div>
+      </Glass>
+
       {/* Late-employee auto-notifications — separate from the workflow builder
           above since it reads live clock-in/job timing rather than firing on a
           discrete event; surfaced as a banner+button on the affected job in
@@ -455,8 +484,31 @@ export function AutomationsPage({ automations = [], setAutomations, jobs = [], c
       <VisualWorkflowBuilder open={builderOpen.open} data={builderOpen.data} onClose={() => setBuilderOpen({ open: false, data: null })} onSave={d => {
         const firstTrigger = d.steps.find(s => s.type === "trigger");
         const firstAction = d.steps.find(s => s.type === "action");
-        const newAuto = { id: d.id || uid(), name: d.name, trigger: firstTrigger?.label || "Manual", action: firstAction?.label || "", steps: d.steps, isWorkflow: true, category: d.category, icon: d.icon, description: d.description, count: d.count || 0, lastTriggered: d.lastTriggered || null, active: d.active !== false, runLog: d.runLog || [] };
-        if (d.id && automations.some(a => a.id === d.id)) setAutomations(automations.map(a => a.id === d.id ? newAuto : a));
+        // CRITICAL FIX (automation spam) — root cause of automations re-firing
+        // for every past recipient: VisualWorkflowBuilder's own `w` state (see
+        // its useEffect seeding from `data`) only ever carries id/name/
+        // category/icon/description/steps — it never had sentLog, count,
+        // active, or lastTriggered to begin with. This handler used to trust
+        // `d` for those fields anyway (`d.count || 0`, `d.active !== false`,
+        // etc.), which silently reset them to blank/defaults on every single
+        // save. For sentLog specifically, that means the dedup memory the
+        // engine (useAutomationEngine.ts) relies on to never message the same
+        // person twice was wiped out the moment the owner opened an existing
+        // automation and hit Save — so it looked "fixed" until anyone edited
+        // a workflow, then every past recipient got messaged again. Always
+        // carry these forward from the CURRENT stored automation, never from
+        // the builder's draft.
+        const existing = d.id ? automations.find(a => a.id === d.id) : null;
+        const newAuto = {
+          id: d.id || uid(), name: d.name, trigger: firstTrigger?.label || "Manual", action: firstAction?.label || "",
+          steps: d.steps, isWorkflow: true, category: d.category, icon: d.icon, description: d.description,
+          count: existing?.count ?? 0,
+          lastTriggered: existing?.lastTriggered ?? null,
+          active: existing?.active ?? true,
+          sentLog: existing?.sentLog ?? {},
+          runLog: existing?.runLog ?? [],
+        };
+        if (existing) setAutomations(automations.map(a => a.id === d.id ? newAuto : a));
         else setAutomations([...automations, newAuto]);
         setBuilderOpen({ open: false, data: null });
         toast("Workflow saved · " + d.steps.length + " steps");

@@ -53,6 +53,23 @@ const SMS_TEMPLATES: Record<string, string> = {
 // suppressed. Resets on a full page reload.
 const notConfiguredWarnedThisSession = new Set<string>();
 
+// CRITICAL (automation spam incident) — a second, independent layer of
+// defense on top of the sentLog/cooldown check in `alreadySent` below.
+// sentLog persistence relies on a round trip through React state
+// (setAutomations) and usePersistent's localStorage write, and the actual
+// spam bug turned out to be an editor path that reset sentLog entirely (see
+// AutomationsPage.tsx's VisualWorkflowBuilder onSave — fixed there now). This
+// module-scope Set is synchronous, has no state/render/localStorage
+// round-trip to race, and survives every re-render and every 15-min poll
+// tick for the life of this browser tab: once a given automation+recipient
+// combination is checked here, it can never fire a second time in this
+// session no matter what happens to sentLog. It is NOT a substitute for
+// sentLog (a fresh page load starts this Set empty, so cross-session/cross-
+// device dedup still depends on sentLog persisting correctly) — it's a
+// same-tab circuit breaker so "broken again" fails safe instead of spamming.
+const firedThisSession = new Set<string>();
+let automationsPausedLoggedThisSession = false;
+
 const fillTemplate = (template: string, vars: Record<string, string>): string =>
   template.replace(/\{\{(\w+)\}\}/g, (_, key) => vars[key] ?? `{{${key}}}`);
 
@@ -284,6 +301,19 @@ export function useAutomationEngine({
       const setAutomations = setAutomationsRef.current;
 
       try {
+
+      // CRITICAL — kill switch (automation spam incident). Defaults to
+      // paused for every existing owner (undefined reads as paused via
+      // `!== false`) until they explicitly re-enable it in the Automations
+      // page, which now also explains what was fixed. Nothing below this
+      // check runs at all while paused — no candidates evaluated, no sends.
+      if (settings.automationsPaused !== false) {
+        if (!automationsPausedLoggedThisSession) {
+          automationsPausedLoggedThisSession = true;
+          console.log("[Automations] paused (kill switch) — enable in the Automations page to resume sending.");
+        }
+        return;
+      }
 
       const todayStr = today();
       const now = new Date();
@@ -627,8 +657,18 @@ export function useAutomationEngine({
             const dedupKey = `${category}:${dir.stepId}:${cand.key}`;
             const cooldownDays = dir.stepId === "legacy" ? spec.defaultCooldownDays : 3650;
             if (alreadySent(auto, dedupKey, cooldownDays)) continue;
+            // Session-level circuit breaker (see firedThisSession above) —
+            // claim this combo synchronously BEFORE the await, so nothing
+            // (an overlapping tick, a sentLog write that hasn't landed yet)
+            // can send it twice in this tab. Real persistence still comes
+            // from sentLog via recordSend below; this only ever prevents an
+            // extra send, never substitutes for the real record.
+            const sessionKey = `${auto.id}:${dedupKey}`;
+            if (firedThisSession.has(sessionKey)) continue;
+            firedThisSession.add(sessionKey);
             const { subject, body } = buildMessage(auto, dir, spec, cand);
-            await sendDirective(auto, dir.channel, cand, subject, body, dedupKey);
+            const sent = await sendDirective(auto, dir.channel, cand, subject, body, dedupKey);
+            if (!sent) firedThisSession.delete(sessionKey); // failed send — allow a real retry next tick
           }
         }
       }
