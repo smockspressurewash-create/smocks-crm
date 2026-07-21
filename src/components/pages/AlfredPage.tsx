@@ -975,7 +975,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           return { count: results.length, customers: results };
         }
         case "get_customer_details": {
-          const c = customers.find(x => x.id === inputs.customerId || (x.firstName + " " + x.lastName).toLowerCase() === (inputs.name || "").toLowerCase());
+          const c = customers.find(x => x.id === inputs.customerId || (x.firstName + " " + x.lastName).trim().toLowerCase() === (inputs.name || "").trim().toLowerCase());
           if (!c) {
             const suggestions = suggestNames(inputs.name || "", customers, x => `${x.firstName} ${x.lastName}`);
             return suggestions.length
@@ -1042,7 +1042,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           return { success: true, customer: saved };
         }
         case "create_estimate": {
-          const c = customers.find(x => x.id === inputs.customerId || (x.firstName + " " + x.lastName).toLowerCase() === (inputs.customerName || "").toLowerCase());
+          const c = customers.find(x => x.id === inputs.customerId || (x.firstName + " " + x.lastName).trim().toLowerCase() === (inputs.customerName || "").trim().toLowerCase());
           if (!c) {
             const suggestions = suggestNames(inputs.customerName || "", customers, x => `${x.firstName} ${x.lastName}`);
             return suggestions.length
@@ -1088,7 +1088,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
             } catch { /* fall through to not-found below */ }
           }
           if (!est) {
-            const byName = customers.find(x => x.id === inputs.customerId || (x.firstName + " " + x.lastName).toLowerCase() === (inputs.customerName || "").toLowerCase());
+            const byName = customers.find(x => x.id === inputs.customerId || (x.firstName + " " + x.lastName).trim().toLowerCase() === (inputs.customerName || "").trim().toLowerCase());
             if (byName) {
               sc = byName;
               est = estimates.filter(x => x.customerId === byName.id && x.status === "pending").sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""))[0] || null;
@@ -1121,25 +1121,49 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           return { success: true, estimateId: est.id, customer: sc.firstName + " " + sc.lastName, sentEmail, sentSms, warnings: errs.length ? errs : undefined };
         }
         case "schedule_job": {
-          const c = customers.find(x => x.id === inputs.customerId || (x.firstName + " " + x.lastName).toLowerCase() === (inputs.customerName || "").toLowerCase());
+          console.log("[AlfredTool schedule_job] raw inputs from model:", JSON.stringify(inputs));
+          // Trim before comparing — a customer with no lastName (a business/
+          // HOA-style entry: firstName="Springfield HOA", lastName="") builds
+          // a trailing-space string ("springfield hoa ") that a strict `===`
+          // against the model's ("springfield hoa") would never match. This
+          // silently fell through to "Customer not found" for exactly this
+          // kind of customer name.
+          const wantedName = (inputs.customerName || "").trim().toLowerCase();
+          const c = customers.find(x => x.id === inputs.customerId || (x.firstName + " " + x.lastName).trim().toLowerCase() === wantedName);
+          console.log("[AlfredTool schedule_job] customer lookup — searched for:", inputs.customerName || inputs.customerId, "→ found:", c ? c.id + " (" + c.firstName + " " + c.lastName + ")" : "NONE");
           if (!c) {
             const suggestions = suggestNames(inputs.customerName || "", customers, x => `${x.firstName} ${x.lastName}`);
+            console.warn("[AlfredTool schedule_job] ABORTING — no customer match. Suggestions:", suggestions);
             return suggestions.length
               ? { error: "Customer not found", suggestions, instruction: "Ask the user 'Do you mean " + suggestions.join(", or ") + "?' — do not ask a generic follow-up question." }
               : { error: "Customer not found" };
           }
+          // The model is responsible for resolving "tomorrow"/"2pm" into
+          // real YYYY-MM-DD / HH:MM values before calling this tool. If it
+          // ever sends the words through literally, a `date`-typed Postgres
+          // column would reject the insert (caught below) — but if
+          // scheduledDate is a looser text-like column, garbage like the
+          // literal string "tomorrow" would insert with NO Supabase error at
+          // all, and the job would silently never show up on any real
+          // calendar date. Reject obviously-invalid input up front instead
+          // of trusting Supabase to catch it.
+          if (inputs.date && !/^\d{4}-\d{2}-\d{2}$/.test(inputs.date)) {
+            console.error("[AlfredTool schedule_job] ABORTING — date is not YYYY-MM-DD:", JSON.stringify(inputs.date));
+            return { error: "Invalid date format: \"" + inputs.date + "\" — must resolve relative dates like 'tomorrow' to an actual YYYY-MM-DD value before calling this tool, then retry." };
+          }
+          if (inputs.time && !/^\d{1,2}:\d{2}$/.test(inputs.time)) {
+            console.error("[AlfredTool schedule_job] ABORTING — time is not HH:MM:", JSON.stringify(inputs.time));
+            return { error: "Invalid time format: \"" + inputs.time + "\" — must be 24h HH:MM (e.g. '14:00' for 2pm), then retry." };
+          }
           // CRITICAL (per owner report) — the manual "Schedule Job" form
           // (JobsPage.tsx, its onClick submit handler) is the proven-working
-          // reference. This payload is now byte-for-byte the same shape —
-          // same fields, same literal defaults, same field ORDER — including
-          // `jobType`, which Alfred's payload was missing entirely (the
-          // manual form always sends it; jobType drives crew pay-rate
-          // overrides and may not tolerate being absent) and `checklist`,
-          // which the manual form always sends as a bare `[]`, not a
-          // populated default item. Do not reintroduce any field the manual
-          // form doesn't send — that mismatch is what breaks PostgREST's
-          // all-or-nothing column validation on this exact table (see
-          // CLAUDE.md's "safe column" note on the jobs table specifically).
+          // reference. This payload is the same shape — same fields, same
+          // literal defaults — including `jobType` (Alfred's payload was
+          // missing it entirely; the manual form always sends it) and
+          // `checklist` (manual form always sends a bare `[]`, never a
+          // populated default item). Do not reintroduce any field the
+          // manual form doesn't send — see CLAUDE.md's "safe column" note on
+          // this exact table.
           const newJ = {
             id: uid(), customerId: c.id,
             address: inputs.address || c.address || "",
@@ -1154,42 +1178,65 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
             crew: [] as any[], checklist: [] as any[], photos: [], commLog: [], chemicalsUsed: [], equipment: [], tags: [],
             loggedHours: 0, createdAt: today(),
           };
-          console.log("[AlfredTool schedule_job] built job payload (matches JobsPage.tsx manual form exactly):", newJ);
+          console.log("[AlfredTool schedule_job] EXACT payload being sent to Supabase:", JSON.stringify(newJ, null, 2));
           // The manual form itself does setJobs() + toast IMMEDIATELY, then
-          // inserts in a detached, un-awaited async IIFE — that's correct
-          // for a UI button (nothing downstream needs its return value), but
-          // wrong for a tool call: this return value IS what tells Alfred
-          // (and through it, the user) whether the job was actually saved.
+          // inserts in a detached, un-awaited async IIFE — correct for a UI
+          // button (nothing downstream needs its return value), but wrong
+          // for a tool call: this return value IS what tells Alfred (and
+          // through it, the user) whether the job was actually saved.
           // Awaiting the SAME insert call — not a different one — doesn't
-          // change what Supabase does or doesn't accept; it only changes
-          // when the code notices the result, which is required here so
-          // Alfred can never again report success before Supabase confirmed
-          // it (the exact bug from the prior audit). No `.select()` chained
-          // on either — matching the manual form means checking only
-          // `{error}` from a bare insert, not requiring a SELECT-after-
-          // INSERT round trip the manual form never relies on either.
-          const { error: jobErr } = await withTimeout<any>(
+          // change what Supabase does or doesn't accept, only when the code
+          // notices the result, which is required so Alfred can never again
+          // report success before Supabase confirmed it. Same table
+          // ("jobs"), same columns, same bare (non-`.select()`) insert
+          // method as the manual form.
+          const insertResp: any = await withTimeout<any>(
             (supabase as any).from("jobs").insert(newJ),
             15000, "Save job"
           );
-          console.log("[AlfredTool schedule_job] Supabase response — error:", jobErr);
+          // Log the ENTIRE raw response object, not just .error — status/
+          // statusText/count reveal e.g. a silent 0-row write that reports
+          // no `error` but also didn't actually insert anything.
+          console.log("[AlfredTool schedule_job] EXACT Supabase response:", JSON.stringify({
+            error: insertResp?.error ? { message: insertResp.error.message, details: insertResp.error.details, hint: insertResp.error.hint, code: insertResp.error.code } : null,
+            status: insertResp?.status, statusText: insertResp?.statusText, count: insertResp?.count,
+          }, null, 2));
+          const jobErr = insertResp?.error;
           if (jobErr) {
+            console.error("[AlfredTool schedule_job] ✗ INSERT FAILED:", jobErr.message, "code:", jobErr.code, "— retrying with core columns only");
             // Same fallback the manual form uses for this exact table: if
             // any column in the patch is unrecognized, PostgREST rejects the
             // WHOLE row — retry with a minimal, known-safe column set before
             // giving up entirely.
-            console.error("[AlfredTool schedule_job] insert failed:", jobErr.message, "— retrying with core columns only");
             const coreJob = {
               id: newJ.id, customerId: newJ.customerId, address: newJ.address, amount: newJ.amount,
               status: newJ.status, scheduledDate: newJ.scheduledDate, scheduledTime: newJ.scheduledTime,
               priority: newJ.priority, notes: newJ.notes, crew: newJ.crew, checklist: newJ.checklist,
               photos: newJ.photos, commLog: newJ.commLog, createdAt: newJ.createdAt,
             };
-            const retry = await (supabase as any).from("jobs").insert(coreJob);
-            console.log("[AlfredTool schedule_job] core-column retry response — error:", retry?.error);
+            console.log("[AlfredTool schedule_job] core-column retry payload:", JSON.stringify(coreJob, null, 2));
+            const retry: any = await (supabase as any).from("jobs").insert(coreJob);
+            console.log("[AlfredTool schedule_job] core-column retry EXACT response:", JSON.stringify({
+              error: retry?.error ? { message: retry.error.message, details: retry.error.details, hint: retry.error.hint, code: retry.error.code } : null,
+              status: retry?.status,
+            }, null, 2));
             if (retry?.error) {
+              console.error("[AlfredTool schedule_job] ✗ RETRY ALSO FAILED — job was NOT saved.");
               return { error: "Failed to schedule job — " + (retry.error.message || jobErr.message) };
             }
+            console.log("[AlfredTool schedule_job] ✓ retry succeeded — job saved with core columns only");
+          } else {
+            console.log("[AlfredTool schedule_job] ✓ INSERT SUCCEEDED — no error returned from Supabase.");
+          }
+          // Verify the row is actually readable back — closes the gap where
+          // an insert reports no error (e.g. RLS silently accepting a write
+          // path but a mismatched WITH CHECK, or a trigger rewriting/
+          // dropping the row) yet nothing is really there to find.
+          const { data: verifyRow, error: verifyErr } = await (supabase as any).from("jobs").select("id, scheduledDate").eq("id", newJ.id).maybeSingle();
+          console.log("[AlfredTool schedule_job] post-insert verification SELECT — row found:", !!verifyRow, "data:", verifyRow, "error:", verifyErr?.message);
+          if (!verifyRow) {
+            console.error("[AlfredTool schedule_job] ✗ Insert reported no error, but the row can't be read back — something is silently dropping it (RLS, a trigger, or a check constraint).");
+            return { error: "Supabase accepted the insert with no error, but the job isn't actually readable afterward — this points at an RLS or trigger issue on the jobs table, not a code bug. The job was NOT actually saved." };
           }
           setJobs(prev => [...prev, newJ as any]);
           toast("Alfred scheduled job for " + c.firstName + " on " + newJ.scheduledDate);
@@ -1260,7 +1307,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           let j: any = inputs.jobId ? jobs.find(x => x.id === inputs.jobId) : null;
           let matchedCustomer: any = null;
           if (!j && inputs.customerName) {
-            matchedCustomer = customers.find(x => (x.firstName + " " + x.lastName).toLowerCase() === (inputs.customerName || "").toLowerCase());
+            matchedCustomer = customers.find(x => (x.firstName + " " + x.lastName).trim().toLowerCase() === (inputs.customerName || "").trim().toLowerCase());
             if (!matchedCustomer) {
               const suggestions = suggestNames(inputs.customerName, customers, x => `${x.firstName} ${x.lastName}`);
               return suggestions.length
@@ -1315,7 +1362,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
         // "create_invoice then send_estimate" mirrors "create_estimate then
         // send_estimate" exactly.
         case "create_invoice": {
-          const c = customers.find(x => x.id === inputs.customerId || (x.firstName + " " + x.lastName).toLowerCase() === (inputs.customerName || "").toLowerCase());
+          const c = customers.find(x => x.id === inputs.customerId || (x.firstName + " " + x.lastName).trim().toLowerCase() === (inputs.customerName || "").trim().toLowerCase());
           if (!c) {
             const suggestions = suggestNames(inputs.customerName || "", customers, x => `${x.firstName} ${x.lastName}`);
             return suggestions.length
@@ -1367,7 +1414,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
         case "assign_employee": {
           const j = jobs.find(x => x.id === inputs.jobId);
           if (!j) return { error: "Job not found" };
-          const emp = employees.find(e => e.id === inputs.employeeId || (e.firstName + " " + e.lastName).toLowerCase() === (inputs.employeeName || "").toLowerCase());
+          const emp = employees.find(e => e.id === inputs.employeeId || (e.firstName + " " + e.lastName).trim().toLowerCase() === (inputs.employeeName || "").trim().toLowerCase());
           if (!emp) {
             const suggestions = suggestNames(inputs.employeeName || "", employees, e => `${e.firstName} ${e.lastName}`);
             return suggestions.length
@@ -1406,7 +1453,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
         case "request_employee": {
           const j = jobs.find(x => x.id === inputs.jobId);
           if (!j) return { error: "Job not found" };
-          const emp = employees.find(e => e.id === inputs.employeeId || (e.firstName + " " + e.lastName).toLowerCase() === (inputs.employeeName || "").toLowerCase());
+          const emp = employees.find(e => e.id === inputs.employeeId || (e.firstName + " " + e.lastName).trim().toLowerCase() === (inputs.employeeName || "").trim().toLowerCase());
           if (!emp) {
             const suggestions = suggestNames(inputs.employeeName || "", employees, e => `${e.firstName} ${e.lastName}`);
             return suggestions.length
@@ -1445,7 +1492,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           // skipped and it STILL reported {success:true} and toasted
           // "sent" — a genuine claims-to-but-doesn't bug, not just a missing
           // feature.
-          const c = customers.find(x => x.id === inputs.customerId || (x.firstName + " " + x.lastName).toLowerCase() === (inputs.customerName || "").toLowerCase());
+          const c = customers.find(x => x.id === inputs.customerId || (x.firstName + " " + x.lastName).trim().toLowerCase() === (inputs.customerName || "").trim().toLowerCase());
           if (!c) {
             const suggestions = suggestNames(inputs.customerName || "", customers, x => `${x.firstName} ${x.lastName}`);
             return suggestions.length
