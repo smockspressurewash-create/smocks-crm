@@ -1128,53 +1128,73 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
               ? { error: "Customer not found", suggestions, instruction: "Ask the user 'Do you mean " + suggestions.join(", or ") + "?' — do not ask a generic follow-up question." }
               : { error: "Customer not found" };
           }
-          // [Alfred schedule_job] FIX 4 — this used to send extra columns the
-          // manual "Schedule Job" form (JobsPage.tsx) never sends on creation
-          // (pipelineStage, isRecurring, recurringFreq, cancelReason, noShow,
-          // clockInAt, attachments, internalNotes instead of notes) — a
-          // different shape/code path from the one proven to work. If any one
-          // of those isn't an actual column in this deployment's jobs table,
-          // PostgREST rejects the WHOLE insert (see CLAUDE.md's "safe column"
-          // note). It also retried via withTimeoutRetry, which — for a plain
-          // INSERT with a fixed id — replays the identical row on a slow-but-
-          // not-actually-failed first attempt, hitting a duplicate-key error
-          // that then also reads as "still fails after retrying." Matching
-          // the manual form's exact field set and its single withTimeout (no
-          // retry) call now.
+          // CRITICAL (per owner report) — the manual "Schedule Job" form
+          // (JobsPage.tsx, its onClick submit handler) is the proven-working
+          // reference. This payload is now byte-for-byte the same shape —
+          // same fields, same literal defaults, same field ORDER — including
+          // `jobType`, which Alfred's payload was missing entirely (the
+          // manual form always sends it; jobType drives crew pay-rate
+          // overrides and may not tolerate being absent) and `checklist`,
+          // which the manual form always sends as a bare `[]`, not a
+          // populated default item. Do not reintroduce any field the manual
+          // form doesn't send — that mismatch is what breaks PostgREST's
+          // all-or-nothing column validation on this exact table (see
+          // CLAUDE.md's "safe column" note on the jobs table specifically).
           const newJ = {
-            id: uid(), customerId: c.id, address: c.address, amount: inputs.amount || 0,
-            status: "scheduled" as const, scheduledDate: inputs.date || daysFromNow(3), scheduledTime: inputs.time || "",
-            priority: inputs.priority || "normal", notes: inputs.notes || "", duration: inputs.duration || 2,
-            crew: [] as any[], checklist: (inputs.checklist || ["Confirm water access"]).map((t: string) => ({ label: t, done: false })),
-            photos: [], commLog: [], chemicalsUsed: [], equipment: [], tags: inputs.tags || [],
+            id: uid(), customerId: c.id,
+            address: inputs.address || c.address || "",
+            amount: parseFloat(inputs.amount) || 0,
+            status: "scheduled" as const,
+            scheduledDate: inputs.date || daysFromNow(3),
+            scheduledTime: inputs.time || "",
+            priority: inputs.priority || "normal",
+            jobType: inputs.jobType || "residential",
+            notes: inputs.notes || "",
+            duration: inputs.duration ? Number(inputs.duration) : undefined,
+            crew: [] as any[], checklist: [] as any[], photos: [], commLog: [], chemicalsUsed: [], equipment: [], tags: [],
             loggedHours: 0, createdAt: today(),
           };
-          console.log("[AlfredTool schedule_job] built job payload:", newJ);
-          // CRITICAL (Alfred functionality audit) — this used to be an
-          // optimistic local setJobs() + fire-and-forget background insert,
-          // returning {success:true} before Supabase had even been asked to
-          // save the row. That's exactly the "claims to do things but
-          // doesn't actually execute them" failure mode: if the insert later
-          // failed, Alfred had already told the user it worked, and the only
-          // sign of trouble was a toast that could easily be missed. Await a
-          // SINGLE attempt (no retry — retrying this exact insert would
-          // replay the same fixed id and hit a duplicate-key error on a
-          // slow-but-not-actually-failed first try) and only report success
-          // once Supabase actually confirms the row was written.
-          const { data: savedJ, error: jobErr } = await withTimeout<any>(
-            (supabase as any).from("jobs").insert(newJ).select().single(),
+          console.log("[AlfredTool schedule_job] built job payload (matches JobsPage.tsx manual form exactly):", newJ);
+          // The manual form itself does setJobs() + toast IMMEDIATELY, then
+          // inserts in a detached, un-awaited async IIFE — that's correct
+          // for a UI button (nothing downstream needs its return value), but
+          // wrong for a tool call: this return value IS what tells Alfred
+          // (and through it, the user) whether the job was actually saved.
+          // Awaiting the SAME insert call — not a different one — doesn't
+          // change what Supabase does or doesn't accept; it only changes
+          // when the code notices the result, which is required here so
+          // Alfred can never again report success before Supabase confirmed
+          // it (the exact bug from the prior audit). No `.select()` chained
+          // on either — matching the manual form means checking only
+          // `{error}` from a bare insert, not requiring a SELECT-after-
+          // INSERT round trip the manual form never relies on either.
+          const { error: jobErr } = await withTimeout<any>(
+            (supabase as any).from("jobs").insert(newJ),
             15000, "Save job"
           );
-          console.log("[AlfredTool schedule_job] Supabase response — data:", savedJ, "error:", jobErr);
-          if (jobErr || !savedJ) {
-            return { error: "Failed to schedule job — " + (jobErr?.message || "Supabase write did not return a row") };
+          console.log("[AlfredTool schedule_job] Supabase response — error:", jobErr);
+          if (jobErr) {
+            // Same fallback the manual form uses for this exact table: if
+            // any column in the patch is unrecognized, PostgREST rejects the
+            // WHOLE row — retry with a minimal, known-safe column set before
+            // giving up entirely.
+            console.error("[AlfredTool schedule_job] insert failed:", jobErr.message, "— retrying with core columns only");
+            const coreJob = {
+              id: newJ.id, customerId: newJ.customerId, address: newJ.address, amount: newJ.amount,
+              status: newJ.status, scheduledDate: newJ.scheduledDate, scheduledTime: newJ.scheduledTime,
+              priority: newJ.priority, notes: newJ.notes, crew: newJ.crew, checklist: newJ.checklist,
+              photos: newJ.photos, commLog: newJ.commLog, createdAt: newJ.createdAt,
+            };
+            const retry = await (supabase as any).from("jobs").insert(coreJob);
+            console.log("[AlfredTool schedule_job] core-column retry response — error:", retry?.error);
+            if (retry?.error) {
+              return { error: "Failed to schedule job — " + (retry.error.message || jobErr.message) };
+            }
           }
-          // No local setJobs — Supabase is the source of truth here (same
-          // reasoning as create_customer/create_estimate above); App.tsx's
-          // cross-device poll/realtime picks the new row up on its own.
+          setJobs(prev => [...prev, newJ as any]);
           toast("Alfred scheduled job for " + c.firstName + " on " + newJ.scheduledDate);
           setTimeout(() => onNav("jobs"), 1200);
-          return { success: true, jobId: savedJ.id, date: savedJ.scheduledDate, customer: c.firstName + " " + c.lastName };
+          return { success: true, jobId: newJ.id, date: newJ.scheduledDate, customer: c.firstName + " " + c.lastName };
         }
         case "update_job_priority": {
           const j = jobs.find(x => x.id === inputs.jobId);
@@ -1652,8 +1672,8 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
     },
     {
       name: "schedule_job",
-      description: "Schedule a new job for a customer on a specific date (YYYY-MM-DD).",
-      input_schema: { type: "object", properties: { customerId: { type: "string" }, customerName: { type: "string" }, date: { type: "string" }, amount: { type: "number" }, duration: { type: "number" }, priority: { type: "string", enum: ["low", "normal", "high", "urgent"] }, tags: { type: "array", items: { type: "string" } }, checklist: { type: "array", items: { type: "string" } }, notes: { type: "string" } } }
+      description: "Schedule a new job for a customer on a specific date (YYYY-MM-DD) and time (HH:MM 24h).",
+      input_schema: { type: "object", properties: { customerId: { type: "string" }, customerName: { type: "string" }, date: { type: "string", description: "YYYY-MM-DD" }, time: { type: "string", description: "HH:MM 24h, e.g. '14:00' for 2pm" }, amount: { type: "number" }, address: { type: "string", description: "Defaults to the customer's address on file if omitted" }, duration: { type: "number", description: "Estimated hours" }, jobType: { type: "string", enum: ["residential", "commercial"], description: "Drives crew pay-rate overrides; defaults to residential" }, priority: { type: "string", enum: ["low", "normal", "high", "urgent"] }, notes: { type: "string" } } }
     },
     {
       name: "update_job_priority",
