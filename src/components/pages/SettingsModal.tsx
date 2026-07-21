@@ -961,7 +961,24 @@ export function SettingsModal({ open, onClose, settings, setSettings, services, 
                       <RefreshCw size={12} className={"inline mr-1.5 " + (googleRetrying ? "animate-spin" : "")} />
                       {googleRetrying ? "Retrying…" : "Retry Connection"}
                     </GBtn>
-                    <GBtn variant="danger" onClick={() => setF({ ...f, googleConnected: false, googleToken: "", googleEmail: "", googleRefreshToken: "", googleScopes: {} })} className="flex-1 !text-xs">
+                    <GBtn variant="danger" onClick={() => {
+                      // GoogleConnect — this used to clear a field literally
+                      // named `googleToken`, which nothing else in the app
+                      // reads or writes (the real field everywhere else is
+                      // `googleProviderToken`) — so clicking Disconnect never
+                      // actually cleared the stored token at all, and only
+                      // ever touched local form state (`setF`), not the
+                      // shared `settings` the rest of the app reads, so even
+                      // the fields it DID clear wouldn't take effect until
+                      // Save was clicked. Per the fix requirement, THIS is
+                      // the only place googleConnected/the token should ever
+                      // be cleared — so it must actually work, immediately.
+                      console.log("[GoogleConnect] Disconnect Google Account clicked — clearing all google fields");
+                      const cleared = { googleConnected: false, googleProviderToken: "", googleRefreshToken: "", googleTokenExpiresAt: 0, googleEmail: "", googleScopes: {} };
+                      setF((prev: any) => ({ ...prev, ...cleared }));
+                      setSettings?.((prev: any) => ({ ...prev, ...cleared }));
+                      toast?.("Google account disconnected", "yellow");
+                    }} className="flex-1 !text-xs">
                       Disconnect Google Account
                     </GBtn>
                   </div>

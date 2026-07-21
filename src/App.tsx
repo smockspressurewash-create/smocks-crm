@@ -808,6 +808,25 @@ export function App() {
           // on the server so nothing is lost.
           setSettings((prev: any) => {
             const merged = { ...prev, ...data.data };
+            // GoogleConnect — this is the load that runs the instant crmUserId
+            // is seeded (from a LOCALSTORAGE CACHE, so it can fire before any
+            // async session/OAuth work resolves). If the owner just connected
+            // Google, applyGoogleIdentity may have already written a fresh
+            // provider_token into local state — but the row this SELECT just
+            // fetched is whatever was last PUSHED to the server, which is
+            // debounced and can easily still be the pre-connection blob. A
+            // blind `{...prev, ...data.data}` would silently regress a brand
+            // new connection back to disconnected. Never let a stale/absent
+            // server value erase an existing local token — only the
+            // Disconnect button should ever clear it.
+            if (prev.googleProviderToken && !data.data.googleProviderToken) {
+              console.log("[GoogleConnect] server settings sync (initial load) had no provider_token — preserving existing local Google connection instead of clearing it");
+              merged.googleConnected = prev.googleConnected;
+              merged.googleProviderToken = prev.googleProviderToken;
+              merged.googleRefreshToken = prev.googleRefreshToken;
+              merged.googleTokenExpiresAt = prev.googleTokenExpiresAt;
+              merged.googleEmail = prev.googleEmail;
+            }
             lastSyncedJsonRef.current = JSON.stringify(merged);
             console.log("[Verify] settings sync across devices — working — loaded", Object.keys(data.data).length, "field(s) from server");
             if (data.data.twilioSid || data.data.googleProviderToken || data.data.stripeSecretKey || data.data.anthropicKey) {
@@ -960,7 +979,21 @@ export function App() {
         const { data, error } = await (supabase as any).from("app_settings").select("data, updated_at").eq("owner_id", crmUserId).maybeSingle();
         if (error || !data?.data) return;
         if (data.updated_at && data.updated_at === settingsLastSavedAtRef.current) return;
-        setSettings((prev: any) => ({ ...prev, ...data.data }));
+        setSettings((prev: any) => {
+          const merged = { ...prev, ...data.data };
+          // GoogleConnect — same rule as the initial load effect above: this
+          // 10s poll must never regress an existing local Google connection
+          // just because the debounced save to the server hasn't landed yet.
+          if (prev.googleProviderToken && !data.data.googleProviderToken) {
+            console.log("[GoogleConnect] server settings poll had no provider_token — preserving existing local Google connection instead of clearing it");
+            merged.googleConnected = prev.googleConnected;
+            merged.googleProviderToken = prev.googleProviderToken;
+            merged.googleRefreshToken = prev.googleRefreshToken;
+            merged.googleTokenExpiresAt = prev.googleTokenExpiresAt;
+            merged.googleEmail = prev.googleEmail;
+          }
+          return merged;
+        });
       } catch { /* app_settings table may not exist yet */ }
     };
     const interval = setInterval(pollSettings, 10000);
@@ -1669,13 +1702,20 @@ export function App() {
     // TWICE for one real connect: once from whichever one actually parsed the
     // original hash (session carries provider_token), and again from the
     // other's redundant re-establish of the same tokens (session does NOT
-    // carry provider_token — Supabase's setSession() never attaches it,
-    // that field only exists on the session object produced by parsing the
-    // original hash). Once a real provider_token has been captured for this
-    // page load, a later token-less firing must never be allowed to clobber
-    // it — this flag is the guard.
-    let googleTokenCapturedThisLoad = false;
-
+    // carry provider_token — Supabase's setSession() never attaches it, that
+    // field only exists on the session object produced by parsing the
+    // original hash).
+    //
+    // A closure-scoped "already captured this load" flag was tried here
+    // first and did not hold up — a flag read OUTSIDE the setState updater
+    // is checked against whatever the closure captured at subscribe time,
+    // not the actual current React state, so it's vulnerable to exactly the
+    // kind of re-subscribe/re-render timing this bug already lives in.
+    // Checking `prev` INSIDE the setSettings updater below is the fix: prev
+    // is always the true, current state at the moment this update actually
+    // applies, no matter how many times or in what order events fire — so
+    // "already have a real token, incoming call has none" is judged against
+    // reality, not a snapshot.
     const applyGoogleIdentity = (session: any) => {
       if (!session?.user) { console.log("[GoogleConnect] applyGoogleIdentity — no session, skipping"); return; }
       const googleId = (session.user.identities || []).find((i: any) => i.provider === "google");
@@ -1689,32 +1729,29 @@ export function App() {
       const bridgedRefreshToken = sessionStorage.getItem("smocks.grt") || "";
       if (bridgedRefreshToken) sessionStorage.removeItem("smocks.grt");
       const providerToken = bridgedToken || session.provider_token || "";
-
-      if (!providerToken && googleTokenCapturedThisLoad) {
-        // A good token was already captured earlier this page load (from an
-        // earlier firing of this same OAuth callback) — this later,
-        // token-less firing is the redundant duplicate, not a real
-        // disconnect. Only googleEmail/googleScopes would change here, and
-        // they're already correct from the first call — skip entirely so
-        // there is zero chance of touching googleProviderToken.
-        console.log("[GoogleConnect] applyGoogleIdentity — no provider_token on this event, but one was already captured this page load — ignoring duplicate firing, connection preserved");
-        return;
-      }
-
-      console.log("[GoogleConnect] applyGoogleIdentity — email:", googleEmail, "· token source:", bridgedToken ? "sessionStorage bridge" : session.provider_token ? "session.provider_token" : "NONE (returning session, not a fresh OAuth redirect — keeping previously persisted token)", "· has refresh token:", !!bridgedRefreshToken);
-      if (providerToken) googleTokenCapturedThisLoad = true;
-      // ITEM 10 — Google access tokens last ~1hr; recording when we captured
-      // this one lets sendViaGmail check expiry proactively (see
-      // lib/messaging.ts) instead of only discovering it's stale after a 401.
-      setSettings((prev: any) => ({
-        ...prev,
-        googleConnected: true,
-        googleEmail,
-        googleScopes: { gmail: true, calendar: true, drive: true, contacts: true, tasks: true },
-        ...(providerToken ? { googleProviderToken: providerToken, googleTokenExpiresAt: Date.now() + 55 * 60 * 1000 } : {}),
-        ...(bridgedRefreshToken ? { googleRefreshToken: bridgedRefreshToken } : {}),
-      }));
-      console.log("[GoogleConnect] settings updated — googleConnected: true, googleEmail:", googleEmail, "· googleProviderToken set:", !!providerToken);
+      console.log("[GoogleConnect] applyGoogleIdentity — email:", googleEmail, "· providerToken this call:", !!providerToken, "· has refresh token this call:", !!bridgedRefreshToken);
+      setSettings((prev: any) => {
+        if (!providerToken && prev.googleProviderToken) {
+          // Nothing new to contribute, and a real token already exists —
+          // per the fix requirement, DO NOTHING. Return prev unchanged (same
+          // reference) so React doesn't even re-render for this no-op.
+          console.log("[GoogleConnect] no provider_token on this event, but settings.googleProviderToken already exists — doing nothing, existing connection untouched");
+          return prev;
+        }
+        console.log("[GoogleConnect] saving google identity — provider token:", providerToken ? "NEW value from this event" : prev.googleProviderToken ? "keeping existing value" : "none yet on file");
+        return {
+          ...prev,
+          googleConnected: true,
+          googleEmail,
+          googleScopes: prev.googleScopes && Object.keys(prev.googleScopes).length ? prev.googleScopes : { gmail: true, calendar: true, drive: true, contacts: true, tasks: true },
+          // ITEM 10 — Google access tokens last ~1hr; recording when we
+          // captured this one lets sendViaGmail check expiry proactively
+          // (see lib/messaging.ts) instead of only discovering it's stale
+          // after a 401.
+          ...(providerToken ? { googleProviderToken: providerToken, googleTokenExpiresAt: Date.now() + 55 * 60 * 1000 } : {}),
+          ...(bridgedRefreshToken ? { googleRefreshToken: bridgedRefreshToken } : {}),
+        };
+      });
     };
 
     (async () => {
