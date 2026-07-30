@@ -145,7 +145,14 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
   // once, all saved to the job's crew array together.
   const emptyNewJobForm = () => ({ customerId: "", address: "", amount: "", scheduledDate: today(), scheduledTime: "", priority: "normal", notes: "", duration: "", crewEmpIds: [] as string[], jobType: "residential", isRecurring: false, recurringMode: "preset" as "preset" | "days" | "weeks" | "months" | "weekdays", recurringFreq: "monthly", recurringInterval: 1, recurringWeekdays: [] as number[] });
   const [newJobForm, setNewJobForm] = useState(emptyNewJobForm());
-  const [newJobCrewMode, setNewJobCrewMode] = useState<"assign" | "request">("assign");
+  // BLOCKER — this used to be ONE shared mode applied to every selected
+  // employee at once, so there was no way to assign one crew member directly
+  // while requesting another on the same job (the actual ask), and — worse —
+  // an owner who meant "assign" for everyone but had this default to
+  // "request" (or vice versa) would see an employee they thought was
+  // assigned sitting only in job_requests, silently absent from crew/myJobs.
+  // Per-employee mode removes that whole class of mismatch.
+  const [crewModeById, setCrewModeById] = useState<Record<string, "assign" | "request">>({});
   const [quickReqJobId, setQuickReqJobId] = useState<string | null>(null);
   const [quickReqEmpId, setQuickReqEmpId] = useState("");
   const [quickReqMsg, setQuickReqMsg] = useState("");
@@ -660,15 +667,7 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
           </div>
 
           <div>
-            <div className="flex items-center justify-between mb-1">
-              <label className="text-xs text-white/60 block">Crew (optional, select multiple)</label>
-              {newJobForm.crewEmpIds.length > 0 && (
-                <GSel className="!w-32 !py-1 !text-xs" value={newJobCrewMode} onChange={e => setNewJobCrewMode(e.target.value as any)}>
-                  <option value="assign" className="bg-black">Assign</option>
-                  <option value="request" className="bg-black">Request</option>
-                </GSel>
-              )}
-            </div>
+            <label className="text-xs text-white/60 block mb-1">Crew (optional, select multiple)</label>
             {/* FIX 5 — was a single-select <GSel>, so only one crew member
                 could ever be picked when scheduling a job. Toggle-button pills
                 (same pattern JobDetailModal already uses for editing an
@@ -680,7 +679,15 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
                 const unavail = newJobForm.scheduledDate && isEmployeeUnavailable(e, newJobForm.scheduledDate);
                 return (
                   <button key={e.id} type="button"
-                    onClick={() => setNewJobForm(f => ({ ...f, crewEmpIds: f.crewEmpIds.includes(e.id) ? f.crewEmpIds.filter(id => id !== e.id) : [...f.crewEmpIds, e.id] }))}
+                    onClick={() => setNewJobForm(f => {
+                      const already = f.crewEmpIds.includes(e.id);
+                      // Default a newly-selected employee to "assign" — matches
+                      // this control's previous default so existing behavior
+                      // (pick people, they're on the crew) doesn't change for
+                      // anyone who never touches the per-person toggle below.
+                      if (!already) setCrewModeById(m => (m[e.id] ? m : { ...m, [e.id]: "assign" }));
+                      return { ...f, crewEmpIds: already ? f.crewEmpIds.filter(id => id !== e.id) : [...f.crewEmpIds, e.id] };
+                    })}
                     title={unavail ? `⚠️ ${e.firstName} is unavailable on this day. Schedule anyway?` : undefined}
                     className={"text-xs px-3 py-1.5 rounded-lg border transition " + (sel ? "bg-red-900/40 border-red-500/50 text-red-300" : unavail ? "bg-yellow-950/20 border-yellow-700/40 text-yellow-300" : "bg-white/5 border-white/10 text-white/60 hover:text-white")}>
                     {e.firstName} {e.lastName[0]}.{unavail ? " ⚠️" : ""}
@@ -702,18 +709,42 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
                 </div>
               ) : null;
             })()}
+            {/* BLOCKER — per-employee Assign/Request, not one shared mode for
+                the whole batch. Lets the owner assign one crew member directly
+                while requesting another on the very same job. Each selected
+                employee defaults to "assign" (set above) until toggled. */}
             {newJobForm.crewEmpIds.length > 0 && (
-              <div className="text-[11px] text-white/30 mt-1">
-                {newJobCrewMode === "assign"
-                  ? "Adds them to the crew immediately and emails them — no response needed."
-                  : "Sends a request each must accept or decline before they're on the crew."}
+              <div className="mt-2 space-y-1.5">
+                {newJobForm.crewEmpIds.map(id => {
+                  const emp = employees.find((e: any) => e.id === id);
+                  if (!emp) return null;
+                  const mode = crewModeById[id] || "assign";
+                  return (
+                    <div key={id} className="flex items-center justify-between gap-2 text-xs bg-black/30 border border-white/5 rounded-lg px-2.5 py-1.5">
+                      <span className="text-white/70">{emp.firstName} {emp.lastName}</span>
+                      <div className="flex gap-1 bg-black/40 border border-white/10 rounded-lg p-0.5">
+                        <button type="button" onClick={() => setCrewModeById(m => ({ ...m, [id]: "assign" }))}
+                          className={"px-2 py-1 rounded-md text-[10px] font-semibold transition " + (mode === "assign" ? "bg-red-900/50 text-red-300" : "text-white/40 hover:text-white/70")}>
+                          Assign
+                        </button>
+                        <button type="button" onClick={() => setCrewModeById(m => ({ ...m, [id]: "request" }))}
+                          className={"px-2 py-1 rounded-md text-[10px] font-semibold transition " + (mode === "request" ? "bg-yellow-900/50 text-yellow-300" : "text-white/40 hover:text-white/70")}>
+                          Request
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+                <div className="text-[11px] text-white/30">
+                  Assign adds them to the crew immediately and emails them — no response needed. Request sends a request they must accept or decline before they're on the crew.
+                </div>
               </div>
             )}
             {/* FIX 4 — "Request" mode writes to job_requests with owner_id:
                 ownerId; if the session bootstrap hasn't resolved it yet, warn
                 up front instead of letting the owner hit save and find out via
                 an error toast after the fact. */}
-            {newJobForm.crewEmpIds.length > 0 && newJobCrewMode === "request" && !ownerId && (
+            {newJobForm.crewEmpIds.some(id => (crewModeById[id] || "assign") === "request") && !ownerId && (
               <div className="text-[11px] text-yellow-300 bg-yellow-950/30 border border-yellow-700/40 rounded px-2 py-1 mt-1 flex items-center gap-1">
                 ⏳ Still finishing sign-in — the job will save, but wait a few seconds before requesting crew.
               </div>
@@ -742,11 +773,15 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
             <GBtn onClick={async () => {
               if (!newJobForm.customerId) { toast("Select a customer", "error"); return; }
               if (!newJobForm.scheduledDate) { toast("Enter a date", "error"); return; }
-              // FIX 5 — assignedEmps is now potentially several employees, not
-              // just one; directAssign/request applies to the whole batch
-              // (the shared newJobCrewMode toggle above the pill list).
+              // BLOCKER — assignedEmps now splits per-employee by crewModeById
+              // instead of one shared mode for the whole batch, so "assign
+              // Alice, request Bob" on the same job is possible, and an owner
+              // who only meant to assign can no longer have someone silently
+              // land in job_requests instead because a single toggle applied
+              // to everyone.
               const assignedEmps = newJobForm.crewEmpIds.map(id => employees.find((e: any) => e.id === id)).filter(Boolean) as any[];
-              const directAssign = assignedEmps.length > 0 && newJobCrewMode === "assign";
+              const directAssignEmps = assignedEmps.filter(e => (crewModeById[e.id] || "assign") === "assign");
+              const requestEmps = assignedEmps.filter(e => (crewModeById[e.id] || "assign") === "request");
               const job = {
                 id: uid(), customerId: newJobForm.customerId,
                 address: newJobForm.address || customers.find(c => c.id === newJobForm.customerId)?.address || "",
@@ -758,9 +793,14 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
                 jobType: newJobForm.jobType as any,
                 notes: newJobForm.notes,
                 duration: newJobForm.duration ? Number(newJobForm.duration) : undefined,
-                crew: directAssign ? assignedEmps.map(e => e.id) : [], checklist: [], photos: [], commLog: [], chemicalsUsed: [], equipment: [], tags: [],
+                crew: directAssignEmps.map(e => e.id), checklist: [], photos: [], commLog: [], chemicalsUsed: [], equipment: [], tags: [],
                 loggedHours: 0, createdAt: today(),
-                ...(directAssign ? { crewAssignedAt: Object.fromEntries(assignedEmps.map(e => [e.id, Date.now()])) } : {}),
+                // Same defensive default AlfredPage.tsx's schedule_job tool
+                // uses — harmless if this deployment's jobs table doesn't
+                // require it (stripped on retry above if the column doesn't
+                // exist at all), but covers it if it's a real NOT NULL column.
+                organizationId: (settings as any)?.organizationId || "17bbffa0-f5d9-47db-b484-2907b2e8c9a3",
+                ...(directAssignEmps.length > 0 ? { crewAssignedAt: Object.fromEntries(directAssignEmps.map(e => [e.id, Date.now()])) } : {}),
                 ...(newJobForm.isRecurring ? {
                   isRecurring: true,
                   recurringMode: newJobForm.recurringMode,
@@ -770,13 +810,14 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
                 } : {}),
               };
               if (job.isRecurring) console.log("[Verify] recurring jobs with custom schedules — working — mode:", job.recurringMode);
-              console.log("[CrewFlow] scheduling job with crew:", assignedEmps.map(e => e.firstName), "mode:", newJobCrewMode);
+              console.log("[CrewFlow] scheduling job — assigned:", directAssignEmps.map(e => e.firstName), "requested:", requestEmps.map(e => e.firstName), "crew field on insert:", job.crew);
               setJobs(prev => [...prev, job]);
               // Close the modal immediately — none of the follow-up work below
               // (Google Calendar, crew email/request) should be able to block
               // the UI if a network call hangs.
               setNewJobOpen(false);
               setNewJobForm(f => ({ ...f, crewEmpIds: [] }));
+              setCrewModeById({});
               toast("Job scheduled for " + newJobForm.scheduledDate);
               // A brand-new job previously only reached Supabase via the
               // 30s app-level auto-save batch — the employee's portal polls
@@ -799,7 +840,12 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
                   // optimistic local state above. Retry with those columns
                   // stripped so the job (and its crew) still lands.
                   console.error("[Recurring] new job insert failed:", error.message, "— retrying without recurring-schedule columns");
-                  const { isRecurring, recurringMode, recurringFreq, recurringInterval, recurringWeekdays, ...coreJob } = job as any;
+                  // Also drop organizationId on retry — same defensive reasoning
+                  // as AlfredPage.tsx's schedule_job tool: if this deployment's
+                  // jobs table doesn't have that column at all, PostgREST rejects
+                  // the WHOLE insert over it same as a missing recurring column
+                  // would, and crew would be silently lost right along with it.
+                  const { isRecurring, recurringMode, recurringFreq, recurringInterval, recurringWeekdays, organizationId, ...coreJob } = job as any;
                   const retry = await (supabase as any).from("jobs").insert(coreJob);
                   if (retry?.error) {
                     console.error("[Recurring] core-column retry also failed:", retry.error.message);
@@ -834,43 +880,47 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
                 }).catch(() => {});
               }
               // Notify each selected crew member — assigned (no response needed) or requested (accept/decline).
+              // BLOCKER — split into the two per-employee lists computed above
+              // instead of branching a single shared `directAssign` inside the
+              // loop, so "assign Alice, request Bob" sends the right email to
+              // the right person instead of applying one mode to everyone.
               const cust = customers.find(c => c.id === job.customerId);
               const custLine = cust ? `<li><b>Customer:</b> ${cust.firstName} ${cust.lastName}</li>` : "";
-              for (const assignedEmp of assignedEmps) {
+              for (const assignedEmp of directAssignEmps) {
                 if (!assignedEmp?.email) continue;
-                if (directAssign) {
-                  const portalLink = `${window.location.origin}${window.location.pathname}#/portal`;
-                  const html = emailShell(settings.companyName || "Crew Boss", "Job Assignment", `<p>Hi ${assignedEmp.firstName},</p><p>You've been assigned to a new job:</p><ul><li><b>Date:</b> ${job.scheduledDate}${job.scheduledTime ? " at " + job.scheduledTime : ""}</li><li><b>Address:</b> ${job.address}</li>${custLine}</ul>` + emailButton("Open Crew Portal", portalLink));
-                  withTimeout(sendEmail(settings, { to: assignedEmp.email, subject: `You've Been Assigned — ${job.scheduledDate}`, body: html }), 8000, "Email send").catch((e: any) => { console.warn("Assignment email failed — job still assigned:", e?.message); toast?.(`Assigned ${assignedEmp.firstName}, but the notification email failed to send`, "red"); });
-                } else {
-                  (async () => {
-                    try {
-                      console.log("[CrewRequest] ownerId at request time:", ownerId || "(empty)", "employee:", assignedEmp.firstName);
-                      if (!ownerId) {
-                        console.warn("[CrewRequest] blocked — ownerId still empty (session bootstrap not resolved yet)");
-                        toast?.(`Job saved, but the request to ${assignedEmp.firstName} failed — still finishing sign-in, try again in a moment`, "red");
-                        return;
-                      }
-                      const { data, error } = await withTimeout<any>(
-                        (supabase as any).from("job_requests").insert({
-                          job_id: job.id, employee_id: assignedEmp.id, owner_id: ownerId, status: "pending",
-                        }).select("id").single(),
-                        15000, "Save request"
-                      );
-                      if (error || !data?.id) {
-                        console.error("Failed to create job_request:", error);
-                        toast?.(`Job saved, but the request to ${assignedEmp.firstName} failed — ` + (error?.message || "run the job_requests SQL in Supabase first"), "red");
-                        return;
-                      }
-                      const reqUrl = `${window.location.origin}${window.location.pathname}#/portal?request=${data.id}`;
-                      const html = emailShell(settings.companyName || "Crew Boss", "Job Request", `<p>Hi ${assignedEmp.firstName},</p><p>You have a new job request:</p><ul><li><b>Date:</b> ${job.scheduledDate}${job.scheduledTime ? " at " + job.scheduledTime : ""}</li><li><b>Address:</b> ${job.address}</li>${custLine}</ul><div style="text-align:center;margin:22px 0 4px"><a href="${reqUrl}" style="display:inline-block;background:#16a34a;color:#fff;text-decoration:none;font-weight:700;font-size:14px;padding:13px 24px;border-radius:10px;margin-right:8px">✓ Accept Job</a><a href="${reqUrl}&action=deny" style="display:inline-block;background:#dc2626;color:#fff;text-decoration:none;font-weight:700;font-size:14px;padding:13px 24px;border-radius:10px">✗ Decline</a></div>`);
-                      withTimeout(sendEmail(settings, { to: assignedEmp.email, subject: `Job Request — ${job.scheduledDate}`, body: html }), 8000, "Email send").catch((e: any) => console.warn("Job request email failed — request still saved:", e?.message));
-                    } catch (e: any) {
-                      console.error("Crew request failed:", e);
-                      toast?.(`Job saved, but the request to ${assignedEmp.firstName} failed — ` + (e?.message || "try again"), "red");
+                const portalLink = `${window.location.origin}${window.location.pathname}#/portal`;
+                const html = emailShell(settings.companyName || "Crew Boss", "Job Assignment", `<p>Hi ${assignedEmp.firstName},</p><p>You've been assigned to a new job:</p><ul><li><b>Date:</b> ${job.scheduledDate}${job.scheduledTime ? " at " + job.scheduledTime : ""}</li><li><b>Address:</b> ${job.address}</li>${custLine}</ul>` + emailButton("Open Crew Portal", portalLink));
+                withTimeout(sendEmail(settings, { to: assignedEmp.email, subject: `You've Been Assigned — ${job.scheduledDate}`, body: html }), 8000, "Email send").catch((e: any) => { console.warn("Assignment email failed — job still assigned:", e?.message); toast?.(`Assigned ${assignedEmp.firstName}, but the notification email failed to send`, "red"); });
+              }
+              for (const assignedEmp of requestEmps) {
+                if (!assignedEmp?.email) continue;
+                (async () => {
+                  try {
+                    console.log("[CrewRequest] ownerId at request time:", ownerId || "(empty)", "employee:", assignedEmp.firstName);
+                    if (!ownerId) {
+                      console.warn("[CrewRequest] blocked — ownerId still empty (session bootstrap not resolved yet)");
+                      toast?.(`Job saved, but the request to ${assignedEmp.firstName} failed — still finishing sign-in, try again in a moment`, "red");
+                      return;
                     }
-                  })();
-                }
+                    const { data, error } = await withTimeout<any>(
+                      (supabase as any).from("job_requests").insert({
+                        job_id: job.id, employee_id: assignedEmp.id, owner_id: ownerId, status: "pending",
+                      }).select("id").single(),
+                      15000, "Save request"
+                    );
+                    if (error || !data?.id) {
+                      console.error("Failed to create job_request:", error);
+                      toast?.(`Job saved, but the request to ${assignedEmp.firstName} failed — ` + (error?.message || "run the job_requests SQL in Supabase first"), "red");
+                      return;
+                    }
+                    const reqUrl = `${window.location.origin}${window.location.pathname}#/portal?request=${data.id}`;
+                    const html = emailShell(settings.companyName || "Crew Boss", "Job Request", `<p>Hi ${assignedEmp.firstName},</p><p>You have a new job request:</p><ul><li><b>Date:</b> ${job.scheduledDate}${job.scheduledTime ? " at " + job.scheduledTime : ""}</li><li><b>Address:</b> ${job.address}</li>${custLine}</ul><div style="text-align:center;margin:22px 0 4px"><a href="${reqUrl}" style="display:inline-block;background:#16a34a;color:#fff;text-decoration:none;font-weight:700;font-size:14px;padding:13px 24px;border-radius:10px;margin-right:8px">✓ Accept Job</a><a href="${reqUrl}&action=deny" style="display:inline-block;background:#dc2626;color:#fff;text-decoration:none;font-weight:700;font-size:14px;padding:13px 24px;border-radius:10px">✗ Decline</a></div>`);
+                    withTimeout(sendEmail(settings, { to: assignedEmp.email, subject: `Job Request — ${job.scheduledDate}`, body: html }), 8000, "Email send").catch((e: any) => console.warn("Job request email failed — request still saved:", e?.message));
+                  } catch (e: any) {
+                    console.error("Crew request failed:", e);
+                    toast?.(`Job saved, but the request to ${assignedEmp.firstName} failed — ` + (e?.message || "try again"), "red");
+                  }
+                })();
               }
             }}>Schedule Job</GBtn>
           </div>

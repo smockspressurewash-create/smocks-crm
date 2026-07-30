@@ -210,7 +210,14 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
   const [signerName, setSignerName] = useState("");
   const [gSyncing, setGSyncing] = useState(false);
   const [notifying, setNotifying] = useState(false);
-  const [showRequestForm, setShowRequestForm] = useState(false);
+  // ITEM (edit-mode parity) — was a single showRequestForm boolean driving one
+  // shared dropdown-based request form, so requesting a SPECIFIC employee
+  // meant opening a global form and picking them from a <select> — not a true
+  // per-employee control like the new-job form's per-row Assign/Request
+  // toggle. Now tracks WHICH employee's inline request panel is open, so each
+  // not-yet-crewed employee gets their own Assign / Request pair directly on
+  // their row, matching JobsPage.tsx's new-job crew picker.
+  const [requestOpenId, setRequestOpenId] = useState<string | null>(null);
   const [requestEmpId, setRequestEmpId] = useState("");
   const [requestMsg, setRequestMsg] = useState("");
   const [requestSending, setRequestSending] = useState(false);
@@ -595,7 +602,7 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
         }
         toast(`Request sent to ${emp.firstName} ✓`, "green");
         console.log("[Verify] requesting employees for jobs — working");
-        setShowRequestForm(false);
+        setRequestOpenId(null);
         setRequestMsg("");
         setRequestEmpId("");
       } else {
@@ -1179,10 +1186,6 @@ ${job.notes ? `<div class="section"><h2>Job Notes</h2><p>${job.notes}</p></div>`
                   <Mail size={9} />{notifying ? "Sending…" : "Notify"}
                 </button>
               )}
-              <button onClick={() => setShowRequestForm(s => !s)}
-                className="text-[10px] flex items-center gap-1 px-2 py-1 rounded-lg bg-yellow-950/40 hover:bg-yellow-900/50 border border-yellow-700/30 text-yellow-400 hover:text-yellow-300 transition">
-                <Send size={9} />Request
-              </button>
               <button onClick={() => setShowScheduleForm(s => !s)}
                 className="text-[10px] flex items-center gap-1 px-2 py-1 rounded-lg bg-purple-950/40 hover:bg-purple-900/50 border border-purple-700/30 text-purple-300 hover:text-purple-200 transition">
                 <Calendar size={9} />Schedule & Notify
@@ -1216,33 +1219,79 @@ ${job.notes ? `<div class="section"><h2>Job Notes</h2><p>${job.notes}</p></div>`
             </div>
           )}
           <div className="text-[10px] text-white/40 uppercase tracking-wider mb-1">{(job.crew || []).length > 0 ? "Add More" : "Assign Crew"}</div>
-          <div className="flex gap-2 flex-wrap">
+          <div className="flex flex-wrap gap-1.5">
             {/* Owner self-assign — uses the same ownerEmployee/ownerEmpId
                 derived above (from the real employees row, not settings) so
                 this button doesn't silently disappear for an owner who never
-                set settings.ownerName. */}
+                set settings.ownerName. Owner isn't request-able (there's no
+                one else to accept/decline on their behalf), so just Assign. */}
             {ownerEmployee && !(job.crew || []).includes(ownerEmpId) && (
               <button key="owner" onClick={() => toggleCrew(ownerEmpId)}
                 className="text-xs px-3 py-1.5 rounded-lg border transition bg-white/5 border-white/10 text-white/60 hover:text-white">
                 {ownerEmployee.firstName} {ownerEmployee.lastName} (Owner)
               </button>
             )}
-            {/* role !== "owner" — the owner already has their own dedicated
-                button above; without this exclusion they'd be listed twice
-                once their employees row exists (post Fix 1). Already-assigned
-                crew are excluded here too — removal now happens via the
-                explicit X above, not by re-clicking this pill. */}
+          </div>
+          {/* ITEM (edit-mode parity) — was one button per employee (click =
+              instant assign), with requesting only reachable via a separate
+              global "Request" button + single-select dropdown above. Each
+              not-yet-crewed employee now gets its own Assign / Request pair,
+              matching the new-job form's per-employee toggle — you can assign
+              one and request another on the same existing job, individually.
+              role !== "owner" — the owner already has their own dedicated
+              button above. Already-assigned crew are excluded here too —
+              removal happens via the explicit X in "Assigned Crew" above. */}
+          <div className="space-y-1.5 mt-1.5">
             {employees.filter(e => e.status === "active" && e.role !== "owner" && !(job.crew || []).includes(e.id)).map(e => {
               // FEATURE 5 — flag unavailable crew right on the assignment
               // button, covering both specific blocked dates and recurring
               // weekday-offs.
               const unavail = job.scheduledDate && isEmployeeUnavailable(e as any, job.scheduledDate);
+              const requestOpen = requestOpenId === e.id;
               return (
-                <button key={e.id} onClick={() => toggleCrew(e.id)} title={unavail ? `⚠️ ${e.firstName} is unavailable on this day. Schedule anyway?` : undefined} className={"text-xs px-3 py-1.5 rounded-lg border transition " + (unavail ? "bg-yellow-950/20 border-yellow-700/40 text-yellow-300" : "bg-white/5 border-white/10 text-white/60 hover:text-white")}>
-                  {e.firstName} {e.lastName[0]}.{unavail ? " ⚠️" : ""}
-                </button>
+                <div key={e.id} className={"rounded-lg border overflow-hidden " + (unavail ? "bg-yellow-950/10 border-yellow-700/30" : "bg-white/5 border-white/10")}>
+                  <div className="flex items-center justify-between gap-2 px-2.5 py-1.5">
+                    <span className={"text-xs " + (unavail ? "text-yellow-300" : "text-white/70")} title={unavail ? `⚠️ ${e.firstName} is unavailable on this day. Schedule anyway?` : undefined}>
+                      {e.firstName} {e.lastName}{unavail ? " ⚠️" : ""}
+                    </span>
+                    <div className="flex gap-1 flex-shrink-0">
+                      <button onClick={() => toggleCrew(e.id)}
+                        className="text-[10px] font-semibold px-2.5 py-1 rounded-md bg-red-950/30 hover:bg-red-900/40 border border-red-700/30 text-red-300 hover:text-red-200 transition">
+                        Assign
+                      </button>
+                      <button onClick={() => { setRequestOpenId(requestOpen ? null : e.id); setRequestEmpId(e.id); setRequestMsg(""); }}
+                        className={"text-[10px] font-semibold px-2.5 py-1 rounded-md border transition " + (requestOpen ? "bg-yellow-900/50 border-yellow-600/50 text-yellow-200" : "bg-yellow-950/20 hover:bg-yellow-900/30 border-yellow-700/30 text-yellow-400 hover:text-yellow-300")}>
+                        Request
+                      </button>
+                    </div>
+                  </div>
+                  {requestOpen && (
+                    <div className="px-2.5 pb-2.5 pt-1 space-y-2 border-t border-yellow-700/20">
+                      <textarea value={requestMsg} onChange={ev => setRequestMsg(ev.target.value)}
+                        placeholder="Message to employee (optional)…" rows={2}
+                        className="w-full bg-black/60 border border-white/20 rounded-lg px-2.5 py-2 text-xs text-white placeholder-white/30 focus:outline-none focus:border-yellow-500/50 resize-none" />
+                      <div className="flex gap-2">
+                        {/* FIX 4 — disable up front instead of only erroring after
+                            the click when ownerId (seeded from getLastOwnerId() at
+                            App.tsx bootstrap) hasn't resolved yet. */}
+                        <button onClick={sendJobRequest} disabled={requestSending || !ownerId}
+                          title={!ownerId ? "Still finishing sign-in — wait a moment" : undefined}
+                          className="flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-lg bg-yellow-600 hover:bg-yellow-500 disabled:opacity-40 text-black text-xs font-bold transition">
+                          <Send size={11} />{requestSending ? "Sending…" : !ownerId ? "Finishing sign-in…" : "Send Request"}
+                        </button>
+                        <button onClick={() => setRequestOpenId(null)}
+                          className="px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-white/60 text-xs transition">
+                          Cancel
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
               );
             })}
+            {employees.filter(e => e.status === "active" && e.role !== "owner" && !(job.crew || []).includes(e.id)).length === 0 && (
+              <div className="text-[11px] text-white/30">No other active employees available</div>
+            )}
           </div>
           {/* FEATURE 5 — explicit warning banner for anyone already assigned
               whose availability conflicts with this job's date (e.g. the
@@ -1257,48 +1306,6 @@ ${job.notes ? `<div class="section"><h2>Job Notes</h2><p>${job.notes}</p></div>`
               </div>
             );
           })()}
-          {showRequestForm && (
-            <div className="mt-3 p-3 rounded-xl bg-yellow-950/20 border border-yellow-700/30 space-y-2">
-              <div className="text-xs text-yellow-300 font-semibold">Request an Employee for This Job</div>
-              <select value={requestEmpId} onChange={e => setRequestEmpId(e.target.value)}
-                className="w-full bg-black/60 border border-white/20 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-yellow-500/50">
-                <option value="">Select employee…</option>
-                {employees.filter(e => e.status === "active").map(e => (
-                  <option key={e.id} value={e.id}>{e.firstName} {e.lastName}</option>
-                ))}
-              </select>
-              {requestEmpId && (() => {
-                const emp = employees.find(e => e.id === requestEmpId);
-                // FIX 6 — this used to check emp.availability directly, which
-                // misses recurringDaysOff (e.g. "every Sunday"); use the same
-                // shared isEmployeeUnavailable check as everywhere else so
-                // this can't silently disagree with the button badges above.
-                const isUnavail = job.scheduledDate && isEmployeeUnavailable(emp as any, job.scheduledDate);
-                return isUnavail ? (
-                  <div className="text-[10px] text-yellow-300 bg-yellow-950/30 border border-yellow-700/40 rounded-lg px-2 py-1.5">
-                    ⚠️ {emp?.firstName} is unavailable on this day. Schedule anyway?
-                  </div>
-                ) : null;
-              })()}
-              <textarea value={requestMsg} onChange={e => setRequestMsg(e.target.value)}
-                placeholder="Message to employee (optional)…" rows={2}
-                className="w-full bg-black/60 border border-white/20 rounded-lg px-3 py-2 text-xs text-white placeholder-white/30 focus:outline-none focus:border-yellow-500/50 resize-none" />
-              <div className="flex gap-2">
-                {/* FIX 4 — disable up front instead of only erroring after the
-                    click when ownerId (seeded from getLastOwnerId() at
-                    App.tsx bootstrap) hasn't resolved yet. */}
-                <button onClick={sendJobRequest} disabled={!requestEmpId || requestSending || !ownerId}
-                  title={!ownerId ? "Still finishing sign-in — wait a moment" : undefined}
-                  className="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg bg-yellow-600 hover:bg-yellow-500 disabled:opacity-40 text-black text-xs font-bold transition">
-                  <Send size={11} />{requestSending ? "Sending…" : !ownerId ? "Finishing sign-in…" : "Send Request"}
-                </button>
-                <button onClick={() => setShowRequestForm(false)}
-                  className="px-3 py-2 rounded-lg bg-white/5 hover:bg-white/10 text-white/60 text-xs transition">
-                  Cancel
-                </button>
-              </div>
-            </div>
-          )}
           {showScheduleForm && (
             <div className="mt-3 p-3 rounded-xl bg-purple-950/20 border border-purple-700/30 space-y-2">
               <div className="text-xs text-purple-300 font-semibold">Schedule & Notify — assigns immediately, no acceptance needed</div>
