@@ -1,3 +1,24 @@
+import { supabase } from "./supabase";
+
+// ─── Job media (Storage-backed photos/videos/signatures) ──────────────────────
+// Every Photo/ChecklistPhoto/JobVideo/JobSignOff can carry EITHER a Storage
+// `url` (new captures, once the job-media bucket exists — see
+// supabase/migrations/0017) OR a legacy inline `dataUrl`/`sigData` (every
+// capture before this migration, or any capture where the Storage upload
+// failed and fell back). Every render site must call mediaSrc() instead of
+// reading .dataUrl directly, or Storage-backed media renders as broken.
+export const mediaSrc = (url?: string | null, dataUrl?: string | null): string => url || dataUrl || "";
+
+// Reconstructs a Blob from a data: URL (compressImageFile's output) for upload.
+export const dataUrlToBlob = (dataUrl: string): Blob => {
+  const [header, b64] = dataUrl.split(",");
+  const mime = /data:(.*?);base64/.exec(header)?.[1] || "image/jpeg";
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return new Blob([bytes], { type: mime });
+};
+
 // ─── Image compression (FIX 6) ────────────────────────────────────────────────
 // Job photos are stored as base64 dataURLs directly inside the `jobs.photos`
 // JSONB column. An uncompressed phone-camera photo is routinely 3-8MB; each
@@ -569,6 +590,34 @@ export const withTimeout = <T,>(p: Promise<T>, ms: number, label: string): Promi
     p,
     new Promise<T>((_, reject) => setTimeout(() => reject(new Error(label + " timed out")), ms)),
   ]);
+
+const JOB_MEDIA_BUCKET = "job-media";
+
+// Uploads a photo/video/signature to the job-media Storage bucket and
+// returns its public URL — or `null` on ANY failure (bucket/policy not
+// applied yet — see supabase/migrations/0017 — offline, timeout, etc.).
+// Callers MUST treat null as "fall back to the dataUrl behavior from before
+// this migration," never as a thrown error — this function itself never
+// throws, so photo capture can never regress to worse than it was before
+// Storage existed.
+export const uploadJobMedia = async (blob: Blob, path: string, contentType?: string): Promise<string | null> => {
+  try {
+    const { error } = await withTimeout<any>(
+      (supabase as any).storage.from(JOB_MEDIA_BUCKET).upload(path, blob, {
+        contentType: contentType || blob.type || "application/octet-stream",
+        upsert: true,
+      }),
+      15000,
+      "Media upload to Storage"
+    );
+    if (error) { console.warn("[uploadJobMedia] upload failed, falling back to inline dataUrl:", error.message); return null; }
+    const { data } = (supabase as any).storage.from(JOB_MEDIA_BUCKET).getPublicUrl(path);
+    return data?.publicUrl || null;
+  } catch (e: any) {
+    console.warn("[uploadJobMedia] threw, falling back to inline dataUrl:", e?.message);
+    return null;
+  }
+};
 
 // BLOCKER 6 (mobile round 9) — Alfred's multi-step tool chains (create
 // customer → schedule job → assign employees) each write to Supabase with no

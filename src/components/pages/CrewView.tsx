@@ -20,7 +20,7 @@ import {
   Tooltip, ResponsiveContainer, Area, AreaChart, LineChart, Line,
   ComposedChart, Legend
 } from "recharts";
-import { fmt, uid, today, localDateStr, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE } from "../../lib/utils";
+import { fmt, uid, today, localDateStr, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, compressImageFile, mediaSrc, dataUrlToBlob, uploadJobMedia } from "../../lib/utils";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
 import { twilioSend, sendEmail, emailShell } from "../../lib/messaging";
 import { seedWeather } from "../../lib/weather";
@@ -509,8 +509,13 @@ export function CrewView({ jobs = [], setJobs, customers = [], employees = [], t
               <label className="cursor-pointer">
                 <input type="file" accept="image/*" capture="environment" className="hidden" onChange={e => {
                   const f = e.target.files?.[0]; if (!f) return;
-                  const r = new FileReader(); r.onload = ev => updateJob(j.id, { photos: [...(j.photos || []), { id: uid(), type: "before", dataUrl: ev.target.result, addedAt: today(), caption: "Before" }] });
-                  r.readAsDataURL(f); e.target.value = "";
+                  compressImageFile(f).then(async dataUrl => {
+                    const id = uid();
+                    const url = await uploadJobMedia(dataUrlToBlob(dataUrl), `${j.id}/photo-${id}.jpg`, "image/jpeg");
+                    const newPhoto = url ? { id, type: "before", url, addedAt: today(), caption: "Before" } : { id, type: "before", dataUrl, addedAt: today(), caption: "Before" };
+                    updateJob(j.id, { photos: [...(j.photos || []), newPhoto] });
+                  });
+                  e.target.value = "";
                   toast("Before photo added");
                 }} />
                 <div className="flex items-center justify-center gap-1.5 py-2.5 rounded-xl bg-blue-950/30 border border-blue-700/40 text-blue-300 text-xs font-medium">📷 Before</div>
@@ -518,8 +523,13 @@ export function CrewView({ jobs = [], setJobs, customers = [], employees = [], t
               <label className="cursor-pointer">
                 <input type="file" accept="image/*" capture="environment" className="hidden" onChange={e => {
                   const f = e.target.files?.[0]; if (!f) return;
-                  const r = new FileReader(); r.onload = ev => updateJob(j.id, { photos: [...(j.photos || []), { id: uid(), type: "after", dataUrl: ev.target.result, addedAt: today(), caption: "After" }] });
-                  r.readAsDataURL(f); e.target.value = "";
+                  compressImageFile(f).then(async dataUrl => {
+                    const id = uid();
+                    const url = await uploadJobMedia(dataUrlToBlob(dataUrl), `${j.id}/photo-${id}.jpg`, "image/jpeg");
+                    const newPhoto = url ? { id, type: "after", url, addedAt: today(), caption: "After" } : { id, type: "after", dataUrl, addedAt: today(), caption: "After" };
+                    updateJob(j.id, { photos: [...(j.photos || []), newPhoto] });
+                  });
+                  e.target.value = "";
                   toast("After photo added");
                 }} />
                 <div className="flex items-center justify-center gap-1.5 py-2.5 rounded-xl bg-green-950/30 border border-green-700/40 text-green-300 text-xs font-medium">✨ After</div>
@@ -527,7 +537,7 @@ export function CrewView({ jobs = [], setJobs, customers = [], employees = [], t
             </div>
             {(j.photos || []).length > 0 && <div className="mt-2 flex gap-1.5 overflow-x-auto pb-1">
               {(j.photos || []).map((p, i) => <div key={i} className="w-16 h-16 rounded-lg overflow-hidden flex-shrink-0 border border-white/10 relative">
-                {p.dataUrl ? <img src={p.dataUrl} alt="" className="w-full h-full object-cover" /> : <div className="w-full h-full bg-white/10 flex items-center justify-center text-lg">{p.type === "before" ? "📷" : "✨"}</div>}
+                {(p.url || p.dataUrl) ? <img src={mediaSrc(p.url, p.dataUrl)} alt="" className="w-full h-full object-cover" /> : <div className="w-full h-full bg-white/10 flex items-center justify-center text-lg">{p.type === "before" ? "📷" : "✨"}</div>}
               </div>)}
             </div>}
 

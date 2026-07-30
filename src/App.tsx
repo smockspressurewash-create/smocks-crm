@@ -1637,7 +1637,13 @@ export function App() {
         .on("postgres_changes", { event: "*", schema: "public", table: "employees" }, () => { refetchEmployees(); })
         .subscribe();
     } catch { /* realtime may not be enabled on this project */ }
-    const dataInterval = setInterval(() => { if (shouldPollCrossDevice()) refetchData(); }, 10000);
+    // EGRESS FIX — jobs/customers/estimates carry inline base64 photos/videos
+    // (see types/index.ts Photo.dataUrl etc.), so a select("*") poll re-
+    // downloads every job's full media on every tick. Realtime above already
+    // covers instant updates; this interval is only the cross-device/missed-
+    // event fallback, so widened from 10s to 60s (6x less egress) rather than
+    // removed outright.
+    const dataInterval = setInterval(() => { if (shouldPollCrossDevice()) refetchData(); }, 60000);
     const crewInterval = setInterval(() => { if (shouldPollCrossDevice()) refetchEmployees(); }, 3000);
     return () => {
       clearInterval(dataInterval);

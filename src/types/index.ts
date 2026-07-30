@@ -179,14 +179,16 @@ export interface ServiceChecklistItem {
 export interface Photo {
   id: string;
   type: "before" | "after" | "general";
-  dataUrl: string;
+  url?: string;        // Supabase Storage public URL — preferred when present
+  dataUrl?: string;    // legacy inline base64 — read via mediaSrc() alongside url
   caption?: string;
   uploadedAt?: string;
 }
 
 export interface ChecklistPhoto {
   id: string;
-  dataUrl: string;
+  url?: string;
+  dataUrl?: string;
   caption?: string;
 }
 
@@ -201,7 +203,8 @@ export interface JobChecklistItem {
 
 export interface JobVideo {
   id: string;
-  dataUrl: string;
+  url?: string;
+  dataUrl?: string;
   caption?: string;
   addedAt?: string;
 }
@@ -209,7 +212,8 @@ export interface JobVideo {
 export interface JobSignOff {
   signerName: string;
   timestamp: string;
-  sigData?: string;
+  sigUrl?: string;     // Supabase Storage URL for the drawn-signature PNG
+  sigData?: string;    // legacy inline base64 canvas PNG
   sigType?: "type" | "draw";
 }
 

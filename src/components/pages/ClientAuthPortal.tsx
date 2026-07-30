@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { Lock, Mail, User, Phone, LogOut, CreditCard, Receipt, CheckCircle, Clock, Gift, Copy, Repeat, ImageIcon, ChevronRight } from "lucide-react";
 import { supabase } from "../../lib/supabase";
-import { fmt, uid, today } from "../../lib/utils";
+import { fmt, uid, today, mediaSrc } from "../../lib/utils";
 import type { Customer, Estimate, Job, AppSettings } from "../../types";
 import { Glass } from "../ui/Glass";
 import { GBtn } from "../ui/GBtn";
@@ -296,7 +296,7 @@ export function ClientAuthPortal({
                 <div className="text-xs text-white/40">{j.scheduledDate}</div>
                 {(j.photos || []).length > 0 && (
                   <div className="flex gap-2 mt-2 overflow-x-auto">
-                    {j.photos.map(p => <img key={p.id} src={p.dataUrl} alt="" className="w-16 h-16 rounded-lg object-cover border border-white/10 flex-shrink-0" />)}
+                    {j.photos.map(p => <img key={p.id} src={mediaSrc(p.url, p.dataUrl)} alt="" className="w-16 h-16 rounded-lg object-cover border border-white/10 flex-shrink-0" />)}
                   </div>
                 )}
               </Glass>

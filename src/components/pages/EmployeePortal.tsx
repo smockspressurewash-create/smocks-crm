@@ -17,7 +17,7 @@ import { loadMapsScript, AddressAutocomplete } from "../ui/AddressAutocomplete";
 import { LiveMap } from "../ui/LiveMap";
 import { PropertyMapEmbed } from "../ui/PropertyMapEmbed";
 import { BarChart, Bar, LineChart, Line, XAxis, YAxis, ResponsiveContainer, Tooltip, CartesianGrid } from "recharts";
-import { fmt, uid, today, localDateStr, shiftDayStr, daysFromNow, computeJobRatingScore, setOAuthIntent, compressImageFile, getEffectiveRate, computeNextRecurringDate, weekdayLabels, normalizeJobRow, totalJobPhotoCount } from "../../lib/utils";
+import { fmt, uid, today, localDateStr, shiftDayStr, daysFromNow, computeJobRatingScore, setOAuthIntent, compressImageFile, getEffectiveRate, computeNextRecurringDate, weekdayLabels, normalizeJobRow, totalJobPhotoCount, mediaSrc, dataUrlToBlob, uploadJobMedia } from "../../lib/utils";
 import { usePollGate } from "../../hooks/usePollGate";
 import type { Job, Employee, Customer, AppSettings, JobChecklistItem } from "../../types";
 
@@ -132,7 +132,8 @@ export const DEFAULT_PERMISSIONS: Record<string, boolean> = {
   can_view_pay: true, can_view_calendar: true, can_add_notes: true,
 };
 
-function PortalChecklistSection({ title, emoji, items, onUpdate, allowPhotos = false, disabled = false }: {
+function PortalChecklistSection({ jobId, title, emoji, items, onUpdate, allowPhotos = false, disabled = false }: {
+  jobId: string;
   title: string; emoji: string;
   items: JobChecklistItem[];
   onUpdate: (items: JobChecklistItem[]) => void;
@@ -142,8 +143,11 @@ function PortalChecklistSection({ title, emoji, items, onUpdate, allowPhotos = f
   const done = items.filter(i => i.done).length;
   const toggle = (id: string) => { if (!disabled) onUpdate(items.map(it => it.id === id ? { ...it, done: !it.done } : it)); };
   const updateNotes = (id: string, notes: string) => onUpdate(items.map(it => it.id === id ? { ...it, notes } : it));
-  const addItemPhoto = (id: string, dataUrl: string, isVideo: boolean) => {
-    const media = { id: uid(), dataUrl };
+  const addItemPhoto = async (id: string, dataUrl: string, isVideo: boolean, contentType?: string) => {
+    const mediaId = uid();
+    const ext = isVideo ? (contentType?.split("/")[1] || "mp4").replace("quicktime", "mov") : "jpg";
+    const url = await uploadJobMedia(dataUrlToBlob(dataUrl), `${jobId}/checklist-${id}-${mediaId}.${ext}`, contentType || (isVideo ? undefined : "image/jpeg"));
+    const media = url ? { id: mediaId, url } : { id: mediaId, dataUrl };
     onUpdate(items.map(it => it.id === id
       ? isVideo ? { ...it, videos: [...(it.videos || []), media] } : { ...it, photos: [...(it.photos || []), media] }
       : it));
@@ -187,7 +191,7 @@ function PortalChecklistSection({ title, emoji, items, onUpdate, allowPhotos = f
                           const isVideo = f.type.startsWith("video/");
                           if (isVideo) {
                             const r = new FileReader();
-                            r.onload = ev => addItemPhoto(item.id, ev.target!.result as string, true);
+                            r.onload = ev => addItemPhoto(item.id, ev.target!.result as string, true, f.type);
                             r.readAsDataURL(f);
                           } else {
                             compressImageFile(f).then(dataUrl => addItemPhoto(item.id, dataUrl, false));
@@ -205,7 +209,7 @@ function PortalChecklistSection({ title, emoji, items, onUpdate, allowPhotos = f
                   <div className="mt-1.5 flex gap-1.5 flex-wrap">
                     {(item.photos || []).map((p, pi) => (
                       <div key={p.id || pi} className="w-14 h-14 rounded-lg overflow-hidden flex-shrink-0 border border-white/10 relative">
-                        <img src={p.dataUrl} alt="" className="w-full h-full object-cover" />
+                        <img src={mediaSrc(p.url, p.dataUrl)} alt="" className="w-full h-full object-cover" />
                         {!disabled && (
                           <button onClick={() => deleteItemMedia(item.id, p.id, false)} className="absolute top-0.5 right-0.5 w-4 h-4 rounded-full bg-black/70 hover:bg-red-700 text-white flex items-center justify-center">
                             <X size={9} />
@@ -215,7 +219,7 @@ function PortalChecklistSection({ title, emoji, items, onUpdate, allowPhotos = f
                     ))}
                     {(item.videos || []).map((v, vi) => (
                       <div key={v.id || vi} className="w-14 h-14 rounded-lg overflow-hidden flex-shrink-0 border border-white/10 relative bg-black">
-                        <video src={v.dataUrl} className="w-full h-full object-cover" />
+                        <video src={mediaSrc(v.url, v.dataUrl)} className="w-full h-full object-cover" />
                         <Video size={14} className="absolute inset-0 m-auto text-white/80" />
                         {!disabled && (
                           <button onClick={() => deleteItemMedia(item.id, v.id, true)} className="absolute top-0.5 right-0.5 w-4 h-4 rounded-full bg-black/70 hover:bg-red-700 text-white flex items-center justify-center">
@@ -423,7 +427,10 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
   };
 
   const addPhoto = async (type: "before" | "after", dataUrl: string) => {
-    const newPhoto = { id: uid(), type, caption: (type === "before" ? "Before" : "After") + " — " + today(), dataUrl, uploadedAt: today() };
+    const id = uid();
+    const caption = (type === "before" ? "Before" : "After") + " — " + today();
+    const url = await uploadJobMedia(dataUrlToBlob(dataUrl), `${job.id}/photo-${id}.jpg`, "image/jpeg");
+    const newPhoto = url ? { id, type, caption, url, uploadedAt: today() } : { id, type, caption, dataUrl, uploadedAt: today() };
     const nextPhotos = [...(job.photos || []), newPhoto];
     try {
       const result = await withTimeout(Promise.resolve(onUpdateJob({ photos: nextPhotos })), 15000, "Photo upload");
@@ -451,13 +458,17 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
       // Check duration via a transient video element
       const vid = document.createElement("video");
       vid.preload = "metadata";
-      vid.onloadedmetadata = () => {
+      vid.onloadedmetadata = async () => {
         URL.revokeObjectURL(vid.src);
         if (vid.duration > 30) {
           toast("Video exceeds 30 seconds — please trim it first", "red");
           return;
         }
-        onUpdateJob({ videos: [...(job.videos || []), { id: uid(), dataUrl, caption: "Field video", addedAt: today() }] });
+        const id = uid();
+        const ext = (file.type.split("/")[1] || "mp4").replace("quicktime", "mov");
+        const url = await uploadJobMedia(file, `${job.id}/video-${id}.${ext}`, file.type);
+        const newVideo = url ? { id, url, caption: "Field video", addedAt: today() } : { id, dataUrl, caption: "Field video", addedAt: today() };
+        onUpdateJob({ videos: [...(job.videos || []), newVideo] });
         toast("Video added ✓");
       };
       vid.src = URL.createObjectURL(file);
@@ -484,11 +495,15 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
     if (sigMode === "type") {
       if (!signerName.trim()) return;
     } else if (!sigDrawData) return;
+    let sigUrl: string | undefined;
+    if (sigMode === "draw" && sigDrawData) {
+      sigUrl = (await uploadJobMedia(dataUrlToBlob(sigDrawData), `${job.id}/signoff-${uid()}.png`, "image/png")) || undefined;
+    }
     const signOff: any = {
       signerName: signerName.trim() || "Drawn signature",
       timestamp: new Date().toISOString(),
       sigType: sigMode,
-      ...(sigMode === "draw" ? { sigData: sigDrawData } : {}),
+      ...(sigMode === "draw" ? (sigUrl ? { sigUrl } : { sigData: sigDrawData }) : {}),
     };
     // AUDIT H (mobile round 4) — this used to fire onUpdateJob and
     // unconditionally toast "saved" without awaiting the result. onUpdateJob
@@ -570,8 +585,8 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
     setSigMode(m); setSignerName(""); sigClear();
   };
 
-  const beforePhoto = (job.photos || []).find(p => p.type === "before" && p.dataUrl);
-  const afterPhoto = (job.photos || []).find(p => p.type === "after" && p.dataUrl);
+  const beforePhoto = (job.photos || []).find(p => p.type === "before" && (p.url || p.dataUrl));
+  const afterPhoto = (job.photos || []).find(p => p.type === "after" && (p.url || p.dataUrl));
 
   const preItems = job.preChecklist?.length ? job.preChecklist : PRE_DEFAULTS;
   const durItems = job.duringChecklist?.length ? job.duringChecklist : DURING_DEFAULTS;
@@ -703,9 +718,9 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
       const empName = employeeName || "A crew member";
       const companyName = settings?.companyName || "Crew Boss";
       const photoCount = totalJobPhotoCount(completedJob);
-      const beforeAfterThumbs = (completedJob.photos || []).slice(0, 4).filter((p: any) => p.dataUrl)
-        .map((p: any) => `<img src="${p.dataUrl}" alt="${p.type || "photo"}" style="width:100px;height:100px;object-fit:cover;border-radius:8px;margin:0 6px 6px 0" />`).join("");
-      const sigImg = job.signOff?.sigData ? `<img src="${job.signOff.sigData}" alt="signature" style="max-width:260px;background:#fff;border-radius:6px;padding:6px;margin-top:4px" />` : "";
+      const beforeAfterThumbs = (completedJob.photos || []).slice(0, 4).filter((p: any) => p.url || p.dataUrl)
+        .map((p: any) => `<img src="${mediaSrc(p.url, p.dataUrl)}" alt="${p.type || "photo"}" style="width:100px;height:100px;object-fit:cover;border-radius:8px;margin:0 6px 6px 0" />`).join("");
+      const sigImg = (job.signOff?.sigUrl || job.signOff?.sigData) ? `<img src="${mediaSrc(job.signOff.sigUrl, job.signOff.sigData)}" alt="signature" style="max-width:260px;background:#fff;border-radius:6px;padding:6px;margin-top:4px" />` : "";
       const rows = `
         <div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #eee"><span>Technician</span><strong>${empName}</strong></div>
         <div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #eee"><span>Address</span><strong>${job.address || ""}</strong></div>
@@ -767,11 +782,11 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
             <Glass className="p-4 !bg-black/40">
               <div className="text-xs text-white/50 uppercase tracking-wider mb-2 font-semibold">Before / After</div>
               {beforePhoto && afterPhoto ? (
-                <BeforeAfterSlider before={beforePhoto.dataUrl} after={afterPhoto.dataUrl} />
+                <BeforeAfterSlider before={mediaSrc(beforePhoto.url, beforePhoto.dataUrl)} after={mediaSrc(afterPhoto.url, afterPhoto.dataUrl)} />
               ) : (
                 <div className="grid grid-cols-2 gap-2">
-                  {beforePhoto && <div className="rounded-xl overflow-hidden aspect-video"><img src={beforePhoto.dataUrl} alt="Before" className="w-full h-full object-cover" /></div>}
-                  {afterPhoto && <div className="rounded-xl overflow-hidden aspect-video"><img src={afterPhoto.dataUrl} alt="After" className="w-full h-full object-cover" /></div>}
+                  {beforePhoto && <div className="rounded-xl overflow-hidden aspect-video"><img src={mediaSrc(beforePhoto.url, beforePhoto.dataUrl)} alt="Before" className="w-full h-full object-cover" /></div>}
+                  {afterPhoto && <div className="rounded-xl overflow-hidden aspect-video"><img src={mediaSrc(afterPhoto.url, afterPhoto.dataUrl)} alt="After" className="w-full h-full object-cover" /></div>}
                 </div>
               )}
             </Glass>
@@ -1354,7 +1369,7 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
           </div>
           {beforePhoto && afterPhoto && (
             <div className="mb-3">
-              <BeforeAfterSlider before={beforePhoto.dataUrl} after={afterPhoto.dataUrl} />
+              <BeforeAfterSlider before={mediaSrc(beforePhoto.url, beforePhoto.dataUrl)} after={mediaSrc(afterPhoto.url, afterPhoto.dataUrl)} />
             </div>
           )}
           {effPerms.can_upload_photos && (
@@ -1392,9 +1407,9 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
           )}
           {(job.photos || []).length > 0 && (
             <div className="mt-2 grid grid-cols-3 gap-1.5">
-              {(job.photos || []).map((p, i) => p.dataUrl ? (
+              {(job.photos || []).map((p, i) => (p.url || p.dataUrl) ? (
                 <div key={p.id || i} className="relative aspect-square rounded-lg overflow-hidden group">
-                  <img src={p.dataUrl} alt="" className="w-full h-full object-cover" />
+                  <img src={mediaSrc(p.url, p.dataUrl)} alt="" className="w-full h-full object-cover" />
                   <div className={"absolute top-1 left-1 text-[8px] px-1 py-0.5 rounded font-bold uppercase " +
                     (p.type === "before" ? "bg-blue-600/90" : "bg-green-600/90")}>{p.type}</div>
                   {effPerms.can_upload_photos && (
@@ -1411,7 +1426,7 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
             <div className="mt-2 space-y-2">
               {(job.videos || []).map((v, i) => (
                 <div key={v.id || i} className="rounded-xl overflow-hidden bg-black/60 relative">
-                  <video src={v.dataUrl} controls className="w-full rounded-xl" style={{ maxHeight: 200 }} />
+                  <video src={mediaSrc(v.url, v.dataUrl)} controls className="w-full rounded-xl" style={{ maxHeight: 200 }} />
                   {effPerms.can_upload_photos && (
                     <button onClick={() => { if (window.confirm("Delete this video?")) onUpdateJob({ videos: (job.videos || []).filter(x => (x.id || x) !== (v.id || v)) }); }}
                       className="absolute top-2 right-2 w-6 h-6 rounded-full bg-black/70 hover:bg-red-700 text-white flex items-center justify-center transition">
@@ -1431,18 +1446,21 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
             <CheckSquare size={12} />Job Checklists
           </div>
           <PortalChecklistSection
+            jobId={job.id}
             title="Pre-Job" emoji="🔵" allowPhotos
             items={preItems}
             onUpdate={items => saveChecklist("Pre-Job", { preChecklist: items })}
             disabled={!effPerms.can_complete_checklist}
           />
           <PortalChecklistSection
+            jobId={job.id}
             title="During Job" emoji="🟡" allowPhotos
             items={durItems}
             onUpdate={items => saveChecklist("During-Job", { duringChecklist: items })}
             disabled={!effPerms.can_complete_checklist}
           />
           <PortalChecklistSection
+            jobId={job.id}
             title="Post-Job" emoji="🟢" allowPhotos
             items={postItems}
             onUpdate={items => saveChecklist("Post-Job", { postChecklist: items })}
@@ -1457,8 +1475,8 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
               <CheckCircle size={14} className="text-green-400" />
               <div className="text-xs font-semibold text-green-300">Customer Signed Off</div>
             </div>
-            {job.signOff.sigType === "draw" && job.signOff.sigData ? (
-              <img src={job.signOff.sigData} alt="Signature" className="mt-1 bg-white rounded-lg max-h-20" />
+            {job.signOff.sigType === "draw" && (job.signOff.sigUrl || job.signOff.sigData) ? (
+              <img src={mediaSrc(job.signOff.sigUrl, job.signOff.sigData)} alt="Signature" className="mt-1 bg-white rounded-lg max-h-20" />
             ) : (
               <div style={{ fontFamily: "Georgia, serif", fontStyle: "italic" }} className="text-lg text-white/80 mt-1">{job.signOff.signerName}</div>
             )}
@@ -2343,7 +2361,12 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     // EGRESS FIX — was an unconditional 3s poll; realtime above already
     // covers instant updates, this is now just the fallback, and skips
     // entirely while the tab is hidden or the employee is idle 5+ minutes.
-    const interval = setInterval(() => { if (shouldPollJobs()) load(); }, 10000);
+    // Widened 10s -> 60s: `load()` is a select("*") on jobs, which carries
+    // every job's inline base64 photos/videos (types/index.ts Photo.dataUrl
+    // etc.) — a 10s fallback poll re-downloads all of that every tick for
+    // every open employee portal, which is the dominant driver of a real
+    // Supabase egress overage. Realtime already handles the instant case.
+    const interval = setInterval(() => { if (shouldPollJobs()) load(); }, 60000);
     return () => {
       clearInterval(interval);
       try { channel?.unsubscribe(); } catch { /* ignore */ }

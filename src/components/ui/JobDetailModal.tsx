@@ -20,7 +20,7 @@ import {
   Tooltip, ResponsiveContainer, Area, AreaChart, LineChart, Line,
   ComposedChart, Legend
 } from "recharts";
-import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, weekdayLabels, computeNextRecurringDate, isEmployeeUnavailable, computeDiscountsTotal, equipmentList, requiredChemicalsList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, compressImageFile, getEffectiveRate } from "../../lib/utils";
+import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, weekdayLabels, computeNextRecurringDate, isEmployeeUnavailable, computeDiscountsTotal, equipmentList, requiredChemicalsList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, compressImageFile, getEffectiveRate, mediaSrc, dataUrlToBlob, uploadJobMedia } from "../../lib/utils";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField, JobChecklistItem, ChecklistPhoto, JobVideo, JobSignOff } from "../../types";
 import { twilioSend, sendEmail, sendViaGmail, sendOwnerGmailOnly, emailShell, emailButton, logOutboundSmsToInbox } from "../../lib/messaging";
 import { seedWeather } from "../../lib/weather";
@@ -65,7 +65,8 @@ const POST_DEFAULTS: JobChecklistItem[] = [
   { id: "post4", label: "Take after photos", done: false },
 ];
 
-function ChecklistSection({ title, emoji, items, onUpdate }: {
+function ChecklistSection({ jobId, title, emoji, items, onUpdate }: {
+  jobId: string;
   title: string; emoji: string;
   items: JobChecklistItem[];
   onUpdate: (items: JobChecklistItem[]) => void;
@@ -78,8 +79,12 @@ function ChecklistSection({ title, emoji, items, onUpdate }: {
     onUpdate(items.map(it => it.id === id ? { ...it, done: !it.done } : it));
   const updateNotes = (id: string, notes: string) =>
     onUpdate(items.map(it => it.id === id ? { ...it, notes } : it));
-  const addPhoto = (id: string, dataUrl: string) =>
-    onUpdate(items.map(it => it.id === id ? { ...it, photos: [...(it.photos || []), { id: uid(), dataUrl }] } : it));
+  const addPhoto = async (id: string, dataUrl: string) => {
+    const mediaId = uid();
+    const url = await uploadJobMedia(dataUrlToBlob(dataUrl), `${jobId}/checklist-${id}-${mediaId}.jpg`, "image/jpeg");
+    const media = url ? { id: mediaId, url } : { id: mediaId, dataUrl };
+    onUpdate(items.map(it => it.id === id ? { ...it, photos: [...(it.photos || []), media] } : it));
+  };
   const removePhoto = (itemId: string, photoId: string) =>
     onUpdate(items.map(it => it.id === itemId ? { ...it, photos: (it.photos || []).filter(p => p.id !== photoId) } : it));
 
@@ -118,7 +123,7 @@ function ChecklistSection({ title, emoji, items, onUpdate }: {
                   <div className="flex gap-1 flex-wrap">
                     {(item.photos || []).map(p => (
                       <div key={p.id} className="relative w-14 h-14 rounded-lg overflow-hidden border border-white/10 group">
-                        <img src={p.dataUrl} alt="" className="w-full h-full object-cover" />
+                        <img src={mediaSrc(p.url, p.dataUrl)} alt="" className="w-full h-full object-cover" />
                         <button onClick={() => removePhoto(item.id, p.id)}
                           className="absolute top-0.5 right-0.5 bg-black/80 text-white rounded p-0.5 opacity-0 group-hover:opacity-100">
                           <X size={8} />
@@ -131,9 +136,8 @@ function ChecklistSection({ title, emoji, items, onUpdate }: {
                   <input type="file" accept="image/*" capture="environment" className="hidden"
                     onChange={e => {
                       const f = e.target.files?.[0]; if (!f) return;
-                      const r = new FileReader();
-                      r.onload = ev => addPhoto(item.id, ev.target!.result as string);
-                      r.readAsDataURL(f); e.target.value = "";
+                      compressImageFile(f).then(dataUrl => addPhoto(item.id, dataUrl));
+                      e.target.value = "";
                     }} />
                   <div className="inline-flex items-center gap-1 text-[10px] px-2.5 py-1 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-white/50 cursor-pointer transition">
                     <Plus size={8} />📷 Add Photo
@@ -790,8 +794,8 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
 
   const printSignOff = (name: string, ts: string) => {
     const customer = customers.find(x => x.id === job.customerId);
-    const beforePhoto = (job.photos || []).find(p => p.type === "before" && p.dataUrl);
-    const afterPhoto = (job.photos || []).find(p => p.type === "after" && p.dataUrl);
+    const beforePhoto = (job.photos || []).find(p => p.type === "before" && (p.url || p.dataUrl));
+    const afterPhoto = (job.photos || []).find(p => p.type === "after" && (p.url || p.dataUrl));
     const preItems = job.preChecklist || PRE_DEFAULTS;
     const postItems = job.postChecklist || POST_DEFAULTS;
     const preIssues = preItems.filter(i => i.notes).map(i => `<li>${i.label}: ${i.notes}</li>`).join("");
@@ -828,8 +832,8 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
 ${(beforePhoto || afterPhoto) ? `<div class="section">
   <h2>Before &amp; After Photos</h2>
   <div class="photos">
-    ${beforePhoto ? `<div><img src="${beforePhoto.dataUrl}" alt="Before"/><div class="photo-label">BEFORE</div></div>` : ""}
-    ${afterPhoto ? `<div><img src="${afterPhoto.dataUrl}" alt="After"/><div class="photo-label">AFTER</div></div>` : ""}
+    ${beforePhoto ? `<div><img src="${mediaSrc(beforePhoto.url, beforePhoto.dataUrl)}" alt="Before"/><div class="photo-label">BEFORE</div></div>` : ""}
+    ${afterPhoto ? `<div><img src="${mediaSrc(afterPhoto.url, afterPhoto.dataUrl)}" alt="After"/><div class="photo-label">AFTER</div></div>` : ""}
   </div>
 </div>` : ""}
 <div class="section">
@@ -1350,6 +1354,7 @@ ${job.notes ? `<div class="section"><h2>Job Notes</h2><p>${job.notes}</p></div>`
 
         {/* Pre-Job Checklist */}
         <ChecklistSection
+          jobId={jobId}
           title="Pre-Job Checklist"
           emoji="🔵"
           items={job.preChecklist?.length ? job.preChecklist : PRE_DEFAULTS}
@@ -1358,6 +1363,7 @@ ${job.notes ? `<div class="section"><h2>Job Notes</h2><p>${job.notes}</p></div>`
 
         {/* During Job Checklist */}
         <ChecklistSection
+          jobId={jobId}
           title="During Job Checklist"
           emoji="🟡"
           items={job.duringChecklist?.length ? job.duringChecklist : DURING_DEFAULTS}
@@ -1366,6 +1372,7 @@ ${job.notes ? `<div class="section"><h2>Job Notes</h2><p>${job.notes}</p></div>`
 
         {/* Post-Job Checklist */}
         <ChecklistSection
+          jobId={jobId}
           title="Post-Job Checklist"
           emoji="🟢"
           items={job.postChecklist?.length ? job.postChecklist : POST_DEFAULTS}
@@ -1381,16 +1388,16 @@ ${job.notes ? `<div class="section"><h2>Job Notes</h2><p>${job.notes}</p></div>`
 
           {/* Before/After comparison slider */}
           {(() => {
-            const beforePhoto = (job.photos || []).find(p => p.type === "before" && p.dataUrl);
-            const afterPhoto = (job.photos || []).find(p => p.type === "after" && p.dataUrl);
+            const beforePhoto = (job.photos || []).find(p => p.type === "before" && (p.url || p.dataUrl));
+            const afterPhoto = (job.photos || []).find(p => p.type === "after" && (p.url || p.dataUrl));
             if (!beforePhoto || !afterPhoto) return null;
-            return <BeforeAfterSlider before={beforePhoto.dataUrl} after={afterPhoto.dataUrl} />;
+            return <BeforeAfterSlider before={mediaSrc(beforePhoto.url, beforePhoto.dataUrl)} after={mediaSrc(afterPhoto.url, afterPhoto.dataUrl)} />;
           })()}
 
           {(job.photos || []).length > 0 && <div className="grid grid-cols-3 gap-2 mb-2 mt-2">
             {(job.photos || []).map((p, i) => (
               <div key={p.id || i} className="relative group aspect-square rounded-lg overflow-hidden bg-gradient-to-br from-neutral-800 to-neutral-900 border border-red-900/30">
-                {p.dataUrl ? <img src={p.dataUrl} alt={p.caption || ""} className="absolute inset-0 w-full h-full object-cover" />
+                {(p.url || p.dataUrl) ? <img src={mediaSrc(p.url, p.dataUrl)} alt={p.caption || ""} className="absolute inset-0 w-full h-full object-cover" />
                   : <div className="absolute inset-0 flex items-center justify-center text-4xl opacity-40">{p.type === "before" ? "📷" : p.type === "after" ? "✨" : "🖼️"}</div>}
                 <div className={"absolute top-1 left-1 text-[9px] uppercase font-bold tracking-wider px-1.5 py-0.5 rounded " + (p.type === "before" ? "bg-blue-600/90" : p.type === "after" ? "bg-green-600/90" : "bg-black/70")}>{p.type || "photo"}</div>
                 <button onClick={() => updateJob(jobId, { photos: (job.photos || []).filter(x => x !== p) })} className="absolute top-1 right-1 p-1 rounded bg-black/70 opacity-0 group-hover:opacity-100 hover:bg-red-900/80 text-white/80"><X size={10} /></button>
@@ -1403,8 +1410,12 @@ ${job.notes ? `<div class="section"><h2>Job Notes</h2><p>${job.notes}</p></div>`
               <input type="file" accept="image/*" capture="environment" className="hidden" onChange={e => {
                 const files = Array.from(e.target.files || []);
                 files.forEach(f => {
-                  compressImageFile(f).then(dataUrl => {
-                    const newPhoto = { id: uid(), type: "before", caption: "Before — " + today(), dataUrl, addedAt: today() };
+                  compressImageFile(f).then(async dataUrl => {
+                    const id = uid();
+                    const url = await uploadJobMedia(dataUrlToBlob(dataUrl), `${jobId}/photo-${id}.jpg`, "image/jpeg");
+                    const newPhoto = url
+                      ? { id, type: "before", caption: "Before — " + today(), url, addedAt: today() }
+                      : { id, type: "before", caption: "Before — " + today(), dataUrl, addedAt: today() };
                     const nextPhotos = [...(job.photos || []), newPhoto];
                     updateJob(jobId, { photos: nextPhotos });
                   });
@@ -1418,8 +1429,12 @@ ${job.notes ? `<div class="section"><h2>Job Notes</h2><p>${job.notes}</p></div>`
               <input type="file" accept="image/*" capture="environment" className="hidden" onChange={e => {
                 const files = Array.from(e.target.files || []);
                 files.forEach(f => {
-                  compressImageFile(f).then(dataUrl => {
-                    const newPhoto = { id: uid(), type: "after", caption: "After — " + today(), dataUrl, addedAt: today() };
+                  compressImageFile(f).then(async dataUrl => {
+                    const id = uid();
+                    const url = await uploadJobMedia(dataUrlToBlob(dataUrl), `${jobId}/photo-${id}.jpg`, "image/jpeg");
+                    const newPhoto = url
+                      ? { id, type: "after", caption: "After — " + today(), url, addedAt: today() }
+                      : { id, type: "after", caption: "After — " + today(), dataUrl, addedAt: today() };
                     const nextPhotos = [...(job.photos || []), newPhoto];
                     updateJob(jobId, { photos: nextPhotos });
                   });
@@ -1434,8 +1449,12 @@ ${job.notes ? `<div class="section"><h2>Job Notes</h2><p>${job.notes}</p></div>`
                 const f = e.target.files?.[0]; if (!f) return;
                 if (f.size > 80 * 1024 * 1024) { toast("Video too large (max ~80MB)"); return; }
                 const r = new FileReader();
-                r.onload = ev => {
-                  const vid: JobVideo = { id: uid(), dataUrl: ev.target!.result as string, caption: today(), addedAt: today() };
+                r.onload = async ev => {
+                  const dataUrl = ev.target!.result as string;
+                  const id = uid();
+                  const ext = (f.type.split("/")[1] || "mp4").replace("quicktime", "mov");
+                  const url = await uploadJobMedia(f, `${jobId}/video-${id}.${ext}`, f.type);
+                  const vid: JobVideo = url ? { id, url, caption: today(), addedAt: today() } : { id, dataUrl, caption: today(), addedAt: today() };
                   updateJob(jobId, { videos: [...(job.videos || []), vid] });
                 };
                 r.readAsDataURL(f);
@@ -1451,7 +1470,7 @@ ${job.notes ? `<div class="section"><h2>Job Notes</h2><p>${job.notes}</p></div>`
               <div className="grid grid-cols-2 gap-2">
                 {(job.videos || []).map((v, i) => (
                   <div key={v.id || i} className="relative rounded-lg overflow-hidden bg-black border border-purple-900/30 group">
-                    <video src={v.dataUrl} controls className="w-full max-h-32 object-contain" />
+                    <video src={mediaSrc(v.url, v.dataUrl)} controls className="w-full max-h-32 object-contain" />
                     <button onClick={() => updateJob(jobId, { videos: (job.videos || []).filter(x => x.id !== v.id) })}
                       className="absolute top-1 right-1 p-1 rounded bg-black/70 opacity-0 group-hover:opacity-100 hover:bg-red-900/80 text-white/80"><X size={10} /></button>
                     {v.caption && <div className="text-[9px] text-white/40 px-1 pb-1">{v.caption}</div>}
@@ -1673,8 +1692,8 @@ ${job.notes ? `<div class="section"><h2>Job Notes</h2><p>${job.notes}</p></div>`
           </div>
           {job.signOff ? (
             <div className="space-y-1">
-              {(job.signOff as any).sigType === "draw" && (job.signOff as any).sigData ? (
-                <img src={(job.signOff as any).sigData} alt="Signature" className="bg-white rounded-lg max-h-16" />
+              {(job.signOff as any).sigType === "draw" && ((job.signOff as any).sigUrl || (job.signOff as any).sigData) ? (
+                <img src={mediaSrc((job.signOff as any).sigUrl, (job.signOff as any).sigData)} alt="Signature" className="bg-white rounded-lg max-h-16" />
               ) : (
                 <div className="text-sm font-medium text-white/90">{job.signOff.signerName}</div>
               )}
