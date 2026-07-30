@@ -319,25 +319,39 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
   // Only the "Request" flow (sendJobRequest below) requires the employee to
   // accept/decline via the Incoming Requests section of their portal.
   const toggleCrew = eid => {
-    const crew = job.crew || [];
-    const adding = !crew.includes(eid);
-    const newCrew = adding ? [...crew, eid] : crew.filter(x => x !== eid);
-    // crewAssignedAt records when each employee was added, so the portal's
-    // Today tab can show a "New Assignment" banner for anything assigned
-    // recently — this doubles as the durable assignment record itself.
-    const patch: any = { crew: newCrew };
-    if (adding) patch.crewAssignedAt = { ...(job.crewAssignedAt || {}), [eid]: Date.now() };
-    updateJob(jobId, patch);
-    if (adding) {
-      const emp = employees.find(e => e.id === eid);
-      if (emp?.email) {
-        const cust = customers.find(x => x.id === job.customerId);
-        notifyEmployeesRef.current(
-          [emp],
-          () => `You've Been Assigned — ${job.scheduledDate || job.address}`,
-          () => emailShell(settings.companyName || "Crew Boss", "You've Been Assigned", `<p>Hi ${emp.firstName},</p><p>You've been assigned to a job:</p><ul><li><b>Date:</b> ${job.scheduledDate}${job.scheduledTime ? " at " + job.scheduledTime : ""}</li><li><b>Address:</b> ${job.address}</li>${cust ? `<li><b>Customer:</b> ${cust.firstName} ${cust.lastName}</li>` : ""}</ul><p>This job is already on your schedule — no action needed.</p>`)
-        ).then((sent: number) => { if (sent > 0) toast?.(`Notified ${emp.firstName} ✓`, "green"); });
+    // DIAGNOSTIC — unlike scheduleAndNotify/sendJobRequest below, this used to
+    // have zero error handling: a synchronous throw anywhere in this body
+    // (e.g. updateJob not being the function this modal expects) aborted
+    // silently — no toast, no network request, nothing in the console unless
+    // devtools happened to be open. Wrapped in try/catch below so any future
+    // failure here is loud instead of invisible; this log stays even after
+    // the bug is found, matching this file's existing [Verify]-style tags.
+    console.log("[EditCrewAssign] toggleCrew called — jobId:", jobId, "eid:", eid, "job.crew:", job?.crew, "updateJob is function:", typeof updateJob === "function");
+    try {
+      const crew = job.crew || [];
+      const adding = !crew.includes(eid);
+      const newCrew = adding ? [...crew, eid] : crew.filter(x => x !== eid);
+      // crewAssignedAt records when each employee was added, so the portal's
+      // Today tab can show a "New Assignment" banner for anything assigned
+      // recently — this doubles as the durable assignment record itself.
+      const patch: any = { crew: newCrew };
+      if (adding) patch.crewAssignedAt = { ...(job.crewAssignedAt || {}), [eid]: Date.now() };
+      console.log("[EditCrewAssign] calling updateJob with patch:", patch);
+      updateJob(jobId, patch);
+      if (adding) {
+        const emp = employees.find(e => e.id === eid);
+        if (emp?.email) {
+          const cust = customers.find(x => x.id === job.customerId);
+          notifyEmployeesRef.current(
+            [emp],
+            () => `You've Been Assigned — ${job.scheduledDate || job.address}`,
+            () => emailShell(settings.companyName || "Crew Boss", "You've Been Assigned", `<p>Hi ${emp.firstName},</p><p>You've been assigned to a job:</p><ul><li><b>Date:</b> ${job.scheduledDate}${job.scheduledTime ? " at " + job.scheduledTime : ""}</li><li><b>Address:</b> ${job.address}</li>${cust ? `<li><b>Customer:</b> ${cust.firstName} ${cust.lastName}</li>` : ""}</ul><p>This job is already on your schedule — no action needed.</p>`)
+          ).then((sent: number) => { if (sent > 0) toast?.(`Notified ${emp.firstName} ✓`, "green"); }).catch((e: any) => console.warn("[EditCrewAssign] notify email failed (non-fatal):", e?.message));
+        }
       }
+    } catch (e: any) {
+      console.error("[EditCrewAssign] toggleCrew threw:", e?.message, e);
+      toast?.("Failed to update crew — " + (e?.message || "unknown error"), "red");
     }
   };
 

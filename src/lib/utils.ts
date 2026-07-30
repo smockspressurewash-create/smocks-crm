@@ -59,6 +59,36 @@ export const compressImageFile = (file: File, maxDim = 1600, quality = 0.72): Pr
   });
 };
 
+// ITEM 11 — shared video length/size cap. Previously only the top-level
+// before/after video capture (EmployeePortal.tsx's addVideo) enforced this;
+// the checklist-item video capture (PortalChecklistSection's file input) had
+// no check at all, so a long/large video uploaded through a checklist item
+// could still blow past Storage/egress limits (and, falling back to an
+// inline dataUrl on an upload timeout, bloat the jobs row enough to make
+// "Complete Job" saves intermittently fail — see CLAUDE.md's Complete Job
+// wizard reliability notes). Both capture points now call this one check.
+export const MAX_JOB_VIDEO_SECONDS = 30;
+export const MAX_JOB_VIDEO_MB = 50;
+
+export const checkVideoLimits = (file: File): Promise<string | null> => {
+  if (file.size > MAX_JOB_VIDEO_MB * 1024 * 1024) {
+    return Promise.resolve(`Video exceeds ${MAX_JOB_VIDEO_MB}MB limit — trim to under ${MAX_JOB_VIDEO_SECONDS} seconds`);
+  }
+  return new Promise(resolve => {
+    const vid = document.createElement("video");
+    vid.preload = "metadata";
+    const url = URL.createObjectURL(file);
+    vid.onloadedmetadata = () => {
+      URL.revokeObjectURL(url);
+      resolve(vid.duration > MAX_JOB_VIDEO_SECONDS ? `Video exceeds ${MAX_JOB_VIDEO_SECONDS} seconds — please trim it first` : null);
+    };
+    // Can't read metadata (unsupported format, corrupt file) — don't block the
+    // upload over a check that itself failed; let it through.
+    vid.onerror = () => { URL.revokeObjectURL(url); resolve(null); };
+    vid.src = url;
+  });
+};
+
 // ─── Formatting ───────────────────────────────────────────────────────────────
 
 export const fmt = (n: number | undefined | null): string => {
@@ -617,6 +647,34 @@ export const uploadJobMedia = async (blob: Blob, path: string, contentType?: str
     console.warn("[uploadJobMedia] threw, falling back to inline dataUrl:", e?.message);
     return null;
   }
+};
+
+// ITEM 10 — real OS-level "push-like" alerts for the owner (e.g. an employee's
+// Report Problem) using the browser's built-in Notification API. This fires
+// as long as the browser is running, even if the CRM tab isn't focused —
+// there is NO server component here, so unlike true mobile push it can't
+// reach the owner once the browser itself is fully closed; that would need a
+// service worker + VAPID keys + a server endpoint to send from, which this
+// single-page app (no backend server — see CLAUDE.md) doesn't have yet.
+// Callers must never depend on this actually showing anything (permission
+// may be denied/unsupported) — it's additive to the existing toast/bell and
+// email, never a replacement for either.
+export const desktopNotifsSupported = (): boolean => typeof window !== "undefined" && "Notification" in window;
+
+export const desktopNotifPermission = (): NotificationPermission | "unsupported" =>
+  desktopNotifsSupported() ? Notification.permission : "unsupported";
+
+export const requestDesktopNotifPermission = async (): Promise<boolean> => {
+  if (!desktopNotifsSupported()) return false;
+  if (Notification.permission === "granted") return true;
+  if (Notification.permission === "denied") return false;
+  try { const result = await Notification.requestPermission(); return result === "granted"; }
+  catch { return false; }
+};
+
+export const notifyDesktop = (title: string, body?: string): void => {
+  if (!desktopNotifsSupported() || Notification.permission !== "granted") return;
+  try { new Notification(title, { body, icon: "/favicon.ico" }); } catch { /* best-effort only */ }
 };
 
 // BLOCKER 6 (mobile round 9) — Alfred's multi-step tool chains (create

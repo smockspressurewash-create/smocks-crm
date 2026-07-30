@@ -17,7 +17,7 @@ import { loadMapsScript, AddressAutocomplete } from "../ui/AddressAutocomplete";
 import { LiveMap } from "../ui/LiveMap";
 import { PropertyMapEmbed } from "../ui/PropertyMapEmbed";
 import { BarChart, Bar, LineChart, Line, XAxis, YAxis, ResponsiveContainer, Tooltip, CartesianGrid } from "recharts";
-import { fmt, uid, today, localDateStr, shiftDayStr, daysFromNow, computeJobRatingScore, setOAuthIntent, compressImageFile, getEffectiveRate, computeNextRecurringDate, weekdayLabels, normalizeJobRow, totalJobPhotoCount, mediaSrc, dataUrlToBlob, uploadJobMedia } from "../../lib/utils";
+import { fmt, uid, today, localDateStr, shiftDayStr, daysFromNow, computeJobRatingScore, setOAuthIntent, compressImageFile, getEffectiveRate, computeNextRecurringDate, weekdayLabels, normalizeJobRow, totalJobPhotoCount, mediaSrc, dataUrlToBlob, uploadJobMedia, checkVideoLimits } from "../../lib/utils";
 import { usePollGate } from "../../hooks/usePollGate";
 import type { Job, Employee, Customer, AppSettings, JobChecklistItem } from "../../types";
 
@@ -132,13 +132,14 @@ export const DEFAULT_PERMISSIONS: Record<string, boolean> = {
   can_view_pay: true, can_view_calendar: true, can_add_notes: true,
 };
 
-function PortalChecklistSection({ jobId, title, emoji, items, onUpdate, allowPhotos = false, disabled = false }: {
+function PortalChecklistSection({ jobId, title, emoji, items, onUpdate, allowPhotos = false, disabled = false, toast = () => {} }: {
   jobId: string;
   title: string; emoji: string;
   items: JobChecklistItem[];
   onUpdate: (items: JobChecklistItem[]) => void;
   allowPhotos?: boolean;
   disabled?: boolean;
+  toast?: (msg: string, tone?: any) => void;
 }) {
   const done = items.filter(i => i.done).length;
   const toggle = (id: string) => { if (!disabled) onUpdate(items.map(it => it.id === id ? { ...it, done: !it.done } : it)); };
@@ -190,9 +191,14 @@ function PortalChecklistSection({ jobId, title, emoji, items, onUpdate, allowPho
                           const f = e.target.files?.[0]; if (!f) return;
                           const isVideo = f.type.startsWith("video/");
                           if (isVideo) {
-                            const r = new FileReader();
-                            r.onload = ev => addItemPhoto(item.id, ev.target!.result as string, true, f.type);
-                            r.readAsDataURL(f);
+                            // ITEM 11 — same 30s/50MB cap as the top-level before/after
+                            // video capture (addVideo below) — this path had none before.
+                            checkVideoLimits(f).then(err => {
+                              if (err) { toast(err, "red"); return; }
+                              const r = new FileReader();
+                              r.onload = ev => addItemPhoto(item.id, ev.target!.result as string, true, f.type);
+                              r.readAsDataURL(f);
+                            });
                           } else {
                             compressImageFile(f).then(dataUrl => addItemPhoto(item.id, dataUrl, false));
                           }
@@ -446,32 +452,20 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
     }
   };
 
-  const addVideo = (file: File) => {
-    const MAX_MB = 50;
-    if (file.size > MAX_MB * 1024 * 1024) {
-      toast(`Video exceeds ${MAX_MB}MB limit — trim to under 30 seconds`, "red");
-      return;
-    }
+  const addVideo = async (file: File) => {
+    // ITEM 11 — shared with PortalChecklistSection's checklist-item video
+    // capture (see checkVideoLimits) so both paths enforce the same cap.
+    const limitErr = await checkVideoLimits(file);
+    if (limitErr) { toast(limitErr, "red"); return; }
     const r = new FileReader();
-    r.onload = ev => {
+    r.onload = async ev => {
       const dataUrl = ev.target!.result as string;
-      // Check duration via a transient video element
-      const vid = document.createElement("video");
-      vid.preload = "metadata";
-      vid.onloadedmetadata = async () => {
-        URL.revokeObjectURL(vid.src);
-        if (vid.duration > 30) {
-          toast("Video exceeds 30 seconds — please trim it first", "red");
-          return;
-        }
-        const id = uid();
-        const ext = (file.type.split("/")[1] || "mp4").replace("quicktime", "mov");
-        const url = await uploadJobMedia(file, `${job.id}/video-${id}.${ext}`, file.type);
-        const newVideo = url ? { id, url, caption: "Field video", addedAt: today() } : { id, dataUrl, caption: "Field video", addedAt: today() };
-        onUpdateJob({ videos: [...(job.videos || []), newVideo] });
-        toast("Video added ✓");
-      };
-      vid.src = URL.createObjectURL(file);
+      const id = uid();
+      const ext = (file.type.split("/")[1] || "mp4").replace("quicktime", "mov");
+      const url = await uploadJobMedia(file, `${job.id}/video-${id}.${ext}`, file.type);
+      const newVideo = url ? { id, url, caption: "Field video", addedAt: today() } : { id, dataUrl, caption: "Field video", addedAt: today() };
+      onUpdateJob({ videos: [...(job.videos || []), newVideo] });
+      toast("Video added ✓");
     };
     r.readAsDataURL(file);
   };
@@ -1451,6 +1445,7 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
             items={preItems}
             onUpdate={items => saveChecklist("Pre-Job", { preChecklist: items })}
             disabled={!effPerms.can_complete_checklist}
+            toast={toast}
           />
           <PortalChecklistSection
             jobId={job.id}
@@ -1458,6 +1453,7 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
             items={durItems}
             onUpdate={items => saveChecklist("During-Job", { duringChecklist: items })}
             disabled={!effPerms.can_complete_checklist}
+            toast={toast}
           />
           <PortalChecklistSection
             jobId={job.id}
@@ -1465,6 +1461,7 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
             items={postItems}
             onUpdate={items => saveChecklist("Post-Job", { postChecklist: items })}
             disabled={!effPerms.can_complete_checklist}
+            toast={toast}
           />
         </Glass>
 
@@ -1547,7 +1544,11 @@ function OwnerTeamPortal({ jobs, employees, customers, onClose, googleMapsKey, t
 }) {
   const [selectedEmpId, setSelectedEmpId] = useState<string>("all");
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
-  const todayStr = today();
+  // ITEM 7 — match the real employee Today tab's 4am shift-day cutover (see
+  // shiftDayStr's use below in the main portal) so the owner's preview of a
+  // night worker's Today list doesn't disagree with what that employee
+  // actually sees on their own device.
+  const todayStr = shiftDayStr();
 
   const viewEmp = selectedEmpId === "all" ? null : employees.find(e => e.id === selectedEmpId);
   const viewEmpForFilter = selectedEmpId === "all" ? null : employees.find(e => e.id === selectedEmpId);
@@ -2535,7 +2536,15 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   // FIX 8 — same UTC-vs-local mismatch as calSelectedDate above: this feeds
   // both the Today tab's job list and the Calendar tab's "isToday"
   // highlighting, so it must agree with the employee's actual local date.
-  const todayStr = localDateStr();
+  // ITEM 7 — plain local midnight still isn't right for a night-shift worker:
+  // a job scheduled for tonight that runs past midnight used to vanish from
+  // the Today tab (and lose its "isToday" calendar highlight) the instant the
+  // calendar date rolled over, even though the employee was still actively
+  // clocked in on it. shiftDayStr() applies the same 4am cutover the
+  // whole-day shift timer already uses elsewhere in this file (dayClockInAt/
+  // lastShiftDate) so a job started the night before keeps counting as
+  // "today" until 4am, not local midnight.
+  const todayStr = shiftDayStr();
   const todayJobs = myJobs.filter(j => j.scheduledDate === todayStr && j.status !== "cancelled");
 
   const weekStart = (() => {
@@ -3103,13 +3112,18 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
         const currentCrew = targetJob?.crew || [];
         if (!crewIncludesEmployee(currentCrew, empId, empUserId)) {
           const newCrew = [...currentCrew, empId];
+          // crewAssignedAt must be set here too, same as the owner's direct-assign
+          // path (toggleCrew in JobDetailModal) — without it, this employee never
+          // gets a "New Assignment" banner on their Today tab for a job they just
+          // accepted, even though they're genuinely on the crew.
+          const newCrewAssignedAt = { ...(targetJob?.crewAssignedAt || {}), [empId]: Date.now() };
           // Optimistic local update
-          setJobs(prev => prev.map(j => j.id === requestData.job_id ? { ...j, crew: newCrew } : j));
+          setJobs(prev => prev.map(j => j.id === requestData.job_id ? { ...j, crew: newCrew, crewAssignedAt: newCrewAssignedAt } : j));
           // Save MUST be awaited before refetching — otherwise the refetch below can
           // land before this write commits and overwrite the optimistic crew with the
           // still-empty array from Supabase, which is exactly why accepted jobs were
           // vanishing again right after acceptance.
-          const saveResult = await (supabase as any).from("jobs").update({ crew: newCrew }).eq("id", requestData.job_id);
+          const saveResult = await (supabase as any).from("jobs").update({ crew: newCrew, crewAssignedAt: newCrewAssignedAt }).eq("id", requestData.job_id);
           if (saveResult?.error) {
             toast("Accepted, but couldn't add you to the job's crew — " + saveResult.error.message, "red");
           }
@@ -3259,24 +3273,39 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
         const empUserId = (myEmployee as any).user_id;
         const targetJob = jobs.find(j => j.id === req.job_id);
         const currentCrew = targetJob?.crew || [];
+        let crewSaveError: string | null = null;
         if (!crewIncludesEmployee(currentCrew, empId, empUserId)) {
           const newCrew = [...currentCrew, empId];
+          // Same as handleAcceptRequest — set crewAssignedAt so the Today tab's
+          // "New Assignment" banner still shows for a job accepted via a request,
+          // not just via the owner's direct-assign toggle.
+          const newCrewAssignedAt = { ...(targetJob?.crewAssignedAt || {}), [empId]: Date.now() };
           // Optimistic local update
-          setJobs(prev => prev.map(j => j.id === req.job_id ? { ...j, crew: newCrew } : j));
+          setJobs(prev => prev.map(j => j.id === req.job_id ? { ...j, crew: newCrew, crewAssignedAt: newCrewAssignedAt } : j));
           // Must await the save before refetching — see handleAcceptRequest for why
           // an un-awaited fire-and-forget write here let the refetch race ahead and
           // clobber the optimistic crew with Supabase's still-stale (empty) row.
-          const saveResult = await (supabase as any).from("jobs").update({ crew: newCrew }).eq("id", req.job_id);
+          const saveResult = await (supabase as any).from("jobs").update({ crew: newCrew, crewAssignedAt: newCrewAssignedAt }).eq("id", req.job_id);
+          // BUG FIX — this result used to be captured and never checked, so a
+          // failed crew write (RLS, bad column, network) still showed the green
+          // "you're on the crew" toast below even though the employee was never
+          // actually added — exactly the "accept works but doesn't work" report.
+          if (saveResult?.error) crewSaveError = saveResult.error.message;
         }
         // Confirm against Supabase immediately rather than waiting up to 10s for the
         // next poll — the optimistic setJobs above already updated myJobs for instant
         // UI feedback; this just reconciles with the server-confirmed state right away.
         refetchJobsRef.current().catch(() => {});
         syncAcceptedJobToCalendar(jobs.find(j => j.id === req.job_id));
+        if (crewSaveError) {
+          setIncomingRequests(prev => prev.map(r => r.id === req.id ? { ...r, status: "accepted" } : r));
+          toast("Accepted, but couldn't add you to the job's crew — " + crewSaveError, "red");
+          return;
+        }
       }
       setIncomingRequests(prev => prev.map(r => r.id === req.id ? { ...r, status: "accepted" } : r));
       toast("Job accepted! You're on the crew. ✓");
-    } catch { toast("Error accepting request", "red"); }
+    } catch (e: any) { console.error("[CrewFlow] inline accept failed:", e?.message || e); toast("Error accepting request — " + (e?.message || "check connection"), "red"); }
   };
 
   const handleInlineDeny = async (req: any) => {

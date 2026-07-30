@@ -67,7 +67,7 @@ import {
 } from "./lib/seed";
 import { seedWeather } from "./lib/weather";
 import { fetchRealWeather } from "./lib/weather";
-import { fmt, uid, today, daysSince, daysFromNow, consumeOAuthIntent, getLastOwnerSessionFlag, setLastOwnerSessionFlag, getLastOwnerId, setLastOwnerId, buildChecklistFromServices, withTimeout, normalizeJobRow, totalJobPhotoCount } from "./lib/utils";
+import { fmt, uid, today, daysSince, daysFromNow, consumeOAuthIntent, getLastOwnerSessionFlag, setLastOwnerSessionFlag, getLastOwnerId, setLastOwnerId, buildChecklistFromServices, withTimeout, normalizeJobRow, totalJobPhotoCount, notifyDesktop } from "./lib/utils";
 import { sendEmail, buildTomorrowJobsEmailHtml, buildDailyBriefingEmailHtml } from "./lib/messaging";
 import { exchangeSocialOAuthCode, type SocialPlatform } from "./lib/socialOAuth";
 import type {
@@ -996,7 +996,17 @@ export function App() {
         });
       } catch { /* app_settings table may not exist yet */ }
     };
-    const interval = setInterval(pollSettings, 10000);
+    // EGRESS FIX — app_settings.data is a single JSONB blob that can carry a
+    // multi-MB inline base64 company logo (SettingsModal.tsx's logo upload
+    // has no compression step, unlike job photos). Re-fetching the WHOLE
+    // blob every 10s per open tab, regardless of whether anything changed,
+    // made this a bigger egress driver than the entire jobs table (622KB
+    // vs. this table's several MB) — confirmed via SELECT * FROM
+    // storage... table-size check during a live egress investigation.
+    // Realtime isn't wired up for this table, so this poll IS the only
+    // sync mechanism — can't remove it, but 60s cuts its cost 6x same as
+    // the jobs/customers/estimates poll above.
+    const interval = setInterval(pollSettings, 60000);
     return () => clearInterval(interval);
   }, [crmUserId]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -1110,7 +1120,7 @@ export function App() {
   // toast + bell entry the moment it happens, mirroring the invoice-activity
   // diff above. Seeded on first pass so a fresh load doesn't replay history.
   const crewActivityEmpRef = useRef<Record<string, number | null>>({});
-  const crewActivityJobRef = useRef<Record<string, { status?: string; arrivedAt?: number; photoCount?: number; signed?: boolean }>>({});
+  const crewActivityJobRef = useRef<Record<string, { status?: string; arrivedAt?: number; photoCount?: number; signed?: boolean; issueCount?: number }>>({});
   const crewActivitySeededRef = useRef(false);
   useEffect(() => {
     if (!hasCrmSession) return;
@@ -1134,7 +1144,14 @@ export function App() {
       // (see BLOCKER 12) so a checklist-camera upload counts too.
       const photoCount = totalJobPhotoCount(j);
       const signed = !!j.signOff;
-      const cur = { status: j.status, arrivedAt: j.arrivedAt, photoCount, signed };
+      // ITEM 10 — "Report Problem" (EmployeePortal.tsx's sendReportProblem)
+      // already emails the owner directly, but had no in-app bell/toast or
+      // desktop alert at all — an owner away from their inbox could miss it
+      // entirely. It logs as a commLog note starting with "🚨 ISSUE
+      // REPORTED", so count those the same way photoCount is counted above
+      // and diff it below.
+      const issueCount = (j.commLog || []).filter((c: any) => typeof c.note === "string" && c.note.startsWith("🚨 ISSUE REPORTED")).length;
+      const cur = { status: j.status, arrivedAt: j.arrivedAt, photoCount, signed, issueCount };
       jobSnap[j.id] = cur;
       if (!crewActivitySeededRef.current) continue;
       const prev = crewActivityJobRef.current[j.id] || {};
@@ -1144,12 +1161,21 @@ export function App() {
       if (cur.arrivedAt && !prev.arrivedAt) events.push({ id: j.id + ":arrived", text: `📍 Crew arrived at ${who}`, at: Date.now() });
       if (photoCount > (prev.photoCount ?? 0)) events.push({ id: j.id + ":photos:" + photoCount, text: `📸 ${photoCount - (prev.photoCount ?? 0)} new photo${photoCount - (prev.photoCount ?? 0) !== 1 ? "s" : ""} — ${who}`, at: Date.now() });
       if (signed && !prev.signed) events.push({ id: j.id + ":signed", text: `✍️ Got customer sign-off — ${who}`, at: Date.now() });
+      if (issueCount > (prev.issueCount ?? 0)) {
+        const latestNote = [...(j.commLog || [])].reverse().find((c: any) => typeof c.note === "string" && c.note.startsWith("🚨 ISSUE REPORTED"));
+        const text = `🚨 Problem reported — ${who}`;
+        events.push({ id: j.id + ":issue:" + issueCount, text, at: Date.now() });
+        // Desktop alert is the closest thing to "push" this single-page app can
+        // do without a server (see notifyDesktop's own comment) — fire it only
+        // for this highest-priority event, not every crew-activity ping.
+        notifyDesktop(text, latestNote?.note?.replace("🚨 ISSUE REPORTED by ", "") || undefined);
+      }
     }
     crewActivityEmpRef.current = empSnap;
     crewActivityJobRef.current = jobSnap;
     if (!crewActivitySeededRef.current) { crewActivitySeededRef.current = true; return; }
     if (events.length) {
-      events.forEach(ev => toast(ev.text));
+      events.forEach(ev => toast(ev.text, ev.text.startsWith("🚨") ? "red" : undefined));
       setInvoiceNotifs(prev => [...events, ...prev].slice(0, 20));
     }
   }, [employees, jobs, hasCrmSession]); // eslint-disable-line react-hooks/exhaustive-deps

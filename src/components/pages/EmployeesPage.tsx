@@ -120,6 +120,82 @@ const DEFAULT_MANAGER_PERMS: Record<string, boolean> = {
   alfred: false, inbox: false, accountability: false, google: false,
 };
 
+// ITEM 5 — "Mark as Paid" already existed (togglePeriod/toggleDay/
+// markPeriodPaidFor below), but there was no calendar view of payments at
+// all, and no record of WHEN a payment was actually made or how much — only
+// a paid/unpaid status per period. Reads the append-only paymentLog each of
+// those three functions now writes (one entry per "Mark Paid" click, dated
+// with a real timestamp) and plots it on a month grid.
+function PayrollCalendar({ employees }: { employees: any[] }) {
+  const [monthOffset, setMonthOffset] = useState(0);
+  const [selectedDay, setSelectedDay] = useState<string | null>(null);
+  const base = new Date();
+  base.setDate(1);
+  base.setMonth(base.getMonth() + monthOffset);
+  const year = base.getFullYear(), month = base.getMonth();
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const startWeekday = new Date(year, month, 1).getDay();
+  const monthLabel = base.toLocaleDateString("en-US", { month: "long", year: "numeric" });
+
+  const eventsByDay: Record<string, { id: string; empName: string; amount: number; periodStart: string; periodEnd: string }[]> = {};
+  employees.forEach((e: any) => {
+    (e.paymentLog || []).forEach((p: any) => {
+      const dateKey = new Date(p.paidAt).toISOString().slice(0, 10);
+      (eventsByDay[dateKey] ||= []).push({ id: p.id, empName: `${e.firstName} ${e.lastName}`, amount: Number(p.amount) || 0, periodStart: p.periodStart, periodEnd: p.periodEnd });
+    });
+  });
+
+  const cells: (number | null)[] = [];
+  for (let i = 0; i < startWeekday; i++) cells.push(null);
+  for (let d = 1; d <= daysInMonth; d++) cells.push(d);
+
+  return (
+    <Glass className="p-4">
+      <div className="flex items-center justify-between mb-3">
+        <button onClick={() => setMonthOffset(o => o - 1)} className="p-1.5 rounded-lg hover:bg-white/10 text-white/50"><ChevronLeft size={14} /></button>
+        <div className="text-sm font-semibold flex items-center gap-1.5"><Calendar size={13} className="text-green-400" />{monthLabel}</div>
+        <button onClick={() => setMonthOffset(o => o + 1)} className="p-1.5 rounded-lg hover:bg-white/10 text-white/50"><ChevronRight size={14} /></button>
+      </div>
+      <div className="grid grid-cols-7 gap-1 text-center text-[10px] text-white/40 mb-1">
+        {["S","M","T","W","T","F","S"].map((d, i) => <div key={i}>{d}</div>)}
+      </div>
+      <div className="grid grid-cols-7 gap-1">
+        {cells.map((d, i) => {
+          if (d == null) return <div key={i} />;
+          const key = `${year}-${String(month + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+          const dayEvents = eventsByDay[key] || [];
+          const total = dayEvents.reduce((s, ev) => s + ev.amount, 0);
+          return (
+            <button key={i} onClick={() => dayEvents.length > 0 && setSelectedDay(selectedDay === key ? null : key)}
+              disabled={dayEvents.length === 0}
+              className={"aspect-square rounded-lg text-[10px] flex flex-col items-center justify-center gap-0.5 transition " +
+                (dayEvents.length > 0
+                  ? "bg-green-950/40 border " + (selectedDay === key ? "border-green-400" : "border-green-700/40") + " text-green-300 hover:bg-green-900/40 cursor-pointer"
+                  : "text-white/30 cursor-default")}>
+              <div>{d}</div>
+              {dayEvents.length > 0 && <div className="text-[8px] font-bold leading-none">{fmt(total)}</div>}
+            </button>
+          );
+        })}
+      </div>
+      {selectedDay && (eventsByDay[selectedDay]?.length ?? 0) > 0 && (
+        <div className="mt-3 pt-3 border-t border-white/10 space-y-1.5">
+          <div className="text-[10px] text-white/40 uppercase tracking-wider">Paid on {selectedDay}</div>
+          {eventsByDay[selectedDay].map(ev => (
+            <div key={ev.id} className="flex items-center justify-between text-xs bg-black/40 rounded-lg px-2.5 py-1.5">
+              <span className="text-white/70">{ev.empName} <span className="text-white/40">({ev.periodStart}{ev.periodEnd !== ev.periodStart ? " – " + ev.periodEnd : ""})</span></span>
+              <span className="font-semibold text-green-400">{fmt(ev.amount)}</span>
+            </div>
+          ))}
+        </div>
+      )}
+      {Object.keys(eventsByDay).length === 0 && (
+        <div className="text-center py-4 text-xs text-white/30">No payments recorded yet — use "Mark Paid" below</div>
+      )}
+    </Glass>
+  );
+}
+
 export function EmployeesPage({ employees = [], setEmployees, jobs = [], customers = [], settings = {} as any, toast = (_msg: string, _tone?: string) => {}, autoOpenManagerInvite = false, onAutoOpenManagerInviteConsumed }: { employees?: any[]; setEmployees: any; jobs?: any[]; customers?: any[]; settings?: any; toast?: any; autoOpenManagerInvite?: boolean; onAutoOpenManagerInviteConsumed?: () => void }) {
   const [modal, setModal] = useState({ open: false, data: null });
   const [view, setView] = useState("list"); // list | hours | payroll
@@ -384,10 +460,19 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], custome
     const paidPeriods: Record<string, "paid" | "unpaid"> = emp.paidPeriods || {};
     return { start: s, end: e, hours: hrs, pay, status: paidPeriods[s] || "unpaid" };
   };
-  const markPeriodPaidFor = (emp: any, periodStart: string, nextStatus: "paid" | "unpaid") => {
+  const markPeriodPaidFor = (emp: any, periodStart: string, nextStatus: "paid" | "unpaid", periodEnd?: string, amount?: number) => {
     const next = { ...(emp.paidPeriods || {}), [periodStart]: nextStatus };
-    setEmployees((prev: any[]) => prev.map(x => x.id === emp.id ? { ...x, paidPeriods: next } : x));
-    (supabase as any).from("employees").update({ paidPeriods: next }).eq("id", emp.id)
+    // ITEM 5 — paidPeriods only ever recorded a status per period start date,
+    // never WHEN a payment was actually made or how much — there was no way
+    // to build the requested "calendar view of payments, with details of who
+    // was paid and when." Append-only log, one entry per "Mark Paid" click
+    // (never removed on an "unpaid" toggle-back, so the historical record of
+    // what actually happened stays intact even if a mistake gets corrected).
+    const nextLog = nextStatus === "paid"
+      ? [...(emp.paymentLog || []), { id: uid(), periodStart, periodEnd: periodEnd || periodStart, amount: amount ?? 0, paidAt: Date.now() }]
+      : (emp.paymentLog || []);
+    setEmployees((prev: any[]) => prev.map(x => x.id === emp.id ? { ...x, paidPeriods: next, paymentLog: nextLog } : x));
+    (supabase as any).from("employees").update({ paidPeriods: next, paymentLog: nextLog }).eq("id", emp.id)
       .then((r: any) => {
         if (r?.error) { console.error("[MarkPaid] failed:", r.error.message); toast?.("Failed to save pay status — " + r.error.message, "red"); }
         else toast?.(nextStatus === "paid" ? `${emp.firstName} marked as paid ✓` : `${emp.firstName} marked as unpaid`, "green");
@@ -499,7 +584,13 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], custome
                 // which re-renders on every jobs/employees poll while the
                 // Hours tab is open — a real console flood, multiplied by
                 // headcount. Crew matching is confirmed working; removed.
-                const todayStr = today();
+                // ITEM 7 — plain today() rolls over at local midnight (UTC,
+                // actually — see today()'s own comment), so a completed
+                // night-shift job still gets dropped from "Today" hours the
+                // moment the calendar date changes. shiftDayStr()'s 4am
+                // cutover matches getEmployeeHours' own already-fixed use
+                // above (line 282), so this column can't disagree with it.
+                const todayStr = shiftDayStr();
                 const weekStart = (() => { const d = new Date(); d.setDate(d.getDate() - d.getDay()); return d.toISOString().slice(0, 10); })();
                 const allCompleted = jobs.filter((j: any) => crewIncludesEmployee(j.crew, e.id, (e as any).user_id) && j.status === "completed");
                 const hoursToday = allCompleted.filter((j: any) => j.scheduledDate === todayStr).reduce((s: number, j: any) => s + Number(j.loggedHours || j.duration || 0), 0);
@@ -545,6 +636,7 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], custome
             const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = "payroll-" + payPeriodStart + ".csv"; a.click();
           }} className="text-xs px-3 py-1.5 bg-black/40 border border-red-900/30 text-white/60 hover:text-white rounded-xl transition flex items-center gap-1"><Download size={12} />Export CSV</button>
         </div>
+        <PayrollCalendar employees={employees} />
         <div className="grid gap-4">
           {employees.filter(e => e.status !== "inactive").map(e => {
             const hrs = getEmployeeHours(e.id, payPeriodStart, payPeriodEnd);
@@ -572,7 +664,7 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], custome
               {currentPeriod.hours > 0 && (
                 <div className="mt-3 pt-3 border-t border-white/10 flex items-center justify-between gap-2">
                   <div className="text-[11px] text-white/50">Current period ({currentPeriod.start} – {currentPeriod.end}): <span className="text-white/80 font-semibold">{currentPeriod.hours}h · {fmt(currentPeriod.pay)}</span></div>
-                  <button onClick={() => markPeriodPaidFor(e, currentPeriod.start, currentPeriod.status === "paid" ? "unpaid" : "paid")}
+                  <button onClick={() => markPeriodPaidFor(e, currentPeriod.start, currentPeriod.status === "paid" ? "unpaid" : "paid", currentPeriod.end, currentPeriod.pay)}
                     className={"text-[10px] font-bold px-2.5 py-1 rounded-full flex-shrink-0 transition " + (currentPeriod.status === "paid" ? "bg-green-700 text-white" : "bg-yellow-950/40 border border-yellow-700/40 text-yellow-300 hover:bg-yellow-900/40")}>
                     {currentPeriod.status === "paid" ? "✓ Paid" : "Mark Paid"}
                   </button>
@@ -869,10 +961,17 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], custome
             // looked like it "did nothing." Write straight to Supabase (and
             // the live `employees` state) the moment it's clicked.
             const togglePeriod = (start: string) => {
-              const next = { ...paidPeriods, [start]: paidPeriods[start] === "paid" ? "unpaid" as const : "paid" as const };
-              setF((p: any) => ({ ...p, paidPeriods: next }));
-              setEmployees((prev: any[]) => prev.map(e => e.id === f.id ? { ...e, paidPeriods: next } : e));
-              (supabase as any).from("employees").update({ paidPeriods: next }).eq("id", f.id)
+              const nowPaid = paidPeriods[start] !== "paid";
+              const next = { ...paidPeriods, [start]: nowPaid ? "paid" as const : "unpaid" as const };
+              // ITEM 5 — this modal's own Mark Paid button didn't feed the
+              // same paymentLog markPeriodPaidFor writes (see that function's
+              // comment) — a payment marked from here would silently be
+              // invisible on the new Payroll Calendar.
+              const period = periods.find(p => p.start === start);
+              const nextLog = nowPaid ? [...(f.paymentLog || []), { id: uid(), periodStart: start, periodEnd: period?.end || start, amount: period?.pay ?? 0, paidAt: Date.now() }] : (f.paymentLog || []);
+              setF((p: any) => ({ ...p, paidPeriods: next, paymentLog: nextLog }));
+              setEmployees((prev: any[]) => prev.map(e => e.id === f.id ? { ...e, paidPeriods: next, paymentLog: nextLog } : e));
+              (supabase as any).from("employees").update({ paidPeriods: next, paymentLog: nextLog }).eq("id", f.id)
                 .then((r: any) => {
                   if (r?.error) { console.error("[MarkPaid] failed:", r.error.message); toast?.("Failed to save pay status — " + r.error.message, "red"); }
                   else toast?.(next[start] === "paid" ? "Marked as paid ✓" : "Marked as unpaid", "green");
@@ -962,10 +1061,14 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], custome
             // must reach Supabase the moment it's clicked, not wait on the
             // modal's separate Save button.
             const toggleDay = (key: string) => {
-              const next = { ...paidDays, [key]: paidDays[key] === "paid" ? "unpaid" as const : "paid" as const };
-              setF((p: any) => ({ ...p, paidDays: next }));
-              setEmployees((prev: any[]) => prev.map(e => e.id === f.id ? { ...e, paidDays: next } : e));
-              (supabase as any).from("employees").update({ paidDays: next }).eq("id", f.id)
+              const nowPaid = paidDays[key] !== "paid";
+              const next = { ...paidDays, [key]: nowPaid ? "paid" as const : "unpaid" as const };
+              // ITEM 5 — same paymentLog hook as togglePeriod above.
+              const day = days.find(d => d.key === key);
+              const nextLog = nowPaid ? [...(f.paymentLog || []), { id: uid(), periodStart: key, periodEnd: key, amount: day?.pay ?? 0, paidAt: Date.now() }] : (f.paymentLog || []);
+              setF((p: any) => ({ ...p, paidDays: next, paymentLog: nextLog }));
+              setEmployees((prev: any[]) => prev.map(e => e.id === f.id ? { ...e, paidDays: next, paymentLog: nextLog } : e));
+              (supabase as any).from("employees").update({ paidDays: next, paymentLog: nextLog }).eq("id", f.id)
                 .then((r: any) => {
                   if (r?.error) { console.error("[MarkPaid] failed:", r.error.message); toast?.("Failed to save pay status — " + r.error.message, "red"); }
                   else toast?.(next[key] === "paid" ? "Marked as paid ✓" : "Marked as unpaid", "green");

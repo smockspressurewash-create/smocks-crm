@@ -20,7 +20,7 @@ import {
   Tooltip, ResponsiveContainer, Area, AreaChart, LineChart, Line,
   ComposedChart, Legend
 } from "recharts";
-import { fmt, uid, today, localDateStr, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, forecastFor, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, withTimeout, totalJobPhotoCount } from "../../lib/utils";
+import { fmt, uid, today, localDateStr, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, forecastFor, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, withTimeout, totalJobPhotoCount, desktopNotifsSupported, desktopNotifPermission, requestDesktopNotifPermission } from "../../lib/utils";
 // BLOCKER 5/9 (mobile round 9) — same robust crew-matching helper the
 // employee portal uses (tolerates object-shaped crew entries, stringified
 // JSON, casing, and the employees.id vs employees.user_id mismatch). Live
@@ -137,6 +137,7 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
   const [sendingDashInvoiceId, setSendingDashInvoiceId] = useState<string | null>(null);
   const [needsInvoiceCollapsed, setNeedsInvoiceCollapsed] = useState(false);
   const [previewInvoiceJob, setPreviewInvoiceJob] = useState<any>(null);
+  const [desktopNotifDismissed, setDesktopNotifDismissed] = useState(false);
   // AUDIT ITEM 13 — an empty `employees` array on the very first render is
   // ambiguous: it could mean "no crew configured yet" or "the initial
   // Supabase fetch just hasn't resolved yet". Showing "No one on shift"
@@ -784,6 +785,20 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
           </div>
         </div>
       </div>
+
+      {/* ITEM 10 — one-time prompt to enable desktop alerts, so "Report
+          Problem" (and future crew-activity events) can reach the owner even
+          when this tab isn't focused, not just via the in-app bell/toast and
+          email. Only shown when permission hasn't been asked yet or was
+          dismissed this session; never shown again once granted or denied. */}
+      {desktopNotifsSupported() && desktopNotifPermission() === "default" && !desktopNotifDismissed && (
+        <div className="flex items-center gap-2 px-3 py-2 rounded-xl bg-blue-950/20 border border-blue-700/30 text-xs text-blue-300">
+          <Bell size={13} className="flex-shrink-0" />
+          <span className="flex-1">Enable desktop alerts to get notified instantly when a crew member reports a problem — even if this tab isn't open.</span>
+          <button onClick={async () => { await requestDesktopNotifPermission(); setDesktopNotifDismissed(true); }} className="px-2.5 py-1 rounded-lg bg-blue-700 hover:bg-blue-600 text-white font-semibold whitespace-nowrap">Enable</button>
+          <button onClick={() => setDesktopNotifDismissed(true)} className="text-blue-300/50 hover:text-blue-300"><X size={14} /></button>
+        </div>
+      )}
 
       {/* Smart alerts - compact single row */}
       {alerts.length > 0 && (

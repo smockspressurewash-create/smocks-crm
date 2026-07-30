@@ -20,7 +20,7 @@ import {
   Tooltip, ResponsiveContainer, Area, AreaChart, LineChart, Line,
   ComposedChart, Legend
 } from "recharts";
-import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE } from "../../lib/utils";
+import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, mediaSrc } from "../../lib/utils";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
 import { twilioSend, sendEmail } from "../../lib/messaging";
 import { seedWeather } from "../../lib/weather";
@@ -76,6 +76,83 @@ export function CustomerDetail({ customer: c, onClose, onDelete, estimates = [],
     job: { I: CheckCircle, c: "text-red-400 bg-red-900/30" },
     note: { I: Clipboard, c: "text-white/60 bg-white/10" }
   }[t] || { I: Clipboard, c: "text-white/60 bg-white/10" });
+
+  // ITEM 8/9 — this used to only live in the "Info" tab's Job History list;
+  // the separate "Jobs" tab (below) had its own, older render that was just
+  // a plain unclickable div — address/date/status/amount only, exactly the
+  // "only shows address, date, status, amount" gap reported. Both tabs now
+  // share this single expand-to-see-everything row so neither can drift out
+  // of sync with the other again.
+  const renderJobRow = (j: any) => {
+    const isOpen = expandedJobId === j.id;
+    const allChecklist = [...(j.preChecklist||[]), ...(j.duringChecklist||[]), ...(j.postChecklist||[]), ...(j.checklist||[])];
+    const ckDone = allChecklist.filter((it: any) => it.done).length;
+    const crewNames = employees
+      .filter((e: any) => crewIncludesEmployee(j.crew, e.id, e.user_id))
+      .map((e: any) => `${e.firstName} ${e.lastName}`);
+    return (
+      <div key={j.id} className="bg-black/40 border border-red-900/10 rounded-xl text-xs overflow-hidden">
+        <button onClick={() => setExpandedJobId(isOpen ? null : j.id)} className="w-full flex items-center gap-3 p-2.5 text-left hover:bg-white/5 transition">
+          <div className="flex-1 min-w-0"><div className="font-medium truncate">{j.address?.split(",")[0]}</div><div className="text-white/40">{j.scheduledDate} · {fmt(j.amount)}</div></div>
+          <div className="flex items-center gap-1.5 flex-shrink-0">
+            {j.photos?.filter((p: any) => p.url || p.dataUrl).length > 0 && <span className="text-[10px] text-white/40">{j.photos.filter((p: any) => p.url || p.dataUrl).length}📸</span>}
+            <Badge tone={j.status==="completed"?"green":j.status==="scheduled"?"blue":"gray"}>{j.status}</Badge>
+            <ChevronRight size={12} className={"text-white/30 transition-transform " + (isOpen ? "rotate-90" : "")} />
+          </div>
+        </button>
+        {isOpen && (
+          <div className="px-3 pb-3 pt-1 space-y-2 border-t border-white/5">
+            <div className="text-[11px] text-white/50">
+              <span className="text-white/70 font-medium">Crew: </span>{crewNames.length > 0 ? crewNames.join(", ") : "Not assigned"}
+            </div>
+            {allChecklist.length > 0 && (
+              <div>
+                <div className="text-[10px] text-white/40 uppercase tracking-wider mb-1">Checklist ({ckDone}/{allChecklist.length})</div>
+                <div className="space-y-1">
+                  {allChecklist.map((ck: any, i: number) => (
+                    <div key={i} className={"flex items-center gap-1.5 text-[11px] " + (ck.done ? "text-white/40 line-through" : "text-white/70")}>
+                      {ck.done ? <CheckSquare size={11} className="text-green-500 flex-shrink-0" /> : <span className="w-[11px] h-[11px] rounded border border-white/30 flex-shrink-0" />}
+                      {ck.label}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+            {(j.notes || j.internalNotes) && (
+              <div>
+                <div className="text-[10px] text-white/40 uppercase tracking-wider mb-1">Notes</div>
+                <div className="text-[11px] text-white/70">{j.notes || j.internalNotes}</div>
+              </div>
+            )}
+            {j.signOff && (
+              <div>
+                <div className="text-[10px] text-white/40 uppercase tracking-wider mb-1">Signature</div>
+                <div className="text-[11px] text-white/70">
+                  Signed by {j.signOff.signerName || "customer"}{j.signOff.timestamp ? ` on ${new Date(j.signOff.timestamp).toLocaleDateString()}` : ""}
+                </div>
+                {(j.signOff.sigUrl || j.signOff.sigData) && (
+                  <img src={mediaSrc(j.signOff.sigUrl, j.signOff.sigData)} alt="signature" className="mt-1 max-w-[200px] bg-white rounded-lg p-1.5" />
+                )}
+              </div>
+            )}
+            {(j.photos||[]).some((p: any) => p.url || p.dataUrl) && (
+              <div>
+                <div className="text-[10px] text-white/40 uppercase tracking-wider mb-1">Photos</div>
+                <div className="grid grid-cols-4 gap-1.5">
+                  {(j.photos||[]).filter((p: any) => p.url || p.dataUrl).map((p: any, i: number) => (
+                    <div key={i} className="relative aspect-square rounded-lg overflow-hidden bg-black/40 cursor-pointer" onClick={() => window.open(mediaSrc(p.url, p.dataUrl), "_blank")}>
+                      <img src={mediaSrc(p.url, p.dataUrl)} alt={p.type} className="absolute inset-0 w-full h-full object-cover" />
+                      <div className={"absolute top-0.5 left-0.5 text-[7px] px-1 py-0.5 rounded-full font-bold " + (p.type === "before" ? "bg-blue-600 text-white" : "bg-green-600 text-white")}>{p.type}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  };
 
   return (
     <Modal open={!!c} onClose={onClose} title="Customer Details" maxW="max-w-2xl">
@@ -227,7 +304,11 @@ export function CustomerDetail({ customer: c, onClose, onDelete, estimates = [],
             </div>
           </div>}
           {tab === "estimates" && <div className="space-y-2">{ce.length ? ce.map(e => <div key={e.id} className="flex items-center justify-between p-3 rounded-xl bg-white/5 border border-white/5"><div><div className="text-sm font-medium">#{e.id.toUpperCase()}</div><div className="text-xs text-white/50">{e.createdAt}</div></div><div className="flex items-center gap-3"><Badge tone={e.status === "approved" ? "green" : "yellow"}>{e.status}</Badge><span className="font-semibold text-red-400">{fmt(e.total)}</span></div></div>) : <div className="text-center py-6 text-white/40 text-sm">None</div>}</div>}
-          {tab === "jobs" && <div className="space-y-2">{cj.length ? cj.map(j => <div key={j.id} className="flex items-center justify-between p-3 rounded-xl bg-white/5 border border-white/5"><div className="min-w-0 flex-1"><div className="text-sm font-medium truncate">{j.address}</div><div className="text-xs text-white/50">{j.scheduledDate}</div></div><div className="flex items-center gap-3"><Badge tone={j.status === "completed" ? "green" : "yellow"}>{j.status.replace("_", " ")}</Badge><span className="font-semibold text-red-400">{fmt(j.amount)}</span></div></div>) : <div className="text-center py-6 text-white/40 text-sm">None</div>}</div>}
+          {/* ITEM 9 — this was a plain, unclickable div: address/date/status/
+              amount only, no way to see checklist/photos/signature/crew —
+              exactly the reported gap. Now shares the same expand-to-see-
+              everything row the Info tab's Job History list uses. */}
+          {tab === "jobs" && <div className="space-y-2">{cj.length ? cj.map(j => renderJobRow(j)) : <div className="text-center py-6 text-white/40 text-sm">None</div>}</div>}
           {tab === "timeline" && <div className="space-y-3">
             <Glass className="p-3 !bg-black/40">
               <div className="flex gap-2 mb-2 flex-wrap">{["note", "call", "text", "email"].map(t => <button key={t} onClick={() => setNoteType(t)} className={"text-[10px] px-2.5 py-1 rounded-full uppercase tracking-wider border transition capitalize " + (noteType === t ? "bg-red-900/40 text-red-300 border-red-600/40" : "bg-white/5 text-white/50 border-white/10")}>{t}</button>)}</div>
@@ -272,17 +353,20 @@ export function CustomerDetail({ customer: c, onClose, onDelete, estimates = [],
             <div>
               <div className="text-xs text-white/50 uppercase tracking-wider mb-2 flex items-center justify-between">
                 <div className="flex items-center gap-1.5"><Briefcase size={10} />Job History & Photo Gallery</div>
-                <span className="text-[10px] text-white/30">{cj.reduce((s,j) => s + (j.photos?.filter(p=>p.dataUrl).length||0), 0)} photos</span>
+                {/* ITEM 9 — dataUrl-only count/gate, same bug as the expandable
+                    rows below: any Storage-uploaded photo (url, no dataUrl)
+                    counted as zero and was excluded from this whole gallery. */}
+                <span className="text-[10px] text-white/30">{cj.reduce((s,j) => s + (j.photos?.filter(p=>p.url || p.dataUrl).length||0), 0)} photos</span>
               </div>
               {/* All photos flat grid */}
-              {cj.some(j => j.photos?.some(p => p.dataUrl)) && (
+              {cj.some(j => j.photos?.some(p => p.url || p.dataUrl)) && (
                 <div className="grid grid-cols-3 gap-1.5 mb-3">
-                  {cj.flatMap(j => (j.photos||[]).filter(p=>p.dataUrl).map((p,i) => ({
+                  {cj.flatMap(j => (j.photos||[]).filter(p => p.url || p.dataUrl).map((p,i) => ({
                     ...p, jobDate: j.scheduledDate, jobAddr: j.address?.split(",")[0], jobAmt: j.amount
                   }))).slice(0,12).map((p,i) => (
                     <div key={i} className="relative aspect-square rounded-xl overflow-hidden bg-black/40 group cursor-pointer"
-                      onClick={() => window.open(p.dataUrl, "_blank")}>
-                      <img src={p.dataUrl} alt={p.type} className="absolute inset-0 w-full h-full object-cover group-hover:scale-105 transition-transform duration-300" />
+                      onClick={() => window.open(mediaSrc(p.url, p.dataUrl), "_blank")}>
+                      <img src={mediaSrc(p.url, p.dataUrl)} alt={p.type} className="absolute inset-0 w-full h-full object-cover group-hover:scale-105 transition-transform duration-300" />
                       <div className="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent opacity-0 group-hover:opacity-100 transition-opacity" />
                       <div className={"absolute top-1 left-1 text-[8px] px-1.5 py-0.5 rounded-full font-bold " + (p.type === "before" ? "bg-blue-600 text-white" : "bg-green-600 text-white")}>{p.type}</div>
                       <div className="absolute bottom-1 left-1 right-1 text-[8px] text-white/80 opacity-0 group-hover:opacity-100 transition-opacity truncate">{p.jobAddr}</div>
@@ -297,81 +381,7 @@ export function CustomerDetail({ customer: c, onClose, onDelete, estimates = [],
                   click a row to expand full checklist/photos/notes/crew. */}
               {cj.length > 0 ? (
                 <div className="space-y-2">
-                  {cj.slice(0,6).map(j => {
-                    const isOpen = expandedJobId === j.id;
-                    const allChecklist = [...(j.preChecklist||[]), ...(j.duringChecklist||[]), ...(j.postChecklist||[]), ...(j.checklist||[])];
-                    const ckDone = allChecklist.filter((it: any) => it.done).length;
-                    const crewNames = employees
-                      .filter((e: any) => crewIncludesEmployee(j.crew, e.id, e.user_id))
-                      .map((e: any) => `${e.firstName} ${e.lastName}`);
-                    return (
-                      <div key={j.id} className="bg-black/40 border border-red-900/10 rounded-xl text-xs overflow-hidden">
-                        <button onClick={() => setExpandedJobId(isOpen ? null : j.id)} className="w-full flex items-center gap-3 p-2.5 text-left hover:bg-white/5 transition">
-                          <div className="flex-1 min-w-0"><div className="font-medium truncate">{j.address?.split(",")[0]}</div><div className="text-white/40">{j.scheduledDate} · {fmt(j.amount)}</div></div>
-                          <div className="flex items-center gap-1.5 flex-shrink-0">
-                            {j.photos?.filter((p: any)=>p.dataUrl).length > 0 && <span className="text-[10px] text-white/40">{j.photos.filter((p: any)=>p.dataUrl).length}📸</span>}
-                            <Badge tone={j.status==="completed"?"green":j.status==="scheduled"?"blue":"gray"}>{j.status}</Badge>
-                            <ChevronRight size={12} className={"text-white/30 transition-transform " + (isOpen ? "rotate-90" : "")} />
-                          </div>
-                        </button>
-                        {isOpen && (
-                          <div className="px-3 pb-3 pt-1 space-y-2 border-t border-white/5">
-                            <div className="text-[11px] text-white/50">
-                              <span className="text-white/70 font-medium">Crew: </span>{crewNames.length > 0 ? crewNames.join(", ") : "Not assigned"}
-                            </div>
-                            {allChecklist.length > 0 && (
-                              <div>
-                                <div className="text-[10px] text-white/40 uppercase tracking-wider mb-1">Checklist ({ckDone}/{allChecklist.length})</div>
-                                <div className="space-y-1">
-                                  {allChecklist.map((ck: any, i: number) => (
-                                    <div key={i} className={"flex items-center gap-1.5 text-[11px] " + (ck.done ? "text-white/40 line-through" : "text-white/70")}>
-                                      {ck.done ? <CheckSquare size={11} className="text-green-500 flex-shrink-0" /> : <span className="w-[11px] h-[11px] rounded border border-white/30 flex-shrink-0" />}
-                                      {ck.label}
-                                    </div>
-                                  ))}
-                                </div>
-                              </div>
-                            )}
-                            {(j.notes || j.internalNotes) && (
-                              <div>
-                                <div className="text-[10px] text-white/40 uppercase tracking-wider mb-1">Notes</div>
-                                <div className="text-[11px] text-white/70">{j.notes || j.internalNotes}</div>
-                              </div>
-                            )}
-                            {/* FIX 11 — customer sign-off, if collected, wasn't
-                                shown here at all — signerName plus the drawn
-                                signature image (job.signOff.sigData), same
-                                data the field portal's own sign-off screen
-                                collects and the invoice PDF embeds. */}
-                            {j.signOff && (
-                              <div>
-                                <div className="text-[10px] text-white/40 uppercase tracking-wider mb-1">Signature</div>
-                                <div className="text-[11px] text-white/70">
-                                  Signed by {j.signOff.signerName || "customer"}{j.signOff.timestamp ? ` on ${new Date(j.signOff.timestamp).toLocaleDateString()}` : ""}
-                                </div>
-                                {j.signOff.sigData && (
-                                  <img src={j.signOff.sigData} alt="signature" className="mt-1 max-w-[200px] bg-white rounded-lg p-1.5" />
-                                )}
-                              </div>
-                            )}
-                            {(j.photos||[]).some((p: any) => p.dataUrl) && (
-                              <div>
-                                <div className="text-[10px] text-white/40 uppercase tracking-wider mb-1">Photos</div>
-                                <div className="grid grid-cols-4 gap-1.5">
-                                  {(j.photos||[]).filter((p: any)=>p.dataUrl).map((p: any, i: number) => (
-                                    <div key={i} className="relative aspect-square rounded-lg overflow-hidden bg-black/40 cursor-pointer" onClick={() => window.open(p.dataUrl, "_blank")}>
-                                      <img src={p.dataUrl} alt={p.type} className="absolute inset-0 w-full h-full object-cover" />
-                                      <div className={"absolute top-0.5 left-0.5 text-[7px] px-1 py-0.5 rounded-full font-bold " + (p.type === "before" ? "bg-blue-600 text-white" : "bg-green-600 text-white")}>{p.type}</div>
-                                    </div>
-                                  ))}
-                                </div>
-                              </div>
-                            )}
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
+                  {cj.slice(0,6).map(j => renderJobRow(j))}
                 </div>
               ) : <div className="text-xs text-white/40 py-3 text-center">No jobs yet</div>}
             </div>

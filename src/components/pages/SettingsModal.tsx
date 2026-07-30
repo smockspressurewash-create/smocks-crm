@@ -20,7 +20,7 @@ import {
   Tooltip, ResponsiveContainer, Area, AreaChart, LineChart, Line,
   ComposedChart, Legend
 } from "recharts";
-import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE } from "../../lib/utils";
+import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, compressImageFile } from "../../lib/utils";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
 import { twilioSend, sendEmail, fetchBufferOrganizationId, fetchBufferChannels, type BufferChannel } from "../../lib/messaging";
 import { buildSocialAuthorizeUrl, type SocialPlatform } from "../../lib/socialOAuth";
@@ -269,7 +269,7 @@ export function SettingsModal({ open, onClose, settings, setSettings, services, 
                   <div className="text-xs text-white/40">{f.companyEmail || "—"}</div>
                 </div>
                 <label className="cursor-pointer px-3 py-2 bg-black/40 border border-red-900/30 rounded-xl text-xs text-white/70 hover:text-white transition flex items-center gap-1.5 flex-shrink-0">
-                  <input type="file" accept="image/*" className="hidden" onChange={e => { const file = e.target.files?.[0]; if (!file) return; const r = new FileReader(); r.onload = ev => setF(prev => ({ ...prev, logoUrl: ev.target?.result as string })); r.readAsDataURL(file); }} />
+                  <input type="file" accept="image/*" className="hidden" onChange={e => { const file = e.target.files?.[0]; if (!file) return; compressImageFile(file, 400, 0.8).then(dataUrl => setF(prev => ({ ...prev, logoUrl: dataUrl }))); }} />
                   <Upload size={12} /> Photo
                 </label>
               </div>
@@ -455,7 +455,7 @@ export function SettingsModal({ open, onClose, settings, setSettings, services, 
                 {f.logoUrl ? <img src={f.logoUrl} alt="Logo" className="w-16 h-16 object-contain rounded-xl bg-black/40 border border-red-900/30 p-1" /> : <div className="w-16 h-16 rounded-xl bg-black/40 border border-red-900/30 flex items-center justify-center text-white/30 text-2xl">🏢</div>}
                 <div>
                   <label className="cursor-pointer px-3 py-2 bg-black/40 border border-red-900/30 rounded-xl text-xs text-white/70 hover:text-white transition flex items-center gap-1.5">
-                    <input type="file" accept="image/*" className="hidden" onChange={e => { const file = e.target.files?.[0]; if (!file) return; const r = new FileReader(); r.onload = ev => setF(prev => ({ ...prev, logoUrl: ev.target.result })); r.readAsDataURL(file); }} />
+                    <input type="file" accept="image/*" className="hidden" onChange={e => { const file = e.target.files?.[0]; if (!file) return; compressImageFile(file, 400, 0.8).then(dataUrl => setF(prev => ({ ...prev, logoUrl: dataUrl }))); }} />
                     <Upload size={12} /> Upload Logo
                   </label>
                   {f.logoUrl && <button onClick={() => setF(prev => ({ ...prev, logoUrl: "" }))} className="mt-1 text-[10px] text-red-400 hover:text-red-300 block">Remove</button>}
@@ -693,9 +693,7 @@ export function SettingsModal({ open, onClose, settings, setSettings, services, 
                         <Upload size={12} />Upload Logo
                         <input type="file" accept="image/*" className="hidden" onChange={(e: any) => {
                           const f = e.target.files?.[0]; if (!f) return;
-                          const reader = new FileReader();
-                          reader.onload = () => setEditingTpl((t: any) => ({ ...t, logoUrl: String(reader.result) }));
-                          reader.readAsDataURL(f);
+                          compressImageFile(f, 400, 0.8).then(dataUrl => setEditingTpl((t: any) => ({ ...t, logoUrl: dataUrl })));
                           e.target.value = "";
                         }} />
                       </label>
