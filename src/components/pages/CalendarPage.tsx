@@ -205,7 +205,12 @@ export function CalendarPage({ jobs = [], setJobs, customers = [], employees = [
       if (patch.crewAssignedAt !== undefined) crewPatch.crewAssignedAt = patch.crewAssignedAt;
       (supabase as any).from("jobs").update(crewPatch).eq("id", jid)
         .then((result: any) => {
+          // BUG FIX — this had no success branch at all: a working crew save
+          // showed nothing, indistinguishable from the click not registering.
+          // JobsPage.tsx's own updateJob already toasts on success; this one
+          // (reached when editing a job from the Calendar page) didn't match.
           if (result?.error) toast?.("Crew assignment failed to save — " + result.error.message, "red");
+          else toast?.("Crew updated ✓", "green");
         })
         .catch((e: any) => {
           console.warn("SUPABASE SAVE FAILED:", e?.message);

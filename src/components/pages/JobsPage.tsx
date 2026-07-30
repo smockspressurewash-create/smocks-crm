@@ -795,11 +795,14 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
                 duration: newJobForm.duration ? Number(newJobForm.duration) : undefined,
                 crew: directAssignEmps.map(e => e.id), checklist: [], photos: [], commLog: [], chemicalsUsed: [], equipment: [], tags: [],
                 loggedHours: 0, createdAt: today(),
-                // Same defensive default AlfredPage.tsx's schedule_job tool
-                // uses — harmless if this deployment's jobs table doesn't
-                // require it (stripped on retry above if the column doesn't
-                // exist at all), but covers it if it's a real NOT NULL column.
-                organizationId: (settings as any)?.organizationId || "17bbffa0-f5d9-47db-b484-2907b2e8c9a3",
+                // REVERTED — organizationId here caused the App.tsx 30s bulk
+                // autosave to fail for every job ("Could not find the
+                // organizationId column of jobs in the schema cache") once
+                // any job carrying this field entered React state — that
+                // autosave upserts the full in-memory job object and doesn't
+                // know to strip this field. The column genuinely doesn't
+                // exist on this deployment; do not re-add without confirming
+                // otherwise (see AlfredPage.tsx's matching revert).
                 ...(directAssignEmps.length > 0 ? { crewAssignedAt: Object.fromEntries(directAssignEmps.map(e => [e.id, Date.now()])) } : {}),
                 ...(newJobForm.isRecurring ? {
                   isRecurring: true,
@@ -840,12 +843,7 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
                   // optimistic local state above. Retry with those columns
                   // stripped so the job (and its crew) still lands.
                   console.error("[Recurring] new job insert failed:", error.message, "— retrying without recurring-schedule columns");
-                  // Also drop organizationId on retry — same defensive reasoning
-                  // as AlfredPage.tsx's schedule_job tool: if this deployment's
-                  // jobs table doesn't have that column at all, PostgREST rejects
-                  // the WHOLE insert over it same as a missing recurring column
-                  // would, and crew would be silently lost right along with it.
-                  const { isRecurring, recurringMode, recurringFreq, recurringInterval, recurringWeekdays, organizationId, ...coreJob } = job as any;
+                  const { isRecurring, recurringMode, recurringFreq, recurringInterval, recurringWeekdays, ...coreJob } = job as any;
                   const retry = await (supabase as any).from("jobs").insert(coreJob);
                   if (retry?.error) {
                     console.error("[Recurring] core-column retry also failed:", retry.error.message);

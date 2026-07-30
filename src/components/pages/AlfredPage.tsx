@@ -1201,16 +1201,18 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
             duration: inputs.duration ? Number(inputs.duration) : undefined,
             crew: [] as any[], checklist: [] as any[], photos: [], commLog: [], chemicalsUsed: [], equipment: [], tags: [],
             loggedHours: 0, createdAt: today(),
-            // BUG FIX — live console output from a real failed attempt
-            // (23502 null value in column "organizationId" of relation
-            // "jobs" violates not-null constraint) confirms this column is
-            // required on this deployment even though no other insert path
-            // in this codebase sets it. Not added to CORE_JOB_COLUMNS below,
-            // so if this column doesn't actually exist on some other
-            // deployment, the existing unrecognized-column retry still
-            // strips it and falls back cleanly — this can't make a working
-            // deployment worse.
-            organizationId: (settings as any)?.organizationId || "17bbffa0-f5d9-47db-b484-2907b2e8c9a3",
+            // REVERTED — organizationId was added here on the strength of a
+            // one-off console log that turned out not to hold up: live
+            // testing now shows the App.tsx 30s bulk jobs autosave (which
+            // upserts the FULL in-memory job object, not just this insert)
+            // rejecting every save afterward with "Could not find the
+            // organizationId column of jobs in the schema cache" — the
+            // column genuinely doesn't exist on this deployment. Once it's on
+            // a job object in React state it poisons every future autosave
+            // of that job, not just this insert, which the autosave's own
+            // safe-column retry doesn't know to strip. Do not re-add without
+            // confirming the column actually exists (see CLAUDE.md's Database
+            // section on organizations/profiles being aspirational scaffolding).
           };
           console.log("[AlfredTool schedule_job] EXACT payload being sent to Supabase:", JSON.stringify(newJ, null, 2));
           // The manual form itself does setJobs() + toast IMMEDIATELY, then

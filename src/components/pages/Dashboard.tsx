@@ -981,6 +981,19 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
           photo upload, and signature capture are one tap away via the
           existing JobDetailModal below (setOwnerDetailId) rather than a
           second, divergent copy of that UI built inline here. */}
+      {/* ITEM 6 (discoverability) — this whole card only ever rendered when
+          the owner had a crew-assigned job today, so an owner testing "self-
+          serve clock in" with no job assigned to themselves today saw
+          nothing at all — indistinguishable from the feature not existing.
+          Explicit empty state instead, so it's clear what to do next. */}
+      {!ownerActiveJob && (
+        <Glass className="p-4 !bg-black/30">
+          <div className="flex items-center gap-2 text-xs text-white/40">
+            <Briefcase size={13} />
+            No job assigned to you today — assign yourself to a job (Jobs → Edit → Assign Crew → your name) to clock in and track your own hours here.
+          </div>
+        </Glass>
+      )}
       {ownerActiveJob && (
         <Glass className="p-4 !border-green-700/30">
           <div className="flex items-center gap-2 mb-3">

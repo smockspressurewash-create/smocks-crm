@@ -56,6 +56,7 @@ import { EmployeePortal } from "./components/pages/EmployeePortal";
 import { saveEmpGoogleToken } from "./lib/googleApi";
 import { ResetPassword } from "./components/pages/ResetPassword";
 import { OnboardingFlow } from "./components/ui/OnboardingFlow";
+import { AutomationBatchModal } from "./components/ui/AutomationBatchModal";
 
 // ─── Seed data ────────────────────────────────────────────────────────────────
 import {
@@ -2044,8 +2045,11 @@ export function App() {
     }
   };
 
-  // Automation engine
-  useAutomationEngine({ automations, setAutomations, jobs, customers, estimates, referrals, settings, toast });
+  // Automation engine — batch-approval gate (automation spam guardrail):
+  // every tick gathers candidates but never sends; the owner explicitly
+  // approves each batch via AutomationBatchModal, rendered below.
+  const { pendingBatch: pendingAutomationBatch, approveBatch: approveAutomationBatch, skipBatch: skipAutomationBatch } =
+    useAutomationEngine({ automations, setAutomations, jobs, customers, estimates, referrals, settings, setSettings, toast });
 
   // Sign out — clears Supabase session and forces login page.
   // signOut() defaults to scope: "global", which revokes the refresh token
@@ -2861,6 +2865,21 @@ export function App() {
         restrictToProfile={crmRole === "manager"}
         onAddManager={() => { setSettingsOpen(false); setAutoOpenManagerInvite(true); setPage("employees"); }}
       />
+
+      {/* Automation batch-approval gate — nothing an automation wants to send
+          goes out until the owner explicitly approves it here. */}
+      {pendingAutomationBatch && (
+        <AutomationBatchModal
+          batch={pendingAutomationBatch}
+          onSendAll={approveAutomationBatch}
+          onSkip={skipAutomationBatch}
+          onPause={() => {
+            setSettings((s: any) => ({ ...s, automationsPaused: true }));
+            skipAutomationBatch();
+            toast("Automations paused");
+          }}
+        />
+      )}
 
       {/* Client portal */}
       {portalEstId && (

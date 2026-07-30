@@ -1,8 +1,7 @@
-import { useEffect, useRef } from "react";
-import type { Automation, AutomationStep, Job, Customer, Estimate, Referral } from "../types";
+import { useEffect, useRef, useState, useCallback } from "react";
+import type { Automation, AutomationStep, Job, Customer, Estimate, Referral, AppSettings } from "../types";
 import { today, daysSince } from "../lib/utils";
 import { twilioSend, logOutboundSmsToInbox, sendOwnerGmailOnly, emailShell } from "../lib/messaging";
-import type { AppSettings } from "../types";
 
 interface AutomationEngineProps {
   automations: Automation[];
@@ -12,6 +11,7 @@ interface AutomationEngineProps {
   estimates: Estimate[];
   referrals?: Referral[];
   settings: AppSettings;
+  setSettings: React.Dispatch<React.SetStateAction<AppSettings>>;
   toast: (msg: string) => void;
 }
 
@@ -56,17 +56,13 @@ const notConfiguredWarnedThisSession = new Set<string>();
 // CRITICAL (automation spam incident) — a second, independent layer of
 // defense on top of the sentLog/cooldown check in `alreadySent` below.
 // sentLog persistence relies on a round trip through React state
-// (setAutomations) and usePersistent's localStorage write, and the actual
-// spam bug turned out to be an editor path that reset sentLog entirely (see
-// AutomationsPage.tsx's VisualWorkflowBuilder onSave — fixed there now). This
-// module-scope Set is synchronous, has no state/render/localStorage
-// round-trip to race, and survives every re-render and every 15-min poll
-// tick for the life of this browser tab: once a given automation+recipient
-// combination is checked here, it can never fire a second time in this
-// session no matter what happens to sentLog. It is NOT a substitute for
-// sentLog (a fresh page load starts this Set empty, so cross-session/cross-
-// device dedup still depends on sentLog persisting correctly) — it's a
-// same-tab circuit breaker so "broken again" fails safe instead of spamming.
+// (setAutomations) and usePersistent's localStorage write. This module-scope
+// Set is synchronous and survives every re-render for the life of this
+// browser tab: once a given automation+recipient combination is actually
+// sent (approved), it can never be sent a second time in this session no
+// matter what happens to sentLog. It is NOT a substitute for sentLog (a
+// fresh page load starts this Set empty) — it's a same-tab circuit breaker
+// against a double "Send All" click or an overlapping approve call.
 const firedThisSession = new Set<string>();
 let automationsPausedLoggedThisSession = false;
 
@@ -234,6 +230,39 @@ const extractDirectives = (steps: AutomationStep[]): Directive[] => {
   return directives;
 };
 
+// ── Batch-approval types (owner review gate) ────────────────────────────────
+// A tick no longer sends anything directly. It gathers every candidate that
+// passes every check (active, category matched, timing window, condition,
+// per-invoice cooldown, per-customer daily cap) into a batch and hands it to
+// the owner via pendingBatch; nothing goes out until they click "Send All" in
+// AutomationBatchModal (rendered from App.tsx). "Skip" discards the batch
+// with zero sends. "Pause Automations" flips the existing kill switch.
+export interface PendingAutomationItem {
+  id: string;
+  autoId: string;
+  autoName: string;
+  category: Category;
+  dedupKey: string;
+  channel: string;
+  subject: string;
+  body: string;
+  customerId: string;
+  customerName: string;
+  estimateId?: string;
+  jobId?: string;
+  referralId?: string;
+  conditions: string[];
+}
+export interface PendingAutomationBatch {
+  items: PendingAutomationItem[];
+  createdAt: number;
+}
+export interface AutomationEngineResult {
+  pendingBatch: PendingAutomationBatch | null;
+  approveBatch: () => Promise<void>;
+  skipBatch: () => void;
+}
+
 export function useAutomationEngine({
   automations,
   setAutomations,
@@ -242,8 +271,9 @@ export function useAutomationEngine({
   estimates,
   referrals = [],
   settings,
+  setSettings,
   toast,
-}: AutomationEngineProps): void {
+}: AutomationEngineProps): AutomationEngineResult {
   const lastRunRef = useRef<string>("");
   // FIX 1 (automations firing repeatedly for the same person) — root cause:
   // this effect used to depend directly on [automations, jobs, customers,
@@ -252,18 +282,10 @@ export function useAutomationEngine({
   // (App.tsx's refetchData/refetchEmployees). Every one of those poll ticks
   // tore this effect down and re-ran it — and re-running called run()
   // immediately, so the 15-minute setInterval never actually governed
-  // anything; only the minute-precision lastRunRef guard did, meaning the
-  // engine could really fire again every time a new calendar minute rolled
-  // around. Worse, setAutomations() (called at the end of a successful send)
-  // itself changes the `automations` reference, which was ALSO a dep — so a
-  // send's own state update could retrigger the effect and start a new run()
-  // before the previous run's sentLog patch had committed to state, reading a
-  // stale sentLog that didn't yet know the message had just gone out. That's
-  // what let "Payment overdue 3-day -> Tom Wilson" fire multiple times.
-  // Fix: the interval is now set up once ([] deps) and reads the latest
-  // jobs/customers/estimates/referrals/settings/automations from refs at
-  // execution time, so fresh poll data no longer restarts the timer, and an
-  // isRunningRef guard blocks a new run from overlapping a still-in-flight
+  // anything. Fix: the interval is now set up once ([] deps) and reads the
+  // latest jobs/customers/estimates/referrals/settings/automations from refs
+  // at execution time, so fresh poll data no longer restarts the timer, and
+  // an isRunningRef guard blocks a new run from overlapping a still-in-flight
   // one entirely.
   const isRunningRef = useRef(false);
   const automationsRef = useRef(automations);
@@ -274,6 +296,7 @@ export function useAutomationEngine({
   const settingsRef = useRef(settings);
   const toastRef = useRef(toast);
   const setAutomationsRef = useRef(setAutomations);
+  const setSettingsRef = useRef(setSettings);
   automationsRef.current = automations;
   jobsRef.current = jobs;
   customersRef.current = customers;
@@ -282,12 +305,114 @@ export function useAutomationEngine({
   settingsRef.current = settings;
   toastRef.current = toast;
   setAutomationsRef.current = setAutomations;
+  setSettingsRef.current = setSettings;
+
+  const [pendingBatch, setPendingBatch] = useState<PendingAutomationBatch | null>(null);
+  const pendingBatchRef = useRef<PendingAutomationBatch | null>(null);
+  pendingBatchRef.current = pendingBatch;
+  const isApprovingRef = useRef(false);
+
+  const reviewLink = (c: Customer, settings: AppSettings) =>
+    `${window.location.origin}${window.location.pathname}#/rate?c=${encodeURIComponent(c.id)}&n=${encodeURIComponent(c.firstName)}&g=${encodeURIComponent((settings as any).googlePlaceId ?? "")}&rl=${encodeURIComponent((settings as any).googleReviewLink ?? "")}&co=${encodeURIComponent((settings as any).companyName ?? "Crew Boss")}`;
+  const paymentLink = (estId: string) => `${window.location.origin}${window.location.pathname}#/estimate/${estId}`;
+
+  const buildMessage = (auto: Automation, dir: Directive, spec: CategorySpec, cand: Candidate, settings: AppSettings) => {
+    const vars: Record<string, string> = {
+      first_name: cand.customer.firstName,
+      last_name: cand.customer.lastName,
+      amount: cand.estimate ? `$${cand.estimate.total}` : "",
+      date: cand.job?.scheduledDate || "",
+      address: cand.customer.address || "",
+      review_link: "", payment_link: "", reward: "",
+      company_phone: (settings as any).companyPhone || (settings as any).twilioFrom || "",
+      ...(spec.extraVars ? spec.extraVars(cand) : {}),
+    };
+    const raw = dir.messageBody
+      || (dir.templateKey && SMS_TEMPLATES[dir.templateKey])
+      || (spec.smsTemplateKey && SMS_TEMPLATES[spec.smsTemplateKey])
+      || `Hi {{first_name}}, ${dir.label || auto.action || auto.name}. — Crew Boss`;
+    return { subject: auto.name || dir.label || "Update from Crew Boss", body: fillTemplate(raw, vars) };
+  };
+
+  // Actually performs one send (email or SMS, with the existing Twilio ->
+  // email fallback). Only ever called from approveBatch, i.e. only after the
+  // owner has explicitly clicked "Send All" on a reviewed batch.
+  const sendOne = async (auto: Automation, channel: string, cand: Candidate, subject: string, body: string, settings: AppSettings, toast: (msg: string) => void, onSent: () => void): Promise<boolean> => {
+    const c = cand.customer;
+    if (channel === "email") {
+      if (!c.email) return false;
+      try {
+        await sendOwnerGmailOnly(settings as any, c.email, subject, emailShell((settings as any).companyName || "Crew Boss", subject, `<p>${body.replace(/\n/g, "<br/>")}</p>`));
+        onSent();
+        toast(`📧 ${auto.name} → ${c.firstName}`);
+        return true;
+      } catch (e: any) {
+        const msg = e?.message || String(e);
+        if (msg.includes("Gmail not connected")) {
+          const key = `${auto.id}:none-configured`;
+          if (!notConfiguredWarnedThisSession.has(key)) {
+            notConfiguredWarnedThisSession.add(key);
+            console.warn(`[Automations] "${auto.name}" — email failed: ${msg} Configure Google in Settings → Integrations. (further attempts for this automation are logged only once per session)`);
+          }
+        } else {
+          console.error("[Automations]", auto.name, "— email failed for", c.firstName, ":", msg);
+        }
+        return false;
+      }
+    }
+    if (channel === "webhook") return false; // no reliable webhook URL field wired from the builder yet
+    if (!c.phone || c.smsOptOut) return false;
+    try {
+      await twilioSend(settings, c.phone, body);
+      logOutboundSmsToInbox({ contactName: `${c.firstName} ${c.lastName}`, contactPhone: c.phone, customerId: c.id, body }).catch(() => {});
+      onSent();
+      toast(`📱 ${auto.name} → ${c.firstName}`);
+      return true;
+    } catch (e: any) {
+      const msg = e?.message || String(e);
+      const isTwilioNotConfigured = msg.includes("Twilio not configured");
+      if (isTwilioNotConfigured && c.email) {
+        const fallbackKey = `${auto.id}:twilio-fallback`;
+        if (!notConfiguredWarnedThisSession.has(fallbackKey)) {
+          notConfiguredWarnedThisSession.add(fallbackKey);
+          console.warn(`[Automations] Twilio not configured — falling back to email for ${auto.name}`);
+        }
+        try {
+          await sendOwnerGmailOnly(settings as any, c.email, subject, emailShell((settings as any).companyName || "Crew Boss", subject, `<p>${body.replace(/\n/g, "<br/>")}</p>`));
+          onSent();
+          toast(`📧 ${auto.name} → ${c.firstName} (SMS unavailable — sent via email)`);
+          return true;
+        } catch (emailErr: any) {
+          const noneKey = `${auto.id}:none-configured`;
+          if (!notConfiguredWarnedThisSession.has(noneKey)) {
+            notConfiguredWarnedThisSession.add(noneKey);
+            console.warn(`[Automations] "${auto.name}" — SMS unavailable (Twilio not configured) and email fallback also failed (${emailErr?.message || "Gmail not connected"}). Configure Twilio or Google in Settings → Integrations. (further attempts for this automation are logged only once per session)`);
+          }
+          return false;
+        }
+      }
+      if (isTwilioNotConfigured) {
+        const noneKey = `${auto.id}:none-configured`;
+        if (!notConfiguredWarnedThisSession.has(noneKey)) {
+          notConfiguredWarnedThisSession.add(noneKey);
+          console.warn(`[Automations] "${auto.name}" — Twilio not configured, and ${c.firstName} ${c.lastName} has no email on file to fall back to. Configure Twilio in Settings → Integrations. (further attempts for this automation are logged only once per session)`);
+        }
+        return false;
+      }
+      console.error("[Automations]", auto.name, "— failed for", c.firstName, ":", msg);
+      return false;
+    }
+  };
 
   useEffect(() => {
     const run = async () => {
       const nowKey = new Date().toISOString().slice(0, 16); // minute precision
       if (lastRunRef.current === nowKey) return;
-      if (isRunningRef.current) return; // a previous tick is still sending — never overlap
+      if (isRunningRef.current) return; // a previous tick is still gathering — never overlap
+      // GUARDRAIL (batch approval) — never gather a second batch while one is
+      // still awaiting the owner's Send All / Skip decision. Resolve the
+      // current one first.
+      if (pendingBatchRef.current) return;
       lastRunRef.current = nowKey;
       isRunningRef.current = true;
 
@@ -297,16 +422,13 @@ export function useAutomationEngine({
       const estimates = estimatesRef.current;
       const referrals = referralsRef.current;
       const settings = settingsRef.current;
-      const toast = toastRef.current;
-      const setAutomations = setAutomationsRef.current;
 
       try {
 
       // CRITICAL — kill switch (automation spam incident). Defaults to
       // paused for every existing owner (undefined reads as paused via
       // `!== false`) until they explicitly re-enable it in the Automations
-      // page, which now also explains what was fixed. Nothing below this
-      // check runs at all while paused — no candidates evaluated, no sends.
+      // page. Nothing below this check runs at all while paused.
       if (settings.automationsPaused !== false) {
         if (!automationsPausedLoggedThisSession) {
           automationsPausedLoggedThisSession = true;
@@ -320,21 +442,10 @@ export function useAutomationEngine({
       const hour = now.getHours();
       const mmdd = todayStr.slice(5);
 
-      const patchesByAutoId: Record<string, { sentTo: Record<string, string>; sent: number }> = {};
       const alreadySent = (auto: Automation, key: string, cooldownDays: number): boolean => {
         const last = auto.sentLog?.[key];
         return !!last && daysSince(last) < cooldownDays;
       };
-      const recordSend = (auto: Automation, key: string, label: string) => {
-        if (!patchesByAutoId[auto.id]) patchesByAutoId[auto.id] = { sentTo: {}, sent: 0 };
-        patchesByAutoId[auto.id].sentTo[key] = todayStr;
-        patchesByAutoId[auto.id].sent += 1;
-        console.log("[Automations] fired:", auto.name, "->", label);
-      };
-
-      const reviewLink = (c: Customer) =>
-        `${window.location.origin}${window.location.pathname}#/rate?c=${encodeURIComponent(c.id)}&n=${encodeURIComponent(c.firstName)}&g=${encodeURIComponent((settings as any).googlePlaceId ?? "")}&rl=${encodeURIComponent((settings as any).googleReviewLink ?? "")}&co=${encodeURIComponent((settings as any).companyName ?? "Crew Boss")}`;
-      const paymentLink = (estId: string) => `${window.location.origin}${window.location.pathname}#/estimate/${estId}`;
 
       // ── Category specs — built fresh each tick so candidate lists reflect
       // the latest jobs/customers/estimates/referrals. ────────────────────
@@ -387,7 +498,7 @@ export function useAutomationEngine({
         },
         review_request: {
           direction: "after", defaultDelayMinutes: 2880, defaultCooldownDays: 3650, smsTemplateKey: "review_request",
-          extraVars: cand => ({ review_link: reviewLink(cand.customer) }),
+          extraVars: cand => ({ review_link: reviewLink(cand.customer, settings) }),
           getCandidates: () => jobs.filter(j => j.status === "completed").map(j => {
             const c = customers.find(x => x.id === j.customerId);
             if (!c) return null;
@@ -507,103 +618,11 @@ export function useAutomationEngine({
         weekly_scheduled: { direction: "immediate", defaultDelayMinutes: 0, defaultCooldownDays: 3650, getCandidates: () => [] },
       };
 
-      const buildMessage = (auto: Automation, dir: Directive, spec: CategorySpec, cand: Candidate) => {
-        const vars: Record<string, string> = {
-          first_name: cand.customer.firstName,
-          last_name: cand.customer.lastName,
-          amount: cand.estimate ? `$${cand.estimate.total}` : "",
-          date: cand.job?.scheduledDate || "",
-          address: cand.customer.address || "",
-          review_link: "", payment_link: "", reward: "",
-          company_phone: (settings as any).companyPhone || (settings as any).twilioFrom || "",
-          ...(spec.extraVars ? spec.extraVars(cand) : {}),
-        };
-        const raw = dir.messageBody
-          || (dir.templateKey && SMS_TEMPLATES[dir.templateKey])
-          || (spec.smsTemplateKey && SMS_TEMPLATES[spec.smsTemplateKey])
-          || `Hi {{first_name}}, ${dir.label || auto.action || auto.name}. — Crew Boss`;
-        return { subject: auto.name || dir.label || "Update from Crew Boss", body: fillTemplate(raw, vars) };
-      };
-
-      const sendDirective = async (auto: Automation, channel: string, cand: Candidate, subject: string, body: string, dedupKey: string): Promise<boolean> => {
-        const c = cand.customer;
-        if (channel === "email") {
-          if (!c.email) return false;
-          try {
-            await sendOwnerGmailOnly(settings as any, c.email, subject, emailShell((settings as any).companyName || "Crew Boss", subject, `<p>${body.replace(/\n/g, "<br/>")}</p>`));
-            recordSend(auto, dedupKey, c.firstName + " " + c.lastName);
-            toast(`📧 ${auto.name} → ${c.firstName}`);
-            return true;
-          } catch (e: any) {
-            // BLOCKER 1b — same one-warning-per-automation-per-session
-            // throttle as the SMS branch below, for the "not configured"
-            // case specifically; genuine per-message failures still log
-            // every time since those are actionable per-customer issues.
-            const msg = e?.message || String(e);
-            if (msg.includes("Gmail not connected")) {
-              const key = `${auto.id}:none-configured`;
-              if (!notConfiguredWarnedThisSession.has(key)) {
-                notConfiguredWarnedThisSession.add(key);
-                console.warn(`[Automations] "${auto.name}" — email failed: ${msg} Configure Google in Settings → Integrations. (further attempts for this automation are logged only once per session)`);
-              }
-            } else {
-              console.error("[Automations]", auto.name, "— email failed for", c.firstName, ":", msg);
-            }
-            return false;
-          }
-        }
-        if (channel === "webhook") return false; // no reliable webhook URL field wired from the builder yet
-        if (!c.phone || c.smsOptOut) return false;
-        try {
-          await twilioSend(settings, c.phone, body);
-          logOutboundSmsToInbox({ contactName: `${c.firstName} ${c.lastName}`, contactPhone: c.phone, customerId: c.id, body }).catch(() => {});
-          recordSend(auto, dedupKey, c.firstName + " " + c.lastName);
-          toast(`📱 ${auto.name} → ${c.firstName}`);
-          return true;
-        } catch (e: any) {
-          const msg = e?.message || String(e);
-          const isTwilioNotConfigured = msg.includes("Twilio not configured");
-          // BLOCKER 1a — SMS can't go out because Twilio isn't set up, but the
-          // automation itself still has something worth telling the customer.
-          // Fall back to the owner's Gmail rather than just failing, same as
-          // the "email" channel branch above.
-          if (isTwilioNotConfigured && c.email) {
-            const fallbackKey = `${auto.id}:twilio-fallback`;
-            if (!notConfiguredWarnedThisSession.has(fallbackKey)) {
-              notConfiguredWarnedThisSession.add(fallbackKey);
-              console.warn(`[Automations] Twilio not configured — falling back to email for ${auto.name}`);
-            }
-            try {
-              await sendOwnerGmailOnly(settings as any, c.email, subject, emailShell((settings as any).companyName || "Crew Boss", subject, `<p>${body.replace(/\n/g, "<br/>")}</p>`));
-              recordSend(auto, dedupKey, c.firstName + " " + c.lastName);
-              toast(`📧 ${auto.name} → ${c.firstName} (SMS unavailable — sent via email)`);
-              return true;
-            } catch (emailErr: any) {
-              // BLOCKER 1b — neither channel is actually usable. One warning
-              // per automation per session, not one per candidate per tick.
-              const noneKey = `${auto.id}:none-configured`;
-              if (!notConfiguredWarnedThisSession.has(noneKey)) {
-                notConfiguredWarnedThisSession.add(noneKey);
-                console.warn(`[Automations] "${auto.name}" — SMS unavailable (Twilio not configured) and email fallback also failed (${emailErr?.message || "Gmail not connected"}). Configure Twilio or Google in Settings → Integrations. (further attempts for this automation are logged only once per session)`);
-              }
-              return false;
-            }
-          }
-          if (isTwilioNotConfigured) {
-            // No email on file to fall back to, either — still throttled.
-            const noneKey = `${auto.id}:none-configured`;
-            if (!notConfiguredWarnedThisSession.has(noneKey)) {
-              notConfiguredWarnedThisSession.add(noneKey);
-              console.warn(`[Automations] "${auto.name}" — Twilio not configured, and ${c.firstName} ${c.lastName} has no email on file to fall back to. Configure Twilio in Settings → Integrations. (further attempts for this automation are logged only once per session)`);
-            }
-            return false;
-          }
-          // A genuine per-message send failure (bad number, Twilio rejected
-          // it, etc.) — not a "not configured" case, so always surface it.
-          console.error("[Automations]", auto.name, "— failed for", c.firstName, ":", msg);
-          return false;
-        }
-      };
+      // ── Gather phase — no sends happen here. Every candidate that clears
+      // every check becomes a PendingAutomationItem for the owner to review.
+      const gathered: PendingAutomationItem[] = [];
+      const dailyLog = settings.automationDailySendLog || {};
+      const claimedCustomersThisBatch = new Set<string>();
 
       for (const auto of automations) {
         if (!auto.active) continue;
@@ -637,7 +656,22 @@ export function useAutomationEngine({
           }
           directives = [legacy];
         } else {
-          directives = extractDirectives(steps);
+          // AUTOMATION SPAM FIX — extractDirectives only attaches conditions
+          // from explicit "condition"-type steps the owner dragged into the
+          // workflow; it has no idea what category this automation classified
+          // as, so it never re-checks payment/response status on its own. The
+          // legacy branch above always attaches spec.conditionKey (e.g.
+          // "invoice_unpaid" for payment_overdue, "estimate_not_viewed" for
+          // estimate_followup) — a multi-step workflow drip (3-day -> 7-day ->
+          // 14-day overdue reminders) got no such safety net unless the owner
+          // happened to also build an explicit "still unpaid" condition step.
+          // Every directive from a workflow now also carries the category's
+          // baseline condition, in addition to whatever the workflow itself
+          // explicitly checks.
+          const raw = extractDirectives(steps);
+          directives = spec.conditionKey
+            ? raw.map(d => d.conditions.includes(spec.conditionKey!) ? d : { ...d, conditions: [...d.conditions, spec.conditionKey!] })
+            : raw;
         }
 
         for (const dir of directives) {
@@ -657,29 +691,36 @@ export function useAutomationEngine({
             const dedupKey = `${category}:${dir.stepId}:${cand.key}`;
             const cooldownDays = dir.stepId === "legacy" ? spec.defaultCooldownDays : 3650;
             if (alreadySent(auto, dedupKey, cooldownDays)) continue;
-            // Session-level circuit breaker (see firedThisSession above) —
-            // claim this combo synchronously BEFORE the await, so nothing
-            // (an overlapping tick, a sentLog write that hasn't landed yet)
-            // can send it twice in this tab. Real persistence still comes
-            // from sentLog via recordSend below; this only ever prevents an
-            // extra send, never substitutes for the real record.
+            // GUARDRAIL — at most one automation touch per customer per day,
+            // across ALL automations (not just this one). Checks both the
+            // persisted record (a batch approved earlier today) and this same
+            // gather pass (two different automations both wanting to reach
+            // the same customer in one tick only get one of them queued).
+            if (dailyLog[cand.customer.id] === todayStr) continue;
+            if (claimedCustomersThisBatch.has(cand.customer.id)) continue;
             const sessionKey = `${auto.id}:${dedupKey}`;
             if (firedThisSession.has(sessionKey)) continue;
-            firedThisSession.add(sessionKey);
-            const { subject, body } = buildMessage(auto, dir, spec, cand);
-            const sent = await sendDirective(auto, dir.channel, cand, subject, body, dedupKey);
-            if (!sent) firedThisSession.delete(sessionKey); // failed send — allow a real retry next tick
+            claimedCustomersThisBatch.add(cand.customer.id);
+            const { subject, body } = buildMessage(auto, dir, spec, cand, settings);
+            gathered.push({
+              id: sessionKey,
+              autoId: auto.id, autoName: auto.name, category, dedupKey, channel: dir.channel,
+              subject, body, customerId: cand.customer.id, customerName: `${cand.customer.firstName} ${cand.customer.lastName}`,
+              estimateId: cand.estimate?.id, jobId: cand.job?.id, referralId: cand.referral?.id,
+              conditions: dir.conditions,
+            });
           }
         }
       }
 
-      if (Object.keys(patchesByAutoId).length > 0) {
-        setAutomations(prev => prev.map(a => {
-          const patch = patchesByAutoId[a.id];
-          if (!patch) return a;
-          return { ...a, lastTriggered: todayStr, count: (a.count ?? 0) + patch.sent, sentLog: { ...(a.sentLog || {}), ...patch.sentTo } };
-        }));
+      // GUARDRAIL (batch approval popup) — hand the whole tick's findings to
+      // the owner instead of sending anything. AutomationBatchModal
+      // (rendered from App.tsx) shows count + first few names + Send All /
+      // Skip / Pause Automations.
+      if (gathered.length > 0) {
+        setPendingBatch({ items: gathered, createdAt: Date.now() });
       }
+
       } finally {
         isRunningRef.current = false;
       }
@@ -689,4 +730,80 @@ export function useAutomationEngine({
     const interval = setInterval(run, 15 * 60 * 1000);
     return () => clearInterval(interval);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Re-verifies a pending item's original conditions against the LATEST
+  // customer/job/estimate/referral state before actually sending — a batch
+  // can sit awaiting approval for a while (owner away from the screen), and
+  // an invoice could get paid, or an estimate get viewed, in the meantime.
+  // Re-checking here closes that window instead of trusting stale gather-time
+  // data at send time.
+  const stillQualifies = (item: PendingAutomationItem): { cand: Candidate; auto: Automation } | null => {
+    const auto = automationsRef.current.find(a => a.id === item.autoId);
+    if (!auto || !auto.active) return null;
+    const customer = customersRef.current.find(c => c.id === item.customerId);
+    if (!customer) return null;
+    const job = item.jobId ? jobsRef.current.find(j => j.id === item.jobId) : undefined;
+    const estimate = item.estimateId ? estimatesRef.current.find(e => e.id === item.estimateId) : undefined;
+    const referral = item.referralId ? referralsRef.current.find(r => r.id === item.referralId) : undefined;
+    const cand: Candidate = { key: item.dedupKey, customer, job, estimate, referral, anchorMs: Date.now() };
+    if (item.conditions.some(c => !evalCondition(c, cand))) return null;
+    // Also re-check the daily cap and dedup one more time — belt and
+    // suspenders against a batch that's been sitting a while.
+    const settings = settingsRef.current;
+    if ((settings.automationDailySendLog || {})[item.customerId] === today()) return null;
+    return { cand, auto };
+  };
+
+  const approveBatch = useCallback(async () => {
+    const batch = pendingBatchRef.current;
+    if (!batch || isApprovingRef.current) return;
+    isApprovingRef.current = true;
+    setPendingBatch(null); // clear immediately so the modal can't be double-submitted
+    try {
+      const todayStr = today();
+      const patchesByAutoId: Record<string, { sentTo: Record<string, string>; sent: number }> = {};
+      const newDailyLog: Record<string, string> = { ...(settingsRef.current.automationDailySendLog || {}) };
+      const sentThisApprovalForCustomer = new Set<string>();
+
+      for (const item of batch.items) {
+        // GUARDRAIL — never send twice to the same customer in this approval
+        // even if the batch (gathered up to 15 minutes ago) somehow still
+        // had two entries for them.
+        if (sentThisApprovalForCustomer.has(item.customerId)) continue;
+        if (firedThisSession.has(item.id)) continue;
+        const fresh = stillQualifies(item);
+        if (!fresh) { console.log("[Automations] skipped at send time (no longer qualifies):", item.autoName, "→", item.customerName); continue; }
+        firedThisSession.add(item.id);
+        const sent = await sendOne(fresh.auto, item.channel, fresh.cand, item.subject, item.body, settingsRef.current, toastRef.current, () => {
+          if (!patchesByAutoId[item.autoId]) patchesByAutoId[item.autoId] = { sentTo: {}, sent: 0 };
+          patchesByAutoId[item.autoId].sentTo[item.dedupKey] = todayStr;
+          patchesByAutoId[item.autoId].sent += 1;
+          console.log("[Automations] fired:", item.autoName, "->", item.customerName);
+        });
+        if (sent) {
+          newDailyLog[item.customerId] = todayStr;
+          sentThisApprovalForCustomer.add(item.customerId);
+        } else {
+          firedThisSession.delete(item.id); // failed send — allow a real retry next batch
+        }
+      }
+
+      if (Object.keys(patchesByAutoId).length > 0) {
+        setAutomationsRef.current(prev => prev.map(a => {
+          const patch = patchesByAutoId[a.id];
+          if (!patch) return a;
+          return { ...a, lastTriggered: todayStr, count: (a.count ?? 0) + patch.sent, sentLog: { ...(a.sentLog || {}), ...patch.sentTo } };
+        }));
+      }
+      setSettingsRef.current((s: any) => ({ ...s, automationDailySendLog: newDailyLog }));
+    } finally {
+      isApprovingRef.current = false;
+    }
+  }, []);
+
+  const skipBatch = useCallback(() => {
+    setPendingBatch(null);
+  }, []);
+
+  return { pendingBatch, approveBatch, skipBatch };
 }

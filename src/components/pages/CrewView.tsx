@@ -159,7 +159,9 @@ export function CrewView({ jobs = [], setJobs, customers = [], employees = [], t
     if (patch.crew !== undefined) {
       const crewPatch: any = { crew: patch.crew };
       if (patch.crewAssignedAt !== undefined) crewPatch.crewAssignedAt = patch.crewAssignedAt;
-      (supabase as any).from("jobs").update(crewPatch).eq("id", jid).then((r: any) => { if (r?.error) toast?.("Crew assignment failed to save — " + r.error.message, "red"); }).catch(() => toast?.("Crew assignment failed to save", "red"));
+      // BUG FIX — same missing-success-toast gap as CalendarPage.tsx's
+      // updateJob: a working save showed nothing at all here before.
+      (supabase as any).from("jobs").update(crewPatch).eq("id", jid).then((r: any) => { if (r?.error) toast?.("Crew assignment failed to save — " + r.error.message, "red"); else toast?.("Crew updated ✓", "green"); }).catch(() => toast?.("Crew assignment failed to save", "red"));
     }
   };
   const dayJobs = jobs

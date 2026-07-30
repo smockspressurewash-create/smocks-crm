@@ -766,6 +766,11 @@ export interface AppSettings {
   // Defaults every existing owner to paused after the automation-spam
   // incident; see AutomationsPage.tsx's banner and useAutomationEngine.ts.
   automationsPaused?: boolean;
+  // Batch-approval guardrail — customerId -> last date (YYYY-MM-DD) any
+  // automation actually emailed/texted them, across ALL automations. Caps
+  // every customer to at most one automation touch per day regardless of
+  // how many different automations would otherwise want to reach them.
+  automationDailySendLog?: Record<string, string>;
 
   [key: string]: any;
 }
