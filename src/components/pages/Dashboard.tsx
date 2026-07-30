@@ -564,6 +564,11 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
   // customer info, and signature-capture functionality a technician gets in
   // CrewView's "Live Now" detail modal, via the same JobDetailModal.
   const [ownerDetailId, setOwnerDetailId] = useState<string | null>(null);
+  // BLOCKER — "My Week Ahead" days with more than one job were dead clicks
+  // (onClick only fired for `single`); the owner had no way to see them at
+  // all from here short of leaving the dashboard for the full Jobs page.
+  // This opens a full-screen list of every job on that date instead.
+  const [ownerDayJobsDate, setOwnerDayJobsDate] = useState<string | null>(null);
   // FIX 8 — Live Team View previously only ever showed a done/total COUNT for
   // checklists, never the actual items — "0/0" (or any count) with nothing to
   // click into wasn't distinguishable from "checklist data isn't loading" at
@@ -1096,8 +1101,8 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
                   return (
                     <button
                       key={date}
-                      onClick={() => single && setOwnerDetailId(single.id)}
-                      className={"w-full flex items-center justify-between gap-2 p-2 rounded-xl border border-white/10 bg-black/20 text-left " + (single ? "hover:border-green-600/40 transition" : "cursor-default")}
+                      onClick={() => single ? setOwnerDetailId(single.id) : setOwnerDayJobsDate(date)}
+                      className="w-full flex items-center justify-between gap-2 p-2 rounded-xl border border-white/10 bg-black/20 text-left hover:border-green-600/40 transition"
                     >
                       <span className="text-xs text-white/60">{label}</span>
                       <span className="text-[10px] text-white/40">{dayJobs.length} job{dayJobs.length > 1 ? "s" : ""}</span>
@@ -1118,6 +1123,53 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
           streamlined, mobile-optimized view a field employee gets (sign-off,
           checklist with photo upload, clock in/out, OTW/Running Late, Report
           Problem) with no admin-only fields at all. */}
+      {/* FIX — day with 2+ jobs from "My Week Ahead" (previously a dead
+          click). Full-screen (min-h-screen, same as JobDetailView) list of
+          every job that date; tapping one drills into the same single-job
+          JobDetailView the "My Jobs Today" rows already use. */}
+      {ownerDayJobsDate && (() => {
+        const dayJobs = jobs
+          .filter((j: any) => crewIncludesEmployee(j.crew, ownerEmpId, ownerEmp?.user_id) && j.scheduledDate === ownerDayJobsDate && j.status !== "cancelled")
+          .sort((a: any, b: any) => (a.scheduledTime || "").localeCompare(b.scheduledTime || ""));
+        const label = new Date(ownerDayJobsDate + "T12:00:00").toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
+        return (
+          <div className="fixed inset-0 z-50 overflow-y-auto min-h-screen bg-black text-white">
+            <div className="sticky top-0 z-10 bg-black/95 backdrop-blur border-b border-white/10 p-4 flex items-center gap-3">
+              <button onClick={() => setOwnerDayJobsDate(null)} className="text-white/60 hover:text-white flex-shrink-0">
+                <ChevronLeft size={22} />
+              </button>
+              <div>
+                <div className="font-bold text-base">{label}</div>
+                <div className="text-xs text-white/40">{dayJobs.length} job{dayJobs.length !== 1 ? "s" : ""} scheduled</div>
+              </div>
+            </div>
+            <div className="p-4 space-y-2">
+              {dayJobs.map((j: any) => {
+                const c = customers.find((x: any) => x.id === j.customerId);
+                const prog = checklistProgress(j);
+                return (
+                  <button
+                    key={j.id}
+                    onClick={() => { setOwnerDayJobsDate(null); setOwnerDetailId(j.id); }}
+                    className="w-full flex items-center gap-3 p-3 rounded-xl border border-white/10 bg-black/30 hover:border-green-600/40 transition text-left"
+                  >
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm font-medium truncate">{c ? `${c.firstName} ${c.lastName}` : j.address}</div>
+                      <div className="text-[10px] text-white/40 truncate flex items-center gap-2 mt-0.5">
+                        {j.scheduledTime && <span>{j.scheduledTime}</span>}
+                        <span className={j.status === "completed" ? "text-green-400" : "text-white/40"}>{j.status}</span>
+                        {prog && <span>{prog.done}/{prog.total} checklist</span>}
+                      </div>
+                    </div>
+                    <ChevronRight size={13} className="text-white/30 flex-shrink-0" />
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })()}
+
       {ownerDetailId && (() => {
         const j = jobs.find((x: any) => x.id === ownerDetailId);
         if (!j) return null;

@@ -17,7 +17,7 @@ import { loadMapsScript, AddressAutocomplete } from "../ui/AddressAutocomplete";
 import { LiveMap } from "../ui/LiveMap";
 import { PropertyMapEmbed } from "../ui/PropertyMapEmbed";
 import { BarChart, Bar, LineChart, Line, XAxis, YAxis, ResponsiveContainer, Tooltip, CartesianGrid } from "recharts";
-import { fmt, uid, today, localDateStr, shiftDayStr, daysFromNow, computeJobRatingScore, setOAuthIntent, compressImageFile, getEffectiveRate, computeNextRecurringDate, weekdayLabels, normalizeJobRow, totalJobPhotoCount, mediaSrc, dataUrlToBlob, uploadJobMedia, checkVideoLimits } from "../../lib/utils";
+import { fmt, uid, today, localDateStr, shiftDayStr, daysFromNow, computeJobRatingScore, setOAuthIntent, compressImageFile, getEffectiveRate, computeNextRecurringDate, weekdayLabels, normalizeJobRow, totalJobPhotoCount, mediaSrc, dataUrlToBlob, uploadJobMedia, checkVideoLimits, stripLegacyJobFields } from "../../lib/utils";
 import { usePollGate } from "../../hooks/usePollGate";
 import type { Job, Employee, Customer, AppSettings, JobChecklistItem } from "../../types";
 
@@ -2684,7 +2684,10 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     if (!sourceJob.isRecurring) return;
     const nextDate = computeNextRecurringDate(sourceJob, sourceJob.scheduledDate);
     const nextJob: any = {
-      ...sourceJob, id: uid(), status: "scheduled", scheduledDate: nextDate,
+      // stripLegacyJobFields — sourceJob may still carry a poisoned
+      // organizationId/org_id key from before that bug was reverted; a bare
+      // spread would carry it into this brand-new row and fail the insert.
+      ...stripLegacyJobFields(sourceJob), id: uid(), status: "scheduled", scheduledDate: nextDate,
       loggedHours: 0, clockInAt: null, arrivedAt: null, completedAt: null,
       checklist: (sourceJob.checklist || []).map((ck: any) => ({ ...ck, done: false })),
       preChecklist: (sourceJob.preChecklist || []).map((ck: any) => ({ ...ck, done: false })),

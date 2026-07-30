@@ -621,6 +621,25 @@ export const withTimeout = <T,>(p: Promise<T>, ms: number, label: string): Promi
     new Promise<T>((_, reject) => setTimeout(() => reject(new Error(label + " timed out")), ms)),
   ]);
 
+// ─── stripLegacyJobFields ───────────────────────────────────────────────────
+// organizationId/org_id have been added to a job payload twice now on the
+// strength of evidence that didn't hold up — the column has never existed on
+// this deployment (see JobsPage.tsx/AlfredPage.tsx revert comments). The real
+// danger isn't the insert that adds it — it's that once such a field lands on
+// a job object sitting in React state (and therefore in the "smocks.jobs"
+// localStorage cache via usePersistent), EVERY future spread of that job
+// object (the 30s bulk autosave, "complete recurring job" duplicating it into
+// next occurrence, etc.) carries it forward and keeps failing, even after the
+// code that originally added it is reverted. Stripping defensively at every
+// write site self-heals any job already poisoned in a user's browser instead
+// of requiring them to clear localStorage.
+const LEGACY_BAD_JOB_FIELDS = ["organizationId", "org_id"] as const;
+export const stripLegacyJobFields = <T extends Record<string, any>>(job: T): T => {
+  const copy: any = { ...job };
+  LEGACY_BAD_JOB_FIELDS.forEach(f => delete copy[f]);
+  return copy;
+};
+
 const JOB_MEDIA_BUCKET = "job-media";
 
 // Uploads a photo/video/signature to the job-media Storage bucket and

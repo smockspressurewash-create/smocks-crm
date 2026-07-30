@@ -20,7 +20,7 @@ import {
   Tooltip, ResponsiveContainer, Area, AreaChart, LineChart, Line,
   ComposedChart, Legend
 } from "recharts";
-import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, weekdayLabels, computeNextRecurringDate, describeRecurringSchedule, isEmployeeUnavailable, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, withTimeout, getEffectiveRate, totalJobPhotoCount } from "../../lib/utils";
+import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, weekdayLabels, computeNextRecurringDate, describeRecurringSchedule, isEmployeeUnavailable, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, withTimeout, getEffectiveRate, totalJobPhotoCount, stripLegacyJobFields } from "../../lib/utils";
 const weatherRisk = (_dateStr: string): {icon: string; level: string; reason: string} | null => null;
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
 import { twilioSend, sendEmail, emailShell, emailButton } from "../../lib/messaging";
@@ -830,35 +830,51 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
               // write surfaces as a visible error rather than silent data loss.
               (async () => {
                 console.log("[Recurring] saving new job", job.id, "isRecurring:", (job as any).isRecurring, "crew:", job.crew);
-                const { error } = await withTimeout<any>((supabase as any).from("jobs").insert(job), 15000, "Save job");
-                if (error) {
-                  // FIX G — recurring jobs add isRecurring/recurringMode/
-                  // recurringFreq/recurringInterval/recurringWeekdays columns
-                  // (migration 0007) on top of the normal job payload. If that
-                  // migration hasn't been run yet, PostgREST rejects the WHOLE
-                  // insert (not just those columns) — so the job never reached
-                  // Supabase at all, and the employee portal (which reads jobs
-                  // straight from Supabase) never saw it, even though the
-                  // owner's own screen showed "Job scheduled" from the
-                  // optimistic local state above. Retry with those columns
-                  // stripped so the job (and its crew) still lands.
-                  console.error("[Recurring] new job insert failed:", error.message, "— retrying without recurring-schedule columns");
-                  const { isRecurring, recurringMode, recurringFreq, recurringInterval, recurringWeekdays, ...coreJob } = job as any;
-                  const retry = await (supabase as any).from("jobs").insert(coreJob);
-                  if (retry?.error) {
-                    console.error("[Recurring] core-column retry also failed:", retry.error.message);
-                    toast?.("Job created locally, but failed to save to the server — " + retry.error.message, "red");
-                  } else if ((job as any).isRecurring) {
-                    console.warn("[Recurring] job saved without its recurring-schedule columns — run supabase/migrations/0007_custom_recurring_schedule_columns.sql to enable auto-scheduling.");
-                    toast?.("Job saved, but recurring schedule couldn't be saved — ask your admin to run the pending database migration.", "yellow");
+                // BLOCKER — this whole IIFE previously had no try/catch. A
+                // genuine network hang makes withTimeout's race REJECT (not
+                // resolve with {error}), which threw straight out of this
+                // async function with nothing to catch it — an unhandled
+                // promise rejection that only ever showed up as "Error: Save
+                // job timed out" in the console, never a toast, and never
+                // attempted the safe-column retry below. The job stayed in
+                // local state only and the employee portal (which reads jobs
+                // straight from Supabase) never saw it — exactly the "jobs
+                // don't show up" symptom. Every path out of this function
+                // must now end in either a success log or a toast.
+                try {
+                  const { error } = await withTimeout<any>((supabase as any).from("jobs").insert(job), 15000, "Save job");
+                  if (error) {
+                    // FIX G — recurring jobs add isRecurring/recurringMode/
+                    // recurringFreq/recurringInterval/recurringWeekdays columns
+                    // (migration 0007) on top of the normal job payload. If that
+                    // migration hasn't been run yet, PostgREST rejects the WHOLE
+                    // insert (not just those columns) — so the job never reached
+                    // Supabase at all, and the employee portal (which reads jobs
+                    // straight from Supabase) never saw it, even though the
+                    // owner's own screen showed "Job scheduled" from the
+                    // optimistic local state above. Retry with those columns
+                    // stripped so the job (and its crew) still lands.
+                    console.error("[Recurring] new job insert failed:", error.message, "— retrying without recurring-schedule columns");
+                    const { isRecurring, recurringMode, recurringFreq, recurringInterval, recurringWeekdays, ...coreJob } = job as any;
+                    const retry = await withTimeout<any>((supabase as any).from("jobs").insert(coreJob), 15000, "Save job (retry)");
+                    if (retry?.error) {
+                      console.error("[Recurring] core-column retry also failed:", retry.error.message);
+                      toast?.("Job created locally, but failed to save to the server — " + retry.error.message, "red");
+                    } else if ((job as any).isRecurring) {
+                      console.warn("[Recurring] job saved without its recurring-schedule columns — run supabase/migrations/0007_custom_recurring_schedule_columns.sql to enable auto-scheduling.");
+                      toast?.("Job saved, but recurring schedule couldn't be saved — ask your admin to run the pending database migration.", "yellow");
+                    }
+                  } else {
+                    console.log("[Recurring] new job saved to Supabase ✓", job.id);
                   }
-                } else {
-                  console.log("[Recurring] new job saved to Supabase ✓", job.id);
+                  // No verify SELECT round-trip — it needs a SELECT RLS policy
+                  // that may be absent, and would otherwise spuriously warn on a
+                  // save that actually succeeded. The 3s cross-device poll will
+                  // reconcile local state with the server on its own.
+                } catch (e: any) {
+                  console.error("[Recurring] new job insert threw:", e?.message);
+                  toast?.("Job created locally, but failed to save to the server — " + (e?.message || "connection issue, please retry"), "red");
                 }
-                // No verify SELECT round-trip — it needs a SELECT RLS policy
-                // that may be absent, and would otherwise spuriously warn on a
-                // save that actually succeeded. The 3s cross-device poll will
-                // reconcile local state with the server on its own.
               })();
               // Create Google Calendar event if Google is connected
               // FIX 9 — only auto-create the calendar event when auto-sync is on
@@ -1358,7 +1374,12 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
                     // job from here specifically ("commercial jobs" are
                     // usually owner-managed, not completed via the field
                     // portal) never produced a job employees could see.
-                    const nextJob: any = { ...j, id: uid(), status: "scheduled", scheduledDate: nextDate, loggedHours: 0, clockInAt: null, arrivedAt: null, completedAt: null, checklist: (j.checklist || []).map(ck => ({ ...ck, done: false })), preChecklist: (j.preChecklist || []).map((ck: any) => ({ ...ck, done: false })), duringChecklist: (j.duringChecklist || []).map((ck: any) => ({ ...ck, done: false })), postChecklist: (j.postChecklist || []).map((ck: any) => ({ ...ck, done: false })), commLog: [], photos: [], videos: [], chemicalsUsed: [], paymentStatus: undefined, amountCollected: undefined };
+                    // stripLegacyJobFields — `j` is an existing job object that
+                    // may still carry a poisoned organizationId/org_id field
+                    // from before that bug was reverted (see lib/utils.ts); a
+                    // bare {...j} spread would carry it into this brand-new
+                    // row and fail the insert below.
+                    const nextJob: any = { ...stripLegacyJobFields(j), id: uid(), status: "scheduled", scheduledDate: nextDate, loggedHours: 0, clockInAt: null, arrivedAt: null, completedAt: null, checklist: (j.checklist || []).map(ck => ({ ...ck, done: false })), preChecklist: (j.preChecklist || []).map((ck: any) => ({ ...ck, done: false })), duringChecklist: (j.duringChecklist || []).map((ck: any) => ({ ...ck, done: false })), postChecklist: (j.postChecklist || []).map((ck: any) => ({ ...ck, done: false })), commLog: [], photos: [], videos: [], chemicalsUsed: [], paymentStatus: undefined, amountCollected: undefined };
                     console.log("[Recurring] auto-scheduling next occurrence for", nextDate, "— crew:", nextJob.crew);
                     setJobs(prev => [...prev.map(x => x.id === j.id ? { ...x, status: "completed" } : x), nextJob]);
                     (supabase as any).from("jobs").insert(nextJob)

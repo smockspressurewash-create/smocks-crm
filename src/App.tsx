@@ -68,7 +68,7 @@ import {
 } from "./lib/seed";
 import { seedWeather } from "./lib/weather";
 import { fetchRealWeather } from "./lib/weather";
-import { fmt, uid, today, daysSince, daysFromNow, consumeOAuthIntent, getLastOwnerSessionFlag, setLastOwnerSessionFlag, getLastOwnerId, setLastOwnerId, buildChecklistFromServices, withTimeout, normalizeJobRow, totalJobPhotoCount, notifyDesktop } from "./lib/utils";
+import { fmt, uid, today, daysSince, daysFromNow, consumeOAuthIntent, getLastOwnerSessionFlag, setLastOwnerSessionFlag, getLastOwnerId, setLastOwnerId, buildChecklistFromServices, withTimeout, normalizeJobRow, totalJobPhotoCount, notifyDesktop, stripLegacyJobFields } from "./lib/utils";
 import { sendEmail, buildTomorrowJobsEmailHtml, buildDailyBriefingEmailHtml } from "./lib/messaging";
 import { exchangeSocialOAuthCode, type SocialPlatform } from "./lib/socialOAuth";
 import type {
@@ -1523,7 +1523,7 @@ export function App() {
           "equipmentChecked", "notes",
         ] as const;
         const safeJobs = jobs.map(j => {
-          const copy: any = { ...j };
+          const copy: any = stripLegacyJobFields(j);
           EMPLOYEE_OWNED_FIELDS.forEach(f => delete copy[f]);
           return copy;
         });
