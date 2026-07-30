@@ -1201,6 +1201,16 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
             duration: inputs.duration ? Number(inputs.duration) : undefined,
             crew: [] as any[], checklist: [] as any[], photos: [], commLog: [], chemicalsUsed: [], equipment: [], tags: [],
             loggedHours: 0, createdAt: today(),
+            // BUG FIX — live console output from a real failed attempt
+            // (23502 null value in column "organizationId" of relation
+            // "jobs" violates not-null constraint) confirms this column is
+            // required on this deployment even though no other insert path
+            // in this codebase sets it. Not added to CORE_JOB_COLUMNS below,
+            // so if this column doesn't actually exist on some other
+            // deployment, the existing unrecognized-column retry still
+            // strips it and falls back cleanly — this can't make a working
+            // deployment worse.
+            organizationId: (settings as any)?.organizationId || "17bbffa0-f5d9-47db-b484-2907b2e8c9a3",
           };
           console.log("[AlfredTool schedule_job] EXACT payload being sent to Supabase:", JSON.stringify(newJ, null, 2));
           // The manual form itself does setJobs() + toast IMMEDIATELY, then
@@ -2099,6 +2109,19 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
             throw err;
           } else {
             const overloaded = (err as any)?.status === 503 || /overloaded|503/i.test(err.message || "");
+            // BUG FIX — a persistent non-rate-limit failure (a browser CORS
+            // block on a provider that doesn't support direct browser calls
+            // — e.g. NVIDIA's NIM API — an invalid/expired key, a
+            // deprecated model) previously got no lockout at all, only
+            // rate-limit errors did (above). That meant the same broken
+            // model was retried from scratch on EVERY message, failing and
+            // re-toasting every time — which is what made "priority order
+            // ignored" and "failed over to X repeatedly" both look broken,
+            // when the real issue was one specific model in the chain never
+            // backing off. Give any failure a short cooldown so a broken
+            // model steps aside for the rest of the chain, while still
+            // retrying periodically in case it was transient.
+            setModelStatus(s => ({ ...s, [mid]: { lockedUntil: Date.now() + 5 * 60000, lastError: err.message, since: Date.now() } }));
             toast((MODELS_MAP[mid]?.name || mid) + (overloaded ? " overloaded — auto-switching to next model" : " failed — trying next"), "error");
           }
           // continue to next model
