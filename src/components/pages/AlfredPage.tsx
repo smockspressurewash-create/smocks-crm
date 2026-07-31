@@ -20,7 +20,7 @@ import {
   Tooltip, ResponsiveContainer, Area, AreaChart, LineChart, Line,
   ComposedChart, Legend
 } from "recharts";
-import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, withTimeout, withTimeoutRetry } from "../../lib/utils";
+import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, withTimeout, withTimeoutRetry, reconcileCrewAfterAssign } from "../../lib/utils";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
 import { twilioSend, sendEmail, emailShell, emailButton, logOutboundSmsToInbox } from "../../lib/messaging";
 import { seedWeather } from "../../lib/weather";
@@ -1528,6 +1528,15 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
             console.error("[Alfred assign_employee] — error:", assignErr.message || assignErr);
             return { error: "Could not save the assignment — " + (assignErr.message || String(assignErr)) };
           }
+          // reconcileCrewAfterAssign — `newCrew` was computed from Alfred's
+          // own possibly-stale `jobs` state. If the owner directly assigned
+          // someone else on the CRM (or an employee accepted a pending
+          // request) for this same job moments ago, this write would
+          // otherwise silently overwrite that addition instead of adding
+          // alongside it.
+          reconcileCrewAfterAssign(j.id, newCrew, crewAssignedAt, p =>
+            (supabase as any).from("jobs").update(p).eq("id", j.id)
+          ).catch(() => {});
           // Local echo so the owner UI reflects it before the next poll.
           setJobs(prev => prev.map(x => x.id === j.id ? { ...x, crew: newCrew, crewAssignedAt } : x));
           if (emp.email) {

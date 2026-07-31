@@ -17,7 +17,7 @@ import { loadMapsScript, AddressAutocomplete } from "../ui/AddressAutocomplete";
 import { LiveMap } from "../ui/LiveMap";
 import { PropertyMapEmbed } from "../ui/PropertyMapEmbed";
 import { BarChart, Bar, LineChart, Line, XAxis, YAxis, ResponsiveContainer, Tooltip, CartesianGrid } from "recharts";
-import { fmt, uid, today, localDateStr, shiftDayStr, daysFromNow, computeJobRatingScore, setOAuthIntent, compressImageFile, getEffectiveRate, computeNextRecurringDate, weekdayLabels, normalizeJobRow, totalJobPhotoCount, mediaSrc, dataUrlToBlob, uploadJobMedia, checkVideoLimits, stripLegacyJobFields } from "../../lib/utils";
+import { fmt, uid, today, localDateStr, shiftDayStr, daysFromNow, computeJobRatingScore, setOAuthIntent, compressImageFile, getEffectiveRate, computeNextRecurringDate, weekdayLabels, normalizeJobRow, totalJobPhotoCount, mediaSrc, dataUrlToBlob, uploadJobMedia, checkVideoLimits, stripLegacyJobFields, reconcileCrewAfterAssign } from "../../lib/utils";
 import { usePollGate } from "../../hooks/usePollGate";
 import type { Job, Employee, Customer, AppSettings, JobChecklistItem } from "../../types";
 
@@ -2644,7 +2644,9 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   // it never needed to be in this fallback-only list at all.
   const CORE_JOB_COLUMNS = [
     "status", "paymentStatus", "paymentType", "loggedHours", "amountCollected", "invoiceSentAt", "arrivedAt",
-    "crew", "clockInAt", "lunchStartAt", "pipelineStage", "photos", "videos", "preChecklist", "duringChecklist",
+    // "crewAssignedAt" was missing here (same gap as App.tsx's bulk autosave
+    // and Dashboard's OWNER_CORE_JOB_COLUMNS) — see the comment there.
+    "crew", "crewAssignedAt", "clockInAt", "lunchStartAt", "pipelineStage", "photos", "videos", "preChecklist", "duringChecklist",
     "postChecklist", "signOff", "scheduledTime", "commLog", "equipmentChecked", "notes",
   ] as const;
   const updateJob = (jobId: string, patch: Partial<Job>): Promise<any> => {
@@ -3129,6 +3131,17 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
           const saveResult = await (supabase as any).from("jobs").update({ crew: newCrew, crewAssignedAt: newCrewAssignedAt }).eq("id", requestData.job_id);
           if (saveResult?.error) {
             toast("Accepted, but couldn't add you to the job's crew — " + saveResult.error.message, "red");
+          } else {
+            // reconcileCrewAfterAssign — this write was based on this
+            // portal's own possibly-stale local copy of the job's crew. If
+            // the owner directly assigned someone else to this same job (or
+            // another employee accepted a different pending request for it)
+            // moments ago and this browser hasn't polled since, the write
+            // above would silently overwrite that addition instead of
+            // adding alongside it.
+            reconcileCrewAfterAssign(requestData.job_id, newCrew, newCrewAssignedAt, p =>
+              (supabase as any).from("jobs").update(p).eq("id", requestData.job_id)
+            ).catch(() => {});
           }
         }
         // Confirm against Supabase immediately rather than waiting up to 10s for the
@@ -3294,6 +3307,13 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
           // "you're on the crew" toast below even though the employee was never
           // actually added — exactly the "accept works but doesn't work" report.
           if (saveResult?.error) crewSaveError = saveResult.error.message;
+          else {
+            // reconcileCrewAfterAssign — same cross-actor race as
+            // handleAcceptRequest above (this is the inline-card accept path).
+            reconcileCrewAfterAssign(req.job_id, newCrew, newCrewAssignedAt, p =>
+              (supabase as any).from("jobs").update(p).eq("id", req.job_id)
+            ).catch(() => {});
+          }
         }
         // Confirm against Supabase immediately rather than waiting up to 10s for the
         // next poll — the optimistic setJobs above already updated myJobs for instant

@@ -589,7 +589,14 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
   // deployment yet — see CLAUDE.md's "safe column" note).
   const OWNER_CORE_JOB_COLUMNS = [
     "status", "paymentStatus", "paymentType", "loggedHours", "amountCollected", "invoiceSentAt", "arrivedAt",
-    "crew", "clockInAt", "lunchStartAt", "lunchMinutes", "lunchExceeded", "pipelineStage", "photos", "videos",
+    // "crewAssignedAt" was missing here (same gap as App.tsx's bulk autosave
+    // and EmployeePortal's CORE_JOB_COLUMNS) — a full-patch write that
+    // included crew always includes crewAssignedAt too; if the full write
+    // 400s on some unrelated column and falls back to this safe-subset
+    // retry, crew itself would still land but its assignment timestamp
+    // silently wouldn't, dropping the "New Assignment" banner for no
+    // apparent reason.
+    "crew", "crewAssignedAt", "clockInAt", "lunchStartAt", "lunchMinutes", "lunchExceeded", "pipelineStage", "photos", "videos",
     "preChecklist", "duringChecklist", "postChecklist", "signOff", "commLog", "notes",
   ] as const;
   const ownerUpdateJob = (jid: string, patch: any): Promise<any> => {
@@ -1124,16 +1131,27 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
           checklist with photo upload, clock in/out, OTW/Running Late, Report
           Problem) with no admin-only fields at all. */}
       {/* FIX — day with 2+ jobs from "My Week Ahead" (previously a dead
-          click). Full-screen (min-h-screen, same as JobDetailView) list of
-          every job that date; tapping one drills into the same single-job
-          JobDetailView the "My Jobs Today" rows already use. */}
+          click). Full-screen list of every job that date; tapping one drills
+          into the same single-job JobDetailView the "My Jobs Today" rows
+          already use. */}
       {ownerDayJobsDate && (() => {
         const dayJobs = jobs
           .filter((j: any) => crewIncludesEmployee(j.crew, ownerEmpId, ownerEmp?.user_id) && j.scheduledDate === ownerDayJobsDate && j.status !== "cancelled")
           .sort((a: any, b: any) => (a.scheduledTime || "").localeCompare(b.scheduledTime || ""));
         const label = new Date(ownerDayJobsDate + "T12:00:00").toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
         return (
-          <div className="fixed inset-0 z-50 overflow-y-auto min-h-screen bg-black text-white">
+          // z-[100], not z-50 — the FAB and toast stack are ALSO z-50 and
+          // render later in the DOM (App.tsx), so equal z-index means THEY
+          // paint on top of this at that tie; bumped above everything in the
+          // owner shell. No min-h-screen: that's a min-HEIGHT of 100vh
+          // stacked on top of inset-0's own top/bottom-derived sizing, and
+          // on mobile Safari 100vh doesn't track the real visible viewport
+          // as the URL bar shows/hides — the two sizing rules can disagree
+          // enough to leave the dashboard visible through a gap at the
+          // bottom while scrolling. inset-0 alone (matching every other
+          // full-screen overlay in this file) sizes correctly against the
+          // real viewport in all cases.
+          <div className="fixed inset-0 z-[100] overflow-y-auto bg-black text-white">
             <div className="sticky top-0 z-10 bg-black/95 backdrop-blur border-b border-white/10 p-4 flex items-center gap-3">
               <button onClick={() => setOwnerDayJobsDate(null)} className="text-white/60 hover:text-white flex-shrink-0">
                 <ChevronLeft size={22} />
@@ -1175,7 +1193,12 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
         if (!j) return null;
         const c = customers.find((x: any) => x.id === j.customerId);
         return (
-          <div className="fixed inset-0 z-50 overflow-y-auto">
+          // Same z-[100]/bg-black fix as the day-list modal above — this
+          // wrapper previously had no background of its own at all (relying
+          // solely on JobDetailView's inner min-h-screen div to paint black),
+          // and sat at z-50, tied with the FAB/toast stack that renders after
+          // it in the DOM and so visually wins the tie.
+          <div className="fixed inset-0 z-[100] overflow-y-auto bg-black">
             <JobDetailView
               job={j}
               customer={c}

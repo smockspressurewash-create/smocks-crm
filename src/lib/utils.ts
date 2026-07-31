@@ -207,6 +207,15 @@ export const normalizeJobRow = (j: any): any => ({
   invoiceSentAt: j.invoiceSentAt ?? j.invoicesentat ?? j.invoice_sent_at ?? null,
   amountCollected: j.amountCollected ?? j.amountcollected ?? j.amount_collected ?? 0,
   scheduledTime: j.scheduledTime ?? j.scheduledtime ?? j.scheduled_time ?? "",
+  // crewAssignedAt was never in this list (unlike every other camelCase
+  // field above) despite CLAUDE.md flagging it as JSONB and this project's
+  // repeated history of unquoted-DDL columns folding to lowercase in
+  // Postgres. If it was ever created without quotes, every read of
+  // job.crewAssignedAt silently comes back undefined (crew visibility is
+  // unaffected — that's a separate array field — but the "New Assignment"
+  // banner and cross-actor crew merge in reconcileCrewAfterAssign both rely
+  // on this being populated).
+  crewAssignedAt: j.crewAssignedAt ?? j.crewassignedat ?? j.crew_assigned_at ?? {},
 });
 
 // ─── Timeframes ───────────────────────────────────────────────────────────────
@@ -638,6 +647,51 @@ export const stripLegacyJobFields = <T extends Record<string, any>>(job: T): T =
   const copy: any = { ...job };
   LEGACY_BAD_JOB_FIELDS.forEach(f => delete copy[f]);
   return copy;
+};
+
+// ─── reconcileCrewAfterAssign ───────────────────────────────────────────────
+// Four independent places compute a job's new crew array the same way:
+// read whatever `crew` this surface's own local state last knew about,
+// append/accept, blind-overwrite the whole array back to Supabase.
+//   - JobDetailModal.tsx toggleCrew (owner direct-assign, every Edit Job UI)
+//   - EmployeePortal.tsx handleAcceptRequest / handleInlineAccept (employee
+//     accepting a pending request)
+//   - AlfredPage.tsx's assign_employee tool
+// None of them know about each other's in-flight writes, and `crew` is a
+// plain JSONB array (not a Postgres array column), so there's no DB-side
+// atomic append to fall back on. If two of these fire close together for
+// the SAME job from two different actors/devices — the exact pattern of
+// testing "assign X directly" and "request Y then have Y accept" back to
+// back — each computes its new array from a snapshot that doesn't know
+// about the other's addition, and whichever write reaches Supabase LAST
+// silently overwrites the other's, dropping that person from the crew with
+// no error anywhere. This is almost certainly why assignment/requests have
+// seemed to "come and go" with no obvious trigger.
+// This can't be made fully atomic without a Postgres function, but
+// re-reading the live row immediately after writing and merging in anyone
+// present there but missing from what was just written shrinks the danger
+// window from "however stale local state is" (up to a full poll interval,
+// tens of seconds) down to a single round trip. `writeFn` is whatever the
+// caller normally uses to persist a patch, so this reuses each surface's
+// own retry/toast/error handling rather than writing raw.
+export const reconcileCrewAfterAssign = async (
+  jobId: string,
+  writtenCrew: string[],
+  writtenCrewAssignedAt: Record<string, number>,
+  writeFn: (patch: { crew: string[]; crewAssignedAt: Record<string, number> }) => void | Promise<any>
+): Promise<void> => {
+  try {
+    const { data } = await (supabase as any).from("jobs").select("crew, crewAssignedAt").eq("id", jobId).maybeSingle();
+    const liveCrew: any[] = Array.isArray(data?.crew) ? data.crew : [];
+    const missing = liveCrew.filter(id => !writtenCrew.includes(id));
+    if (missing.length === 0) return;
+    console.warn("[CrewRace] another actor added", missing, "to job", jobId, "between our read and write — merging instead of overwriting");
+    const merged = [...writtenCrew, ...missing];
+    const mergedAssignedAt = { ...(data?.crewAssignedAt || {}), ...writtenCrewAssignedAt };
+    await writeFn({ crew: merged, crewAssignedAt: mergedAssignedAt });
+  } catch (e: any) {
+    console.warn("[CrewRace] reconcile check failed (non-fatal):", e?.message);
+  }
 };
 
 const JOB_MEDIA_BUCKET = "job-media";

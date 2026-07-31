@@ -20,7 +20,7 @@ import {
   Tooltip, ResponsiveContainer, Area, AreaChart, LineChart, Line,
   ComposedChart, Legend
 } from "recharts";
-import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, weekdayLabels, computeNextRecurringDate, isEmployeeUnavailable, computeDiscountsTotal, equipmentList, requiredChemicalsList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, compressImageFile, getEffectiveRate, mediaSrc, dataUrlToBlob, uploadJobMedia } from "../../lib/utils";
+import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, weekdayLabels, computeNextRecurringDate, isEmployeeUnavailable, computeDiscountsTotal, equipmentList, requiredChemicalsList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, compressImageFile, getEffectiveRate, mediaSrc, dataUrlToBlob, uploadJobMedia, reconcileCrewAfterAssign } from "../../lib/utils";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField, JobChecklistItem, ChecklistPhoto, JobVideo, JobSignOff } from "../../types";
 import { twilioSend, sendEmail, sendViaGmail, sendOwnerGmailOnly, emailShell, emailButton, logOutboundSmsToInbox } from "../../lib/messaging";
 import { seedWeather } from "../../lib/weather";
@@ -345,6 +345,15 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
       if (adding) patch.crewAssignedAt = { ...(job.crewAssignedAt || {}), [eid]: Date.now() };
       console.log("[EditCrewAssign] calling updateJob with patch:", patch);
       updateJob(jobId, patch);
+      if (adding) {
+        // reconcileCrewAfterAssign — `newCrew` was computed from this
+        // modal's own possibly-stale `job.crew` prop. If an employee accepted
+        // a different pending request for this same job moments ago (or
+        // Alfred/another device assigned someone) and this browser's poll
+        // hasn't caught up yet, the write above would silently overwrite
+        // that addition. Merges it back in instead of losing it.
+        reconcileCrewAfterAssign(jobId, newCrew, patch.crewAssignedAt, p => updateJob(jobId, p)).catch(() => {});
+      }
       if (adding) {
         const emp = employees.find(e => e.id === eid);
         if (emp?.email) {

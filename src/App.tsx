@@ -1518,7 +1518,19 @@ export function App() {
         // key leaves that column untouched.
         const EMPLOYEE_OWNED_FIELDS = [
           "status", "paymentStatus", "paymentType", "loggedHours", "amountCollected", "invoiceSentAt", "arrivedAt",
-          "crew", "clockInAt", "lunchStartAt", "lunchMinutes", "lunchExceeded", "pipelineStage", "photos", "videos",
+          // BLOCKER — "crew" was already excluded here but "crewAssignedAt"
+          // wasn't. Both get written together by every assign/request-accept
+          // flow (see reconcileCrewAfterAssign in lib/utils.ts), but this
+          // bulk autosave re-upserts every job's FULL in-memory row every
+          // 30s. If crew came from ANOTHER device/actor since this browser's
+          // own jobs state last refreshed, "crew" being stripped means the
+          // array itself survives — but crewAssignedAt didn't, so this
+          // owner's stale local copy silently overwrote (not merged) the
+          // JSONB timestamp map, erasing another employee's assignment
+          // timestamp (and their "New Assignment" banner) even though they
+          // stayed visibly on the crew. Matches this feature's own "comes
+          // and goes" symptom.
+          "crew", "crewAssignedAt", "clockInAt", "lunchStartAt", "lunchMinutes", "lunchExceeded", "pipelineStage", "photos", "videos",
           "preChecklist", "duringChecklist", "postChecklist", "checklist", "signOff", "scheduledTime", "commLog",
           "equipmentChecked", "notes",
         ] as const;
@@ -1538,6 +1550,17 @@ export function App() {
         const OPTIONAL_NEWER_FIELDS = [
           "isRecurring", "recurringMode", "recurringFreq", "recurringInterval", "recurringWeekdays",
           "depositRequired", "depositType", "discount", "discounts", "customFields",
+          // "tip" is a real field (types/index.ts Job.tip, shown in
+          // Dashboard/Reports/Budget/Alfred tip totals) — unlike
+          // organizationId/org_id it should NOT be stripped from the app,
+          // just from this retry until supabase/migrations/0020_job_tip_column.sql
+          // is run. A seed job (lib/seed.ts) ships with tip:40, so any
+          // deployment that ever loaded demo data has a job carrying this
+          // field in its "smocks.jobs" localStorage cache, which — same as
+          // the org_id incident — poisons this ENTIRE bulk upsert (all jobs,
+          // not just that one) every 30s until either the column exists or
+          // it's excluded here.
+          "tip",
         ] as const;
         // Supabase-js resolves (rather than rejects) on a PostgREST error, so check
         // the returned `error` explicitly — a bare try/catch alone won't see a 400.

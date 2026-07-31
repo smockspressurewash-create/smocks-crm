@@ -1,0 +1,14 @@
+-- Job.tip (src/types/index.ts) has always been a real, designed field —
+-- tip totals are shown in Dashboard, ReportsPage, BudgetPage, and Alfred's
+-- daily/weekly/monthly insights — but the "jobs" table on this deployment
+-- never actually got the column. A seed job (lib/seed.ts) ships with
+-- tip: 40, so any browser that ever loaded demo data has a job carrying
+-- this field in its local "smocks.jobs" cache, which poisons the 30s bulk
+-- autosave (one bad row 400s the WHOLE batch upsert) with:
+--   "Could not find the 'tip' column of 'jobs' in the schema cache"
+-- App.tsx's autosave now also excludes "tip" on its safe-column retry so
+-- saves don't hard-fail before this migration is run, but tip amounts
+-- won't actually persist to Supabase (or sync to other devices) until it is.
+--
+-- Run in the Supabase SQL Editor (Project -> SQL Editor).
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS tip NUMERIC DEFAULT 0;

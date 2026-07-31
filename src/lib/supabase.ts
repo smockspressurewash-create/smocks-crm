@@ -193,6 +193,24 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
     autoRefreshToken: true,
     persistSession: true,
     detectSessionInUrl: true,
+    // supabase-js v2 serializes token-refresh (and, transitively, some
+    // request paths) behind the browser's Web Locks API so multiple tabs of
+    // this same origin don't race refreshing the same stored session. If a
+    // tab holding that lock gets backgrounded/frozen or reloaded mid-refresh
+    // (routine here — testing usually has the owner CRM and employee portal
+    // open in separate tabs of the same browser at once), every OTHER tab's
+    // next authenticated call can queue behind a lock that never releases —
+    // a genuine, no-error, no-console-log hang, which is exactly the
+    // unexplained "Save job timed out" symptom (a real 15s wait with no
+    // PostgREST response at all, not a fast rejected column error). This
+    // project's own auth comments already flagged Supabase calls "hanging...
+    // under real-world navigator-lock/network conditions" as a known issue
+    // (see the note above this client's construction). Single-owner app, no
+    // multi-tenant session isolation to protect — a plain passthrough (skip
+    // the mutex, just run the callback) trades theoretical cross-tab
+    // refresh-race safety for never deadlocking on it, which is the better
+    // trade here.
+    lock: async (_name: string, _acquireTimeout: number, fn: () => Promise<any>) => fn(),
   },
 });
 
