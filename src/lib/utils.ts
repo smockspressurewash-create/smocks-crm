@@ -716,6 +716,67 @@ export const reconcileCrewAfterAssign = async (
   }
 };
 
+// ─── Timeout-safe insert retries ───────────────────────────────────────────
+// withTimeout() rejecting on an insert means the CLIENT gave up waiting —
+// not that the write failed server-side. Under real-world Supabase slowness
+// (e.g. an over-quota/throttled project), the original request can still
+// land a few seconds after the 15s window lapses. A naive "just retry" is
+// unsafe though: retrying blindly can create a genuine duplicate row. These
+// two helpers make retrying safe for the two shapes of insert this app does.
+
+// For inserts where WE pick the id client-side (uid()) before writing — e.g.
+// jobs. If the first attempt actually landed, Postgres rejects the identical
+// retry with a primary-key violation, which reads as "already saved" instead
+// of a real failure. Never use this for a server-generated-id table.
+export const isDuplicateKeyError = (error: any): boolean =>
+  error?.code === "23505" || /duplicate key/i.test(error?.message || "");
+
+export const insertClientIdRowWithRetry = async (
+  table: string,
+  row: { id: string; [k: string]: any }
+): Promise<{ error: any }> => {
+  try {
+    return await withTimeout<any>((supabase as any).from(table).insert(row), 15000, `Save ${table}`);
+  } catch (e: any) {
+    if (!String(e?.message || "").includes("timed out")) throw e;
+    console.warn(`[insertClientIdRowWithRetry] ${table} insert timed out — retrying once (duplicate-key response on retry means the first attempt actually landed)`);
+    const retry: any = await withTimeout<any>((supabase as any).from(table).insert(row), 15000, `Save ${table} (retry after timeout)`).catch((e2: any) => ({ error: e2 }));
+    if (!retry?.error || isDuplicateKeyError(retry.error)) return { error: null };
+    return retry;
+  }
+};
+
+// job_requests.id is server-generated (gen_random_uuid()) — a blind retry
+// would leave two live "pending" rows for the same job+employee. Check for a
+// just-created matching request before retrying; if the first attempt
+// actually landed, use that row instead of inserting a second one.
+export const insertJobRequestSafely = async (payload: {
+  job_id: string; employee_id: string; owner_id: string; status?: string; message?: string | null;
+}): Promise<{ data: { id: string } | null; error: any }> => {
+  try {
+    return await withTimeout<any>(
+      (supabase as any).from("job_requests").insert(payload).select("id").single(),
+      15000, "Save request"
+    );
+  } catch (e: any) {
+    if (!String(e?.message || "").includes("timed out")) throw e;
+    console.warn("[insertJobRequestSafely] insert timed out — checking whether it landed before retrying");
+    const existing: any = await withTimeout<any>(
+      (supabase as any).from("job_requests").select("id").eq("job_id", payload.job_id).eq("employee_id", payload.employee_id)
+        .eq("status", payload.status || "pending").order("created_at", { ascending: false }).limit(1).maybeSingle(),
+      8000, "Check existing request"
+    ).catch(() => ({ data: null }));
+    if (existing?.data?.id) {
+      console.log("[insertJobRequestSafely] found the original request — it actually saved, just responded slowly");
+      return { data: existing.data, error: null };
+    }
+    return await withTimeout<any>(
+      (supabase as any).from("job_requests").insert(payload).select("id").single(),
+      15000, "Save request (retry after timeout)"
+    ).catch((e2: any) => ({ data: null, error: e2 }));
+  }
+};
+
 const JOB_MEDIA_BUCKET = "job-media";
 
 // Uploads a photo/video/signature to the job-media Storage bucket and

@@ -9,7 +9,7 @@ export class ErrorBoundary extends React.Component<
     this.state = { error: null };
   }
   static getDerivedStateFromError(err: Error) { return { error: err }; }
-  componentDidCatch(err: Error, info: React.ErrorInfo) { console.error("Smock OS Error:", err, info); }
+  componentDidCatch(err: Error, info: React.ErrorInfo) { console.error("CrewBoss Error:", err, info); }
   render() {
     if (this.state.error) {
       return (

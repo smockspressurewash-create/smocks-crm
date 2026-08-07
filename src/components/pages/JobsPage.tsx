@@ -20,7 +20,7 @@ import {
   Tooltip, ResponsiveContainer, Area, AreaChart, LineChart, Line,
   ComposedChart, Legend
 } from "recharts";
-import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, weekdayLabels, computeNextRecurringDate, describeRecurringSchedule, isEmployeeUnavailable, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, withTimeout, getEffectiveRate, totalJobPhotoCount, stripLegacyJobFields } from "../../lib/utils";
+import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, weekdayLabels, computeNextRecurringDate, describeRecurringSchedule, isEmployeeUnavailable, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, withTimeout, getEffectiveRate, totalJobPhotoCount, stripLegacyJobFields, insertClientIdRowWithRetry, insertJobRequestSafely } from "../../lib/utils";
 const weatherRisk = (_dateStr: string): {icon: string; level: string; reason: string} | null => null;
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
 import { twilioSend, sendEmail, emailShell, emailButton } from "../../lib/messaging";
@@ -391,16 +391,13 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
         return;
       }
       const portalUrl = `${window.location.origin}${window.location.pathname}`;
-      const { data: row, error } = await withTimeout<any>(
-        (supabase as any).from("job_requests").insert({
-          job_id: job.id,
-          employee_id: emp.id,
-          owner_id: ownerId,
-          status: "pending",
-          message: quickReqMsg.trim() || null,
-        }).select("id").single(),
-        15000, "Save request"
-      );
+      const { data: row, error } = await insertJobRequestSafely({
+        job_id: job.id,
+        employee_id: emp.id,
+        owner_id: ownerId,
+        status: "pending",
+        message: quickReqMsg.trim() || null,
+      });
       if (!error && row?.id) {
         const requestUrl = `${portalUrl}#/portal?request=${row.id}`;
         const c = customers.find((x: any) => x.id === job.customerId);
@@ -873,7 +870,23 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
                   // reconcile local state with the server on its own.
                 } catch (e: any) {
                   console.error("[Recurring] new job insert threw:", e?.message);
-                  toast?.("Job created locally, but failed to save to the server — " + (e?.message || "connection issue, please retry"), "red");
+                  if (!String(e?.message || "").includes("timed out")) {
+                    toast?.("Job created locally, but failed to save to the server — " + (e?.message || "connection issue, please retry"), "red");
+                    return;
+                  }
+                  // A timeout means the CLIENT gave up waiting, not that the write
+                  // failed server-side — under real Supabase slowness the original
+                  // insert can still land seconds later. job.id is client-generated
+                  // (uid()), so retrying is safe: a duplicate-key response on the
+                  // retry means the first attempt actually went through.
+                  console.warn("[Recurring] insert timed out — retrying once (Supabase may be slow or over its usage quota)");
+                  const { error: retryErr } = await insertClientIdRowWithRetry("jobs", job).catch((e2: any) => ({ error: e2 }));
+                  if (retryErr) {
+                    console.error("[Recurring] job insert still failing after retry:", retryErr?.message);
+                    toast?.("Job created locally, but Supabase isn't responding — check your Supabase dashboard for a usage/restriction warning, then try again", "red");
+                  } else {
+                    console.log("[Recurring] job saved on retry ✓", job.id);
+                  }
                 }
               })();
               // Create Google Calendar event if Google is connected
@@ -916,12 +929,9 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
                       toast?.(`Job saved, but the request to ${assignedEmp.firstName} failed — still finishing sign-in, try again in a moment`, "red");
                       return;
                     }
-                    const { data, error } = await withTimeout<any>(
-                      (supabase as any).from("job_requests").insert({
-                        job_id: job.id, employee_id: assignedEmp.id, owner_id: ownerId, status: "pending",
-                      }).select("id").single(),
-                      15000, "Save request"
-                    );
+                    const { data, error } = await insertJobRequestSafely({
+                      job_id: job.id, employee_id: assignedEmp.id, owner_id: ownerId, status: "pending",
+                    });
                     if (error || !data?.id) {
                       console.error("Failed to create job_request:", error);
                       toast?.(`Job saved, but the request to ${assignedEmp.firstName} failed — ` + (error?.message || "run the job_requests SQL in Supabase first"), "red");

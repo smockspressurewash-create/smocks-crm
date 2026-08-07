@@ -20,7 +20,7 @@ import {
   Tooltip, ResponsiveContainer, Area, AreaChart, LineChart, Line,
   ComposedChart, Legend
 } from "recharts";
-import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, weekdayLabels, computeNextRecurringDate, isEmployeeUnavailable, computeDiscountsTotal, equipmentList, requiredChemicalsList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, compressImageFile, getEffectiveRate, mediaSrc, dataUrlToBlob, uploadJobMedia, reconcileCrewAfterAssign } from "../../lib/utils";
+import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, weekdayLabels, computeNextRecurringDate, isEmployeeUnavailable, computeDiscountsTotal, equipmentList, requiredChemicalsList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, compressImageFile, getEffectiveRate, mediaSrc, dataUrlToBlob, uploadJobMedia, reconcileCrewAfterAssign, insertJobRequestSafely } from "../../lib/utils";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField, JobChecklistItem, ChecklistPhoto, JobVideo, JobSignOff } from "../../types";
 import { twilioSend, sendEmail, sendViaGmail, sendOwnerGmailOnly, emailShell, emailButton, logOutboundSmsToInbox } from "../../lib/messaging";
 import { seedWeather } from "../../lib/weather";
@@ -572,16 +572,13 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
         setRequestSending(false);
         return;
       }
-      const { data, error } = await withTimeout<any>(
-        (supabase as any).from("job_requests").insert({
-          job_id: jobId,
-          employee_id: requestEmpId,
-          owner_id: ownerId,
-          status: "pending",
-          message: requestMsg.trim() || null,
-        }).select("id").single(),
-        15000, "Save request"
-      );
+      const { data, error } = await insertJobRequestSafely({
+        job_id: jobId,
+        employee_id: requestEmpId,
+        owner_id: ownerId,
+        status: "pending",
+        message: requestMsg.trim() || null,
+      });
       if (!error && data) {
         // The save succeeded — the request is on the books regardless of whether
         // the notification email below succeeds, so the UI must reflect success

@@ -2634,8 +2634,8 @@ export function App() {
         {/* Logo */}
         <div className="p-4 border-b border-red-900/30 flex items-center justify-between">
           <div className="flex items-center gap-2.5">
-            <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-red-600 to-red-900 flex items-center justify-center font-black text-sm shadow-lg shadow-red-900/40">
-              {(settings.companyName || "S")[0].toUpperCase()}
+            <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-red-600 to-red-900 flex items-center justify-center font-black text-xs text-white shadow-lg shadow-red-900/40">
+              CB
             </div>
             <div>
               <div className="font-bold text-sm leading-tight">{settings.companyName || "Crew Boss OS"}</div>
