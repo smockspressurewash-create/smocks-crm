@@ -771,6 +771,23 @@ export interface AppSettings {
   // every customer to at most one automation touch per day regardless of
   // how many different automations would otherwise want to reach them.
   automationDailySendLog?: Record<string, string>;
+  // EGRESS — shared poll interval (ms) for the cross-device fallback polls
+  // that re-fetch jobs/customers/estimates, employees, app_settings, and
+  // Alfred conversations/memory. Realtime subscriptions handle instant sync
+  // for all of these; this interval only controls how often the redundant
+  // fallback poll re-checks for anything realtime missed. Defaults to 120s
+  // (was a hardcoded, inconsistent mix of 3s/5s/60s across different polls —
+  // see App.tsx/AlfredPage.tsx/CrewView.tsx/EmployeePortal.tsx). Exposed in
+  // Settings so an owner who hits their Supabase egress cap can widen it
+  // further (e.g. 300s) without a code change.
+  pollIntervalMs?: number;
+  // Custom equipment/chemical names an owner has added on a specific job
+  // (JobDetailModal's "Add custom equipment/chemical" inputs) that aren't on
+  // the hardcoded equipmentList/requiredChemicalsList (lib/utils.ts). Without
+  // this, a custom entry only ever lived on the one job it was typed into —
+  // every future job started from scratch with no memory of it.
+  customEquipmentList?: string[];
+  customChemicalsList?: string[];
 
   [key: string]: any;
 }

@@ -29,7 +29,17 @@ export const onRequestPost = async (context: { request: Request }) => {
       });
     }
     const data = await twilioRes.json() as { messages?: any[] };
-    return new Response(JSON.stringify({ messages: data.messages ?? [] }), {
+    // BLOCKER — Twilio's raw Messages resource uses snake_case (date_sent),
+    // but InboxPage.tsx and the TwilioMessage type (lib/messaging.ts) read
+    // msg.dateSent (camelCase). Returning the raw objects unmapped meant
+    // dateSent was always undefined, so every incoming text silently fell
+    // back to Date.now() as its timestamp instead of when it was actually
+    // sent — messages could show out of order in a burst, and "since" the
+    // client sends back on the next poll would be based on the wrong time.
+    const messages = (data.messages ?? []).map((m: any) => ({
+      sid: m.sid, from: m.from, body: m.body, dateSent: m.date_sent, direction: m.direction,
+    }));
+    return new Response(JSON.stringify({ messages }), {
       headers: { "Content-Type": "application/json" },
     });
   } catch (e: any) {

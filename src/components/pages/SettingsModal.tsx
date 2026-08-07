@@ -20,7 +20,7 @@ import {
   Tooltip, ResponsiveContainer, Area, AreaChart, LineChart, Line,
   ComposedChart, Legend
 } from "recharts";
-import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, compressImageFile } from "../../lib/utils";
+import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, compressImageFile, POLL_INTERVAL_OPTIONS, DEFAULT_POLL_INTERVAL_MS } from "../../lib/utils";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
 import { twilioSend, sendEmail, fetchBufferOrganizationId, fetchBufferChannels, type BufferChannel } from "../../lib/messaging";
 import { buildSocialAuthorizeUrl, type SocialPlatform } from "../../lib/socialOAuth";
@@ -81,7 +81,7 @@ import { ChemicalModal } from "../ui/ChemicalModal";
 import { WeeklyBusinessReview } from "../ui/WeeklyBusinessReview";
 import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 
-export function SettingsModal({ open, onClose, settings, setSettings, services, setServices, emailTemplates, setEmailTemplates, smsTemplates, setSmsTemplates, estimateTemplates = [], setEstimateTemplates = (() => {}) as any, modelStatus = {}, setModelStatus = (() => {}) as any, toast, onSignOut, restrictToProfile = false, onAddManager }: { open?: any; onClose?: any; settings?: any; setSettings?: any; services?: any; setServices?: any; emailTemplates?: any; setEmailTemplates?: any; smsTemplates?: any; setSmsTemplates?: any; estimateTemplates?: any[]; setEstimateTemplates?: any; modelStatus?: any; setModelStatus?: any; toast?: any; onSignOut?: () => void; restrictToProfile?: boolean; onAddManager?: () => void }) {
+export function SettingsModal({ open, onClose, settings, setSettings, jobs = [], setJobs = (() => {}) as any, services, setServices, emailTemplates, setEmailTemplates, smsTemplates, setSmsTemplates, estimateTemplates = [], setEstimateTemplates = (() => {}) as any, modelStatus = {}, setModelStatus = (() => {}) as any, toast, onSignOut, restrictToProfile = false, onAddManager }: { open?: any; onClose?: any; settings?: any; setSettings?: any; jobs?: any[]; setJobs?: any; services?: any; setServices?: any; emailTemplates?: any; setEmailTemplates?: any; smsTemplates?: any; setSmsTemplates?: any; estimateTemplates?: any[]; setEstimateTemplates?: any; modelStatus?: any; setModelStatus?: any; toast?: any; onSignOut?: () => void; restrictToProfile?: boolean; onAddManager?: () => void }) {
   const [f, setF] = useState(settings);
   const [stripeSecretInput, setStripeSecretInput] = useState(() => deobfuscate(settings.stripeSecretKeyEnc || ""));
   const [showStripeSecret, setShowStripeSecret] = useState(false);
@@ -1351,7 +1351,49 @@ export function SettingsModal({ open, onClose, settings, setSettings, services, 
           </div>}
 
           {sec === "data" && <div className="space-y-3">
-            <h4 className="font-semibold text-sm">Data Export & Backup</h4>
+            <h4 className="font-semibold text-sm">Sync & Egress</h4>
+            <Glass className="p-3 !bg-black/40 space-y-2">
+              <div className="flex items-center gap-2 text-xs"><RefreshCw size={12} className="text-blue-400" /><span className="font-semibold">Background Sync Interval</span></div>
+              <div className="text-[10px] text-white/50">
+                How often the app re-checks Supabase for changes made on another device. Realtime updates (the same device making a change) are always instant regardless of this setting — this only controls the fallback poll. Lower it and Supabase egress usage goes up; if you're near your project's usage cap, raise it.
+              </div>
+              <GSel value={f.pollIntervalMs || DEFAULT_POLL_INTERVAL_MS} onChange={e => setF({ ...f, pollIntervalMs: Number(e.target.value) })}>
+                {POLL_INTERVAL_OPTIONS.map(o => <option key={o.value} value={o.value} className="bg-black">{o.label}</option>)}
+              </GSel>
+            </Glass>
+
+            <Glass className="p-3 !bg-red-950/10 !border-red-700/30 space-y-2">
+              <div className="flex items-center gap-2 text-xs"><AlertTriangle size={12} className="text-red-400" /><span className="font-semibold">Archive Old Completed Jobs</span></div>
+              <div className="text-[10px] text-white/50">
+                Exports every completed job older than 30 days to a JSON file, then — only after you confirm the file downloaded — permanently deletes those rows from Supabase to reduce egress. This is irreversible; the downloaded file is your only copy afterward. Jobs less than 30 days old, and anything not marked completed, are never touched.
+              </div>
+              <GBtn variant="danger" onClick={async () => {
+                const cutoff = new Date(); cutoff.setDate(cutoff.getDate() - 30);
+                const cutoffStr = cutoff.toISOString().slice(0, 10);
+                const oldJobs = (jobs || []).filter((j: any) => j.status === "completed" && j.scheduledDate && j.scheduledDate < cutoffStr);
+                if (oldJobs.length === 0) { toast?.("No completed jobs older than 30 days — nothing to archive"); return; }
+                if (!window.confirm(`This will export ${oldJobs.length} completed job(s) scheduled before ${cutoffStr}, then permanently delete them from Supabase. This cannot be undone. Continue?`)) return;
+                const blob = new Blob([JSON.stringify(oldJobs, null, 2)], { type: "application/json" });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement("a"); a.href = url; a.download = `smocks-archived-jobs-${cutoffStr}.json`; a.click();
+                URL.revokeObjectURL(url);
+                // Deliberate second confirm, not a rubber-stamp — gives the owner
+                // a real chance to check the file actually saved (e.g. downloads
+                // blocked by browser settings) before anything is deleted.
+                if (!window.confirm(`Backup file downloaded (${oldJobs.length} job(s)). Confirm the file saved successfully, then click OK to permanently delete these jobs from Supabase. Click Cancel to keep them for now.`)) {
+                  toast?.("Deletion cancelled — jobs kept"); return;
+                }
+                const ids = oldJobs.map((j: any) => j.id);
+                const { error } = await (supabase as any).from("jobs").delete().in("id", ids);
+                if (error) { toast?.("Some jobs may not have deleted from the server — " + error.message, "red"); return; }
+                setJobs((prev: any[]) => prev.filter(j => !ids.includes(j.id)));
+                toast?.(`Archived and deleted ${ids.length} job(s) ✓`, "green");
+              }} className="w-full !text-xs">
+                <Download size={12} className="inline mr-1.5" />Export & Delete Jobs Older Than 30 Days
+              </GBtn>
+            </Glass>
+
+            <h4 className="font-semibold text-sm pt-2">Data Export & Backup</h4>
             <div className="text-xs text-white/50 mb-2">Export your data in various formats for backup, accounting, or tax prep.</div>
 
             <Glass className="p-3 !bg-black/40 space-y-2">

@@ -17,7 +17,7 @@ import { loadMapsScript, AddressAutocomplete } from "../ui/AddressAutocomplete";
 import { LiveMap } from "../ui/LiveMap";
 import { PropertyMapEmbed } from "../ui/PropertyMapEmbed";
 import { BarChart, Bar, LineChart, Line, XAxis, YAxis, ResponsiveContainer, Tooltip, CartesianGrid } from "recharts";
-import { fmt, uid, today, localDateStr, shiftDayStr, daysFromNow, computeJobRatingScore, setOAuthIntent, compressImageFile, getEffectiveRate, computeNextRecurringDate, weekdayLabels, normalizeJobRow, totalJobPhotoCount, mediaSrc, dataUrlToBlob, uploadJobMedia, checkVideoLimits, stripLegacyJobFields, reconcileCrewAfterAssign } from "../../lib/utils";
+import { fmt, uid, today, localDateStr, shiftDayStr, daysFromNow, computeJobRatingScore, setOAuthIntent, compressImageFile, getEffectiveRate, computeNextRecurringDate, weekdayLabels, normalizeJobRow, totalJobPhotoCount, mediaSrc, dataUrlToBlob, uploadJobMedia, checkVideoLimits, stripLegacyJobFields, reconcileCrewAfterAssign, getPollIntervalMs } from "../../lib/utils";
 import { usePollGate } from "../../hooks/usePollGate";
 import type { Job, Employee, Customer, AppSettings, JobChecklistItem } from "../../types";
 
@@ -1723,12 +1723,13 @@ function OwnerTeamPortal({ jobs, employees, customers, onClose, googleMapsKey, t
   );
 }
 
-export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, employees, customers, setCustomers = (() => {}) as any, settings, toast, isOwnerView = false, onClose = () => {}, refetchEmployees, estimates = [], setEstimates = (() => {}) as any }: {
+export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, employees, customers, setCustomers = (() => {}) as any, settings, toast, isOwnerView = false, onClose = () => {}, refetchEmployees, estimates = [], setEstimates = (() => {}) as any, weatherData = null as any }: {
   empSession: any; setEmpSession: (s: any) => void;
   jobs: Job[]; setJobs: (fn: (prev: Job[]) => Job[]) => void;
   employees: Employee[]; customers: Customer[]; setCustomers?: any;
   settings: AppSettings; toast: (msg: string, tone?: any) => void;
   isOwnerView?: boolean; onClose?: () => void;
+  weatherData?: { current: any; forecast?: any[] } | null;
   refetchEmployees?: () => Promise<void>;
   estimates?: any[]; setEstimates?: any;
 }) {
@@ -1965,7 +1966,13 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   const [inlineDenyId, setInlineDenyId] = useState<string | null>(null);
   const [inlineDenyReason, setInlineDenyReason] = useState("");
 
-  // Normalize Supabase snake_case columns to the camelCase Employee shape the rest of the code expects
+  // Normalize Supabase snake_case columns to the camelCase Employee shape the
+  // rest of the code expects. BLOCKER — this used to normalize none of the
+  // shift-timer or payroll fields at all (unlike App.tsx's own
+  // normalizeEmployee, which the OWNER's side reads through), so if any of
+  // those camelCase columns landed lowercase in Postgres (unquoted DDL —
+  // see CLAUDE.md), the EMPLOYEE'S OWN view of their shift/pay status could
+  // silently disagree with what the owner sees for the exact same row.
   const normalizeEmp = (e: any) => !e ? null : ({
     ...e,
     id: e.id || "",
@@ -1975,6 +1982,16 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     status: e.status || "active",
     hourlyRate: e.hourlyRate ?? e.hourly_rate ?? 0,
     email: e.email || "",
+    dayClockInAt: e.dayClockInAt ?? e.dayclockinat ?? e.day_clock_in_at ?? null,
+    dayLunchStartAt: e.dayLunchStartAt ?? e.daylunchstartat ?? e.day_lunch_start_at ?? null,
+    dayPausedMinutes: e.dayPausedMinutes ?? e.daypausedminutes ?? e.day_paused_minutes ?? 0,
+    locationSharing: e.locationSharing ?? e.locationsharing ?? e.location_sharing ?? false,
+    lastLocation: e.lastLocation ?? e.lastlocation ?? e.last_location ?? null,
+    paidPeriods: e.paidPeriods ?? e.paidperiods ?? e.paid_periods ?? {},
+    paidDays: e.paidDays ?? e.paiddays ?? e.paid_days ?? {},
+    paymentLog: e.paymentLog ?? e.paymentlog ?? e.payment_log ?? [],
+    lastShiftHours: e.lastShiftHours ?? e.lastshifthours ?? e.last_shift_hours ?? 0,
+    lastShiftDate: e.lastShiftDate ?? e.lastshiftdate ?? e.last_shift_date ?? "",
   });
 
   // Capture hash synchronously on first render, before App.tsx's hash-sync effect can strip the invite param
@@ -2362,17 +2379,19 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     // EGRESS FIX — was an unconditional 3s poll; realtime above already
     // covers instant updates, this is now just the fallback, and skips
     // entirely while the tab is hidden or the employee is idle 5+ minutes.
-    // Widened 10s -> 60s: `load()` is a select("*") on jobs, which carries
-    // every job's inline base64 photos/videos (types/index.ts Photo.dataUrl
-    // etc.) — a 10s fallback poll re-downloads all of that every tick for
-    // every open employee portal, which is the dominant driver of a real
-    // Supabase egress overage. Realtime already handles the instant case.
-    const interval = setInterval(() => { if (shouldPollJobs()) load(); }, 60000);
+    // Widened 10s -> 60s, now using the owner-configurable interval
+    // (Settings, default 120s): `load()` is a select("*") on jobs, which
+    // carries every job's inline base64 photos/videos (types/index.ts
+    // Photo.dataUrl etc.) — a fast fallback poll re-downloads all of that
+    // every tick for every open employee portal, which is the dominant
+    // driver of a real Supabase egress overage. Realtime already handles
+    // the instant case.
+    const interval = setInterval(() => { if (shouldPollJobs()) load(); }, getPollIntervalMs(settings));
     return () => {
       clearInterval(interval);
       try { channel?.unsubscribe(); } catch { /* ignore */ }
     };
-  }, [(myEmployee as any)?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [(myEmployee as any)?.id, (settings as any)?.pollIntervalMs]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Periodically refetch the employees table so a Google connection (or any
   // other field) made on a DIFFERENT device shows up here without requiring
@@ -2381,9 +2400,13 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   // device wrote to the same Supabase row.
   useEffect(() => {
     if (!empSession?.user?.id) return;
-    const interval = setInterval(() => { if (shouldPollJobs()) refetchEmployees?.(); }, 10000);
+    // EGRESS — was a hardcoded 10s regardless of the owner's configured
+    // fallback-poll interval; every logged-in employee session polling the
+    // full employees table that often adds up fast with more than one or
+    // two crew members.
+    const interval = setInterval(() => { if (shouldPollJobs()) refetchEmployees?.(); }, getPollIntervalMs(settings));
     return () => clearInterval(interval);
-  }, [empSession?.user?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [empSession?.user?.id, (settings as any)?.pollIntervalMs]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Merge owner-set permissions with defaults (all-on for existing employees with no permissions field)
   const perms: Record<string, boolean> = { ...DEFAULT_PERMISSIONS, ...((myEmployee as any)?.permissions || {}) };
@@ -4366,6 +4389,26 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                 </button>
               )}
             </div>
+
+            {/* Weather — same OpenWeather-backed data the owner's Dashboard
+                shows (App.tsx fetches it once, keyed off settings.owmKey);
+                crew scheduling outdoor pressure-washing jobs need rain/wind
+                risk visible without switching to the owner's CRM. Silently
+                renders nothing if no API key is configured, matching
+                Dashboard's own "no fake data" rule. */}
+            {weatherData?.current && (
+              <Glass className="p-3 !bg-blue-950/10 !border-blue-700/20 flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2.5">
+                  <div className="text-2xl font-bold text-white">{weatherData.current.temp}°F</div>
+                  <div className="text-xs text-white/50 capitalize">{weatherData.current.description || weatherData.current.condition?.replace("_", " ")}</div>
+                </div>
+                <div className="flex items-center gap-3 text-[11px] text-white/50 flex-wrap justify-end">
+                  <span className={weatherData.current.rainChance > 50 ? "text-blue-400 font-semibold" : ""}>💧 {weatherData.current.rainChance}%</span>
+                  {weatherData.current.wind > 20 && <span className="text-yellow-400 font-semibold">💨 {weatherData.current.wind}mph</span>}
+                  <span>💦 {weatherData.current.humidity}%</span>
+                </div>
+              </Glass>
+            )}
 
             {/* Start My Day — overall work-hours clock, separate from clocking
                 into an individual job (job clock-in/out tracks time per stop;

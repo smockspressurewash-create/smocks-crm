@@ -136,17 +136,33 @@ export function CustomersPage({ customers = [], setCustomers, estimates = [], jo
       .catch((e: any) => toast("Deleted locally, but failed to delete from server — " + (e?.message || ""), "red"));
   };
 
-  const save = d => {
-    if (d.id) setCustomers(customers.map(c => c.id === d.id ? d : c));
-    else {
+  // BLOCKER — this only ever called setCustomers (local state), same gap
+  // App.tsx's own 30s bulk customer autosave was added to paper over ("no
+  // write path to Supabase at all... only looked true on the single device
+  // that created the record"). But that bulk save is up to 30s delayed and
+  // has no per-edit success/failure feedback — editing a customer and
+  // checking another device (or this same one, right after) within that
+  // window shows the OLD data, reading as "editing doesn't work" even
+  // though it eventually syncs. Writing immediately here, with its own
+  // toast, closes that gap the same way jobs/crew writes already were.
+  const save = (d: any) => {
+    const isNew = !d.id;
+    let record = d;
+    if (isNew) {
       const id = uid();
       // A stable, real referral code generated once at creation — not derived
       // on the fly from the id, so it survives independently and reads cleanly.
       const referralCode = (d.firstName?.slice(0, 3) || "REF").toUpperCase() + id.slice(-4).toUpperCase();
-      setCustomers([...customers, { ...d, id, totalSpent: 0, createdAt: today(), referralCode }]);
+      record = { ...d, id, totalSpent: 0, createdAt: today(), referralCode };
     }
+    setCustomers(isNew ? [...customers, record] : customers.map(c => c.id === record.id ? record : c));
     setModal({ open: false, data: null });
-    toast("Customer saved");
+    (supabase as any).from("customers").upsert(record, { onConflict: "id" })
+      .then((result: any) => {
+        if (result?.error) { console.error("[CustomersPage] save failed:", result.error.message); toast("Saved locally, but failed to sync — " + result.error.message, "red"); }
+        else toast("Customer saved ✓", "green");
+      })
+      .catch((e: any) => { console.error("[CustomersPage] save threw:", e?.message); toast("Saved locally, but failed to sync — " + (e?.message || "unknown error"), "red"); });
   };
 
   const deleteCustomer = (c: any) => {

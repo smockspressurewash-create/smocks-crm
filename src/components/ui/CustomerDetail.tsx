@@ -85,7 +85,17 @@ export function CustomerDetail({ customer: c, onClose, onDelete, estimates = [],
   // of sync with the other again.
   const renderJobRow = (j: any) => {
     const isOpen = expandedJobId === j.id;
-    const allChecklist = [...(j.preChecklist||[]), ...(j.duringChecklist||[]), ...(j.postChecklist||[]), ...(j.checklist||[])];
+    // BLOCKER — jobs seeded from an approved estimate set BOTH `checklist`
+    // and `preChecklist` to the SAME combined array (App.tsx), so
+    // unconditionally concatenating legacy `checklist` alongside the
+    // pre/during/post phases duplicated every one of those items in this
+    // list — a job with 7 real items showed some of them twice. `checklist`
+    // is only meaningful on its own for jobs that predate the phase split
+    // (no pre/during/post data at all).
+    const hasPhaseChecklist = (j.preChecklist||[]).length || (j.duringChecklist||[]).length || (j.postChecklist||[]).length;
+    const allChecklist = hasPhaseChecklist
+      ? [...(j.preChecklist||[]), ...(j.duringChecklist||[]), ...(j.postChecklist||[])]
+      : (j.checklist||[]);
     const ckDone = allChecklist.filter((it: any) => it.done).length;
     const crewNames = employees
       .filter((e: any) => crewIncludesEmployee(j.crew, e.id, e.user_id))

@@ -473,9 +473,28 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], custome
       : (emp.paymentLog || []);
     setEmployees((prev: any[]) => prev.map(x => x.id === emp.id ? { ...x, paidPeriods: next, paymentLog: nextLog } : x));
     (supabase as any).from("employees").update({ paidPeriods: next, paymentLog: nextLog }).eq("id", emp.id)
-      .then((r: any) => {
-        if (r?.error) { console.error("[MarkPaid] failed:", r.error.message); toast?.("Failed to save pay status — " + r.error.message, "red"); }
-        else toast?.(nextStatus === "paid" ? `${emp.firstName} marked as paid ✓` : `${emp.firstName} marked as unpaid`, "green");
+      .then(async (r: any) => {
+        if (r?.error) {
+          // BLOCKER — paidPeriods and paymentLog are two SEPARATE columns
+          // (migration 0019); PostgREST rejects the WHOLE update if either
+          // one doesn't exist on this deployment yet, which previously meant
+          // a missing paymentLog column (added after paidPeriods in an
+          // earlier round) silently blocked the paid/unpaid STATUS from
+          // saving too — exactly "Mark as Paid doesn't work", with the real
+          // cause being one column, not the feature itself. Retry with just
+          // paidPeriods so the status still lands even if the log can't yet.
+          console.warn("[MarkPaid] full update failed:", r.error.message, "— retrying with paidPeriods only");
+          const retry = await (supabase as any).from("employees").update({ paidPeriods: next }).eq("id", emp.id);
+          if (retry?.error) {
+            console.error("[MarkPaid] paidPeriods-only retry also failed:", retry.error.message);
+            toast?.("Failed to save pay status — " + retry.error.message, "red");
+          } else {
+            console.warn("[MarkPaid] saved paid/unpaid status, but the payment log (who/when/how much) couldn't save — run supabase/migrations/0019_employee_payment_log.sql");
+            toast?.(nextStatus === "paid" ? `${emp.firstName} marked as paid ✓ (payment log needs a pending database migration)` : `${emp.firstName} marked as unpaid`, "yellow");
+          }
+          return;
+        }
+        toast?.(nextStatus === "paid" ? `${emp.firstName} marked as paid ✓` : `${emp.firstName} marked as unpaid`, "green");
       })
       .catch((e: any) => { console.error("[MarkPaid] threw:", e?.message); toast?.("Failed to save pay status — " + (e?.message || "unknown error"), "red"); });
   };

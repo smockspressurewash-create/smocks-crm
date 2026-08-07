@@ -79,7 +79,7 @@ import { ChemicalModal } from "../ui/ChemicalModal";
 import { WeeklyBusinessReview } from "../ui/WeeklyBusinessReview";
 import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 
-export function CalendarPage({ jobs = [], setJobs, customers = [], employees = [], toast, settings = {} as AppSettings, ownerId = "" }: { jobs?: any[]; setJobs?: any; customers?: any[]; employees?: any[]; toast?: any; settings?: AppSettings; ownerId?: string }) {
+export function CalendarPage({ jobs = [], setJobs, customers = [], employees = [], toast, settings = {} as AppSettings, setSettings, ownerId = "" }: { jobs?: any[]; setJobs?: any; customers?: any[]; employees?: any[]; toast?: any; settings?: AppSettings; setSettings?: any; ownerId?: string }) {
   const [view, setView] = useState(() => typeof window !== "undefined" && window.innerWidth < 768 ? "agenda" : "month");
   const [off, setOff] = useState(0);
   const [dragId, setDragId] = useState(null);
@@ -187,6 +187,21 @@ export function CalendarPage({ jobs = [], setJobs, customers = [], employees = [
 
   const updateJob = (jid: string, patch: any) => {
     setJobs((prev: any[]) => prev.map(j => j.id === jid ? { ...j, ...patch } : j));
+    // BLOCKER — this function only ever immediately wrote EMPLOYEE_OWNED_FIELDS
+    // and crew below; everything else (paymentStatus/paymentType/
+    // amountCollected, status, checklist, photos, notes, ...) relied on the
+    // 30s bulk autosave in App.tsx — which deliberately EXCLUDES those exact
+    // fields, assuming something writes them immediately. A job opened from
+    // the Calendar page's detail modal had nowhere those fields ever
+    // persisted: "Mark Paid" (and any other non-owned-field edit) looked
+    // like it saved (optimistic local state) then silently reverted on the
+    // next poll. Write the whole patch immediately, same as JobsPage.tsx's
+    // and CrewView.tsx's updateJob — the two blocks below still run for
+    // their extra side effects (this doubles up on crew, harmlessly, since
+    // both send identical data).
+    (supabase as any).from("jobs").update(patch).eq("id", jid)
+      .then((result: any) => { if (result?.error) { console.error("[CalendarPage] updateJob failed:", result.error.message); toast?.("Failed to save — " + result.error.message, "red"); } })
+      .catch((e: any) => { console.error("[CalendarPage] updateJob threw:", e?.message); toast?.("Failed to save — " + (e?.message || "unknown error"), "red"); });
     // Clock-in/lunch/hours fields are excluded from the App-level 30s bulk
     // autosave so it never clobbers a more-recent employee-portal write —
     // so any owner-side edit to them must be pushed immediately here.
@@ -701,6 +716,7 @@ export function CalendarPage({ jobs = [], setJobs, customers = [], employees = [
         toast={toast}
         gToken={gToken}
         settings={settings}
+        setSettings={setSettings}
         ownerId={ownerId}
       />
 

@@ -4,7 +4,7 @@ import {
   Calendar, MessageSquare, Megaphone, Star, Zap, Share2, UserPlus,
   Bot, Database, Users2, Truck, DollarSign, FlaskConical, BarChart3,
   TrendingUp, PiggyBank, Wallet, Heart, Gift, Monitor, Tag,
-  Bell, Settings, X, Lock, Globe, ChevronLeft, ChevronRight, Plus, Undo2, Redo2, CheckCircle, Eye, EyeOff, Menu
+  Bell, Settings, X, Lock, Globe, ChevronLeft, ChevronRight, Plus, Undo2, Redo2, CheckCircle, Eye, EyeOff, Menu, AlertTriangle
 } from "lucide-react";
 
 import { useGlobalStyles } from "./hooks/useGlobalStyles";
@@ -68,7 +68,7 @@ import {
 } from "./lib/seed";
 import { seedWeather } from "./lib/weather";
 import { fetchRealWeather } from "./lib/weather";
-import { fmt, uid, today, daysSince, daysFromNow, consumeOAuthIntent, getLastOwnerSessionFlag, setLastOwnerSessionFlag, getLastOwnerId, setLastOwnerId, buildChecklistFromServices, withTimeout, normalizeJobRow, totalJobPhotoCount, notifyDesktop, stripLegacyJobFields } from "./lib/utils";
+import { fmt, uid, today, daysSince, daysFromNow, consumeOAuthIntent, getLastOwnerSessionFlag, setLastOwnerSessionFlag, getLastOwnerId, setLastOwnerId, buildChecklistFromServices, withTimeout, normalizeJobRow, totalJobPhotoCount, notifyDesktop, stripLegacyJobFields, getPollIntervalMs } from "./lib/utils";
 import { sendEmail, buildTomorrowJobsEmailHtml, buildDailyBriefingEmailHtml } from "./lib/messaging";
 import { exchangeSocialOAuthCode, type SocialPlatform } from "./lib/socialOAuth";
 import type {
@@ -384,6 +384,16 @@ export function App() {
   // Last Supabase sync timestamp
   const [lastSynced, setLastSynced] = useState<Date | null>(null);
   const [isSyncing, setIsSyncing] = useState(false);
+  // EGRESS — a client can't read its own Supabase project's usage-vs-quota
+  // (that's a Management API metric behind a privileged token that must
+  // never ship in browser code), but a project that's been paused/restricted
+  // for being over quota makes every request fail the same way, repeatedly,
+  // across totally unrelated tables. That IS something the client can see —
+  // track consecutive full-cycle failures and warn once it looks systemic
+  // rather than one flaky request.
+  const syncFailureStreakRef = useRef(0);
+  const [supabaseDegraded, setSupabaseDegraded] = useState(false);
+  const [degradedWarningDismissed, setDegradedWarningDismissed] = useState(false);
 
   // ── OAuth processing guard ───────────────────────────────────────────────
   // Set to true when the page loads with an OAuth callback hash (#access_token=...).
@@ -1005,11 +1015,12 @@ export function App() {
     // vs. this table's several MB) — confirmed via SELECT * FROM
     // storage... table-size check during a live egress investigation.
     // Realtime isn't wired up for this table, so this poll IS the only
-    // sync mechanism — can't remove it, but 60s cuts its cost 6x same as
-    // the jobs/customers/estimates poll above.
-    const interval = setInterval(pollSettings, 60000);
+    // sync mechanism — can't remove it, but this now uses the same
+    // owner-configurable interval (Settings → default 120s) as every other
+    // fallback poll, instead of a hardcoded 60s.
+    const interval = setInterval(pollSettings, getPollIntervalMs(settings));
     return () => clearInterval(interval);
-  }, [crmUserId]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [crmUserId, (settings as any)?.pollIntervalMs]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // FIX 5 — ensure the owner has a real row in `employees` so they can be
   // assigned to jobs, clock in/out, and show up in Live Crew View exactly like
@@ -1134,8 +1145,8 @@ export function App() {
       empSnap[e.id] = cur;
       if (!crewActivitySeededRef.current) continue;
       const prev = crewActivityEmpRef.current[e.id] ?? null;
-      if (cur && !prev) events.push({ id: e.id + ":in:" + cur, text: `🟢 ${empName(e)} started their shift`, at: Date.now() });
-      else if (!cur && prev) events.push({ id: e.id + ":out:" + Date.now(), text: `⏹ ${empName(e)} ended their shift`, at: Date.now() });
+      if (cur && !prev) { const text = `🟢 ${empName(e)} started their shift`; events.push({ id: e.id + ":in:" + cur, text, at: Date.now() }); notifyDesktop(text); }
+      else if (!cur && prev) { const text = `⏹ ${empName(e)} ended their shift`; events.push({ id: e.id + ":out:" + Date.now(), text, at: Date.now() }); notifyDesktop(text); }
     }
     for (const j of jobs as any[]) {
       // FEATURE 4 (mobile round 7) — photo uploads and customer sign-off were
@@ -1159,7 +1170,7 @@ export function App() {
       const cust = customers.find(x => x.id === j.customerId);
       const who = cust ? `${cust.firstName} ${cust.lastName}` : j.address;
       if (cur.status === "completed" && prev.status && prev.status !== "completed") events.push({ id: j.id + ":done", text: `✅ Job completed — ${who}`, at: Date.now() });
-      if (cur.arrivedAt && !prev.arrivedAt) events.push({ id: j.id + ":arrived", text: `📍 Crew arrived at ${who}`, at: Date.now() });
+      if (cur.arrivedAt && !prev.arrivedAt) { const text = `📍 Crew arrived at ${who}`; events.push({ id: j.id + ":arrived", text, at: Date.now() }); notifyDesktop(text); }
       if (photoCount > (prev.photoCount ?? 0)) events.push({ id: j.id + ":photos:" + photoCount, text: `📸 ${photoCount - (prev.photoCount ?? 0)} new photo${photoCount - (prev.photoCount ?? 0) !== 1 ? "s" : ""} — ${who}`, at: Date.now() });
       if (signed && !prev.signed) events.push({ id: j.id + ":signed", text: `✍️ Got customer sign-off — ${who}`, at: Date.now() });
       if (issueCount > (prev.issueCount ?? 0)) {
@@ -1167,8 +1178,10 @@ export function App() {
         const text = `🚨 Problem reported — ${who}`;
         events.push({ id: j.id + ":issue:" + issueCount, text, at: Date.now() });
         // Desktop alert is the closest thing to "push" this single-page app can
-        // do without a server (see notifyDesktop's own comment) — fire it only
-        // for this highest-priority event, not every crew-activity ping.
+        // do without a server (see notifyDesktop's own comment) — also fired
+        // for shift start/end and arrival above, but this one gets the actual
+        // issue text as the notification body since it's the highest-priority
+        // event of the bunch.
         notifyDesktop(text, latestNote?.note?.replace("🚨 ISSUE REPORTED by ", "") || undefined);
       }
     }
@@ -1389,6 +1402,19 @@ export function App() {
     dayPausedMinutes: e.dayPausedMinutes ?? e.daypausedminutes ?? e.day_paused_minutes ?? 0,
     locationSharing: e.locationSharing ?? e.locationsharing ?? e.location_sharing ?? false,
     lastLocation: e.lastLocation ?? e.lastlocation ?? e.last_location ?? null,
+    // BLOCKER — same unquoted-DDL casing risk as the shift fields above, but
+    // these (migration 0019) never got the same defensive fallback. If any
+    // of these columns landed lowercase, EVERY read of e.paidPeriods/
+    // paidDays/paymentLog/lastShiftHours/lastShiftDate on the owner's side
+    // comes back undefined even though the write actually succeeded and the
+    // data is sitting right there under the lowercase key — which reads
+    // exactly like "Mark as Paid doesn't stick" (it stuck; the owner's own
+    // next read just couldn't see it).
+    paidPeriods: e.paidPeriods ?? e.paidperiods ?? e.paid_periods ?? {},
+    paidDays: e.paidDays ?? e.paiddays ?? e.paid_days ?? {},
+    paymentLog: e.paymentLog ?? e.paymentlog ?? e.payment_log ?? [],
+    lastShiftHours: e.lastShiftHours ?? e.lastshifthours ?? e.last_shift_hours ?? 0,
+    lastShiftDate: e.lastShiftDate ?? e.lastshiftdate ?? e.last_shift_date ?? "",
   });
 
   const refetchEmployees = async () => {
@@ -1419,12 +1445,26 @@ export function App() {
   const refetchData = async () => {
     setIsSyncing(true);
     try {
-      const [{ data: sbJobs }, { data: sbCustomers }, { data: sbEstimates }, { data: sbPromotions }] = await Promise.all([
+      const [{ data: sbJobs, error: jobsErr }, { data: sbCustomers, error: customersErr }, { data: sbEstimates, error: estimatesErr }, { data: sbPromotions }] = await Promise.all([
         (supabase as any).from("jobs").select("*"),
         (supabase as any).from("customers").select("*"),
         (supabase as any).from("estimates").select("*"),
         (supabase as any).from("promotions").select("*").then((r: any) => r).catch(() => ({ data: null })),
       ]);
+      // EGRESS/QUOTA — supabase-js resolves with {data: null, error} rather
+      // than throwing, so this Promise.all never hits the catch block below
+      // on a real per-table failure (RLS, paused project, quota
+      // restriction) — it just silently skipped the state update. Three
+      // core tables failing in the SAME cycle, repeated across several
+      // cycles in a row, is the actual observable signature of a
+      // paused/restricted project from the client's point of view.
+      if (jobsErr || customersErr || estimatesErr) {
+        syncFailureStreakRef.current += 1;
+        if (syncFailureStreakRef.current >= 3) setSupabaseDegraded(true);
+      } else {
+        syncFailureStreakRef.current = 0;
+        setSupabaseDegraded(false);
+      }
       if (Array.isArray(sbJobs) && sbJobs.length > 0) {
         const normedJobs = sbJobs.map(normalizeJobRow);
         // AUDIT — this [Hours] log was a one-time diagnostic for FIX 7
@@ -1471,7 +1511,12 @@ export function App() {
         });
       }
       setLastSynced(new Date());
-    } catch { /* tables may not exist yet */ }
+    } catch {
+      /* tables may not exist yet — but a THROWN failure (network down,
+         project unreachable) is just as much a signal as an error response. */
+      syncFailureStreakRef.current += 1;
+      if (syncFailureStreakRef.current >= 3) setSupabaseDegraded(true);
+    }
     setIsSyncing(false);
   };
 
@@ -1691,16 +1736,22 @@ export function App() {
     // (see types/index.ts Photo.dataUrl etc.), so a select("*") poll re-
     // downloads every job's full media on every tick. Realtime above already
     // covers instant updates; this interval is only the cross-device/missed-
-    // event fallback, so widened from 10s to 60s (6x less egress) rather than
-    // removed outright.
-    const dataInterval = setInterval(() => { if (shouldPollCrossDevice()) refetchData(); }, 60000);
-    const crewInterval = setInterval(() => { if (shouldPollCrossDevice()) refetchEmployees(); }, 3000);
+    // event fallback. Both now share the owner-configurable interval
+    // (Settings → default 120s) instead of two different hardcoded values —
+    // crewInterval was still at its ORIGINAL 3000ms here, never widened when
+    // dataInterval was bumped to 60s in an earlier pass, making it by far
+    // the single biggest poll-driven egress source in the app (a full
+    // employees select("*") every 3 seconds, indefinitely, on every open
+    // owner tab).
+    const pollMs = getPollIntervalMs(settings);
+    const dataInterval = setInterval(() => { if (shouldPollCrossDevice()) refetchData(); }, pollMs);
+    const crewInterval = setInterval(() => { if (shouldPollCrossDevice()) refetchEmployees(); }, pollMs);
     return () => {
       clearInterval(dataInterval);
       clearInterval(crewInterval);
       try { channel?.unsubscribe(); } catch { /* ignore */ }
     };
-  }, [hasCrmSession, !!empSession]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [hasCrmSession, !!empSession, (settings as any)?.pollIntervalMs]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Supabase Google OAuth / identity-link capture ────────────────────────
   useEffect(() => {
@@ -2294,6 +2345,7 @@ export function App() {
           isOwnerView={!empSession && page === "portal" && !window.location.hash.includes("invite=") && hasCrmSession}
           onClose={() => setPage("dashboard")}
           refetchEmployees={refetchEmployees}
+          weatherData={weatherData}
         />
         <div className="fixed bottom-20 left-4 right-4 md:bottom-4 md:right-auto z-50 space-y-2 pointer-events-none">
           {toasts.map(t => (
@@ -2791,6 +2843,21 @@ export function App() {
           </div>
         </header>
 
+        {/* EGRESS/QUOTA — see supabaseDegraded above. Not a live usage-vs-cap
+            readout (impossible to get safely from client code) — this is a
+            best-effort inference from repeated request failures, so the
+            wording says "may be" rather than asserting the cause. */}
+        {supabaseDegraded && !degradedWarningDismissed && (
+          <div className="flex items-center gap-3 px-4 py-2.5 bg-red-950/40 border-b border-red-700/40 text-red-200 text-xs flex-shrink-0">
+            <AlertTriangle size={14} className="flex-shrink-0" />
+            <div className="flex-1">
+              Supabase requests have been failing repeatedly — this can happen when a project is paused or over its usage quota. Check Usage in your Supabase dashboard. If you're near a quota limit, raising the Background Sync Interval in Settings → Data can help.
+            </div>
+            <button onClick={() => setSettingsOpen(true)} className="underline hover:text-white flex-shrink-0">Open Settings</button>
+            <button onClick={() => setDegradedWarningDismissed(true)} className="text-red-200/60 hover:text-white flex-shrink-0"><X size={14} /></button>
+          </div>
+        )}
+
         {/* Page content */}
         {/* FIX 19 — AlfredPage used to size itself with a hardcoded
             h-[calc(100dvh-150px)] guess at "everything else on screen" —
@@ -2814,9 +2881,9 @@ export function App() {
                 {page === "customers"      && <CustomersPage customers={customers} setCustomers={setCustomers} estimates={estimates} jobs={jobs} employees={employees} toast={toast} timeline={timeline} setTimeline={setTimeline} settings={settings} />}
                 {page === "estimates"      && <EstimatesPage estimates={estimates} setEstimates={setEstimates} customers={customers} services={services} settings={settings} toast={toast} onPortal={id => setPortalEstId(id)} estimateTemplates={estimateTemplates} setEstimateTemplates={setEstimateTemplates} setJobs={setJobs} onNav={setPage} />}
                 {page === "invoices"       && <InvoicesPage estimates={estimates} setEstimates={setEstimates} customers={customers} settings={settings} toast={toast} jobs={jobs} setJobs={setJobs} />}
-                {page === "jobs"           && <JobsPage jobs={jobs} setJobs={setJobs} customers={customers} setCustomers={setCustomers} employees={employees} estimates={estimates} setEstimates={setEstimates} settings={settings} toast={toast} posts={socialPosts} setPosts={setSocialPosts} setTimeline={setTimeline} initialDetailId={openJobId} onInitialDetailIdConsumed={() => setOpenJobId(null)} onPortal={id => setPortalEstId(id)} ownerId={crmUserId} />}
+                {page === "jobs"           && <JobsPage jobs={jobs} setJobs={setJobs} customers={customers} setCustomers={setCustomers} employees={employees} estimates={estimates} setEstimates={setEstimates} settings={settings} setSettings={setSettings} toast={toast} posts={socialPosts} setPosts={setSocialPosts} setTimeline={setTimeline} initialDetailId={openJobId} onInitialDetailIdConsumed={() => setOpenJobId(null)} onPortal={id => setPortalEstId(id)} ownerId={crmUserId} />}
                 {page === "pipeline"       && <PipelinePage jobs={jobs} setJobs={setJobs} customers={customers} toast={toast} />}
-                {page === "calendar"       && <CalendarPage jobs={jobs} setJobs={setJobs} customers={customers} employees={employees} toast={toast} settings={settings} ownerId={crmUserId} />}
+                {page === "calendar"       && <CalendarPage jobs={jobs} setJobs={setJobs} customers={customers} employees={employees} toast={toast} settings={settings} setSettings={setSettings} ownerId={crmUserId} />}
                 {page === "inbox"          && (managerBlocked("inbox") ? <RestrictedNotice label="the Inbox" /> : <InboxPage threads={inboxThreads} setThreads={setInboxThreads} customers={customers} settings={settings} toast={toast} />)}
                 {page === "campaigns"      && <CampaignsPage campaigns={campaigns} setCampaigns={setCampaigns} customers={customers} estimates={estimates} jobs={jobs} settings={settings} inboxThreads={inboxThreads} setInboxThreads={setInboxThreads} toast={toast} />}
                 {page === "reviews"        && <ReviewsPage reviews={reviews} setReviews={setReviews} jobs={jobs} customers={customers} toast={toast} negativeAlerts={negativeAlerts} setNegativeAlerts={setNegativeAlerts} settings={settings} setSettings={setSettings} />}
@@ -2836,7 +2903,7 @@ export function App() {
                 {page === "accountability" && (managerBlocked("accountability") ? <RestrictedNotice label="Accountability Tools" /> : <AccountabilityPage entries={accountability} setEntries={setAccountability} goals={goalsList} setGoals={setGoalsList} wins={wins} setWins={setWins} toast={toast} settings={settings} />)}
                 {page === "referrals"      && <ReferralsPage customers={customers} setCustomers={setCustomers} jobs={jobs} toast={toast} settings={settings} setSettings={setSettings} />}
                 {page === "promotions"     && <PromotionsPage promotions={promotions} setPromotions={setPromotions} customers={customers} services={services} settings={settings} toast={toast} />}
-                {page === "crew"           && <CrewView jobs={jobs} setJobs={setJobs} customers={customers} employees={employees} toast={toast} settings={settings} estimates={estimates} setEstimates={setEstimates} refetchEmployees={refetchEmployees} ownerId={crmUserId} />}
+                {page === "crew"           && <CrewView jobs={jobs} setJobs={setJobs} customers={customers} employees={employees} toast={toast} settings={settings} setSettings={setSettings} estimates={estimates} setEstimates={setEstimates} refetchEmployees={refetchEmployees} ownerId={crmUserId} />}
               </SafePage>
             </PageFade>
           </div>
@@ -2873,6 +2940,8 @@ export function App() {
         onClose={() => setSettingsOpen(false)}
         settings={settings}
         setSettings={setSettings}
+        jobs={jobs}
+        setJobs={setJobs}
         services={services}
         setServices={setServices}
         emailTemplates={emailTemplates}

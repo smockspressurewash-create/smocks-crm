@@ -106,7 +106,7 @@ const CREW_POST_DEFAULTS = [
   { id: "post4", label: "Take after photos", done: false },
 ];
 
-export function CrewView({ jobs = [], setJobs, customers = [], employees = [], toast, settings = {} as any, estimates = [], setEstimates = (() => {}) as any, refetchEmployees = (() => {}) as any, ownerId = "" }: { jobs?: any[]; setJobs?: any; customers?: any[]; employees?: any[]; toast?: any; settings?: any; estimates?: any[]; setEstimates?: any; refetchEmployees?: any; ownerId?: string }) {
+export function CrewView({ jobs = [], setJobs, customers = [], employees = [], toast, settings = {} as any, setSettings, estimates = [], setEstimates = (() => {}) as any, refetchEmployees = (() => {}) as any, ownerId = "" }: { jobs?: any[]; setJobs?: any; customers?: any[]; employees?: any[]; toast?: any; settings?: any; setSettings?: any; estimates?: any[]; setEstimates?: any; refetchEmployees?: any; ownerId?: string }) {
   const [empFilter, setEmpFilter] = useState("all");
   const [crewDate, setCrewDate] = useState(today());
   const [liveDetailId, setLiveDetailId] = useState<string | null>(null);
@@ -143,27 +143,6 @@ export function CrewView({ jobs = [], setJobs, customers = [], employees = [], t
     const interval = setInterval(() => { refetchEmployees(); }, 10000);
     return () => clearInterval(interval);
   }, [activeEmps.some((e: any) => e.locationSharing)]); // eslint-disable-line react-hooks/exhaustive-deps
-  // Mirrors JobsPage/CalendarPage's updateJob — crew assignment and employee-owned
-  // clock fields must reach Supabase immediately rather than waiting on the 30s
-  // bulk autosave, since the employee portal polls Supabase directly. Without
-  // this, assigning crew from the Live Now detail modal never left this page's
-  // local React state, so the employee never saw the assignment.
-  const liveUpdateJob = (jid: string, patch: any) => {
-    setJobs((prev: any[]) => prev.map(j => j.id === jid ? { ...j, ...patch } : j));
-    const EMPLOYEE_OWNED_FIELDS = ["clockInAt", "lunchStartAt", "lunchMinutes", "lunchExceeded", "loggedHours"] as const;
-    const ownedPatch: any = {};
-    EMPLOYEE_OWNED_FIELDS.forEach(f => { if ((patch as any)[f] !== undefined) ownedPatch[f] = (patch as any)[f]; });
-    if (Object.keys(ownedPatch).length > 0) {
-      (supabase as any).from("jobs").update(ownedPatch).eq("id", jid).then((r: any) => { if (r?.error) toast?.("Failed to save — " + r.error.message, "red"); }).catch(() => {});
-    }
-    if (patch.crew !== undefined) {
-      const crewPatch: any = { crew: patch.crew };
-      if (patch.crewAssignedAt !== undefined) crewPatch.crewAssignedAt = patch.crewAssignedAt;
-      // BUG FIX — same missing-success-toast gap as CalendarPage.tsx's
-      // updateJob: a working save showed nothing at all here before.
-      (supabase as any).from("jobs").update(crewPatch).eq("id", jid).then((r: any) => { if (r?.error) toast?.("Crew assignment failed to save — " + r.error.message, "red"); else toast?.("Crew updated ✓", "green"); }).catch(() => toast?.("Crew assignment failed to save", "red"));
-    }
-  };
   const dayJobs = jobs
     .filter(j => j.scheduledDate === crewDate && j.status !== "cancelled")
     .filter(j => empFilter === "all" || (j.crew || []).includes(empFilter))
@@ -351,9 +330,21 @@ export function CrewView({ jobs = [], setJobs, customers = [], employees = [], t
         onClose={() => setLiveDetailId(null)}
         customers={customers}
         employees={employees}
-        updateJob={liveUpdateJob}
+        // BLOCKER — this used to pass liveUpdateJob, a narrower write that
+        // only persisted clock/lunch fields and crew immediately (everything
+        // else relied on the 30s bulk autosave in App.tsx, which itself
+        // deliberately EXCLUDES paymentStatus/paymentType/amountCollected/
+        // status/etc — it assumes something writes those immediately). A job
+        // opened from this Live Now view had nowhere that ever persisted a
+        // Mark Paid, status change, or checklist edit — it looked like it
+        // saved (optimistic local state) and then silently reverted on the
+        // next poll. `updateJob` below (already used for this page's own
+        // Stops-view checklist/Complete actions) writes the full patch
+        // immediately and is the one JobDetailModal should always have had.
+        updateJob={updateJob}
         toast={toast}
         settings={settings}
+        setSettings={setSettings}
         estimates={estimates}
         setEstimates={setEstimates}
         ownerId={ownerId}

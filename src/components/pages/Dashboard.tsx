@@ -528,15 +528,27 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
   const ownerHoursToday = ownerJobsToday.reduce((s: number, j: any) => s + (Number(j.loggedHours) || 0), 0);
   const ownerHoursThisWeek = ownerJobsThisWeek.reduce((s: number, j: any) => s + (Number(j.loggedHours) || 0), 0);
 
+  // BLOCKER — `checklist` is the legacy pre-phase-split field; jobs seeded
+  // from an approved estimate (App.tsx) set BOTH `checklist` AND
+  // `preChecklist` to the SAME combined array, so unconditionally appending
+  // `j.checklist` on top of the (already-defaulted) pre/during/post lists
+  // double-counted every one of those items — a job with 7 real custom
+  // items showed up to 14, or a mismatched fraction depending on how many
+  // were done, matching reports of checklist totals looking wrong/partial.
+  // `checklist` should only ever be used for genuinely OLD jobs that predate
+  // the pre/during/post split (no phase data at all) — never alongside it.
+  const getAllChecklistItems = (j: any): any[] =>
+    (j.preChecklist?.length || j.duringChecklist?.length || j.postChecklist?.length || !j.checklist?.length)
+      ? [
+          ...(j.preChecklist?.length ? j.preChecklist : DASH_PRE_DEFAULTS),
+          ...(j.duringChecklist?.length ? j.duringChecklist : DASH_DURING_DEFAULTS),
+          ...(j.postChecklist?.length ? j.postChecklist : DASH_POST_DEFAULTS),
+        ]
+      : j.checklist;
   const checklistProgress = (j: any) => {
     // FIX 8 — fall back to defaults so a not-yet-touched job shows its real
     // (default) checklist progress instead of "0/0" — see DASH_*_DEFAULTS above.
-    const items = [
-      ...(j.preChecklist?.length ? j.preChecklist : DASH_PRE_DEFAULTS),
-      ...(j.duringChecklist?.length ? j.duringChecklist : DASH_DURING_DEFAULTS),
-      ...(j.postChecklist?.length ? j.postChecklist : DASH_POST_DEFAULTS),
-      ...(j.checklist || []),
-    ];
+    const items = getAllChecklistItems(j);
     if (items.length === 0) return null;
     const done = items.filter((it: any) => it.done).length;
     return { done, total: items.length, pct: Math.round((done / items.length) * 100) };
@@ -944,7 +956,7 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
                         </button>
                         {expandedChecklistJobId === j.id && (
                           <div className="mt-1.5 space-y-1 max-h-40 overflow-y-auto pr-1">
-                            {[...(j.preChecklist?.length ? j.preChecklist : DASH_PRE_DEFAULTS), ...(j.duringChecklist?.length ? j.duringChecklist : DASH_DURING_DEFAULTS), ...(j.postChecklist?.length ? j.postChecklist : DASH_POST_DEFAULTS), ...(j.checklist || [])].map((ck: any, i: number) => (
+                            {getAllChecklistItems(j).map((ck: any, i: number) => (
                               <div key={i} className={"text-[10px] flex items-center gap-1.5 " + (ck.done ? "text-white/40 line-through" : "text-white/70")}>
                                 {ck.done ? <CheckSquare size={10} className="text-green-500 flex-shrink-0" /> : <Square size={10} className="text-white/30 flex-shrink-0" />}
                                 {ck.label}

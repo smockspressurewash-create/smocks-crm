@@ -1,5 +1,23 @@
 import { supabase } from "./supabase";
 
+// ─── Configurable poll interval (EGRESS) ───────────────────────────────────────
+// Single source of truth for "how often do the cross-device fallback polls
+// re-check Supabase" (jobs/customers/estimates, employees, app_settings,
+// Alfred conversations/memory). Clamped so a bad/missing settings value can
+// never produce a runaway fast poll (min 30s) or a value so long it stops
+// being a meaningful fallback at all (max 600s).
+export const DEFAULT_POLL_INTERVAL_MS = 120000;
+export const POLL_INTERVAL_OPTIONS = [
+  { label: "30 seconds (most responsive, highest egress)", value: 30000 },
+  { label: "60 seconds", value: 60000 },
+  { label: "120 seconds (recommended)", value: 120000 },
+  { label: "300 seconds (lowest egress)", value: 300000 },
+] as const;
+export const getPollIntervalMs = (settings: { pollIntervalMs?: number } | null | undefined): number => {
+  const v = Number(settings?.pollIntervalMs) || DEFAULT_POLL_INTERVAL_MS;
+  return Math.min(600000, Math.max(30000, v));
+};
+
 // ─── Job media (Storage-backed photos/videos/signatures) ──────────────────────
 // Every Photo/ChecklistPhoto/JobVideo/JobSignOff can carry EITHER a Storage
 // `url` (new captures, once the job-media bucket exists — see
@@ -67,8 +85,12 @@ export const compressImageFile = (file: File, maxDim = 1600, quality = 0.72): Pr
 // inline dataUrl on an upload timeout, bloat the jobs row enough to make
 // "Complete Job" saves intermittently fail — see CLAUDE.md's Complete Job
 // wizard reliability notes). Both capture points now call this one check.
-export const MAX_JOB_VIDEO_SECONDS = 30;
-export const MAX_JOB_VIDEO_MB = 50;
+// Tightened from 30s/50MB — long/large field videos were the single biggest
+// contributor to jobs-table egress bloat before Storage uploads existed, and
+// still fall back to an inline base64 blob on any upload timeout/offline
+// capture, so a hard low cap matters even with Storage in place.
+export const MAX_JOB_VIDEO_SECONDS = 10;
+export const MAX_JOB_VIDEO_MB = 10;
 
 export const checkVideoLimits = (file: File): Promise<string | null> => {
   if (file.size > MAX_JOB_VIDEO_MB * 1024 * 1024) {

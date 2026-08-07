@@ -181,7 +181,14 @@ export function InboxPage({ threads = [], setThreads, customers = [], settings =
     const poll = async () => {
       setPolling(true);
       try {
-        const lastTs = Math.max(0, ...threads.flatMap(t => t.messages.map(m => m.ts)));
+        // BLOCKER — this used to max() over EVERY thread regardless of
+        // channel. If Gmail activity (a separate channel merged into the
+        // same `threads` array below) was more recent than the last real
+        // SMS, `since` got pinned to that later email timestamp — any SMS
+        // that arrived in the gap between the true last-SMS time and that
+        // email time would never satisfy Twilio's DateSent> filter on any
+        // future poll, permanently disappearing instead of just being late.
+        const lastTs = Math.max(0, ...threads.filter(t => t.channel === "sms").flatMap(t => t.messages.map((m: any) => m.ts)));
         const incoming = await pollTwilioIncoming(settings, new Date(lastTs).toISOString());
         if (incoming.length > 0) {
           const touchedIds = new Set<string>();

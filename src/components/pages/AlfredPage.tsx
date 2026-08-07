@@ -20,7 +20,7 @@ import {
   Tooltip, ResponsiveContainer, Area, AreaChart, LineChart, Line,
   ComposedChart, Legend
 } from "recharts";
-import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, withTimeout, withTimeoutRetry, reconcileCrewAfterAssign } from "../../lib/utils";
+import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, withTimeout, withTimeoutRetry, reconcileCrewAfterAssign, getPollIntervalMs } from "../../lib/utils";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
 import { twilioSend, sendEmail, emailShell, emailButton, logOutboundSmsToInbox } from "../../lib/messaging";
 import { seedWeather } from "../../lib/weather";
@@ -214,6 +214,9 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
   // given ownerId, don't repeat the extra round-trips on every 5s poll —
   // once is enough; re-arm if ownerId changes (e.g. a different session).
   const mismatchCheckedRef = useRef<string | null>(null);
+  // Guards the 7-day-inactivity auto-delete (below) so it only issues a
+  // DELETE once per session instead of re-checking on every 5s poll.
+  const staleCleanupDoneRef = useRef(false);
   const shouldPollAlfred = usePollGate();
   useEffect(() => {
     if (!ownerId) { console.warn("[Alfred Sync] no ownerId yet — skipping conversation fetch"); return; }
@@ -255,10 +258,31 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           }
         }
         if (data.length > 0) console.log("[Verify] Alfred conversations cross-device sync — working —", data.length, "conversation(s) loaded for owner_id=" + ownerId);
-        const fromServer: AlfredConversation[] = data.map((r: any) => ({
+        let fromServer: AlfredConversation[] = data.map((r: any) => ({
           id: r.id, title: r.title || "Conversation", messages: Array.isArray(r.messages) ? r.messages : [],
           createdAt: r.created_at || r.createdAt || new Date().toISOString(), updatedAt: r.updated_at || r.updatedAt || new Date().toISOString(),
         }));
+        // FEATURE — auto-delete conversations inactive 7+ days, so the
+        // alfred_conversations table (and this owner's cross-device sync
+        // payload) doesn't grow unbounded. Only runs the delete once per
+        // session (staleCleanupDoneRef), not on every 5s poll — the rows are
+        // gone from Supabase after the first pass, so later polls simply
+        // won't see them again. Filter them out of THIS pass's result too so
+        // they don't flash on screen before the delete lands.
+        const ONE_WEEK_MS = 7 * 24 * 60 * 60 * 1000;
+        const staleIds = fromServer.filter(c => Date.now() - new Date(c.updatedAt as any).getTime() > ONE_WEEK_MS).map(c => c.id);
+        if (staleIds.length > 0) {
+          fromServer = fromServer.filter(c => !staleIds.includes(c.id));
+          if (!staleCleanupDoneRef.current) {
+            staleCleanupDoneRef.current = true;
+            (supabase as any).from("alfred_conversations").delete().eq("owner_id", ownerId).in("id", staleIds)
+              .then((r: any) => {
+                if (r?.error) console.warn("[Alfred Cleanup] failed to delete stale conversations:", r.error.message);
+                else console.log("[Alfred Cleanup] deleted", staleIds.length, "conversation(s) inactive 7+ days");
+              })
+              .catch((e: any) => console.warn("[Alfred Cleanup] threw:", e?.message));
+          }
+        }
         // Anything the server already has is "known" — only conversations
         // created locally after this point should trigger an immediate save.
         fromServer.forEach(c => knownConvIdsRef.current.add(c.id));
@@ -283,9 +307,13 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
       } catch (e: any) { console.warn("[Alfred Sync] fetch threw:", e?.message); }
     };
     loadConversations();
-    const interval = setInterval(() => { if (shouldPollAlfred()) loadConversations(); }, 5000);
+    // EGRESS — was a hardcoded 5s regardless of the owner's configured
+    // fallback-poll interval (Settings, default 120s) — alfred_conversations
+    // rows can carry a full chat history each, so polling that every 5s
+    // while Alfred is open was a real contributor to the egress overage.
+    const interval = setInterval(() => { if (shouldPollAlfred()) loadConversations(); }, getPollIntervalMs(settings));
     return () => clearInterval(interval);
-  }, [ownerId]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [ownerId, (settings as any)?.pollIntervalMs]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // FEATURE 2 (mobile round 7) — Alfred's remember_fact tool used to only
   // write to local usePersistent state, so anything the owner told Alfred to
@@ -316,9 +344,9 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
       } catch (e: any) { console.warn("[Alfred Memory Sync] fetch threw:", e?.message); }
     };
     loadMemory();
-    const interval = setInterval(() => { if (shouldPollAlfred()) loadMemory(); }, 5000);
+    const interval = setInterval(() => { if (shouldPollAlfred()) loadMemory(); }, getPollIntervalMs(settings));
     return () => clearInterval(interval);
-  }, [ownerId]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [ownerId, (settings as any)?.pollIntervalMs]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (!ownerId || !alfredMemoryLoaded) return;

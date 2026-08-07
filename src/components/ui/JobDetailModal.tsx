@@ -192,7 +192,7 @@ const withTimeout = <T,>(p: Promise<T>, ms: number, label: string): Promise<T> =
     new Promise<T>((_, reject) => setTimeout(() => reject(new Error(label + " timed out")), ms)),
   ]);
 
-export function JobDetailModal({ jobId, job, onClose, customers = [], employees = [], updateJob, toast, gToken = "", settings = {} as any, estimates = [], setEstimates = (() => {}) as any, onPortal = (_id: string) => {}, ownerId = "" }: { jobId: any; job: any; onClose: any; customers?: any[]; employees?: any[]; updateJob: any; toast: any; gToken?: string; settings?: any; estimates?: any[]; setEstimates?: any; onPortal?: (id: string) => void; ownerId?: string }) {
+export function JobDetailModal({ jobId, job, onClose, customers = [], employees = [], updateJob, toast, gToken = "", settings = {} as any, setSettings, estimates = [], setEstimates = (() => {}) as any, onPortal = (_id: string) => {}, ownerId = "" }: { jobId: any; job: any; onClose: any; customers?: any[]; employees?: any[]; updateJob: any; toast: any; gToken?: string; settings?: any; setSettings?: any; estimates?: any[]; setEstimates?: any; onPortal?: (id: string) => void; ownerId?: string }) {
   const [commNote, setCommNote] = useState("");
   const [sendingInvoice, setSendingInvoice] = useState(false);
   const [sendingReview, setSendingReview] = useState(false);
@@ -710,13 +710,30 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
     }
   };
 
+  // BLOCKER — adding a custom equipment/chemical here only ever wrote it onto
+  // THIS job's own array. It displayed fine on this job (and in the employee
+  // portal, which already reads job.equipment/job.requiredChemicals), but the
+  // next job started from scratch with no memory of it — "custom equipment
+  // saved for future jobs" never actually persisted anywhere reusable. A
+  // brand-new value (not already in the preset list) now also gets appended
+  // to settings so it shows up as a one-click preset button on every future
+  // job, not just retyped each time. setSettings is optional (older callers
+  // that haven't threaded it through yet) so this never throws either way.
   const toggleEquip = eq => {
     const list = job.equipment || [];
-    updateJob(jobId, { equipment: list.includes(eq) ? list.filter(x => x !== eq) : [...list, eq] });
+    const adding = !list.includes(eq);
+    updateJob(jobId, { equipment: adding ? [...list, eq] : list.filter(x => x !== eq) });
+    if (adding && !equipmentList.includes(eq) && setSettings) {
+      setSettings((s: any) => (s.customEquipmentList || []).includes(eq) ? s : { ...s, customEquipmentList: [...(s.customEquipmentList || []), eq] });
+    }
   };
   const toggleRequiredChemical = chem => {
     const list = job.requiredChemicals || [];
-    updateJob(jobId, { requiredChemicals: list.includes(chem) ? list.filter(x => x !== chem) : [...list, chem] });
+    const adding = !list.includes(chem);
+    updateJob(jobId, { requiredChemicals: adding ? [...list, chem] : list.filter(x => x !== chem) });
+    if (adding && !requiredChemicalsList.includes(chem) && setSettings) {
+      setSettings((s: any) => (s.customChemicalsList || []).includes(chem) ? s : { ...s, customChemicalsList: [...(s.customChemicalsList || []), chem] });
+    }
   };
   const toggleTag = t => {
     const tags = job.tags || [];
@@ -1104,8 +1121,27 @@ ${job.notes ? `<div class="section"><h2>Job Notes</h2><p>${job.notes}</p></div>`
               <div className={"p-2 rounded-lg " + (job.clockInAt ? "bg-green-900/40 animate-pulse" : "bg-white/5")}><Clock size={14} className={job.clockInAt ? "text-green-400" : "text-white/60"} /></div>
               <div>
                 <div className="text-xs text-white/60 uppercase tracking-wider">Time Tracking</div>
-                <div className="text-sm">
-                  {job.clockInAt ? <span className="font-mono text-green-400 text-base font-bold">{liveDisplay}</span> : <span className="text-white/50">Logged: <span className="text-white font-semibold">{job.loggedHours || 0}h</span></span>}
+                <div className="text-sm flex items-center gap-1.5">
+                  {job.clockInAt ? <span className="font-mono text-green-400 text-base font-bold">{liveDisplay}</span> : (
+                    <span className="text-white/50 flex items-center gap-1">
+                      Logged:
+                      {/* Owner-editable — loggedHours was previously read-only
+                          text, set only by the Clock In/Out toggle below. If
+                          an employee forgets to clock out (or clocks out
+                          late) the resulting hours are wrong with no way to
+                          correct them short of editing the raw DB row. */}
+                      <input
+                        type="number" min="0" step="0.25"
+                        defaultValue={job.loggedHours || 0}
+                        key={job.loggedHours}
+                        onBlur={e => {
+                          const next = Math.max(0, Number(e.target.value) || 0);
+                          if (next !== (job.loggedHours || 0)) { updateJob(jobId, { loggedHours: next }); toast?.("Logged hours updated ✓", "green"); }
+                        }}
+                        className="w-14 text-white font-semibold bg-transparent border-b border-white/20 focus:border-red-500/60 focus:outline-none text-center"
+                      />h
+                    </span>
+                  )}
                   {!job.clockInAt && job.duration && <span className="text-white/40"> · est {job.duration}h</span>}
                 </div>
               </div>
@@ -1344,11 +1380,15 @@ ${job.notes ? `<div class="section"><h2>Job Notes</h2><p>${job.notes}</p></div>`
         <div>
           <label className="text-xs text-white/60 mb-1 block">Required Equipment <span className="text-white/30">(crew sees this before starting)</span></label>
           <div className="flex gap-2 flex-wrap mb-2">
-            {equipmentList.map(eq => {
+            {/* fullEquipmentList — merges in any custom equipment saved from a
+                previous job (settings.customEquipmentList) so it becomes a
+                one-click preset going forward instead of being retyped every
+                time. See toggleEquip above. */}
+            {[...equipmentList, ...((settings as any)?.customEquipmentList || [])].map(eq => {
               const sel = (job.equipment || []).includes(eq);
               return <button key={eq} onClick={() => toggleEquip(eq)} className={"text-xs px-3 py-1.5 rounded-lg border transition " + (sel ? "bg-red-900/40 border-red-500/50 text-red-300" : "bg-white/5 border-white/10 text-white/60 hover:text-white")}>{eq}</button>;
             })}
-            {(job.equipment || []).filter((eq: string) => !equipmentList.includes(eq)).map((eq: string) => (
+            {(job.equipment || []).filter((eq: string) => !equipmentList.includes(eq) && !((settings as any)?.customEquipmentList || []).includes(eq)).map((eq: string) => (
               <button key={eq} onClick={() => toggleEquip(eq)} className="text-xs px-3 py-1.5 rounded-lg border bg-red-900/40 border-red-500/50 text-red-300 flex items-center gap-1">{eq}<X size={10} /></button>
             ))}
           </div>
@@ -1359,11 +1399,11 @@ ${job.notes ? `<div class="section"><h2>Job Notes</h2><p>${job.notes}</p></div>`
         <div>
           <label className="text-xs text-white/60 mb-1 block">Required Chemicals</label>
           <div className="flex gap-2 flex-wrap mb-2">
-            {requiredChemicalsList.map(chem => {
+            {[...requiredChemicalsList, ...((settings as any)?.customChemicalsList || [])].map(chem => {
               const sel = (job.requiredChemicals || []).includes(chem);
               return <button key={chem} onClick={() => toggleRequiredChemical(chem)} className={"text-xs px-3 py-1.5 rounded-lg border transition " + (sel ? "bg-purple-900/40 border-purple-500/50 text-purple-300" : "bg-white/5 border-white/10 text-white/60 hover:text-white")}>{chem}</button>;
             })}
-            {(job.requiredChemicals || []).filter((chem: string) => !requiredChemicalsList.includes(chem)).map((chem: string) => (
+            {(job.requiredChemicals || []).filter((chem: string) => !requiredChemicalsList.includes(chem) && !((settings as any)?.customChemicalsList || []).includes(chem)).map((chem: string) => (
               <button key={chem} onClick={() => toggleRequiredChemical(chem)} className="text-xs px-3 py-1.5 rounded-lg border bg-purple-900/40 border-purple-500/50 text-purple-300 flex items-center gap-1">{chem}<X size={10} /></button>
             ))}
           </div>
