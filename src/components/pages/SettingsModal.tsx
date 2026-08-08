@@ -20,9 +20,9 @@ import {
   Tooltip, ResponsiveContainer, Area, AreaChart, LineChart, Line,
   ComposedChart, Legend
 } from "recharts";
-import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, compressImageFile, POLL_INTERVAL_OPTIONS, DEFAULT_POLL_INTERVAL_MS } from "../../lib/utils";
+import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, compressImageFile, POLL_INTERVAL_OPTIONS, DEFAULT_POLL_INTERVAL_MS, backfillJobMediaToStorage } from "../../lib/utils";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
-import { twilioSend, sendEmail, fetchBufferOrganizationId, fetchBufferChannels, type BufferChannel } from "../../lib/messaging";
+import { twilioSend, sendEmail, fetchBufferOrganizationId, fetchBufferChannels, checkA2pCampaignStatus, type BufferChannel } from "../../lib/messaging";
 import { buildSocialAuthorizeUrl, type SocialPlatform } from "../../lib/socialOAuth";
 import { seedWeather } from "../../lib/weather";
 import { seedCustomers, seedEstimates, seedJobs, seedEmployees, seedVehicles, seedExpenses, seedChemicals, seedServices, seedAutomations, seedEmailTemplates, seedSmsTemplates, seedRewardTiers, seedReferrals, seedMaintenance, campaignTemplates, seedSocialPosts, seedTimeline, seedGoals, seedReminders, seedAccountabilityEntries, seedMileage, seedLeadSrc, STEP_TYPES, AUTOMATION_TEMPLATES } from "../../lib/seed";
@@ -89,6 +89,10 @@ export function SettingsModal({ open, onClose, settings, setSettings, jobs = [],
   const [showKey, setShowKey] = useState(false);
   const [googleOAuth, setGoogleOAuth] = useState({ open: false, step: "account", email: "", selectedScopes: { gmail: true, calendar: true, drive: false, contacts: false } });
   const [googleRetrying, setGoogleRetrying] = useState(false);
+  // FEATURE — one-time backfill of pre-Storage-migration base64 photos/videos
+  // (see backfillJobMediaToStorage in lib/utils.ts) — surfaces progress while
+  // it runs since this can take a while against a large job history.
+  const [mediaBackfillProgress, setMediaBackfillProgress] = useState<{ running: boolean; done: number; total: number } | null>(null);
   // FIX D — refreshEmpGoogleToken/refreshGoogleAccessToken tag a failed
   // refresh as configMissing when the Cloudflare Pages Function reports
   // GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET aren't set as env vars there. That
@@ -194,6 +198,7 @@ export function SettingsModal({ open, onClose, settings, setSettings, jobs = [],
   const [tplTab, setTplTab] = useState<"messaging" | "estimates">("messaging");
   const [bufferChannels, setBufferChannels] = useState<BufferChannel[]>([]);
   const [bufferConnecting, setBufferConnecting] = useState(false);
+  const [campaignChecking, setCampaignChecking] = useState(false);
   const [editingTpl, setEditingTpl] = useState<any>(null); // null = list view, {} = new, {...} = editing existing
   const blankTpl = () => ({ id: "", name: "", description: "", lineItems: [{ id: Date.now().toString(), description: "", quantity: 1, unitPrice: 0 }], notes: "", terms: "Payment due upon completion. 3-day cancellation notice requested. Weather reschedules free of charge.", customFields: [] });
   const blankField = () => ({ id: Date.now().toString() + Math.random(), label: "", type: "text", required: false, customerVisible: true, options: "" });
@@ -378,21 +383,38 @@ export function SettingsModal({ open, onClose, settings, setSettings, jobs = [],
 
           {sec === "legal" && <div className="space-y-3">
             <h4 className="font-semibold text-sm flex items-center gap-2"><Shield size={14} className="text-red-400" />Legal Pages</h4>
-            <div className="text-xs text-white/50">These pages are displayed in your client portal and estimate pages. Edit to match your business.</div>
+            <div className="text-xs text-white/50">
+              These are your live, public Terms & Privacy pages — the same ones linked from the SMS opt-in checkbox on your lead form and required for Twilio campaign registration. Leave a field blank to use the built-in default text instead of your own. Live at:{" "}
+              <a href={`${window.location.origin}${window.location.pathname}#/terms?co=${encodeURIComponent(f.companyName || "Crew Boss")}`} target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:underline">/terms</a>
+              {" "}·{" "}
+              <a href={`${window.location.origin}${window.location.pathname}#/privacy?co=${encodeURIComponent(f.companyName || "Crew Boss")}`} target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:underline">/privacy</a>
+            </div>
             <Glass className="p-4">
               <div className="font-semibold text-sm mb-2">Privacy Policy</div>
-              <GTxt rows={6} value={f.privacyPolicy || "Privacy Policy for Crew Boss\n\nLast updated: " + today() + "\n\nWe collect your name, phone, email, and address to provide pressure washing services. We do not sell your information to third parties. Your data is used only for scheduling, invoicing, and communication related to our services. We use SMS (Twilio) and email to communicate with you about your service. You may opt out at any time by replying STOP to any text message.\n\nContact: smocks@smockspower.com"} onChange={e => setF({ ...f, privacyPolicy: e.target.value })} className="!text-xs" />
+              <GTxt rows={6} value={f.privacyPolicy || ""} placeholder="Leave blank to use the built-in default privacy policy shown on your public /privacy page." onChange={e => setF({ ...f, privacyPolicy: e.target.value })} className="!text-xs" />
             </Glass>
             <Glass className="p-4">
               <div className="font-semibold text-sm mb-2">Terms of Service</div>
-              <GTxt rows={6} value={f.termsOfService || "Terms of Service for Crew Boss\n\nBy booking our services, you agree to:\n\n1. Payment is due upon completion unless otherwise agreed.\n2. Cancellations within 24 hours may incur a $50 fee.\n3. We are not liable for pre-existing damage to surfaces.\n4. Our 48-hour rain guarantee applies to soft wash services only.\n5. All estimates are valid for 30 days from the date issued.\n\nContact: (717) 555-0100 | smocks@smockspower.com"} onChange={e => setF({ ...f, termsOfService: e.target.value })} className="!text-xs" />
+              <GTxt rows={6} value={f.termsOfService || ""} placeholder="Leave blank to use the built-in default terms shown on your public /terms page." onChange={e => setF({ ...f, termsOfService: e.target.value })} className="!text-xs" />
             </Glass>
             <Glass className="p-4">
               <div className="font-semibold text-sm mb-2">GDPR / Data Compliance</div>
               <div className="space-y-2 text-xs text-white/70">
                 <div className="flex items-center justify-between p-2.5 bg-black/40 rounded-lg"><span>Data export (customer request)</span><GBtn variant="ghost" className="!text-xs !py-1" onClick={() => toast("Customer data exported")}>Export</GBtn></div>
                 <div className="flex items-center justify-between p-2.5 bg-black/40 rounded-lg"><span>Right to erasure</span><GBtn variant="danger" className="!text-xs !py-1" onClick={() => toast("Contact customer and delete manually from Customers page")}>Instructions</GBtn></div>
-                <div className="flex items-center justify-between p-2.5 bg-black/40 rounded-lg"><span>SMS opt-out compliance (10DLC)</span><Badge tone="green">Active via Twilio</Badge></div>
+                <div className="flex items-center justify-between p-2.5 bg-black/40 rounded-lg">
+                  <span>A2P 10DLC campaign status</span>
+                  {/* BUG FIX — this used to be a hardcoded "Active via Twilio"
+                      badge that never actually checked anything, which could
+                      give false confidence about real carrier registration
+                      status. Now reflects the real last-checked result from
+                      Settings → Integrations → Twilio (or prompts to check). */}
+                  {f.twilioA2pCampaignStatus ? (
+                    <Badge tone={f.twilioA2pCampaignStatus === "VERIFIED" ? "green" : f.twilioA2pCampaignStatus === "FAILED" ? "red" : "yellow"}>{f.twilioA2pCampaignStatus}</Badge>
+                  ) : (
+                    <Badge tone="gray">Not checked yet</Badge>
+                  )}
+                </div>
                 <div className="flex items-center justify-between p-2.5 bg-black/40 rounded-lg"><span>Stripe PCI compliance</span><Badge tone="green">Handled by Stripe</Badge></div>
               </div>
             </Glass>
@@ -1142,6 +1164,38 @@ export function SettingsModal({ open, onClose, settings, setSettings, jobs = [],
                   <div className="font-mono text-blue-400 bg-blue-950/20 px-2 py-1 rounded mt-1 break-all">{f.googleBackendUrl ? f.googleBackendUrl.replace(/\/$/, "") + "/api/sms/incoming" : "https://your-backend.railway.app/api/sms/incoming"}</div>
                   <div className="mt-1">Method: HTTP POST. Incoming messages will appear in the CRM Inbox automatically.</div>
                 </div>
+                <div className="p-3 bg-black/60 rounded-xl border border-white/5">
+                  <label className="text-[10px] text-white/50 uppercase tracking-wider">A2P 10DLC Campaign — Messaging Service SID</label>
+                  <GInput value={f.twilioMessagingServiceSid || ""} onChange={e => setF({ ...f, twilioMessagingServiceSid: e.target.value })} placeholder="MGxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" className="!text-xs mt-1" />
+                  <div className="text-[10px] text-white/40 mt-1.5">Required to check your carrier campaign registration status — find it in your Twilio Console under Messaging → Services.</div>
+                  <div className="flex items-center justify-between gap-2 mt-2">
+                    <GBtn
+                      variant="ghost"
+                      disabled={!f.twilioSid || !f.twilioToken || !f.twilioMessagingServiceSid || campaignChecking}
+                      onClick={async () => {
+                        setCampaignChecking(true);
+                        try {
+                          const result = await checkA2pCampaignStatus(f as any);
+                          setF({ ...f, twilioA2pCampaignStatus: result.campaignStatus || (result.registered ? "UNKNOWN" : "NOT_REGISTERED"), twilioA2pCampaignCheckedAt: Date.now() });
+                          toast(result.campaignStatus ? `Campaign status: ${result.campaignStatus}` : "No A2P campaign found for this Messaging Service", result.campaignStatus === "VERIFIED" ? "green" : "yellow");
+                        } catch (e: any) {
+                          toast("Campaign check failed — " + (e?.message || "unknown error"), "red");
+                        } finally {
+                          setCampaignChecking(false);
+                        }
+                      }}
+                      className="!text-xs !py-1.5"
+                    >
+                      {campaignChecking ? "Checking…" : "Check Campaign Status"}
+                    </GBtn>
+                    {f.twilioA2pCampaignStatus && (
+                      <div className="text-right">
+                        <Badge tone={f.twilioA2pCampaignStatus === "VERIFIED" ? "green" : f.twilioA2pCampaignStatus === "FAILED" ? "red" : "yellow"}>{f.twilioA2pCampaignStatus}</Badge>
+                        {f.twilioA2pCampaignCheckedAt && <div className="text-[9px] text-white/30 mt-0.5">Checked {new Date(f.twilioA2pCampaignCheckedAt).toLocaleString()}</div>}
+                      </div>
+                    )}
+                  </div>
+                </div>
               </div>
             </Glass>
 
@@ -1391,6 +1445,56 @@ export function SettingsModal({ open, onClose, settings, setSettings, jobs = [],
               }} className="w-full !text-xs">
                 <Download size={12} className="inline mr-1.5" />Export & Delete Jobs Older Than 30 Days
               </GBtn>
+            </Glass>
+
+            <Glass className="p-3 !bg-red-950/10 !border-red-700/30 space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2 text-xs"><AlertTriangle size={12} className="text-red-400" /><span className="font-semibold">Photo/Video Auto-Deletion</span></div>
+                <button
+                  onClick={() => setF({ ...f, mediaRetentionDays: f.mediaRetentionDays ? 0 : 30 })}
+                  className={"flex-shrink-0 w-11 h-6 rounded-full transition relative " + (f.mediaRetentionDays ? "bg-red-600" : "bg-white/10")}
+                >
+                  <div className={"absolute top-1 w-4 h-4 rounded-full bg-white transition " + (f.mediaRetentionDays ? "left-6" : "left-1")} />
+                </button>
+              </div>
+              <div className="text-[10px] text-white/50">
+                When enabled, job photos/videos (not signatures) are permanently deleted from completed jobs older than the period below. This runs automatically in the background — no export step, no per-run confirmation. Disabled by default; nothing is deleted unless you turn this on.
+              </div>
+              {!!f.mediaRetentionDays && (
+                <div className="flex items-center gap-2 text-xs pt-1">
+                  <span className="text-white/60">Delete after</span>
+                  <GInput type="number" min="1" step="1" value={f.mediaRetentionDays} onChange={e => setF({ ...f, mediaRetentionDays: Math.max(1, Number(e.target.value) || 30) })} className="!w-20 !text-xs" />
+                  <span className="text-white/60">days</span>
+                </div>
+              )}
+            </Glass>
+
+            <Glass className="p-3 !bg-blue-950/10 !border-blue-700/30 space-y-2">
+              <div className="flex items-center gap-2 text-xs"><Download size={12} className="text-blue-400" /><span className="font-semibold">Migrate Old Photos/Videos to Storage</span></div>
+              <div className="text-[10px] text-white/50">
+                Jobs captured before Storage support was added still have their photos, videos, and signatures stored as raw data directly in the database — the main driver of database size and Supabase egress usage. This one-time migration uploads that old media to Storage and removes the inline copy from the database, with no visible change to how photos display. Safe to run repeatedly — already-migrated jobs are skipped automatically.
+              </div>
+              {mediaBackfillProgress?.running ? (
+                <div className="text-[11px] text-blue-300">Migrating job {mediaBackfillProgress.done} of {mediaBackfillProgress.total}…</div>
+              ) : (
+                <GBtn variant="ghost" onClick={async () => {
+                  setMediaBackfillProgress({ running: true, done: 0, total: 0 });
+                  try {
+                    const result = await backfillJobMediaToStorage(jobs, setJobs, (done, total) => setMediaBackfillProgress({ running: true, done, total }));
+                    if (result.jobsScanned === 0) {
+                      toast("No old inline photos/videos found — nothing to migrate ✓");
+                    } else {
+                      toast(`Migrated ${result.itemsMigrated} file(s) across ${result.jobsUpdated} job(s), freed ~${(result.bytesFreedApprox / 1024 / 1024).toFixed(1)}MB` + (result.itemsFailed > 0 ? ` — ${result.itemsFailed} item(s) failed and were left as-is (retry by running this again)` : " ✓"));
+                    }
+                  } catch (e: any) {
+                    toast("Migration failed: " + (e?.message || "unknown error"), "red");
+                  } finally {
+                    setMediaBackfillProgress(null);
+                  }
+                }} className="w-full !text-xs">
+                  <Download size={12} className="inline mr-1.5" />Start Migration
+                </GBtn>
+              )}
             </Glass>
 
             <h4 className="font-semibold text-sm pt-2">Data Export & Backup</h4>

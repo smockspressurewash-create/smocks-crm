@@ -44,7 +44,7 @@ import { TimeframeSelector } from "./TimeframeSelector";
 import { DocumentVault } from "./DocumentVault";
 import { crewIncludesEmployee } from "../pages/EmployeePortal";
 
-export function CustomerDetail({ customer: c, onClose, onDelete, estimates = [], jobs = [], employees = [], timeline = {}, setTimeline = (..._args: any[]) => {}, settings = {} as any, toast = (..._args: any[]) => {} }) {
+export function CustomerDetail({ customer: c, onClose, onDelete, onEdit, estimates = [], jobs = [], employees = [], timeline = {}, setTimeline = (..._args: any[]) => {}, settings = {} as any, toast = (..._args: any[]) => {} }) {
   const [tab, setTab] = useState("info");
   const [note, setNote] = useState("");
   const [noteType, setNoteType] = useState("note");
@@ -106,6 +106,7 @@ export function CustomerDetail({ customer: c, onClose, onDelete, estimates = [],
           <div className="flex-1 min-w-0"><div className="font-medium truncate">{j.address?.split(",")[0]}</div><div className="text-white/40">{j.scheduledDate} · {fmt(j.amount)}</div></div>
           <div className="flex items-center gap-1.5 flex-shrink-0">
             {j.photos?.filter((p: any) => p.url || p.dataUrl).length > 0 && <span className="text-[10px] text-white/40">{j.photos.filter((p: any) => p.url || p.dataUrl).length}📸</span>}
+            {(j as any).videos?.filter((v: any) => v.url || v.dataUrl).length > 0 && <span className="text-[10px] text-white/40">{(j as any).videos.filter((v: any) => v.url || v.dataUrl).length}🎥</span>}
             <Badge tone={j.status==="completed"?"green":j.status==="scheduled"?"blue":"gray"}>{j.status}</Badge>
             <ChevronRight size={12} className={"text-white/30 transition-transform " + (isOpen ? "rotate-90" : "")} />
           </div>
@@ -158,6 +159,20 @@ export function CustomerDetail({ customer: c, onClose, onDelete, estimates = [],
                 </div>
               </div>
             )}
+            {/* BUG FIX — job.videos was never rendered here at all (photos,
+                checklist, and signature were, but not videos), so a video
+                captured on a job was invisible in the customer's past-job
+                detail even though it was captured/uploaded fine. */}
+            {((j as any).videos||[]).some((v: any) => v.url || v.dataUrl) && (
+              <div>
+                <div className="text-[10px] text-white/40 uppercase tracking-wider mb-1">Videos</div>
+                <div className="grid grid-cols-2 gap-1.5">
+                  {((j as any).videos||[]).filter((v: any) => v.url || v.dataUrl).map((v: any, i: number) => (
+                    <video key={i} src={mediaSrc(v.url, v.dataUrl)} controls className="w-full rounded-lg bg-black/60" />
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -182,19 +197,30 @@ export function CustomerDetail({ customer: c, onClose, onDelete, estimates = [],
             <div className="text-right">
               <div className="text-xs text-white/50 uppercase tracking-wider">Lifetime</div>
               <div className="text-2xl font-bold text-red-400">{fmt(c.totalSpent)}</div>
-              {onDelete && (
-                <button
-                  onClick={() => {
-                    if (window.confirm(`Delete ${c.firstName} ${c.lastName}? This cannot be undone.`)) {
-                      onDelete(c);
-                    }
-                  }}
-                  title="Delete customer"
-                  className="mt-2 p-1.5 rounded-lg border border-red-900/40 bg-red-950/20 text-red-400/70 hover:text-red-300 hover:bg-red-950/40 transition"
-                >
-                  <Trash2 size={13} />
-                </button>
-              )}
+              <div className="flex items-center gap-1.5 justify-end mt-2">
+                {onEdit && (
+                  <button
+                    onClick={() => onEdit(c)}
+                    title="Edit customer"
+                    className="p-1.5 rounded-lg border border-white/10 bg-white/5 text-white/60 hover:text-white hover:bg-white/10 transition"
+                  >
+                    <Edit size={13} />
+                  </button>
+                )}
+                {onDelete && (
+                  <button
+                    onClick={() => {
+                      if (window.confirm(`Delete ${c.firstName} ${c.lastName}? This cannot be undone.`)) {
+                        onDelete(c);
+                      }
+                    }}
+                    title="Delete customer"
+                    className="p-1.5 rounded-lg border border-red-900/40 bg-red-950/20 text-red-400/70 hover:text-red-300 hover:bg-red-950/40 transition"
+                  >
+                    <Trash2 size={13} />
+                  </button>
+                )}
+              </div>
             </div>
           </div>
 

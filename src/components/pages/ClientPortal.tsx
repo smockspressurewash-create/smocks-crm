@@ -94,6 +94,10 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
   const [sigData, setSigData] = useState(null);
   const [tip, setTip] = useState(0);
   const [customTip, setCustomTip] = useState("");
+  // FEATURE — legal disclaimer/T&Cs checkbox at the payment step (previously
+  // absent entirely; the only agreement language in the flow was on the
+  // signature step, about the estimate total, not payment terms).
+  const [agreedToPaymentTerms, setAgreedToPaymentTerms] = useState(false);
   // FIX 14 — promo code (business coupon, Settings → Promotions) or a referral
   // code (another customer's referralCode) entered at checkout. Only one of
   // "promotion" | "referral" applies at a time — whichever the code matches.
@@ -645,13 +649,33 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
                 </div>
               </Glass>
 
+              {/* Legal disclaimer / T&Cs — gates the Pay button below. */}
+              <label className="flex items-start gap-2.5 p-3 rounded-xl bg-white/5 border border-white/10 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={agreedToPaymentTerms}
+                  onChange={ev => setAgreedToPaymentTerms(ev.target.checked)}
+                  className="mt-0.5 flex-shrink-0"
+                />
+                <span className="text-[11px] text-white/60 leading-relaxed">
+                  I authorize {companyName} to charge {fmt(totalWithTip)} to my payment method today{payType === "deposit" ? `, with the remaining balance of ${fmt(depositBalanceAmt)} due after service is completed` : ""}. I understand this charge is non-refundable once service has been rendered, and that {companyName} may retain job photos/videos as service records
+                  {e?.terms ? <> — see full terms below.</> : "."}
+                  {e?.terms && <div className="mt-1.5 text-white/40 whitespace-pre-wrap">{e.terms}</div>}
+                </span>
+              </label>
+
               {/* Stripe payment — real Payment Element if keys are configured, otherwise a connect prompt */}
               {settings?.stripePublishableKey && settings?.stripeSecretKeyEnc ? (
                 <div className="space-y-2">
-                  <button onClick={() => setShowStripeModal(true)} className="w-full py-4 bg-gradient-to-r from-[#635BFF] to-[#4F46E5] text-white font-bold rounded-xl shadow-lg hover:from-[#7C74FF] hover:to-[#6056F5] transition-all flex items-center justify-center gap-2">
+                  <button
+                    onClick={() => setShowStripeModal(true)}
+                    disabled={!agreedToPaymentTerms}
+                    className="w-full py-4 bg-gradient-to-r from-[#635BFF] to-[#4F46E5] text-white font-bold rounded-xl shadow-lg hover:from-[#7C74FF] hover:to-[#6056F5] transition-all flex items-center justify-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:from-[#635BFF] disabled:hover:to-[#4F46E5]"
+                  >
                     <CreditCard size={18} />
                     Pay {fmt(totalWithTip)} · Powered by Stripe
                   </button>
+                  {!agreedToPaymentTerms && <div className="text-center text-[10px] text-yellow-400/80">Check the box above to enable payment</div>}
                   <div className="text-center text-[10px] text-white/30">🔒 Your payment is secured by Stripe · 256-bit SSL</div>
                 </div>
               ) : (

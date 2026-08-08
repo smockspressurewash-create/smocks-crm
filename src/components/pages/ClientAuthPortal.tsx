@@ -39,6 +39,12 @@ export function ClientAuthPortal({
   const [forgotSent, setForgotSent] = useState(false);
   const [tab, setTab] = useState<"invoices" | "jobs" | "referrals" | "payment">("invoices");
   const [payingInv, setPayingInv] = useState<Estimate | null>(null);
+  // FEATURE — legal disclaimer/T&Cs gate before the Stripe modal opens (this
+  // portal jumps straight from "Pay Now" to the card form with no review
+  // step, unlike ClientPortal.tsx's estimate-payment flow, so the checkbox
+  // lives here as its own intermediate step instead).
+  const [payDisclaimerInv, setPayDisclaimerInv] = useState<Estimate | null>(null);
+  const [agreedInvoiceTerms, setAgreedInvoiceTerms] = useState(false);
   const [showSaveCard, setShowSaveCard] = useState(false);
 
   useEffect(() => {
@@ -265,10 +271,28 @@ export function ClientAuthPortal({
                   <div className="font-semibold">{fmt(inv.total)}</div>
                   <div className="text-xs text-white/40">{inv.invoicedAt || inv.createdAt}</div>
                 </div>
-                <GBtn onClick={() => setPayingInv(inv)} className="!text-xs !py-2"><CreditCard size={13} className="inline mr-1" />Pay Now</GBtn>
+                <GBtn onClick={() => { setAgreedInvoiceTerms(false); setPayDisclaimerInv(inv); }} className="!text-xs !py-2"><CreditCard size={13} className="inline mr-1" />Pay Now</GBtn>
               </Glass>
             ))}
             {outstanding.length === 0 && <div className="text-center py-6 text-white/30 text-sm">No outstanding invoices 🎉</div>}
+
+            {payDisclaimerInv && (
+              <Glass className="p-4 space-y-3 !border-red-700/40">
+                <div className="text-sm font-semibold">Confirm payment of {fmt(payDisclaimerInv.total)}</div>
+                <label className="flex items-start gap-2.5 cursor-pointer">
+                  <input type="checkbox" checked={agreedInvoiceTerms} onChange={ev => setAgreedInvoiceTerms(ev.target.checked)} className="mt-0.5 flex-shrink-0" />
+                  <span className="text-[11px] text-white/60 leading-relaxed">
+                    I authorize {companyName} to charge {fmt(payDisclaimerInv.total)} to my payment method. I understand this charge is non-refundable once service has been rendered, and that {companyName} may retain job photos/videos as service records
+                    {payDisclaimerInv.terms ? <> — see full terms below.</> : "."}
+                    {payDisclaimerInv.terms && <div className="mt-1.5 text-white/40 whitespace-pre-wrap">{payDisclaimerInv.terms}</div>}
+                  </span>
+                </label>
+                <div className="flex gap-2">
+                  <GBtn variant="ghost" onClick={() => setPayDisclaimerInv(null)} className="!text-xs">Cancel</GBtn>
+                  <GBtn onClick={() => { setPayingInv(payDisclaimerInv); setPayDisclaimerInv(null); }} disabled={!agreedInvoiceTerms} className="!text-xs flex-1">Continue to Payment</GBtn>
+                </div>
+              </Glass>
+            )}
 
             <div className="text-xs text-white/40 uppercase tracking-wider pt-2">Paid</div>
             {paid.length === 0 && <div className="text-center py-6 text-white/30 text-sm">No paid invoices yet</div>}

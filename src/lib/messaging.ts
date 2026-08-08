@@ -18,6 +18,15 @@ export interface TwilioSettings {
   twilioPhone?: string;
   twilioBackendUrl?: string;
   myPhone?: string;
+  // FEATURE — A2P 10DLC campaign compliance ("ATP checking"). Required to
+  // check campaign status — Twilio's compliance API is keyed off a Messaging
+  // Service, not a raw From number.
+  twilioMessagingServiceSid?: string;
+  // Cached result of the last status check (see checkA2pCampaignStatus) so
+  // the automation batch-approval gate doesn't have to hit Twilio's API on
+  // every single gather tick — refreshed on-demand from Settings.
+  twilioA2pCampaignStatus?: string;
+  twilioA2pCampaignCheckedAt?: number;
 }
 
 export interface EmailSettings {}
@@ -107,6 +116,33 @@ export const postToBuffer = async (
   if (data?.createPost?.message) throw new Error(data.createPost.message);
 };
 
+// ─── SMS opt-out enforcement ────────────────────────────────────────────────
+// Twilio compliance gap (found in audit) — Customer.smsOptOut has existed on
+// the type for a while and useAutomationEngine's sendOne already checked it,
+// but NOTHING ever set it to true, so it never actually blocked anything, on
+// any send path. twilioSend() has no access to the live `customers` React
+// state (it's a plain lib function, not a hook) and no reliable way to look
+// one up server-side (phone numbers aren't stored in a normalized format —
+// a Supabase .eq() query would miss formatting variants like "(717) 555-0100"
+// vs "+17175550100"). Instead, App.tsx calls setOptedOutPhones(customers)
+// once whenever the live customers array changes, and every twilioSend() call
+// anywhere in the app — automations, manual Inbox replies, OTW/Running Late/
+// invoice texts, campaigns, review requests — checks this same in-memory set
+// before sending, with zero changes needed at any of the ~45 call sites.
+let optedOutPhoneDigits = new Set<string>();
+const normalizePhoneDigits = (p?: string | null) => (p || "").replace(/\D/g, "");
+
+export const setOptedOutPhones = (customers: { phone?: string; smsOptOut?: boolean }[]): void => {
+  optedOutPhoneDigits = new Set(
+    customers.filter(c => c.smsOptOut && c.phone).map(c => normalizePhoneDigits(c.phone))
+  );
+};
+
+export const isPhoneOptedOut = (phone: string): boolean => {
+  const digits = normalizePhoneDigits(phone);
+  return !!digits && optedOutPhoneDigits.has(digits);
+};
+
 // ─── Twilio SMS / WhatsApp ────────────────────────────────────────────────────
 
 export const twilioSend = async (
@@ -115,6 +151,9 @@ export const twilioSend = async (
   body: string,
   channel: "sms" | "whatsapp" = "sms"
 ): Promise<void> => {
+  if (channel === "sms" && isPhoneOptedOut(to)) {
+    throw new Error("This contact has opted out of text messages (replied STOP) — SMS blocked.");
+  }
   const { twilioSid, twilioToken, twilioBackendUrl } = settings;
   const twilioPhone = settings.twilioFrom || settings.twilioPhone;
   if (!twilioSid || !twilioToken || !twilioPhone) {
@@ -146,6 +185,44 @@ export const twilioSend = async (
     console.error("[Twilio] send failed:", data?.error || res.status);
     throw new Error(data?.error || `Twilio error ${res.status}`);
   }
+};
+
+// ─── A2P 10DLC campaign compliance status ("ATP checking") ─────────────────
+// Queries Twilio's Messaging Compliance API (via the same-origin proxy, same
+// CORS reason as twilioSend above) for the current A2P campaign status
+// attached to a Messaging Service. Campaign statuses Twilio uses: "VERIFIED"
+// (approved, can send), "IN_PROGRESS"/"PENDING" (still under carrier review),
+// "FAILED" (rejected — needs re-registration). Requires a Messaging Service
+// SID (settings.twilioMessagingServiceSid) — a raw From phone number alone
+// has no campaign resource to check.
+export interface A2pCampaignStatus {
+  registered: boolean;
+  campaignStatus: string | null;
+  campaignId: string | null;
+}
+
+export const checkA2pCampaignStatus = async (settings: TwilioSettings): Promise<A2pCampaignStatus> => {
+  const { twilioSid, twilioToken, twilioMessagingServiceSid, twilioBackendUrl } = settings;
+  if (!twilioSid || !twilioToken || !twilioMessagingServiceSid) {
+    throw new Error("Add your Twilio Account SID, Auth Token, and Messaging Service SID in Settings → Integrations first.");
+  }
+  const endpoint = twilioBackendUrl ? `${twilioBackendUrl}/campaign-status` : "/api/twilio-campaign-status";
+  const payload = twilioBackendUrl
+    ? { messagingServiceSid: twilioMessagingServiceSid }
+    : { sid: twilioSid, token: twilioToken, messagingServiceSid: twilioMessagingServiceSid };
+  const res = await fetch(endpoint, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  const data = await res.json().catch(() => ({} as any));
+  if (!res.ok) throw new Error(data?.error || `Twilio error ${res.status}`);
+  // The exact shape of Twilio's real response hasn't been verified live from
+  // this codebase — always log the untouched payload so the real shape is
+  // visible in devtools the first time this runs against a live account, in
+  // case registered/campaignStatus below parsed it wrong.
+  console.log("[Twilio A2P] raw campaign status response:", data.raw ?? data);
+  return { registered: !!data.registered, campaignStatus: data.campaignStatus || null, campaignId: data.campaignId || null };
 };
 
 // ─── Inbox sync (SMS) ─────────────────────────────────────────────────────────
@@ -238,11 +315,27 @@ export const pollTwilioIncoming = async (
 
 // ─── Email via Gmail API ──────────────────────────────────────────────────────
 
+// BUG FIX — RFC 2822 headers must be ASCII. Every Subject line in this app
+// that includes a non-ASCII character (most commonly an em-dash "—", e.g.
+// "Job completed — Luke Knight") was placed directly in the raw MIME header
+// as literal UTF-8 bytes with no encoding declaration — headers only get a
+// Content-Type/charset for the BODY, never for their own bytes. Receiving
+// clients then reinterpreted those UTF-8 bytes as Latin-1/Windows-1252,
+// producing exactly the "Ã¢Â€Â”" mangling reported. RFC 2047 encoded-word
+// syntax (=?UTF-8?B?...?=) is the correct way to put non-ASCII text in a
+// header; pure-ASCII subjects are left untouched (encoding them is legal
+// but pointless noise).
+const encodeMimeSubject = (subject: string): string => {
+  // eslint-disable-next-line no-control-regex
+  if (/^[\x00-\x7F]*$/.test(subject)) return subject;
+  return `=?UTF-8?B?${btoa(unescape(encodeURIComponent(subject)))}?=`;
+};
+
 const sendGmailRaw = async (googleProviderToken: string, fromEmail: string, to: string, subject: string, html: string): Promise<Response> => {
   const mime = [
     `From: ${fromEmail}`,
     `To: ${to}`,
-    `Subject: ${subject}`,
+    `Subject: ${encodeMimeSubject(subject)}`,
     `MIME-Version: 1.0`,
     `Content-Type: text/html; charset=utf-8`,
     ``,
@@ -502,10 +595,20 @@ export const sendOwnerGmailOnly = async (
   }
 
   console.log("[GoogleConnect] sendOwnerGmailOnly — token source:", tokenSource);
-  if (!providerToken || !email) {
+  // BUG FIX — this used to also require `email` (the From address) before
+  // attempting a send, but `email` is decoded from the OAuth JWT and can be
+  // legitimately absent (decode failure, or a device that only ever got the
+  // token via the cross-device app_settings mirror, which historically
+  // didn't always carry an email alongside it) even though `providerToken`
+  // is genuinely valid — Settings/Workspace pages only check for a token,
+  // so this stricter check made a "Connected" account still fail to send.
+  // `fromEmail` is only used to build the MIME `From:` header — Gmail's
+  // send API sends as the authenticated token's own account regardless of
+  // what that header says, so a missing email is safe to fall back on.
+  if (!providerToken) {
     throw new Error("Gmail not connected — connect Google in Settings → Integrations to send email.");
   }
-  await sendViaGmail(providerToken, email, to, subject, html, {
+  await sendViaGmail(providerToken, email || settings.googleEmail || "", to, subject, html, {
     refreshToken,
     tokenExpiresAt,
     backendUrl: settings.googleBackendUrl,
@@ -568,10 +671,13 @@ export const sendEmail = async (
     tokenExpiresAt = settings.googleTokenExpiresAt;
   }
 
-  if (!providerToken || !email) {
+  // See the matching comment in sendOwnerGmailOnly above — email (the From
+  // header) can legitimately be missing even with a fully valid token; only
+  // the token itself is required to actually send.
+  if (!providerToken) {
     throw new Error("Gmail not connected — connect Google in Settings → Integrations to send email.");
   }
-  await sendViaGmail(providerToken, email, to, subj, body, {
+  await sendViaGmail(providerToken, email || settings.googleEmail || "", to, subj, body, {
     refreshToken,
     tokenExpiresAt,
     backendUrl: settings.googleBackendUrl,

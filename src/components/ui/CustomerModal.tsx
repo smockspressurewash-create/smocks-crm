@@ -44,7 +44,7 @@ import { TimeframeSelector } from "./TimeframeSelector";
 import { AddressAutocomplete } from "./AddressAutocomplete";
 
 export function CustomerModal({ open, onClose, data, onSave, mapsKey = "", customers = [] }: { open?: any; onClose?: any; data?: any; onSave?: any; mapsKey?: string; customers?: any[] }) {
-  const blank = { firstName: "", lastName: "", email: "", phone: "", address: "", notes: "", gateCode: "", hasDog: false, dogName: "", sensitivePlants: "", leadSource: "", tags: [], sqFootage: "", propertyNotes: "", customFields: [], addresses: [] as CustomerAddress[] };
+  const blank = { firstName: "", lastName: "", email: "", phone: "", address: "", notes: "", gateCode: "", hasDog: false, dogName: "", sensitivePlants: "", leadSource: "", tags: [], folder: "", sqFootage: "", propertyNotes: "", customFields: [], addresses: [] as CustomerAddress[] };
   const [addAddr, setAddAddr] = useState(false);
   const [addrForm, setAddrForm] = useState<CustomerAddress>({ id: "", label: "", street: "", city: "", state: "", zip: "", propertyType: "residential", sqFootage: undefined, notes: "" });
   const [f, setF] = useState(blank);
@@ -101,6 +101,19 @@ export function CustomerModal({ open, onClose, data, onSave, mapsKey = "", custo
             <div className="flex gap-1 flex-wrap">
               {availTags.map(t => <button key={t} type="button" onClick={() => setF({ ...f, tags: (f.tags || []).includes(t) ? f.tags.filter(x => x !== t) : [...(f.tags || []), t] })} className={"text-[9px] px-1.5 py-0.5 rounded-full border transition " + ((f.tags || []).includes(t) ? "bg-red-600/30 border-red-500/50 text-red-200" : "bg-white/5 border-white/10 text-white/50 hover:text-white")}>{t}</button>)}
             </div>
+          </div>
+          <div>
+            <label className="text-xs text-white/60 mb-1 block">Folder</label>
+            <GInput
+              value={(f as any).folder || ""}
+              onChange={e => setF({ ...(f as any), folder: e.target.value } as any)}
+              placeholder="e.g. VIP, Commercial, Referral Partners…"
+              list="customer-folder-options"
+              className="!text-xs"
+            />
+            <datalist id="customer-folder-options">
+              {Array.from(new Set(customers.map((c: any) => c.folder).filter(Boolean))).map((folder: any) => <option key={folder} value={folder} />)}
+            </datalist>
           </div>
         </div>
 

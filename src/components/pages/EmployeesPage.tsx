@@ -196,9 +196,32 @@ function PayrollCalendar({ employees }: { employees: any[] }) {
   );
 }
 
-export function EmployeesPage({ employees = [], setEmployees, jobs = [], customers = [], settings = {} as any, toast = (_msg: string, _tone?: string) => {}, autoOpenManagerInvite = false, onAutoOpenManagerInviteConsumed }: { employees?: any[]; setEmployees: any; jobs?: any[]; customers?: any[]; settings?: any; toast?: any; autoOpenManagerInvite?: boolean; onAutoOpenManagerInviteConsumed?: () => void }) {
+export function EmployeesPage({ employees = [], setEmployees, jobs = [], setJobs = (() => {}) as any, customers = [], settings = {} as any, toast = (_msg: string, _tone?: string) => {}, autoOpenManagerInvite = false, onAutoOpenManagerInviteConsumed, initialView, onInitialViewConsumed }: { employees?: any[]; setEmployees: any; jobs?: any[]; setJobs?: any; customers?: any[]; settings?: any; toast?: any; autoOpenManagerInvite?: boolean; onAutoOpenManagerInviteConsumed?: () => void; initialView?: "list" | "hours" | "payroll"; onInitialViewConsumed?: () => void }) {
   const [modal, setModal] = useState({ open: false, data: null });
   const [view, setView] = useState("list"); // list | hours | payroll
+  // Hours tab — which employee's per-shift/per-job paid/unpaid breakdown is
+  // currently expanded (owner request: "paid/unpaid status per shift not
+  // displayed" — the table itself only showed aggregate hours).
+  const [expandedHoursEmpId, setExpandedHoursEmpId] = useState<string | null>(null);
+  // FEATURE — owner-side view/approve for employee-submitted mileage
+  // (mileage_logs table, migration 0023; employee-side submit form lives in
+  // EmployeePortal.tsx's Pay tab).
+  const [mileageLogs, setMileageLogs] = useState<any[]>([]);
+  useEffect(() => {
+    if (view !== "mileage") return;
+    (async () => {
+      try {
+        const { data, error } = await (supabase as any).from("mileage_logs").select("*").order("date", { ascending: false }).limit(200);
+        if (!error && Array.isArray(data)) setMileageLogs(data);
+      } catch { /* table may not exist yet */ }
+    })();
+  }, [view]);
+  const reviewMileageLog = (id: string, status: "approved" | "denied") => {
+    setMileageLogs(prev => prev.map(m => m.id === id ? { ...m, status } : m));
+    (supabase as any).from("mileage_logs").update({ status, reviewed_at: new Date().toISOString() }).eq("id", id)
+      .then((r: any) => { if (r?.error) toast?.("Couldn't save — " + r.error.message, "red"); else toast?.(status === "approved" ? "Mileage approved ✓" : "Mileage denied", "green"); })
+      .catch((e: any) => toast?.("Couldn't save — " + (e?.message || "unknown error"), "red"));
+  };
   const [payPeriodStart, setPayPeriodStart] = usePersistent("smocks.payPeriodStart", (() => { const d = new Date(); d.setDate(1); return d.toISOString().slice(0,10); })());
   const [payPeriodEnd, setPayPeriodEnd] = usePersistent("smocks.payPeriodEnd", today());
   const [f, setF] = useState<any>({ id: "", firstName: "", lastName: "", role: "Technician", status: "active", hourlyRate: 18, phone: "", email: "", startDate: today(), emergencyContact: "", notes: "", permissions: { ...DEFAULT_PERMS } });
@@ -292,6 +315,15 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], custome
     setShowInvitePerms(false);
     onAutoOpenManagerInviteConsumed?.();
   }, [autoOpenManagerInvite]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Lets a clicked desktop notification (clock-out, report-problem) land the
+  // owner directly on the Hours tab instead of just opening this page on
+  // whatever tab it last happened to be on.
+  useEffect(() => {
+    if (!initialView) return;
+    setView(initialView);
+    onInitialViewConsumed?.();
+  }, [initialView]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Employee edits (pay rate, paidPeriods, permissions, etc.) have no bulk
   // autosave the way `jobs` does — without an immediate Supabase write here,
@@ -499,12 +531,80 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], custome
       .catch((e: any) => { console.error("[MarkPaid] threw:", e?.message); toast?.("Failed to save pay status — " + (e?.message || "unknown error"), "red"); });
   };
 
+  // FEATURE — per-JOB paid/unpaid marking (owner request: "no job dollar
+  // amounts, ... owner can't mark jobs as paid" — the period/day toggles
+  // above don't cover marking one specific job's labor cost). Same
+  // safe-column-retry shape as markPeriodPaidFor, keyed by job id instead of
+  // a period/day string, on the new `paidJobs` column (migration 0022).
+  const markJobPaidFor = (emp: any, jobId: string, nextStatus: "paid" | "unpaid") => {
+    const next = { ...((emp as any).paidJobs || {}), [jobId]: nextStatus };
+    setEmployees((prev: any[]) => prev.map(x => x.id === emp.id ? { ...x, paidJobs: next } : x));
+    (supabase as any).from("employees").update({ paidJobs: next }).eq("id", emp.id)
+      .then((r: any) => {
+        if (r?.error) {
+          console.error("[MarkJobPaid] failed:", r.error.message, "— run supabase/migrations/0022_employee_paid_jobs.sql");
+          toast?.("Saved locally, but couldn't sync — " + r.error.message, "red");
+        } else {
+          toast?.(nextStatus === "paid" ? "Job marked as paid ✓" : "Job marked as unpaid", "green");
+        }
+      })
+      .catch((e: any) => toast?.("Saved locally, but couldn't sync — " + (e?.message || "unknown error"), "red"));
+  };
+
+  // Owner-editable hours per job, reachable directly from Payroll/Hours
+  // instead of only via JobDetailModal (which isn't mounted on this page at
+  // all — see the per-job breakdown rows below).
+  const updateJobHours = (jobId: string, nextHours: number) => {
+    setJobs((prev: any[]) => prev.map(j => j.id === jobId ? { ...j, loggedHours: nextHours } : j));
+    (supabase as any).from("jobs").update({ loggedHours: nextHours }).eq("id", jobId)
+      .then((r: any) => { if (r?.error) toast?.("Saved locally, but couldn't sync hours — " + r.error.message, "red"); else toast?.("Hours updated ✓", "green"); })
+      .catch((e: any) => toast?.("Saved locally, but couldn't sync hours — " + (e?.message || "unknown error"), "red"));
+  };
+
+  // Shared per-job breakdown row — used in both the Payroll tab card and the
+  // Hours tab's expandable row, so "owner edit hours" and "mark job paid"
+  // work identically wherever they're used. A plain function returning JSX,
+  // NOT a component defined inline (see EmployeePortal.tsx's JobDetailView
+  // comment / CLAUDE.md's "BUG 4" note) — a nested component definition gets
+  // a new function identity every render, which React treats as a different
+  // element type and remounts, causing flicker on a page that re-renders on
+  // every jobs/employees poll.
+  const renderJobBreakdownRow = (emp: any, j: any) => {
+    const rate = getEffectiveRate(emp, j);
+    const jobPay = Number(j.loggedHours || 0) * rate;
+    const paidJobs: Record<string, "paid" | "unpaid"> = (emp as any).paidJobs || {};
+    const status = paidJobs[j.id] || "unpaid";
+    return (
+      <div key={j.id} className="flex items-center gap-2 px-2.5 py-1.5 bg-black/30 rounded-lg text-[11px]">
+        <div className="flex-1 min-w-0 truncate text-white/70">{j.scheduledDate} · {j.address?.split(",")[0] || "—"}</div>
+        <input
+          type="number" min="0" step="0.25"
+          defaultValue={j.loggedHours || 0}
+          key={j.id + ":" + j.loggedHours}
+          onBlur={e => {
+            const next = Math.max(0, Number(e.target.value) || 0);
+            if (next !== (j.loggedHours || 0)) updateJobHours(j.id, next);
+          }}
+          className="w-14 text-center bg-black/40 border border-white/10 rounded-md text-white/80 focus:border-red-500/60 focus:outline-none"
+        />
+        <span className="text-white/40 w-1">h</span>
+        <span className="text-white/60 w-16 text-right">{fmt(jobPay)}</span>
+        <button
+          onClick={() => markJobPaidFor(emp, j.id, status === "paid" ? "unpaid" : "paid")}
+          className={"text-[9px] font-bold px-2 py-1 rounded-full flex-shrink-0 transition " + (status === "paid" ? "bg-green-700 text-white" : "bg-yellow-950/40 border border-yellow-700/40 text-yellow-300 hover:bg-yellow-900/40")}
+        >
+          {status === "paid" ? "✓ Paid" : "Mark Paid"}
+        </button>
+      </div>
+    );
+  };
+
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div className="flex items-center gap-3">
           <div className="flex gap-1 bg-black/40 border border-red-900/30 rounded-xl p-1">
-            {["list","hours","payroll"].map(v => <button key={v} onClick={() => setView(v)} className={"px-3 py-1.5 rounded-lg text-xs font-semibold capitalize transition " + (view === v ? "bg-gradient-to-r from-red-600 to-red-800 text-white" : "text-white/50 hover:text-white")}>{v === "hours" ? "⏱ Hours" : v === "payroll" ? "💰 Payroll" : "👥 Team"}</button>)}
+            {["list","hours","payroll","mileage"].map(v => <button key={v} onClick={() => setView(v)} className={"px-3 py-1.5 rounded-lg text-xs font-semibold capitalize transition " + (view === v ? "bg-gradient-to-r from-red-600 to-red-800 text-white" : "text-white/50 hover:text-white")}>{v === "hours" ? "⏱ Hours" : v === "payroll" ? "💰 Payroll" : v === "mileage" ? "🚗 Mileage" : "👥 Team"}</button>)}
           </div>
           <div className="text-xs text-white/50">{employees.filter(e => e.status !== "inactive").length} active</div>
         </div>
@@ -585,6 +685,7 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], custome
               <th className="text-right px-4 py-3 text-xs uppercase tracking-wider text-white/60">Period Hours</th>
               <th className="text-right px-4 py-3 text-xs uppercase tracking-wider text-white/60">Rate</th>
               <th className="text-right px-4 py-3 text-xs uppercase tracking-wider text-white/60">Est. Pay</th>
+              <th className="text-right px-4 py-3 text-xs uppercase tracking-wider text-white/60"></th>
             </tr></thead>
             <tbody>
               {employees.filter(e => e.status !== "inactive").map(e => {
@@ -614,7 +715,9 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], custome
                 const allCompleted = jobs.filter((j: any) => crewIncludesEmployee(j.crew, e.id, (e as any).user_id) && j.status === "completed");
                 const hoursToday = allCompleted.filter((j: any) => j.scheduledDate === todayStr).reduce((s: number, j: any) => s + Number(j.loggedHours || j.duration || 0), 0);
                 const hoursWeek = allCompleted.filter((j: any) => j.scheduledDate >= weekStart).reduce((s: number, j: any) => s + Number(j.loggedHours || j.duration || 0), 0);
-                return <tr key={e.id} className="border-b border-red-900/10 hover:bg-white/5">
+                const expanded = expandedHoursEmpId === e.id;
+                return <React.Fragment key={e.id}>
+                <tr className="border-b border-red-900/10 hover:bg-white/5">
                   <td className="px-4 py-3"><div className="flex items-center gap-2"><div className="w-7 h-7 rounded-full bg-gradient-to-br from-red-600 to-red-900 flex items-center justify-center text-xs font-bold">{e.firstName?.[0]}</div>{e.firstName} {e.lastName}{(e as any).dayClockInAt && <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" title="On the clock now" />}</div></td>
                   <td className="px-4 py-3 text-right text-white/70">{hoursToday.toFixed(1)}h</td>
                   <td className="px-4 py-3 text-right text-white/70">{hoursWeek.toFixed(1)}h</td>
@@ -622,11 +725,30 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], custome
                   <td className="px-4 py-3 text-right text-white/80">{hrs.toFixed(1)}h</td>
                   <td className="px-4 py-3 text-right text-white/60">{fmt(e.hourlyRate)}/hr</td>
                   <td className="px-4 py-3 text-right font-bold text-red-400">{fmt(cost)}</td>
-                </tr>;
+                  <td className="px-2 py-3 text-right">
+                    {empJobs.length > 0 && (
+                      <button onClick={() => setExpandedHoursEmpId(expanded ? null : e.id)} className="p-1 rounded-lg hover:bg-white/10 text-white/40 hover:text-white transition" title="Show paid/unpaid per shift">
+                        <ChevronRight size={14} className={"transition-transform " + (expanded ? "rotate-90" : "")} />
+                      </button>
+                    )}
+                  </td>
+                </tr>
+                {expanded && (
+                  <tr className="border-b border-red-900/10 bg-black/20">
+                    <td colSpan={8} className="px-4 py-2.5">
+                      <div className="space-y-1">
+                        <div className="text-[10px] text-white/40 uppercase tracking-wider mb-1">Paid/unpaid per shift — edit hours or mark paid</div>
+                        {empJobs.map(j => renderJobBreakdownRow(e, j))}
+                      </div>
+                    </td>
+                  </tr>
+                )}
+                </React.Fragment>;
               })}
               <tr className="bg-red-950/20 font-bold border-t border-red-900/30">
                 <td className="px-4 py-3" colSpan={6}>Total Payroll Est.</td>
                 <td className="px-4 py-3 text-right text-red-400 text-base">{fmt(totalPayroll)}</td>
+                <td></td>
               </tr>
             </tbody>
           </table>
@@ -679,7 +801,12 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], custome
                 <div className="p-2 bg-black/40 rounded-xl"><div className="text-white/50 mb-0.5">Gross</div><div className="font-bold text-red-400">{fmt(gross)}</div></div>
                 <div className="p-2 bg-black/40 rounded-xl"><div className="text-white/50 mb-0.5">FICA</div><div className="font-bold text-yellow-400">-{fmt(fica)}</div></div>
               </div>
-              {empJobs.length > 0 && <div className="mt-3 text-[10px] text-white/40">Jobs: {empJobs.map(j => j.scheduledDate).join(", ")}</div>}
+              {empJobs.length > 0 && (
+                <div className="mt-3 pt-3 border-t border-white/10 space-y-1">
+                  <div className="text-[10px] text-white/40 uppercase tracking-wider mb-1">Jobs this period — edit hours or mark paid</div>
+                  {empJobs.map(j => renderJobBreakdownRow(e, j))}
+                </div>
+              )}
               {currentPeriod.hours > 0 && (
                 <div className="mt-3 pt-3 border-t border-white/10 flex items-center justify-between gap-2">
                   <div className="text-[11px] text-white/50">Current period ({currentPeriod.start} – {currentPeriod.end}): <span className="text-white/80 font-semibold">{currentPeriod.hours}h · {fmt(currentPeriod.pay)}</span></div>
@@ -698,6 +825,49 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], custome
           <div className="text-[10px] text-white/30 mt-1">Gross · FICA employer match additional 7.65%</div>
         </Glass>
       </div>}
+
+      {view === "mileage" && (() => {
+        const empName = (id: string) => { const e = employees.find((x: any) => x.id === id); return e ? `${e.firstName} ${e.lastName}` : "Unknown"; };
+        const pending = mileageLogs.filter((m: any) => m.status === "pending");
+        const reviewed = mileageLogs.filter((m: any) => m.status !== "pending");
+        const IRS_MILEAGE_RATE = 0.67;
+        return (
+          <div className="space-y-4">
+            <div className="text-xs text-white/40">Manual entries submitted by employees from their own portal (Pay tab → Log Mileage). Approve to count toward tax/reimbursement records.</div>
+            <Glass className="overflow-hidden">
+              <div className="px-4 py-3 border-b border-red-900/30 bg-black/40 text-xs uppercase tracking-wider text-white/60">Pending Approval ({pending.length})</div>
+              {pending.length === 0 && <div className="p-6 text-center text-white/30 text-sm">Nothing pending</div>}
+              {pending.map((m: any) => (
+                <div key={m.id} className="flex items-center gap-3 px-4 py-3 border-b border-red-900/10 text-sm">
+                  <div className="flex-1 min-w-0">
+                    <div className="font-medium">{empName(m.employee_id)} · {m.date}</div>
+                    <div className="text-xs text-white/50 truncate">{m.from || "—"} → {m.to || "—"} {m.purpose ? `· ${m.purpose}` : ""}</div>
+                  </div>
+                  <div className="text-right flex-shrink-0">
+                    <div className="font-bold">{m.miles}mi</div>
+                    <div className="text-[10px] text-white/40">{fmt(Number(m.miles) * IRS_MILEAGE_RATE)}</div>
+                  </div>
+                  <div className="flex gap-1.5 flex-shrink-0">
+                    <button onClick={() => reviewMileageLog(m.id, "approved")} className="text-[10px] font-bold px-2.5 py-1.5 rounded-full bg-green-700 hover:bg-green-600 text-white transition">Approve</button>
+                    <button onClick={() => reviewMileageLog(m.id, "denied")} className="text-[10px] font-bold px-2.5 py-1.5 rounded-full bg-red-950/40 border border-red-700/40 text-red-300 hover:bg-red-900/40 transition">Deny</button>
+                  </div>
+                </div>
+              ))}
+            </Glass>
+            {reviewed.length > 0 && (
+              <Glass className="overflow-hidden">
+                <div className="px-4 py-3 border-b border-red-900/30 bg-black/40 text-xs uppercase tracking-wider text-white/60">Reviewed</div>
+                {reviewed.map((m: any) => (
+                  <div key={m.id} className="flex items-center gap-3 px-4 py-2.5 border-b border-red-900/10 text-xs">
+                    <div className="flex-1 min-w-0 text-white/60 truncate">{empName(m.employee_id)} · {m.date} · {m.from || "—"} → {m.to || "—"} · {m.miles}mi</div>
+                    <Badge tone={m.status === "approved" ? "green" : "gray"}>{m.status}</Badge>
+                  </div>
+                ))}
+              </Glass>
+            )}
+          </div>
+        );
+      })()}
 
       {/* Active invites */}
       {invites.filter(i => !i.used).length > 0 && view === "list" && (

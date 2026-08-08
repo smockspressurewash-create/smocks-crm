@@ -805,6 +805,178 @@ export const uploadJobMedia = async (blob: Blob, path: string, contentType?: str
   }
 };
 
+// FEATURE — photo/video auto-deletion (owner opt-in, Settings → Data;
+// disabled by default — see settings.mediaRetentionDays). Recovers the
+// job-media Storage object's path from the public URL uploadJobMedia's
+// getPublicUrl() produced, since deleting from Storage needs the path, not
+// the URL. Returns null for legacy dataUrl-only media (nothing in Storage to
+// delete for those — clearing the JSONB field is enough).
+const jobMediaPathFromUrl = (url: string): string | null => {
+  const marker = `/object/public/${JOB_MEDIA_BUCKET}/`;
+  const i = url.indexOf(marker);
+  return i === -1 ? null : url.slice(i + marker.length);
+};
+
+// Sweeps completed jobs older than `retentionDays` and strips their
+// photos/videos/checklist-item photos (both the JSONB references AND the
+// actual Storage objects behind any `url`-backed one) — irreversible, only
+// ever called when the owner has explicitly enabled this in Settings.
+// Signatures (job.signOff) are deliberately left untouched — they're a
+// service/approval record, not capture media. Called once per session from
+// wherever it's wired in (see Dashboard.tsx), same "runs on page load,
+// harmless no-op if nothing qualifies" pattern as Alfred's 7-day cleanup.
+export const purgeOldJobMedia = async (
+  jobs: any[],
+  retentionDays: number,
+  setJobs: (updater: (prev: any[]) => any[]) => void
+): Promise<{ jobsPurged: number; filesDeleted: number }> => {
+  const cutoff = new Date();
+  cutoff.setDate(cutoff.getDate() - retentionDays);
+  const cutoffStr = cutoff.toISOString().slice(0, 10);
+  const CHECKLIST_KEYS = ["preChecklist", "duringChecklist", "postChecklist"] as const;
+  const hasMedia = (j: any) =>
+    (j.photos || []).length > 0 || (j.videos || []).length > 0 ||
+    CHECKLIST_KEYS.some(k => ((j[k] || []) as any[]).some((it: any) => (it.photos || []).length > 0));
+  const candidates = jobs.filter(j => j.status === "completed" && j.scheduledDate && j.scheduledDate < cutoffStr && hasMedia(j));
+  if (candidates.length === 0) return { jobsPurged: 0, filesDeleted: 0 };
+
+  const paths: string[] = [];
+  const collect = (arr: any[]) => (arr || []).forEach((m: any) => { const p = m.url && jobMediaPathFromUrl(m.url); if (p) paths.push(p); });
+  for (const j of candidates) {
+    collect(j.photos);
+    collect(j.videos);
+    for (const k of CHECKLIST_KEYS) for (const it of (j[k] || []) as any[]) collect(it.photos);
+  }
+  if (paths.length > 0) {
+    try { await (supabase as any).storage.from(JOB_MEDIA_BUCKET).remove(paths); }
+    catch (e: any) { console.warn("[MediaRetention] Storage delete failed (still clearing DB references):", e?.message); }
+  }
+
+  const stripJob = (j: any) => ({
+    ...j,
+    photos: [], videos: [],
+    ...Object.fromEntries(CHECKLIST_KEYS.map(k => [k, (j[k] || []).map((it: any) => ({ ...it, photos: [] }))])),
+  });
+  const idSet = new Set(candidates.map(j => j.id));
+  for (const j of candidates) {
+    const stripped = stripJob(j);
+    const patch = { photos: [], videos: [], preChecklist: stripped.preChecklist, duringChecklist: stripped.duringChecklist, postChecklist: stripped.postChecklist };
+    await (supabase as any).from("jobs").update(patch).eq("id", j.id).then((r: any) => {
+      if (r?.error) console.warn("[MediaRetention] job", j.id, "DB clear failed:", r.error.message);
+    }).catch((e: any) => console.warn("[MediaRetention] job", j.id, "DB clear threw:", e?.message));
+  }
+  setJobs(prev => prev.map(j => idSet.has(j.id) ? stripJob(j) : j));
+  console.log(`[MediaRetention] purged media from ${candidates.length} job(s) older than ${retentionDays} days, deleted ${paths.length} Storage file(s)`);
+  return { jobsPurged: candidates.length, filesDeleted: paths.length };
+};
+
+// FEATURE — backfill: existing jobs captured BEFORE the Storage migration
+// (see uploadJobMedia above) still carry full base64 photos/videos/signatures
+// inline in the `jobs` table's JSONB columns — the original root cause of
+// this project's Supabase egress overage (see supabase/migrations/0017).
+// New captures already go to Storage; this is the one-time cleanup pass for
+// everything captured before that existed. Owner-triggered only (Settings →
+// Data), never automatic — rewriting/removing dataUrl is not reversible once
+// the old row is overwritten, so each item is only stripped of its dataUrl
+// AFTER its Storage upload is confirmed to have succeeded.
+export interface MediaBackfillResult {
+  jobsScanned: number;
+  jobsUpdated: number;
+  itemsMigrated: number;
+  itemsFailed: number;
+  bytesFreedApprox: number;
+}
+
+const dataUrlByteLength = (dataUrl: string): number => {
+  const b64 = dataUrl.split(",")[1] || "";
+  return Math.floor((b64.length * 3) / 4);
+};
+
+export const backfillJobMediaToStorage = async (
+  jobs: any[],
+  setJobs: (updater: (prev: any[]) => any[]) => void,
+  onProgress?: (done: number, total: number) => void
+): Promise<MediaBackfillResult> => {
+  const CHECKLIST_KEYS = ["preChecklist", "duringChecklist", "postChecklist"] as const;
+  const needsMigration = (j: any) =>
+    (j.photos || []).some((p: any) => p.dataUrl && !p.url) ||
+    (j.videos || []).some((v: any) => v.dataUrl && !v.url) ||
+    (j.signOff?.sigData && !j.signOff?.sigUrl) ||
+    CHECKLIST_KEYS.some(k => ((j[k] || []) as any[]).some((it: any) => (it.photos || []).some((p: any) => p.dataUrl && !p.url)));
+
+  const candidates = jobs.filter(needsMigration);
+  const result: MediaBackfillResult = { jobsScanned: candidates.length, jobsUpdated: 0, itemsMigrated: 0, itemsFailed: 0, bytesFreedApprox: 0 };
+  if (candidates.length === 0) return result;
+
+  // Migrates one photo/video-shaped item {id, dataUrl, ...} in place — on a
+  // successful upload, dataUrl is deleted (base64 actually leaves the row)
+  // and url is set; on failure the item is left completely untouched so it's
+  // simply picked up again on the next run.
+  const migrateItem = async (item: any, pathPrefix: string, defaultExt: string, defaultType: string): Promise<boolean> => {
+    if (!item.dataUrl) return false;
+    try {
+      const blob = dataUrlToBlob(item.dataUrl);
+      const url = await uploadJobMedia(blob, `${pathPrefix}-${item.id}.${defaultExt}`, blob.type || defaultType);
+      if (!url) { result.itemsFailed++; return false; }
+      result.bytesFreedApprox += dataUrlByteLength(item.dataUrl);
+      delete item.dataUrl;
+      item.url = url;
+      result.itemsMigrated++;
+      return true;
+    } catch (e: any) {
+      console.warn("[MediaBackfill] item", item.id, "failed:", e?.message);
+      result.itemsFailed++;
+      return false;
+    }
+  };
+
+  let done = 0;
+  for (const original of candidates) {
+    const j = JSON.parse(JSON.stringify(original)); // deep clone — mutate freely, only commit on success
+    let changed = false;
+
+    for (const p of (j.photos || [])) if (p.dataUrl && !p.url) changed = (await migrateItem(p, `${j.id}/photo`, "jpg", "image/jpeg")) || changed;
+    for (const v of (j.videos || [])) if (v.dataUrl && !v.url) changed = (await migrateItem(v, `${j.id}/video`, "mp4", "video/mp4")) || changed;
+    for (const k of CHECKLIST_KEYS) for (const it of (j[k] || []) as any[]) for (const p of (it.photos || [])) if (p.dataUrl && !p.url) changed = (await migrateItem(p, `${j.id}/checklist`, "jpg", "image/jpeg")) || changed;
+    // Signature uses a differently-named field (sigData/sigUrl, not
+    // dataUrl/url) — handle it directly rather than forcing it through
+    // migrateItem's generic {dataUrl/url} shape.
+    if (j.signOff?.sigData && !j.signOff?.sigUrl) {
+      try {
+        const blob = dataUrlToBlob(j.signOff.sigData);
+        const url = await uploadJobMedia(blob, `${j.id}/signature-${j.id}.png`, "image/png");
+        if (url) {
+          result.bytesFreedApprox += dataUrlByteLength(j.signOff.sigData);
+          delete j.signOff.sigData;
+          j.signOff.sigUrl = url;
+          result.itemsMigrated++;
+          changed = true;
+        } else {
+          result.itemsFailed++;
+        }
+      } catch (e: any) {
+        console.warn("[MediaBackfill] signature for job", j.id, "failed:", e?.message);
+        result.itemsFailed++;
+      }
+    }
+
+    if (changed) {
+      const patch = { photos: j.photos, videos: j.videos, preChecklist: j.preChecklist, duringChecklist: j.duringChecklist, postChecklist: j.postChecklist, signOff: j.signOff };
+      const { error } = await (supabase as any).from("jobs").update(patch).eq("id", j.id);
+      if (error) {
+        console.warn("[MediaBackfill] job", j.id, "DB update failed:", error.message);
+      } else {
+        result.jobsUpdated++;
+        setJobs(prev => prev.map(p => p.id === j.id ? { ...p, ...patch } : p));
+      }
+    }
+    done++;
+    onProgress?.(done, candidates.length);
+  }
+  console.log(`[MediaBackfill] scanned ${result.jobsScanned} job(s), updated ${result.jobsUpdated}, migrated ${result.itemsMigrated} item(s), ${result.itemsFailed} failed, ~${(result.bytesFreedApprox / 1024 / 1024).toFixed(1)}MB freed from the database`);
+  return result;
+};
+
 // ITEM 10 — real OS-level "push-like" alerts for the owner (e.g. an employee's
 // Report Problem) using the browser's built-in Notification API. This fires
 // as long as the browser is running, even if the CRM tab isn't focused —
@@ -828,9 +1000,15 @@ export const requestDesktopNotifPermission = async (): Promise<boolean> => {
   catch { return false; }
 };
 
-export const notifyDesktop = (title: string, body?: string): void => {
+export const notifyDesktop = (title: string, body?: string, onClick?: () => void): void => {
   if (!desktopNotifsSupported() || Notification.permission !== "granted") return;
-  try { new Notification(title, { body, icon: "/favicon.ico" }); } catch { /* best-effort only */ }
+  try {
+    const n = new Notification(title, { body, icon: "/favicon.ico" });
+    // BUG FIX — clock-out/report-problem notifications previously had no
+    // click behavior at all; clicking one should bring the owner straight
+    // to the relevant screen instead of just dismissing it.
+    if (onClick) n.onclick = () => { window.focus(); onClick(); n.close(); };
+  } catch { /* best-effort only */ }
 };
 
 // BLOCKER 6 (mobile round 9) — Alfred's multi-step tool chains (create

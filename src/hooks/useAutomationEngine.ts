@@ -256,6 +256,17 @@ export interface PendingAutomationItem {
 export interface PendingAutomationBatch {
   items: PendingAutomationItem[];
   createdAt: number;
+  // FEATURE — how many additional candidates cleared every other check but
+  // were held back by the daily send cap (settings.automationMaxSendsPerDay).
+  // 0 when nothing was capped.
+  heldBackCount: number;
+  // FEATURE — A2P 10DLC campaign compliance ("ATP checking"). Non-null only
+  // when a Messaging Service SID is configured AND its last-checked status
+  // (Settings → Integrations → Twilio → Check Campaign Status) isn't
+  // VERIFIED — surfaced as a warning in AutomationBatchModal before the
+  // owner approves a send, not a hard block (the cached check can go stale,
+  // and 1:1 replies/manual sends aren't gated on this at all).
+  campaignWarning: string | null;
 }
 export interface AutomationEngineResult {
   pendingBatch: PendingAutomationBatch | null;
@@ -623,6 +634,15 @@ export function useAutomationEngine({
       const gathered: PendingAutomationItem[] = [];
       const dailyLog = settings.automationDailySendLog || {};
       const claimedCustomersThisBatch = new Set<string>();
+      // GUARDRAIL — explicit total-sends-per-day cap across every automation
+      // combined (settings.automationMaxSendsPerDay, default 50), separate
+      // from the one-touch-per-customer-per-day rule below. That rule stops
+      // any ONE customer being messaged twice — nothing previously stopped a
+      // single automation from legitimately matching e.g. 200 customers at
+      // once and queuing all 200 into one approval batch.
+      const maxSendsPerDay = Math.max(1, Number(settings.automationMaxSendsPerDay) || 50);
+      const alreadySentTodayCount = Object.values(dailyLog).filter(d => d === todayStr).length;
+      let heldBackCount = 0;
 
       for (const auto of automations) {
         if (!auto.active) continue;
@@ -677,6 +697,12 @@ export function useAutomationEngine({
         for (const dir of directives) {
           const effectiveDelay = dir.explicitDelay ? dir.delayMinutes : dir.delayMinutes || spec.defaultDelayMinutes;
           for (const cand of spec.getCandidates()) {
+            // AUDIT FIX — an opted-out (STOP) customer used to still get
+            // gathered into the batch every 15 minutes, silently fail inside
+            // sendOne (return false, no log), then get re-gathered forever —
+            // never actually sent, but a confusing perpetual entry in the
+            // owner's approval modal. Skip them before they ever reach it.
+            if (dir.channel === "sms" && cand.customer.smsOptOut) continue;
             if (dir.conditions.some(c => !evalCondition(c, cand))) continue;
             let ok: boolean;
             if (spec.direction === "before") {
@@ -700,6 +726,7 @@ export function useAutomationEngine({
             if (claimedCustomersThisBatch.has(cand.customer.id)) continue;
             const sessionKey = `${auto.id}:${dedupKey}`;
             if (firedThisSession.has(sessionKey)) continue;
+            if (alreadySentTodayCount + gathered.length >= maxSendsPerDay) { heldBackCount++; continue; }
             claimedCustomersThisBatch.add(cand.customer.id);
             const { subject, body } = buildMessage(auto, dir, spec, cand, settings);
             gathered.push({
@@ -717,8 +744,14 @@ export function useAutomationEngine({
       // the owner instead of sending anything. AutomationBatchModal
       // (rendered from App.tsx) shows count + first few names + Send All /
       // Skip / Pause Automations.
-      if (gathered.length > 0) {
-        setPendingBatch({ items: gathered, createdAt: Date.now() });
+      if (gathered.length > 0 || heldBackCount > 0) {
+        const campaignWarning = settings.twilioMessagingServiceSid && settings.twilioA2pCampaignStatus && settings.twilioA2pCampaignStatus !== "VERIFIED"
+          ? `Your Twilio A2P campaign status was last checked as "${settings.twilioA2pCampaignStatus}", not VERIFIED — carriers may filter or block these texts. Check Settings → Integrations → Twilio.`
+          : null;
+        setPendingBatch({ items: gathered, createdAt: Date.now(), heldBackCount, campaignWarning });
+      }
+      if (heldBackCount > 0) {
+        console.warn(`[Automations] ${heldBackCount} candidate(s) held back — daily send cap of ${maxSendsPerDay} reached (Settings → Automations → Max Automation Sends Per Day to raise it)`);
       }
 
       } finally {

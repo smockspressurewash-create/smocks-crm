@@ -26,7 +26,7 @@ import { twilioSend, sendEmail, emailShell, emailButton, logOutboundSmsToInbox }
 import { seedWeather } from "../../lib/weather";
 import { seedCustomers, seedEstimates, seedJobs, seedEmployees, seedVehicles, seedExpenses, seedChemicals, seedServices, seedAutomations, seedEmailTemplates, seedSmsTemplates, seedRewardTiers, seedReferrals, seedMaintenance, campaignTemplates, seedSocialPosts, seedTimeline, seedGoals, seedReminders, seedAccountabilityEntries, seedMileage, seedLeadSrc, STEP_TYPES, AUTOMATION_TEMPLATES } from "../../lib/seed";
 import { callModel, MODELS, parseRateLimitError } from "../../lib/api";
-import { supabase } from "../../lib/supabase";
+import { supabase, getStoredGoogleConnection } from "../../lib/supabase";
 import { createCalendarEvent, updateCalendarEvent, deleteCalendarEvent, fetchDriveFiles, MOCK_GOOGLE_DATA, fmtSize, fmtDate, fileIcon } from "../../lib/google";
 import { usePersistent } from "../../hooks/usePersistent";
 import { usePersistentRaw } from "../../hooks/usePersistentRaw";
@@ -1708,30 +1708,26 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           return { success: true, automationId: inputs.automationId, active: inputs.active };
         }
         case "send_email_via_gmail": {
-          if (!settings.googleConnected || !(settings.googleScopes || {}).gmail) return { error: "Gmail not connected. Ask user to go to Settings → Integrations → Google and connect." };
           if (!inputs.to || !inputs.subject || !inputs.body) return { error: "to, subject, body required" };
-          const url = settings.googleBackendUrl;
-          // AUDIT G (mobile round 4) — this read `settings.googleToken`, a
-          // field the OAuth connect flow never actually populates (it only
-          // ever writes `googleProviderToken` — see App.tsx). That meant
-          // `token` was always undefined here regardless of connection
-          // status, silently forcing every one of these Alfred Google
-          // actions into the "queued/staged" fallback branch below even with
-          // a valid, connected, non-expired token.
-          const token = settings.googleProviderToken;
-          if (url && token) {
-            try {
-              const sendGmailEmail = async (u: string, t: string, opts: any) => { const r = await fetch(u + "/gmail/send", { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${t}` }, body: JSON.stringify(opts) }); return r.json(); };
-              const result = await sendGmailEmail(url, token, { to: inputs.to, subject: inputs.subject, body: inputs.body, cc: inputs.cc });
-              toast("Email sent to " + inputs.to + " ✓");
-              return { success: true, sent: true, via: "gmail", to: inputs.to, subject: inputs.subject, messageId: result.id || "sent" };
-            } catch (e) {
-              return { error: "Gmail send failed: " + e.message };
-            }
-          } else {
-            // Backend not configured — show what would happen
-            toast("Email staged: " + inputs.to + " (add backend URL in Settings to actually send)");
-            return { success: true, sent: false, staged: true, to: inputs.to, subject: inputs.subject, note: "Backend URL not configured. Token + URL needed to send real emails." };
+          // BUG FIX — this used to (a) gate on settings.googleConnected, a
+          // React-state flag that can lag behind the actual connection state
+          // GoogleWorkspacePage/Settings show (getStoredGoogleConnection(),
+          // written synchronously to localStorage the moment OAuth
+          // completes), which is exactly why Alfred could say "not
+          // connected" while Settings showed Connected; and (b) require a
+          // `settings.googleBackendUrl` that this app has never had — there
+          // is no separate backend server (see CLAUDE.md), so this tool
+          // could never actually send for anyone, always falling into the
+          // "staged" no-op branch. Route through the same sendEmail() helper
+          // every other real send in this app uses (direct-from-browser
+          // Gmail API call, no backend needed) and let its own connection
+          // check be the single source of truth.
+          try {
+            await sendEmail(settings as any, { to: inputs.to, subject: inputs.subject, body: inputs.body, cc: inputs.cc });
+            toast("Email sent to " + inputs.to + " ✓");
+            return { success: true, sent: true, via: "gmail", to: inputs.to, subject: inputs.subject };
+          } catch (e: any) {
+            return { error: e?.message || "Gmail send failed" };
           }
         }
         case "create_calendar_event": {
@@ -2031,9 +2027,18 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
       const memByCat: Record<string, string[]> = memory.reduce((acc: Record<string, string[]>, m: any) => { const k = m.category || "general"; (acc[k] = acc[k] || []).push(m.text); return acc; }, {});
       const memoryContext = memory.length > 0 ? "\n\nWhat you remember about the user (organized by category):\n" + Object.entries(memByCat).map(([k, list]) => "  [" + k + "]: " + list.join("; ")).join("\n") : "";
       const businessContext = "\n\nCurrent business snapshot:\n- Active jobs: " + stats.activeJobs + "\n- Pending quotes: " + stats.pendingEst + "\n- Revenue MTD: " + fmt(stats.totalRev) + "\n- Close rate: " + stats.closeRate + "%\n- Jobs completed this month: " + stats.doneMonth + "\n- Total customers: " + customers.length;
-      const googleStatus = settings.googleConnected
-        ? `\n\nGoogle Workspace: CONNECTED as ${settings.googleEmail}. Backend: ${settings.googleBackendUrl ? "configured ✓" : "NOT configured — calls will be queued until backend URL is added"}. Enabled scopes: ${Object.entries(settings.googleScopes || {}).filter(([k, v]) => v).map(([k]) => k).join(", ")}. You CAN use send_email_via_gmail, create_calendar_event, create_google_task, and upload_to_drive — they will call the real Google APIs if backend is configured, or stage for later if not.`
-        : `\n\nGoogle Workspace: NOT CONNECTED. If the user asks to send email, create calendar events, or manage tasks, tell them to go to Settings → Integrations → Google and connect their backend.`;
+      // BUG FIX — this used to check only settings.googleConnected, a
+      // React-state flag that can lag behind the real connection state (see
+      // getStoredGoogleConnection() in lib/supabase.ts), which is why Alfred
+      // could tell the user "not connected" while Settings/Workspace showed
+      // Connected. send_email_via_gmail now sends directly via the same
+      // browser-side Gmail API call every other real send in this app uses
+      // (see its case above) — no backend URL is needed or exists.
+      const storedGoogle = getStoredGoogleConnection();
+      const googleActuallyConnected = !!(storedGoogle?.token || (settings.googleConnected && settings.googleProviderToken));
+      const googleStatus = googleActuallyConnected
+        ? `\n\nGoogle Workspace: CONNECTED as ${storedGoogle?.email || settings.googleEmail}. You CAN use send_email_via_gmail to send real email right now. create_calendar_event/create_google_task/upload_to_drive still require a configured backend URL and will stage for later if one isn't set.`
+        : `\n\nGoogle Workspace: NOT CONNECTED. If the user asks to send email, create calendar events, or manage tasks, tell them to go to Settings → Integrations → Google and connect.`;
       const toolHint = `\n\nYou have tools available to READ and MODIFY the CRM. USE THEM AGGRESSIVELY — don't just describe what you would do, actually do it.\n\nASK WHEN INFO IS MISSING: using tools aggressively does NOT mean guessing or silently defaulting a value the user never gave you. If a request is missing something a tool actually needs to act correctly — which customer, which date, which employee to assign — ask one short, direct clarifying question instead of calling the tool with a made-up or silently-defaulted value (e.g. schedule_job will default an unspecified date to a few days out — do not let that fire silently; ask "what date?" first if the user didn't give one). Only skip asking when the missing piece has an obviously safe default (e.g. a walkthrough with no stated time) or a tool's own fuzzy-match/suggestions can resolve it on its own (e.g. a slightly misspelled customer name).\n\nRESPONSE STYLE: Do not narrate your reasoning, your plan, or which tool you're about to call ("Let me check...", "I'll create that now...", "First I need to..."). Just call the tool(s) silently and then give the user the final result in 1-3 short sentences. No step-by-step thinking out loud.\n\nVERIFY BEFORE CONFIRMING: every action tool returns either {"success": true, ...} or {"error": "..."}. NEVER say "Done" or "All set" without checking which one came back. If you see an "error" field, tell the user exactly what went wrong (the error text) and what they could try instead — do not pretend it worked, and do not retry silently. Only confirm success when the tool result actually contains "success": true.\n\nTASK RESULT REPORTING — NO PERSONALITY FLAIR: your personality (drill sergeant / butler / quiet pro / savage) shapes how you TALK, not whether a task result is reported straight. The moment you report the outcome of an action tool (schedule_job, create_customer, create_estimate, send_estimate, assign/request crew, etc.), drop the persona voice entirely and state the plain fact: "Job scheduled successfully" / "Failed — [exact error text]" / "Estimate sent to [name] successfully" / "Failed — [exact error text]". No jokes, no military barking, no "sir", no sarcasm on the result line itself — save the personality for ordinary conversation, small talk, and check-ins, never for whether something actually saved.\n\nKEY TOOL RULES:\n- Customer queries → USE search_customers or get_customer_details FIRST\n- Stats requests → USE get_business_stats\n- "What's on the calendar" → USE get_calendar_summary\n- "Who's clocked in / who's working" → USE get_employee_status\n- "Remember/note/don't forget" → USE remember_fact\n- Create estimates, customers, jobs → USE create_estimate/create_customer/schedule_job
 - MULTI-STEP CHAINS (e.g. "create a customer, schedule them a job, and assign Mike"): call tools ONE AT A TIME across separate turns when a later step needs an id/result a real tool call hasn't returned yet (e.g. schedule_job needs the customerId create_customer just returned). Do NOT guess or fabricate an id and call multiple dependent tools in the same turn — wait for each real tool_result before issuing the next dependent call. If a step's result is an "error", STOP the chain right there, tell the user exactly which step failed and why, and do not attempt the remaining steps with made-up data.
 - "Send a quote/estimate to X" → USE create_estimate (if it doesn't exist yet) THEN send_estimate in the same turn — do not just create it and stop, and do not tell the user it was "sent" unless send_estimate actually returned success\n- "Send an invoice to X for $Y" → USE create_invoice THEN send_estimate (pass the returned invoiceId as send_estimate's estimateId) — same two-step pattern as quotes. create_invoice alone does NOT notify the customer.\n- Move or cancel a job → USE reschedule_job/cancel_job\n- "Add [item] to the checklist" → USE add_checklist_item\n- "Show me the details for X's job" → USE get_job_details\n- "Text/email X and tell them [anything]" → USE send_reminder with the exact wording as the message param — this is not just for payment reminders, use it for any custom message the user dictates\n- Navigate somewhere → USE navigate_to (the app already auto-navigates after schedule_job/create_customer/create_estimate, but call navigate_to yourself for anything else the user asks to see)\n- Preferences/facts shared → USE remember_fact automatically\n- RESOLVING "that job" / "the job we just scheduled" / references to something from an earlier message: a tool result's exact jobId/customerId is only visible to you within the SAME turn it was returned — your own past replies (in the chat history) are plain text, not structured data, so they do NOT reliably carry the real id forward. Before calling assign_employee/request_employee/reschedule_job/cancel_job/add_checklist_item on something referenced from an earlier turn, first call list_jobs or get_calendar_summary (or get_job_details with the customer's name) to look up the real current jobId — never guess, reuse an id from your own prior wording, or fabricate one.\n\nAUTOMATION TOOLS (VERY IMPORTANT):\n- When user describes ANY workflow, drip sequence, reminder, or "when X do Y" scenario → USE create_automation IMMEDIATELY. Build a proper n8n-style multi-step workflow with real step types: trigger (first), then delays, conditions, actions. NEVER just describe what you'd build — actually build it with create_automation.\n- "Send review request after job complete" → trigger: Job complete, delay: 2h, action: SMS review request\n- "Follow up on unpaid invoices" → trigger: Invoice unpaid 7 days, action: polite reminder email, delay: 4 days, condition: still unpaid, action: firm SMS\n- To check existing workflows → USE list_automations\n- To enable/disable a workflow → USE toggle_automation\n\nCurrent automations: ${automations.length} total, ${automations.filter(a => a.active).length} active\n\nNAME MATCHING: if a tool result comes back with "error": "Customer not found" or "Employee not found" and includes a "suggestions" array, ask the user "Do you mean [name], or [name]?" using those exact suggested names — never ask a generic clarifying question like "who do you mean?" when real candidate names are available.`;

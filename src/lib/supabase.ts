@@ -49,33 +49,62 @@ let _bridgeCapturedExpiresAt = 0;
 
 if (typeof window !== "undefined" && window.location.hash.includes("provider_token")) {
   try {
+    // BUG FIX (Google accounts mixed up) — this bridge used to treat EVERY
+    // completed Google OAuth as the OWNER's, unconditionally writing it into
+    // these `crew_google_*` keys (the "authoritative" source getStoredGoogleConnection()
+    // hands to sendOwnerGmailOnly/sendEmail/GoogleWorkspacePage) and pushing it
+    // to the shared app_settings row below. But FOUR call sites in this app
+    // trigger a Google OAuth redirect through this exact same callback:
+    // the owner's login/reconnect (App.tsx, GoogleWorkspacePage.tsx,
+    // SettingsModal.tsx — correctly meant for this shared slot) AND an
+    // EMPLOYEE linking their own separate Google account for their own
+    // Gmail/Calendar from inside the portal (EmployeePortal.tsx's
+    // handleConnectGoogle/handleEmployeeGoogleLogin, meant for the PER-
+    // EMPLOYEE employees.google_token column via App.tsx's
+    // persistEmployeeGoogleToken instead). Nothing distinguished them, so an
+    // employee connecting their own Google account silently overwrote the
+    // owner's shared connection — every subsequent "owner" send (invoices,
+    // job assignments, the daily briefing) went out from the EMPLOYEE's
+    // Gmail, and GoogleWorkspacePage's Calendar/Tasks/Contacts started
+    // reading the employee's data instead of the business's. Both employee
+    // OAuth entry points now call setOAuthIntent("employee") right before
+    // redirecting (a plain sessionStorage flag, since this bridge runs at
+    // module load, before React/any async role lookup exists) — reading
+    // (not consuming — App.tsx's resolveUserRole still needs to consume it
+    // separately) that same flag here is what lets this bridge tell the two
+    // apart and skip the owner-facing writes for an employee's own connect.
+    const isEmployeeGoogleOAuth = sessionStorage.getItem("smocks.oauthIntent") === "employee";
     const params = new URLSearchParams(window.location.hash.substring(1));
     const providerToken = params.get("provider_token");
     const providerRefreshToken = params.get("provider_refresh_token");
     const accessToken = params.get("access_token");
     if (providerToken) {
-      localStorage.setItem(GOOGLE_TOKEN_KEY, providerToken);
-      _bridgeCapturedToken = providerToken;
-      _bridgeCapturedExpiresAt = Date.now() + 55 * 60 * 1000;
-      localStorage.setItem(GOOGLE_EXPIRES_KEY, String(_bridgeCapturedExpiresAt));
-      // Kept alongside for App.tsx's existing settings-object flow (Alfred,
-      // invoice sends, etc. still read settings.googleProviderToken) — this
-      // is a secondary consumer now, not the source of truth.
+      // Still bridged to sessionStorage unconditionally — App.tsx's
+      // persistEmployeeGoogleToken (the CORRECT per-employee destination)
+      // reads it from here regardless of which flow this was.
       sessionStorage.setItem("smocks.gpt", providerToken);
+      if (!isEmployeeGoogleOAuth) {
+        localStorage.setItem(GOOGLE_TOKEN_KEY, providerToken);
+        _bridgeCapturedToken = providerToken;
+        _bridgeCapturedExpiresAt = Date.now() + 55 * 60 * 1000;
+        localStorage.setItem(GOOGLE_EXPIRES_KEY, String(_bridgeCapturedExpiresAt));
+      }
     }
     if (providerRefreshToken) {
-      localStorage.setItem(GOOGLE_REFRESH_KEY, providerRefreshToken);
-      _bridgeCapturedRefreshToken = providerRefreshToken;
       sessionStorage.setItem("smocks.grt", providerRefreshToken);
+      if (!isEmployeeGoogleOAuth) {
+        localStorage.setItem(GOOGLE_REFRESH_KEY, providerRefreshToken);
+        _bridgeCapturedRefreshToken = providerRefreshToken;
+      }
     }
-    if (accessToken) {
+    if (accessToken && !isEmployeeGoogleOAuth) {
       const email = decodeEmailFromJwt(accessToken);
       if (email) {
         localStorage.setItem(GOOGLE_EMAIL_KEY, email);
         _bridgeCapturedEmail = email;
       }
     }
-    console.log("[GoogleConnect] localStorage bridge (pre-React) — provider_token saved:", !!providerToken, "· refresh_token saved:", !!providerRefreshToken, "· email:", localStorage.getItem(GOOGLE_EMAIL_KEY) || "(not decoded)");
+    console.log("[GoogleConnect] localStorage bridge (pre-React) — provider_token saved:", !!providerToken, "· refresh_token saved:", !!providerRefreshToken, "· email:", localStorage.getItem(GOOGLE_EMAIL_KEY) || "(not decoded)", "· employee-own-connect (owner slot skipped):", isEmployeeGoogleOAuth);
   } catch (e: any) {
     console.warn("[GoogleConnect] localStorage bridge failed:", e?.message);
   }

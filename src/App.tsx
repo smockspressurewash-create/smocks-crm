@@ -52,6 +52,7 @@ import { ClientAuthPortal } from "./components/pages/ClientAuthPortal";
 import { ReferralLanding } from "./components/pages/ReferralLanding";
 import { CustomerReviewPage } from "./components/pages/CustomerReviewPage";
 import { LeadFormPage } from "./components/pages/LeadFormPage";
+import { TermsPage, PrivacyPolicyPage } from "./components/pages/LegalPages";
 import { EmployeePortal } from "./components/pages/EmployeePortal";
 import { saveEmpGoogleToken } from "./lib/googleApi";
 import { ResetPassword } from "./components/pages/ResetPassword";
@@ -68,8 +69,8 @@ import {
 } from "./lib/seed";
 import { seedWeather } from "./lib/weather";
 import { fetchRealWeather } from "./lib/weather";
-import { fmt, uid, today, daysSince, daysFromNow, consumeOAuthIntent, getLastOwnerSessionFlag, setLastOwnerSessionFlag, getLastOwnerId, setLastOwnerId, buildChecklistFromServices, withTimeout, normalizeJobRow, totalJobPhotoCount, notifyDesktop, stripLegacyJobFields, getPollIntervalMs } from "./lib/utils";
-import { sendEmail, buildTomorrowJobsEmailHtml, buildDailyBriefingEmailHtml } from "./lib/messaging";
+import { fmt, uid, today, daysSince, daysFromNow, consumeOAuthIntent, getLastOwnerSessionFlag, setLastOwnerSessionFlag, getLastOwnerId, setLastOwnerId, buildChecklistFromServices, withTimeout, normalizeJobRow, totalJobPhotoCount, notifyDesktop, stripLegacyJobFields, getPollIntervalMs, purgeOldJobMedia } from "./lib/utils";
+import { sendEmail, buildTomorrowJobsEmailHtml, buildDailyBriefingEmailHtml, setOptedOutPhones } from "./lib/messaging";
 import { exchangeSocialOAuthCode, type SocialPlatform } from "./lib/socialOAuth";
 import type {
   Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense,
@@ -439,6 +440,11 @@ export function App() {
     // Embed Code"). No owner session/auth — see LeadFormPage.tsx for why it
     // deliberately never reads app_settings (secrets exposure).
     if (hash === "lead-form" || hash.startsWith("lead-form?")) return "lead-form";
+    // FEATURE — public, unauthenticated legal pages required as live HTTPS
+    // links for Twilio A2P 10DLC campaign registration (see LeadFormPage.tsx's
+    // SMS opt-in checkbox and LegalPages.tsx).
+    if (hash === "terms" || hash.startsWith("terms?")) return "terms";
+    if (hash === "privacy" || hash.startsWith("privacy?")) return "privacy";
     // FIX 17/20 — public, unauthenticated single-estimate view (sign/decline a
     // quote, or pay an invoice) reached via #/estimate/ID. This used to be
     // #/portal/ID, but "portal" is the EMPLOYEE portal's own route — it has no
@@ -558,6 +564,11 @@ export function App() {
   // modal pre-opened (role defaulted to Manager) instead of duplicating the
   // whole invite form inside Settings.
   const [autoOpenManagerInvite, setAutoOpenManagerInvite] = useState(false);
+  // Clicking a clock-out/report-problem desktop notification jumps straight
+  // to Employees → Hours instead of just opening the app on whatever page it
+  // was last on.
+  const [employeesInitialView, setEmployeesInitialView] = useState<"list" | "hours" | "payroll" | undefined>(undefined);
+  const goToEmployeeHours = () => { setPage("employees"); setEmployeesInitialView("hours"); };
   const [notifOpen, setNotifOpen] = useState(false);
   const [fabOpen, setFabOpen] = useState(false);
   // FEATURE 1 — mobile FAB drag-and-drop. Hold the button for 2s to enter drag
@@ -696,13 +707,15 @@ export function App() {
 
   // Listen for browser back/forward
   useEffect(() => {
-    const valid = ["dashboard","alfred","inbox","customers","estimates","invoices","pipeline","intake","jobs","calendar","crew","campaigns","reviews","automations","social","referrals","promotions","expenses","reports","analytics","budget","personal","accountability","employees","fleet","chemicals","google","portal","reset-password","client","referral","rate","lead-form"];
+    const valid = ["dashboard","alfred","inbox","customers","estimates","invoices","pipeline","intake","jobs","calendar","crew","campaigns","reviews","automations","social","referrals","promotions","expenses","reports","analytics","budget","personal","accountability","employees","fleet","chemicals","google","portal","reset-password","client","referral","rate","lead-form","terms","privacy"];
     const handler = () => {
       const hash = window.location.hash.replace(/^#\/?/, "").split("?")[0];
       if (hash === "portal" || hash.startsWith("portal/")) { setPage("portal"); return; }
       if (hash === "referral" || hash.startsWith("r/")) { setPage("referral"); return; }
       if (hash === "rate" || hash.startsWith("rate?")) { setPage("rate"); return; }
       if (hash === "lead-form" || hash.startsWith("lead-form?")) { setPage("lead-form"); return; }
+      if (hash === "terms" || hash.startsWith("terms?")) { setPage("terms"); return; }
+      if (hash === "privacy" || hash.startsWith("privacy?")) { setPage("privacy"); return; }
       if (hash.startsWith("estimate/")) { setPage("estimate"); return; }
       if (hash === "reset-password" || hash.startsWith("reset-password&") || hash.startsWith("reset-password?")) { setPage("reset-password"); return; }
       if (valid.includes(hash)) setPage(hash);
@@ -1145,8 +1158,8 @@ export function App() {
       empSnap[e.id] = cur;
       if (!crewActivitySeededRef.current) continue;
       const prev = crewActivityEmpRef.current[e.id] ?? null;
-      if (cur && !prev) { const text = `🟢 ${empName(e)} started their shift`; events.push({ id: e.id + ":in:" + cur, text, at: Date.now() }); notifyDesktop(text); }
-      else if (!cur && prev) { const text = `⏹ ${empName(e)} ended their shift`; events.push({ id: e.id + ":out:" + Date.now(), text, at: Date.now() }); notifyDesktop(text); }
+      if (cur && !prev) { const text = `🟢 ${empName(e)} started their shift`; events.push({ id: e.id + ":in:" + cur, text, at: Date.now() }); notifyDesktop(text, undefined, goToEmployeeHours); }
+      else if (!cur && prev) { const text = `⏹ ${empName(e)} ended their shift`; events.push({ id: e.id + ":out:" + Date.now(), text, at: Date.now() }); notifyDesktop(text, undefined, goToEmployeeHours); }
     }
     for (const j of jobs as any[]) {
       // FEATURE 4 (mobile round 7) — photo uploads and customer sign-off were
@@ -1182,7 +1195,7 @@ export function App() {
         // for shift start/end and arrival above, but this one gets the actual
         // issue text as the notification body since it's the highest-priority
         // event of the bunch.
-        notifyDesktop(text, latestNote?.note?.replace("🚨 ISSUE REPORTED by ", "") || undefined);
+        notifyDesktop(text, latestNote?.note?.replace("🚨 ISSUE REPORTED by ", "") || undefined, goToEmployeeHours);
       }
     }
     crewActivityEmpRef.current = empSnap;
@@ -1193,6 +1206,24 @@ export function App() {
       setInvoiceNotifs(prev => [...events, ...prev].slice(0, 20));
     }
   }, [employees, jobs, hasCrmSession]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // FEATURE — photo/video auto-deletion (owner opt-in, Settings → Data;
+  // settings.mediaRetentionDays is 0/undefined by default, meaning this is a
+  // no-op for everyone unless the owner explicitly turns it on). Runs once
+  // per session once real jobs are loaded, same "harmless if nothing
+  // qualifies" pattern as Alfred's 7-day conversation cleanup.
+  const mediaRetentionSweepDoneRef = useRef(false);
+  useEffect(() => {
+    if (!hasCrmSession || mediaRetentionSweepDoneRef.current) return;
+    const days = Number((settings as any)?.mediaRetentionDays) || 0;
+    if (days <= 0 || jobs.length === 0) return;
+    mediaRetentionSweepDoneRef.current = true;
+    purgeOldJobMedia(jobs, days, setJobs)
+      .then(({ jobsPurged, filesDeleted }) => {
+        if (jobsPurged > 0) toast(`Deleted media from ${jobsPurged} job(s) older than ${days} days (${filesDeleted} file(s))`, "yellow");
+      })
+      .catch((e: any) => console.warn("[MediaRetention] sweep failed:", e?.message));
+  }, [hasCrmSession, jobs, (settings as any)?.mediaRetentionDays]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Alfred
   const [alfredConversations, setAlfredConversations] = usePersistent<AlfredConversation[]>("smocks.alfredConvs", []);
@@ -1412,6 +1443,7 @@ export function App() {
     // next read just couldn't see it).
     paidPeriods: e.paidPeriods ?? e.paidperiods ?? e.paid_periods ?? {},
     paidDays: e.paidDays ?? e.paiddays ?? e.paid_days ?? {},
+    paidJobs: e.paidJobs ?? e.paidjobs ?? e.paid_jobs ?? {},
     paymentLog: e.paymentLog ?? e.paymentlog ?? e.payment_log ?? [],
     lastShiftHours: e.lastShiftHours ?? e.lastshifthours ?? e.last_shift_hours ?? 0,
     lastShiftDate: e.lastShiftDate ?? e.lastshiftdate ?? e.last_shift_date ?? "",
@@ -1652,14 +1684,39 @@ export function App() {
   // works" only looked true on the single device that created the record: it
   // never reached Supabase, so it could never reach a second device, and
   // Alfred-created rows were the only ones the cross-device poll ever saw.
+  // BUG FIX — this bulk upsert had no safe-column retry at all, unlike the
+  // matching jobs bulk autosave below (OPTIONAL_NEWER_FIELDS). folder
+  // (0024) and smsOptIn/smsOptInAt/documents (0025) are all new fields a
+  // customer object can now carry — on any deployment where those
+  // migrations haven't run yet, the very first customer to get one of them
+  // set (e.g. any new lead through the public form, which sets smsOptIn
+  // unconditionally) would 400 this ENTIRE batch, every 30 seconds, for
+  // every customer, silently, until the migration runs. Same "one bad
+  // column poisons the whole write" failure mode this project has hit
+  // repeatedly (tip, org_id, crewAssignedAt) — strip just these on retry so
+  // the rest of the batch still saves.
+  const CUSTOMER_OPTIONAL_NEWER_FIELDS = ["folder", "smsOptIn", "smsOptInAt", "documents", "smsOptOut", "optOutDate"] as const;
+  const upsertCustomersSafely = async (list: any[], label: string) => {
+    if (list.length === 0) return;
+    try {
+      const { error } = await (supabase as any).from("customers").upsert(list, { onConflict: "id" });
+      if (!error) return;
+      console.warn(`${label} failed:`, error.message, "— retrying without", CUSTOMER_OPTIONAL_NEWER_FIELDS.join("/"));
+      const coreList = list.map((c: any) => {
+        const copy = { ...c };
+        CUSTOMER_OPTIONAL_NEWER_FIELDS.forEach(f => delete copy[f]);
+        return copy;
+      });
+      const retry = await (supabase as any).from("customers").upsert(coreList, { onConflict: "id" });
+      if (retry?.error) console.warn(`${label} — core retry also failed:`, retry.error.message);
+    } catch (err: any) {
+      console.warn(`${label} failed:`, err?.message);
+    }
+  };
+
   useEffect(() => {
     const interval = setInterval(async () => {
-      if (customers.length > 0) {
-        try {
-          const { error } = await (supabase as any).from("customers").upsert(customers, { onConflict: "id" });
-          if (error) console.warn("Customer auto-save failed:", error.message);
-        } catch (err: any) { console.warn("Customer auto-save failed:", err?.message); }
-      }
+      await upsertCustomersSafely(customers, "Customer auto-save");
       if (estimates.length > 0) {
         try {
           const { error } = await (supabase as any).from("estimates").upsert(estimates, { onConflict: "id" });
@@ -1670,18 +1727,20 @@ export function App() {
     return () => clearInterval(interval);
   }, [customers, estimates]);
 
+  // SMS compliance — keep messaging.ts's in-memory opted-out-phone registry
+  // (see setOptedOutPhones/isPhoneOptedOut in lib/messaging.ts) in sync with
+  // the live customers array, so twilioSend() blocks anyone who's replied
+  // STOP no matter which of the ~45 call sites across the app triggers it.
+  useEffect(() => {
+    setOptedOutPhones(customers);
+  }, [customers]);
+
   // On first load, immediately push any localStorage customers + estimates to
   // Supabase so employees (and any other device) can read them right away,
   // without waiting up to 30s for the auto-save interval to fire.
   useEffect(() => {
     const syncLocalToSupabase = async () => {
-      const stored = customers;
-      if (stored.length > 0) {
-        try {
-          const { error } = await (supabase as any).from("customers").upsert(stored, { onConflict: "id" });
-          if (error) console.warn("Initial customer sync failed:", error.message);
-        } catch (err: any) { console.warn("Initial customer sync failed:", err?.message); }
-      }
+      await upsertCustomersSafely(customers, "Initial customer sync");
       const storedEst = estimates;
       if (storedEst.length > 0) {
         try {
@@ -2248,6 +2307,15 @@ export function App() {
   // URL: #/lead-form?co=COMPANY_NAME&ph=COMPANY_PHONE
   if (page === "lead-form") {
     return <LeadFormPage />;
+  }
+
+  // ── Public legal pages — no auth, required as live HTTPS links for Twilio
+  // A2P 10DLC campaign registration. See LegalPages.tsx.
+  if (page === "terms") {
+    return <TermsPage />;
+  }
+  if (page === "privacy") {
+    return <PrivacyPolicyPage />;
   }
 
   // No top-level loading gate — render immediately with whatever's already
@@ -2884,7 +2952,7 @@ export function App() {
                 {page === "jobs"           && <JobsPage jobs={jobs} setJobs={setJobs} customers={customers} setCustomers={setCustomers} employees={employees} estimates={estimates} setEstimates={setEstimates} settings={settings} setSettings={setSettings} toast={toast} posts={socialPosts} setPosts={setSocialPosts} setTimeline={setTimeline} initialDetailId={openJobId} onInitialDetailIdConsumed={() => setOpenJobId(null)} onPortal={id => setPortalEstId(id)} ownerId={crmUserId} />}
                 {page === "pipeline"       && <PipelinePage jobs={jobs} setJobs={setJobs} customers={customers} toast={toast} />}
                 {page === "calendar"       && <CalendarPage jobs={jobs} setJobs={setJobs} customers={customers} employees={employees} toast={toast} settings={settings} setSettings={setSettings} ownerId={crmUserId} />}
-                {page === "inbox"          && (managerBlocked("inbox") ? <RestrictedNotice label="the Inbox" /> : <InboxPage threads={inboxThreads} setThreads={setInboxThreads} customers={customers} settings={settings} toast={toast} />)}
+                {page === "inbox"          && (managerBlocked("inbox") ? <RestrictedNotice label="the Inbox" /> : <InboxPage threads={inboxThreads} setThreads={setInboxThreads} customers={customers} setCustomers={setCustomers} settings={settings} toast={toast} />)}
                 {page === "campaigns"      && <CampaignsPage campaigns={campaigns} setCampaigns={setCampaigns} customers={customers} estimates={estimates} jobs={jobs} settings={settings} inboxThreads={inboxThreads} setInboxThreads={setInboxThreads} toast={toast} />}
                 {page === "reviews"        && <ReviewsPage reviews={reviews} setReviews={setReviews} jobs={jobs} customers={customers} toast={toast} negativeAlerts={negativeAlerts} setNegativeAlerts={setNegativeAlerts} settings={settings} setSettings={setSettings} />}
                 {page === "automations"    && <AutomationsPage automations={automations} setAutomations={setAutomations} jobs={jobs} customers={customers} estimates={estimates} settings={settings} setSettings={setSettings} toast={toast} />}
@@ -2892,7 +2960,7 @@ export function App() {
                 {page === "intake"         && <LeadIntakePage customers={customers} setCustomers={setCustomers} estimates={estimates} setEstimates={setEstimates} services={services} settings={settings} toast={toast} onNav={setPage} />}
                 {page === "alfred"         && (managerBlocked("alfred") ? <RestrictedNotice label="Alfred AI" /> : <AlfredPage conversations={alfredConversations} setConversations={setAlfredConversations} activeConvId={activeConvId} setActiveConvId={setActiveConvId} memory={alfredMemory} setMemory={setAlfredMemory} personality={personality} setPersonality={setPersonality} apiKey={settings.anthropicKey ?? settings.geminiKey ?? ""} openSettings={() => setSettingsOpen(true)} toast={toast} jobs={jobs} setJobs={setJobs} estimates={estimates} setEstimates={setEstimates} customers={customers} setCustomers={setCustomers} employees={employees} automations={automations} setAutomations={setAutomations} stats={{ totalRev, activeJobs, pendingEst, closeRate, doneMonth }} setWins={setWins} goals={goalsList} setGoals={setGoalsList} setSettings={setSettings} settings={settings} modelStatus={modelStatus} setModelStatus={setModelStatus} onNav={setPage} ownerId={crmUserId} />)}
                 {page === "google"         && (managerBlocked("google") ? <RestrictedNotice label="Google Workspace" /> : <GoogleWorkspacePage settings={settings} setSettings={setSettings} googleData={googleData as any} setGoogleData={setGoogleData} customers={customers} setCustomers={setCustomers} jobs={jobs} toast={toast} onNav={setPage} />)}
-                {page === "employees"      && <EmployeesPage employees={employees} setEmployees={setEmployees} jobs={jobs} customers={customers} settings={settings} toast={toast} autoOpenManagerInvite={autoOpenManagerInvite} onAutoOpenManagerInviteConsumed={() => setAutoOpenManagerInvite(false)} />}
+                {page === "employees"      && <EmployeesPage employees={employees} setEmployees={setEmployees} jobs={jobs} setJobs={setJobs} customers={customers} settings={settings} toast={toast} autoOpenManagerInvite={autoOpenManagerInvite} onAutoOpenManagerInviteConsumed={() => setAutoOpenManagerInvite(false)} initialView={employeesInitialView} onInitialViewConsumed={() => setEmployeesInitialView(undefined)} />}
                 {page === "fleet"          && <FleetPage vehicles={vehicles} setVehicles={setVehicles} maintenance={maintenance} setMaintenance={setMaintenance} toast={toast} />}
                 {page === "expenses"       && <ExpensesPage expenses={expenses} setExpenses={setExpenses} />}
                 {page === "chemicals"      && <ChemicalsPage chemicals={chemicals} setChemicals={setChemicals} toast={toast} settings={settings} />}

@@ -30,6 +30,15 @@ export interface Customer {
   zip?: string;
   sqFootage?: number;
   tags: string[];
+  // FEATURE — customer folders (simplified: a single flat folder name per
+  // customer, filterable — not nested subfolders or drag-and-drop).
+  folder?: string;
+  // FEATURE — Twilio A2P 10DLC campaign compliance: durable proof of SMS
+  // opt-in consent, captured at the point a phone number is first collected
+  // (LeadFormPage.tsx). smsOptInAt is the actual compliance record (a
+  // timestamp); smsOptIn is just for quick UI reads.
+  smsOptIn?: boolean;
+  smsOptInAt?: string;
   notes?: string;
   totalSpent: number;
   createdAt: string;
@@ -339,6 +348,7 @@ export interface Employee {
   lastShiftDate?: string;
   paidPeriods?: Record<string, "paid" | "unpaid">;
   paidDays?: Record<string, "paid" | "unpaid">;
+  paidJobs?: Record<string, "paid" | "unpaid">;
   locationSharing?: boolean;
   lastLocation?: { lat: number; lng: number; updatedAt: number };
   jobTypeRates?: Record<string, number>;
@@ -737,6 +747,11 @@ export interface AppSettings {
   failoverEnabled?: boolean;
   openAiKey?: string;
   twilioFrom?: string;
+  // FEATURE — A2P 10DLC campaign compliance ("ATP checking"). See
+  // lib/messaging.ts's checkA2pCampaignStatus.
+  twilioMessagingServiceSid?: string;
+  twilioA2pCampaignStatus?: string;
+  twilioA2pCampaignCheckedAt?: number;
 
   // Dashboard / business goals
   dashboardWidgets?: string[];
@@ -771,6 +786,15 @@ export interface AppSettings {
   // every customer to at most one automation touch per day regardless of
   // how many different automations would otherwise want to reach them.
   automationDailySendLog?: Record<string, string>;
+  // FEATURE — explicit total-sends-per-day cap across all automations
+  // combined (distinct from automationDailySendLog's per-customer cap above).
+  // Defaults to 50 when unset. See useAutomationEngine.ts's gather loop.
+  automationMaxSendsPerDay?: number;
+  // FEATURE — photo/video auto-deletion, owner opt-in (default disabled —
+  // 0/undefined means off). When set to a positive number of days, completed
+  // jobs older than that lose their photos/videos (Storage objects + JSONB
+  // references) on the next sweep. See lib/utils.ts's purgeOldJobMedia.
+  mediaRetentionDays?: number;
   // EGRESS — shared poll interval (ms) for the cross-device fallback polls
   // that re-fetch jobs/customers/estimates, employees, app_settings, and
   // Alfred conversations/memory. Realtime subscriptions handle instant sync
@@ -851,6 +875,22 @@ export interface MileageLog {
   purpose: string;
   vehicleId?: string;
   deduction?: number;
+}
+
+// FEATURE — employee-submitted mileage, synced via the `mileage_logs` table
+// (migration 0023) so the owner can see/approve it from any device. Distinct
+// from MileageLog above, which is the owner's own local/manual entry on
+// ExpensesPage.tsx (device-local, no employee/approval concept).
+export interface EmployeeMileageLog {
+  id: string;
+  employeeId: string;
+  date: string;
+  from: string;
+  to: string;
+  miles: number;
+  purpose: string;
+  status: "pending" | "approved" | "denied";
+  createdAt?: string;
 }
 
 // ─── Budget ───────────────────────────────────────────────────────────────────

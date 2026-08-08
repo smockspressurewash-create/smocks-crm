@@ -38,12 +38,26 @@ export function AutomationBatchModal({ batch, onSendAll, onSkip, onPause }: {
   return (
     <Modal open={true} onClose={() => {}} title="Review Before Sending" maxW="max-w-md">
       <div className="space-y-4">
-        <div className="flex items-center gap-3 p-3 rounded-xl bg-yellow-950/20 border border-yellow-700/30">
-          <Users size={20} className="text-yellow-400 flex-shrink-0" />
-          <div className="text-sm text-yellow-200">
-            <span className="font-bold">{batch.items.length}</span> {batch.items.length === 1 ? "message is" : "messages are"} about to go out. Nothing sends until you approve.
+        {batch.items.length > 0 && (
+          <div className="flex items-center gap-3 p-3 rounded-xl bg-yellow-950/20 border border-yellow-700/30">
+            <Users size={20} className="text-yellow-400 flex-shrink-0" />
+            <div className="text-sm text-yellow-200">
+              <span className="font-bold">{batch.items.length}</span> {batch.items.length === 1 ? "message is" : "messages are"} about to go out. Nothing sends until you approve.
+            </div>
           </div>
-        </div>
+        )}
+
+        {batch.heldBackCount > 0 && (
+          <div className="p-3 rounded-xl bg-red-950/20 border border-red-700/30 text-xs text-red-200">
+            <span className="font-bold">{batch.heldBackCount}</span> more {batch.heldBackCount === 1 ? "send was" : "sends were"} held back — you've hit today's Max Automation Sends Per Day limit. Raise it in Settings → Automations if this was a planned mass send.
+          </div>
+        )}
+
+        {batch.campaignWarning && (
+          <div className="p-3 rounded-xl bg-orange-950/20 border border-orange-700/30 text-xs text-orange-200">
+            ⚠️ {batch.campaignWarning}
+          </div>
+        )}
 
         <div className="space-y-1.5 max-h-64 overflow-y-auto">
           {preview.map(item => (
@@ -61,9 +75,11 @@ export function AutomationBatchModal({ batch, onSendAll, onSkip, onPause }: {
         </div>
 
         <div className="flex flex-col gap-2 pt-1">
-          <GBtn onClick={handleSendAll} disabled={sending} className="w-full !justify-center">
-            <Send size={14} className="inline mr-1.5" />{sending ? "Sending…" : `Send All (${batch.items.length})`}
-          </GBtn>
+          {batch.items.length > 0 && (
+            <GBtn onClick={handleSendAll} disabled={sending} className="w-full !justify-center">
+              <Send size={14} className="inline mr-1.5" />{sending ? "Sending…" : `Send All (${batch.items.length})`}
+            </GBtn>
+          )}
           <button onClick={onSkip} disabled={sending}
             className="w-full py-2.5 rounded-xl bg-white/5 hover:bg-white/10 text-white/60 hover:text-white text-sm font-medium transition disabled:opacity-50 flex items-center justify-center gap-1.5">
             <X size={14} />Skip This Batch

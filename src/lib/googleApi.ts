@@ -89,13 +89,22 @@ export const fetchGmailMessages = async (token: string): Promise<GmailMessage[]>
   return details;
 };
 
+// BUG FIX — see the matching encodeMimeSubject comment in lib/messaging.ts:
+// a raw non-ASCII Subject (e.g. an em-dash) placed directly in an RFC 2822
+// header without RFC 2047 encoding gets mangled by receiving mail clients.
+const encodeMimeSubject = (subject: string): string => {
+  // eslint-disable-next-line no-control-regex
+  if (/^[\x00-\x7F]*$/.test(subject)) return subject;
+  return `=?UTF-8?B?${btoa(unescape(encodeURIComponent(subject)))}?=`;
+};
+
 export const sendGmailMessage = async (
   token: string,
   to: string,
   subject: string,
   body: string
 ): Promise<void> => {
-  const message = `To: ${to}\r\nSubject: ${subject}\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n${body}`;
+  const message = `To: ${to}\r\nSubject: ${encodeMimeSubject(subject)}\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n${body}`;
   const raw = btoa(unescape(encodeURIComponent(message)))
     .replace(/\+/g, "-")
     .replace(/\//g, "_")

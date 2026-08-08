@@ -11,6 +11,7 @@ import { sendViaGmail, sendEmail, sendOwnerGmailOnly, emailShell, emailButton, t
 import { Glass } from "../ui/Glass";
 import { GBtn } from "../ui/GBtn";
 import { GInput } from "../ui/GInput";
+import { GDate } from "../ui/GDate";
 import { GTxt } from "../ui/GTxt";
 import { BeforeAfterSlider } from "../ui/BeforeAfterSlider";
 import { loadMapsScript, AddressAutocomplete } from "../ui/AddressAutocomplete";
@@ -1930,7 +1931,22 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   // FIX 5 — instant "📍 Sharing" badge before the Supabase round-trip / next poll.
   const [optimisticLocationSharing, setOptimisticLocationSharing] = useState<boolean | undefined>(undefined);
   const [optimisticDayLunchStartAt, setOptimisticDayLunchStartAt] = useState<number | null | undefined>(undefined);
+  // BUG FIX — after "End My Day," lastShiftHours/lastShiftDate had NO
+  // optimistic equivalent at all (unlike dayClockInAt/dayLunchStartAt/
+  // locationSharing above), so the just-ended shift's hours only reached the
+  // Pay tab once refetchEmployees() resolved and the myEmployee PROP updated.
+  // Any delay/hiccup in that round trip meant "clock out, hours don't show
+  // up" — the fix mirrors the existing optimistic pattern for this pair too.
+  const [optimisticLastShiftHours, setOptimisticLastShiftHours] = useState<number | undefined>(undefined);
+  const [optimisticLastShiftDate, setOptimisticLastShiftDate] = useState<string | undefined>(undefined);
   const [payChartRange, setPayChartRange] = useState<"7d" | "4wk" | "12mo" | "custom">("7d");
+  // FEATURE — employee-submitted mileage log (mileage_logs table, migration
+  // 0023), synced via Supabase so the owner can see/approve it from any
+  // device — the existing ExpensesPage.tsx mileage tab is owner-side and
+  // localStorage-only, with no way for an employee to submit into it at all.
+  const [mileageLogs, setMileageLogs] = useState<any[]>([]);
+  const [mileageForm, setMileageForm] = useState({ date: today(), from: "", to: "", miles: "", purpose: "" });
+  const [mileageSubmitting, setMileageSubmitting] = useState(false);
   // BLOCKER 11 (mobile round 7) — the only "custom period" controls anywhere
   // on this tab were fixed presets (7 days / 4 weeks / 12 months) or the
   // calendar's month prev/next (capped at the current month) — there was no
@@ -1989,6 +2005,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     lastLocation: e.lastLocation ?? e.lastlocation ?? e.last_location ?? null,
     paidPeriods: e.paidPeriods ?? e.paidperiods ?? e.paid_periods ?? {},
     paidDays: e.paidDays ?? e.paiddays ?? e.paid_days ?? {},
+    paidJobs: e.paidJobs ?? e.paidjobs ?? e.paid_jobs ?? {},
     paymentLog: e.paymentLog ?? e.paymentlog ?? e.payment_log ?? [],
     lastShiftHours: e.lastShiftHours ?? e.lastshifthours ?? e.last_shift_hours ?? 0,
     lastShiftDate: e.lastShiftDate ?? e.lastshiftdate ?? e.last_shift_date ?? "",
@@ -2093,11 +2110,29 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     }
   }, [(myEmployee as any)?.locationSharing]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  useEffect(() => {
+    if (optimisticLastShiftHours !== undefined && Number((myEmployee as any)?.lastShiftHours) === optimisticLastShiftHours) {
+      setOptimisticLastShiftHours(undefined);
+    }
+  }, [(myEmployee as any)?.lastShiftHours]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (optimisticLastShiftDate !== undefined && (myEmployee as any)?.lastShiftDate === optimisticLastShiftDate) {
+      setOptimisticLastShiftDate(undefined);
+    }
+  }, [(myEmployee as any)?.lastShiftDate]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Effective dayClockInAt — used by shift timer bar AND startDayShiftIfNeeded.
   // Keeps optimistic value until Supabase confirms it so the timer never flickers.
   const empDayClockInAt: number | null = optimisticDayClockInAt !== undefined
     ? optimisticDayClockInAt
     : ((myEmployee as any)?.dayClockInAt ?? null);
+  const effLastShiftHours: number = optimisticLastShiftHours !== undefined
+    ? optimisticLastShiftHours
+    : (Number((myEmployee as any)?.lastShiftHours) || 0);
+  const effLastShiftDate: string = optimisticLastShiftDate !== undefined
+    ? optimisticLastShiftDate
+    : ((myEmployee as any)?.lastShiftDate || "");
 
   // Shared function so both JobCard's "I'm Here" button and JobDetailView's
   // "I'm Here" button can auto-start the shift timer in one place.
@@ -2194,6 +2229,42 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     if (Array.isArray(rdo) && rdo.length > 0) setRecurringDaysOff(rdo);
     if ((myEmployee as any).autoSyncCalendar === false) setAutoSyncCalendar(false);
   }, [(myEmployee as any)?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Load this employee's own mileage log history on login/employee switch.
+  useEffect(() => {
+    const empId = (myEmployee as any)?.id;
+    if (!empId) return;
+    (async () => {
+      try {
+        const { data, error } = await (supabase as any).from("mileage_logs").select("*").eq("employee_id", empId).order("date", { ascending: false }).limit(50);
+        if (!error && Array.isArray(data)) setMileageLogs(data);
+      } catch { /* table may not exist yet */ }
+    })();
+  }, [(myEmployee as any)?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const submitMileageLog = async () => {
+    const empId = (myEmployee as any)?.id;
+    if (!empId) return;
+    const miles = Number(mileageForm.miles) || 0;
+    if (miles <= 0) { toast("Enter a mileage amount greater than 0", "red"); return; }
+    setMileageSubmitting(true);
+    const row = { id: uid(), employee_id: empId, date: mileageForm.date || today(), from: mileageForm.from, to: mileageForm.to, miles, purpose: mileageForm.purpose, status: "pending" };
+    try {
+      const { error } = await (supabase as any).from("mileage_logs").insert(row);
+      if (error) {
+        console.error("[Mileage] insert failed:", error.message);
+        toast("Couldn't save mileage — " + error.message, "red");
+      } else {
+        setMileageLogs(prev => [row, ...prev]);
+        setMileageForm({ date: today(), from: "", to: "", miles: "", purpose: "" });
+        toast("Mileage logged ✓ — awaiting owner approval", "green");
+      }
+    } catch (e: any) {
+      toast("Couldn't save mileage — " + (e?.message || "unknown error"), "red");
+    } finally {
+      setMileageSubmitting(false);
+    }
+  };
 
   // Home base specifically re-syncs whenever Supabase's value changes (not
   // just once per login) — the periodic employees poll means a home base
@@ -2590,8 +2661,16 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   // rather than completed jobs. Shared as one function so both call sites
   // (and any future one) can't independently diverge again.
   const computeEmployeeShiftTopUp = (startDate: string, endDate: string): number => {
-    const empLastShiftDate = (myEmployee as any)?.lastShiftDate;
-    const empLastShiftHours = Number((myEmployee as any)?.lastShiftHours) || 0;
+    // BUG FIX — this used to re-read myEmployee.lastShiftDate/lastShiftHours/
+    // dayClockInAt straight off the prop, shadowing the optimistic-aware
+    // empDayClockInAt/effLastShiftHours/effLastShiftDate defined above. Right
+    // after "End My Day," the optimistic values are set immediately but the
+    // prop only catches up once refetchEmployees() resolves — using the raw
+    // prop here meant the Pay tab could show stale (pre-clock-out) hours for
+    // however long that round trip took, reading exactly like "hours don't
+    // show up." Use the effective (optimistic-first) values instead.
+    const empLastShiftDate = effLastShiftDate;
+    const empLastShiftHours = effLastShiftHours;
     const jobHoursOnShiftDate = empLastShiftDate
       ? myJobs.filter(j => j.status === "completed" && j.scheduledDate === empLastShiftDate).reduce((s, j) => s + Number(j.loggedHours || 0), 0)
       : 0;
@@ -2605,7 +2684,6 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     // Still clocked in (dayClockInAt set, hasn't pressed "End My Day" yet) —
     // mirrors the live netShiftHoursNow formula used by the shift-timer
     // button below, so the two can't disagree once the shift actually ends.
-    const empDayClockInAt = (myEmployee as any)?.dayClockInAt;
     const liveShiftTopUp = (empDayClockInAt && todayStr >= startDate && todayStr <= endDate)
       ? (() => {
           const pausedMin = Number((myEmployee as any)?.dayPausedMinutes) || 0;
@@ -4511,6 +4589,11 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                 const totalLabel = `${totH}h ${String(totM).padStart(2, "0")}m`;
                 if (endingDay) {
                   setOptimisticDayLunchStartAt(null);
+                  // BUG FIX — set immediately so the Pay tab reflects this
+                  // shift's hours right away instead of waiting on
+                  // refetchEmployees() to resolve (see computeEmployeeShiftTopUp).
+                  setOptimisticLastShiftHours(finalHours);
+                  setOptimisticLastShiftDate(shiftDayStr());
                   sendEndOfDaySummary(finalHours);
                   // Persist for the rest of the day (no auto-hide) — FIX 11.
                   setShiftEndedMsg(`Shift ended · Total ${totalLabel}`);
@@ -5942,6 +6025,29 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                   )}
                 </Glass>
 
+                {/* Mileage — employee-submitted, synced so the owner can see/approve it */}
+                <Glass className="p-4 !bg-black/40">
+                  <div className="text-xs text-white/50 uppercase tracking-wider mb-3">Log Mileage</div>
+                  <div className="grid grid-cols-2 gap-2 mb-2">
+                    <GDate value={mileageForm.date} onChange={(e: any) => setMileageForm(f => ({ ...f, date: e.target.value }))} className="!text-xs !py-2" />
+                    <GInput type="number" min="0" step="0.1" placeholder="Miles" value={mileageForm.miles} onChange={(e: any) => setMileageForm(f => ({ ...f, miles: e.target.value }))} className="!text-xs !py-2" />
+                    <GInput placeholder="From" value={mileageForm.from} onChange={(e: any) => setMileageForm(f => ({ ...f, from: e.target.value }))} className="!text-xs !py-2" />
+                    <GInput placeholder="To" value={mileageForm.to} onChange={(e: any) => setMileageForm(f => ({ ...f, to: e.target.value }))} className="!text-xs !py-2" />
+                  </div>
+                  <GInput placeholder="Purpose (optional)" value={mileageForm.purpose} onChange={(e: any) => setMileageForm(f => ({ ...f, purpose: e.target.value }))} className="!text-xs !py-2 mb-2" />
+                  <GBtn onClick={submitMileageLog} disabled={mileageSubmitting} className="w-full !text-xs">{mileageSubmitting ? "Saving…" : "Log Mileage"}</GBtn>
+                  {mileageLogs.length > 0 && (
+                    <div className="mt-3 pt-3 border-t border-white/10 space-y-1.5">
+                      {mileageLogs.slice(0, 8).map((m: any) => (
+                        <div key={m.id} className="flex items-center justify-between gap-2 text-[11px]">
+                          <div className="min-w-0 truncate text-white/60">{m.date} · {m.from || "—"} → {m.to || "—"} · {m.miles}mi</div>
+                          <span className={"px-2 py-0.5 rounded-full text-[9px] font-bold flex-shrink-0 " + (m.status === "approved" ? "bg-green-700 text-white" : m.status === "denied" ? "bg-red-900/50 text-red-300" : "bg-yellow-950/40 border border-yellow-700/40 text-yellow-300")}>{m.status}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </Glass>
+
                 <div className="text-[10px] text-white/20 text-center pt-2">
                   Pay estimates are based on logged hours × hourly rate.<br />Contact your manager for official payroll figures.
                 </div>
@@ -5986,6 +6092,14 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
               if (empSession?.user?.id) {
                 try { localStorage.setItem("crew_role_" + empSession.user.id, "employee"); } catch { /* ignore */ }
               }
+              // BUG FIX (Google accounts mixed up) — without this, lib/supabase.ts's
+              // pre-React bridge had no way to tell this OAuth completion apart
+              // from the OWNER's own connect/reconnect, and wrote this
+              // employee's token into the shared owner-facing slot — every
+              // "owner" send (invoices, job assignments, daily briefing) then
+              // went out from THIS employee's Gmail instead. Must be set
+              // synchronously before the redirect, same as the role cache above.
+              setOAuthIntent("employee");
               const SCOPES = [
                 "https://www.googleapis.com/auth/calendar",
                 "https://www.googleapis.com/auth/calendar.events",

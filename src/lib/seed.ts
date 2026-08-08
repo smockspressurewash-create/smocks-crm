@@ -462,6 +462,56 @@ export const AUTOMATION_TEMPLATES = [
       { id: uid(), type: "action",    label: "Day 7: Add urgency",      channel: "sms" },
     ],
   },
+  // FEATURE — 5 additional templates, each backed by an already-implemented,
+  // already-firing engine category (useAutomationEngine.ts specs) — none of
+  // the empty-getCandidates() categories (review_good/review_bad/manual/
+  // weekly_scheduled/webhook) are templated here, so every template in this
+  // gallery actually sends when approved, not just looks like it does.
+  {
+    id: "tpl_job_reminder", name: "Job Reminder (24h Before)",
+    trigger: "24h before scheduled job", action: "Send reminder SMS",
+    description: "Reminds the customer the day before their scheduled service.",
+    steps: [
+      { id: uid(), type: "trigger", label: "24h before scheduled job", icon: "⏰" },
+      { id: uid(), type: "action",  label: "Send reminder SMS", channel: "sms", template: "job_reminder" },
+    ],
+  },
+  {
+    id: "tpl_payment_overdue", name: "Overdue Invoice Reminder",
+    trigger: "Invoice overdue 7 days", action: "Send payment reminder SMS",
+    description: "Nudges customers with an unpaid invoice a week past due.",
+    steps: [
+      { id: uid(), type: "trigger", label: "Invoice overdue 7 days", icon: "💳" },
+      { id: uid(), type: "action",  label: "Send payment reminder SMS", channel: "sms" },
+    ],
+  },
+  {
+    id: "tpl_maintenance", name: "90-Day Re-Service Reminder",
+    trigger: "90 days since last service", action: "Send re-book SMS",
+    description: "Reminds a customer it's time for another wash, 90 days after their last one.",
+    steps: [
+      { id: uid(), type: "trigger", label: "90 days since service", icon: "🔁" },
+      { id: uid(), type: "action",  label: "Send re-service SMS", channel: "sms", template: "maintenance_reminder" },
+    ],
+  },
+  {
+    id: "tpl_referral_ask", name: "Loyal Customer Referral Ask",
+    trigger: "3rd job complete", action: "Ask for a referral",
+    description: "Asks a customer to refer a friend after their 3rd completed job with you.",
+    steps: [
+      { id: uid(), type: "trigger", label: "3rd job complete", icon: "🤝" },
+      { id: uid(), type: "action",  label: "Send referral-ask SMS", channel: "sms", template: "referral_ask" },
+    ],
+  },
+  {
+    id: "tpl_seasonal_fall", name: "Fall Gutter Reminder",
+    trigger: "October 1st annually", action: "Send fall campaign",
+    description: "Annual fall reminder about clogged gutters and ice-dam risk.",
+    steps: [
+      { id: uid(), type: "trigger", label: "October 1st annually", icon: "🍂" },
+      { id: uid(), type: "action",  label: "Send fall promo SMS", channel: "sms", template: "seasonal_fall" },
+    ],
+  },
 ];
 
 // ─── Seed revenue chart data ───────────────────────────────────────────────────

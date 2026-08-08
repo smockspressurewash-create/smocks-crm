@@ -1,76 +1,120 @@
 // auto-extracted from Crew Boss OS monolith
-import React, { useState, useEffect, useRef, useCallback } from "react";
-import {
-  LayoutDashboard, Users, FileText, Briefcase, Bot, BarChart3,
-  Settings, Bell, Menu, X, Plus, Search, Edit, Trash2, Send,
-  DollarSign, TrendingUp, CheckCircle, Clock, MapPin, Phone, Mail,
-  Calendar, AlertTriangle, Truck, Receipt, FlaskConical, MessageSquare,
-  Sun, Moon, Download, Undo2, Redo2, Volume2, Play, Cloud, Star,
-  Award, Target, Shield, Key, Eye, EyeOff, Save, ChevronRight,
-  ChevronLeft, GripVertical, Tag, Copy, Ban, RefreshCw, Percent,
-  CreditCard, Repeat, XCircle, Activity, Zap, UserCheck, AlertCircle,
-  Clipboard, Heart, Dumbbell, Droplet, Smile, Flame, Wind, Snowflake,
-  Globe, Share2, Trophy, ExternalLink, Workflow, ToggleLeft, ToggleRight,
-  Navigation, TrendingDown, PieChart as PieIcon, Package, Wrench,
-  CheckSquare, Route, Users2, Layers, ArrowRight, BarChart2, Filter,
-  Paperclip, ImageIcon, FileImage, MoreVertical, Mic, Upload, Link, Lock, User
-} from "lucide-react";
-import {
-  BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid,
-  Tooltip, ResponsiveContainer, Area, AreaChart, LineChart, Line,
-  ComposedChart, Legend
-} from "recharts";
-import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE } from "../../lib/utils";
-import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
-import { twilioSend, sendEmail } from "../../lib/messaging";
-import { seedWeather } from "../../lib/weather";
-import { seedCustomers, seedEstimates, seedJobs, seedEmployees, seedVehicles, seedExpenses, seedChemicals, seedServices, seedAutomations, seedEmailTemplates, seedSmsTemplates, seedRewardTiers, seedReferrals, seedMaintenance, campaignTemplates, seedSocialPosts, seedTimeline, seedGoals, seedReminders, seedAccountabilityEntries, seedMileage, seedLeadSrc, STEP_TYPES, AUTOMATION_TEMPLATES } from "../../lib/seed";
-import { callModel, MODELS } from "../../lib/api";
-import { createCalendarEvent, updateCalendarEvent, deleteCalendarEvent, fetchDriveFiles, MOCK_GOOGLE_DATA, fmtSize, fmtDate, fileIcon } from "../../lib/google";
-import { usePersistent } from "../../hooks/usePersistent";
-import { usePersistentRaw } from "../../hooks/usePersistentRaw";
-import { Glass } from "./Glass";
-import { GBtn } from "./GBtn";
-import { GInput } from "./GInput";
-import { GDate } from "./GDate";
-import { GSel } from "./GSel";
-import { GTxt } from "./GTxt";
-import { Modal } from "./Modal";
-import { Badge } from "./Badge";
-import { Stat } from "./Stat";
-import { PBar } from "./PBar";
-import { PageFade } from "./PageFade";
-import { TimeframeSelector } from "./TimeframeSelector";
+import React, { useState, useEffect, useRef } from "react";
+import { FileText, Plus, Download, Trash2 } from "lucide-react";
+import { uid, today, dataUrlToBlob, withTimeout } from "../../lib/utils";
+import { supabase } from "../../lib/supabase";
 
-export function DocumentVault({ customerId }) {
-  const [docs, setDocs] = usePersistent("smocks.docvault." + customerId, []) as [any[], any];
+// FEATURE — rebuilt to sync via Supabase Storage + customers.documents
+// (migration 0025) instead of usePersistent/localStorage. The old version
+// stored uploaded files (insurance certs, contracts, HOA approvals) only on
+// the ONE device/browser that uploaded them — an owner checking a commercial
+// customer's insurance cert from a different device saw nothing at all.
+const DOCS_BUCKET = "customer-docs";
+
+export function DocumentVault({ customerId }: { customerId: string }) {
+  const [docs, setDocs] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
+  const migrationAttemptedRef = useRef(false);
 
-  const handleUpload = e => {
-    const files = Array.from(e.target.files || []);
-    files.forEach(f => {
-      const file = f as File;
-      const r = new FileReader();
-      r.onload = ev => {
-        setDocs(prev => [...prev, {
-          id: uid(),
-          name: file.name,
-          type: file.type,
-          size: file.size,
-          dataUrl: ev.target.result,
-          uploadedAt: today(),
-          category: file.name.toLowerCase().includes("contract") ? "Contract" : file.name.toLowerCase().includes("waiver") ? "Waiver" : file.name.toLowerCase().includes("hoa") ? "HOA" : "Document"
-        }]);
-      };
-      r.readAsDataURL(file);
-    });
+  useEffect(() => {
+    if (!customerId) return;
+    setLoading(true);
+    (async () => {
+      try {
+        const { data, error } = await (supabase as any).from("customers").select("documents").eq("id", customerId).maybeSingle();
+        let serverDocs: any[] = (!error && Array.isArray(data?.documents)) ? data.documents : [];
+        // One-time migration of any documents uploaded on THIS device before
+        // this component synced via Supabase — without this, they'd silently
+        // vanish from view the moment this device also starts reading from
+        // Supabase instead of its own localStorage.
+        if (serverDocs.length === 0 && !migrationAttemptedRef.current) {
+          migrationAttemptedRef.current = true;
+          let local: any[] = [];
+          try { local = JSON.parse(localStorage.getItem("smocks.docvault." + customerId) || "[]"); } catch { /* ignore */ }
+          if (Array.isArray(local) && local.length > 0) {
+            console.log("[DocumentVault] migrating", local.length, "locally-stored document(s) to Supabase Storage for customer", customerId);
+            const migrated: any[] = [];
+            for (const d of local) {
+              if (!d.dataUrl) continue;
+              try {
+                const blob = dataUrlToBlob(d.dataUrl);
+                const path = `${customerId}/${d.id}-${d.name}`;
+                const { error: upErr } = await (supabase as any).storage.from(DOCS_BUCKET).upload(path, blob, { contentType: d.type || blob.type, upsert: true });
+                if (upErr) { console.warn("[DocumentVault] migration upload failed for", d.name, ":", upErr.message); continue; }
+                const { data: pub } = (supabase as any).storage.from(DOCS_BUCKET).getPublicUrl(path);
+                migrated.push({ ...d, url: pub?.publicUrl, dataUrl: undefined });
+              } catch (e: any) {
+                console.warn("[DocumentVault] migration failed for", d.name, ":", e?.message);
+              }
+            }
+            if (migrated.length > 0) {
+              serverDocs = migrated;
+              await (supabase as any).from("customers").update({ documents: migrated }).eq("id", customerId);
+              try { localStorage.removeItem("smocks.docvault." + customerId); } catch { /* ignore */ }
+            }
+          }
+        }
+        setDocs(serverDocs);
+      } catch (e: any) {
+        console.warn("[DocumentVault] load failed:", e?.message);
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, [customerId]);
+
+  const persist = async (next: any[]) => {
+    setDocs(next);
+    const { error } = await (supabase as any).from("customers").update({ documents: next }).eq("id", customerId);
+    if (error) console.warn("[DocumentVault] save failed:", error.message);
+  };
+
+  const handleUpload = (e: any) => {
+    const files = Array.from(e.target.files || []) as File[];
+    setUploading(true);
+    (async () => {
+      const newDocs: any[] = [];
+      for (const file of files) {
+        const id = uid();
+        const path = `${customerId}/${id}-${file.name}`;
+        try {
+          const { error: upErr } = await withTimeout<any>(
+            (supabase as any).storage.from(DOCS_BUCKET).upload(path, file, { contentType: file.type || "application/octet-stream", upsert: true }),
+            20000, "Document upload"
+          );
+          const category = file.name.toLowerCase().includes("insurance") ? "Insurance" : file.name.toLowerCase().includes("contract") ? "Contract" : file.name.toLowerCase().includes("waiver") ? "Waiver" : file.name.toLowerCase().includes("hoa") ? "HOA" : "Document";
+          if (upErr) {
+            console.warn("[DocumentVault] upload failed for", file.name, "— falling back to inline storage:", upErr.message);
+            // Fallback so a failed Storage upload never silently loses the
+            // file — reads back exactly like before this rebuild, just
+            // without cross-device sync for this one document.
+            const dataUrl: string = await new Promise((resolve, reject) => {
+              const r = new FileReader();
+              r.onload = ev => resolve(ev.target!.result as string);
+              r.onerror = reject;
+              r.readAsDataURL(file);
+            });
+            newDocs.push({ id, name: file.name, type: file.type, size: file.size, dataUrl, uploadedAt: today(), category });
+          } else {
+            const { data: pub } = (supabase as any).storage.from(DOCS_BUCKET).getPublicUrl(path);
+            newDocs.push({ id, name: file.name, type: file.type, size: file.size, url: pub?.publicUrl, uploadedAt: today(), category });
+          }
+        } catch (e: any) {
+          console.warn("[DocumentVault] upload threw for", file.name, ":", e?.message);
+        }
+      }
+      if (newDocs.length > 0) await persist([...docs, ...newDocs]);
+      setUploading(false);
+    })();
     e.target.value = "";
   };
 
-  const download = doc => {
+  const download = (doc: any) => {
     const a = document.createElement("a");
-    a.href = doc.dataUrl;
+    a.href = doc.url || doc.dataUrl;
     a.download = doc.name;
+    a.target = "_blank";
     a.click();
   };
 
@@ -79,22 +123,24 @@ export function DocumentVault({ customerId }) {
       <div className="flex items-center justify-between px-3 py-2 bg-black/40 border-b border-white/5">
         <div className="text-xs font-semibold flex items-center gap-1.5"><FileText size={11} className="text-blue-400" />Document Vault</div>
         <label className="cursor-pointer px-2 py-1 bg-blue-900/30 border border-blue-700/40 text-blue-300 rounded-lg text-[10px] hover:bg-blue-900/50 flex items-center gap-1">
-          <input type="file" accept=".pdf,.doc,.docx,.png,.jpg,.jpeg" multiple className="hidden" onChange={handleUpload} />
-          <Plus size={10} /> Upload
+          <input type="file" accept=".pdf,.doc,.docx,.png,.jpg,.jpeg" multiple className="hidden" onChange={handleUpload} disabled={uploading} />
+          <Plus size={10} /> {uploading ? "Uploading…" : "Upload"}
         </label>
       </div>
-      {docs.length === 0
-        ? <div className="py-5 text-center text-[11px] text-white/40">No documents uploaded. Upload contracts, waivers, or HOA approvals.</div>
+      {loading
+        ? <div className="py-5 text-center text-[11px] text-white/40">Loading…</div>
+        : docs.length === 0
+        ? <div className="py-5 text-center text-[11px] text-white/40">No documents uploaded. Upload contracts, insurance certs, waivers, or HOA approvals.</div>
         : <div className="divide-y divide-white/5">
           {docs.map(doc => (
             <div key={doc.id} className="flex items-center gap-2.5 px-3 py-2 hover:bg-white/5">
-              <span className="text-base">{doc.type.includes("pdf") ? "📄" : doc.type.includes("image") ? "🖼️" : "📋"}</span>
+              <span className="text-base">{(doc.type || "").includes("pdf") ? "📄" : (doc.type || "").includes("image") ? "🖼️" : "📋"}</span>
               <div className="flex-1 min-w-0">
                 <div className="text-xs font-medium truncate">{doc.name}</div>
-                <div className="text-[10px] text-white/40">{doc.category} · {doc.uploadedAt} · {(doc.size / 1024).toFixed(0)}KB</div>
+                <div className="text-[10px] text-white/40">{doc.category} · {doc.uploadedAt} · {(doc.size / 1024).toFixed(0)}KB{!doc.url && doc.dataUrl && <span className="text-yellow-400/70"> · this device only</span>}</div>
               </div>
               <button onClick={() => download(doc)} className="p-1 text-white/40 hover:text-blue-400"><Download size={11} /></button>
-              <button onClick={() => setDocs(prev => prev.filter(d => d.id !== doc.id))} className="p-1 text-white/40 hover:text-red-400"><Trash2 size={11} /></button>
+              <button onClick={() => persist(docs.filter(d => d.id !== doc.id))} className="p-1 text-white/40 hover:text-red-400"><Trash2 size={11} /></button>
             </div>
           ))}
         </div>
@@ -102,4 +148,3 @@ export function DocumentVault({ customerId }) {
     </div>
   );
 }
-

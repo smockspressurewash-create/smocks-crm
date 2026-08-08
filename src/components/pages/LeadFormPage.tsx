@@ -40,6 +40,14 @@ export function LeadFormPage() {
   const [submitting, setSubmitting] = useState(false);
   const [submitted, setSubmitted] = useState(false);
   const [error, setError] = useState("");
+  // FEATURE — Twilio A2P 10DLC campaign compliance: this is the point a
+  // phone number is first collected from someone who isn't a customer yet,
+  // so it's where SMS opt-in consent has to be captured and durably recorded
+  // (smsOptInAt below is the actual compliance record). The exact wording
+  // here is a standard TCPA-style placeholder, NOT the literal text from
+  // your Twilio campaign registration — swap it for that exact wording
+  // before this matters for registration/vetting.
+  const [smsOptIn, setSmsOptIn] = useState(false);
 
   const utmParams = (() => {
     try {
@@ -51,7 +59,7 @@ export function LeadFormPage() {
   })();
 
   const handleSubmit = async () => {
-    if (!f.firstName.trim() || !f.phone.trim()) return;
+    if (!f.firstName.trim() || !f.phone.trim() || !smsOptIn) return;
     setSubmitting(true);
     setError("");
     try {
@@ -60,9 +68,19 @@ export function LeadFormPage() {
         address: f.address.trim(), leadSource: utmParams.utm_source || "Website", notes: (f.service ? `Service: ${f.service}. ` : "") + f.message.trim(),
         tags: [], createdAt: today(), totalSpent: 0, pipelineStage: "lead",
         utmSource: utmParams.utm_source, utmMedium: utmParams.utm_medium, utmCampaign: utmParams.utm_campaign,
+        smsOptIn: true, smsOptInAt: new Date().toISOString(),
       };
       console.log("[LeadForm] submitting new lead:", newCustomer.firstName, newCustomer.lastName);
-      const { error: insertError } = await (supabase as any).from("customers").insert(newCustomer);
+      let { error: insertError } = await (supabase as any).from("customers").insert(newCustomer);
+      if (insertError) {
+        // BUG FIX — smsOptIn/smsOptInAt (migration 0025) not existing yet
+        // would otherwise reject the WHOLE lead insert, losing a real lead
+        // entirely rather than just the opt-in timestamp.
+        console.warn("[LeadForm] insert failed:", insertError.message, "— retrying without smsOptIn columns");
+        const { smsOptIn, smsOptInAt, ...coreCustomer } = newCustomer as any;
+        const retry = await (supabase as any).from("customers").insert(coreCustomer);
+        insertError = retry.error;
+      }
       if (insertError) {
         console.error("[LeadForm] insert failed:", insertError.message);
         setError("Something went wrong submitting your request — please call or text us instead.");
@@ -136,14 +154,23 @@ export function LeadFormPage() {
           <textarea rows={3} value={f.message} onChange={e => setF({ ...f, message: e.target.value })} placeholder="Gate code, dog on property, specific concerns..."
             className="w-full bg-white/5 border border-white/15 rounded-xl px-3 py-2.5 text-sm text-white placeholder-white/25 resize-none focus:outline-none focus:border-red-500/50" />
         </div>
+        <label className="flex items-start gap-2.5 p-3 rounded-xl bg-white/5 border border-white/10 cursor-pointer">
+          <input type="checkbox" checked={smsOptIn} onChange={e => setSmsOptIn(e.target.checked)} className="mt-0.5 flex-shrink-0" />
+          <span className="text-[11px] text-white/60 leading-relaxed">
+            By checking this box, I agree to receive text messages from {companyName} at the phone number provided, including appointment reminders and service updates. Message and data rates may apply. Message frequency varies. Reply STOP to unsubscribe, HELP for help. See our{" "}
+            <a href={"#/terms?co=" + encodeURIComponent(companyName)} target="_blank" rel="noopener noreferrer" className="text-red-400 underline">Terms & Conditions</a> and{" "}
+            <a href={"#/privacy?co=" + encodeURIComponent(companyName)} target="_blank" rel="noopener noreferrer" className="text-red-400 underline">Privacy Policy</a>.
+          </span>
+        </label>
         {error && <div className="text-xs text-red-400 bg-red-950/20 border border-red-700/30 rounded-xl px-3 py-2">{error}</div>}
         <button
           onClick={handleSubmit}
-          disabled={!f.firstName.trim() || !f.phone.trim() || submitting}
+          disabled={!f.firstName.trim() || !f.phone.trim() || !smsOptIn || submitting}
           className="w-full py-4 bg-gradient-to-r from-red-600 to-red-800 text-white font-bold rounded-xl hover:from-red-500 hover:to-red-700 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
         >
           {submitting ? "Submitting…" : "Get My Free Estimate →"}
         </button>
+        {!smsOptIn && <div className="text-center text-[10px] text-yellow-400/70">Check the box above to submit</div>}
         <div className="text-center text-[10px] text-white/30">🔒 We never share your info · No spam</div>
       </div>
     </div>

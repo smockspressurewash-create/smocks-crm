@@ -234,6 +234,28 @@ export function AutomationsPage({ automations = [], setAutomations, jobs = [], c
         </div>
       </Glass>
 
+      {/* FEATURE — explicit cap on total automation sends per day, on top of
+          the existing one-touch-per-customer-per-day guardrail. That existing
+          rule stops any ONE customer being messaged twice in a day, but does
+          nothing to stop a single automation from legitimately matching e.g.
+          200 customers at once (a seasonal promo) and queuing all 200 into
+          one approval batch — this cap holds the excess back and warns
+          instead of dumping an unbounded blast on "Send All". */}
+      <Glass className="p-4 !bg-blue-950/10 !border-blue-700/20">
+        <div className="flex items-center justify-between gap-3 flex-wrap">
+          <div>
+            <div className="text-sm font-semibold flex items-center gap-1.5">🛡 Max Automation Sends Per Day</div>
+            <div className="text-xs text-white/50 mt-0.5 max-w-xl">Caps how many customers can be reached by automations in a single day, across every workflow combined. If a batch would exceed this, the extra sends are held back with a warning instead of going out — raise it if you're running a planned mass promo.</div>
+          </div>
+          <GInput
+            type="number" min="1" step="1"
+            value={settings?.automationMaxSendsPerDay ?? 50}
+            onChange={(e: any) => setSettings((s: any) => ({ ...s, automationMaxSendsPerDay: Math.max(1, Number(e.target.value) || 50) }))}
+            className="!w-24 !text-sm flex-shrink-0"
+          />
+        </div>
+      </Glass>
+
       {/* Late-employee auto-notifications — separate from the workflow builder
           above since it reads live clock-in/job timing rather than firing on a
           discrete event; surfaced as a banner+button on the affected job in

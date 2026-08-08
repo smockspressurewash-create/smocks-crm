@@ -80,7 +80,7 @@ import { ChemicalModal } from "../ui/ChemicalModal";
 import { WeeklyBusinessReview } from "../ui/WeeklyBusinessReview";
 import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 
-export function InboxPage({ threads = [], setThreads, customers = [], settings = {} as AppSettings, toast }: { threads?: any[]; setThreads?: any; customers?: any[]; settings?: AppSettings; toast?: any }) {
+export function InboxPage({ threads = [], setThreads, customers = [], setCustomers, settings = {} as AppSettings, toast }: { threads?: any[]; setThreads?: any; customers?: any[]; setCustomers?: any; settings?: AppSettings; toast?: any }) {
   const [active, setActive] = useState(threads[0]?.id || null);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
@@ -199,15 +199,32 @@ export function InboxPage({ threads = [], setThreads, customers = [], settings =
               const customer = customers.find(c => c.phone?.replace(/\D/g, "") === phone.replace(/\D/g, ""));
               const newMsg = { id: uid(), dir: "in", body: msg.body, ts: msg.dateSent ? new Date(msg.dateSent).getTime() : Date.now() };
 
-              // Handle STOP/UNSTOP opt-out keywords (Twilio compliance)
+              // Handle STOP/UNSTOP opt-out keywords (Twilio compliance).
+              // AUDIT FIX — this used to only toast; it never actually wrote
+              // smsOptOut anywhere, so twilioSend's opt-out check (see
+              // setOptedOutPhones in lib/messaging.ts) had nothing to block
+              // on and a customer who replied STOP kept getting texted by
+              // every automation/manual send in the app. This is a fallback
+              // path only (fires while the owner's Inbox tab is open and
+              // polling) — functions/api/twilio-sms-webhook.ts is the real,
+              // always-on fix once configured as the Twilio Messaging
+              // Service's inbound webhook URL.
               const body = (msg.body || "").trim().toUpperCase();
               if (["STOP", "STOPALL", "UNSUBSCRIBE", "CANCEL", "END", "QUIT"].includes(body)) {
-                // Auto-unsubscribe from review requests and marketing
-                if (customer?.phone) {
+                if (customer?.id && setCustomers) {
+                  setCustomers((prev: Customer[]) => prev.map(c => c.id === customer.id
+                    ? { ...c, smsOptOut: true, optOutDate: today(), smsOptIn: false } as Customer
+                    : c));
                   toast("⛔ " + (customer.firstName || phone) + " replied STOP — unsubscribed");
+                } else {
+                  toast("⛔ STOP received from unknown number " + phone + " — no matching customer to unsubscribe");
                 }
-                // Note: Twilio handles STOP compliance automatically at carrier level
               } else if (["START", "UNSTOP", "YES"].includes(body)) {
+                if (customer?.id && setCustomers) {
+                  setCustomers((prev: Customer[]) => prev.map(c => c.id === customer.id
+                    ? { ...c, smsOptOut: false, smsOptIn: true, smsOptInAt: new Date().toISOString() } as Customer
+                    : c));
+                }
                 toast("✅ " + (customer?.firstName || phone) + " re-subscribed");
               }
 

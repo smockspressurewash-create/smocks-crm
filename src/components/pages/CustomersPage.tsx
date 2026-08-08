@@ -80,6 +80,14 @@ import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 
 export function CustomersPage({ customers = [], setCustomers, estimates = [], jobs = [], employees = [], toast, timeline = {}, setTimeline = () => {}, settings = {} as AppSettings }: { customers?: any[]; setCustomers?: any; estimates?: any[]; jobs?: any[]; employees?: any[]; toast?: any; timeline?: any; setTimeline?: any; settings?: AppSettings }) {
   const [search, setSearch] = useState("");
+  // FEATURE — filter/sort controls for the customer list (previously just a
+  // plain text search with no way to sort or filter by tag).
+  const [sortBy, setSortBy] = useState<"name" | "dateAdded" | "lastJob" | "totalSpent">("name");
+  const [tagFilter, setTagFilter] = useState("");
+  // FEATURE — customer folders, simplified to a single flat folder name per
+  // customer with a filter dropdown (not nested subfolders/drag-and-drop —
+  // see CustomerModal's folder field for how a customer gets assigned one).
+  const [folderFilter, setFolderFilter] = useState("");
   const [modal, setModal] = useState({ open: false, data: null });
   const [detail, setDetail] = useState(null);
   const [pageTab, setPageTab] = useState("list"); // list | analytics | duplicates
@@ -110,7 +118,30 @@ export function CustomersPage({ customers = [], setCustomers, estimates = [], jo
     toast("Customers merged ✓");
   };
 
-  const filtered = customers.filter(c => (c.firstName + " " + c.lastName + " " + c.email + " " + c.phone).toLowerCase().includes(search.toLowerCase()));
+  const allCustomerTags = Array.from(new Set(customers.flatMap((c: any) => c.tags || []))).sort();
+  const allCustomerFolders = Array.from(new Set(customers.map((c: any) => c.folder).filter(Boolean))).sort();
+  // Last-job-scheduled date per customer, used for the "Last Job" sort — not
+  // stored on the customer record itself, so derived from jobs here.
+  const lastJobDateByCustomer = (() => {
+    const m: Record<string, string> = {};
+    for (const j of jobs as any[]) {
+      if (!j.customerId || !j.scheduledDate) continue;
+      if (!m[j.customerId] || j.scheduledDate > m[j.customerId]) m[j.customerId] = j.scheduledDate;
+    }
+    return m;
+  })();
+  const filtered = customers
+    .filter(c => (c.firstName + " " + c.lastName + " " + c.email + " " + c.phone).toLowerCase().includes(search.toLowerCase()))
+    .filter(c => !tagFilter || (c.tags || []).includes(tagFilter))
+    .filter(c => !folderFilter || (folderFilter === "__unfiled__" ? !c.folder : c.folder === folderFilter))
+    .slice()
+    .sort((a: any, b: any) => {
+      if (sortBy === "name") return `${a.firstName} ${a.lastName}`.localeCompare(`${b.firstName} ${b.lastName}`);
+      if (sortBy === "dateAdded") return (b.createdAt || "").localeCompare(a.createdAt || "");
+      if (sortBy === "totalSpent") return (Number(b.totalSpent) || 0) - (Number(a.totalSpent) || 0);
+      if (sortBy === "lastJob") return (lastJobDateByCustomer[b.id] || "").localeCompare(lastJobDateByCustomer[a.id] || "");
+      return 0;
+    });
   const toggleBulkAll = () => setBulkSelected(bulkSelected.length === filtered.length ? [] : filtered.map(c => c.id));
 
   const downloadSelectedCsv = () => {
@@ -158,8 +189,22 @@ export function CustomersPage({ customers = [], setCustomers, estimates = [], jo
     setCustomers(isNew ? [...customers, record] : customers.map(c => c.id === record.id ? record : c));
     setModal({ open: false, data: null });
     (supabase as any).from("customers").upsert(record, { onConflict: "id" })
-      .then((result: any) => {
-        if (result?.error) { console.error("[CustomersPage] save failed:", result.error.message); toast("Saved locally, but failed to sync — " + result.error.message, "red"); }
+      .then(async (result: any) => {
+        if (result?.error) {
+          // BUG FIX — `folder` (new field, migration 0024) not existing yet
+          // would otherwise reject the WHOLE customer save, silently dropping
+          // every other edited field too (same "one bad column poisons the
+          // whole write" pattern documented throughout this project).
+          if ("folder" in record) {
+            console.warn("[CustomersPage] save failed:", result.error.message, "— retrying without folder");
+            const { folder, ...coreRecord } = record;
+            const retry = await (supabase as any).from("customers").upsert(coreRecord, { onConflict: "id" });
+            if (retry?.error) { console.error("[CustomersPage] core retry also failed:", retry.error.message); toast("Saved locally, but failed to sync — " + retry.error.message, "red"); }
+            else toast("Saved, but folder needs a pending database migration to sync", "yellow");
+            return;
+          }
+          console.error("[CustomersPage] save failed:", result.error.message); toast("Saved locally, but failed to sync — " + result.error.message, "red");
+        }
         else toast("Customer saved ✓", "green");
       })
       .catch((e: any) => { console.error("[CustomersPage] save threw:", e?.message); toast("Saved locally, but failed to sync — " + (e?.message || "unknown error"), "red"); });
@@ -332,6 +377,27 @@ export function CustomersPage({ customers = [], setCustomers, estimates = [], jo
             <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-white/40" />
             <GInput placeholder="Search..." value={search} onChange={e => setSearch(e.target.value)} className="!pl-9 !py-1.5 !text-xs" />
           </div>}
+          {pageTab === "list" && (
+            <GSel value={sortBy} onChange={e => setSortBy(e.target.value as any)} className="!py-1.5 !text-xs !w-auto">
+              <option value="name">Sort: Name</option>
+              <option value="dateAdded">Sort: Date Added</option>
+              <option value="lastJob">Sort: Last Job</option>
+              <option value="totalSpent">Sort: Total Spent</option>
+            </GSel>
+          )}
+          {pageTab === "list" && allCustomerTags.length > 0 && (
+            <GSel value={tagFilter} onChange={e => setTagFilter(e.target.value)} className="!py-1.5 !text-xs !w-auto">
+              <option value="">All Tags</option>
+              {allCustomerTags.map((t: string) => <option key={t} value={t}>{t}</option>)}
+            </GSel>
+          )}
+          {pageTab === "list" && (
+            <GSel value={folderFilter} onChange={e => setFolderFilter(e.target.value)} className="!py-1.5 !text-xs !w-auto">
+              <option value="">📁 All Folders</option>
+              <option value="__unfiled__">Unfiled</option>
+              {allCustomerFolders.map((f: string) => <option key={f} value={f}>📁 {f}</option>)}
+            </GSel>
+          )}
         </div>
         <div className="flex gap-2 flex-wrap">
           <input ref={fileRef} type="file" accept=".csv" onChange={importCSV} className="hidden" />
@@ -458,6 +524,7 @@ export function CustomersPage({ customers = [], setCustomers, estimates = [], jo
                         <div className="font-medium">{c.firstName} {c.lastName}</div>
                         {c.hasDog && <span title={"Dog: " + c.dogName} className="text-[10px]">🐕</span>}
                         {c.gateCode && <span title={"Gate: " + c.gateCode} className="text-[10px]">🔒</span>}
+                        {c.folder && <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-blue-950/40 border border-blue-700/40 text-blue-300">📁 {c.folder}</span>}
                       </div>
                       <div className="text-xs text-white/50">{c.email}</div>
                     </td>
@@ -481,7 +548,7 @@ export function CustomersPage({ customers = [], setCustomers, estimates = [], jo
       </Glass>
 
       <CustomerModal open={modal.open} onClose={() => setModal({ open: false, data: null })} data={modal.data} onSave={save} mapsKey={settings.googleMapsKey || (settings as any).mapsKey || ""} customers={customers} />
-      <CustomerDetail customer={detail} onClose={() => setDetail(null)} onDelete={deleteCustomer} estimates={estimates} jobs={jobs} employees={employees} timeline={timeline} setTimeline={setTimeline} settings={settings} />
+      <CustomerDetail customer={detail} onClose={() => setDetail(null)} onDelete={deleteCustomer} onEdit={(cust: any) => { setDetail(null); setModal({ open: true, data: cust }); }} estimates={estimates} jobs={jobs} employees={employees} timeline={timeline} setTimeline={setTimeline} settings={settings} />
       </>}
     </div>
   );
