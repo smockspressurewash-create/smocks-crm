@@ -682,6 +682,17 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
       const added = Math.max(0, Math.round((Date.now() - job.arrivedAt - lunchMs) / 36000) / 100);
       hrs = added;
       patch.loggedHours = hrs;
+    } else if (!hrs) {
+      // AUDIT FIX — a job completed with NEITHER a per-job clockInAt NOR an
+      // "I'm Here" arrivedAt on file (e.g. marked complete straight from the
+      // job card, or arrivedAt never got tapped) used to leave loggedHours
+      // completely unset — not even 0 — which is exactly what "completed
+      // job hours/dollar amounts not appearing in the Pay tab" looks like,
+      // since every Pay tab total is a sum over job.loggedHours. Explicitly
+      // writing 0 at least makes the job show up (as $0/0h, visibly
+      // incomplete) instead of silently vanishing from every total.
+      console.warn("[FinalizeCompletion] job", job.id, "completed with no clockInAt/arrivedAt on file — loggedHours defaulting to 0; hours won't be accurate for this job.");
+      patch.loggedHours = 0;
     }
     if (paymentStatus === "Paid") {
       patch.paymentType = (method as any) || "Cash";
@@ -1758,6 +1769,15 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     window.addEventListener("hashchange", handler);
     return () => window.removeEventListener("hashchange", handler);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // AUDIT FIX — the Pay tab (hours/amounts/paid status) otherwise only
+  // refreshes on the shared cross-device poll's cadence (settings-controlled,
+  // can be 60-120s) or realtime, which reads as "pay tabs don't seem to be
+  // updating" if the owner just changed something and the employee switches
+  // to Pay right after. Pull fresh employees data the moment this tab opens.
+  useEffect(() => {
+    if (tab === "pay") refetchEmployees?.();
+  }, [tab]); // eslint-disable-line react-hooks/exhaustive-deps
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
   const [pendingCompleteJobId, setPendingCompleteJobId] = useState<string | null>(null);
   const [activeJobMenuOpen, setActiveJobMenuOpen] = useState(false);
@@ -1816,23 +1836,40 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   // employees.paidPeriods JSONB the owner's Employees > Payroll view reads,
   // so either side marking a period paid is immediately visible to the other.
   const [markingPaidPeriod, setMarkingPaidPeriod] = useState<string | null>(null);
+  // Turns a PostgREST "column not found" error into an actionable message —
+  // this exact column has a documented history of not existing on some
+  // deployments (see migration 0019's own comment), so a generic error here
+  // has repeatedly read as "Mark as Paid is broken" when the real fix is a
+  // one-line SQL migration the owner just hasn't run yet.
+  const paidColumnMigrationHint = (msg: string, column: string): string =>
+    new RegExp(`${column}.*schema cache|column.*${column}`, "i").test(msg)
+      ? ` — the "${column}" column hasn't been added to your database yet. Ask the owner to run supabase/migrations/0019_employee_payment_log.sql in the Supabase SQL editor.`
+      : "";
   const markPeriodPaid = async (periodStart: string) => {
     const empId = (myEmployee as any)?.id;
     if (!empId) return;
     setMarkingPaidPeriod(periodStart);
+    // Optimistic — shown immediately and held until the server confirms this
+    // exact key, so a slow refetch/poll cycle can never make this look like
+    // it "reverted" (see BUG FIX comment near optimisticPaidPeriods' declaration).
+    setOptimisticPaidPeriods(prev => ({ ...prev, [periodStart]: "paid" }));
     const nextPaid = { ...((myEmployee as any)?.paidPeriods || {}), [periodStart]: "paid" as const };
     try {
       const result = await (supabase as any).from("employees").update({ paidPeriods: nextPaid }).eq("id", empId);
       if (result?.error) {
         console.error("[Mark as Paid] — error:", result.error.message);
-        toast("Saved locally, but couldn't sync to the owner: " + result.error.message, "red");
+        // Genuine failure — revert the optimistic flag instead of leaving a
+        // "paid" badge showing for something that never actually saved.
+        setOptimisticPaidPeriods(prev => { const n = { ...prev }; delete n[periodStart]; return n; });
+        toast("Couldn't save — " + result.error.message + paidColumnMigrationHint(result.error.message, "paidPeriods"), "red");
       } else {
         refetchEmployees?.();
         toast("Marked as paid — owner notified ✓", "green");
       }
     } catch (e: any) {
       console.error("[Mark as Paid] — error:", e?.message || e);
-      toast("Couldn't sync to the owner: " + (e?.message || "unknown error"), "red");
+      setOptimisticPaidPeriods(prev => { const n = { ...prev }; delete n[periodStart]; return n; });
+      toast("Couldn't save: " + (e?.message || "unknown error"), "red");
     } finally {
       setMarkingPaidPeriod(null);
     }
@@ -1845,19 +1882,23 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     if (!empId) return;
     setMarkingPaidDay(dateKey);
     const current = (myEmployee as any)?.paidDays || {};
-    const nextPaid = { ...current, [dateKey]: current[dateKey] === "paid" ? "unpaid" as const : "paid" as const };
+    const nextStatus: "paid" | "unpaid" = current[dateKey] === "paid" ? "unpaid" : "paid";
+    const nextPaid = { ...current, [dateKey]: nextStatus };
+    setOptimisticPaidDays(prev => ({ ...prev, [dateKey]: nextStatus }));
     try {
       const result = await (supabase as any).from("employees").update({ paidDays: nextPaid }).eq("id", empId);
       if (result?.error) {
         console.error("[HoursSync] markDayPaid — error:", result.error.message);
-        toast("Saved locally, but couldn't sync to the owner: " + result.error.message, "red");
+        setOptimisticPaidDays(prev => { const n = { ...prev }; delete n[dateKey]; return n; });
+        toast("Couldn't save — " + result.error.message + paidColumnMigrationHint(result.error.message, "paidDays"), "red");
       } else {
         refetchEmployees?.();
-        toast(nextPaid[dateKey] === "paid" ? "Day marked as paid ✓" : "Day marked unpaid");
+        toast(nextStatus === "paid" ? "Day marked as paid ✓" : "Day marked unpaid");
       }
     } catch (e: any) {
       console.error("[HoursSync] markDayPaid — error:", e?.message || e);
-      toast("Couldn't sync to the owner: " + (e?.message || "unknown error"), "red");
+      setOptimisticPaidDays(prev => { const n = { ...prev }; delete n[dateKey]; return n; });
+      toast("Couldn't save: " + (e?.message || "unknown error"), "red");
     } finally {
       setMarkingPaidDay(null);
     }
@@ -1939,6 +1980,19 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   // up" — the fix mirrors the existing optimistic pattern for this pair too.
   const [optimisticLastShiftHours, setOptimisticLastShiftHours] = useState<number | undefined>(undefined);
   const [optimisticLastShiftDate, setOptimisticLastShiftDate] = useState<string | undefined>(undefined);
+  // BUG FIX (Pay tab audit) — same class of bug as dayClockInAt/lastShiftHours
+  // above: paidPeriods/paidDays have a documented history of the column not
+  // existing on some deployments at all (see supabase/migrations/0019's own
+  // comment — "Mark as Paid was never actually working... that column never
+  // existed here"). Without an optimistic override, tapping "Mark as Paid"
+  // only ever LOOKED like it worked if the write, the refetchEmployees()
+  // round trip, AND the myEmployee prop re-render all lined up — any hiccup
+  // in that chain (a missing column, a slow poll, a stale employees.find()
+  // match) meant the button flipped back to "unpaid" on the very next
+  // render, which is indistinguishable from "shows paid temporarily, then
+  // reverts after reload." Undefined per-key means "trust the server value."
+  const [optimisticPaidPeriods, setOptimisticPaidPeriods] = useState<Record<string, "paid" | "unpaid"> | undefined>(undefined);
+  const [optimisticPaidDays, setOptimisticPaidDays] = useState<Record<string, "paid" | "unpaid"> | undefined>(undefined);
   const [payChartRange, setPayChartRange] = useState<"7d" | "4wk" | "12mo" | "custom">("7d");
   // FEATURE — employee-submitted mileage log (mileage_logs table, migration
   // 0023), synced via Supabase so the owner can see/approve it from any
@@ -2122,6 +2176,26 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     }
   }, [(myEmployee as any)?.lastShiftDate]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Reconciliation for optimisticPaidPeriods/optimisticPaidDays (declared
+  // above, near the other optimistic overrides) — clears once the server's
+  // paidPeriods/paidDays actually agrees with every key this session marked,
+  // same pattern as dayClockInAt/lastShiftHours above.
+  useEffect(() => {
+    if (!optimisticPaidPeriods) return;
+    const real = (myEmployee as any)?.paidPeriods || {};
+    if (Object.keys(optimisticPaidPeriods).every(k => real[k] === optimisticPaidPeriods[k])) {
+      setOptimisticPaidPeriods(undefined);
+    }
+  }, [(myEmployee as any)?.paidPeriods]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (!optimisticPaidDays) return;
+    const real = (myEmployee as any)?.paidDays || {};
+    if (Object.keys(optimisticPaidDays).every(k => real[k] === optimisticPaidDays[k])) {
+      setOptimisticPaidDays(undefined);
+    }
+  }, [(myEmployee as any)?.paidDays]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Effective dayClockInAt — used by shift timer bar AND startDayShiftIfNeeded.
   // Keeps optimistic value until Supabase confirms it so the timer never flickers.
   const empDayClockInAt: number | null = optimisticDayClockInAt !== undefined
@@ -2282,6 +2356,17 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   // Hydrate the Google connection from Supabase if localStorage doesn't have it
   // (different browser/device, or localStorage cleared) — so a real, still-valid
   // token saved by App.tsx's OAuth callback shows "Connected" without re-asking.
+  // AUDIT FIX (Google keeps showing disconnected) — this used to only depend on
+  // [myEmployee.id, empSession.user.id], both stable for the whole session, so
+  // it effectively ran ONCE per login. If localStorage's token was invalid at
+  // that moment (or absent) and the DB didn't have one YET either, this never
+  // got another chance to hydrate later even after employees.google_token got
+  // a real value from elsewhere (a different device's refresh, or the initial
+  // OAuth callback landing a beat after this ran) — the employee stayed
+  // "disconnected" until a full reload happened to re-run this by luck. Now
+  // depends on the actual DB token fields, so any fresh value reaching the
+  // `employees` prop (poll or realtime, both already wired for this table)
+  // re-evaluates hydration immediately.
   useEffect(() => {
     if (!myEmployee || !empSession?.user?.id) return;
     const uid = empSession.user.id;
@@ -2296,14 +2381,18 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     // never gets a chance to run on a device that's never connected before,
     // and the employee sees a "reconnect" prompt for a self-healing state.
     const expiresAt = dbExpiresAt ? new Date(dbExpiresAt).getTime() : 0;
+    // Don't overwrite localStorage with an older DB snapshot than what's
+    // already cached — only hydrate forward, never backward.
+    if (existing?.token && existing.expiresAt >= (Number.isFinite(expiresAt) ? expiresAt : 0)) return;
     saveEmpGoogleToken(uid, {
       token: dbToken || "",
       refreshToken: dbRefreshToken || undefined,
       email: (myEmployee as any).google_email || empSession.user.email || "",
       expiresAt: Number.isFinite(expiresAt) ? expiresAt : 0,
     });
+    console.log("[GoogleConnect] EmployeePortal — hydrated Google token from Supabase (employees.google_token)");
     setGoogleHydrateTick(t => t + 1);
-  }, [(myEmployee as any)?.id, empSession?.user?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [(myEmployee as any)?.id, empSession?.user?.id, (myEmployee as any)?.google_token, (myEmployee as any)?.google_token_expires_at, (myEmployee as any)?.google_refresh_token]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Silently refresh an expired Google access token using the stored
   // refresh_token before ever asking the employee to reconnect. Checked on
@@ -5615,7 +5704,9 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
             // periods as paid/unpaid (Employees → Pay), keyed by each
             // period's start date in paidPeriods. Anything not explicitly
             // marked paid counts as pending.
-            const paidPeriodsMap: Record<string, "paid" | "unpaid"> = (myEmployee as any)?.paidPeriods || {};
+            // Optimistic overrides layered on top of the server value — see
+            // optimisticPaidPeriods' declaration for why this exists.
+            const paidPeriodsMap: Record<string, "paid" | "unpaid"> = { ...((myEmployee as any)?.paidPeriods || {}), ...optimisticPaidPeriods };
             const periodsWithStatus = periods.filter(p => p.pay > 0).map(p => ({ ...p, status: paidPeriodsMap[p.start] || "unpaid" }));
             const totalPaid = Math.round(periodsWithStatus.filter(p => p.status === "paid").reduce((s, p) => s + p.pay, 0) * 100) / 100;
             const pendingPay = Math.round(periodsWithStatus.filter(p => p.status === "unpaid").reduce((s, p) => s + p.pay, 0) * 100) / 100;
@@ -5776,7 +5867,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                   const year = calBase.getFullYear(), month = calBase.getMonth();
                   const daysInMonth = new Date(year, month + 1, 0).getDate();
                   const firstDow = new Date(year, month, 1).getDay();
-                  const paidDaysMap: Record<string, "paid" | "unpaid"> = (myEmployee as any)?.paidDays || {};
+                  const paidDaysMap: Record<string, "paid" | "unpaid"> = { ...((myEmployee as any)?.paidDays || {}), ...optimisticPaidDays };
                   const dayCells: Array<{ key: string; day: number; hours: number; pay: number; status: "paid" | "unpaid" } | null> = [];
                   for (let i = 0; i < firstDow; i++) dayCells.push(null);
                   for (let d = 1; d <= daysInMonth; d++) {
