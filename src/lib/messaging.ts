@@ -335,9 +335,31 @@ const encodeMimeSubject = (subject: string): string => {
   return `=?UTF-8?B?${btoa(unescape(encodeURIComponent(subject)))}?=`;
 };
 
-const sendGmailRaw = async (googleProviderToken: string, fromEmail: string, to: string, subject: string, html: string): Promise<Response> => {
+// BUG FIX — outgoing owner emails had no display name on the From header at
+// all (just the bare Gmail address), so recipients saw whatever profile name
+// happens to be set on the connected Google account — which could be
+// anything (a personal name, an old business name, etc.), not the brand
+// name this app should present consistently. Explicitly the PLATFORM brand
+// ("Crew Boss"), not settings.companyName (the owner's own pressure-washing
+// business name) — the owner asked for this specifically, so the sender
+// name is stable and correct regardless of what's configured in Settings →
+// Company or which Google account happens to be connected.
+export const EMAIL_FROM_NAME = "Crew Boss";
+
+// Builds a proper `"Name" <email>` header; the quoted-string name is
+// RFC-2047-encoded the same way Subject is if it contains non-ASCII, and any
+// literal `"` in the name is stripped since it would otherwise terminate the
+// quoted-string early.
+const formatFromHeader = (email: string, name?: string): string => {
+  if (!name) return email;
+  const safeName = name.replace(/"/g, "");
+  const encoded = /^[\x00-\x7F]*$/.test(safeName) ? safeName : encodeMimeSubject(safeName); // eslint-disable-line no-control-regex
+  return `"${encoded}" <${email}>`;
+};
+
+const sendGmailRaw = async (googleProviderToken: string, fromEmail: string, to: string, subject: string, html: string, fromName?: string): Promise<Response> => {
   const mime = [
-    `From: ${fromEmail}`,
+    `From: ${formatFromHeader(fromEmail, fromName)}`,
     `To: ${to}`,
     `Subject: ${encodeMimeSubject(subject)}`,
     `MIME-Version: 1.0`,
@@ -456,7 +478,7 @@ export const sendViaGmail = async (
   to: string,
   subject: string,
   html: string,
-  opts?: { refreshToken?: string; tokenExpiresAt?: number; backendUrl?: string; onTokenRefreshed?: (token: string, expiresAt: number) => void }
+  opts?: { refreshToken?: string; tokenExpiresAt?: number; backendUrl?: string; onTokenRefreshed?: (token: string, expiresAt: number) => void; fromName?: string }
 ): Promise<void> => {
   let activeToken = googleProviderToken;
 
@@ -473,7 +495,7 @@ export const sendViaGmail = async (
     }
   }
 
-  let res = await sendGmailRaw(activeToken, fromEmail, to, subject, html);
+  let res = await sendGmailRaw(activeToken, fromEmail, to, subject, html, opts?.fromName);
   if (res.status === 401) {
     // FIX 1 — circuit breaker: after 2 consecutive failures, stop attempting
     // the refresh chain entirely and fail fast instead of repeating the same
@@ -532,7 +554,7 @@ export const sendViaGmail = async (
       console.warn("[GoogleToken] no refresh_token available or refresh failed for this account — reconnect required (no longer falling back to the ambient browser session, see BUG FIX comment above)");
     }
     if (freshToken) {
-      res = await sendGmailRaw(freshToken, fromEmail, to, subject, html);
+      res = await sendGmailRaw(freshToken, fromEmail, to, subject, html, opts?.fromName);
     }
     // ITEM 10 — only surface "reconnect" once BOTH the real refresh_token
     // exchange AND the Supabase-session fallback have failed to produce a
@@ -624,6 +646,7 @@ export const sendOwnerGmailOnly = async (
     // row (see setStoredGoogleToken) so every device — not just this one —
     // has the current token for its next send.
     onTokenRefreshed: (token, expiresAt) => setStoredGoogleToken(token, expiresAt, email),
+    fromName: EMAIL_FROM_NAME,
   });
 };
 
@@ -689,6 +712,7 @@ export const sendEmail = async (
     tokenExpiresAt,
     backendUrl: settings.googleBackendUrl,
     onTokenRefreshed: (token, expiresAt) => setStoredGoogleToken(token, expiresAt, email),
+    fromName: EMAIL_FROM_NAME,
   });
 };
 

@@ -118,43 +118,16 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
     return () => clearInterval(h);
   }, [modelStatus]);
 
-  // Proactive morning briefing — fires once per day at app open between 6-11am
-  useEffect(() => {
-    const key = "smocks.alfredBriefingDate";
-    const lastDate = localStorage.getItem(key);
-    const todayStr = today();
-    const hour = new Date().getHours();
-    if (lastDate === todayStr) return;
-    if (hour < 6 || hour > 11) return;
-    localStorage.setItem(key, todayStr);
-    const t = setTimeout(() => {
-      const todayJobs = jobs.filter(j => j.scheduledDate === todayStr && j.status === "scheduled");
-      const overdueInv = estimates.filter(e => e.invoiced && !e.paidAt && e.invoicedAt && daysSince(e.invoicedAt) > 14);
-      const pendingEst = estimates.filter(e => e.status === "pending");
-      const stale = estimates.filter(e => e.status === "pending" && daysSince(e.createdAt) >= 7);
-      const revMonth = jobs.filter(j => j.status === "completed" && j.scheduledDate?.slice(0, 7) === todayStr.slice(0, 7)).reduce((s, j) => s + j.amount, 0);
-      const goalRev = settings?.monthlyRevenueGoal || 0;
-      const pct = goalRev > 0 ? Math.round(revMonth / goalRev * 100) : null;
-      const lines = [
-        "🌅 MORNING BRIEFING — " + new Date().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" }),
-        "",
-        "📅 TODAY: " + (todayJobs.length > 0
-          ? todayJobs.length + " job" + (todayJobs.length !== 1 ? "s" : "") + " scheduled\n" + todayJobs.slice(0, 4).map(j => { const c = customers.find(x => x.id === j.customerId); return "  • " + (c ? c.firstName + " " + c.lastName : "?") + " — " + (j.address || "").split(",")[0] + (j.amount ? " · " + fmt(j.amount) : ""); }).join("\n")
-          : "Nothing scheduled. Book something."),
-        "",
-        pct !== null ? "📈 MONTH: " + fmt(revMonth) + " / " + fmt(goalRev) + " goal (" + pct + "%) " + (pct >= 80 ? "🔥 Almost there!" : pct >= 50 ? "📊 On track" : "⚠️ Behind pace") : "📈 MONTH: " + fmt(revMonth) + " collected",
-        pendingEst.length > 0 ? "📋 " + pendingEst.length + " pending quote" + (pendingEst.length !== 1 ? "s" : "") + (stale.length > 0 ? " (" + stale.length + " stale — follow up)" : "") : "📋 No pending quotes",
-        overdueInv.length > 0 ? "💸 " + overdueInv.length + " overdue invoice" + (overdueInv.length !== 1 ? "s" : "") + " — collect ASAP" : "✅ No overdue invoices",
-        "",
-        "Type /route to optimize today · /status for quick stats · Alfred out."
-      ];
-      const briefing = lines.join("\n");
-      const newConv = { id: uid(), title: "Morning Briefing — " + todayStr, personality: "drill", messages: [{ id: uid(), role: "alfred", content: briefing, timestamp: Date.now() }], createdAt: Date.now(), updatedAt: Date.now() };
-      setConversations(prev => [newConv, ...prev]);
-      setActiveConvId(newConv.id);
-    }, 2000);
-    return () => clearTimeout(t);
-  }, []); // eslint-disable-line
+  // AUDIT FIX — the morning-briefing trigger (fires once per day 6-11am) has
+  // been MOVED to App.tsx, for the exact same reason the general check-in
+  // system was already relocated (see the FIX 14 comment below): this
+  // component only mounts when page === "alfred", so a "proactive 6-11am
+  // briefing" that lived here could only ever fire while the owner already
+  // had Alfred open — never actually proactive. See App.tsx's own effect
+  // (alfredBriefingDate gating, same shape as alfredCheckinDate) for the
+  // real implementation; the conversation it creates lands in
+  // alfredConversations and is picked up by this page's own Supabase sync
+  // the next time Alfred is opened, same as check-ins.
 
   // Proactive afternoon check-in — fires at 2pm if no jobs completed today
   useEffect(() => {
@@ -384,6 +357,16 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
     }, { onConflict: "id" })
       .then((r: any) => {
         if (r?.error) console.warn("[Alfred Sync] save failed for", c.id, ":", r.error.message);
+        // AUDIT FIX — the fetch side already logs "[Verify] ... working" on
+        // success (see loadConversations above); the write side only ever
+        // logged failures. To verify cross-device sync end-to-end: open the
+        // console on device A, send a message (watch for this log), then
+        // open Alfred on device B within ~2min (or wait for its poll) and
+        // confirm the SAME conversation id shows up in its "[Verify] ...
+        // loaded" log. SQL to check directly in Supabase SQL Editor:
+        //   select id, owner_id, title, updated_at from alfred_conversations
+        //   where owner_id = '<ownerId>' order by updated_at desc;
+        else console.log("[Verify] Alfred conversation saved to Supabase — id:", c.id, "· owner_id:", ownerId, "· title:", c.title);
       })
       .catch((e: any) => console.warn("[Alfred Sync] save threw for", c.id, ":", e?.message));
   };
@@ -408,6 +391,20 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
 
   const active = conversations.find(c => c.id === activeConvId) || conversations[0];
   const chats = active?.messages || [];
+
+  // See the BUG FIX comment in send() — when send() had to create a brand
+  // new conversation from scratch, it couldn't also append the user's text
+  // in the same render (state hadn't committed yet), so it queues that text
+  // here and this effect fires the real send() once `active` reflects the
+  // just-created conversation, instead of the message silently vanishing.
+  const pendingFirstSendRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (active && pendingFirstSendRef.current) {
+      const queued = pendingFirstSendRef.current;
+      pendingFirstSendRef.current = null;
+      send(queued);
+    }
+  }); // deliberately no deps — runs after every render, guarded by the ref itself
 
   // Auto-initialize: if no conversations exist, create one so appendMessage always has a target
   // BLOCKER 5 (mobile round 7) — this ran on mount with empty deps, BEFORE
@@ -1984,16 +1981,24 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
     const text = (overrideText ?? input).trim();
     if (!text || loading) return;
 
-    // If no conversation exists yet (edge case on first render), create one now
+    // BUG FIX — "creates a new chat but says nothing": this used to create an
+    // empty-messages conversation, switch to it, then return without ever
+    // appending the text the user just typed — appendMessage/updateActive
+    // below both operate on `active`, which is derived from conversations/
+    // activeConvId state that hasn't committed yet on this same render, so
+    // the message was silently dropped (only a console warning, no
+    // user-visible sign anything went wrong; the user had to notice and
+    // retype it). Rather than duplicating this function's ~200-line model-
+    // calling/tool-use pipeline below for a "conversation already exists"
+    // case, queue the text and let the effect just below re-invoke send()
+    // itself (via overrideText) the moment `active` actually exists.
     if (!active) {
       const cid = uid();
-      const greeting = getPersonality(personality)?.greeting || "Hey. What do we need to handle today? Alfred out.";
-      const newConv = { id: cid, title: text.slice(0, 42) + (text.length > 42 ? "…" : ""), personality, createdAt: today(), updatedAt: Date.now(), messages: [] };
-      setConversations([newConv]);
+      setConversations([{ id: cid, title: text.slice(0, 42) + (text.length > 42 ? "…" : ""), personality, createdAt: today(), updatedAt: Date.now(), messages: [] }]);
       setActiveConvId(cid);
-      // Can't append to it this render — state not yet committed. Return and let user retry.
-      // In practice the auto-init useEffect handles this; this guard prevents a silent no-op.
-      console.warn("No active conversation on send — auto-created one. Please send again.");
+      setInput("");
+      setShowSlash(false);
+      pendingFirstSendRef.current = text;
       return;
     }
 

@@ -157,7 +157,7 @@ export function LeadFormPage() {
         <label className="flex items-start gap-2.5 p-3 rounded-xl bg-white/5 border border-white/10 cursor-pointer">
           <input type="checkbox" checked={smsOptIn} onChange={e => setSmsOptIn(e.target.checked)} className="mt-0.5 flex-shrink-0" />
           <span className="text-[11px] text-white/60 leading-relaxed">
-            By checking this box, I agree to receive text messages from {companyName} at the phone number provided, including appointment reminders and service updates. Message and data rates may apply. Message frequency varies. Reply STOP to unsubscribe, HELP for help. See our{" "}
+            By checking this box, I agree to receive text messages from {companyName} at the phone number provided, including <strong className="text-white/80">estimate follow-ups, appointment reminders, on-my-way/running-late updates, and service confirmations</strong>. Message frequency varies based on your active jobs and requests (typically 1-4 messages per month). Message and data rates may apply. Reply <strong className="text-white/80">STOP</strong> at any time to unsubscribe, or <strong className="text-white/80">HELP</strong> for help. Consent is not a condition of purchase. See our{" "}
             <a href={"#/terms?co=" + encodeURIComponent(companyName)} target="_blank" rel="noopener noreferrer" className="text-red-400 underline">Terms & Conditions</a> and{" "}
             <a href={"#/privacy?co=" + encodeURIComponent(companyName)} target="_blank" rel="noopener noreferrer" className="text-red-400 underline">Privacy Policy</a>.
           </span>

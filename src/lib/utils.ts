@@ -159,6 +159,24 @@ export const localDateStr = (): string => {
   return `${y}-${m}-${day}`;
 };
 
+// AUDIT FIX (Pay tab hours/earnings drift) — same class of bug as AUDIT 3
+// above, but for arbitrary dates rather than "now": pay-period/chart bucket
+// boundaries are built via `new Date(now); d.setDate(d.getDate() - n)`, which
+// operates in the browser's LOCAL timezone, then were converted back to a
+// YYYY-MM-DD key via `toISOString().slice(0,10)` — a UTC conversion. For any
+// timezone west of UTC (all of the US), that can roll the boundary back to
+// the PREVIOUS calendar day, especially in the evening — silently shifting a
+// job right at a period/week/month boundary into the wrong bucket, or off
+// the edge of the tracked window entirely. Use this instead of toISOString()
+// whenever the Date was constructed via local-time arithmetic and needs to
+// be compared against a local calendar-date string like job.scheduledDate.
+export const localDateKey = (d: Date): string => {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+};
+
 // BLOCKER 13 (mobile round 9) — the whole-day shift timer's "same day" check
 // (Resume Day vs Start My Day) used localDateStr()'s plain midnight boundary,
 // so a night-shift worker who ends (or auto-resumes via "I'm Here") a shift

@@ -38,6 +38,7 @@ import { EmployeesPage } from "./components/pages/EmployeesPage";
 import { FleetPage } from "./components/pages/FleetPage";
 import { ExpensesPage } from "./components/pages/ExpensesPage";
 import { ChemicalsPage } from "./components/pages/ChemicalsPage";
+import { NotificationsPage } from "./components/pages/NotificationsPage";
 import { ReportsPage } from "./components/pages/ReportsPage";
 import { AnalyticsPage } from "./components/pages/AnalyticsPage";
 import { BudgetPage } from "./components/pages/BudgetPage";
@@ -76,7 +77,7 @@ import type {
   Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense,
   Chemical, Service, Campaign, Automation, Review, SocialPost,
   AccountabilityEntry, Goal, Win, Reminder, AppSettings,
-  InboxThread, AlfredConversation, AlfredMessage, Timeline, ModelStatus,
+  InboxThread, AlfredConversation, AlfredMessage, Timeline, ModelStatus, AppNotification,
 } from "./types";
 
 // ─── Toast ────────────────────────────────────────────────────────────────────
@@ -97,9 +98,10 @@ const navGroups = [
   {
     label: "Main",
     items: [
-      { id: "dashboard",  label: "Dashboard",  icon: LayoutDashboard },
-      { id: "alfred",     label: "Alfred AI",  icon: Bot             },
-      { id: "inbox",      label: "Inbox",      icon: MessageSquare   },
+      { id: "dashboard",     label: "Dashboard",     icon: LayoutDashboard },
+      { id: "alfred",        label: "Alfred AI",     icon: Bot             },
+      { id: "inbox",         label: "Inbox",         icon: MessageSquare   },
+      { id: "notifications", label: "Notifications", icon: Bell            },
     ],
   },
   {
@@ -463,7 +465,7 @@ export function App() {
     // is exactly why the reset page sometimes never even loaded. Prefix-match
     // it like "portal/" and "estimate/" above.
     if (hash === "reset-password" || hash.startsWith("reset-password&") || hash.startsWith("reset-password?")) return "reset-password";
-    const valid = ["dashboard","alfred","inbox","customers","estimates","invoices","pipeline","intake","jobs","calendar","crew","campaigns","reviews","automations","social","referrals","promotions","expenses","reports","analytics","budget","personal","accountability","employees","fleet","chemicals","google","portal","reset-password","client","referral","rate"];
+    const valid = ["dashboard","alfred","inbox","notifications","customers","estimates","invoices","pipeline","intake","jobs","calendar","crew","campaigns","reviews","automations","social","referrals","promotions","expenses","reports","analytics","budget","personal","accountability","employees","fleet","chemicals","google","portal","reset-password","client","referral","rate"];
     return valid.includes(hash) ? hash : "dashboard";
   });
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -707,7 +709,7 @@ export function App() {
 
   // Listen for browser back/forward
   useEffect(() => {
-    const valid = ["dashboard","alfred","inbox","customers","estimates","invoices","pipeline","intake","jobs","calendar","crew","campaigns","reviews","automations","social","referrals","promotions","expenses","reports","analytics","budget","personal","accountability","employees","fleet","chemicals","google","portal","reset-password","client","referral","rate","lead-form","terms","privacy"];
+    const valid = ["dashboard","alfred","inbox","notifications","customers","estimates","invoices","pipeline","intake","jobs","calendar","crew","campaigns","reviews","automations","social","referrals","promotions","expenses","reports","analytics","budget","personal","accountability","employees","fleet","chemicals","google","portal","reset-password","client","referral","rate","lead-form","terms","privacy"];
     const handler = () => {
       const hash = window.location.hash.replace(/^#\/?/, "").split("?")[0];
       if (hash === "portal" || hash.startsWith("portal/")) { setPage("portal"); return; }
@@ -1102,7 +1104,21 @@ export function App() {
   // moment a client opens, pays, or fails to pay an invoice.
   const invoiceActivityRef = useRef<Record<string, { viewed?: string; paid?: string; failed?: string; status?: string }>>({});
   const invoiceActivitySeededRef = useRef(false);
-  const [invoiceNotifs, setInvoiceNotifs] = useState<{ id: string; text: string; at: number }[]>([]);
+  // FEATURE — notification center (audit round). This used to be a plain
+  // useState capped at 20 entries — anything older just silently fell off
+  // the end, there was no dedicated page (only the bell dropdown), no way to
+  // delete a single one, no read/unread tracking, and nothing persisted
+  // across a reload. Now backed by usePersistent (localStorage) with a much
+  // higher cap, a `read` flag, and enough routing info (`page`) for a click
+  // to actually take the owner somewhere relevant. NotificationsPage.tsx is
+  // the dedicated scrollable/filterable/sortable view; the bell dropdown
+  // becomes a short "recent + unread" preview of the same store.
+  const [notifications, setNotifications] = usePersistent<AppNotification[]>("smocks.notifications", []);
+  const NOTIFICATIONS_CAP = 300;
+  const deleteNotification = (id: string) => setNotifications((prev: AppNotification[]) => prev.filter(n => n.id !== id));
+  const clearAllNotifications = () => setNotifications([]);
+  const markAllNotificationsRead = () => setNotifications((prev: AppNotification[]) => prev.map(n => ({ ...n, read: true })));
+  const markNotificationRead = (id: string) => setNotifications((prev: AppNotification[]) => prev.map(n => n.id === id ? { ...n, read: true } : n));
   useEffect(() => {
     if (!hasCrmSession) return;
     const snapshot: Record<string, { viewed?: string; paid?: string; failed?: string; status?: string }> = {};
@@ -1126,7 +1142,7 @@ export function App() {
     if (!invoiceActivitySeededRef.current) { invoiceActivitySeededRef.current = true; return; }
     if (newEvents.length) {
       newEvents.forEach(ev => toast(ev.text, (ev.text.startsWith("⚠️") || ev.text.startsWith("❌")) ? "red" : "green"));
-      setInvoiceNotifs(prev => [...newEvents, ...prev].slice(0, 20));
+      setNotifications((prev: AppNotification[]) => [...newEvents.map(ev => ({ ...ev, read: false, category: "invoice" as const, page: "invoices" })), ...prev].slice(0, NOTIFICATIONS_CAP));
       // Email the owner too — a bell/toast only reaches them if the CRM tab is
       // open; accepted-quote and declined-quote are important enough to also
       // land in their inbox.
@@ -1203,7 +1219,7 @@ export function App() {
     if (!crewActivitySeededRef.current) { crewActivitySeededRef.current = true; return; }
     if (events.length) {
       events.forEach(ev => toast(ev.text, ev.text.startsWith("🚨") ? "red" : undefined));
-      setInvoiceNotifs(prev => [...events, ...prev].slice(0, 20));
+      setNotifications((prev: AppNotification[]) => [...events.map(ev => ({ ...ev, read: false, category: (ev.text.startsWith("🚨") ? "issue" : "crew") as "issue" | "crew", page: "employees" })), ...prev].slice(0, NOTIFICATIONS_CAP));
     }
   }, [employees, jobs, hasCrmSession]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -1307,6 +1323,98 @@ export function App() {
     // state at fire-time without needing to re-subscribe this effect (and
     // therefore reset the hourly interval) on every unrelated data change.
   }, [crmUserId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // AUDIT FIX — same relocation as the general check-in effect above, for the
+  // exact same reason: this used to live entirely inside AlfredPage.tsx,
+  // gated on the page being open, which meant a "morning briefing between
+  // 6-11am" only ever fired if the owner happened to have Alfred open during
+  // that window — not actually proactive. Moved here so it fires regardless
+  // of which page is open, matching the check-in effect's own already-fixed
+  // pattern.
+  useEffect(() => {
+    if (!crmUserId) return;
+    const tryBriefing = () => {
+      const todayStr = today();
+      const lastDate = (settingsRef.current as any)?.alfredBriefingDate;
+      if (lastDate === todayStr) return;
+      const hour = new Date().getHours();
+      if (hour < 6 || hour > 11) return;
+      const todayJobs = jobs.filter(j => j.scheduledDate === todayStr && j.status === "scheduled");
+      const overdueInv = estimates.filter(e => e.invoiced && !e.paidAt && e.invoicedAt && daysSince(e.invoicedAt) > 14);
+      const pendingEst = estimates.filter(e => e.status === "pending");
+      const stale = estimates.filter(e => e.status === "pending" && daysSince(e.createdAt) >= 7);
+      const revMonth = jobs.filter(j => j.status === "completed" && j.scheduledDate?.slice(0, 7) === todayStr.slice(0, 7)).reduce((s, j) => s + j.amount, 0);
+      const goalRev = (settingsRef.current as any)?.monthlyRevenueGoal || 0;
+      const pct = goalRev > 0 ? Math.round(revMonth / goalRev * 100) : null;
+      const lines = [
+        "🌅 MORNING BRIEFING — " + new Date().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" }),
+        "",
+        "📅 TODAY: " + (todayJobs.length > 0
+          ? todayJobs.length + " job" + (todayJobs.length !== 1 ? "s" : "") + " scheduled\n" + todayJobs.slice(0, 4).map(j => { const c = customers.find(x => x.id === j.customerId); return "  • " + (c ? c.firstName + " " + c.lastName : "?") + " — " + (j.address || "").split(",")[0] + (j.amount ? " · " + fmt(j.amount) : ""); }).join("\n")
+          : "Nothing scheduled. Book something."),
+        "",
+        pct !== null ? "📈 MONTH: " + fmt(revMonth) + " / " + fmt(goalRev) + " goal (" + pct + "%) " + (pct >= 80 ? "🔥 Almost there!" : pct >= 50 ? "📊 On track" : "⚠️ Behind pace") : "📈 MONTH: " + fmt(revMonth) + " collected",
+        pendingEst.length > 0 ? "📋 " + pendingEst.length + " pending quote" + (pendingEst.length !== 1 ? "s" : "") + (stale.length > 0 ? " (" + stale.length + " stale — follow up)" : "") : "📋 No pending quotes",
+        overdueInv.length > 0 ? "💸 " + overdueInv.length + " overdue invoice" + (overdueInv.length !== 1 ? "s" : "") + " — collect ASAP" : "✅ No overdue invoices",
+        "",
+        "Type /route to optimize today · /status for quick stats · Alfred out."
+      ];
+      const briefing = lines.join("\n");
+      const newConv = { id: uid(), title: "Morning Briefing — " + todayStr, personality, messages: [{ id: uid(), role: "alfred", content: briefing, timestamp: Date.now() }], createdAt: Date.now(), updatedAt: Date.now() };
+      console.log("[AlfredBriefing] firing morning briefing for", todayStr);
+      setAlfredConversations((prev: any[]) => [newConv, ...(prev || [])]);
+      setSettings?.((prev: any) => ({ ...prev, alfredBriefingDate: todayStr }));
+      toast?.("🌅 Alfred's morning briefing is ready — see the Alfred tab", "green");
+    };
+    const t = setTimeout(tryBriefing, 1800);
+    const interval = setInterval(tryBriefing, 60 * 60 * 1000);
+    return () => { clearTimeout(t); clearInterval(interval); };
+    // Deliberately keyed only on crmUserId — same staleness tradeoff as the
+    // check-in effect above (reads live jobs/estimates/customers closures
+    // from whenever this effect last actually re-subscribed).
+  }, [crmUserId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // AUDIT FIX — "Morning briefings & day summaries do not work... Email
+  // summaries do not work": sendDailyBriefingNow (below) always existed but
+  // was ONLY reachable via a manual Dashboard button — there was never an
+  // automatic trigger, despite the comment right above it calling this "the
+  // (currently unimplemented) automatic end-of-day send." Mirrors the
+  // "Tomorrow's Jobs" email effect's own once-per-day-after-6pm/localStorage-
+  // dedup pattern. Opt-out, not opt-in (settings.dailyBriefingAutoSend ===
+  // false disables it) — a once-daily performance summary is much lower spam
+  // risk than the automation-SMS incident this app's kill-switches exist for,
+  // and the owner explicitly asked for this to "just work."
+  useEffect(() => {
+    const checkAndSendDailySummary = async () => {
+      if ((settings as any).dailyBriefingAutoSend === false) return;
+      if (new Date().getHours() < 18) return;
+      const dedupeKey = "smocks.dailySummarySent." + today();
+      if (localStorage.getItem(dedupeKey)) return;
+      const toEmail = (settings as any).companyEmail || (settings as any).myEmail;
+      if (!toEmail) { localStorage.setItem(dedupeKey, "1"); return; } // nothing to send to — don't retry hourly
+      localStorage.setItem(dedupeKey, "1");
+      try {
+        const tKey = today();
+        const todaysJobs = jobs.filter(j => j.scheduledDate === tKey);
+        const completed = todaysJobs.filter(j => j.status === "completed");
+        const revenue = completed.reduce((s, j) => s + (Number(j.amount) || 0), 0);
+        const late = todaysJobs.filter(j => {
+          if (!j.clockInAt || !j.scheduledTime) return false;
+          const scheduled = new Date(`${j.scheduledDate}T${j.scheduledTime}:00`).getTime();
+          return (j.clockInAt - scheduled) / 60000 > 15;
+        }).length;
+        const issues = todaysJobs.flatMap(j => (j.commLog || []).filter((e: any) => e.type === "note" && (e.date || "").startsWith(tKey))).length;
+        const html = buildDailyBriefingEmailHtml((settings as any).companyName || "Crew Boss", { completed: completed.length, total: todaysJobs.length, revenue, late, issues });
+        await sendEmail(settings as any, toEmail, "Daily Summary", html);
+        console.log("[DailySummary] auto-sent for", tKey);
+      } catch (e: any) {
+        console.warn("[DailySummary] auto-send failed:", e?.message);
+      }
+    };
+    checkAndSendDailySummary();
+    const interval = setInterval(checkAndSendDailySummary, 60 * 60 * 1000);
+    return () => clearInterval(interval);
+  }, [jobs, settings]);
 
   // Portal
   const [portalEstId, setPortalEstId] = useState<string | null>(null);
@@ -1695,7 +1803,7 @@ export function App() {
   // column poisons the whole write" failure mode this project has hit
   // repeatedly (tip, org_id, crewAssignedAt) — strip just these on retry so
   // the rest of the batch still saves.
-  const CUSTOMER_OPTIONAL_NEWER_FIELDS = ["folder", "smsOptIn", "smsOptInAt", "documents", "smsOptOut", "optOutDate"] as const;
+  const CUSTOMER_OPTIONAL_NEWER_FIELDS = ["folder", "smsOptIn", "smsOptInAt", "documents", "smsOptOut", "optOutDate", "smsOptInPending", "smsOptInPendingAt"] as const;
   const upsertCustomersSafely = async (list: any[], label: string) => {
     if (list.length === 0) return;
     try {
@@ -2848,7 +2956,7 @@ export function App() {
           <div className="relative">
           <button onClick={() => setNotifOpen(!notifOpen)} className="relative p-2 text-white/60 hover:text-white">
             <Bell size={18} />
-            {(negativeAlerts.length + overdueCount + lowStock) > 0 && (
+            {(notifications.filter(n => !n.read).length + negativeAlerts.length + overdueCount + lowStock) > 0 && (
               <span className="absolute top-1 right-1 w-2 h-2 bg-red-500 rounded-full animate-pulse" />
             )}
           </button>
@@ -2861,10 +2969,12 @@ export function App() {
                   <button onClick={() => setNotifOpen(false)} className="p-1 text-white/40 hover:text-white"><X size={14} /></button>
                 </div>
                 <div className="flex-1 overflow-y-auto p-2 space-y-1">
-                  {invoiceNotifs.map(n => (
-                    <button key={n.id + n.at} onClick={() => { setPage("invoices"); setNotifOpen(false); }} className="w-full flex items-center gap-3 p-2.5 hover:bg-white/5 rounded-xl text-left">
-                      <div className="p-1.5 rounded-lg bg-green-950/30 text-green-400"><Receipt size={12} /></div>
-                      <div><div className="text-xs font-semibold">{n.text}</div><div className="text-[10px] text-white/40">{new Date(n.at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</div></div>
+                  {notifications.slice(0, 8).map(n => (
+                    <button key={n.id + n.at} onClick={() => { markNotificationRead(n.id); setPage(n.page || "notifications"); setNotifOpen(false); }} className={"w-full flex items-center gap-3 p-2.5 hover:bg-white/5 rounded-xl text-left " + (n.read ? "opacity-50" : "")}>
+                      <div className={"p-1.5 rounded-lg " + (n.category === "issue" ? "bg-red-950/30 text-red-400" : n.category === "crew" ? "bg-blue-950/30 text-blue-400" : "bg-green-950/30 text-green-400")}>
+                        {n.category === "issue" ? <AlertTriangle size={12} /> : n.category === "crew" ? <Users2 size={12} /> : <Receipt size={12} />}
+                      </div>
+                      <div className="min-w-0"><div className="text-xs font-semibold truncate">{n.text}</div><div className="text-[10px] text-white/40">{new Date(n.at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</div></div>
                     </button>
                   ))}
                   {overdueCount > 0 && (
@@ -2888,10 +2998,13 @@ export function App() {
                       </button>
                     );
                   })}
-                  {negativeAlerts.length === 0 && overdueCount === 0 && lowStock === 0 && invoiceNotifs.length === 0 && estimates.filter(e => e.status === "pending" && daysSince(e.createdAt) >= 7).length === 0 && (
+                  {negativeAlerts.length === 0 && overdueCount === 0 && lowStock === 0 && notifications.length === 0 && estimates.filter(e => e.status === "pending" && daysSince(e.createdAt) >= 7).length === 0 && (
                     <div className="p-6 text-center text-sm text-white/40">All clear ✓</div>
                   )}
                 </div>
+                <button onClick={() => { setPage("notifications"); setNotifOpen(false); }} className="p-2.5 text-center text-xs text-red-400 hover:text-red-300 border-t border-red-900/30 font-semibold">
+                  See all notifications →
+                </button>
               </div>
             </>
           )}
@@ -2968,7 +3081,7 @@ export function App() {
             <PageFade key={page} className={page === "alfred" ? "flex-1 min-h-0 flex flex-col" : ""}>
               <SafePage>
                 {page === "dashboard"      && <Dashboard jobs={jobs} setJobs={setJobs} customers={customers} estimates={estimates} setEstimates={setEstimates} automations={automations} stats={{ totalRev, activeJobs, pendingEst, closeRate, doneMonth }} goals={{ revenue: settings.monthlyRevenueGoal ?? 8000, jobCount: settings.monthlyJobsGoal ?? 20 }} vehicles={vehicles} maintenance={maintenance} chemicals={chemicals} settings={settings} setSettings={setSettings} onNav={setPage} toast={toast} weatherData={weatherData} weatherFetchError={weatherFetchError} inboxThreads={inboxThreads} employees={employees} crewFetchError={crewFetchError} reviews={reviews} onSendDailyBriefing={sendDailyBriefingNow} onViewJob={id => { setOpenJobId(id); setPage("jobs"); }} ownerId={crmUserId} />}
-                {page === "customers"      && <CustomersPage customers={customers} setCustomers={setCustomers} estimates={estimates} jobs={jobs} employees={employees} toast={toast} timeline={timeline} setTimeline={setTimeline} settings={settings} />}
+                {page === "customers"      && <CustomersPage customers={customers} setCustomers={setCustomers} estimates={estimates} jobs={jobs} employees={employees} toast={toast} timeline={timeline} setTimeline={setTimeline} settings={settings} setSettings={setSettings} />}
                 {page === "estimates"      && <EstimatesPage estimates={estimates} setEstimates={setEstimates} customers={customers} services={services} settings={settings} toast={toast} onPortal={id => setPortalEstId(id)} estimateTemplates={estimateTemplates} setEstimateTemplates={setEstimateTemplates} setJobs={setJobs} onNav={setPage} />}
                 {page === "invoices"       && <InvoicesPage estimates={estimates} setEstimates={setEstimates} customers={customers} settings={settings} toast={toast} jobs={jobs} setJobs={setJobs} />}
                 {page === "jobs"           && <JobsPage jobs={jobs} setJobs={setJobs} customers={customers} setCustomers={setCustomers} employees={employees} estimates={estimates} setEstimates={setEstimates} settings={settings} setSettings={setSettings} toast={toast} posts={socialPosts} setPosts={setSocialPosts} setTimeline={setTimeline} initialDetailId={openJobId} onInitialDetailIdConsumed={() => setOpenJobId(null)} onPortal={id => setPortalEstId(id)} ownerId={crmUserId} />}
@@ -2986,6 +3099,7 @@ export function App() {
                 {page === "fleet"          && <FleetPage vehicles={vehicles} setVehicles={setVehicles} maintenance={maintenance} setMaintenance={setMaintenance} toast={toast} />}
                 {page === "expenses"       && <ExpensesPage expenses={expenses} setExpenses={setExpenses} />}
                 {page === "chemicals"      && <ChemicalsPage chemicals={chemicals} setChemicals={setChemicals} toast={toast} settings={settings} />}
+                {page === "notifications"  && <NotificationsPage notifications={notifications} onDelete={deleteNotification} onMarkRead={markNotificationRead} onMarkAllRead={markAllNotificationsRead} onClearAll={clearAllNotifications} onNav={setPage} />}
                 {page === "reports"        && <ReportsPage jobs={jobs} customers={customers} estimates={estimates} expenses={expenses} employees={employees} chemicals={chemicals} />}
                 {page === "analytics"      && <AnalyticsPage jobs={jobs} customers={customers} estimates={estimates} expenses={expenses} />}
                 {page === "budget"         && <BudgetPage jobs={jobs} estimates={estimates} expenses={expenses} settings={settings} toast={toast} />}

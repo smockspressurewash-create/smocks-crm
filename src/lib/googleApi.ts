@@ -98,13 +98,32 @@ const encodeMimeSubject = (subject: string): string => {
   return `=?UTF-8?B?${btoa(unescape(encodeURIComponent(subject)))}?=`;
 };
 
+// BUG FIX — same "sender shows whatever the connected Google account's own
+// profile name is" issue as lib/messaging.ts's sendGmailRaw (see
+// EMAIL_FROM_NAME there) — this path (GoogleWorkspacePage compose, InboxPage
+// reply) had no From header at all. Duplicated rather than imported to avoid
+// coupling this module to messaging.ts's import graph.
+const EMAIL_FROM_NAME = "Crew Boss";
+const formatFromHeader = (email: string, name: string): string => {
+  if (!email) return "";
+  const safeName = name.replace(/"/g, "");
+  const encoded = /^[\x00-\x7F]*$/.test(safeName) ? safeName : encodeMimeSubject(safeName); // eslint-disable-line no-control-regex
+  return `"${encoded}" <${email}>`;
+};
+
 export const sendGmailMessage = async (
   token: string,
   to: string,
   subject: string,
-  body: string
+  body: string,
+  fromEmail?: string
 ): Promise<void> => {
-  const message = `To: ${to}\r\nSubject: ${encodeMimeSubject(subject)}\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n${body}`;
+  // fromEmail is optional (callers don't always have it handy) — Gmail's
+  // send API fills in the authenticated account's real address regardless
+  // of what this header says, so omitting it entirely when unknown is safe;
+  // a bare display name with no <email> would be a malformed header.
+  const fromHeader = fromEmail ? formatFromHeader(fromEmail, EMAIL_FROM_NAME) : "";
+  const message = `${fromHeader ? `From: ${fromHeader}\r\n` : ""}To: ${to}\r\nSubject: ${encodeMimeSubject(subject)}\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n${body}`;
   const raw = btoa(unescape(encodeURIComponent(message)))
     .replace(/\+/g, "-")
     .replace(/\//g, "_")

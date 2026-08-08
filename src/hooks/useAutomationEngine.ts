@@ -787,6 +787,23 @@ export function useAutomationEngine({
     return { cand, auto };
   };
 
+  // AUDIT FIX — the per-day cap (settings.automationMaxSendsPerDay) only ever
+  // limited the TOTAL, not the RATE — an approved 200-customer batch still
+  // fired all 200 sends back-to-back in the same second, which is exactly
+  // the kind of burst carrier A2P filtering flags as spam. These two new
+  // settings (automationMaxSendsPerHour/PerMinute, Settings → Automations)
+  // throttle the actual send loop below; 0/unset on either means no limit.
+  const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+  const computeThrottleDelayMs = (settings: any): number => {
+    const perHour = Number(settings.automationMaxSendsPerHour) || 0;
+    const perMinute = Number(settings.automationMaxSendsPerMinute) || 0;
+    const delays = [
+      perHour > 0 ? 3600000 / perHour : 0,
+      perMinute > 0 ? 60000 / perMinute : 0,
+    ].filter(d => d > 0);
+    return delays.length > 0 ? Math.max(...delays) : 0;
+  };
+
   const approveBatch = useCallback(async () => {
     const batch = pendingBatchRef.current;
     if (!batch || isApprovingRef.current) return;
@@ -797,6 +814,8 @@ export function useAutomationEngine({
       const patchesByAutoId: Record<string, { sentTo: Record<string, string>; sent: number }> = {};
       const newDailyLog: Record<string, string> = { ...(settingsRef.current.automationDailySendLog || {}) };
       const sentThisApprovalForCustomer = new Set<string>();
+      const throttleDelayMs = computeThrottleDelayMs(settingsRef.current);
+      let sentCountThisApproval = 0;
 
       for (const item of batch.items) {
         // GUARDRAIL — never send twice to the same customer in this approval
@@ -806,7 +825,12 @@ export function useAutomationEngine({
         if (firedThisSession.has(item.id)) continue;
         const fresh = stillQualifies(item);
         if (!fresh) { console.log("[Automations] skipped at send time (no longer qualifies):", item.autoName, "→", item.customerName); continue; }
+        if (throttleDelayMs > 0 && sentCountThisApproval > 0) {
+          console.log("[Automations] throttling —", Math.round(throttleDelayMs), "ms before next send (per-hour/per-minute limit)");
+          await sleep(throttleDelayMs);
+        }
         firedThisSession.add(item.id);
+        sentCountThisApproval++;
         const sent = await sendOne(fresh.auto, item.channel, fresh.cand, item.subject, item.body, settingsRef.current, toastRef.current, () => {
           if (!patchesByAutoId[item.autoId]) patchesByAutoId[item.autoId] = { sentTo: {}, sent: 0 };
           patchesByAutoId[item.autoId].sentTo[item.dedupKey] = todayStr;

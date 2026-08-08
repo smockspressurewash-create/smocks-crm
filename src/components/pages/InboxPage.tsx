@@ -335,7 +335,8 @@ export function InboxPage({ threads = [], setThreads, customers = [], setCustome
         if (!activeThread.contactEmail) throw new Error("No email for this contact");
         const lastSubject = activeThread.messages.find(m => m.subject)?.subject || "";
         if (isGmail && gmailToken) {
-          await sendGmailMessage(gmailToken, activeThread.contactEmail, "Re: " + lastSubject, msgText);
+          const gmailFromEmail = storedGoogle?.email || (settings as any)?.googleEmail || "";
+          await sendGmailMessage(gmailToken, activeThread.contactEmail, "Re: " + lastSubject, msgText, gmailFromEmail);
         } else {
           await sendEmail(settings, { to: activeThread.contactEmail, subject: "Re: " + lastSubject, body: msgText });
         }

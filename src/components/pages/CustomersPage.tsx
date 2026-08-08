@@ -78,7 +78,7 @@ import { ChemicalModal } from "../ui/ChemicalModal";
 import { WeeklyBusinessReview } from "../ui/WeeklyBusinessReview";
 import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 
-export function CustomersPage({ customers = [], setCustomers, estimates = [], jobs = [], employees = [], toast, timeline = {}, setTimeline = () => {}, settings = {} as AppSettings }: { customers?: any[]; setCustomers?: any; estimates?: any[]; jobs?: any[]; employees?: any[]; toast?: any; timeline?: any; setTimeline?: any; settings?: AppSettings }) {
+export function CustomersPage({ customers = [], setCustomers, estimates = [], jobs = [], employees = [], toast, timeline = {}, setTimeline = () => {}, settings = {} as AppSettings, setSettings = (() => {}) as any }: { customers?: any[]; setCustomers?: any; estimates?: any[]; jobs?: any[]; employees?: any[]; toast?: any; timeline?: any; setTimeline?: any; settings?: AppSettings; setSettings?: any }) {
   const [search, setSearch] = useState("");
   // FEATURE — filter/sort controls for the customer list (previously just a
   // plain text search with no way to sort or filter by tag).
@@ -88,6 +88,19 @@ export function CustomersPage({ customers = [], setCustomers, estimates = [], jo
   // customer with a filter dropdown (not nested subfolders/drag-and-drop —
   // see CustomerModal's folder field for how a customer gets assigned one).
   const [folderFilter, setFolderFilter] = useState("");
+  // AUDIT FIX — folder management (add/rename/delete/nest/drag-drop). Nesting
+  // is a "Parent/Child" naming convention on the same flat string field
+  // (no schema change) — a customer's folder is still just one string, but
+  // the UI splits on "/" to render and manage it as a tree. Empty folders
+  // (no customers yet) need to exist SOMEWHERE independent of any customer
+  // row, hence settings.customerFolders as the master list.
+  const [folderManagerOpen, setFolderManagerOpen] = useState(false);
+  const [newFolderName, setNewFolderName] = useState("");
+  const [newFolderParent, setNewFolderParent] = useState("");
+  const [renamingFolder, setRenamingFolder] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState("");
+  const [draggedCustomerId, setDraggedCustomerId] = useState<string | null>(null);
+  const [dragOverFolder, setDragOverFolder] = useState<string | null>(null);
   const [modal, setModal] = useState({ open: false, data: null });
   const [detail, setDetail] = useState(null);
   const [pageTab, setPageTab] = useState("list"); // list | analytics | duplicates
@@ -120,6 +133,68 @@ export function CustomersPage({ customers = [], setCustomers, estimates = [], jo
 
   const allCustomerTags = Array.from(new Set(customers.flatMap((c: any) => c.tags || []))).sort();
   const allCustomerFolders = Array.from(new Set(customers.map((c: any) => c.folder).filter(Boolean))).sort();
+  // Union of folders that actually have a customer in them AND folders that
+  // exist only because the owner explicitly created them (still empty).
+  const masterFolders = Array.from(new Set([...(settings.customerFolders || []), ...allCustomerFolders])).sort();
+  // Every folder AND every ancestor path implied by "/"-nested names, so
+  // "Commercial/Restaurants" also surfaces a "Commercial" node in the tree
+  // even if no customer/created-folder is filed directly under "Commercial"
+  // itself.
+  const allFolderPaths = Array.from(new Set(masterFolders.flatMap(f => {
+    const parts = f.split("/");
+    return parts.map((_, i) => parts.slice(0, i + 1).join("/"));
+  }))).sort();
+  const folderDepth = (path: string) => path.split("/").length - 1;
+  const folderLabel = (path: string) => path.split("/").pop() || path;
+  const folderCustomerCount = (path: string) => customers.filter((c: any) => c.folder === path || (c.folder || "").startsWith(path + "/")).length;
+
+  const renameFolder = (oldPath: string, newName: string) => {
+    const trimmed = newName.trim();
+    if (!trimmed || trimmed === folderLabel(oldPath)) { setRenamingFolder(null); return; }
+    const parent = oldPath.includes("/") ? oldPath.slice(0, oldPath.lastIndexOf("/")) : "";
+    const newPath = parent ? `${parent}/${trimmed}` : trimmed;
+    if (allFolderPaths.includes(newPath)) { toast?.("A folder with that name already exists here", "red"); return; }
+    // Re-point this folder AND every descendant ("oldPath/...") to the new path.
+    setCustomers((prev: any[]) => prev.map((c: any) => {
+      if (c.folder === oldPath) return { ...c, folder: newPath };
+      if ((c.folder || "").startsWith(oldPath + "/")) return { ...c, folder: newPath + c.folder.slice(oldPath.length) };
+      return c;
+    }));
+    setSettings((s: any) => ({
+      ...s,
+      customerFolders: (s.customerFolders || []).map((f: string) =>
+        f === oldPath ? newPath : f.startsWith(oldPath + "/") ? newPath + f.slice(oldPath.length) : f
+      ),
+    }));
+    setRenamingFolder(null);
+    if (folderFilter === oldPath) setFolderFilter(newPath);
+    toast?.("Folder renamed ✓");
+  };
+
+  const deleteFolder = (path: string) => {
+    const count = folderCustomerCount(path);
+    if (!confirm(count > 0 ? `Delete "${folderLabel(path)}"? ${count} customer(s) will become unfiled (not deleted).` : `Delete empty folder "${folderLabel(path)}"?`)) return;
+    setCustomers((prev: any[]) => prev.map((c: any) => (c.folder === path || (c.folder || "").startsWith(path + "/")) ? { ...c, folder: "" } : c));
+    setSettings((s: any) => ({ ...s, customerFolders: (s.customerFolders || []).filter((f: string) => f !== path && !f.startsWith(path + "/")) }));
+    if (folderFilter === path) setFolderFilter("");
+    toast?.("Folder deleted ✓");
+  };
+
+  const createFolder = () => {
+    const trimmed = newFolderName.trim();
+    if (!trimmed) return;
+    const path = newFolderParent ? `${newFolderParent}/${trimmed}` : trimmed;
+    if (allFolderPaths.includes(path)) { toast?.("That folder already exists", "red"); return; }
+    setSettings((s: any) => ({ ...s, customerFolders: [...(s.customerFolders || []), path] }));
+    setNewFolderName("");
+    toast?.("Folder created ✓");
+  };
+
+  const moveCustomerToFolder = (customerId: string, folderPath: string) => {
+    setCustomers((prev: any[]) => prev.map((c: any) => c.id === customerId ? { ...c, folder: folderPath } : c));
+    const cust = customers.find((c: any) => c.id === customerId);
+    toast?.(`${cust?.firstName || "Customer"} moved to ${folderPath || "Unfiled"} ✓`);
+  };
   // Last-job-scheduled date per customer, used for the "Last Job" sort — not
   // stored on the customer record itself, so derived from jobs here.
   const lastJobDateByCustomer = (() => {
@@ -395,8 +470,11 @@ export function CustomersPage({ customers = [], setCustomers, estimates = [], jo
             <GSel value={folderFilter} onChange={e => setFolderFilter(e.target.value)} className="!py-1.5 !text-xs !w-auto">
               <option value="">📁 All Folders</option>
               <option value="__unfiled__">Unfiled</option>
-              {allCustomerFolders.map((f: string) => <option key={f} value={f}>📁 {f}</option>)}
+              {allFolderPaths.map((f: string) => <option key={f} value={f}>{"—".repeat(folderDepth(f))} 📁 {folderLabel(f)}</option>)}
             </GSel>
+          )}
+          {pageTab === "list" && (
+            <GBtn variant="ghost" onClick={() => setFolderManagerOpen(true)} className="!py-1.5 !text-xs"><Filter size={12} className="inline mr-1.5" />Manage Folders</GBtn>
           )}
         </div>
         <div className="flex gap-2 flex-wrap">
@@ -408,6 +486,36 @@ export function CustomersPage({ customers = [], setCustomers, estimates = [], jo
           <GBtn onClick={() => setModal({ open: true, data: null })}><Plus size={14} className="inline mr-1.5" />Add</GBtn>
         </div>
       </div>
+
+      {/* AUDIT FIX — drag-and-drop folder assignment. Drag a customer row
+          from the list below onto one of these chips to move them into that
+          folder; native HTML5 drag/drop, no library. Only shown when at
+          least one folder exists so it doesn't clutter a fresh install. */}
+      {pageTab === "list" && allFolderPaths.length > 0 && (
+        <div className="flex items-center gap-1.5 flex-wrap px-1">
+          <span className="text-[10px] text-white/30 uppercase tracking-wider mr-1">Drag to file:</span>
+          <div
+            onDragOver={e => { e.preventDefault(); setDragOverFolder("__unfiled__"); }}
+            onDragLeave={() => setDragOverFolder(null)}
+            onDrop={e => { e.preventDefault(); if (draggedCustomerId) moveCustomerToFolder(draggedCustomerId, ""); setDraggedCustomerId(null); setDragOverFolder(null); }}
+            className={"text-[10px] px-2 py-1 rounded-full border transition " + (dragOverFolder === "__unfiled__" ? "bg-white/20 border-white/40" : "bg-white/5 border-white/10 text-white/40")}
+          >
+            Unfiled
+          </div>
+          {allFolderPaths.map(f => (
+            <div
+              key={f}
+              onDragOver={e => { e.preventDefault(); setDragOverFolder(f); }}
+              onDragLeave={() => setDragOverFolder(null)}
+              onDrop={e => { e.preventDefault(); if (draggedCustomerId) moveCustomerToFolder(draggedCustomerId, f); setDraggedCustomerId(null); setDragOverFolder(null); }}
+              className={"text-[10px] px-2 py-1 rounded-full border transition " + (dragOverFolder === f ? "bg-blue-900/50 border-blue-500/60 text-blue-200" : "bg-blue-950/20 border-blue-700/30 text-blue-300/70")}
+              style={{ marginLeft: folderDepth(f) * 8 }}
+            >
+              📁 {folderLabel(f)}
+            </div>
+          ))}
+        </div>
+      )}
 
       {bulkMode && pageTab === "list" && (
         <Glass className="p-3 !bg-red-950/15 !border-red-700/30 flex items-center justify-between flex-wrap gap-2">
@@ -491,6 +599,58 @@ export function CustomersPage({ customers = [], setCustomers, estimates = [], jo
         </div>
       </Modal>}
 
+      {/* AUDIT FIX — full folder management: create, rename, delete, and
+          nested ("Parent/Child") organization. Drag-and-drop reassignment
+          lives on the list view itself (chips above the table); this modal
+          is for structural changes to the folders themselves. */}
+      {folderManagerOpen && (
+        <Modal open={folderManagerOpen} onClose={() => { setFolderManagerOpen(false); setRenamingFolder(null); }} title="Manage Folders">
+          <div className="space-y-4 min-w-[320px]">
+            <div className="flex gap-2">
+              <GSel value={newFolderParent} onChange={e => setNewFolderParent(e.target.value)} className="!text-xs !w-36 flex-shrink-0">
+                <option value="">Top level</option>
+                {allFolderPaths.map(f => <option key={f} value={f}>{"—".repeat(folderDepth(f))} {folderLabel(f)}</option>)}
+              </GSel>
+              <input
+                value={newFolderName}
+                onChange={e => setNewFolderName(e.target.value)}
+                onKeyDown={e => e.key === "Enter" && createFolder()}
+                placeholder="New folder name"
+                className="flex-1 bg-black/40 border border-white/15 rounded-xl px-3 py-2 text-sm text-white placeholder-white/30 focus:outline-none focus:border-red-500/50"
+              />
+              <GBtn onClick={createFolder} disabled={!newFolderName.trim()} className="!text-xs flex-shrink-0"><Plus size={12} className="inline mr-1" />Add</GBtn>
+            </div>
+            <div className="space-y-1 max-h-80 overflow-y-auto">
+              {allFolderPaths.length === 0 && <div className="text-center text-xs text-white/40 py-6">No folders yet — add one above.</div>}
+              {allFolderPaths.map(f => (
+                <div key={f} className="flex items-center justify-between gap-2 p-2 rounded-lg bg-white/5" style={{ marginLeft: folderDepth(f) * 16 }}>
+                  {renamingFolder === f ? (
+                    <>
+                      <input
+                        autoFocus
+                        value={renameValue}
+                        onChange={e => setRenameValue(e.target.value)}
+                        onKeyDown={e => { if (e.key === "Enter") renameFolder(f, renameValue); if (e.key === "Escape") setRenamingFolder(null); }}
+                        className="flex-1 bg-black/60 border border-white/20 rounded-lg px-2 py-1 text-xs text-white focus:outline-none"
+                      />
+                      <button onClick={() => renameFolder(f, renameValue)} className="text-[10px] px-2 py-1 rounded-lg bg-green-900/40 text-green-300 hover:bg-green-800/50">Save</button>
+                      <button onClick={() => setRenamingFolder(null)} className="text-[10px] px-2 py-1 rounded-lg bg-white/10 text-white/50 hover:text-white">Cancel</button>
+                    </>
+                  ) : (
+                    <>
+                      <span className="text-xs flex-1 min-w-0 truncate">📁 {folderLabel(f)} <span className="text-white/30">({folderCustomerCount(f)})</span></span>
+                      <button onClick={() => { setRenamingFolder(f); setRenameValue(folderLabel(f)); }} className="p-1.5 text-white/40 hover:text-white flex-shrink-0" title="Rename"><Edit size={12} /></button>
+                      <button onClick={() => deleteFolder(f)} className="p-1.5 text-white/40 hover:text-red-400 flex-shrink-0" title="Delete"><Trash2 size={12} /></button>
+                    </>
+                  )}
+                </div>
+              ))}
+            </div>
+            <div className="text-[10px] text-white/30 pt-2 border-t border-white/10">Tip: pick a parent above to nest a folder inside another (e.g. "Commercial" → "Restaurants"). Deleting a folder unfiles its customers — it never deletes them.</div>
+          </div>
+        </Modal>
+      )}
+
       {pageTab === "list" && <>
       {mergeMode && <Glass className="p-3 !bg-yellow-950/20 !border-yellow-700/40">
         <div className="flex items-center justify-between">
@@ -516,7 +676,11 @@ export function CustomersPage({ customers = [], setCustomers, estimates = [], jo
               {filtered.map(c => {
                 const sel = mergePair.includes(c.id);
                 return (
-                  <tr key={c.id} className={"border-b border-red-900/10 hover:bg-white/5 transition " + (sel ? "bg-yellow-950/20" : "")}>
+                  <tr key={c.id}
+                    draggable={!mergeMode && !bulkMode}
+                    onDragStart={() => setDraggedCustomerId(c.id)}
+                    onDragEnd={() => setDraggedCustomerId(null)}
+                    className={"border-b border-red-900/10 hover:bg-white/5 transition " + (sel ? "bg-yellow-950/20" : "") + (draggedCustomerId === c.id ? " opacity-40" : "")}>
                     {mergeMode && <td className="px-4 py-4"><input type="checkbox" checked={sel} onChange={() => toggleMerge(c.id)} className="w-4 h-4 accent-red-600" /></td>}
                     {bulkMode && <td className="px-4 py-4"><input type="checkbox" checked={bulkSelected.includes(c.id)} onChange={() => toggleBulk(c.id)} className="w-4 h-4 rounded accent-red-600" /></td>}
                     <td className="px-5 py-4 cursor-pointer" onClick={() => !mergeMode && !bulkMode && setDetail(c)}>

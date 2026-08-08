@@ -39,6 +39,12 @@ export interface Customer {
   // timestamp); smsOptIn is just for quick UI reads.
   smsOptIn?: boolean;
   smsOptInAt?: string;
+  // FEATURE — text-to-opt-in keyword flow (Twilio A2P "via text" opt-in
+  // requirement): double opt-in — texting the keyword sets this pending
+  // flag and sends a confirmation REQUEST; only replying Y/YES flips
+  // smsOptIn to true. See functions/api/twilio-sms-webhook.ts.
+  smsOptInPending?: boolean;
+  smsOptInPendingAt?: string;
   notes?: string;
   totalSpent: number;
   createdAt: string;
@@ -533,6 +539,19 @@ export interface InboxThread {
   smsOptOut?: boolean;
 }
 
+// FEATURE — Notification Center (audit round). One persisted record per
+// owner-facing event (crew activity, invoice activity, reported issues,
+// etc.) — see setNotifications in App.tsx for where these get created.
+export interface AppNotification {
+  id: string;
+  text: string;
+  at: number;
+  read?: boolean;
+  category?: "invoice" | "crew" | "issue" | "system";
+  page?: string;
+  detail?: string;
+}
+
 // ─── Social ───────────────────────────────────────────────────────────────────
 
 export interface SocialPost {
@@ -740,6 +759,13 @@ export interface AppSettings {
 
   // Extended/misc
   googleMapsKey?: string;
+  // FEATURE — customer folder management. Customer.folder (a plain string,
+  // "Parent/Child" for nesting) stays the source of truth for WHICH folder a
+  // customer is in; this is the separate master list of folder NAMES that
+  // exist even with zero customers in them yet (e.g. right after creating an
+  // empty folder) — without this, an empty folder has nothing referencing it
+  // and would vanish from every folder list immediately. See CustomersPage.tsx.
+  customerFolders?: string[];
   googleScopes?: Record<string, boolean>;
   activeModel?: string;
   modelPriority?: string[];
@@ -760,6 +786,10 @@ export interface AppSettings {
   // a guessed/computed value that can drift from reality (e.g. across
   // Cloudflare Pages preview vs. production domains).
   twilioIncomingWebhookUrl?: string;
+  // FEATURE — Twilio A2P "via text" opt-in keyword (e.g. "DEALS"). Default
+  // is applied server-side in the webhook if unset — see
+  // functions/api/twilio-sms-webhook.ts.
+  smsOptInKeyword?: string;
 
   // Dashboard / business goals
   dashboardWidgets?: string[];
@@ -798,6 +828,11 @@ export interface AppSettings {
   // combined (distinct from automationDailySendLog's per-customer cap above).
   // Defaults to 50 when unset. See useAutomationEngine.ts's gather loop.
   automationMaxSendsPerDay?: number;
+  // FEATURE — throttles (not just caps) the actual send rate of an approved
+  // batch. 0/unset = no limit. See computeThrottleDelayMs in
+  // useAutomationEngine.ts.
+  automationMaxSendsPerHour?: number;
+  automationMaxSendsPerMinute?: number;
   // FEATURE — photo/video auto-deletion, owner opt-in (default disabled —
   // 0/undefined means off). When set to a positive number of days, completed
   // jobs older than that lose their photos/videos (Storage objects + JSONB

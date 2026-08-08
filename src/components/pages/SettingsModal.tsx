@@ -282,10 +282,21 @@ export function SettingsModal({ open, onClose, settings, setSettings, jobs = [],
                   <div className="text-xs text-white/50">{f.ownerRole || "Owner · Crew Boss"}</div>
                   <div className="text-xs text-white/40">{f.companyEmail || "—"}</div>
                 </div>
-                <label className="cursor-pointer px-3 py-2 bg-black/40 border border-red-900/30 rounded-xl text-xs text-white/70 hover:text-white transition flex items-center gap-1.5 flex-shrink-0">
-                  <input type="file" accept="image/*" className="hidden" onChange={e => { const file = e.target.files?.[0]; if (!file) return; compressImageFile(file, 400, 0.8).then(dataUrl => setF(prev => ({ ...prev, logoUrl: dataUrl }))); }} />
-                  <Upload size={12} /> Photo
-                </label>
+                <div className="flex flex-col gap-1.5 flex-shrink-0">
+                  <label className="cursor-pointer px-3 py-2 bg-black/40 border border-red-900/30 rounded-xl text-xs text-white/70 hover:text-white transition flex items-center gap-1.5">
+                    <input type="file" accept="image/*" className="hidden" onChange={e => { const file = e.target.files?.[0]; if (!file) return; compressImageFile(file, 400, 0.8).then(dataUrl => setF(prev => ({ ...prev, logoUrl: dataUrl }))); }} />
+                    <Upload size={12} /> Photo
+                  </label>
+                  {/* AUDIT FIX — there was no way to delete a profile photo
+                      once uploaded, unlike the Company Logo section further
+                      down which already has a "Remove" button for the same
+                      underlying logoUrl field. */}
+                  {f.logoUrl && (
+                    <button type="button" onClick={() => setF(prev => ({ ...prev, logoUrl: "" }))} className="px-3 py-1.5 bg-red-950/30 border border-red-800/40 rounded-xl text-xs text-red-300 hover:bg-red-900/40 transition flex items-center gap-1.5 justify-center">
+                      <Trash2 size={12} /> Remove
+                    </button>
+                  )}
+                </div>
               </div>
               <div className="grid md:grid-cols-2 gap-3">
                 <div><label className="text-xs text-white/60 mb-1 block">Your Name</label><GInput value={f.ownerName || ""} onChange={e => setF({ ...f, ownerName: e.target.value })} placeholder="Will Smock" /></div>
@@ -1251,6 +1262,40 @@ export function SettingsModal({ open, onClose, settings, setSettings, jobs = [],
                       </div>
                     )}
                   </div>
+                </div>
+
+                {/* FEATURE — "via text" opt-in keyword (Twilio A2P compliance
+                    checklist item). Texting this word to your number starts a
+                    real double opt-in flow — see functions/api/twilio-sms-
+                    webhook.ts: keyword -> confirmation request -> Y/YES reply
+                    -> confirmed + smsOptIn set true. */}
+                <div className="p-3 bg-black/60 rounded-xl border border-white/5">
+                  <label className="text-[10px] text-white/50 uppercase tracking-wider">Text-to-Join Opt-In Keyword</label>
+                  <GInput value={f.smsOptInKeyword || ""} onChange={e => setF({ ...f, smsOptInKeyword: e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, "") })} placeholder="DEALS" className="!text-xs mt-1 font-mono" />
+                  <div className="text-[10px] text-white/40 mt-1.5">
+                    Someone texting this word to your number ({f.twilioFrom || "your Twilio number"}) gets a confirmation request; replying Y/YES completes opt-in. Defaults to "DEALS" if left blank. Requires the Incoming SMS Webhook above to be configured in Twilio.
+                  </div>
+                </div>
+
+                {/* FEATURE — verbal opt-in script (Twilio A2P compliance
+                    checklist item: phone-collected consent needs the same
+                    disclosures as the web form, just read aloud). Reference
+                    text only — nothing here is sent automatically. */}
+                <div className="p-3 bg-black/60 rounded-xl border border-white/5">
+                  <label className="text-[10px] text-white/50 uppercase tracking-wider">Verbal Opt-In Script (read to customer by phone)</label>
+                  <div className="text-[10px] text-white/40 mt-1 mb-2">Use this when collecting a phone number over a call — read it before adding them to text updates.</div>
+                  {(() => {
+                    const companyName = f.companyName || "Crew Boss";
+                    const script = `"Before I text you [estimate details / your appointment confirmation], can I get your okay to send you text updates from ${companyName}? You'd get things like appointment reminders, on-my-way alerts, and occasional service offers — usually about 1 to 4 messages a month. Message and data rates may apply, and you can reply STOP at any time to stop, or HELP for help. Our terms and privacy policy are at ${typeof window !== "undefined" ? window.location.origin : ""}/#/terms and /#/privacy. Is that okay with you — yes or no?"\n\n[Wait for a clear "yes." If yes: "Great, thank you — I've got you signed up." If no: do not add them to text updates — proceed with phone/email only.]`;
+                    return (
+                      <>
+                        <GTxt readOnly rows={6} value={script} className="!text-[11px] !leading-relaxed" />
+                        <GBtn variant="ghost" className="!text-[10px] !py-1 mt-1.5" onClick={() => { navigator.clipboard?.writeText(script).then(() => toast("Script copied ✓"), () => toast("Couldn't copy — select and copy manually", "red")); }}>
+                          Copy Script
+                        </GBtn>
+                      </>
+                    );
+                  })()}
                 </div>
               </div>
             </Glass>

@@ -224,6 +224,29 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
   const [showScheduleForm, setShowScheduleForm] = useState(false);
   const [scheduleEmpId, setScheduleEmpId] = useState("");
   const [scheduling, setScheduling] = useState(false);
+  // AUDIT FIX — the owner never had any visibility into whether a sent
+  // request was still pending, accepted, or declined — job_requests was
+  // write-only from this side. A declined request produced zero signal; the
+  // job just sat crew-less, indistinguishable from a request never having
+  // been sent at all (exactly the "assigning/requesting employees doesn't
+  // work" report). Keyed by employee_id — last request per employee wins.
+  const [jobRequestStatuses, setJobRequestStatuses] = useState<Record<string, { status: string; denial_reason?: string }>>({});
+  const fetchJobRequestStatuses = useCallback(async () => {
+    if (!jobId) return;
+    try {
+      const { data, error } = await (supabase as any).from("job_requests").select("employee_id, status, denial_reason").eq("job_id", jobId);
+      if (!error && Array.isArray(data)) {
+        const map: Record<string, { status: string; denial_reason?: string }> = {};
+        data.forEach((r: any) => { map[r.employee_id] = { status: r.status, denial_reason: r.denial_reason }; });
+        setJobRequestStatuses(map);
+      }
+    } catch { /* job_requests table may not exist yet */ }
+  }, [jobId]);
+  useEffect(() => {
+    fetchJobRequestStatuses();
+    const interval = setInterval(fetchJobRequestStatuses, 15000);
+    return () => clearInterval(interval);
+  }, [fetchJobRequestStatuses]);
 
   // Live timer tick while clock is running
   useEffect(() => {
@@ -616,6 +639,7 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
         setRequestOpenId(null);
         setRequestMsg("");
         setRequestEmpId("");
+        fetchJobRequestStatuses();
       } else {
         toast("Request failed — run the job_requests SQL in Supabase first", "red");
         console.warn("[Verify] requesting employees for jobs — failed:", error?.message);
@@ -1298,8 +1322,16 @@ ${job.notes ? `<div class="section"><h2>Job Notes</h2><p>${job.notes}</p></div>`
               return (
                 <div key={e.id} className={"rounded-lg border overflow-hidden " + (unavail ? "bg-yellow-950/10 border-yellow-700/30" : "bg-white/5 border-white/10")}>
                   <div className="flex items-center justify-between gap-2 px-2.5 py-1.5">
-                    <span className={"text-xs " + (unavail ? "text-yellow-300" : "text-white/70")} title={unavail ? `⚠️ ${e.firstName} is unavailable on this day. Schedule anyway?` : undefined}>
+                    <span className={"text-xs flex items-center gap-1.5 " + (unavail ? "text-yellow-300" : "text-white/70")} title={unavail ? `⚠️ ${e.firstName} is unavailable on this day. Schedule anyway?` : undefined}>
                       {e.firstName} {e.lastName}{unavail ? " ⚠️" : ""}
+                      {jobRequestStatuses[e.id]?.status === "pending" && (
+                        <span className="text-[9px] font-semibold px-1.5 py-0.5 rounded-full bg-yellow-950/50 text-yellow-300">Request pending</span>
+                      )}
+                      {jobRequestStatuses[e.id]?.status === "denied" && (
+                        <span className="text-[9px] font-semibold px-1.5 py-0.5 rounded-full bg-red-950/50 text-red-300" title={jobRequestStatuses[e.id]?.denial_reason || undefined}>
+                          Declined{jobRequestStatuses[e.id]?.denial_reason ? `: ${jobRequestStatuses[e.id]!.denial_reason}` : ""}
+                        </span>
+                      )}
                     </span>
                     <div className="flex gap-1 flex-shrink-0">
                       <button onClick={() => toggleCrew(e.id)}

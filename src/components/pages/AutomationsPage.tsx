@@ -241,7 +241,7 @@ export function AutomationsPage({ automations = [], setAutomations, jobs = [], c
           200 customers at once (a seasonal promo) and queuing all 200 into
           one approval batch — this cap holds the excess back and warns
           instead of dumping an unbounded blast on "Send All". */}
-      <Glass className="p-4 !bg-blue-950/10 !border-blue-700/20">
+      <Glass className="p-4 !bg-blue-950/10 !border-blue-700/20 space-y-3">
         <div className="flex items-center justify-between gap-3 flex-wrap">
           <div>
             <div className="text-sm font-semibold flex items-center gap-1.5">🛡 Max Automation Sends Per Day</div>
@@ -251,6 +251,40 @@ export function AutomationsPage({ automations = [], setAutomations, jobs = [], c
             type="number" min="1" step="1"
             value={settings?.automationMaxSendsPerDay ?? 50}
             onChange={(e: any) => setSettings((s: any) => ({ ...s, automationMaxSendsPerDay: Math.max(1, Number(e.target.value) || 50) }))}
+            className="!w-24 !text-sm flex-shrink-0"
+          />
+        </div>
+        {/* AUDIT FIX — the per-day cap alone doesn't stop a huge batch from
+            hitting Twilio all at once the moment "Send All" is clicked — a
+            200-customer approved batch still fires 200 texts in the same
+            second, which is exactly the kind of burst that trips carrier
+            filtering/A2P throughput limits (and is generally how "spam"
+            gets flagged). Per-hour/per-minute caps throttle the actual send
+            RATE, independent of the daily total. 0 or blank = no limit
+            (same "off" convention as elsewhere in this app). */}
+        <div className="flex items-center justify-between gap-3 flex-wrap pt-3 border-t border-white/5">
+          <div>
+            <div className="text-sm font-semibold flex items-center gap-1.5">⏱ Max Sends Per Hour</div>
+            <div className="text-xs text-white/50 mt-0.5 max-w-xl">Throttles how fast a big approved batch actually goes out, independent of the daily cap above. Leave blank/0 for no hourly limit.</div>
+          </div>
+          <GInput
+            type="number" min="0" step="1"
+            value={settings?.automationMaxSendsPerHour ?? ""}
+            placeholder="No limit"
+            onChange={(e: any) => setSettings((s: any) => ({ ...s, automationMaxSendsPerHour: Math.max(0, Number(e.target.value) || 0) }))}
+            className="!w-24 !text-sm flex-shrink-0"
+          />
+        </div>
+        <div className="flex items-center justify-between gap-3 flex-wrap pt-3 border-t border-white/5">
+          <div>
+            <div className="text-sm font-semibold flex items-center gap-1.5">⏱ Max Sends Per Minute</div>
+            <div className="text-xs text-white/50 mt-0.5 max-w-xl">The tightest throttle of the three — caps burst rate within any single minute. Leave blank/0 for no per-minute limit.</div>
+          </div>
+          <GInput
+            type="number" min="0" step="1"
+            value={settings?.automationMaxSendsPerMinute ?? ""}
+            placeholder="No limit"
+            onChange={(e: any) => setSettings((s: any) => ({ ...s, automationMaxSendsPerMinute: Math.max(0, Number(e.target.value) || 0) }))}
             className="!w-24 !text-sm flex-shrink-0"
           />
         </div>

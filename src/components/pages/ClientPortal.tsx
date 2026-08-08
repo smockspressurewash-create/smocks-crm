@@ -657,8 +657,10 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
                   onChange={ev => setAgreedToPaymentTerms(ev.target.checked)}
                   className="mt-0.5 flex-shrink-0"
                 />
-                <span className="text-[11px] text-white/60 leading-relaxed">
-                  I authorize {companyName} to charge {fmt(totalWithTip)} to my payment method today{payType === "deposit" ? `, with the remaining balance of ${fmt(depositBalanceAmt)} due after service is completed` : ""}. I understand this charge is non-refundable once service has been rendered, and that {companyName} may retain job photos/videos as service records
+                <span className="text-[13px] text-white/70 leading-relaxed">
+                  I authorize {companyName} to charge {fmt(totalWithTip)} to my payment method today{payType === "deposit" ? `, with the remaining balance of ${fmt(depositBalanceAmt)} due after service is completed` : ""}. I understand this charge is non-refundable once service has been rendered, and that {companyName} may retain job photos/videos as service records for up to {(settings as any)?.mediaRetentionDays || 30} days. If I provided a phone number, I may receive text updates about this service (message/data rates may apply — reply STOP at any time to opt out, HELP for help; see {companyName}'s{" "}
+                  <a href={"#/terms?co=" + encodeURIComponent(companyName)} target="_blank" rel="noopener noreferrer" className="underline text-red-300">Terms</a> and{" "}
+                  <a href={"#/privacy?co=" + encodeURIComponent(companyName)} target="_blank" rel="noopener noreferrer" className="underline text-red-300">Privacy Policy</a>)
                   {e?.terms ? <> — see full terms below.</> : "."}
                   {e?.terms && <div className="mt-1.5 text-white/40 whitespace-pre-wrap">{e.terms}</div>}
                 </span>

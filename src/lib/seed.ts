@@ -512,6 +512,134 @@ export const AUTOMATION_TEMPLATES = [
       { id: uid(), type: "action",  label: "Send fall promo SMS", channel: "sms", template: "seasonal_fall" },
     ],
   },
+  // AUDIT FIX — "only 16 [really 10] templates exist, need more, all fully
+  // functional (not mock-ups)": every one of these, like the 10 above, is
+  // built on an engine category (useAutomationEngine.ts's classifyTrigger +
+  // specs) that already has a real, non-empty getCandidates() implementation
+  // and an existing SMS_TEMPLATES message — none of the genuinely-unbuilt
+  // categories (review_good/review_bad/manual/weekly_scheduled/webhook,
+  // still empty candidate lists) are templated here, same rule the original
+  // 5 followed. Trigger label wording is deliberately exact-matched against
+  // classifyTrigger's regexes (verified against its patterns one at a time,
+  // including the "1 year since first service" vs. "since service" mainten-
+  // ance-category collision already documented in that function's comments).
+  {
+    id: "tpl_estimate_expiring", name: "Estimate Expiring Soon",
+    trigger: "Estimate expires in 48 hours", action: "Send urgency SMS",
+    description: "Nudges a customer with a pending quote right before it expires.",
+    steps: [
+      { id: uid(), type: "trigger", label: "Estimate expires in 48 hours", icon: "⏳" },
+      { id: uid(), type: "action",  label: "Send expiring-quote SMS", channel: "sms", template: "estimate_expiring" },
+    ],
+  },
+  {
+    id: "tpl_job_reminder_morning", name: "Morning-Of Job Reminder",
+    trigger: "Job day morning", action: "Send day-of reminder SMS",
+    description: "A same-day, morning-of text for every job scheduled today (6-10am).",
+    steps: [
+      { id: uid(), type: "trigger", label: "Job day morning", icon: "🌤" },
+      { id: uid(), type: "action",  label: "Send morning-of reminder SMS", channel: "sms", template: "job_reminder" },
+    ],
+  },
+  {
+    id: "tpl_crew_starts", name: "Crew Started Notification",
+    trigger: "Crew starts job", action: "Send 'on our way in' SMS",
+    description: "Lets the customer know the crew has begun work on-site.",
+    steps: [
+      { id: uid(), type: "trigger", label: "Crew starts job", icon: "🚚" },
+      { id: uid(), type: "action",  label: "Send crew-started SMS", channel: "sms", template: "crew_starts" },
+    ],
+  },
+  {
+    id: "tpl_job_scheduled", name: "New Booking Confirmation",
+    trigger: "Job scheduled", action: "Send booking confirmation SMS",
+    description: "Confirms the appointment the moment a job is scheduled.",
+    steps: [
+      { id: uid(), type: "trigger", label: "Job scheduled", icon: "📅" },
+      { id: uid(), type: "action",  label: "Send booking confirmation SMS", channel: "sms", template: "job_scheduled" },
+    ],
+  },
+  {
+    id: "tpl_estimate_viewed", name: "Estimate Viewed Follow-Up",
+    trigger: "Estimate viewed", action: "Send viewed-acknowledgment SMS",
+    description: "Follows up the moment a customer opens their quote, while it's top of mind.",
+    steps: [
+      { id: uid(), type: "trigger", label: "Estimate viewed", icon: "👀" },
+      { id: uid(), type: "action",  label: "Send viewed-ack SMS", channel: "sms", template: "estimate_viewed_ack" },
+    ],
+  },
+  {
+    id: "tpl_estimate_accepted", name: "Estimate Accepted Confirmation",
+    trigger: "Estimate accepted", action: "Send thank-you + next-steps SMS",
+    description: "Confirms approval and sets expectations for scheduling.",
+    steps: [
+      { id: uid(), type: "trigger", label: "Estimate accepted", icon: "✅" },
+      { id: uid(), type: "action",  label: "Send acceptance confirmation SMS", channel: "sms", template: "estimate_accepted" },
+    ],
+  },
+  {
+    id: "tpl_payment_received", name: "Payment Received Thank-You",
+    trigger: "Payment received", action: "Send thank-you SMS",
+    description: "Thanks the customer the moment their payment clears.",
+    steps: [
+      { id: uid(), type: "trigger", label: "Payment received", icon: "💵" },
+      { id: uid(), type: "action",  label: "Send payment thank-you SMS", channel: "sms", template: "payment_received" },
+    ],
+  },
+  {
+    id: "tpl_payment_overdue_3", name: "Overdue Invoice — Friendly (3-Day)",
+    trigger: "Invoice overdue 3 days", action: "Send friendly payment reminder SMS",
+    description: "A soft first nudge, 3 days after an invoice goes past due.",
+    steps: [
+      { id: uid(), type: "trigger", label: "Invoice overdue 3 days", icon: "💳" },
+      { id: uid(), type: "action",  label: "Send friendly reminder SMS", channel: "sms", template: "payment_overdue_3" },
+    ],
+  },
+  {
+    id: "tpl_payment_overdue_14", name: "Overdue Invoice — Firm (14-Day)",
+    trigger: "Invoice overdue 14 days", action: "Send firm payment reminder SMS",
+    description: "A firmer follow-up once an invoice is two-plus weeks overdue.",
+    steps: [
+      { id: uid(), type: "trigger", label: "Invoice overdue 14 days", icon: "🚨" },
+      { id: uid(), type: "action",  label: "Send firm reminder SMS", channel: "sms", template: "payment_overdue_14" },
+    ],
+  },
+  {
+    id: "tpl_reengage", name: "Win-Back — 6 Months Inactive",
+    trigger: "No service 6 months", action: "Send win-back SMS",
+    description: "Re-engages a customer who hasn't booked in half a year.",
+    steps: [
+      { id: uid(), type: "trigger", label: "No service 6 months", icon: "🔄" },
+      { id: uid(), type: "action",  label: "Send win-back SMS", channel: "sms", template: "reengage" },
+    ],
+  },
+  {
+    id: "tpl_anniversary", name: "Customer Anniversary",
+    trigger: "1 year since first service", action: "Send anniversary SMS",
+    description: "Celebrates a full year as a customer with a thank-you and discount.",
+    steps: [
+      { id: uid(), type: "trigger", label: "1 year since first service", icon: "🎉" },
+      { id: uid(), type: "action",  label: "Send anniversary SMS", channel: "sms", template: "anniversary" },
+    ],
+  },
+  {
+    id: "tpl_referral_reward", name: "Referral Reward Earned",
+    trigger: "Referral reward earned", action: "Send reward notification SMS",
+    description: "Tells a customer their referral just earned them a credit.",
+    steps: [
+      { id: uid(), type: "trigger", label: "Referral reward earned", icon: "🎁" },
+      { id: uid(), type: "action",  label: "Send reward SMS", channel: "sms", template: "referral_reward" },
+    ],
+  },
+  {
+    id: "tpl_referral_booked", name: "Referral Booked Thank-You",
+    trigger: "Referral booked", action: "Send thank-you SMS",
+    description: "Thanks the referring customer as soon as their referral books a first job.",
+    steps: [
+      { id: uid(), type: "trigger", label: "Referral booked", icon: "🤝" },
+      { id: uid(), type: "action",  label: "Send referral-booked SMS", channel: "sms", template: "referral_booked" },
+    ],
+  },
 ];
 
 // ─── Seed revenue chart data ───────────────────────────────────────────────────

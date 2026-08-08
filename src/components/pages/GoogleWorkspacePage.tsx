@@ -88,11 +88,13 @@ const ApiError = ({ msg, onRetry, apiName }: { msg: string; onRetry?: () => void
 // ─── Gmail tab ────────────────────────────────────────────────────────────────
 function GmailTab({
   token,
+  googleEmail,
   toast,
   customers,
   setCustomers,
 }: {
   token: string;
+  googleEmail?: string;
   toast?: any;
   customers?: any[];
   setCustomers?: any;
@@ -121,7 +123,7 @@ function GmailTab({
     if (!to || !subject || !body) return;
     setSending(true);
     try {
-      await sendGmailMessage(token, to, subject, body);
+      await sendGmailMessage(token, to, subject, body, googleEmail);
       toast?.("Email sent!", "green");
       setComposing(false); setTo(""); setSubject(""); setBody("");
     } catch (e: any) { toast?.(e.message || "Send failed", "red"); }
@@ -1176,7 +1178,7 @@ export function GoogleWorkspacePage({
         </Glass>
       )}
 
-      {tab === "gmail"    && hasToken && <GmailTab    token={token} toast={toast} customers={customers} setCustomers={setCustomers} />}
+      {tab === "gmail"    && hasToken && <GmailTab    token={token} googleEmail={googleEmail} toast={toast} customers={customers} setCustomers={setCustomers} />}
       {tab === "calendar" && hasToken && <GCalTab     token={token} />}
       {tab === "tasks"    && hasToken && <GTasksTab   token={token} toast={toast} />}
       {tab === "contacts" && hasToken && <GContactsTab token={token} customers={customers} setCustomers={setCustomers} toast={toast} />}

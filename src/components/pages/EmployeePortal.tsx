@@ -18,7 +18,7 @@ import { loadMapsScript, AddressAutocomplete } from "../ui/AddressAutocomplete";
 import { LiveMap } from "../ui/LiveMap";
 import { PropertyMapEmbed } from "../ui/PropertyMapEmbed";
 import { BarChart, Bar, LineChart, Line, XAxis, YAxis, ResponsiveContainer, Tooltip, CartesianGrid } from "recharts";
-import { fmt, uid, today, localDateStr, shiftDayStr, daysFromNow, computeJobRatingScore, setOAuthIntent, compressImageFile, getEffectiveRate, computeNextRecurringDate, weekdayLabels, normalizeJobRow, totalJobPhotoCount, mediaSrc, dataUrlToBlob, uploadJobMedia, checkVideoLimits, stripLegacyJobFields, reconcileCrewAfterAssign, getPollIntervalMs } from "../../lib/utils";
+import { fmt, uid, today, localDateStr, localDateKey, shiftDayStr, daysFromNow, computeJobRatingScore, setOAuthIntent, compressImageFile, getEffectiveRate, computeNextRecurringDate, weekdayLabels, normalizeJobRow, totalJobPhotoCount, mediaSrc, dataUrlToBlob, uploadJobMedia, checkVideoLimits, stripLegacyJobFields, reconcileCrewAfterAssign, getPollIntervalMs } from "../../lib/utils";
 import { usePollGate } from "../../hooks/usePollGate";
 import type { Job, Employee, Customer, AppSettings, JobChecklistItem } from "../../types";
 
@@ -259,13 +259,13 @@ const DEFAULT_SIGNOFF_DISCLAIMER = "I confirm that all services have been comple
 // streamlined, mobile-optimized job view a field employee sees (sign-off,
 // checklist with photo upload, clock in/out — no admin fields) instead of
 // opening the full JobDetailModal for a job the OWNER is personally working.
-export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName = "the company", onComplete, perms: permsOverride, maxLunchMinutes = 30, onJobCompleted, googleMapsKey = "", paidLunchBreaks = false, signOffDisclaimer = "", settings = {} as AppSettings, setEstimates = (() => {}) as any, nextJob = null, nextJobCustomer = null, onArrived, autoComplete = false, employeeName = "", isPreview = false }: {
+export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName = "the company", onComplete, perms: permsOverride, maxLunchMinutes = 30, onJobCompleted, googleMapsKey = "", paidLunchBreaks = false, signOffDisclaimer = "", settings = {} as AppSettings, setEstimates = (() => {}) as any, nextJob = null, nextJobCustomer = null, onArrived, autoComplete = false, employeeName = "", employeeEmail = "", isPreview = false }: {
   job: Job; customer?: Customer; onBack: () => void;
   onUpdateJob: (patch: Partial<Job>) => void | Promise<any>; toast: (msg: string, tone?: any) => void;
   companyName?: string; onComplete?: () => void; perms?: Record<string, boolean>; maxLunchMinutes?: number;
   onJobCompleted?: (job: Job) => void; googleMapsKey?: string; paidLunchBreaks?: boolean; signOffDisclaimer?: string;
   settings?: AppSettings; setEstimates?: any; nextJob?: Job | null; nextJobCustomer?: Customer | null;
-  onArrived?: () => void; autoComplete?: boolean; employeeName?: string; isPreview?: boolean;
+  onArrived?: () => void; autoComplete?: boolean; employeeName?: string; employeeEmail?: string; isPreview?: boolean;
 }) {
   const effPerms = { ...DEFAULT_PERMISSIONS, ...(permsOverride || {}) };
   const [note, setNote] = useState("");
@@ -416,13 +416,35 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
         toast("Saved locally, but failed to sync — " + result.error.message, "red");
         return;
       }
+      // AUDIT FIX — this used to fire-and-forget the email (.catch(console.warn)
+      // only) and then ALWAYS toast success regardless of whether it actually
+      // sent — a hung Gmail circuit or missing owner email meant the employee
+      // saw "reported ✓" while the owner never got anything. Now awaited, and
+      // also CCs the reporting employee's own email (via the owner's
+      // connected Gmail, since employees don't all have their own Google
+      // linked) so they have a written copy of what they reported.
       const ownerEmail = (settings as any)?.myEmail || (settings as any)?.companyEmail;
-      if (ownerEmail) {
+      const recipients = [ownerEmail, employeeEmail].filter(Boolean);
+      let emailSent = false;
+      let emailError = "";
+      if (recipients.length > 0) {
         const html = emailShell(companyName, "Issue Reported", `<p><b>${employeeName || "A crew member"}</b> reported an issue on the job at <b>${job.address || "a job"}</b>:</p><p style="background:#fff3cd;color:#333;padding:10px;border-radius:6px">${reportProblemText.trim()}</p>`);
-        sendOwnerGmailOnly(settings as any, ownerEmail, `⚠️ Issue reported — ${job.address || "job"}`, html).catch((e: any) => console.warn("[ReportProblem] owner email failed:", e?.message));
+        try {
+          await withTimeout(sendOwnerGmailOnly(settings as any, recipients.join(", "), `⚠️ Issue reported — ${job.address || "job"}`, html), 15000, "Report problem email");
+          emailSent = true;
+        } catch (e: any) {
+          emailError = e?.message || "unknown error";
+          console.warn("[ReportProblem] email failed:", emailError);
+        }
       }
-      toast("Problem reported to the owner ✓", "green");
-      console.log("[ReportProblem] logged for job", job.id);
+      console.log("[ReportProblem] logged for job", job.id, "· email sent:", emailSent, "· recipients:", recipients);
+      if (!ownerEmail) {
+        toast("Reported and saved to job notes — but no owner email is on file, so no email was sent. Ask the owner to set one in Settings.", "red");
+      } else if (emailSent) {
+        toast("Problem reported to the owner ✓", "green");
+      } else {
+        toast("Saved to job notes, but the email failed to send — " + emailError, "red");
+      }
       setReportProblemOpen(false);
       setReportProblemText("");
     } catch (e: any) {
@@ -1956,6 +1978,13 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   const [showDenyForm, setShowDenyForm] = useState(false);
   const [denyReason, setDenyReason] = useState("");
   const [requestDone, setRequestDone] = useState<string | null>(null);
+  // AUDIT FIX — Accept/Decline had no withTimeout protection (unlike every
+  // other field-portal action button per CLAUDE.md's own rule) and no
+  // loading state, so a hung Supabase call (a known real failure mode in
+  // this app — navigator-lock contention, see JobsPage.tsx) left these
+  // buttons clickable with zero feedback and no eventual error — reads
+  // exactly like "assigning/requesting employees doesn't work."
+  const [respondingToRequest, setRespondingToRequest] = useState(false);
   // Employee availability
   const [availability, setAvailability] = useState<string[]>([]);
   // FEATURE 5 — recurring weekday unavailability (e.g. "every Sunday"),
@@ -2035,6 +2064,10 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   const [incomingLoading, setIncomingLoading] = useState(false);
   const [inlineDenyId, setInlineDenyId] = useState<string | null>(null);
   const [inlineDenyReason, setInlineDenyReason] = useState("");
+  // AUDIT FIX — same withTimeout/loading-state gap as handleAcceptRequest/
+  // handleDenyRequest above, for the inline "Incoming Requests" card path.
+  // Tracked per-request-id since multiple inline cards can show at once.
+  const [respondingToInlineId, setRespondingToInlineId] = useState<string | null>(null);
 
   // Normalize Supabase snake_case columns to the camelCase Employee shape the
   // rest of the code expects. BLOCKER — this used to normalize none of the
@@ -2315,6 +2348,42 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
       } catch { /* table may not exist yet */ }
     })();
   }, [(myEmployee as any)?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // FEATURE — mileage auto-estimate: fills in miles (and from/to, if blank)
+  // using that day's actual job addresses and Google's Distance Matrix
+  // service, same API this file already uses for drive-time estimates
+  // (fetchDriveTime above) and route optimization (optimizeRoute below).
+  const [mileageEstimating, setMileageEstimating] = useState(false);
+  const autoEstimateMileage = async () => {
+    const dateStr = mileageForm.date || today();
+    const dayJobs = myJobs.filter(j => j.scheduledDate === dateStr && j.address).sort((a, b) => (a.scheduledTime || "").localeCompare(b.scheduledTime || ""));
+    const origin = mileageForm.from.trim() || homeBaseAddress || dayJobs[0]?.address;
+    const destination = mileageForm.to.trim() || dayJobs[dayJobs.length - 1]?.address;
+    if (!origin || !destination) { toast("No jobs found on " + dateStr + " to estimate from — enter From/To manually", "yellow"); return; }
+    if (!settings.googleMapsKey) { toast("Add a Google Maps API key in Settings to use auto-estimate", "red"); return; }
+    setMileageEstimating(true);
+    try {
+      await withTimeout(loadMapsScript(settings.googleMapsKey), 8000, "Maps script load");
+      const gm = (window as any).google?.maps;
+      if (!gm?.DistanceMatrixService) throw new Error("Distance service unavailable");
+      const svc = new gm.DistanceMatrixService();
+      const result: any = await withTimeout(new Promise((resolve, reject) => {
+        svc.getDistanceMatrix(
+          { origins: [origin], destinations: [destination], travelMode: gm.TravelMode.DRIVING },
+          (res: any, status: string) => status === "OK" ? resolve(res) : reject(new Error("Distance lookup status: " + status))
+        );
+      }), 8000, "Distance calculation");
+      const el = result?.rows?.[0]?.elements?.[0];
+      if (el?.status !== "OK" || !el?.distance) throw new Error("No route found between those addresses");
+      const miles = el.distance.value / 1609.34;
+      setMileageForm(f => ({ ...f, from: f.from.trim() || origin, to: f.to.trim() || destination, miles: miles.toFixed(1) }));
+      toast(`Estimated ${miles.toFixed(1)} mi (${el.duration?.text || ""}) ✓ — review before saving`, "green");
+    } catch (e: any) {
+      toast("Couldn't estimate — " + (e?.message || "enter miles manually"), "red");
+    } finally {
+      setMileageEstimating(false);
+    }
+  };
 
   const submitMileageLog = async () => {
     const empId = (myEmployee as any)?.id;
@@ -3295,11 +3364,13 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   const syncAcceptedJobToCalendar = (job: Job | undefined) => syncJobToCalendar(job);
 
   const handleAcceptRequest = async () => {
-    if (!requestData || !myEmployee) return;
+    if (!requestData || !myEmployee || respondingToRequest) return;
+    setRespondingToRequest(true);
     try {
-      const statusResult = await (supabase as any).from("job_requests")
-        .update({ status: "accepted", responded_at: new Date().toISOString() })
-        .eq("id", requestId);
+      const statusResult = await withTimeout<any>(
+        (supabase as any).from("job_requests").update({ status: "accepted", responded_at: new Date().toISOString() }).eq("id", requestId),
+        15000, "Accept request"
+      );
       if (statusResult?.error) console.warn("[CrewFlow] job_requests status update failed:", statusResult.error.message);
       if (requestData.job_id) {
         const empId = myEmployee.id;
@@ -3319,7 +3390,10 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
           // land before this write commits and overwrite the optimistic crew with the
           // still-empty array from Supabase, which is exactly why accepted jobs were
           // vanishing again right after acceptance.
-          const saveResult = await (supabase as any).from("jobs").update({ crew: newCrew, crewAssignedAt: newCrewAssignedAt }).eq("id", requestData.job_id);
+          const saveResult = await withTimeout<any>(
+            (supabase as any).from("jobs").update({ crew: newCrew, crewAssignedAt: newCrewAssignedAt }).eq("id", requestData.job_id),
+            15000, "Accept request — crew save"
+          );
           if (saveResult?.error) {
             toast("Accepted, but couldn't add you to the job's crew — " + saveResult.error.message, "red");
           } else {
@@ -3346,20 +3420,27 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     } catch (e: any) {
       console.error("[CrewFlow] accept request failed:", e?.message || e);
       toast("Error accepting request — " + (e?.message || "check connection"), "red");
+    } finally {
+      setRespondingToRequest(false);
     }
   };
 
   const handleDenyRequest = async () => {
+    if (respondingToRequest) return;
+    setRespondingToRequest(true);
     try {
-      const result = await (supabase as any).from("job_requests")
-        .update({ status: "denied", denial_reason: denyReason.trim(), responded_at: new Date().toISOString() })
-        .eq("id", requestId);
+      const result = await withTimeout<any>(
+        (supabase as any).from("job_requests").update({ status: "denied", denial_reason: denyReason.trim(), responded_at: new Date().toISOString() }).eq("id", requestId),
+        15000, "Decline request"
+      );
       if (result?.error) throw new Error(result.error.message);
       setRequestDone("denied");
       toast("Request declined.");
     } catch (e: any) {
       console.error("[CrewFlow] deny request failed:", e?.message || e);
       toast("Error declining request — " + (e?.message || "check connection"), "red");
+    } finally {
+      setRespondingToRequest(false);
     }
   };
 
@@ -3470,11 +3551,13 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   };
 
   const handleInlineAccept = async (req: any) => {
-    if (!myEmployee) return;
+    if (!myEmployee || respondingToInlineId) return;
+    setRespondingToInlineId(req.id);
     try {
-      await (supabase as any).from("job_requests")
-        .update({ status: "accepted", responded_at: new Date().toISOString() })
-        .eq("id", req.id);
+      await withTimeout(
+        (supabase as any).from("job_requests").update({ status: "accepted", responded_at: new Date().toISOString() }).eq("id", req.id),
+        15000, "Inline accept request"
+      );
       if (req.job_id) {
         const empId = myEmployee.id;
         const empUserId = (myEmployee as any).user_id;
@@ -3492,7 +3575,10 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
           // Must await the save before refetching — see handleAcceptRequest for why
           // an un-awaited fire-and-forget write here let the refetch race ahead and
           // clobber the optimistic crew with Supabase's still-stale (empty) row.
-          const saveResult = await (supabase as any).from("jobs").update({ crew: newCrew, crewAssignedAt: newCrewAssignedAt }).eq("id", req.job_id);
+          const saveResult = await withTimeout<any>(
+            (supabase as any).from("jobs").update({ crew: newCrew, crewAssignedAt: newCrewAssignedAt }).eq("id", req.job_id),
+            15000, "Inline accept — crew save"
+          );
           // BUG FIX — this result used to be captured and never checked, so a
           // failed crew write (RLS, bad column, network) still showed the green
           // "you're on the crew" toast below even though the employee was never
@@ -3520,18 +3606,23 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
       setIncomingRequests(prev => prev.map(r => r.id === req.id ? { ...r, status: "accepted" } : r));
       toast("Job accepted! You're on the crew. ✓");
     } catch (e: any) { console.error("[CrewFlow] inline accept failed:", e?.message || e); toast("Error accepting request — " + (e?.message || "check connection"), "red"); }
+    finally { setRespondingToInlineId(null); }
   };
 
   const handleInlineDeny = async (req: any) => {
+    if (respondingToInlineId) return;
+    setRespondingToInlineId(req.id);
     try {
-      await (supabase as any).from("job_requests")
-        .update({ status: "denied", denial_reason: inlineDenyReason.trim(), responded_at: new Date().toISOString() })
-        .eq("id", req.id);
+      await withTimeout(
+        (supabase as any).from("job_requests").update({ status: "denied", denial_reason: inlineDenyReason.trim(), responded_at: new Date().toISOString() }).eq("id", req.id),
+        15000, "Inline decline request"
+      );
       setIncomingRequests(prev => prev.map(r => r.id === req.id ? { ...r, status: "denied" } : r));
       setInlineDenyId(null);
       setInlineDenyReason("");
       toast("Request declined.");
     } catch { toast("Error declining request", "red"); }
+    finally { setRespondingToInlineId(null); }
   };
 
   // Requests the same Calendar + Gmail scopes the owner's Google connect
@@ -3967,22 +4058,22 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
               <GTxt rows={3} value={denyReason} onChange={e => setDenyReason(e.target.value)}
                 placeholder="e.g. Already booked, unavailable that day…" />
               <div className="flex gap-3">
-                <GBtn variant="danger" onClick={handleDenyRequest} className="flex-1 !justify-center">
-                  Confirm Decline
+                <GBtn variant="danger" onClick={handleDenyRequest} disabled={respondingToRequest} className="flex-1 !justify-center disabled:opacity-50">
+                  {respondingToRequest ? "Declining…" : "Confirm Decline"}
                 </GBtn>
-                <GBtn variant="ghost" onClick={() => setShowDenyForm(false)} className="!px-4">
+                <GBtn variant="ghost" onClick={() => setShowDenyForm(false)} disabled={respondingToRequest} className="!px-4">
                   Cancel
                 </GBtn>
               </div>
             </div>
           ) : (
             <div className="flex gap-3">
-              <GBtn onClick={handleAcceptRequest}
-                className="flex-1 !justify-center !py-3.5 !bg-gradient-to-r !from-green-700 !to-green-900 !border-green-600/50">
-                <CheckCircle size={16} />Accept Job
+              <GBtn onClick={handleAcceptRequest} disabled={respondingToRequest}
+                className="flex-1 !justify-center !py-3.5 !bg-gradient-to-r !from-green-700 !to-green-900 !border-green-600/50 disabled:opacity-50">
+                <CheckCircle size={16} />{respondingToRequest ? "Accepting…" : "Accept Job"}
               </GBtn>
-              <GBtn variant="danger" onClick={() => setShowDenyForm(true)}
-                className="flex-1 !justify-center !py-3.5">
+              <GBtn variant="danger" onClick={() => setShowDenyForm(true)} disabled={respondingToRequest}
+                className="flex-1 !justify-center !py-3.5 disabled:opacity-50">
                 <X size={16} />Decline
               </GBtn>
             </div>
@@ -4030,6 +4121,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
         onArrived={startDayShiftIfNeeded}
         autoComplete={pendingCompleteJobId === selectedJobId}
         employeeName={myEmployee ? `${myEmployee.firstName} ${myEmployee.lastName || ""}`.trim() : ""}
+        employeeEmail={empSession?.user?.email || (myEmployee as any)?.email || ""}
       />
     );
   }
@@ -5057,24 +5149,24 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                                   placeholder="Reason (optional)…" rows={2}
                                   className="w-full bg-black/60 border border-white/20 rounded-lg px-2 py-1.5 text-xs text-white placeholder-white/30 focus:outline-none resize-none" />
                                 <div className="flex gap-2">
-                                  <button onClick={() => handleInlineDeny(req)}
-                                    className="flex-1 py-2 rounded-xl bg-red-700 hover:bg-red-600 text-white text-xs font-bold transition">
-                                    Confirm Decline
+                                  <button onClick={() => handleInlineDeny(req)} disabled={respondingToInlineId === req.id}
+                                    className="flex-1 py-2 rounded-xl bg-red-700 hover:bg-red-600 text-white text-xs font-bold transition disabled:opacity-50">
+                                    {respondingToInlineId === req.id ? "Declining…" : "Confirm Decline"}
                                   </button>
-                                  <button onClick={() => { setInlineDenyId(null); setInlineDenyReason(""); }}
-                                    className="px-3 py-2 rounded-xl bg-white/5 text-white/50 text-xs transition">
+                                  <button onClick={() => { setInlineDenyId(null); setInlineDenyReason(""); }} disabled={respondingToInlineId === req.id}
+                                    className="px-3 py-2 rounded-xl bg-white/5 text-white/50 text-xs transition disabled:opacity-50">
                                     Cancel
                                   </button>
                                 </div>
                               </div>
                             ) : (
                               <div className="flex gap-2">
-                                <button onClick={() => handleInlineAccept(req)}
-                                  className="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-xl bg-green-700 hover:bg-green-600 text-white text-xs font-bold transition">
-                                  <CheckCircle size={13} />Accept
+                                <button onClick={() => handleInlineAccept(req)} disabled={respondingToInlineId === req.id}
+                                  className="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-xl bg-green-700 hover:bg-green-600 text-white text-xs font-bold transition disabled:opacity-50">
+                                  <CheckCircle size={13} />{respondingToInlineId === req.id ? "Accepting…" : "Accept"}
                                 </button>
-                                <button onClick={() => setInlineDenyId(req.id)}
-                                  className="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-xl bg-red-950/50 hover:bg-red-900/60 border border-red-700/40 text-red-300 text-xs font-semibold transition">
+                                <button onClick={() => setInlineDenyId(req.id)} disabled={respondingToInlineId === req.id}
+                                  className="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-xl bg-red-950/50 hover:bg-red-900/60 border border-red-700/40 text-red-300 text-xs font-semibold transition disabled:opacity-50">
                                   <X size={13} />Decline
                                 </button>
                               </div>
@@ -5664,15 +5756,29 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
 
           {/* Pay tab */}
           {tab === "pay" && (() => {
+            // AUDIT FIX (Pay tab missing hours) — a completed job can carry
+            // scheduledDate: "" (unscheduled jobs are a real, deliberately-
+            // used state elsewhere in this codebase — see EstimatesPage.tsx/
+            // App.tsx). Every period/day/chart bucket below used to filter
+            // strictly on job.scheduledDate, so a completed job with real
+            // loggedHours but no scheduledDate silently never appeared
+            // ANYWHERE in the Pay tab. Falls back to completedAt (the date it
+            // was actually finished) so its hours land somewhere sensible
+            // instead of vanishing.
+            const jobDateKey = (j: any): string => j.scheduledDate || (j.completedAt ? String(j.completedAt).slice(0, 10) : "");
             // Build pay period history (14-day periods going back 3 months)
             const periods: Array<{ label: string; start: string; end: string; hours: number; pay: number; jobs: number }> = [];
             const now = new Date();
             for (let i = 0; i < 6; i++) {
               const end = new Date(now); end.setDate(end.getDate() - i * 14);
               const start = new Date(end); start.setDate(start.getDate() - 13);
-              const s = start.toISOString().slice(0, 10);
-              const e = end.toISOString().slice(0, 10);
-              const pJobs = myJobs.filter(j => j.scheduledDate >= s && j.scheduledDate <= e);
+              // AUDIT FIX — was toISOString().slice(0,10) (UTC), compared
+              // against local-calendar scheduledDate strings; for any US
+              // timezone this can roll the boundary back a day, especially in
+              // the evening, silently excluding/misplacing boundary jobs.
+              const s = localDateKey(start);
+              const e = localDateKey(end);
+              const pJobs = myJobs.filter(j => jobDateKey(j) >= s && jobDateKey(j) <= e);
               // FIX 5 (mobile round 3) — this used to only count job.loggedHours,
               // missing the shift-timer top-up (ended OR still-in-progress)
               // that the Today tab's widget already includes — so an employee
@@ -5717,8 +5823,9 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
             // periods above, just rolled up annually for tax purposes.
             const earningsByYear: Record<string, number> = {};
             myJobs.forEach(j => {
-              if (!j.scheduledDate || !Number(j.loggedHours)) return;
-              const yr = j.scheduledDate.slice(0, 4);
+              const dk = jobDateKey(j);
+              if (!dk || !Number(j.loggedHours)) return;
+              const yr = dk.slice(0, 4);
               earningsByYear[yr] = (earningsByYear[yr] || 0) + Number(j.loggedHours) * (myEmployee?.hourlyRate || 0);
             });
             const thisYear = String(new Date().getFullYear());
@@ -5772,6 +5879,37 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
 
             return (
               <>
+                {/* AUDIT FIX — moved to the top of the Pay tab per owner
+                    request; was previously the last thing in this tab. */}
+                <Glass className="p-4 !bg-black/40">
+                  <div className="flex items-center justify-between mb-3">
+                    <div className="text-xs text-white/50 uppercase tracking-wider">Log Mileage</div>
+                    <button onClick={autoEstimateMileage} disabled={mileageEstimating}
+                      className="text-[10px] font-semibold px-2.5 py-1 rounded-lg bg-blue-950/30 hover:bg-blue-900/40 border border-blue-700/30 text-blue-300 hover:text-blue-200 transition disabled:opacity-50">
+                      {mileageEstimating ? "Estimating…" : "🧭 Auto-Estimate"}
+                    </button>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2 mb-2">
+                    <GDate value={mileageForm.date} onChange={(e: any) => setMileageForm(f => ({ ...f, date: e.target.value }))} className="!text-xs !py-2" />
+                    <GInput type="number" min="0" step="0.1" placeholder="Miles" value={mileageForm.miles} onChange={(e: any) => setMileageForm(f => ({ ...f, miles: e.target.value }))} className="!text-xs !py-2" />
+                    <GInput placeholder="From" value={mileageForm.from} onChange={(e: any) => setMileageForm(f => ({ ...f, from: e.target.value }))} className="!text-xs !py-2" />
+                    <GInput placeholder="To" value={mileageForm.to} onChange={(e: any) => setMileageForm(f => ({ ...f, to: e.target.value }))} className="!text-xs !py-2" />
+                  </div>
+                  <div className="text-[10px] text-white/30 mb-2">Auto-Estimate uses your home base address (or that day's first job) through your last job of the day, via Google Maps.</div>
+                  <GInput placeholder="Purpose (optional)" value={mileageForm.purpose} onChange={(e: any) => setMileageForm(f => ({ ...f, purpose: e.target.value }))} className="!text-xs !py-2 mb-2" />
+                  <GBtn onClick={submitMileageLog} disabled={mileageSubmitting} className="w-full !text-xs">{mileageSubmitting ? "Saving…" : "Log Mileage"}</GBtn>
+                  {mileageLogs.length > 0 && (
+                    <div className="mt-3 pt-3 border-t border-white/10 space-y-1.5">
+                      {mileageLogs.slice(0, 8).map((m: any) => (
+                        <div key={m.id} className="flex items-center justify-between gap-2 text-[11px]">
+                          <div className="min-w-0 truncate text-white/60">{m.date} · {m.from || "—"} → {m.to || "—"} · {m.miles}mi</div>
+                          <span className={"px-2 py-0.5 rounded-full text-[9px] font-bold flex-shrink-0 " + (m.status === "approved" ? "bg-green-700 text-white" : m.status === "denied" ? "bg-red-900/50 text-red-300" : "bg-yellow-950/40 border border-yellow-700/40 text-yellow-300")}>{m.status}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </Glass>
+
                 <Glass className="p-5 !bg-gradient-to-br !from-green-950/30 !to-black/60 !border-green-700/30">
                   <div className="flex items-start justify-between">
                     <div>
@@ -5872,7 +6010,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                   for (let i = 0; i < firstDow; i++) dayCells.push(null);
                   for (let d = 1; d <= daysInMonth; d++) {
                     const key = `${year}-${String(month + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
-                    const dayJobs = myJobs.filter(j => j.scheduledDate === key && Number(j.loggedHours) > 0);
+                    const dayJobs = myJobs.filter(j => jobDateKey(j) === key && Number(j.loggedHours) > 0);
                     const hours = Math.round(dayJobs.reduce((s, j) => s + Number(j.loggedHours || 0), 0) * 100) / 100;
                     const pay = Math.round(dayJobs.reduce((s, j) => s + Number(j.loggedHours || 0) * getEffectiveRate(myEmployee, j), 0) * 100) / 100;
                     dayCells.push({ key, day: d, hours, pay, status: paidDaysMap[key] || "unpaid" });
@@ -5947,25 +6085,31 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                   // under-report vs. the numbers just above it. Adding the
                   // top-up on whichever single bucket contains lastShiftDate
                   // keeps both sections consistent.
+                  // AUDIT FIX — both helpers used to filter on raw
+                  // job.scheduledDate (excluding empty-scheduledDate
+                  // completed jobs entirely) and every caller below built its
+                  // bucket boundaries via toISOString() on a locally-
+                  // constructed Date, which can roll back a calendar day for
+                  // any US timezone — see jobDateKey/localDateKey above.
                   const bucketHours = (dateKeys: string[]): { name: string; hours: number; earnings: number }[] =>
                     dateKeys.map(key => {
-                      const jobHrs = myJobs.filter(j => (j.scheduledDate || "").startsWith(key)).reduce((s, j) => s + (Number(j.loggedHours) || 0), 0);
+                      const jobHrs = myJobs.filter(j => jobDateKey(j) === key).reduce((s, j) => s + (Number(j.loggedHours) || 0), 0);
                       const topUp = computeEmployeeShiftTopUp(key, key);
                       const hrs = jobHrs + topUp;
                       return { name: key, hours: Math.round(hrs * 100) / 100, earnings: Math.round(hrs * rate * 100) / 100 };
                     });
                   const bucketRangeHours = (s: string, e: string): number =>
-                    myJobs.filter(j => j.scheduledDate >= s && j.scheduledDate <= e).reduce((acc, j) => acc + (Number(j.loggedHours) || 0), 0) + computeEmployeeShiftTopUp(s, e);
+                    myJobs.filter(j => jobDateKey(j) >= s && jobDateKey(j) <= e).reduce((acc, j) => acc + (Number(j.loggedHours) || 0), 0) + computeEmployeeShiftTopUp(s, e);
                   let chartData: { name: string; hours: number; earnings: number }[];
                   let ChartComp: any = BarChart;
                   if (payChartRange === "7d") {
-                    const days = Array.from({ length: 7 }, (_, i) => { const d = new Date(); d.setDate(d.getDate() - (6 - i)); return d.toISOString().slice(0, 10); });
+                    const days = Array.from({ length: 7 }, (_, i) => { const d = new Date(); d.setDate(d.getDate() - (6 - i)); return localDateKey(d); });
                     chartData = bucketHours(days).map((d, i) => ({ ...d, name: new Date(days[i] + "T12:00:00").toLocaleDateString("en-US", { weekday: "short" }) }));
                   } else if (payChartRange === "4wk") {
                     chartData = Array.from({ length: 4 }, (_, i) => {
                       const end = new Date(); end.setDate(end.getDate() - (3 - i) * 7);
                       const start = new Date(end); start.setDate(start.getDate() - 6);
-                      const s = start.toISOString().slice(0, 10), e = end.toISOString().slice(0, 10);
+                      const s = localDateKey(start), e = localDateKey(end);
                       const hrs = bucketRangeHours(s, e);
                       return { name: `${start.getMonth() + 1}/${start.getDate()}`, hours: Math.round(hrs * 100) / 100, earnings: Math.round(hrs * rate * 100) / 100 };
                     });
@@ -5973,14 +6117,14 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                     const s = payCustomStart, e = payCustomEnd > payCustomStart ? payCustomEnd : payCustomStart;
                     const spanDays = Math.max(1, Math.round((new Date(e).getTime() - new Date(s).getTime()) / 86400000) + 1);
                     if (spanDays <= 31) {
-                      const days = Array.from({ length: spanDays }, (_, i) => { const d = new Date(s); d.setDate(d.getDate() + i); return d.toISOString().slice(0, 10); });
+                      const days = Array.from({ length: spanDays }, (_, i) => { const d = new Date(s); d.setDate(d.getDate() + i); return localDateKey(d); });
                       chartData = bucketHours(days).map((d, i) => ({ ...d, name: new Date(days[i] + "T12:00:00").toLocaleDateString("en-US", { month: "numeric", day: "numeric" }) }));
                     } else {
                       const weeks = Math.ceil(spanDays / 7);
                       chartData = Array.from({ length: weeks }, (_, i) => {
                         const wStart = new Date(s); wStart.setDate(wStart.getDate() + i * 7);
                         const wEnd = new Date(wStart); wEnd.setDate(wEnd.getDate() + 6);
-                        const ws = wStart.toISOString().slice(0, 10), we = (wEnd.toISOString().slice(0, 10) > e ? e : wEnd.toISOString().slice(0, 10));
+                        const ws = localDateKey(wStart), we = (localDateKey(wEnd) > e ? e : localDateKey(wEnd));
                         const hrs = bucketRangeHours(ws, we);
                         return { name: `${wStart.getMonth() + 1}/${wStart.getDate()}`, hours: Math.round(hrs * 100) / 100, earnings: Math.round(hrs * rate * 100) / 100 };
                       });
@@ -5989,9 +6133,9 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                     ChartComp = LineChart;
                     chartData = Array.from({ length: 12 }, (_, i) => {
                       const d = new Date(); d.setMonth(d.getMonth() - (11 - i)); d.setDate(1);
-                      const key = d.toISOString().slice(0, 7);
+                      const key = localDateKey(d).slice(0, 7);
                       const monthStart = key + "-01";
-                      const monthEnd = new Date(d.getFullYear(), d.getMonth() + 1, 0).toISOString().slice(0, 10);
+                      const monthEnd = localDateKey(new Date(d.getFullYear(), d.getMonth() + 1, 0));
                       const hrs = bucketRangeHours(monthStart, monthEnd);
                       return { name: d.toLocaleDateString("en-US", { month: "short" }), hours: Math.round(hrs * 100) / 100, earnings: Math.round(hrs * rate * 100) / 100 };
                     });
@@ -6117,28 +6261,6 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                   )}
                 </Glass>
 
-                {/* Mileage — employee-submitted, synced so the owner can see/approve it */}
-                <Glass className="p-4 !bg-black/40">
-                  <div className="text-xs text-white/50 uppercase tracking-wider mb-3">Log Mileage</div>
-                  <div className="grid grid-cols-2 gap-2 mb-2">
-                    <GDate value={mileageForm.date} onChange={(e: any) => setMileageForm(f => ({ ...f, date: e.target.value }))} className="!text-xs !py-2" />
-                    <GInput type="number" min="0" step="0.1" placeholder="Miles" value={mileageForm.miles} onChange={(e: any) => setMileageForm(f => ({ ...f, miles: e.target.value }))} className="!text-xs !py-2" />
-                    <GInput placeholder="From" value={mileageForm.from} onChange={(e: any) => setMileageForm(f => ({ ...f, from: e.target.value }))} className="!text-xs !py-2" />
-                    <GInput placeholder="To" value={mileageForm.to} onChange={(e: any) => setMileageForm(f => ({ ...f, to: e.target.value }))} className="!text-xs !py-2" />
-                  </div>
-                  <GInput placeholder="Purpose (optional)" value={mileageForm.purpose} onChange={(e: any) => setMileageForm(f => ({ ...f, purpose: e.target.value }))} className="!text-xs !py-2 mb-2" />
-                  <GBtn onClick={submitMileageLog} disabled={mileageSubmitting} className="w-full !text-xs">{mileageSubmitting ? "Saving…" : "Log Mileage"}</GBtn>
-                  {mileageLogs.length > 0 && (
-                    <div className="mt-3 pt-3 border-t border-white/10 space-y-1.5">
-                      {mileageLogs.slice(0, 8).map((m: any) => (
-                        <div key={m.id} className="flex items-center justify-between gap-2 text-[11px]">
-                          <div className="min-w-0 truncate text-white/60">{m.date} · {m.from || "—"} → {m.to || "—"} · {m.miles}mi</div>
-                          <span className={"px-2 py-0.5 rounded-full text-[9px] font-bold flex-shrink-0 " + (m.status === "approved" ? "bg-green-700 text-white" : m.status === "denied" ? "bg-red-900/50 text-red-300" : "bg-yellow-950/40 border border-yellow-700/40 text-yellow-300")}>{m.status}</span>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </Glass>
 
                 <div className="text-[10px] text-white/20 text-center pt-2">
                   Pay estimates are based on logged hours × hourly rate.<br />Contact your manager for official payroll figures.

@@ -1,4 +1,5 @@
-// FEATURE — Twilio A2P 10DLC compliance: real STOP/START opt-out handling.
+// FEATURE — Twilio A2P 10DLC compliance: real STOP/START opt-out handling,
+// plus a keyword-based "via text" double opt-in flow.
 // Twilio's own carrier-level Advanced Opt-Out (if enabled on the Messaging
 // Service) can auto-reply to STOP and block the number at Twilio's layer,
 // but this app's OWN customers table has no visibility into that — nothing
@@ -27,6 +28,8 @@ const SUPABASE_ANON_KEY = "sb_publishable_8aEa3wsYJ7ghVPcGbtHymw_ugj0aEfm";
 
 const STOP_WORDS = ["STOP", "STOPALL", "UNSUBSCRIBE", "CANCEL", "END", "QUIT"];
 const START_WORDS = ["START", "UNSTOP", "YES"];
+const CONFIRM_WORDS = ["Y", "YES"];
+const DEFAULT_OPT_IN_KEYWORD = "DEALS";
 
 const normalizePhoneDigits = (p: string) => (p || "").replace(/\D/g, "");
 
@@ -44,9 +47,26 @@ const verifyTwilioSignature = async (url: string, params: Record<string, string>
   return expected === signature;
 };
 
-const twiml = () => new Response(`<?xml version="1.0" encoding="UTF-8"?><Response></Response>`, {
-  headers: { "Content-Type": "text/xml" },
-});
+const twiml = (message?: string) => new Response(
+  `<?xml version="1.0" encoding="UTF-8"?><Response>${message ? `<Message>${message.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")}</Message>` : ""}</Response>`,
+  { headers: { "Content-Type": "text/xml" } }
+);
+
+const fetchAppSettings = async (): Promise<{ companyName: string; keyword: string }> => {
+  try {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/app_settings?select=data-%3E%3EcompanyName,data-%3E%3EsmsOptInKeyword&limit=1`, {
+      headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}` },
+    });
+    const rows = await res.json().catch(() => []);
+    const row = Array.isArray(rows) ? rows[0] : null;
+    return {
+      companyName: row?.companyName || "Crew Boss",
+      keyword: (row?.smsOptInKeyword || DEFAULT_OPT_IN_KEYWORD).toUpperCase(),
+    };
+  } catch {
+    return { companyName: "Crew Boss", keyword: DEFAULT_OPT_IN_KEYWORD };
+  }
+};
 
 export const onRequestPost = async (context: { request: Request; env: Record<string, string> }) => {
   try {
@@ -67,38 +87,97 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
 
     const body = (params.Body || "").trim().toUpperCase();
     const from = params.From || "";
+    if (!from) return twiml();
+
     const isStop = STOP_WORDS.includes(body);
     const isStart = START_WORDS.includes(body);
+    const { companyName, keyword } = await fetchAppSettings();
+    const isOptInKeyword = body === keyword;
+    const isConfirm = CONFIRM_WORDS.includes(body);
+    if (!isStop && !isStart && !isOptInKeyword && !isConfirm) return twiml(); // ordinary message — InboxPage's poll handles display
 
-    if ((isStop || isStart) && from) {
-      const fromDigits = normalizePhoneDigits(from);
-      // No normalized phone column to filter on server-side (formats vary:
-      // "(717) 555-0100" vs "+17175550100") — fetch id+phone and match in JS.
-      // Fine at this app's single-tenant scale (CLAUDE.md).
-      const listRes = await fetch(`${SUPABASE_URL}/rest/v1/customers?select=id,phone`, {
-        headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}` },
+    const fromDigits = normalizePhoneDigits(from);
+    // No normalized phone column to filter on server-side (formats vary:
+    // "(717) 555-0100" vs "+17175550100") — fetch and match in JS. Fine at
+    // this app's single-tenant scale (CLAUDE.md).
+    const listRes = await fetch(`${SUPABASE_URL}/rest/v1/customers?select=id,phone,firstName,smsOptInPending`, {
+      headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}` },
+    });
+    const list = await listRes.json().catch(() => []);
+    const match = Array.isArray(list) ? list.find((c: any) => normalizePhoneDigits(c.phone) === fromDigits) : null;
+
+    const origin = new URL(context.request.url).origin;
+    const termsUrl = `${origin}/#/terms?co=${encodeURIComponent(companyName)}`;
+    const privacyUrl = `${origin}/#/privacy?co=${encodeURIComponent(companyName)}`;
+
+    const patchCustomer = async (id: string, patch: Record<string, unknown>) => {
+      const res = await fetch(`${SUPABASE_URL}/rest/v1/customers?id=eq.${encodeURIComponent(id)}`, {
+        method: "PATCH",
+        headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}`, "Content-Type": "application/json", Prefer: "return=minimal" },
+        body: JSON.stringify(patch),
       });
-      const list = await listRes.json().catch(() => []);
-      const match = Array.isArray(list) ? list.find((c: any) => normalizePhoneDigits(c.phone) === fromDigits) : null;
+      if (!res.ok) console.error("[TwilioSmsWebhook] patch failed for", id, ":", await res.text().catch(() => ""));
+      return res.ok;
+    };
+
+    if (isStop) {
       if (match?.id) {
-        const patch = isStop
-          ? { smsOptOut: true, optOutDate: new Date().toISOString().slice(0, 10), smsOptIn: false }
-          : { smsOptOut: false, smsOptIn: true, smsOptInAt: new Date().toISOString() };
-        const patchRes = await fetch(`${SUPABASE_URL}/rest/v1/customers?id=eq.${encodeURIComponent(match.id)}`, {
-          method: "PATCH",
-          headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}`, "Content-Type": "application/json", Prefer: "return=minimal" },
-          body: JSON.stringify(patch),
-        });
-        if (!patchRes.ok) console.error("[TwilioSmsWebhook] failed to update customer", match.id, ":", await patchRes.text().catch(() => ""));
-        else console.log("[TwilioSmsWebhook]", isStop ? "opted OUT" : "opted back IN", "customer", match.id);
+        await patchCustomer(match.id, { smsOptOut: true, optOutDate: new Date().toISOString().slice(0, 10), smsOptIn: false, smsOptInPending: false });
+        console.log("[TwilioSmsWebhook] opted OUT customer", match.id);
       } else {
-        console.warn("[TwilioSmsWebhook]", isStop ? "STOP" : "START", "from unrecognized number:", from);
+        console.warn("[TwilioSmsWebhook] STOP from unrecognized number:", from);
       }
+      // No auto-reply here — if Advanced Opt-Out is enabled on the Messaging
+      // Service, Twilio already sends the required confirmation text at the
+      // carrier level; replying here too would double-text the customer.
+      return twiml();
     }
 
-    // No auto-reply <Message> here — if Advanced Opt-Out is enabled on the
-    // Messaging Service, Twilio already sends the required confirmation text
-    // at the carrier level; replying here too would double-text the customer.
+    // Confirmation step of the double opt-in (Twilio "via text" keyword flow)
+    // — only completes the opt-in if THIS number actually has a pending
+    // request on file, so a stray "Y"/"YES" from someone who never texted
+    // the keyword doesn't silently opt them in.
+    if (isConfirm && match?.smsOptInPending) {
+      await patchCustomer(match.id, { smsOptIn: true, smsOptInAt: new Date().toISOString(), smsOptInPending: false, smsOptOut: false });
+      console.log("[TwilioSmsWebhook] confirmed opt-in for customer", match.id);
+      return twiml(`You're confirmed! Welcome to ${companyName} text updates — appointment reminders, on-my-way alerts, and occasional offers. Msg freq varies (~1-4/mo). Msg&data rates may apply. Reply HELP for help, STOP to cancel anytime.`);
+    }
+
+    if (isOptInKeyword) {
+      let customerId = match?.id;
+      if (!customerId) {
+        // New number, no existing customer record — create a minimal one so
+        // the pending opt-in has somewhere to live. Mirrors LeadFormPage.tsx's
+        // bare-minimum new-lead shape.
+        const insertRes = await fetch(`${SUPABASE_URL}/rest/v1/customers`, {
+          method: "POST",
+          headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}`, "Content-Type": "application/json", Prefer: "return=representation" },
+          body: JSON.stringify([{ id: crypto.randomUUID(), firstName: "", lastName: "", phone: from, email: "", totalSpent: 0, createdAt: new Date().toISOString(), smsOptInPending: true, smsOptInPendingAt: new Date().toISOString() }]),
+        });
+        const inserted = await insertRes.json().catch(() => null);
+        customerId = Array.isArray(inserted) ? inserted[0]?.id : undefined;
+        if (!customerId) console.error("[TwilioSmsWebhook] failed to create customer for new opt-in number:", from);
+      } else {
+        await patchCustomer(customerId, { smsOptInPending: true, smsOptInPendingAt: new Date().toISOString() });
+      }
+      console.log("[TwilioSmsWebhook] opt-in keyword received, pending confirmation for", customerId || from);
+      return twiml(`Thanks for texting ${keyword} to ${companyName}! Reply Y to confirm you want text updates (appointment reminders & offers, ~1-4 msgs/mo). Msg&data rates may apply. Terms: ${termsUrl} Privacy: ${privacyUrl}`);
+    }
+
+    // isStart (plain STOP-reversal, not the keyword flow above) — checked
+    // explicitly (not just "fell through the checks above") so a bare "Y"
+    // that ISN'T a pending-confirmation reply (isConfirm is true for "Y" too,
+    // but that branch above already returned if it applied) can never
+    // silently opt someone in here just because it also passed the top-level
+    // gate — "Y" alone is not one of START_WORDS.
+    if (isStart) {
+      if (match?.id) {
+        await patchCustomer(match.id, { smsOptOut: false, smsOptIn: true, smsOptInAt: new Date().toISOString(), smsOptInPending: false });
+        console.log("[TwilioSmsWebhook] opted back IN customer", match.id);
+      } else {
+        console.warn("[TwilioSmsWebhook] START from unrecognized number:", from);
+      }
+    }
     return twiml();
   } catch (e: any) {
     console.error("[TwilioSmsWebhook] handler error:", e?.message);
