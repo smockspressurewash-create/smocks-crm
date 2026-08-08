@@ -396,8 +396,12 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
         const validTok = tok && empRow?.google_token_expires_at && new Date(empRow.google_token_expires_at).getTime() > Date.now();
         if (tok && !validTok && empRow?.google_refresh_token && settings?.googleBackendUrl) {
           // Employee's token is expired — this needs THEIR refresh_token, not
-          // the owner's session, so the owner-side supabase.auth.refreshSession()
-          // retry inside sendViaGmail would refresh the wrong account's token.
+          // the owner's session. (Audit round 2 — sendViaGmail's old ambient
+          // supabase.auth.refreshSession() fallback, which this comment used
+          // to warn about, has been removed entirely; it now only ever uses
+          // the explicit token/refreshToken passed in, so there's no longer a
+          // path for it to silently pick up the owner's or any other
+          // session's token here.)
           const refreshed = await refreshEmpGoogleToken(settings.googleBackendUrl, empRow.google_refresh_token);
           if (refreshed?.token) {
             tok = refreshed.token;
@@ -407,6 +411,7 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
           tok = null;
         }
         if (tok) {
+          console.log("[GoogleConnect] Job email send — using EMPLOYEE's own Gmail account:", empRow.google_email || emp.email, "for", emp.firstName || emp.id);
           await withTimeout(sendViaGmail(tok, empRow.google_email || emp.email, emp.email, subj, html), 6000, "Gmail send");
           viaEmpGmail = true;
         }

@@ -1959,11 +1959,33 @@ export function App() {
             // hour; when it includes a fresh Google provider_token, capture it so
             // sendEmail()'s Gmail path uses the current token on the very next
             // send instead of only discovering it's stale after a 401.
+            //
+            // BUG FIX (Google accounts mixed up, round 2) — this used to write
+            // straight to settings.googleProviderToken (the OWNER's shared
+            // slot) with NO check on whose session was actually being
+            // refreshed. onAuthStateChange fires for whatever session is
+            // CURRENTLY ACTIVE in this browser tab — there is exactly one
+            // Supabase Auth session per tab, shared by the whole app — so if
+            // an EMPLOYEE happened to be the signed-in session when Supabase's
+            // background refresh cycle fired (e.g. the same device/browser
+            // was also used to sign into the employee portal), this
+            // unconditionally overwrote the owner's Gmail/Calendar/Workspace
+            // connection with the employee's token. This was the actual root
+            // cause surviving the earlier OAuth-callback bridge fix (that fix
+            // only gated the ONE-TIME connect flow, not this recurring
+            // ~hourly background refresh). Now routed by the session's real
+            // role, same as every other branch below.
             if (event === "TOKEN_REFRESHED") {
               const freshProviderToken = (session as any)?.provider_token;
               if (freshProviderToken) {
-                console.log("[GoogleConnect] TOKEN_REFRESHED carried a fresh provider_token — updating settings");
-                setSettings((prev: any) => ({ ...prev, googleProviderToken: freshProviderToken, googleTokenExpiresAt: Date.now() + 55 * 60 * 1000 }));
+                const refreshRole = await resolveUserRole(session);
+                if (refreshRole === "employee") {
+                  console.log("[GoogleConnect] TOKEN_REFRESHED — active session is an EMPLOYEE — updating employees.google_token only, owner's settings.googleProviderToken left untouched");
+                  persistEmployeeGoogleToken(session);
+                } else {
+                  console.log("[GoogleConnect] TOKEN_REFRESHED — active session is the OWNER/manager — updating settings.googleProviderToken");
+                  setSettings((prev: any) => ({ ...prev, googleProviderToken: freshProviderToken, googleTokenExpiresAt: Date.now() + 55 * 60 * 1000 }));
+                }
               }
               return;
             }

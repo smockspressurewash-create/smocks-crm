@@ -2611,6 +2611,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
         const startDt = new Date(`${j.scheduledDate}T${j.scheduledTime || "09:00"}:00`).getTime();
         const hoursAway = (startDt - now) / 3600000;
         if (hoursAway > 0 && hoursAway <= 24) {
+          console.log("[GoogleConnect] Employee job reminder — using EMPLOYEE's own Gmail account:", empToken!.email, "(never the owner's)");
           sendViaGmail(
             empToken!.token, empToken!.email, empToken!.email,
             `Reminder: Job Tomorrow — ${j.address}`,

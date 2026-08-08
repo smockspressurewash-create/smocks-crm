@@ -509,20 +509,23 @@ export const sendViaGmail = async (
       if (gmailRefreshFailureStreak >= GMAIL_REFRESH_MAX_ATTEMPTS) gmailCircuitOpenedAt = Date.now();
       throw new Error(GMAIL_UNAVAILABLE_MSG);
     }
-    // Fallback for accounts with no stored refresh_token yet (e.g. connected
-    // before this was tracked) — occasionally still turns up a usable token.
+    // BUG FIX (Google accounts mixed up, round 2) — this used to fall back to
+    // supabase.auth.refreshSession()/getSession() here, which reads whichever
+    // Supabase Auth session is CURRENTLY ACTIVE in this browser tab. sendViaGmail
+    // is called for OWNER sends (sendOwnerGmailOnly/sendEmail) from contexts
+    // where an EMPLOYEE could be the actual active session in the same
+    // browser/device (a shared shop computer, or the owner testing the
+    // employee portal without signing out first) — that ambient session has
+    // no relation to the specific googleProviderToken this function was
+    // explicitly called with. Using it here meant an owner-triggered send
+    // could silently go out from — and then (via onTokenRefreshed below)
+    // permanently persist — an employee's Gmail account into the owner's
+    // slot. This function now only ever trusts the refresh_token exchange
+    // above, tied to the specific account it was called for; if that account
+    // has no refresh_token on file or the exchange fails, it fails fast with
+    // a clear message instead of silently borrowing ambient browser state.
     if (!freshToken) {
-      console.warn("[GoogleToken] no refresh_token available or refresh failed — falling back to Supabase session refresh (less reliable)");
-      try {
-        const { data: refreshed } = await withTimeout(supabase.auth.refreshSession(), 6000, "Google session refresh");
-        freshToken = (refreshed.session as any)?.provider_token;
-        if (!freshToken) {
-          const { data: current } = await withTimeout(supabase.auth.getSession(), 4000, "Google session check");
-          freshToken = (current.session as any)?.provider_token;
-        }
-      } catch (refreshErr: any) {
-        console.warn("[SendInvoice] session refresh failed or timed out:", refreshErr?.message);
-      }
+      console.warn("[GoogleToken] no refresh_token available or refresh failed for this account — reconnect required (no longer falling back to the ambient browser session, see BUG FIX comment above)");
     }
     if (freshToken) {
       res = await sendGmailRaw(freshToken, fromEmail, to, subject, html);

@@ -796,6 +796,16 @@ export function GoogleWorkspacePage({
   const googleEmail: string = storedGoogle?.email || s.googleEmail || "";
   const token: string = storedGoogle?.token || s.googleProviderToken || "";
   const hasToken = !!token;
+  // GoogleConnect ask #6 (audit) — one clear, single-source log for "which
+  // account is Workspace actually showing right now," since every tab below
+  // (Gmail/Calendar/Tasks/Contacts/Drive) reads this same `token`/`googleEmail`
+  // pair. If this ever logs an employee's email, the leak is upstream of this
+  // page (the owner's stored connection or settings.googleProviderToken
+  // itself got overwritten) — see the BUG FIX comments in App.tsx's
+  // TOKEN_REFRESHED handler and this file's getRefreshedGoogleToken.
+  useEffect(() => {
+    console.log("[GoogleConnect] Owner Workspace page — account in use:", googleEmail || "(none)", "· connected:", isConnected, "· token source:", storedGoogle?.token ? "localStorage (this browser's own OAuth)" : s.googleProviderToken ? "settings.googleProviderToken (cross-device/cloud)" : "none");
+  }, [googleEmail, isConnected, storedGoogle?.token, s.googleProviderToken]);
 
   // BLOCKER 3 (mobile round 7) — core refresh logic shared by the manual
   // "Refresh" button, the once-per-load auto-refresh, AND the module-level
@@ -812,21 +822,22 @@ export function GoogleWorkspacePage({
     if (refreshToken) {
       const refreshed = await refreshEmpGoogleToken(s.googleBackendUrl, refreshToken);
       if (refreshed?.token) {
-        console.log("[GoogleConnect] GoogleWorkspacePage — token refreshed, saving to localStorage");
+        console.log("[GoogleConnect] GoogleWorkspacePage — OWNER token refreshed via refresh_token exchange, saving to localStorage");
         setStoredGoogleToken(refreshed.token, refreshed.expiresAt);
         setStoredGoogle(getStoredGoogleConnection());
         setSettings?.((prev: any) => ({ ...prev, googleProviderToken: refreshed.token, googleTokenExpiresAt: refreshed.expiresAt }));
         return refreshed.token;
       }
     }
-    const { data } = await supabase.auth.refreshSession();
-    const fallbackToken: string = (data.session as any)?.provider_token || "";
-    if (fallbackToken) {
-      setStoredGoogleToken(fallbackToken, Date.now() + 55 * 60 * 1000);
-      setStoredGoogle(getStoredGoogleConnection());
-      setSettings?.((prev: any) => ({ ...prev, googleProviderToken: fallbackToken }));
-      return fallbackToken;
-    }
+    // BUG FIX (Google accounts mixed up, round 2) — this used to fall back to
+    // supabase.auth.refreshSession()'s ambient session.provider_token, which
+    // reflects whichever Supabase Auth session is CURRENTLY ACTIVE in this
+    // browser tab — not necessarily the owner's, if the same browser/device
+    // was ever used to sign into the employee portal without signing out
+    // first. This page must only ever show/refresh the OWNER's own Google
+    // connection, so the refresh_token exchange above (tied to this specific
+    // stored connection) is now the only path — no ambient-session fallback.
+    console.warn("[GoogleConnect] GoogleWorkspacePage — no refresh_token on file for the owner's connection, and no ambient-session fallback (see BUG FIX comment) — reconnect required");
     return null;
   }, [storedGoogle?.refreshToken, s.googleRefreshToken, s.googleBackendUrl, setSettings]);
 
