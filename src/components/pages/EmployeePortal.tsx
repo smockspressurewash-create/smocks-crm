@@ -3460,6 +3460,8 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   // knows to escalate instead of retrying forever.
   const [empGoogleConfigMissing, setEmpGoogleConfigMissing] = useState(false);
   const [showCanceledJobs, setShowCanceledJobs] = useState(false);
+  const [jobsStatusFilter, setJobsStatusFilter] = useState<"all" | "scheduled" | "completed">("all");
+  const [jobsSearchText, setJobsSearchText] = useState("");
   const [pastCollapsed, setPastCollapsedState] = useState(() => {
     try { const v = localStorage.getItem("smocks.portal.pastCollapsed"); return v === null ? true : v === "1"; } catch { return true; }
   });
@@ -5695,13 +5697,27 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
           {/* All Jobs tab — grouped by date */}
           {tab === "jobs" && (() => {
             const jwEnd = (() => { const d = new Date(); d.setDate(d.getDate() + (6 - d.getDay())); return d.toISOString().slice(0, 10); })();
-            const visibleJobs = showCanceledJobs ? myJobs : myJobs.filter(j => j.status !== "cancelled");
+            // Apply status filter first, then search text
+            const statusFiltered = myJobs.filter(j => {
+              if (j.status === "cancelled" && !showCanceledJobs) return false;
+              if (jobsStatusFilter === "scheduled") return j.status === "scheduled" || j.status === ("active" as any);
+              if (jobsStatusFilter === "completed") return j.status === "completed";
+              return true;
+            });
+            const searchLower = jobsSearchText.trim().toLowerCase();
+            const visibleJobs = searchLower
+              ? statusFiltered.filter(j => {
+                  const cust = customers.find((c: any) => c.id === j.customerId);
+                  const custName = cust ? (cust.firstName + " " + cust.lastName).toLowerCase() : "";
+                  return custName.includes(searchLower) || (j.address || "").toLowerCase().includes(searchLower) || (j.scheduledDate || "").includes(searchLower);
+                })
+              : statusFiltered;
             const canceledCount = myJobs.filter(j => j.status === "cancelled").length;
             const activeGrp  = visibleJobs.filter(j => !!j.clockInAt);
-            const todayGrp   = visibleJobs.filter(j => !j.clockInAt && j.scheduledDate === todayStr);
+            const todayGrp   = visibleJobs.filter(j => !j.clockInAt && j.scheduledDate === todayStr && j.status !== "completed");
             const weekGrp    = visibleJobs.filter(j => !j.clockInAt && j.scheduledDate > todayStr && j.scheduledDate <= jwEnd);
             const upcomingGrp = visibleJobs.filter(j => !j.clockInAt && j.scheduledDate > jwEnd);
-            const earlierGrp = visibleJobs.filter(j => !j.clockInAt && j.scheduledDate < todayStr);
+            const earlierGrp = visibleJobs.filter(j => !j.clockInAt && (j.scheduledDate < todayStr || j.status === "completed"));
 
             const Group = ({ label, jobs: grpJobs, collapsed, onToggle }: { label: string; jobs: typeof myJobs; collapsed?: boolean; onToggle?: () => void }) => {
               if (grpJobs.length === 0) return null;
@@ -5721,7 +5737,32 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
             };
 
             return (
-              <div className="space-y-5">
+              <div className="space-y-4">
+                {/* Filter + search row */}
+                <div className="space-y-2">
+                  <div className="flex items-center gap-1.5">
+                    {([["all", "All"], ["scheduled", "Upcoming"], ["completed", "Completed"]] as const).map(([k, l]) => (
+                      <button key={k} onClick={() => setJobsStatusFilter(k)}
+                        className={"px-3 py-1.5 rounded-lg text-xs font-medium transition flex-1 " + (jobsStatusFilter === k ? "bg-red-700/60 text-white" : "bg-black/40 border border-white/10 text-white/50 hover:text-white")}>
+                        {l}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="relative">
+                    <input
+                      value={jobsSearchText}
+                      onChange={e => setJobsSearchText(e.target.value)}
+                      placeholder="Search by customer, address, or date…"
+                      className="w-full bg-black/40 border border-white/10 rounded-lg px-3 py-2 text-xs text-white placeholder-white/30 focus:outline-none focus:border-red-600/40"
+                    />
+                    {jobsSearchText && (
+                      <button onClick={() => setJobsSearchText("")} className="absolute right-2 top-1/2 -translate-y-1/2 text-white/40 hover:text-white/70">
+                        <X size={12} />
+                      </button>
+                    )}
+                  </div>
+                </div>
+
                 {/* Route button — optimize today's stops (FEATURE 2) */}
                 {todayJobs.filter(j => j.status !== "completed" && j.address).length >= 1 && (
                   <button onClick={optimizeRoute} disabled={routeLoading}
@@ -5729,7 +5770,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                     <Route size={15} />{routeLoading ? "Optimizing route…" : "Route Today's Jobs"}
                   </button>
                 )}
-                {canceledCount > 0 && (
+                {canceledCount > 0 && jobsStatusFilter === "all" && (
                   <button onClick={() => setShowCanceledJobs(v => !v)} className={"w-full flex items-center justify-center gap-1.5 py-2 rounded-xl border text-xs font-medium transition " + (showCanceledJobs ? "bg-red-950/20 border-red-700/40 text-red-300" : "bg-black/30 border-white/10 text-white/40 hover:text-white/60")}>
                     {showCanceledJobs ? <ToggleRight size={14} /> : <ToggleLeft size={14} />}
                     {showCanceledJobs ? `Showing ${canceledCount} canceled job${canceledCount !== 1 ? "s" : ""}` : `Show Canceled (${canceledCount})`}
@@ -5741,13 +5782,15 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                     <div className="font-semibold text-white/40 mb-1">No jobs assigned yet</div>
                     <div className="text-sm leading-relaxed">When your manager assigns you to a job, it will appear here.</div>
                   </div>
+                ) : visibleJobs.length === 0 ? (
+                  <div className="text-center py-10 text-white/30 text-sm">No jobs match this filter.</div>
                 ) : (
                   <>
                     <Group label="Active" jobs={activeGrp} />
                     <Group label="Today" jobs={todayGrp} />
                     <Group label="This Week" jobs={weekGrp.sort((a, b) => a.scheduledDate.localeCompare(b.scheduledDate))} />
                     <Group label="Upcoming" jobs={upcomingGrp.sort((a, b) => a.scheduledDate.localeCompare(b.scheduledDate))} collapsed={upcomingCollapsed} onToggle={() => setUpcomingCollapsed(c => !c)} />
-                    <Group label="Past" jobs={earlierGrp.sort((a, b) => b.scheduledDate.localeCompare(a.scheduledDate))} collapsed={pastCollapsed} onToggle={() => setPastCollapsed(c => !c)} />
+                    <Group label="Past / Completed" jobs={earlierGrp.sort((a, b) => b.scheduledDate.localeCompare(a.scheduledDate))} collapsed={pastCollapsed} onToggle={() => setPastCollapsed(c => !c)} />
                   </>
                 )}
               </div>
@@ -6343,13 +6386,28 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
               <div className="space-y-4">
                 {/* Connect / connected / expired banner */}
                 {empGoogleValid ? (
-                  <Glass className="p-4 !bg-green-950/20 !border-green-700/30 flex items-center gap-3">
-                    <CheckCircle size={18} className="text-green-400 flex-shrink-0" />
-                    <div className="flex-1 min-w-0">
-                      <div className="font-semibold text-sm text-green-300">Google Connected ✓</div>
-                      {empGoogleEmail && <div className="text-xs text-white/50 mt-0.5">Connected as {empGoogleEmail}</div>}
-                      <div className="text-xs text-white/40 mt-0.5">Calendar sync is active — jobs auto-added on accept</div>
+                  <Glass className="p-4 !bg-green-950/20 !border-green-700/30">
+                    <div className="flex items-center gap-3 mb-3">
+                      <CheckCircle size={18} className="text-green-400 flex-shrink-0" />
+                      <div className="flex-1 min-w-0">
+                        <div className="font-semibold text-sm text-green-300">Google Connected ✓</div>
+                        {empGoogleEmail && <div className="text-xs text-white/50 mt-0.5">Connected as {empGoogleEmail}</div>}
+                        <div className="text-xs text-white/40 mt-0.5">Calendar sync is active — jobs auto-added on accept</div>
+                      </div>
                     </div>
+                    <button
+                      onClick={() => {
+                        if (!window.confirm("Disconnect your Google account? This will stop calendar sync and Gmail sending from your portal.")) return;
+                        if (empUserId) {
+                          try { localStorage.removeItem("emp_google_token_" + empUserId); } catch { /* ignore */ }
+                          saveEmpGoogleToken(empUserId, null as any);
+                        }
+                        toast("Google account disconnected", "green");
+                      }}
+                      className="w-full flex items-center justify-center gap-2 py-2 rounded-xl bg-red-950/30 hover:bg-red-900/40 border border-red-700/30 text-red-300 text-xs font-semibold transition"
+                    >
+                      <X size={12} />Disconnect Google
+                    </button>
                   </Glass>
                 ) : empGoogleExpired ? (
                   <Glass className={"p-4 " + (empGoogleConfigMissing ? "!bg-red-950/20 !border-red-700/30" : "!bg-yellow-950/20 !border-yellow-700/30")}>

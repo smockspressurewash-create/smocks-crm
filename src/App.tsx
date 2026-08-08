@@ -1312,6 +1312,7 @@ export function App() {
       const newConv = { id: uid(), title: "Check-in — " + new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }), personality, messages: [{ id: uid(), role: "alfred", content: msg, timestamp: Date.now() }], createdAt: Date.now(), updatedAt: Date.now() };
       console.log("[AlfredCheckin] firing check-in", countToday + 1, "of 3 for", todayStr);
       setAlfredConversations((prev: any[]) => [newConv, ...(prev || [])]);
+      setActiveConvId(newConv.id);
       setSettings?.((prev: any) => ({ ...prev, alfredCheckinDate: todayStr, alfredCheckinsToday: countToday + 1, alfredLastCheckinAt: Date.now() }));
       toast?.("🤖 Alfred checked in — see the Alfred tab", "green");
     };
@@ -1363,6 +1364,7 @@ export function App() {
       const newConv = { id: uid(), title: "Morning Briefing — " + todayStr, personality, messages: [{ id: uid(), role: "alfred", content: briefing, timestamp: Date.now() }], createdAt: Date.now(), updatedAt: Date.now() };
       console.log("[AlfredBriefing] firing morning briefing for", todayStr);
       setAlfredConversations((prev: any[]) => [newConv, ...(prev || [])]);
+      setActiveConvId(newConv.id);
       setSettings?.((prev: any) => ({ ...prev, alfredBriefingDate: todayStr }));
       toast?.("🌅 Alfred's morning briefing is ready — see the Alfred tab", "green");
     };

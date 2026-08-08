@@ -183,6 +183,9 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
   // conversation" apart from "edited an existing one" and save the new one
   // immediately instead of waiting out the debounce.
   const knownConvIdsRef = useRef<Set<string>>(new Set());
+  // Tracks conversations the user deleted locally so the poll merge doesn't
+  // bring them back if the Supabase DELETE is still in-flight or slow.
+  const deletedConvIdsRef = useRef<Set<string>>(new Set());
   // FIX 4 (mobile round 5) — once we've run the mismatch check/re-key for a
   // given ownerId, don't repeat the extra round-trips on every 5s poll —
   // once is enough; re-arm if ownerId changes (e.g. a different session).
@@ -259,11 +262,14 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
         // Anything the server already has is "known" — only conversations
         // created locally after this point should trigger an immediate save.
         fromServer.forEach(c => knownConvIdsRef.current.add(c.id));
+        // Filter out any IDs the user deleted locally — the Supabase DELETE
+        // may not have landed yet, but we never want them to reappear.
+        fromServer = fromServer.filter(c => !deletedConvIdsRef.current.has(c.id));
         setConversations((prev: any[]) => {
           const byId = new Map(fromServer.map(c => [c.id, c]));
           // Keep any local conversation not yet confirmed server-side (just
           // created/edited, upsert still in flight) so it doesn't flicker away.
-          const localOnly = (prev || []).filter((c: any) => !byId.has(c.id));
+          const localOnly = (prev || []).filter((c: any) => !byId.has(c.id) && !deletedConvIdsRef.current.has(c.id));
           // fromServer always sets updatedAt as an ISO STRING, but local
           // conversations get created/updated with `updatedAt: Date.now()` —
           // a NUMBER. Normalize both shapes to a comparable timestamp instead
@@ -274,7 +280,19 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
             if (typeof v === "string" && v) { const t = new Date(v).getTime(); return Number.isNaN(t) ? 0 : t; }
             return 0;
           };
-          return [...fromServer, ...localOnly].sort((a, b) => ts((b as any).updatedAt) - ts((a as any).updatedAt));
+          // BUG FIX — if the server row for a conversation has messages:[]
+          // (upsert failed silently or messages JSONB wasn't stored), the merge
+          // previously overwrote the local copy (which had real messages) with
+          // the empty server version, making check-in / new chats appear blank.
+          // Keep the local messages if the server copy has none.
+          const merged = fromServer.map(serverConv => {
+            const localConv = (prev || []).find((c: any) => c.id === serverConv.id);
+            if (localConv && (!serverConv.messages?.length) && localConv.messages?.length > 0) {
+              return { ...serverConv, messages: localConv.messages };
+            }
+            return serverConv;
+          });
+          return [...merged, ...localOnly].sort((a, b) => ts((b as any).updatedAt) - ts((a as any).updatedAt));
         });
         setAlfredConvsLoaded(true);
       } catch (e: any) { console.warn("[Alfred Sync] fetch threw:", e?.message); }
@@ -510,6 +528,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
   // local state (and it never disappears on any OTHER device either, since
   // no device ever told Supabase it was deleted).
   const deleteConversation = cid => {
+    deletedConvIdsRef.current.add(cid);
     const remaining = conversations.filter(c => c.id !== cid);
     setConversations(remaining);
     if (cid === activeConvId) setActiveConvId(remaining[0]?.id || null);
@@ -530,6 +549,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
 
   const deleteAllConversations = () => {
     const ids = conversations.map(c => c.id);
+    ids.forEach(id => deletedConvIdsRef.current.add(id));
     setConversations([]);
     setActiveConvId(null);
     setTimeout(newConversation, 0);
