@@ -126,9 +126,10 @@ const DEFAULT_MANAGER_PERMS: Record<string, boolean> = {
 // a paid/unpaid status per period. Reads the append-only paymentLog each of
 // those three functions now writes (one entry per "Mark Paid" click, dated
 // with a real timestamp) and plots it on a month grid.
-function PayrollCalendar({ employees }: { employees: any[] }) {
+function PayrollCalendar({ employees, jobs = [] }: { employees: any[]; jobs?: any[] }) {
   const [monthOffset, setMonthOffset] = useState(0);
   const [selectedDay, setSelectedDay] = useState<string | null>(null);
+  const [showMode, setShowMode] = useState<"payments" | "jobs">("jobs");
   const base = new Date();
   base.setDate(1);
   base.setMonth(base.getMonth() + monthOffset);
@@ -137,13 +138,41 @@ function PayrollCalendar({ employees }: { employees: any[] }) {
   const startWeekday = new Date(year, month, 1).getDay();
   const monthLabel = base.toLocaleDateString("en-US", { month: "long", year: "numeric" });
 
-  const eventsByDay: Record<string, { id: string; empName: string; amount: number; periodStart: string; periodEnd: string }[]> = {};
+  // Payment log events (only visible after "Mark Paid" is used)
+  const paymentsByDay: Record<string, { id: string; empName: string; amount: number; periodStart: string; periodEnd: string }[]> = {};
   employees.forEach((e: any) => {
     (e.paymentLog || []).forEach((p: any) => {
       const dateKey = new Date(p.paidAt).toISOString().slice(0, 10);
-      (eventsByDay[dateKey] ||= []).push({ id: p.id, empName: `${e.firstName} ${e.lastName}`, amount: Number(p.amount) || 0, periodStart: p.periodStart, periodEnd: p.periodEnd });
+      (paymentsByDay[dateKey] ||= []).push({ id: p.id, empName: `${e.firstName} ${e.lastName}`, amount: Number(p.amount) || 0, periodStart: p.periodStart, periodEnd: p.periodEnd });
     });
   });
+
+  // Job completion events — show all completed jobs by date so the calendar isn't empty before any payments are marked
+  const jobsByDay: Record<string, { empName: string; hours: number; address: string; status: string }[]> = {};
+  jobs.forEach((j: any) => {
+    if (j.status !== "completed" && j.status !== "scheduled") return;
+    const dateKey = j.scheduledDate || (j.completedAt ? String(j.completedAt).slice(0, 10) : "");
+    if (!dateKey) return;
+    const [y, m] = dateKey.split("-").map(Number);
+    if (y !== year || (m - 1) !== month) return;
+    const empNames: string[] = [];
+    employees.forEach((e: any) => {
+      const crew: any[] = Array.isArray(j.crew) ? j.crew : [];
+      const inCrew = crew.some((c: any) => {
+        if (typeof c === "string") return c === e.id || c === (e as any).user_id;
+        if (c && typeof c === "object") return c.id === e.id || c.user_id === (e as any).user_id;
+        return false;
+      });
+      if (inCrew) empNames.push(`${e.firstName} ${e.lastName}`);
+    });
+    if (empNames.length === 0) empNames.push("Unassigned");
+    empNames.forEach(name => {
+      (jobsByDay[dateKey] ||= []).push({ empName: name, hours: Number(j.loggedHours) || 0, address: j.address || "—", status: j.status });
+    });
+  });
+
+  const eventsByDay = showMode === "payments" ? paymentsByDay : jobsByDay;
+  const hasPayments = Object.keys(paymentsByDay).length > 0;
 
   const cells: (number | null)[] = [];
   for (let i = 0; i < startWeekday; i++) cells.push(null);
@@ -151,10 +180,15 @@ function PayrollCalendar({ employees }: { employees: any[] }) {
 
   return (
     <Glass className="p-4">
-      <div className="flex items-center justify-between mb-3">
+      <div className="flex items-center justify-between mb-2">
         <button onClick={() => setMonthOffset(o => o - 1)} className="p-1.5 rounded-lg hover:bg-white/10 text-white/50"><ChevronLeft size={14} /></button>
         <div className="text-sm font-semibold flex items-center gap-1.5"><Calendar size={13} className="text-green-400" />{monthLabel}</div>
         <button onClick={() => setMonthOffset(o => o + 1)} className="p-1.5 rounded-lg hover:bg-white/10 text-white/50"><ChevronRight size={14} /></button>
+      </div>
+      {/* Toggle: jobs view vs payments view */}
+      <div className="flex gap-1 mb-3 p-0.5 bg-black/30 border border-white/10 rounded-lg">
+        <button onClick={() => setShowMode("jobs")} className={"flex-1 text-[10px] py-1 rounded font-medium transition " + (showMode === "jobs" ? "bg-blue-700/50 text-white" : "text-white/40")}>Jobs</button>
+        <button onClick={() => setShowMode("payments")} className={"flex-1 text-[10px] py-1 rounded font-medium transition " + (showMode === "payments" ? "bg-green-700/50 text-white" : "text-white/40")}>Payments{hasPayments ? "" : " (none yet)"}</button>
       </div>
       <div className="grid grid-cols-7 gap-1 text-center text-[10px] text-white/40 mb-1">
         {["S","M","T","W","T","F","S"].map((d, i) => <div key={i}>{d}</div>)}
@@ -163,34 +197,53 @@ function PayrollCalendar({ employees }: { employees: any[] }) {
         {cells.map((d, i) => {
           if (d == null) return <div key={i} />;
           const key = `${year}-${String(month + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
-          const dayEvents = eventsByDay[key] || [];
-          const total = dayEvents.reduce((s, ev) => s + ev.amount, 0);
+          const dayEvents = (eventsByDay as any)[key] || [];
+          const isSelected = selectedDay === key;
+          const hasData = dayEvents.length > 0;
+          const total = showMode === "payments" ? dayEvents.reduce((s: number, ev: any) => s + (ev.amount || 0), 0) : null;
+          const totalHours = showMode === "jobs" ? dayEvents.reduce((s: number, ev: any) => s + (ev.hours || 0), 0) : null;
           return (
-            <button key={i} onClick={() => dayEvents.length > 0 && setSelectedDay(selectedDay === key ? null : key)}
-              disabled={dayEvents.length === 0}
+            <button key={i} onClick={() => hasData && setSelectedDay(isSelected ? null : key)}
+              disabled={!hasData}
               className={"aspect-square rounded-lg text-[10px] flex flex-col items-center justify-center gap-0.5 transition " +
-                (dayEvents.length > 0
-                  ? "bg-green-950/40 border " + (selectedDay === key ? "border-green-400" : "border-green-700/40") + " text-green-300 hover:bg-green-900/40 cursor-pointer"
+                (hasData
+                  ? (showMode === "payments"
+                      ? "bg-green-950/40 border " + (isSelected ? "border-green-400" : "border-green-700/40") + " text-green-300 hover:bg-green-900/40 cursor-pointer"
+                      : "bg-blue-950/40 border " + (isSelected ? "border-blue-400" : "border-blue-700/30") + " text-blue-300 hover:bg-blue-900/40 cursor-pointer")
                   : "text-white/30 cursor-default")}>
               <div>{d}</div>
-              {dayEvents.length > 0 && <div className="text-[8px] font-bold leading-none">{fmt(total)}</div>}
+              {hasData && showMode === "payments" && <div className="text-[8px] font-bold leading-none">{fmt(total as number)}</div>}
+              {hasData && showMode === "jobs" && <div className="text-[8px] font-bold leading-none">{dayEvents.length}j{totalHours ? " " + (totalHours as number).toFixed(1) + "h" : ""}</div>}
             </button>
           );
         })}
       </div>
-      {selectedDay && (eventsByDay[selectedDay]?.length ?? 0) > 0 && (
+      {selectedDay && ((eventsByDay as any)[selectedDay]?.length ?? 0) > 0 && (
         <div className="mt-3 pt-3 border-t border-white/10 space-y-1.5">
-          <div className="text-[10px] text-white/40 uppercase tracking-wider">Paid on {selectedDay}</div>
-          {eventsByDay[selectedDay].map(ev => (
-            <div key={ev.id} className="flex items-center justify-between text-xs bg-black/40 rounded-lg px-2.5 py-1.5">
-              <span className="text-white/70">{ev.empName} <span className="text-white/40">({ev.periodStart}{ev.periodEnd !== ev.periodStart ? " – " + ev.periodEnd : ""})</span></span>
-              <span className="font-semibold text-green-400">{fmt(ev.amount)}</span>
-            </div>
-          ))}
+          <div className="text-[10px] text-white/40 uppercase tracking-wider">{showMode === "payments" ? "Payments on" : "Jobs on"} {selectedDay}</div>
+          {showMode === "payments"
+            ? (paymentsByDay[selectedDay] || []).map(ev => (
+                <div key={ev.id} className="flex items-center justify-between text-xs bg-black/40 rounded-lg px-2.5 py-1.5">
+                  <span className="text-white/70">{ev.empName} <span className="text-white/40">({ev.periodStart}{ev.periodEnd !== ev.periodStart ? " – " + ev.periodEnd : ""})</span></span>
+                  <span className="font-semibold text-green-400">{fmt(ev.amount)}</span>
+                </div>
+              ))
+            : (jobsByDay[selectedDay] || []).map((ev, i) => (
+                <div key={i} className="flex items-center justify-between text-xs bg-black/40 rounded-lg px-2.5 py-1.5">
+                  <span className="text-white/70 truncate min-w-0 flex-1 mr-2">{ev.empName} <span className="text-white/40">· {ev.address}</span></span>
+                  <div className="text-right flex-shrink-0">
+                    <span className={"text-[10px] font-bold px-1.5 py-0.5 rounded-full " + (ev.status === "completed" ? "bg-green-900/40 text-green-300" : "bg-blue-900/40 text-blue-300")}>{ev.status}</span>
+                    {ev.hours > 0 && <span className="ml-1.5 text-white/50">{ev.hours}h</span>}
+                  </div>
+                </div>
+              ))
+          }
         </div>
       )}
       {Object.keys(eventsByDay).length === 0 && (
-        <div className="text-center py-4 text-xs text-white/30">No payments recorded yet — use "Mark Paid" below</div>
+        <div className="text-center py-4 text-xs text-white/30">
+          {showMode === "payments" ? 'No payments recorded yet — use "Mark Paid" on employee cards below' : "No jobs scheduled or completed this month"}
+        </div>
       )}
     </Glass>
   );
@@ -674,6 +727,22 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setJobs
             <span>to</span>
             <GDate value={payPeriodEnd} onChange={e => setPayPeriodEnd(e.target.value)} className="!text-xs !py-1.5 !w-36" />
           </div>
+          <div className="flex gap-1">
+            <button onClick={() => {
+              const s = new Date(payPeriodStart); s.setDate(s.getDate() - 7);
+              const e = new Date(payPeriodEnd); e.setDate(e.getDate() - 7);
+              setPayPeriodStart(s.toISOString().slice(0, 10)); setPayPeriodEnd(e.toISOString().slice(0, 10));
+            }} className="px-2.5 py-1 rounded-lg bg-black/40 border border-white/10 text-white/50 hover:text-white text-xs transition flex items-center gap-1">
+              <ChevronLeft size={11} />Prev Week
+            </button>
+            <button onClick={() => {
+              const s = new Date(payPeriodStart); s.setDate(s.getDate() + 7);
+              const e = new Date(payPeriodEnd); e.setDate(e.getDate() + 7);
+              setPayPeriodStart(s.toISOString().slice(0, 10)); setPayPeriodEnd(e.toISOString().slice(0, 10));
+            }} className="px-2.5 py-1 rounded-lg bg-black/40 border border-white/10 text-white/50 hover:text-white text-xs transition flex items-center gap-1">
+              Next Week<ChevronRight size={11} />
+            </button>
+          </div>
         </div>
         <Glass className="overflow-hidden">
           <table className="w-full text-sm">
@@ -764,6 +833,30 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setJobs
             <span>—</span>
             <GDate value={payPeriodEnd} onChange={e => setPayPeriodEnd(e.target.value)} className="!text-xs !py-1.5 !w-36" />
           </div>
+          {/* Quick period navigation — jump back/forward 14 days */}
+          <div className="flex gap-1">
+            <button onClick={() => {
+              const s = new Date(payPeriodStart); s.setDate(s.getDate() - 14);
+              const e = new Date(payPeriodEnd); e.setDate(e.getDate() - 14);
+              setPayPeriodStart(s.toISOString().slice(0, 10)); setPayPeriodEnd(e.toISOString().slice(0, 10));
+            }} className="px-2.5 py-1 rounded-lg bg-black/40 border border-white/10 text-white/50 hover:text-white text-xs transition flex items-center gap-1">
+              <ChevronLeft size={11} />Prev
+            </button>
+            <button onClick={() => {
+              const s = new Date(payPeriodStart); s.setDate(s.getDate() + 14);
+              const e = new Date(payPeriodEnd); e.setDate(e.getDate() + 14);
+              setPayPeriodStart(s.toISOString().slice(0, 10)); setPayPeriodEnd(e.toISOString().slice(0, 10));
+            }} className="px-2.5 py-1 rounded-lg bg-black/40 border border-white/10 text-white/50 hover:text-white text-xs transition flex items-center gap-1">
+              Next<ChevronRight size={11} />
+            </button>
+            <button onClick={() => {
+              const now = new Date();
+              setPayPeriodStart(new Date(now.getFullYear(), now.getMonth(), 1).toISOString().slice(0, 10));
+              setPayPeriodEnd(today());
+            }} className="px-2.5 py-1 rounded-lg bg-black/40 border border-white/10 text-white/50 hover:text-white text-xs transition">
+              This Month
+            </button>
+          </div>
           <button onClick={() => {
             const rows = employees.filter(e => e.status !== "inactive").map(e => {
               const hrs = getEmployeeHours(e.id, payPeriodStart, payPeriodEnd);
@@ -777,7 +870,7 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setJobs
             const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = "payroll-" + payPeriodStart + ".csv"; a.click();
           }} className="text-xs px-3 py-1.5 bg-black/40 border border-red-900/30 text-white/60 hover:text-white rounded-xl transition flex items-center gap-1"><Download size={12} />Export CSV</button>
         </div>
-        <PayrollCalendar employees={employees} />
+        <PayrollCalendar employees={employees} jobs={jobs} />
         <div className="grid gap-4">
           {employees.filter(e => e.status !== "inactive").map(e => {
             const hrs = getEmployeeHours(e.id, payPeriodStart, payPeriodEnd);

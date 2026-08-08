@@ -1926,6 +1926,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     }
   };
   const [payCalMonthOffset, setPayCalMonthOffset] = useState(0);
+  const [selectedCalDay, setSelectedCalDay] = useState<string | null>(null);
   const [routeInfo, setRouteInfo] = useState<{ order: Job[]; totalDuration: string; totalDistance: string; etas: string[]; origin: { lat: number; lng: number } | string } | null>(null);
   const [calMode, setCalMode] = useState<"week" | "month">("month");
   // FIX 8 — today() is UTC-derived and rolls to the next date ~4-8pm US
@@ -5266,9 +5267,16 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                 );
               })()}
               {todayJobs.length === 0 ? (
-                <div className="text-center py-10 text-white/30">
-                  <CheckCircle size={32} className="mx-auto mb-2 opacity-30" />
-                  <div>No jobs scheduled — enjoy your day!</div>
+                <div className="text-center py-10 text-white/30 space-y-2">
+                  <CheckCircle size={32} className="mx-auto opacity-30" />
+                  <div className="font-semibold text-white/40">No jobs scheduled for today</div>
+                  <div className="text-xs leading-relaxed text-white/30">
+                    {myJobs.length > 0 ? (
+                      <>You have {myJobs.filter(j => j.scheduledDate > todayStr && j.status !== "cancelled").length} upcoming job{myJobs.filter(j => j.scheduledDate > todayStr && j.status !== "cancelled").length !== 1 ? "s" : ""} — tap <span className="font-semibold text-white/50">All Jobs</span> to view them.</>
+                    ) : (
+                      <>No jobs are assigned to you yet. Your manager will send them here when scheduled.</>
+                    )}
+                  </div>
                 </div>
               ) : (
                 <div className="space-y-2">
@@ -6049,17 +6057,21 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                   const daysInMonth = new Date(year, month + 1, 0).getDate();
                   const firstDow = new Date(year, month, 1).getDay();
                   const paidDaysMap: Record<string, "paid" | "unpaid"> = { ...((myEmployee as any)?.paidDays || {}), ...optimisticPaidDays };
-                  const dayCells: Array<{ key: string; day: number; hours: number; pay: number; status: "paid" | "unpaid" } | null> = [];
+                  type DayCell = { key: string; day: number; hours: number; pay: number; status: "paid" | "unpaid"; jobCount: number; hasScheduled: boolean };
+                  const dayCells: Array<DayCell | null> = [];
                   for (let i = 0; i < firstDow; i++) dayCells.push(null);
                   for (let d = 1; d <= daysInMonth; d++) {
                     const key = `${year}-${String(month + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
-                    const dayJobs = myJobs.filter(j => jobDateKey(j) === key && Number(j.loggedHours) > 0);
-                    const hours = Math.round(dayJobs.reduce((s, j) => s + Number(j.loggedHours || 0), 0) * 100) / 100;
-                    const pay = Math.round(dayJobs.reduce((s, j) => s + Number(j.loggedHours || 0) * getEffectiveRate(myEmployee, j), 0) * 100) / 100;
-                    dayCells.push({ key, day: d, hours, pay, status: paidDaysMap[key] || "unpaid" });
+                    const allDayJobs = myJobs.filter(j => jobDateKey(j) === key);
+                    const loggedJobs = allDayJobs.filter(j => Number(j.loggedHours) > 0);
+                    const hours = Math.round(loggedJobs.reduce((s, j) => s + Number(j.loggedHours || 0), 0) * 100) / 100;
+                    const pay = Math.round(loggedJobs.reduce((s, j) => s + Number(j.loggedHours || 0) * getEffectiveRate(myEmployee, j), 0) * 100) / 100;
+                    const hasScheduled = allDayJobs.some(j => j.status === "scheduled" || j.status === "completed");
+                    dayCells.push({ key, day: d, hours, pay, status: paidDaysMap[key] || "unpaid", jobCount: allDayJobs.length, hasScheduled });
                   }
                   const monthLabel = calBase.toLocaleDateString("en-US", { month: "long", year: "numeric" });
                   const monthTotal = dayCells.reduce((s, c) => s + (c?.pay || 0), 0);
+                  const selectedDayJobs = selectedCalDay ? myJobs.filter(j => jobDateKey(j) === selectedCalDay) : [];
                   return (
                     <Glass className="p-4 !bg-black/40">
                       <div className="flex items-center justify-between mb-3">
@@ -6074,46 +6086,63 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                         {dayCells.map((c, i) => c === null ? <div key={i} /> : (
                           <button
                             key={i}
-                            onClick={() => c.hours > 0 && markDayPaid(c.key)}
-                            disabled={c.hours === 0 || markingPaidDay === c.key}
+                            onClick={() => {
+                              if (c.hours > 0) {
+                                markDayPaid(c.key);
+                              } else if (c.hasScheduled) {
+                                setSelectedCalDay(selectedCalDay === c.key ? null : c.key);
+                              }
+                            }}
+                            disabled={(!c.hasScheduled && c.hours === 0) || markingPaidDay === c.key}
                             className={"aspect-square rounded-lg text-[9px] flex flex-col items-center justify-center gap-0.5 transition " +
-                              (c.hours === 0 ? "text-white/20" : c.status === "paid" ? "bg-green-900/40 border border-green-600/40 text-green-300 hover:bg-green-800/40" : "bg-yellow-950/30 border border-yellow-700/40 text-yellow-300 hover:bg-yellow-900/40")}
-                            title={c.hours > 0 ? `${c.hours}h · ${fmt(c.pay)} · ${c.status === "paid" ? "Paid — tap to unmark" : "Unpaid — tap to mark paid"}` : undefined}
+                              (c.hours > 0
+                                ? (c.status === "paid" ? "bg-green-900/40 border border-green-600/40 text-green-300 hover:bg-green-800/40" : "bg-yellow-950/30 border border-yellow-700/40 text-yellow-300 hover:bg-yellow-900/40")
+                                : c.hasScheduled
+                                  ? "bg-blue-950/30 border border-blue-700/30 text-blue-300 hover:bg-blue-900/30"
+                                  : "text-white/20")}
+                            title={c.hours > 0 ? `${c.hours}h · ${fmt(c.pay)} · ${c.status === "paid" ? "Paid — tap to unmark" : "Unpaid — tap to mark paid"}` : c.hasScheduled ? `${c.jobCount} job${c.jobCount !== 1 ? "s" : ""} scheduled — tap for details` : undefined}
                           >
                             <span className="font-semibold">{c.day}</span>
-                            {c.hours > 0 && <span>{c.hours}h</span>}
+                            {c.hours > 0 ? <span>{c.hours}h</span> : c.hasScheduled ? <span className="w-1 h-1 rounded-full bg-blue-400 mx-auto" /> : null}
                           </button>
                         ))}
                       </div>
+                      {/* Selected day detail panel */}
+                      {selectedCalDay && selectedDayJobs.length > 0 && (
+                        <div className="mt-3 pt-3 border-t border-white/10 space-y-1.5">
+                          <div className="text-[10px] text-white/40 uppercase tracking-wider">{selectedCalDay}</div>
+                          {selectedDayJobs.map(j => {
+                            const c = customers.find(x => x.id === j.customerId);
+                            return (
+                              <div key={j.id} className="flex items-center justify-between gap-2 text-[11px] bg-black/30 rounded-lg px-2.5 py-1.5">
+                                <div className="min-w-0">
+                                  <div className="text-white/70 truncate">{j.address}</div>
+                                  {c && <div className="text-white/40">{c.firstName} {c.lastName}</div>}
+                                </div>
+                                <div className="text-right flex-shrink-0">
+                                  <div className={"text-[10px] font-bold px-2 py-0.5 rounded-full " + (j.status === "completed" ? "bg-green-900/40 text-green-300" : "bg-blue-900/40 text-blue-300")}>{j.status}</div>
+                                  {Number(j.loggedHours) > 0 && <div className="text-white/40 text-[9px] mt-0.5">{j.loggedHours}h · {fmt(Number(j.loggedHours) * getEffectiveRate(myEmployee, j))}</div>}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
                       <div className="flex items-center justify-between mt-3 pt-2 border-t border-white/10 text-[10px]">
                         <span className="text-white/40">Month total</span>
                         <span className="font-bold text-white/70">{fmt(monthTotal)}</span>
                       </div>
-                      <div className="flex items-center gap-3 mt-2 text-[9px] text-white/30">
-                        <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-yellow-700/60" />Unpaid</span>
+                      <div className="flex items-center gap-3 mt-2 text-[9px] text-white/30 flex-wrap">
+                        <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-blue-700/60" />Scheduled</span>
+                        <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-yellow-700/60" />Unpaid hours</span>
                         <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-green-700/60" />Paid</span>
-                        <span>· tap a day to toggle</span>
+                        <span>· tap logged-hour day to mark paid</span>
                       </div>
                     </Glass>
                   );
                 })()}
 
-                {periods.some(p => p.pay > 0) && (
-                  <Glass className="p-4 !bg-black/40">
-                    <div className="text-xs text-white/50 uppercase tracking-wider mb-2">Earnings Over Time</div>
-                    <div style={{ width: "100%", height: 160 }}>
-                      <ResponsiveContainer>
-                        <BarChart data={[...periods].reverse().map(p => ({ name: p.label === "Current Period" ? "Current" : p.label.split(" – ")[0], pay: p.pay }))}>
-                          <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" vertical={false} />
-                          <XAxis dataKey="name" tick={{ fill: "rgba(255,255,255,0.4)", fontSize: 10 }} axisLine={false} tickLine={false} />
-                          <YAxis tick={{ fill: "rgba(255,255,255,0.4)", fontSize: 10 }} axisLine={false} tickLine={false} width={36} />
-                          <Tooltip contentStyle={{ background: "#111", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 8, fontSize: 11 }} formatter={(v: any) => fmt(v)} />
-                          <Bar dataKey="pay" fill="#22c55e" radius={[4, 4, 0, 0]} />
-                        </BarChart>
-                      </ResponsiveContainer>
-                    </div>
-                  </Glass>
-                )}
+                {/* Earnings Over Time chart removed — redundant with Hours & Earnings section below */}
 
                 {/* Hours & Earnings breakdown — daily/weekly/monthly granularity,
                     pulled from real loggedHours on completed jobs (same source
