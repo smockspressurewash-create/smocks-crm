@@ -27,6 +27,10 @@ export interface TwilioSettings {
   // every single gather tick — refreshed on-demand from Settings.
   twilioA2pCampaignStatus?: string;
   twilioA2pCampaignCheckedAt?: number;
+  // Reference copy of the incoming-webhook URL configured in Twilio Console —
+  // see the matching field on AppSettings (types/index.ts) for why this is
+  // stored rather than only computed/displayed.
+  twilioIncomingWebhookUrl?: string;
 }
 
 export interface EmailSettings {}

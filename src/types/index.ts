@@ -752,6 +752,14 @@ export interface AppSettings {
   twilioMessagingServiceSid?: string;
   twilioA2pCampaignStatus?: string;
   twilioA2pCampaignCheckedAt?: number;
+  // FEATURE — reference copy of the URL pasted into Twilio Console's
+  // "incoming webhook" field for this Messaging Service/number. Purely
+  // informational to the app itself (Twilio calls this URL directly — the
+  // app has no way to read Twilio's console config back), but persisting it
+  // here means Settings always shows what was actually configured instead of
+  // a guessed/computed value that can drift from reality (e.g. across
+  // Cloudflare Pages preview vs. production domains).
+  twilioIncomingWebhookUrl?: string;
 
   // Dashboard / business goals
   dashboardWidgets?: string[];

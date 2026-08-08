@@ -81,6 +81,15 @@ import { ChemicalModal } from "../ui/ChemicalModal";
 import { WeeklyBusinessReview } from "../ui/WeeklyBusinessReview";
 import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 
+const isValidHttpsUrl = (value: string): boolean => {
+  try {
+    const u = new URL(value);
+    return u.protocol === "https:";
+  } catch {
+    return false;
+  }
+};
+
 export function SettingsModal({ open, onClose, settings, setSettings, jobs = [], setJobs = (() => {}) as any, services, setServices, emailTemplates, setEmailTemplates, smsTemplates, setSmsTemplates, estimateTemplates = [], setEstimateTemplates = (() => {}) as any, modelStatus = {}, setModelStatus = (() => {}) as any, toast, onSignOut, restrictToProfile = false, onAddManager }: { open?: any; onClose?: any; settings?: any; setSettings?: any; jobs?: any[]; setJobs?: any; services?: any; setServices?: any; emailTemplates?: any; setEmailTemplates?: any; smsTemplates?: any; setSmsTemplates?: any; estimateTemplates?: any[]; setEstimateTemplates?: any; modelStatus?: any; setModelStatus?: any; toast?: any; onSignOut?: () => void; restrictToProfile?: boolean; onAddManager?: () => void }) {
   const [f, setF] = useState(settings);
   const [stripeSecretInput, setStripeSecretInput] = useState(() => deobfuscate(settings.stripeSecretKeyEnc || ""));
@@ -1158,11 +1167,58 @@ export function SettingsModal({ open, onClose, settings, setSettings, jobs = [],
                   <GInput value={f.twilioWhatsAppFrom || ""} onChange={e => setF({ ...f, twilioWhatsAppFrom: e.target.value })} placeholder="whatsapp:+15551234567" className="!text-xs mt-1" />
                   <div className="text-[10px] text-white/30 mt-1">Enable WhatsApp in your Twilio console. Format: whatsapp:+1xxxxxxxxxx</div>
                 </div>
-                <div className="p-3 bg-black/60 rounded-xl border border-white/5 text-[10px] text-white/50 space-y-1">
+                <div className="p-3 bg-black/60 rounded-xl border border-white/5 text-[10px] text-white/50 space-y-1.5">
                   <div className="font-semibold text-white/70">Incoming SMS Webhook</div>
-                  <div>In your Twilio console, set the incoming webhook for your number to:</div>
-                  <div className="font-mono text-blue-400 bg-blue-950/20 px-2 py-1 rounded mt-1 break-all">{f.googleBackendUrl ? f.googleBackendUrl.replace(/\/$/, "") + "/api/sms/incoming" : "https://your-backend.railway.app/api/sms/incoming"}</div>
-                  <div className="mt-1">Method: HTTP POST. Incoming messages will appear in the CRM Inbox automatically.</div>
+                  <div>
+                    Paste this exact URL into Twilio Console → Messaging → Services → your Messaging Service → Integration →
+                    "Incoming Messages" → Webhook (or Phone Numbers → your number → Messaging, if you're not using a Messaging Service).
+                    Method: <span className="font-semibold text-white/70">HTTP POST</span>.
+                  </div>
+                  {/* BUG FIX — this used to be a locked, computed-only display
+                      that read f.googleBackendUrl (an unrelated Telegram/self-
+                      host setting) and pointed at /api/sms/incoming, a route
+                      that doesn't exist anywhere in this codebase. The real
+                      endpoint is the Cloudflare Pages Function at
+                      functions/api/twilio-sms-webhook.ts, served from THIS
+                      site's own domain — fixed path, but the exact domain can
+                      legitimately differ from window.location.origin (a
+                      Cloudflare Pages preview-deploy URL vs. the real
+                      production domain), so this is a real editable+saved
+                      field rather than something fully auto-computed. */}
+                  <GInput
+                    value={f.twilioIncomingWebhookUrl || ""}
+                    onChange={e => setF({ ...f, twilioIncomingWebhookUrl: e.target.value.trim() })}
+                    placeholder={`${window.location.origin}/api/twilio-sms-webhook`}
+                    className="!text-xs font-mono mt-1"
+                  />
+                  {f.twilioIncomingWebhookUrl && !isValidHttpsUrl(f.twilioIncomingWebhookUrl) && (
+                    <div className="text-red-400">Must be a valid https:// URL.</div>
+                  )}
+                  <div className="flex items-center gap-2 pt-1">
+                    <GBtn
+                      variant="ghost"
+                      className="!text-[10px] !py-1"
+                      onClick={() => setF({ ...f, twilioIncomingWebhookUrl: `${window.location.origin}/api/twilio-sms-webhook` })}
+                    >
+                      Use This Site's URL
+                    </GBtn>
+                    <GBtn
+                      variant="ghost"
+                      className="!text-[10px] !py-1"
+                      disabled={!f.twilioIncomingWebhookUrl}
+                      onClick={() => {
+                        navigator.clipboard?.writeText(f.twilioIncomingWebhookUrl || "").then(
+                          () => toast("Copied ✓"),
+                          () => toast("Couldn't copy — select and copy manually", "red")
+                        );
+                      }}
+                    >
+                      Copy
+                    </GBtn>
+                  </div>
+                  <div className="text-white/30 pt-0.5">
+                    This just records what you configured in Twilio — saving it here doesn't change anything in your Twilio account. Incoming messages appear in the CRM Inbox automatically once Twilio is pointed at this URL.
+                  </div>
                 </div>
                 <div className="p-3 bg-black/60 rounded-xl border border-white/5">
                   <label className="text-[10px] text-white/50 uppercase tracking-wider">A2P 10DLC Campaign — Messaging Service SID</label>
