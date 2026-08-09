@@ -162,9 +162,9 @@ export const MODELS: Record<string, ModelDef> = {
   },
   openrouter: {
     id: "openrouter",
-    modelId: "meta-llama/llama-3.1-8b-instruct:free",
+    modelId: "meta-llama/llama-3.3-70b-instruct:free",
     name: "OpenRouter",
-    label: "OpenRouter (Llama 3.1 8B — Free via openrouter.ai)",
+    label: "OpenRouter (Llama 3.3 70B — Free via openrouter.ai)",
     provider: "openrouter",
     endpoint: "https://openrouter.ai/api/v1/chat/completions",
     maxTokens: 4096,
@@ -177,6 +177,20 @@ export const MODELS: Record<string, ModelDef> = {
     free: true,
   },
 };
+
+// ISSUE 19 — OpenRouter's free-tier catalog rotates/deprecates models often
+// (a slug that works today 404s a few weeks later), which is exactly what
+// was happening: the hardcoded modelId went stale and every call 404'd
+// before ever reaching a usable model. This fallback list gives callModel's
+// OpenRouter branch other free slugs to retry against on a 404 instead of
+// failing outright — keep the primary modelId above first in this list.
+export const OPENROUTER_FREE_FALLBACKS = [
+  "meta-llama/llama-3.3-70b-instruct:free",
+  "meta-llama/llama-3.1-8b-instruct:free",
+  "mistralai/mistral-7b-instruct:free",
+  "qwen/qwen-2.5-72b-instruct:free",
+  "google/gemma-2-9b-it:free",
+];
 
 // ─── Safe fetch ───────────────────────────────────────────────────────────────
 
@@ -408,29 +422,53 @@ export const callModel = async (opts: {
     ? (opts.tools as Array<{ name: string; description: string; input_schema: unknown }>).map(t => ({ type: "function", function: { name: t.name, description: t.description, parameters: t.input_schema } }))
     : undefined;
 
-  const openAiBody = JSON.stringify({
-    model: def.modelId,
-    max_tokens: maxTokens,
-    messages: openAiMessages,
-    ...(openAiTools ? { tools: openAiTools } : {}),
-  });
   const openAiHeaders = {
     "Content-Type": "application/json",
     "Authorization": `Bearer ${apiKey}`,
+    // ISSUE 19 — OpenRouter attributes/ranks requests by these headers; some
+    // free-tier models 404 or get deprioritized for requests missing them.
+    ...(def.provider === "openrouter" ? { "HTTP-Referer": "https://crewboss.app", "X-Title": "CrewBoss CRM" } : {}),
   };
 
-  let data: { choices?: Array<{ message?: { content?: string | null; tool_calls?: Array<{ id: string; function?: { name: string; arguments?: string } }> } }> };
-  try {
-    data = await safeFetch(def.endpoint, { method: "POST", headers: openAiHeaders, body: openAiBody }) as typeof data;
-  } catch (err) {
-    // On a network/CORS error (TypeError: Failed to fetch), retry through a public CORS proxy.
-    if (err instanceof TypeError) {
-      const proxied = "https://corsproxy.io/?" + encodeURIComponent(def.endpoint);
-      data = await safeFetch(proxied, { method: "POST", headers: openAiHeaders, body: openAiBody }) as typeof data;
-    } else {
-      throw err;
+  // ISSUE 19 — see OPENROUTER_FREE_FALLBACKS: try each candidate model in
+  // order, moving to the next only on a 404 (model gone/renamed), not on
+  // other errors (auth, rate-limit, etc. should surface immediately).
+  const modelCandidates = def.provider === "openrouter" ? OPENROUTER_FREE_FALLBACKS : [def.modelId];
+
+  let data: { choices?: Array<{ message?: { content?: string | null; tool_calls?: Array<{ id: string; function?: { name: string; arguments?: string } }> } }> } | undefined;
+  let lastErr: unknown;
+  for (const candidateModel of modelCandidates) {
+    const openAiBody = JSON.stringify({
+      model: candidateModel,
+      max_tokens: maxTokens,
+      messages: openAiMessages,
+      ...(openAiTools ? { tools: openAiTools } : {}),
+    });
+    try {
+      data = await safeFetch(def.endpoint, { method: "POST", headers: openAiHeaders, body: openAiBody }) as typeof data;
+      lastErr = undefined;
+      break;
+    } catch (err) {
+      // On a network/CORS error (TypeError: Failed to fetch), retry through a public CORS proxy.
+      if (err instanceof TypeError) {
+        try {
+          const proxied = "https://corsproxy.io/?" + encodeURIComponent(def.endpoint);
+          data = await safeFetch(proxied, { method: "POST", headers: openAiHeaders, body: openAiBody }) as typeof data;
+          lastErr = undefined;
+          break;
+        } catch (proxyErr) {
+          lastErr = proxyErr;
+        }
+      } else if ((err as any)?.status === 404 && modelCandidates.length > 1) {
+        console.warn(`[OpenRouter] model "${candidateModel}" 404'd — trying next fallback`);
+        lastErr = err;
+        continue;
+      } else {
+        throw err;
+      }
     }
   }
+  if (!data) throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
 
   const choice = data.choices?.[0]?.message;
   const text = choice?.content ?? "";

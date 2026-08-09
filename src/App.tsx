@@ -914,7 +914,15 @@ export function App() {
   // Drop any oversized top-level field for the retry attempt — a giant
   // logoUrl or similar shouldn't block the rest of the settings (API keys,
   // toggles, branding colors) from reaching the server.
-  const MAX_FIELD_CHARS = 20000;
+  // ISSUE 14 — settings sync was timing out on real deployments. Root cause
+  // was two-fold: the 8s timeout was too tight for the full settings blob
+  // (templates, integration tokens, branding colors, etc. all live in one
+  // JSONB object) on anything but a fast connection, and MAX_FIELD_CHARS
+  // only dropped individual oversized fields (e.g. one giant base64 logoUrl)
+  // — it did nothing for a blob that's merely large in aggregate across many
+  // small-ish fields. Tightened the per-field threshold so the retry pass
+  // actually sheds enough weight, and gave both attempts more time.
+  const MAX_FIELD_CHARS = 8000;
   const shrinkSettingsPayload = (obj: any): { payload: any; dropped: string[] } => {
     const dropped: string[] = [];
     const payload: any = {};
@@ -943,7 +951,7 @@ export function App() {
       const updatedAt = new Date().toISOString();
       (async () => {
         try {
-          const r: any = await saveSettingsToSupabase(settings, updatedAt, 8000);
+          const r: any = await saveSettingsToSupabase(settings, updatedAt, 20000);
           if (!r?.error) {
             settingsLastSavedAtRef.current = updatedAt;
             lastSyncedJsonRef.current = json;
@@ -964,7 +972,7 @@ export function App() {
           }
           try {
             const retryUpdatedAt = new Date().toISOString();
-            const r2: any = await saveSettingsToSupabase(payload, retryUpdatedAt, 8000);
+            const r2: any = await saveSettingsToSupabase(payload, retryUpdatedAt, 20000);
             if (!r2?.error) {
               settingsLastSavedAtRef.current = retryUpdatedAt;
               // Only the shrunk payload is confirmed synced — leave

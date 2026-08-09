@@ -211,8 +211,18 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
       if (sortBy === "priority") return (prioOrder[a.priority || "normal"] - prioOrder[b.priority || "normal"]) || a.scheduledDate.localeCompare(b.scheduledDate);
       if (sortBy === "status") return String(a.status || "").localeCompare(String(b.status || "")) || a.scheduledDate.localeCompare(b.scheduledDate);
       if (sortBy === "date_asc") return a.scheduledDate.localeCompare(b.scheduledDate) || (prioOrder[a.priority || "normal"] - prioOrder[b.priority || "normal"]);
-      // "date_desc" (Recently Scheduled — default): newest scheduled date first.
-      return b.scheduledDate.localeCompare(a.scheduledDate) || (prioOrder[a.priority || "normal"] - prioOrder[b.priority || "normal"]);
+      // ISSUE 8 — "date_desc" (the default) always sorted by scheduledDate,
+      // which is meaningless for the Completed/Cancelled tabs (it reflects
+      // when the job was booked FOR, not when it actually finished or was
+      // called off — a job scheduled for next week that got cancelled today
+      // would sort above one cancelled an hour ago). Use the tab-appropriate
+      // timestamp: completedAt for Completed, cancelledAt for Cancelled,
+      // falling back to scheduledDate if the timestamp is missing (jobs
+      // completed/cancelled before this field existed).
+      const dateKey = tab === "completed" ? "completedAt" : tab === "cancelled" ? "cancelledAt" : "scheduledDate";
+      const aDate = (a as any)[dateKey] || a.scheduledDate || "";
+      const bDate = (b as any)[dateKey] || b.scheduledDate || "";
+      return String(bDate).localeCompare(String(aDate)) || (prioOrder[a.priority || "normal"] - prioOrder[b.priority || "normal"]);
     });
 
   const move = (jid, ns) => {
@@ -358,7 +368,7 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
   };
   const confirmCancel = () => {
     const j = jobs.find(x => x.id === cancelModal);
-    setJobs(jobs.map(x => x.id === cancelModal ? { ...x, status: "cancelled", cancelReason } : x));
+    setJobs(jobs.map(x => x.id === cancelModal ? { ...x, status: "cancelled", cancelReason, cancelledAt: new Date().toISOString() } : x));
     setCancelModal(null);
     toast("Job cancelled");
     // Delete Google Calendar event if connected
@@ -1141,7 +1151,7 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
         <div className="flex items-center gap-1.5">
           <span className="text-[10px] text-white/40 uppercase tracking-wider">Sort:</span>
           <GSel value={sortBy} onChange={e => setSortBy(e.target.value)} className="!text-xs !py-1.5 !w-44">
-            <option value="date_desc" className="bg-black">Recently Scheduled</option>
+            <option value="date_desc" className="bg-black">{tab === "completed" ? "Recently Completed" : tab === "cancelled" ? "Recently Cancelled" : "Recently Scheduled"}</option>
             <option value="date_asc" className="bg-black">Date (Oldest)</option>
             <option value="amount_desc" className="bg-black">Amount (Highest)</option>
             <option value="amount_asc" className="bg-black">Amount (Lowest)</option>
@@ -1350,7 +1360,7 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
                 )}
                 {tab === "scheduled" && <><GBtn onClick={() => move(j.id, "in_progress")} className="flex-1 text-xs !py-1.5">Start</GBtn>
                   <button onClick={() => {
-                    setJobs(jobs.map(x => x.id === j.id ? { ...x, status: "cancelled", noShow: true, cancelReason: "Customer no-show" } : x));
+                    setJobs(jobs.map(x => x.id === j.id ? { ...x, status: "cancelled", noShow: true, cancelReason: "Customer no-show", cancelledAt: new Date().toISOString() } : x));
                     toast("Marked as no-show");
                     // Text Will about the no-show
                     if (settings?.twilioSid && settings?.myPhone) {

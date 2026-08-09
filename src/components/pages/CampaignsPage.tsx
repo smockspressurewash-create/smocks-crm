@@ -23,6 +23,7 @@ import {
 import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE } from "../../lib/utils";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
 import { twilioSend, sendEmail } from "../../lib/messaging";
+import { getStoredGoogleConnection } from "../../lib/supabase";
 import { seedWeather } from "../../lib/weather";
 import { seedCustomers, seedEstimates, seedJobs, seedEmployees, seedVehicles, seedExpenses, seedChemicals, seedServices, seedAutomations, seedEmailTemplates, seedSmsTemplates, seedRewardTiers, seedReferrals, seedMaintenance, campaignTemplates, seedSocialPosts, seedTimeline, seedGoals, seedReminders, seedAccountabilityEntries, seedMileage, seedLeadSrc, STEP_TYPES, AUTOMATION_TEMPLATES } from "../../lib/seed";
 import { callModel, MODELS } from "../../lib/api";
@@ -94,7 +95,17 @@ export function CampaignsPage({ campaigns = [], setCampaigns, customers = [], es
   const [scheduleTime, setScheduleTime] = useState("");
 
   const twilioReady = !!(settings.twilioSid && settings.twilioToken && settings.twilioFrom);
-  const emailReady = !!(settings.googleConnected && settings.googleScopes?.gmail);
+  // ISSUE 13 — this read settings.googleScopes?.gmail, a display-only
+  // toggle in Settings → Integrations that defaults to OFF and has no
+  // bearing on whether Gmail send actually works (sendOwnerGmailOnly uses
+  // the owner's OAuth token directly, not this toggle — see CLAUDE.md).
+  // That made Campaigns report "email not connected" for an owner who was
+  // genuinely connected, and never accounted for an actually-missing/empty
+  // Twilio config reading as falsy-but-still-"ready" once fields existed.
+  // Matches SettingsModal's own isGoogleConnected check so the two screens
+  // can't disagree.
+  const storedGoogle = getStoredGoogleConnection();
+  const emailReady = !!(storedGoogle?.token || ((settings as any).googleConnected && (settings as any).googleProviderToken));
   const canSend = ch === "sms" ? twilioReady : emailReady;
 
   const cities = [...new Set(customers.map(c => { const a = c.address || ""; const m = a.match(/,\s*([A-Za-z ]+)\s+PA/); return m ? m[1].trim() : null; }).filter(Boolean))];

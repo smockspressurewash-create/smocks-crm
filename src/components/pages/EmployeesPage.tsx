@@ -129,7 +129,6 @@ const DEFAULT_MANAGER_PERMS: Record<string, boolean> = {
 function PayrollCalendar({ employees, jobs = [] }: { employees: any[]; jobs?: any[] }) {
   const [monthOffset, setMonthOffset] = useState(0);
   const [selectedDay, setSelectedDay] = useState<string | null>(null);
-  const [showMode, setShowMode] = useState<"payments" | "jobs">("jobs");
   const base = new Date();
   base.setDate(1);
   base.setMonth(base.getMonth() + monthOffset);
@@ -171,8 +170,11 @@ function PayrollCalendar({ employees, jobs = [] }: { employees: any[]; jobs?: an
     });
   });
 
-  const eventsByDay = showMode === "payments" ? paymentsByDay : jobsByDay;
-  const hasPayments = Object.keys(paymentsByDay).length > 0;
+  // ISSUE 5 — this used to be a Jobs/Payments toggle the owner had to
+  // switch between to see either kind of event. Combined into a single
+  // per-day view: job dots (blue) and payment dots (green) both show on the
+  // same cell, and the detail panel below lists both kinds together.
+  const allDayKeys = new Set([...Object.keys(jobsByDay), ...Object.keys(paymentsByDay)]);
 
   const cells: (number | null)[] = [];
   for (let i = 0; i < startWeekday; i++) cells.push(null);
@@ -185,10 +187,9 @@ function PayrollCalendar({ employees, jobs = [] }: { employees: any[]; jobs?: an
         <div className="text-sm font-semibold flex items-center gap-1.5"><Calendar size={13} className="text-green-400" />{monthLabel}</div>
         <button onClick={() => setMonthOffset(o => o + 1)} className="p-1.5 rounded-lg hover:bg-white/10 text-white/50"><ChevronRight size={14} /></button>
       </div>
-      {/* Toggle: jobs view vs payments view */}
-      <div className="flex gap-1 mb-3 p-0.5 bg-black/30 border border-white/10 rounded-lg">
-        <button onClick={() => setShowMode("jobs")} className={"flex-1 text-[10px] py-1 rounded font-medium transition " + (showMode === "jobs" ? "bg-blue-700/50 text-white" : "text-white/40")}>Jobs</button>
-        <button onClick={() => setShowMode("payments")} className={"flex-1 text-[10px] py-1 rounded font-medium transition " + (showMode === "payments" ? "bg-green-700/50 text-white" : "text-white/40")}>Payments{hasPayments ? "" : " (none yet)"}</button>
+      <div className="flex items-center gap-3 mb-2 text-[10px] text-white/40">
+        <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-blue-400 inline-block" />Jobs</span>
+        <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-green-400 inline-block" />Payments</span>
       </div>
       <div className="grid grid-cols-7 gap-1 text-center text-[10px] text-white/40 mb-1">
         {["S","M","T","W","T","F","S"].map((d, i) => <div key={i}>{d}</div>)}
@@ -197,53 +198,52 @@ function PayrollCalendar({ employees, jobs = [] }: { employees: any[]; jobs?: an
         {cells.map((d, i) => {
           if (d == null) return <div key={i} />;
           const key = `${year}-${String(month + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
-          const dayEvents = (eventsByDay as any)[key] || [];
+          const dayJobs = jobsByDay[key] || [];
+          const dayPayments = paymentsByDay[key] || [];
           const isSelected = selectedDay === key;
-          const hasData = dayEvents.length > 0;
-          const total = showMode === "payments" ? dayEvents.reduce((s: number, ev: any) => s + (ev.amount || 0), 0) : null;
-          const totalHours = showMode === "jobs" ? dayEvents.reduce((s: number, ev: any) => s + (ev.hours || 0), 0) : null;
+          const hasData = dayJobs.length > 0 || dayPayments.length > 0;
+          const totalHours = dayJobs.reduce((s: number, ev: any) => s + (ev.hours || 0), 0);
+          const totalPaid = dayPayments.reduce((s: number, ev: any) => s + (ev.amount || 0), 0);
           return (
             <button key={i} onClick={() => hasData && setSelectedDay(isSelected ? null : key)}
               disabled={!hasData}
               className={"aspect-square rounded-lg text-[10px] flex flex-col items-center justify-center gap-0.5 transition " +
                 (hasData
-                  ? (showMode === "payments"
-                      ? "bg-green-950/40 border " + (isSelected ? "border-green-400" : "border-green-700/40") + " text-green-300 hover:bg-green-900/40 cursor-pointer"
-                      : "bg-blue-950/40 border " + (isSelected ? "border-blue-400" : "border-blue-700/30") + " text-blue-300 hover:bg-blue-900/40 cursor-pointer")
+                  ? "bg-black/30 border " + (isSelected ? "border-white/40" : "border-white/10") + " hover:bg-white/5 cursor-pointer"
                   : "text-white/30 cursor-default")}>
               <div>{d}</div>
-              {hasData && showMode === "payments" && <div className="text-[8px] font-bold leading-none">{fmt(total as number)}</div>}
-              {hasData && showMode === "jobs" && <div className="text-[8px] font-bold leading-none">{dayEvents.length}j{totalHours ? " " + (totalHours as number).toFixed(1) + "h" : ""}</div>}
+              {hasData && (
+                <div className="flex items-center gap-1">
+                  {dayJobs.length > 0 && <span className="text-[8px] font-bold leading-none text-blue-300">{dayJobs.length}j{totalHours ? " " + totalHours.toFixed(1) + "h" : ""}</span>}
+                  {dayPayments.length > 0 && <span className="text-[8px] font-bold leading-none text-green-300">{fmt(totalPaid)}</span>}
+                </div>
+              )}
             </button>
           );
         })}
       </div>
-      {selectedDay && ((eventsByDay as any)[selectedDay]?.length ?? 0) > 0 && (
+      {selectedDay && (jobsByDay[selectedDay]?.length || paymentsByDay[selectedDay]?.length) && (
         <div className="mt-3 pt-3 border-t border-white/10 space-y-1.5">
-          <div className="text-[10px] text-white/40 uppercase tracking-wider">{showMode === "payments" ? "Payments on" : "Jobs on"} {selectedDay}</div>
-          {showMode === "payments"
-            ? (paymentsByDay[selectedDay] || []).map(ev => (
-                <div key={ev.id} className="flex items-center justify-between text-xs bg-black/40 rounded-lg px-2.5 py-1.5">
-                  <span className="text-white/70">{ev.empName} <span className="text-white/40">({ev.periodStart}{ev.periodEnd !== ev.periodStart ? " – " + ev.periodEnd : ""})</span></span>
-                  <span className="font-semibold text-green-400">{fmt(ev.amount)}</span>
-                </div>
-              ))
-            : (jobsByDay[selectedDay] || []).map((ev, i) => (
-                <div key={i} className="flex items-center justify-between text-xs bg-black/40 rounded-lg px-2.5 py-1.5">
-                  <span className="text-white/70 truncate min-w-0 flex-1 mr-2">{ev.empName} <span className="text-white/40">· {ev.address}</span></span>
-                  <div className="text-right flex-shrink-0">
-                    <span className={"text-[10px] font-bold px-1.5 py-0.5 rounded-full " + (ev.status === "completed" ? "bg-green-900/40 text-green-300" : "bg-blue-900/40 text-blue-300")}>{ev.status}</span>
-                    {ev.hours > 0 && <span className="ml-1.5 text-white/50">{ev.hours}h</span>}
-                  </div>
-                </div>
-              ))
-          }
+          <div className="text-[10px] text-white/40 uppercase tracking-wider">{selectedDay}</div>
+          {(paymentsByDay[selectedDay] || []).map(ev => (
+            <div key={ev.id} className="flex items-center justify-between text-xs bg-black/40 rounded-lg px-2.5 py-1.5">
+              <span className="text-white/70">{ev.empName} <span className="text-white/40">({ev.periodStart}{ev.periodEnd !== ev.periodStart ? " – " + ev.periodEnd : ""})</span></span>
+              <span className="font-semibold text-green-400">{fmt(ev.amount)} paid</span>
+            </div>
+          ))}
+          {(jobsByDay[selectedDay] || []).map((ev, i) => (
+            <div key={i} className="flex items-center justify-between text-xs bg-black/40 rounded-lg px-2.5 py-1.5">
+              <span className="text-white/70 truncate min-w-0 flex-1 mr-2">{ev.empName} <span className="text-white/40">· {ev.address}</span></span>
+              <div className="text-right flex-shrink-0">
+                <span className={"text-[10px] font-bold px-1.5 py-0.5 rounded-full " + (ev.status === "completed" ? "bg-green-900/40 text-green-300" : "bg-blue-900/40 text-blue-300")}>{ev.status}</span>
+                {ev.hours > 0 && <span className="ml-1.5 text-white/50">{ev.hours}h</span>}
+              </div>
+            </div>
+          ))}
         </div>
       )}
-      {Object.keys(eventsByDay).length === 0 && (
-        <div className="text-center py-4 text-xs text-white/30">
-          {showMode === "payments" ? 'No payments recorded yet — use "Mark Paid" on employee cards below' : "No jobs scheduled or completed this month"}
-        </div>
+      {allDayKeys.size === 0 && (
+        <div className="text-center py-4 text-xs text-white/30">No jobs or payments recorded this month</div>
       )}
     </Glass>
   );
@@ -735,11 +735,19 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setJobs
             }} className="px-2.5 py-1 rounded-lg bg-black/40 border border-white/10 text-white/50 hover:text-white text-xs transition flex items-center gap-1">
               <ChevronLeft size={11} />Prev Week
             </button>
-            <button onClick={() => {
-              const s = new Date(payPeriodStart); s.setDate(s.getDate() + 7);
-              const e = new Date(payPeriodEnd); e.setDate(e.getDate() + 7);
-              setPayPeriodStart(s.toISOString().slice(0, 10)); setPayPeriodEnd(e.toISOString().slice(0, 10));
-            }} className="px-2.5 py-1 rounded-lg bg-black/40 border border-white/10 text-white/50 hover:text-white text-xs transition flex items-center gap-1">
+            <button
+              disabled={payPeriodEnd >= today()}
+              onClick={() => {
+                const s = new Date(payPeriodStart); s.setDate(s.getDate() + 7);
+                const e = new Date(payPeriodEnd); e.setDate(e.getDate() + 7);
+                const nextEnd = e.toISOString().slice(0, 10);
+                // ISSUE 6 — Hours is a timesheet view; letting the owner page
+                // into future weeks showed an all-zero table that looked broken.
+                // Clamp the window so it never starts past today.
+                if (nextEnd > today()) { setPayPeriodStart(today()); setPayPeriodEnd(today()); return; }
+                setPayPeriodStart(s.toISOString().slice(0, 10)); setPayPeriodEnd(nextEnd);
+              }}
+              className="px-2.5 py-1 rounded-lg bg-black/40 border border-white/10 text-white/50 hover:text-white text-xs transition flex items-center gap-1 disabled:opacity-30 disabled:cursor-not-allowed">
               Next Week<ChevronRight size={11} />
             </button>
           </div>
