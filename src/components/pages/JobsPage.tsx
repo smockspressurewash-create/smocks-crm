@@ -80,7 +80,7 @@ import { ChemicalModal } from "../ui/ChemicalModal";
 import { WeeklyBusinessReview } from "../ui/WeeklyBusinessReview";
 import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 
-export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = (() => {}) as any, employees = [], estimates = [], setEstimates = () => {}, settings = {} as AppSettings, setSettings, toast, posts = [], setPosts = () => {}, setTimeline = () => {}, initialDetailId = null, onInitialDetailIdConsumed = () => {}, onPortal = (_id: string) => {}, ownerId = "" }: { jobs?: any[]; setJobs?: any; customers?: any[]; setCustomers?: any; employees?: any[]; estimates?: any[]; setEstimates?: any; settings?: AppSettings; setSettings?: any; toast?: any; posts?: any[]; setPosts?: any; setTimeline?: any; initialDetailId?: string | null; onInitialDetailIdConsumed?: () => void; onPortal?: (id: string) => void; ownerId?: string }) {
+export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = (() => {}) as any, employees = [], estimates = [], setEstimates = () => {}, settings = {} as AppSettings, setSettings, toast, posts = [], setPosts = () => {}, setTimeline = () => {}, initialDetailId = null, onInitialDetailIdConsumed = () => {}, onPortal = (_id: string) => {}, ownerId = "", autoOpenNew = false, onAutoOpenNewConsumed }: { jobs?: any[]; setJobs?: any; customers?: any[]; setCustomers?: any; employees?: any[]; estimates?: any[]; setEstimates?: any; settings?: AppSettings; setSettings?: any; toast?: any; posts?: any[]; setPosts?: any; setTimeline?: any; initialDetailId?: string | null; onInitialDetailIdConsumed?: () => void; onPortal?: (id: string) => void; ownerId?: string; autoOpenNew?: boolean; onAutoOpenNewConsumed?: () => void }) {
   const [tab, setTab] = useState("scheduled");
   const [cancelModal, setCancelModal] = useState(null);
   const [cancelReason, setCancelReason] = useState(cancelReasons[0]);
@@ -135,6 +135,14 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
   const [bulkAction, setBulkAction] = useState(null);
   const [, forceTick] = useState(0);
   const [newJobOpen, setNewJobOpen] = useState(false);
+  // ISSUE 21 — FAB's "Schedule Job" now opens this modal immediately instead
+  // of just landing on the Jobs tab.
+  useEffect(() => {
+    if (!autoOpenNew) return;
+    setNewJobForm(emptyNewJobForm());
+    setNewJobOpen(true);
+    onAutoOpenNewConsumed?.();
+  }, [autoOpenNew]); // eslint-disable-line react-hooks/exhaustive-deps
   // FIX 4 — recurring options weren't reachable from job CREATION at all
   // (JobDetailModal has a full recurring editor, but that's post-creation
   // only). One shared factory for the "empty form" shape so the initial
@@ -849,7 +857,7 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
                 // don't show up" symptom. Every path out of this function
                 // must now end in either a success log or a toast.
                 try {
-                  const { error } = await withTimeout<any>((supabase as any).from("jobs").insert(job), 15000, "Save job");
+                  const { error } = await withTimeout<any>((supabase as any).from("jobs").insert(job), 30000, "Save job");
                   if (error) {
                     // FIX G — recurring jobs add isRecurring/recurringMode/
                     // recurringFreq/recurringInterval/recurringWeekdays columns
@@ -863,7 +871,7 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
                     // stripped so the job (and its crew) still lands.
                     console.error("[Recurring] new job insert failed:", error.message, "— retrying without recurring-schedule columns");
                     const { isRecurring, recurringMode, recurringFreq, recurringInterval, recurringWeekdays, ...coreJob } = job as any;
-                    const retry = await withTimeout<any>((supabase as any).from("jobs").insert(coreJob), 15000, "Save job (retry)");
+                    const retry = await withTimeout<any>((supabase as any).from("jobs").insert(coreJob), 30000, "Save job (retry)");
                     if (retry?.error) {
                       console.error("[Recurring] core-column retry also failed:", retry.error.message);
                       toast?.("Job created locally, but failed to save to the server — " + retry.error.message, "red");

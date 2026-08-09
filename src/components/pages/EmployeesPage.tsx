@@ -20,7 +20,7 @@ import {
   Tooltip, ResponsiveContainer, Area, AreaChart, LineChart, Line,
   ComposedChart, Legend
 } from "recharts";
-import { fmt, uid, today, localDateStr, shiftDayStr, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, getEffectiveRate, weekdayLabels, countDaysOffInRange } from "../../lib/utils";
+import { fmt, uid, today, localDateStr, shiftDayStr, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, getEffectiveRate, weekdayLabels, countDaysOffInRange, getPayPeriodBounds } from "../../lib/utils";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
 import { twilioSend, sendEmail } from "../../lib/messaging";
 import { supabase } from "../../lib/supabase";
@@ -534,11 +534,11 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setJobs
   // never disagree — just usable directly from the Payroll tab.
   const getCurrentPayPeriod = (emp: any) => {
     const empJobs = jobs.filter((j: any) => crewIncludesEmployee(j.crew, emp.id, emp.user_id) && j.status === "completed" && Number(j.loggedHours) > 0);
-    const now = new Date();
-    const end = new Date(now);
-    const start = new Date(end); start.setDate(start.getDate() - 13);
-    const s = start.toISOString().slice(0, 10);
-    const e = end.toISOString().slice(0, 10);
+    // ISSUE 2 — fixed-anchor period (see getPayPeriodBounds's comment) so
+    // this can never disagree with the employee's own Pay tab, or with
+    // itself on a later render/reload, the way a "today minus 13 days"
+    // sliding window did.
+    const { start: s, end: e } = getPayPeriodBounds();
     const pJobs = empJobs.filter((j: any) => j.scheduledDate >= s && j.scheduledDate <= e);
     const hrs = Math.round(pJobs.reduce((acc: number, j: any) => acc + Number(j.loggedHours || 0), 0) * 10) / 10;
     const pay = Math.round(pJobs.reduce((acc: number, j: any) => acc + Number(j.loggedHours || 0) * getEffectiveRate(emp, j), 0) * 100) / 100;

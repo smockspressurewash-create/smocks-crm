@@ -18,7 +18,7 @@ import { loadMapsScript, AddressAutocomplete } from "../ui/AddressAutocomplete";
 import { LiveMap } from "../ui/LiveMap";
 import { PropertyMapEmbed } from "../ui/PropertyMapEmbed";
 import { BarChart, Bar, LineChart, Line, XAxis, YAxis, ResponsiveContainer, Tooltip, CartesianGrid } from "recharts";
-import { fmt, uid, today, localDateStr, localDateKey, shiftDayStr, daysFromNow, computeJobRatingScore, setOAuthIntent, compressImageFile, getEffectiveRate, computeNextRecurringDate, weekdayLabels, normalizeJobRow, totalJobPhotoCount, mediaSrc, dataUrlToBlob, uploadJobMedia, checkVideoLimits, stripLegacyJobFields, reconcileCrewAfterAssign, getPollIntervalMs } from "../../lib/utils";
+import { fmt, uid, today, localDateStr, localDateKey, shiftDayStr, daysFromNow, computeJobRatingScore, setOAuthIntent, compressImageFile, getEffectiveRate, computeNextRecurringDate, weekdayLabels, normalizeJobRow, totalJobPhotoCount, mediaSrc, dataUrlToBlob, uploadJobMedia, checkVideoLimits, stripLegacyJobFields, reconcileCrewAfterAssign, getPollIntervalMs, getPayPeriodBounds } from "../../lib/utils";
 import { usePollGate } from "../../hooks/usePollGate";
 import type { Job, Employee, Customer, AppSettings, JobChecklistItem } from "../../types";
 
@@ -2519,13 +2519,22 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     const load = async () => {
       if (incomingFirstLoadRef.current) setIncomingLoading(true);
       try {
-        const { data } = await (supabase as any)
+        // ISSUE 10 — this silently swallowed EVERY error (missing table,
+        // missing/blocking RLS policy, etc.), which is indistinguishable
+        // from "no requests yet" in the UI. Log it so a request that really
+        // was created but isn't showing up has an actual error message to
+        // debug instead of just an empty list — see
+        // supabase/migrations/0018_job_requests_table.sql, which is the one
+        // most likely to not have been run yet (confirm it's applied the
+        // same way migration 0019 was).
+        const { data, error } = await (supabase as any)
           .from("job_requests")
           .select("*")
           .eq("employee_id", empId)
           .order("created_at", { ascending: false });
+        if (error) console.error("[IncomingRequests] fetch failed:", error.message, "— run supabase/migrations/0018_job_requests_table.sql if it hasn't been applied yet");
         if (Array.isArray(data)) setIncomingRequests(data);
-      } catch { /* table may not exist */ }
+      } catch (e: any) { console.error("[IncomingRequests] fetch threw:", e?.message); }
       if (incomingFirstLoadRef.current) { setIncomingLoading(false); incomingFirstLoadRef.current = false; }
     };
     load();
@@ -5821,14 +5830,12 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
             const periods: Array<{ label: string; start: string; end: string; hours: number; pay: number; jobs: number }> = [];
             const now = new Date();
             for (let i = 0; i < 6; i++) {
-              const end = new Date(now); end.setDate(end.getDate() - i * 14);
-              const start = new Date(end); start.setDate(start.getDate() - 13);
-              // AUDIT FIX — was toISOString().slice(0,10) (UTC), compared
-              // against local-calendar scheduledDate strings; for any US
-              // timezone this can roll the boundary back a day, especially in
-              // the evening, silently excluding/misplacing boundary jobs.
-              const s = localDateKey(start);
-              const e = localDateKey(end);
+              // ISSUE 2 — fixed-anchor periods (see getPayPeriodBounds) so this
+              // can never disagree with the owner's own "current period" or
+              // with itself on a later reload — see that function's comment.
+              const { start: s, end: e } = getPayPeriodBounds(now, i);
+              const start = new Date(s + "T00:00:00");
+              const end = new Date(e + "T00:00:00");
               const pJobs = myJobs.filter(j => jobDateKey(j) >= s && jobDateKey(j) <= e);
               // FIX 5 (mobile round 3) — this used to only count job.loggedHours,
               // missing the shift-timer top-up (ended OR still-in-progress)

@@ -87,6 +87,11 @@ export function CampaignsPage({ campaigns = [], setCampaigns, customers = [], es
   const [fCity, setFCity] = useState("");
   const [fLast, setFLast] = useState(""); // last service date (most recent completed job)
   const [fTag, setFTag] = useState("");
+  // ISSUE 25/26/34 — customer folders (CustomersPage.tsx's c.folder field)
+  // had no equivalent targeting filter here, only tags — the owner could
+  // segment by tag but not by the folder structure they'd already organized
+  // customers into.
+  const [fFolder, setFFolder] = useState("");
   const [fService, setFService] = useState("");
   const [fMinSpent, setFMinSpent] = useState("");
   const [sending, setSending] = useState(false);
@@ -110,8 +115,10 @@ export function CampaignsPage({ campaigns = [], setCampaigns, customers = [], es
 
   const cities = [...new Set(customers.map(c => { const a = c.address || ""; const m = a.match(/,\s*([A-Za-z ]+)\s+PA/); return m ? m[1].trim() : null; }).filter(Boolean))];
   const allTags = [...new Set(customers.flatMap(c => c.tags || []))];
+  const allFolders = [...new Set(customers.map((c: any) => c.folder).filter(Boolean))].sort();
 
-  const matches = customers.filter(c => {
+  const matches = customers.filter((c: any) => {
+    if (fFolder && c.folder !== fFolder) return false;
     if (fCity && !(c.address || "").includes(fCity)) return false;
     if (fLast) {
       // Filter by LAST SERVICE DATE (most recent completed job) not join date
@@ -342,6 +349,7 @@ export function CampaignsPage({ campaigns = [], setCampaigns, customers = [], es
         </div>
         <Glass className="p-4 space-y-3">
           <div className="flex items-center gap-2"><Target size={14} className="text-red-400" /><h3 className="font-semibold text-sm">Audience</h3></div>
+          <div><label className="text-xs text-white/60 mb-1 block">Folder</label><GSel value={fFolder} onChange={e => setFFolder(e.target.value)}><option value="" className="bg-black">Any folder</option>{allFolders.map((f: string) => <option key={f} value={f} className="bg-black">{f}</option>)}</GSel></div>
           <div><label className="text-xs text-white/60 mb-1 block">City</label><GSel value={fCity} onChange={e => setFCity(e.target.value)}><option value="" className="bg-black">Any city</option>{cities.map(c => <option key={c} value={c} className="bg-black">{c}</option>)}</GSel></div>
           <div><label className="text-xs text-white/60 mb-1 block">Tag</label><GSel value={fTag} onChange={e => setFTag(e.target.value)}><option value="" className="bg-black">Any tag</option>{allTags.map(t => <option key={t} value={t} className="bg-black">{t}</option>)}</GSel></div>
           <div><label className="text-xs text-white/60 mb-1 block">Service type</label><GInput value={fService} onChange={e => setFService(e.target.value)} placeholder="e.g. Roof Wash" className="!text-xs" /></div>
@@ -354,16 +362,16 @@ export function CampaignsPage({ campaigns = [], setCampaigns, customers = [], es
           </div>
           {/* Save segment */}
           <button onClick={() => {
-            const name = prompt("Segment name:", (fTag || fCity || "Custom") + " audience");
+            const name = prompt("Segment name:", (fFolder || fTag || fCity || "Custom") + " audience");
             if (!name) return;
-            setSavedSegments(prev => [...prev, { id: uid(), name, fCity, fTag, fLast, count: matches.length, savedAt: today() }]);
+            setSavedSegments(prev => [...prev, { id: uid(), name, fCity, fTag, fFolder, fLast, count: matches.length, savedAt: today() }]);
             toast("Segment saved: " + name);
           }} className="w-full text-xs text-blue-400 hover:text-blue-300 py-1.5 border border-blue-900/30 rounded-lg hover:bg-blue-950/20 transition">💾 Save this segment</button>
           {savedSegments.length > 0 && <div>
             <div className="text-[10px] text-white/40 mb-1">Saved segments</div>
             <div className="space-y-1">
               {savedSegments.map(s => <div key={s.id} className="flex items-center gap-2 p-1.5 bg-black/40 border border-white/5 rounded-lg text-[10px]">
-                <button onClick={() => { setFCity(s.fCity); setFTag(s.fTag); setFLast(s.fLast); toast("Segment loaded: " + s.name); }} className="flex-1 text-left text-white/70 hover:text-white">{s.name} <span className="text-white/40">({s.count})</span></button>
+                <button onClick={() => { setFCity(s.fCity); setFTag(s.fTag); setFFolder(s.fFolder || ""); setFLast(s.fLast); toast("Segment loaded: " + s.name); }} className="flex-1 text-left text-white/70 hover:text-white">{s.name} <span className="text-white/40">({s.count})</span></button>
                 <button onClick={() => setSavedSegments(prev => prev.filter(x => x.id !== s.id))} className="text-white/30 hover:text-red-400"><X size={9} /></button>
               </div>)}
             </div>

@@ -573,6 +573,11 @@ export function App() {
   const goToEmployeeHours = () => { setPage("employees"); setEmployeesInitialView("hours"); };
   const [notifOpen, setNotifOpen] = useState(false);
   const [fabOpen, setFabOpen] = useState(false);
+  // ISSUE 21 — which page's "New" modal should auto-open on the next
+  // render of that page, set by a FAB click and cleared by the page itself
+  // once it has opened the modal (see CustomersPage/EstimatesPage/JobsPage's
+  // own autoOpenNew effect + onAutoOpenNewConsumed callback).
+  const [fabAutoOpenNew, setFabAutoOpenNew] = useState<string | null>(null);
   // FEATURE 1 — mobile FAB drag-and-drop. Hold the button for 2s to enter drag
   // mode; pointermove repositions it (clamped to the viewport); releasing
   // saves the position via usePersistent (localStorage key smocks.fabPosition)
@@ -643,13 +648,32 @@ export function App() {
   }, [fabHolding]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (!fabDragging) return;
+    const lastPosRef = { current: { x: 0, y: 0 } };
     const onMove = (e: PointerEvent) => {
       const x = Math.max(4, Math.min(window.innerWidth - FAB_SIZE - 4, e.clientX - fabDragOffsetRef.current.x));
       const y = Math.max(4, Math.min(getViewportHeight() - FAB_SIZE - 4, e.clientY - fabDragOffsetRef.current.y));
+      lastPosRef.current = { x, y };
       setFabPosition({ x, y });
     };
     const onUp = () => {
       setFabDragging(false);
+      // ISSUE 20 — dropping in the bottom-middle "dismiss zone" (center
+      // third of the screen width, bottom 15% of height) now actually
+      // hides the FAB, instead of collapsing to a small restore dot —
+      // reuses the existing settings.fabEnabled flag (same one Settings →
+      // Quick Action FAB already toggles) so "bring it back" has one
+      // obvious answer instead of a second hidden mechanism to remember.
+      // Checked once on release (not every pointermove tick) so this fires
+      // exactly once per drag instead of spamming the toast mid-drag.
+      const { x, y } = lastPosRef.current;
+      const centerX = x + FAB_SIZE / 2;
+      const inDismissZoneX = centerX > window.innerWidth * 0.35 && centerX < window.innerWidth * 0.65;
+      const inDismissZoneY = y + FAB_SIZE > getViewportHeight() * 0.85;
+      if (inDismissZoneX && inDismissZoneY) {
+        setFabPosition(null);
+        setSettings((s: any) => ({ ...s, fabEnabled: false }));
+        toast?.("Quick actions hidden — re-enable in Settings → Quick Action FAB", "yellow");
+      }
     };
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
@@ -3091,10 +3115,10 @@ export function App() {
             <PageFade key={page} className={page === "alfred" ? "flex-1 min-h-0 flex flex-col" : ""}>
               <SafePage>
                 {page === "dashboard"      && <Dashboard jobs={jobs} setJobs={setJobs} customers={customers} estimates={estimates} setEstimates={setEstimates} automations={automations} stats={{ totalRev, activeJobs, pendingEst, closeRate, doneMonth }} goals={{ revenue: settings.monthlyRevenueGoal ?? 8000, jobCount: settings.monthlyJobsGoal ?? 20 }} vehicles={vehicles} maintenance={maintenance} chemicals={chemicals} settings={settings} setSettings={setSettings} onNav={setPage} toast={toast} weatherData={weatherData} weatherFetchError={weatherFetchError} inboxThreads={inboxThreads} employees={employees} crewFetchError={crewFetchError} reviews={reviews} onSendDailyBriefing={sendDailyBriefingNow} onViewJob={id => { setOpenJobId(id); setPage("jobs"); }} ownerId={crmUserId} />}
-                {page === "customers"      && <CustomersPage customers={customers} setCustomers={setCustomers} estimates={estimates} jobs={jobs} employees={employees} toast={toast} timeline={timeline} setTimeline={setTimeline} settings={settings} setSettings={setSettings} />}
-                {page === "estimates"      && <EstimatesPage estimates={estimates} setEstimates={setEstimates} customers={customers} services={services} settings={settings} toast={toast} onPortal={id => setPortalEstId(id)} estimateTemplates={estimateTemplates} setEstimateTemplates={setEstimateTemplates} setJobs={setJobs} onNav={setPage} />}
+                {page === "customers"      && <CustomersPage customers={customers} setCustomers={setCustomers} estimates={estimates} jobs={jobs} employees={employees} toast={toast} timeline={timeline} setTimeline={setTimeline} settings={settings} setSettings={setSettings} autoOpenNew={fabAutoOpenNew === "customers"} onAutoOpenNewConsumed={() => setFabAutoOpenNew(null)} />}
+                {page === "estimates"      && <EstimatesPage estimates={estimates} setEstimates={setEstimates} customers={customers} services={services} settings={settings} toast={toast} onPortal={id => setPortalEstId(id)} estimateTemplates={estimateTemplates} setEstimateTemplates={setEstimateTemplates} setJobs={setJobs} onNav={setPage} autoOpenNew={fabAutoOpenNew === "estimates"} onAutoOpenNewConsumed={() => setFabAutoOpenNew(null)} />}
                 {page === "invoices"       && <InvoicesPage estimates={estimates} setEstimates={setEstimates} customers={customers} settings={settings} toast={toast} jobs={jobs} setJobs={setJobs} />}
-                {page === "jobs"           && <JobsPage jobs={jobs} setJobs={setJobs} customers={customers} setCustomers={setCustomers} employees={employees} estimates={estimates} setEstimates={setEstimates} settings={settings} setSettings={setSettings} toast={toast} posts={socialPosts} setPosts={setSocialPosts} setTimeline={setTimeline} initialDetailId={openJobId} onInitialDetailIdConsumed={() => setOpenJobId(null)} onPortal={id => setPortalEstId(id)} ownerId={crmUserId} />}
+                {page === "jobs"           && <JobsPage jobs={jobs} setJobs={setJobs} customers={customers} setCustomers={setCustomers} employees={employees} estimates={estimates} setEstimates={setEstimates} settings={settings} setSettings={setSettings} toast={toast} posts={socialPosts} setPosts={setSocialPosts} setTimeline={setTimeline} initialDetailId={openJobId} onInitialDetailIdConsumed={() => setOpenJobId(null)} onPortal={id => setPortalEstId(id)} ownerId={crmUserId} autoOpenNew={fabAutoOpenNew === "jobs"} onAutoOpenNewConsumed={() => setFabAutoOpenNew(null)} />}
                 {page === "pipeline"       && <PipelinePage jobs={jobs} setJobs={setJobs} customers={customers} toast={toast} />}
                 {page === "calendar"       && <CalendarPage jobs={jobs} setJobs={setJobs} customers={customers} employees={employees} toast={toast} settings={settings} setSettings={setSettings} ownerId={crmUserId} />}
                 {page === "inbox"          && (managerBlocked("inbox") ? <RestrictedNotice label="the Inbox" /> : <InboxPage threads={inboxThreads} setThreads={setInboxThreads} customers={customers} setCustomers={setCustomers} settings={settings} toast={toast} />)}
@@ -3302,7 +3326,17 @@ export function App() {
                     return (
                       <button
                         key={item.dest}
-                        onClick={() => { setPage(item.dest); setFabOpen(false); setSidebarOpen(false); }}
+                        onClick={() => {
+                          setPage(item.dest);
+                          // ISSUE 21 — customers/estimates/jobs support
+                          // auto-opening their "New" modal; other FAB
+                          // destinations (Alfred, Expenses, New Lead) just
+                          // navigate as before, since they have no separate
+                          // creation modal to pop.
+                          if (item.dest === "customers" || item.dest === "estimates" || item.dest === "jobs") setFabAutoOpenNew(item.dest);
+                          setFabOpen(false);
+                          setSidebarOpen(false);
+                        }}
                         className={"flex items-center gap-2.5 px-4 py-2.5 rounded-2xl bg-gradient-to-r text-white text-sm font-semibold shadow-xl border border-white/10 hover:scale-105 active:scale-95 transition-transform " + item.colorClass}
                       >
                         <Icon size={15} />

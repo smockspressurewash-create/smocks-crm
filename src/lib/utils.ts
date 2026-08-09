@@ -196,6 +196,35 @@ export const shiftDayStr = (): string => {
   return `${y}-${m}-${day}`;
 };
 
+// ISSUE 2 — root cause of "Mark as Paid reverts after reload": both the
+// employee's Pay tab (EmployeePortal.tsx) and the owner's Payroll tab
+// (EmployeesPage.tsx's getCurrentPayPeriod) used to independently compute
+// "the current pay period" as a SLIDING window — literally "today minus 13
+// days" — recomputed fresh on every render from `new Date()`. That value
+// shifts by one calendar day every day (and can differ between the owner's
+// and employee's device if rendered at slightly different moments straddling
+// midnight), so the `paidPeriods` key written when marking a period paid
+// today (e.g. "2026-07-26") stops matching the "current period" key computed
+// on the very next render that happens on a different day (e.g.
+// "2026-07-27") — paidPeriodsMap[currentStart] comes back undefined, i.e.
+// "unpaid", even though the write genuinely succeeded and is still sitting
+// in Supabase under the old key. Anchoring every period to a fixed epoch
+// (a Monday) makes period boundaries deterministic and IDENTICAL no matter
+// who computes them or when — a period a device computed yesterday and one
+// computed today for "the period that contains today" only differ once the
+// real 14-day boundary is crossed, matching what "Mark as Paid" actually
+// means (pay for a fixed period, not a rolling one).
+const PAY_PERIOD_EPOCH = new Date(2024, 0, 1); // Monday, Jan 1 2024 — arbitrary fixed anchor
+export const getPayPeriodBounds = (referenceDate: Date = new Date(), periodsAgo = 0): { start: string; end: string } => {
+  const daysSinceEpoch = Math.floor((referenceDate.getTime() - PAY_PERIOD_EPOCH.getTime()) / 86400000);
+  const periodIndex = Math.floor(daysSinceEpoch / 14) - periodsAgo;
+  const start = new Date(PAY_PERIOD_EPOCH);
+  start.setDate(start.getDate() + periodIndex * 14);
+  const end = new Date(start);
+  end.setDate(end.getDate() + 13);
+  return { start: localDateKey(start), end: localDateKey(end) };
+};
+
 export const daysFromNow = (n: number): string => {
   const d = new Date();
   d.setDate(d.getDate() + n);
@@ -754,11 +783,11 @@ export const insertClientIdRowWithRetry = async (
   row: { id: string; [k: string]: any }
 ): Promise<{ error: any }> => {
   try {
-    return await withTimeout<any>((supabase as any).from(table).insert(row), 15000, `Save ${table}`);
+    return await withTimeout<any>((supabase as any).from(table).insert(row), 30000, `Save ${table}`);
   } catch (e: any) {
     if (!String(e?.message || "").includes("timed out")) throw e;
     console.warn(`[insertClientIdRowWithRetry] ${table} insert timed out — retrying once (duplicate-key response on retry means the first attempt actually landed)`);
-    const retry: any = await withTimeout<any>((supabase as any).from(table).insert(row), 15000, `Save ${table} (retry after timeout)`).catch((e2: any) => ({ error: e2 }));
+    const retry: any = await withTimeout<any>((supabase as any).from(table).insert(row), 30000, `Save ${table} (retry after timeout)`).catch((e2: any) => ({ error: e2 }));
     if (!retry?.error || isDuplicateKeyError(retry.error)) return { error: null };
     return retry;
   }
@@ -774,7 +803,7 @@ export const insertJobRequestSafely = async (payload: {
   try {
     return await withTimeout<any>(
       (supabase as any).from("job_requests").insert(payload).select("id").single(),
-      15000, "Save request"
+      30000, "Save request"
     );
   } catch (e: any) {
     if (!String(e?.message || "").includes("timed out")) throw e;
@@ -790,7 +819,7 @@ export const insertJobRequestSafely = async (payload: {
     }
     return await withTimeout<any>(
       (supabase as any).from("job_requests").insert(payload).select("id").single(),
-      15000, "Save request (retry after timeout)"
+      30000, "Save request (retry after timeout)"
     ).catch((e2: any) => ({ data: null, error: e2 }));
   }
 };

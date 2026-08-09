@@ -78,7 +78,7 @@ import { ChemicalModal } from "../ui/ChemicalModal";
 import { WeeklyBusinessReview } from "../ui/WeeklyBusinessReview";
 import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 
-export function CustomersPage({ customers = [], setCustomers, estimates = [], jobs = [], employees = [], toast, timeline = {}, setTimeline = () => {}, settings = {} as AppSettings, setSettings = (() => {}) as any }: { customers?: any[]; setCustomers?: any; estimates?: any[]; jobs?: any[]; employees?: any[]; toast?: any; timeline?: any; setTimeline?: any; settings?: AppSettings; setSettings?: any }) {
+export function CustomersPage({ customers = [], setCustomers, estimates = [], jobs = [], employees = [], toast, timeline = {}, setTimeline = () => {}, settings = {} as AppSettings, setSettings = (() => {}) as any, autoOpenNew = false, onAutoOpenNewConsumed }: { customers?: any[]; setCustomers?: any; estimates?: any[]; jobs?: any[]; employees?: any[]; toast?: any; timeline?: any; setTimeline?: any; settings?: AppSettings; setSettings?: any; autoOpenNew?: boolean; onAutoOpenNewConsumed?: () => void }) {
   const [search, setSearch] = useState("");
   // FEATURE — filter/sort controls for the customer list (previously just a
   // plain text search with no way to sort or filter by tag).
@@ -102,6 +102,15 @@ export function CustomersPage({ customers = [], setCustomers, estimates = [], jo
   const [draggedCustomerId, setDraggedCustomerId] = useState<string | null>(null);
   const [dragOverFolder, setDragOverFolder] = useState<string | null>(null);
   const [modal, setModal] = useState({ open: false, data: null });
+  // ISSUE 21 — the FAB's "New Customer" action used to just navigate here
+  // and leave the owner to find/click Add themselves. Opens the Add modal
+  // automatically once, then tells the parent to clear the flag so it
+  // doesn't reopen on every re-render or the next time this page is visited.
+  useEffect(() => {
+    if (!autoOpenNew) return;
+    setModal({ open: true, data: null });
+    onAutoOpenNewConsumed?.();
+  }, [autoOpenNew]); // eslint-disable-line react-hooks/exhaustive-deps
   const [detail, setDetail] = useState(null);
   const [pageTab, setPageTab] = useState("list"); // list | analytics | duplicates
   const [dupPairs, setDupPairs] = useState(null); // null = not scanned, [] = no dupes
