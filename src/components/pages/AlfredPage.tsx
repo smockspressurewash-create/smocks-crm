@@ -1172,7 +1172,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           const errs: string[] = [];
           if ((channel === "email" || channel === "both") && sc.email) {
             try {
-              await sendEmail(settings, { to: sc.email, subject: "Your Crew Boss estimate", body: emailShell(settings?.companyName || "Crew Boss", "Your Estimate", `<p>Hi ${sc.firstName}, here's your estimate for ${fmt(est.total)}.</p>` + emailButton("View & Sign Estimate", link)) });
+              await sendEmail(settings, { to: sc.email, subject: "Your Crew Boss estimate", body: emailShell(settings,"Your Estimate", `<p>Hi ${sc.firstName}, here's your estimate for ${fmt(est.total)}.</p>` + emailButton("View & Sign Estimate", link)) });
               sentEmail = true;
             } catch (e: any) { errs.push("email: " + e.message); }
           }
@@ -1587,7 +1587,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           if (emp.email) {
             const c = customers.find(x => x.id === j.customerId);
             const portalLink = `${window.location.origin}${window.location.pathname}#/portal`;
-            const html = emailShell(settings.companyName || "Crew Boss", "Job Assignment", `<p>Hi ${emp.firstName},</p><p>You've been assigned to a job:</p><ul><li><b>Date:</b> ${j.scheduledDate}${j.scheduledTime ? " at " + j.scheduledTime : ""}</li><li><b>Address:</b> ${j.address}</li>${c ? `<li><b>Customer:</b> ${c.firstName} ${c.lastName}</li>` : ""}</ul>` + emailButton("Open Crew Portal", portalLink));
+            const html = emailShell(settings,"Job Assignment", `<p>Hi ${emp.firstName},</p><p>You've been assigned to a job:</p><ul><li><b>Date:</b> ${j.scheduledDate}${j.scheduledTime ? " at " + j.scheduledTime : ""}</li><li><b>Address:</b> ${j.address}</li>${c ? `<li><b>Customer:</b> ${c.firstName} ${c.lastName}</li>` : ""}</ul>` + emailButton("Open Crew Portal", portalLink));
             sendEmail(settings, { to: emp.email, subject: `You've Been Assigned — ${j.scheduledDate}`, body: html }).catch(() => {});
           }
           toast("Alfred assigned " + emp.firstName + " to the " + j.scheduledDate + " job");
@@ -1615,7 +1615,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
             if (emp.email) {
               const c = customers.find(x => x.id === j.customerId);
               const reqUrl = `${window.location.origin}${window.location.pathname}#/portal?request=${data.id}`;
-              const html = emailShell(settings.companyName || "Crew Boss", "Job Request", `<p>Hi ${emp.firstName},</p><p>${inputs.message || "You have a new job request:"}</p><ul><li><b>Date:</b> ${j.scheduledDate}${j.scheduledTime ? " at " + j.scheduledTime : ""}</li><li><b>Address:</b> ${j.address}</li>${c ? `<li><b>Customer:</b> ${c.firstName} ${c.lastName}</li>` : ""}</ul><div style="text-align:center;margin:22px 0 4px"><a href="${reqUrl}" style="display:inline-block;background:#16a34a;color:#fff;text-decoration:none;font-weight:700;font-size:14px;padding:13px 24px;border-radius:10px;margin-right:8px">✓ Accept Job</a><a href="${reqUrl}&action=deny" style="display:inline-block;background:#dc2626;color:#fff;text-decoration:none;font-weight:700;font-size:14px;padding:13px 24px;border-radius:10px">✗ Decline</a></div>`);
+              const html = emailShell(settings,"Job Request", `<p>Hi ${emp.firstName},</p><p>${inputs.message || "You have a new job request:"}</p><ul><li><b>Date:</b> ${j.scheduledDate}${j.scheduledTime ? " at " + j.scheduledTime : ""}</li><li><b>Address:</b> ${j.address}</li>${c ? `<li><b>Customer:</b> ${c.firstName} ${c.lastName}</li>` : ""}</ul><div style="text-align:center;margin:22px 0 4px"><a href="${reqUrl}" style="display:inline-block;background:#16a34a;color:#fff;text-decoration:none;font-weight:700;font-size:14px;padding:13px 24px;border-radius:10px;margin-right:8px">✓ Accept Job</a><a href="${reqUrl}&action=deny" style="display:inline-block;background:#dc2626;color:#fff;text-decoration:none;font-weight:700;font-size:14px;padding:13px 24px;border-radius:10px">✗ Decline</a></div>`);
               withTimeout(sendEmail(settings, { to: emp.email, subject: `Job Request — ${j.scheduledDate}`, body: html }), 8000, "Email send").catch((e: any) => console.warn("Alfred job request email failed — request still saved:", e?.message));
             }
             toast("Alfred sent a job request to " + emp.firstName);
@@ -1654,7 +1654,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           } else {
             if (!c.email) return { error: "No email on file for " + c.firstName + " — use channel: sms, or add an email first." };
             try {
-              await sendEmail(settings, { to: c.email, subject: inputs.subject || "Message from " + (settings?.companyName || "Crew Boss"), body: emailShell(settings?.companyName || "Crew Boss", "Message", `<p>${msg}</p>`) });
+              await sendEmail(settings, { to: c.email, subject: inputs.subject || "Message from " + (settings?.companyName || "Crew Boss"), body: emailShell(settings,"Message", `<p>${msg}</p>`) });
             } catch (e: any) { return { error: "Email failed: " + (e?.message || String(e)) }; }
           }
           toast("Alfred sent a message to " + c.firstName + " via " + channel + " ✓");

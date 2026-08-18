@@ -1479,7 +1479,7 @@ export function App() {
           return (j.clockInAt - scheduled) / 60000 > 15;
         }).length;
         const issues = todaysJobs.flatMap(j => (j.commLog || []).filter((e: any) => e.type === "note" && (e.date || "").startsWith(tKey))).length;
-        const html = buildDailyBriefingEmailHtml((settings as any).companyName || "Crew Boss", { completed: completed.length, total: todaysJobs.length, revenue, late, issues });
+        const html = buildDailyBriefingEmailHtml(settings as any, { completed: completed.length, total: todaysJobs.length, revenue, late, issues });
         await sendEmail(settings as any, toEmail, "Daily Summary", html);
         console.log("[DailySummary] auto-sent for", tKey);
       } catch (e: any) {
@@ -2348,7 +2348,7 @@ export function App() {
           job: j,
           custName: (() => { const c = customers.find(x => x.id === j.customerId); return c ? `${c.firstName} ${c.lastName}` : ""; })(),
         }));
-        const html = buildTomorrowJobsEmailHtml(settings.companyName || "Crew Boss", emp.firstName, jobsList);
+        const html = buildTomorrowJobsEmailHtml(settings as any, emp.firstName, jobsList);
         try { await sendEmail(settings as any, emp.email, "Tomorrow's Jobs", html); } catch { /* best-effort */ }
       }
       localStorage.setItem(dedupeKey, "1");
@@ -2372,7 +2372,7 @@ export function App() {
       return (j.clockInAt - scheduled) / 60000 > 15;
     }).length;
     const issues = todaysJobs.flatMap(j => (j.commLog || []).filter((e: any) => e.type === "note" && (e.date || "").startsWith(tKey))).length;
-    const html = buildDailyBriefingEmailHtml(settings.companyName || "Crew Boss", { completed: completed.length, total: todaysJobs.length, revenue, late, issues });
+    const html = buildDailyBriefingEmailHtml(settings as any, { completed: completed.length, total: todaysJobs.length, revenue, late, issues });
     const toEmail = settings.companyEmail || settings.myEmail;
     if (!toEmail) { toast("Add a business email in Settings → My Profile first", "yellow"); return; }
     try {

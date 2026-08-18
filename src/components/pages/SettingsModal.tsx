@@ -539,6 +539,11 @@ export function SettingsModal({ open, onClose, settings, setSettings, jobs = [],
               <div className="flex-1 min-w-0 pr-3"><div className="text-sm font-medium">Hide $ amounts from employees</div><div className="text-[10px] text-white/50">Employee Pay tab still shows hours worked, just not job prices or earnings</div></div>
               <button onClick={() => setF({ ...f, hideJobAmountsFromEmployees: !f.hideJobAmountsFromEmployees })} className={"transition " + (f.hideJobAmountsFromEmployees ? "text-red-400" : "text-white/30")}>{f.hideJobAmountsFromEmployees ? <ToggleRight size={28} /> : <ToggleLeft size={28} />}</button>
             </div>
+            {/* ISSUE 16 (round 4) — GPS auto-mileage tracking, default ON. */}
+            <div className="flex items-center justify-between p-3 bg-black/40 border border-red-900/20 rounded-xl">
+              <div className="flex-1 min-w-0 pr-3"><div className="text-sm font-medium">Auto-track mileage via GPS</div><div className="text-[10px] text-white/50">Estimates miles driven between clock-in and clock-out on the employee's device; they review/edit before submitting</div></div>
+              <button onClick={() => setF({ ...f, autoMileageTrackingEnabled: f.autoMileageTrackingEnabled === false ? true : false })} className={"transition " + (f.autoMileageTrackingEnabled !== false ? "text-red-400" : "text-white/30")}>{f.autoMileageTrackingEnabled !== false ? <ToggleRight size={28} /> : <ToggleLeft size={28} />}</button>
+            </div>
             <div><label className="text-xs text-white/60 mb-1 block flex items-center gap-1"><Truck size={10} />Default Travel Buffer <span className="text-white/30 font-normal">(minutes between jobs)</span></label><GInput type="number" min="0" step="5" value={f.defaultBufferMinutes ?? 30} onChange={e => setF({ ...f, defaultBufferMinutes: Number(e.target.value) || 0 })} placeholder="30" className="!text-xs" /><div className="text-[10px] text-white/30 mt-1">Jobs scheduled the same day get flagged on the Calendar if there isn't this much time between them</div></div>
             <div>
               <label className="text-xs text-white/60 mb-1 block flex items-center gap-1"><FileText size={10} />Terms & Conditions <span className="text-white/30 font-normal">(shown on the customer sign-off screen)</span></label>

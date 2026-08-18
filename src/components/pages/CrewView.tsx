@@ -449,7 +449,7 @@ export function CrewView({ jobs = [], setJobs, customers = [], employees = [], t
                   catch (e: any) { toast(e?.message || "Failed to send OTW text", "red"); }
                 } else if (c.email) {
                   try {
-                    const html = emailShell(settings.companyName || "Crew Boss", "On My Way", `<p>${msg}</p>`);
+                    const html = emailShell(settings,"On My Way", `<p>${msg}</p>`);
                     await sendEmail(settings, { to: c.email, subject: "Your technician is on the way", body: html });
                     toast("OTW email sent to " + c.firstName + " ✓");
                   } catch (e: any) { toast(e?.message || "Failed to send OTW email", "red"); }

@@ -755,26 +755,60 @@ export const sendEmail = async (
 
 // ─── Branded HTML email shell ──────────────────────────────────────────────────
 // One shared shell applied to every outgoing email (job assignments, requests,
-// reminders, daily briefings, tomorrow's jobs) so they all look like real,
-// mobile-friendly transactional email instead of plain text — branded header,
-// readable typography, optional action button, footer. Wrapped in an outer
-// table for consistent rendering across email clients (Gmail/Outlook strip
-// <style> blocks, so all styling here is inline).
-export const emailShell = (companyName: string, title: string, bodyHtml: string): string => `
+// reminders, daily briefings, tomorrow's jobs, invoices, OTW/Running Late,
+// end-of-day summaries, payment receipts) so they all look like real,
+// mobile-friendly transactional email instead of plain text — branded header
+// (logo if the owner has uploaded one in Settings → Company Profile, brand
+// colors if set), readable typography, optional action button, and a real
+// footer (company phone/address, unsubscribe link when a customer email is
+// known). Wrapped in an outer table for consistent rendering across email
+// clients (Gmail/Outlook strip <style> blocks, so all styling here is inline).
+//
+// ISSUE 2 (round 4) — first argument used to be a bare `companyName: string`,
+// so this shell could only ever render the hardcoded red gradient with no
+// logo/company colors, even on deployments that had already set a logo and
+// brand colors in Settings. Accepts either a plain string (every existing
+// call site keeps compiling and rendering exactly as before, just still
+// without the extra branding) OR a settings-shaped object, so upgrading a
+// call site to real branding is a one-line change (pass `settings` instead
+// of `settings.companyName`) rather than a signature-breaking rewrite.
+interface EmailBrand {
+  companyName?: string;
+  logoUrl?: string;
+  brandColor?: string;
+  brandAccent?: string;
+  companyPhone?: string;
+  companyAddress?: string;
+  companyEmail?: string;
+}
+export const emailShell = (brandOrName: string | EmailBrand, title: string, bodyHtml: string, unsubscribeEmail?: string): string => {
+  const b: EmailBrand = typeof brandOrName === "string" ? { companyName: brandOrName } : (brandOrName || {});
+  const companyName = b.companyName || "Crew Boss";
+  const brandColor = b.brandColor || "#dc2626";
+  const brandAccent = b.brandAccent || "#7f1d1d";
+  const headerInner = b.logoUrl
+    ? `<img src="${b.logoUrl}" alt="${companyName}" style="max-height:44px;max-width:220px;display:inline-block" />`
+    : `<div style="font-size:21px;font-weight:800;letter-spacing:-0.02em;color:#fff">${companyName}</div>`;
+  const footerContact = [b.companyPhone, b.companyAddress].filter(Boolean).join(" · ");
+  const unsubHref = unsubscribeEmail ? `mailto:${unsubscribeEmail}?subject=${encodeURIComponent("Unsubscribe")}` : null;
+  return `
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#000;padding:24px 12px">
   <tr><td align="center">
     <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;background:#0a0a0a;color:#fff;border-radius:16px;overflow:hidden">
-      <tr><td style="background:linear-gradient(135deg,#dc2626,#7f1d1d);padding:28px 24px;text-align:center">
-        <div style="font-size:21px;font-weight:800;letter-spacing:-0.02em">${companyName}</div>
-        <div style="font-size:13px;opacity:0.85;margin-top:4px">${title}</div>
+      <tr><td style="background:linear-gradient(135deg,${brandColor},${brandAccent});padding:28px 24px;text-align:center">
+        ${headerInner}
+        <div style="font-size:13px;opacity:0.85;margin-top:4px;color:#fff">${title}</div>
       </td></tr>
       <tr><td style="padding:28px 24px;background:#111;font-size:14px;line-height:1.6;color:rgba(255,255,255,0.85)">${bodyHtml}</td></tr>
       <tr><td style="padding:16px 24px;text-align:center;font-size:11px;color:rgba(255,255,255,0.3);background:#0a0a0a">
+        ${footerContact ? `<div style="margin-bottom:6px">${footerContact}</div>` : ""}
         Sent automatically by ${companyName}'s CrewBoss system.
+        ${unsubHref ? `<div style="margin-top:6px"><a href="${unsubHref}" style="color:rgba(255,255,255,0.35);text-decoration:underline">Unsubscribe</a></div>` : ""}
       </td></tr>
     </table>
   </td></tr>
 </table>`;
+};
 
 // A pill-style call-to-action button, used for "Open the crew portal" / "View
 // estimate" / "Confirm" links so emails read as actionable, not just informative.
@@ -790,14 +824,14 @@ const jobCardHtml = (j: any, custName: string): string => `
     ${j.notes ? `<div style="font-size:12px;color:rgba(255,255,255,0.6);margin-top:6px;font-style:italic">"${j.notes}"</div>` : ""}
   </div>`;
 
-export const buildTomorrowJobsEmailHtml = (companyName: string, empFirstName: string, jobsList: Array<{ job: any; custName: string }>): string => {
+export const buildTomorrowJobsEmailHtml = (brand: string | Parameters<typeof emailShell>[0], empFirstName: string, jobsList: Array<{ job: any; custName: string }>): string => {
   const body = `<p style="font-size:14px;color:rgba(255,255,255,0.8)">Hi ${empFirstName}, here's your schedule for tomorrow:</p>` +
     jobsList.map(({ job, custName }) => jobCardHtml(job, custName)).join("") +
     `<p style="font-size:12px;color:rgba(255,255,255,0.4);margin-top:16px">Open the crew portal for full details, directions, and checklists.</p>`;
-  return emailShell(companyName, "Tomorrow's Jobs", body);
+  return emailShell(brand, "Tomorrow's Jobs", body);
 };
 
-export const buildDailyBriefingEmailHtml = (companyName: string, stats: { completed: number; total: number; revenue: number; late: number; issues: number }): string => {
+export const buildDailyBriefingEmailHtml = (brand: string | Parameters<typeof emailShell>[0], stats: { completed: number; total: number; revenue: number; late: number; issues: number }): string => {
   const body = `
     <p style="font-size:14px;color:rgba(255,255,255,0.8)">Here's how today went:</p>
     <table style="width:100%;border-collapse:collapse;margin-top:10px">
@@ -806,5 +840,5 @@ export const buildDailyBriefingEmailHtml = (companyName: string, stats: { comple
       <tr><td style="padding:8px 0;color:rgba(255,255,255,0.5);font-size:13px">Late arrivals</td><td style="text-align:right;font-weight:700;font-size:13px;color:${stats.late > 0 ? "#facc15" : "#fff"}">${stats.late}</td></tr>
       <tr><td style="padding:8px 0;color:rgba(255,255,255,0.5);font-size:13px">Field notes/issues</td><td style="text-align:right;font-weight:700;font-size:13px;color:${stats.issues > 0 ? "#fb923c" : "#fff"}">${stats.issues}</td></tr>
     </table>`;
-  return emailShell(companyName, "Daily Briefing", body);
+  return emailShell(brand, "Daily Briefing", body);
 };

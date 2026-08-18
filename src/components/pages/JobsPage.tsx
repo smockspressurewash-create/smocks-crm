@@ -422,7 +422,7 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
         const requestUrl = `${portalUrl}#/portal?request=${row.id}`;
         const c = customers.find((x: any) => x.id === job.customerId);
         if (emp.email) {
-          const html = emailShell(settings.companyName || "Crew Boss", "Job Request", `<p>Hi ${emp.firstName},</p><p>${quickReqMsg || "You have a new job request:"}</p>
+          const html = emailShell(settings,"Job Request", `<p>Hi ${emp.firstName},</p><p>${quickReqMsg || "You have a new job request:"}</p>
               <ul>
                 <li><b>Date:</b> ${job.scheduledDate}${job.scheduledTime ? " at " + job.scheduledTime : ""}</li>
                 <li><b>Address:</b> ${job.address}</li>
@@ -936,7 +936,7 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
               for (const assignedEmp of directAssignEmps) {
                 if (!assignedEmp?.email) continue;
                 const portalLink = `${window.location.origin}${window.location.pathname}#/portal`;
-                const html = emailShell(settings.companyName || "Crew Boss", "Job Assignment", `<p>Hi ${assignedEmp.firstName},</p><p>You've been assigned to a new job:</p><ul><li><b>Date:</b> ${job.scheduledDate}${job.scheduledTime ? " at " + job.scheduledTime : ""}</li><li><b>Address:</b> ${job.address}</li>${custLine}</ul>` + emailButton("Open Crew Portal", portalLink));
+                const html = emailShell(settings,"Job Assignment", `<p>Hi ${assignedEmp.firstName},</p><p>You've been assigned to a new job:</p><ul><li><b>Date:</b> ${job.scheduledDate}${job.scheduledTime ? " at " + job.scheduledTime : ""}</li><li><b>Address:</b> ${job.address}</li>${custLine}</ul>` + emailButton("Open Crew Portal", portalLink));
                 withTimeout(sendEmail(settings, { to: assignedEmp.email, subject: `You've Been Assigned — ${job.scheduledDate}`, body: html }), 8000, "Email send").catch((e: any) => { console.warn("Assignment email failed — job still assigned:", e?.message); toast?.(`Assigned ${assignedEmp.firstName}, but the notification email failed to send`, "red"); });
               }
               for (const assignedEmp of requestEmps) {
@@ -958,7 +958,7 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
                       return;
                     }
                     const reqUrl = `${window.location.origin}${window.location.pathname}#/portal?request=${data.id}`;
-                    const html = emailShell(settings.companyName || "Crew Boss", "Job Request", `<p>Hi ${assignedEmp.firstName},</p><p>You have a new job request:</p><ul><li><b>Date:</b> ${job.scheduledDate}${job.scheduledTime ? " at " + job.scheduledTime : ""}</li><li><b>Address:</b> ${job.address}</li>${custLine}</ul><div style="text-align:center;margin:22px 0 4px"><a href="${reqUrl}" style="display:inline-block;background:#16a34a;color:#fff;text-decoration:none;font-weight:700;font-size:14px;padding:13px 24px;border-radius:10px;margin-right:8px">✓ Accept Job</a><a href="${reqUrl}&action=deny" style="display:inline-block;background:#dc2626;color:#fff;text-decoration:none;font-weight:700;font-size:14px;padding:13px 24px;border-radius:10px">✗ Decline</a></div>`);
+                    const html = emailShell(settings,"Job Request", `<p>Hi ${assignedEmp.firstName},</p><p>You have a new job request:</p><ul><li><b>Date:</b> ${job.scheduledDate}${job.scheduledTime ? " at " + job.scheduledTime : ""}</li><li><b>Address:</b> ${job.address}</li>${custLine}</ul><div style="text-align:center;margin:22px 0 4px"><a href="${reqUrl}" style="display:inline-block;background:#16a34a;color:#fff;text-decoration:none;font-weight:700;font-size:14px;padding:13px 24px;border-radius:10px;margin-right:8px">✓ Accept Job</a><a href="${reqUrl}&action=deny" style="display:inline-block;background:#dc2626;color:#fff;text-decoration:none;font-weight:700;font-size:14px;padding:13px 24px;border-radius:10px">✗ Decline</a></div>`);
                     withTimeout(sendEmail(settings, { to: assignedEmp.email, subject: `Job Request — ${job.scheduledDate}`, body: html }), 8000, "Email send").catch((e: any) => console.warn("Job request email failed — request still saved:", e?.message));
                   } catch (e: any) {
                     console.error("Crew request failed:", e);
@@ -1337,7 +1337,7 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
                         try { await twilioSend(settings, c.phone, omwMsg); toast("OTW text sent to " + c.firstName + " ✓"); }
                         catch (e: any) { toast(e?.message || "Failed to send OTW text", "red"); }
                       } else if (c.email) {
-                        const html = emailShell(settings.companyName || "Crew Boss", "On My Way", `<p>${omwMsg}</p>`);
+                        const html = emailShell(settings,"On My Way", `<p>${omwMsg}</p>`);
                         try {
                           await sendEmail(settings, { to: c.email, subject: "Your technician is on the way", body: html });
                           toast("OTW email sent to " + c.firstName + " ✓");

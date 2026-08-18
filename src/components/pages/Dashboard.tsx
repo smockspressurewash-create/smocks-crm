@@ -707,7 +707,7 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
         }
       }
       if (!ownerActiveCustomer.email) { toast?.("No email on file to fall back to — failed", "red"); return; }
-      const html = emailShell(settings?.companyName || "Crew Boss", "On My Way", `<p>${msg}</p>`);
+      const html = emailShell(settings,"On My Way", `<p>${msg}</p>`);
       await withTimeout(sendOwnerGmailOnly(settings as any, ownerActiveCustomer.email, "Your technician is on the way", html), 15000, "OTW email");
       console.log("[OTW] sent via email to", ownerActiveCustomer.firstName);
       toast?.(`On the way message sent to ${ownerActiveCustomer.firstName} ✓ (email)`, "green");
@@ -743,7 +743,7 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
         }
       }
       if (!ownerActiveCustomer.email) { toast?.("No email on file to fall back to — failed", "red"); return; }
-      const html = emailShell(settings?.companyName || "Crew Boss", "Running Late", `<p>${msg}</p>`);
+      const html = emailShell(settings,"Running Late", `<p>${msg}</p>`);
       await withTimeout(sendOwnerGmailOnly(settings as any, ownerActiveCustomer.email, "Your technician is running late", html), 15000, "Running late email");
       console.log("[RunningLate] sent via email to", ownerActiveCustomer.firstName);
       toast?.(`Message sent to ${ownerActiveCustomer.firstName} ✓ (email)`, "green");

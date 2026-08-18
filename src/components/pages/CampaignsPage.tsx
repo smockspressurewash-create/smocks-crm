@@ -230,6 +230,12 @@ export function CampaignsPage({ campaigns = [], setCampaigns, customers = [], es
     setSendProgress({ sent: 0, failed: 0, total: matches.length });
 
     let sent = 0, failed = 0;
+    // AUDIT #6 (round 4) — per-recipient send failures were counted but the
+    // actual Twilio/Gmail error (insufficient balance, invalid number, opted
+    // out, etc.) was thrown away — the owner only ever saw "N failed" with
+    // no way to know why or which recipients. Collect a capped sample of
+    // real error messages to surface in the end-of-send toast.
+    const failureSamples: string[] = [];
     for (const customer of matches) {
       const personalized = merge(body, customer);
       try {
@@ -267,8 +273,11 @@ export function CampaignsPage({ campaigns = [], setCampaigns, customers = [], es
           await sendEmail(settings, { to: customer.email, subject: merge(subj, customer), body: personalized });
         }
         sent++;
-      } catch {
+      } catch (e: any) {
         failed++;
+        const reason = e?.message || "Unknown error";
+        if (failureSamples.length < 5) failureSamples.push(`${customer.firstName || customer.phone || customer.email}: ${reason}`);
+        console.error("[Campaigns] send failed for", customer.id, "—", reason);
       }
       setSendProgress({ sent, failed, total: matches.length });
       setCampaigns(prev => prev.map(c => c.id === campaignId ? { ...c, sentCount: sent, failedCount: failed, status: sent + failed < matches.length ? "sending" : "sent" } : c));
@@ -278,8 +287,12 @@ export function CampaignsPage({ campaigns = [], setCampaigns, customers = [], es
 
     setSending(false);
     setSendProgress(null);
-    setCampaigns(prev => prev.map(c => c.id === campaignId ? { ...c, status: "sent", sentCount: sent, failedCount: failed, openRate: Math.floor(35 + Math.random() * 30), clickRate: Math.floor(8 + Math.random() * 15) } : c));
-    toast(`Campaign sent! ${sent} delivered${failed > 0 ? ", " + failed + " failed" : ""}`, sent > 0 ? "success" : "error");
+    setCampaigns(prev => prev.map(c => c.id === campaignId ? { ...c, status: "sent", sentCount: sent, failedCount: failed, failureSamples, openRate: Math.floor(35 + Math.random() * 30), clickRate: Math.floor(8 + Math.random() * 15) } : c));
+    if (failed > 0) {
+      toast(`Campaign sent — ${sent} delivered, ${failed} failed. First failure: ${failureSamples[0] || "unknown error"}`, sent > 0 ? "yellow" : "error");
+    } else {
+      toast(`Campaign sent! ${sent} delivered`, "success");
+    }
     setBody("Hi {{first_name}}, spring special — 15% off house soft washes this month. Reply BOOK or call " + ((settings as any)?.companyPhone || "(717) 555-0100") + ". — " + ((settings as any)?.companyName || "Crew Boss"));
     setSubj("");
   };
@@ -537,6 +550,15 @@ export function CampaignsPage({ campaigns = [], setCampaigns, customers = [], es
             <div className="p-2 bg-black/40 rounded-lg"><div className="text-white/50 mb-0.5">Conversions</div><div className="font-bold text-blue-400">{Math.floor((c.recipientCount || 0) * (c.openRate || 0) / 100 * 0.12)}</div></div>
             <div className="p-2 bg-black/40 rounded-lg"><div className="text-white/50 mb-0.5">Conv. rate</div><div className="font-bold text-purple-400">{c.openRate ? Math.round((c.openRate * 0.12)) : 0}%</div></div>
           </div>
+          {/* AUDIT #6 (round 4) — surface WHY sends failed, not just a count. */}
+          {(c.failedCount || 0) > 0 && (
+            <div className="mt-3 pt-3 border-t border-red-900/20">
+              <div className="text-[10px] text-red-400 font-semibold mb-1">{c.failedCount} failed to send{Array.isArray(c.failureSamples) && c.failureSamples.length > 0 ? " — sample reasons:" : ""}</div>
+              {Array.isArray(c.failureSamples) && c.failureSamples.map((s: string, i: number) => (
+                <div key={i} className="text-[10px] text-white/40 truncate">• {s}</div>
+              ))}
+            </div>
+          )}
         </Glass>) : <div className="text-center py-16 text-white/40">No campaigns yet</div>}
       </div>}
 

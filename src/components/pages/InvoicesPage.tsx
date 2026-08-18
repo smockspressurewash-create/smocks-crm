@@ -22,7 +22,7 @@ import {
 } from "recharts";
 import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, withTimeout } from "../../lib/utils";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
-import { twilioSend, sendEmail } from "../../lib/messaging";
+import { twilioSend, sendEmail, emailShell } from "../../lib/messaging";
 import { seedWeather } from "../../lib/weather";
 import { seedCustomers, seedEstimates, seedJobs, seedEmployees, seedVehicles, seedExpenses, seedChemicals, seedServices, seedAutomations, seedEmailTemplates, seedSmsTemplates, seedRewardTiers, seedReferrals, seedMaintenance, campaignTemplates, seedSocialPosts, seedTimeline, seedGoals, seedReminders, seedAccountabilityEntries, seedMileage, seedLeadSrc, STEP_TYPES, AUTOMATION_TEMPLATES } from "../../lib/seed";
 import { callModel, MODELS } from "../../lib/api";
@@ -188,7 +188,7 @@ export function InvoicesPage({ estimates = [], setEstimates, customers = [], set
     const cust = customers.find(c => c.id === inv.customerId);
     if (!cust?.email) return;
     sendEmail(settings as any, cust.email, `Receipt — ${settings?.companyName || "Crew Boss"}`,
-      `<p>Hi ${cust.firstName},</p><p>Thanks for your payment of <strong>${fmt(inv.amount)}</strong> for ${inv.address || "your service"}.</p><p>This receipt confirms your invoice is paid in full.</p><p>— ${settings?.companyName || "Crew Boss"}</p>`
+      emailShell(settings as any, "Payment Receipt", `<p>Hi ${cust.firstName},</p><p>Thanks for your payment of <strong>${fmt(inv.amount)}</strong> for ${inv.address || "your service"}.</p><p>This receipt confirms your invoice is paid in full.</p>`)
     ).catch(() => {});
   };
 

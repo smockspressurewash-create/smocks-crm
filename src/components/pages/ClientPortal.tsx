@@ -22,7 +22,7 @@ import {
 } from "recharts";
 import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, computeDepositAmount, computeDiscountsTotal, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE } from "../../lib/utils";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
-import { twilioSend, sendEmail } from "../../lib/messaging";
+import { twilioSend, sendEmail, emailShell } from "../../lib/messaging";
 import { supabase } from "../../lib/supabase";
 import { seedWeather } from "../../lib/weather";
 import { seedCustomers, seedEstimates, seedJobs, seedEmployees, seedVehicles, seedExpenses, seedChemicals, seedServices, seedAutomations, seedEmailTemplates, seedSmsTemplates, seedRewardTiers, seedReferrals, seedMaintenance, campaignTemplates, seedSocialPosts, seedTimeline, seedGoals, seedReminders, seedAccountabilityEntries, seedMileage, seedLeadSrc, STEP_TYPES, AUTOMATION_TEMPLATES } from "../../lib/seed";
@@ -223,6 +223,23 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
       const msg = "👀 ESTIMATE VIEWED\n\n" + c.firstName + " " + c.lastName + " just opened their estimate for " + fmt(e.total) + ".\n\nNow's a great time to follow up if they don't sign in 30 min. — Alfred";
       twilioSend(settings, settings.myPhone, msg).catch(() => {});
     }
+    // ISSUE 21 (round 4) — this page is unauthenticated (a customer, not the
+    // owner), so it can't write into the owner's synced Alfred conversations
+    // directly. Routes through a Cloudflare Function (functions/api/
+    // alfred-notify.ts) that resolves the one owner_id this single-tenant
+    // deployment has and appends into one persistent "Alfred Notifications"
+    // thread server-side, instead of the SMS ping above being the only trace
+    // of this event and every view spawning its own throwaway chat.
+    if (c) {
+      fetch("/api/alfred-notify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          title: "Alfred Notifications",
+          message: "👀 ESTIMATE VIEWED\n\n" + c.firstName + " " + c.lastName + " just opened their estimate for " + fmt(e.total) + ".\n\nNow's a great time to follow up if they don't sign in 30 min.",
+        }),
+      }).catch(() => {});
+    }
     onView?.(e.id);
   }, [e?.id]); // eslint-disable-line
 
@@ -324,7 +341,8 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
     // Payment confirmation email to customer
     if (c.email && settings?.googleConnected) {
       const subject = "Payment Receipt — " + (settings?.companyName || "Crew Boss");
-      const body = "Hi " + c.firstName + ",\n\nThank you for your payment of $" + totalWithTip.toFixed(2) + ".\n\nServices: " + (e.lineItems || []).map(li => li.description).join(", ") + "\nAmount: $" + totalWithTip.toFixed(2) + "\n\nWe'll contact you soon to schedule your service.\n\n— " + (settings?.companyName || "Crew Boss") + "\n" + (settings?.companyPhone || "(717) 555-0100");
+      const receiptRows = (e.lineItems || []).map(li => `<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid rgba(255,255,255,0.08)"><span>${li.description}</span></div>`).join("");
+      const body = emailShell(settings as any, "Payment Receipt", `<p>Hi ${c.firstName},</p><p>Thank you for your payment!</p>${receiptRows}<div style="display:flex;justify-content:space-between;padding:10px 0;margin-top:6px;border-top:1px solid rgba(255,255,255,0.15)"><span>Amount</span><strong>$${totalWithTip.toFixed(2)}</strong></div><p style="margin-top:16px">We'll contact you soon to confirm your service date.</p>`);
       sendEmail(settings, { to: c.email, subject, body }).catch(() => {});
     }
 

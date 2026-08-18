@@ -152,7 +152,7 @@ export function BudgetPage({ jobs = [], estimates = [], expenses = [], settings 
   const exportTaxPDF = () => {
     const expRows = tfExp.filter(e => e.taxDeductible).map(e => `<tr><td>${e.date}</td><td>${e.category}</td><td>${e.vendor || "—"}</td><td>${e.description}</td><td class="r">${e.isCash ? "💵" : "💳"}</td><td class="r">$${Number(e.amount).toFixed(2)}</td></tr>`).join("");
     const mileRows = tfMileage.map(m => `<tr><td>${m.date}</td><td>${m.from} → ${m.to}</td><td class="r">${m.miles}</td><td class="r">$${(m.deduction||0).toFixed(2)}</td><td>${m.purpose}</td></tr>`).join("");
-    const html = `<!DOCTYPE html><html><head><title>Tax Report — Crew Boss</title>
+    const html = `<!DOCTYPE html><html><head><title>Tax Report — ${(settings as any)?.companyName || "Crew Boss"}</title>
     <style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:Arial,sans-serif;padding:40px;color:#111;max-width:900px;margin:auto;font-size:13px}
     h1{color:#dc2626;font-size:24px}h2{color:#333;font-size:16px;border-bottom:2px solid #dc2626;padding-bottom:6px;margin:24px 0 12px}
     .header{display:flex;justify-content:space-between;align-items:start;border-bottom:3px solid #dc2626;padding-bottom:16px;margin-bottom:24px}

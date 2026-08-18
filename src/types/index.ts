@@ -661,6 +661,7 @@ export interface AppSettings {
   homeBaseAddress?: string;
   paidLunchBreaks?: boolean;
   hideJobAmountsFromEmployees?: boolean;
+  autoMileageTrackingEnabled?: boolean;
 
   // Onboarding — explicitly false only for brand-new owner registrations;
   // undefined (pre-existing accounts) is treated as already complete.

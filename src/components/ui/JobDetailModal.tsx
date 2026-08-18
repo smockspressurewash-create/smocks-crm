@@ -322,7 +322,7 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
       notifyEmployeesRef.current(
         withEmail,
         () => `Job Updated — ${job.address}`,
-        (emp: any) => emailShell(settings.companyName || "Crew Boss", "Job Updated", `<p>Hi ${emp.firstName},</p><p>Your job has changed:</p><ul>${changes.map(c => `<li>${c}</li>`).join("")}</ul>`)
+        (emp: any) => emailShell(settings,"Job Updated", `<p>Hi ${emp.firstName},</p><p>Your job has changed:</p><ul>${changes.map(c => `<li>${c}</li>`).join("")}</ul>`)
       ).then((sent: number) => { if (sent > 0) toast(`Notified ${sent} crew member${sent !== 1 ? "s" : ""} of the change`, "green"); });
     }
     // Calendar sync happens immediately on the same change, not on a timer.
@@ -384,7 +384,7 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
           notifyEmployeesRef.current(
             [emp],
             () => `You've Been Assigned — ${job.scheduledDate || job.address}`,
-            () => emailShell(settings.companyName || "Crew Boss", "You've Been Assigned", `<p>Hi ${emp.firstName},</p><p>You've been assigned to a job:</p><ul><li><b>Date:</b> ${job.scheduledDate}${job.scheduledTime ? " at " + job.scheduledTime : ""}</li><li><b>Address:</b> ${job.address}</li>${cust ? `<li><b>Customer:</b> ${cust.firstName} ${cust.lastName}</li>` : ""}</ul><p>This job is already on your schedule — no action needed.</p>`)
+            () => emailShell(settings,"You've Been Assigned", `<p>Hi ${emp.firstName},</p><p>You've been assigned to a job:</p><ul><li><b>Date:</b> ${job.scheduledDate}${job.scheduledTime ? " at " + job.scheduledTime : ""}</li><li><b>Address:</b> ${job.address}</li>${cust ? `<li><b>Customer:</b> ${cust.firstName} ${cust.lastName}</li>` : ""}</ul><p>This job is already on your schedule — no action needed.</p>`)
           ).then((sent: number) => { if (sent > 0) toast?.(`Notified ${emp.firstName} ✓`, "green"); }).catch((e: any) => console.warn("[EditCrewAssign] notify email failed (non-fatal):", e?.message));
         }
       }
@@ -505,7 +505,7 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
       // invoice view; #/estimate/ID is the public no-login pay/sign portal.
       const payLink = `${window.location.origin}${window.location.pathname}#/estimate/${newInv.id}`;
       if (c.email) {
-        const html = emailShell(settings.companyName || "Crew Boss", subject, bodyHtml + emailButton("View & Pay Invoice", payLink));
+        const html = emailShell(settings,subject, bodyHtml + emailButton("View & Pay Invoice", payLink));
         await withTimeout(sendOwnerGmailOnly(settings as any, c.email, subject, html), 10000, "Invoice email");
       } else {
         const smsBody = `Hi ${c.firstName}, your invoice for $${(Number(job.amount) || 0).toFixed(2)} is ready: ${payLink}`;
@@ -546,7 +546,7 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
         // as the repeated-regression path (Resend fallback instead of the
         // owner's own Gmail); every other customer-facing send in the portal
         // already uses sendOwnerGmailOnly, this one hadn't been switched over.
-        const html = emailShell(companyName, "How did we do?", `<p>Hi ${c.firstName},</p><p>Thanks for choosing ${companyName}! We'd love your feedback on your recent service.</p>` + emailButton("Leave a Review", rateLink));
+        const html = emailShell(settings, "How did we do?", `<p>Hi ${c.firstName},</p><p>Thanks for choosing ${companyName}! We'd love your feedback on your recent service.</p>` + emailButton("Leave a Review", rateLink));
         await withTimeout(sendOwnerGmailOnly(settings as any, c.email, `How did we do, ${c.firstName}?`, html), 10000, "Review email");
         updateJob(jobId, { reviewRequestedAt: today() } as any);
         console.log("[ReviewRequest] sent via email to", c.firstName);
@@ -580,7 +580,7 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
       const sent = await notifyEmployees(
         withEmail,
         () => `Job Assignment — ${job.scheduledDate}`,
-        emp => emailShell(settings.companyName || "Crew Boss", "Job Assignment", `<p>Hi ${emp.firstName},</p><p>You've been assigned to a job:</p><ul><li><b>Date:</b> ${job.scheduledDate}${job.scheduledTime ? " at " + job.scheduledTime : ""}</li><li><b>Address:</b> ${job.address}</li>${c ? `<li><b>Customer:</b> ${c.firstName} ${c.lastName}</li>` : ""}</ul>` + emailButton("Open Crew Portal", jobLink))
+        emp => emailShell(settings,"Job Assignment", `<p>Hi ${emp.firstName},</p><p>You've been assigned to a job:</p><ul><li><b>Date:</b> ${job.scheduledDate}${job.scheduledTime ? " at " + job.scheduledTime : ""}</li><li><b>Address:</b> ${job.address}</li>${c ? `<li><b>Customer:</b> ${c.firstName} ${c.lastName}</li>` : ""}</ul>` + emailButton("Open Crew Portal", jobLink))
       );
       toast(sent > 0 ? `Notified ${sent} crew member${sent !== 1 ? "s" : ""} ✓` : "Email send failed — check Gmail connection in Settings → Integrations", sent > 0 ? "green" : "red");
     } catch (err: any) {
@@ -618,7 +618,7 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
             await notifyEmployees(
               [emp],
               () => `Job Request — ${job.scheduledDate}`,
-              () => emailShell(settings.companyName || "Crew Boss", "Job Request", `<p>Hi ${emp.firstName},</p><p>${requestMsg || "You have a new job request:"}</p>
+              () => emailShell(settings,"Job Request", `<p>Hi ${emp.firstName},</p><p>${requestMsg || "You have a new job request:"}</p>
                 <ul>
                   <li><b>Date:</b> ${job.scheduledDate}${job.scheduledTime ? " at " + job.scheduledTime : ""}</li>
                   <li><b>Address:</b> ${job.address}</li>
@@ -715,7 +715,7 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
         await notifyEmployees(
           [emp],
           () => `You've Been Scheduled — ${job.scheduledDate}`,
-          () => emailShell(settings.companyName || "Crew Boss", "You've Been Scheduled", `<p>Hi ${emp.firstName},</p><p>You've been scheduled for a job — you're confirmed, no action needed:</p><ul><li><b>Date:</b> ${job.scheduledDate}${job.scheduledTime ? " at " + job.scheduledTime : ""}</li><li><b>Address:</b> ${job.address}</li>${cust ? `<li><b>Customer:</b> ${cust.firstName} ${cust.lastName}</li>` : ""}</ul>${calendarSynced ? "<p>This has been added to your Google Calendar.</p>" : ""}`)
+          () => emailShell(settings,"You've Been Scheduled", `<p>Hi ${emp.firstName},</p><p>You've been scheduled for a job — you're confirmed, no action needed:</p><ul><li><b>Date:</b> ${job.scheduledDate}${job.scheduledTime ? " at " + job.scheduledTime : ""}</li><li><b>Address:</b> ${job.address}</li>${cust ? `<li><b>Customer:</b> ${cust.firstName} ${cust.lastName}</li>` : ""}</ul>${calendarSynced ? "<p>This has been added to your Google Calendar.</p>" : ""}`)
         );
       } catch (err) {
         console.warn("Schedule notification email failed — crew assignment still saved:", err);

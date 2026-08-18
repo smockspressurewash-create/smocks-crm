@@ -73,6 +73,12 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
   try {
     const raw = await context.request.text();
     const params = Object.fromEntries(new URLSearchParams(raw));
+    // AUDIT #3.4 (round 4) — unconditional entry log, independent of which
+    // branch (STOP/START/keyword/ordinary) this message ends up taking, so
+    // "is the webhook even being hit" is answerable from Cloudflare Pages'
+    // Functions log tab alone, without needing to reason about which of the
+    // more specific logs further down should have fired.
+    console.log("[TwilioSmsWebhook] inbound request received — From:", params.From, "Body:", (params.Body || "").slice(0, 80));
 
     const authToken = context.env.TWILIO_AUTH_TOKEN;
     if (authToken) {

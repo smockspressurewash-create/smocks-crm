@@ -20,6 +20,7 @@ import { PropertyMapEmbed } from "../ui/PropertyMapEmbed";
 import { BarChart, Bar, LineChart, Line, XAxis, YAxis, ResponsiveContainer, Tooltip, CartesianGrid } from "recharts";
 import { fmt, uid, today, localDateStr, localDateKey, shiftDayStr, daysFromNow, computeJobRatingScore, setOAuthIntent, compressImageFile, getEffectiveRate, computeNextRecurringDate, weekdayLabels, normalizeJobRow, totalJobPhotoCount, mediaSrc, dataUrlToBlob, uploadJobMedia, checkVideoLimits, stripLegacyJobFields, reconcileCrewAfterAssign, getPollIntervalMs, getPayPeriodBounds } from "../../lib/utils";
 import { usePollGate } from "../../hooks/usePollGate";
+import { usePersistent } from "../../hooks/usePersistent";
 import type { Job, Employee, Customer, AppSettings, JobChecklistItem } from "../../types";
 
 const PRE_DEFAULTS: JobChecklistItem[] = [
@@ -351,12 +352,12 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
         logOutboundSmsToInbox({ contactName: `${customer.firstName} ${customer.lastName}`, contactPhone: customer.phone, customerId: customer.id, body: `Hi ${customer.firstName}, ${msg}` }).catch(() => {});
       } else {
         if (!customer?.email) throw new Error("No email on file for this customer.");
-        const html = emailShell(companyName, "Running Late", `<p>Hi ${customer.firstName},</p><p>${msg}</p>`);
+        const html = emailShell(settings, "Running Late", `<p>Hi ${customer.firstName},</p><p>${msg}</p>`);
         await withTimeout(sendOwnerGmailOnly(settings as any, customer.email, "Your technician is running late", html), 15000, "Running late email");
       }
       const ownerEmail = (settings as any)?.myEmail || (settings as any)?.companyEmail;
       if (ownerEmail) {
-        const ownerHtml = emailShell(companyName, "Crew Running Late", `<p>${customer ? customer.firstName + " " + customer.lastName : job.address} — running ~${minutes} min late${lateReasonNote.trim() ? ` (${lateReasonNote.trim()})` : ""}.</p><p>Address: ${job.address}</p>`);
+        const ownerHtml = emailShell(settings, "Crew Running Late", `<p>${customer ? customer.firstName + " " + customer.lastName : job.address} — running ~${minutes} min late${lateReasonNote.trim() ? ` (${lateReasonNote.trim()})` : ""}.</p><p>Address: ${job.address}</p>`);
         sendOwnerGmailOnly(settings as any, ownerEmail, `Running late — ${job.address}`, ownerHtml).catch(() => {});
       }
       const newScheduledTime = shiftScheduledTime(job.scheduledTime, minutes);
@@ -386,7 +387,7 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
         logOutboundSmsToInbox({ contactName: `${customer.firstName} ${customer.lastName}`, contactPhone: customer.phone, customerId: customer.id, body: msg }).catch(() => {});
       } else {
         if (!customer?.email) throw new Error("No email on file for this customer.");
-        const html = emailShell(companyName, "On My Way", `<p>${msg}</p>`);
+        const html = emailShell(settings, "On My Way", `<p>${msg}</p>`);
         await withTimeout(sendOwnerGmailOnly(settings as any, customer.email, "Your technician is on the way", html), 15000, "OTW email");
       }
       onUpdateJob({ commLog: [...(job.commLog || []), { id: uid(), type: "note" as const, date: today(), note: `📍 On my way message sent via ${otwChannel === "sms" ? "text" : "email"}` }] });
@@ -428,7 +429,7 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
       let emailSent = false;
       let emailError = "";
       if (recipients.length > 0) {
-        const html = emailShell(companyName, "Issue Reported", `<p><b>${employeeName || "A crew member"}</b> reported an issue on the job at <b>${job.address || "a job"}</b>:</p><p style="background:#fff3cd;color:#333;padding:10px;border-radius:6px">${reportProblemText.trim()}</p>`);
+        const html = emailShell(settings, "Issue Reported", `<p><b>${employeeName || "A crew member"}</b> reported an issue on the job at <b>${job.address || "a job"}</b>:</p><p style="background:#fff3cd;color:#333;padding:10px;border-radius:6px">${reportProblemText.trim()}</p>`);
         try {
           await withTimeout(sendOwnerGmailOnly(settings as any, recipients.join(", "), `⚠️ Issue reported — ${job.address || "job"}`, html), 15000, "Report problem email");
           emailSent = true;
@@ -668,7 +669,7 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
         logOutboundSmsToInbox({ contactName: `${customer.firstName} ${customer.lastName}`, contactPhone: customer.phone, customerId: customer.id, body: `Hi ${customer.firstName}, your invoice for ${fmt(Number(job.amount) || 0)} is ready: ${payLink}` }).catch(() => {});
       } else {
         if (!customer.email) throw new Error("No email on file for this customer.");
-        const html = emailShell(companyName, "Invoice", `<p>Hi ${customer.firstName},</p>${noteHtml}<p>Thanks for choosing us! Your service at <b>${job.address}</b> is complete.</p><p><b>Amount due:</b> $${(Number(job.amount) || 0).toFixed(2)}</p>` + emailButton("View & Pay Invoice", payLink));
+        const html = emailShell(settings, "Invoice", `<p>Hi ${customer.firstName},</p>${noteHtml}<p>Thanks for choosing us! Your service at <b>${job.address}</b> is complete.</p><p><b>Amount due:</b> $${(Number(job.amount) || 0).toFixed(2)}</p>` + emailButton("View & Pay Invoice", payLink));
         console.log("[SendInvoice] sending via Gmail to", customer.email);
         await withTimeout(sendOwnerGmailOnly(settings as any, customer.email, subject, html), 10000, "Invoice email");
         console.log("[SendInvoice] Gmail send resolved ✓");
@@ -763,7 +764,7 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
       const photosHtml = beforeAfterThumbs ? `<p><b>Photos:</b></p><div>${beforeAfterThumbs}</div>` : "";
       sendEmail(settings as any, {
         to: ownerEmail, subject: `Job completed — ${empName} — ${job.address || ""}`,
-        body: emailShell(companyName, "Job Completed", `<p>${empName} just completed a job.</p>${customerLine}${rows}${notesHtml}${sigHtml}${photosHtml}`),
+        body: emailShell(settings, "Job Completed", `<p>${empName} just completed a job.</p>${customerLine}${rows}${notesHtml}${sigHtml}${photosHtml}`),
       }).catch((e: any) => console.warn("[Complete Job] owner summary email failed:", e?.message));
     })();
     setCompleteSummary({ hours: hrs, amount: Number(job.amount) || 0, paymentStatus: paymentStatus === "Paid" ? `Paid (${patch.paymentType})` : invoiceSent ? "Unpaid — Invoice Sent" : "Unpaid" });
@@ -2180,6 +2181,77 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
        null)
     : null;
 
+  // ISSUE 16 (round 4) — GPS auto-mileage tracking. Runs entirely in the
+  // browser (watchPosition), so it only accumulates while this tab is open
+  // and the OS hasn't suspended it — a real limitation of browser
+  // geolocation vs. a native app, not something fixable from here. It's a
+  // genuine improvement over "nothing happens unless you tap Auto-Estimate"
+  // and stacks with (doesn't replace) the existing Maps-based estimate and
+  // manual entry, which stay as fallbacks if GPS never got a fix. Persisted
+  // to localStorage (not Supabase) keyed by employee+day so a reload
+  // mid-shift on the SAME device doesn't lose the running total; nothing
+  // here needs a schema change since the final number is only ever written
+  // to the existing mileage_logs table on submit, same as manual entry.
+  const dayTrackKey = "smocks.dayAutoMiles." + ((myEmployee as any)?.id || "x") + "." + today();
+  const [dayTrackedMiles, setDayTrackedMiles] = usePersistent<number>(dayTrackKey, 0);
+  const gpsWatchIdRef = useRef<number | null>(null);
+  const lastGpsPosRef = useRef<{ lat: number; lng: number; t: number } | null>(null);
+  const autoMileageEnabled = (settings as any)?.autoMileageTrackingEnabled !== false; // default ON
+  // Haversine distance in miles between two lat/lng points.
+  const haversineMiles = (a: { lat: number; lng: number }, b: { lat: number; lng: number }) => {
+    const R = 3958.8; // Earth radius, miles
+    const dLat = (b.lat - a.lat) * Math.PI / 180;
+    const dLng = (b.lng - a.lng) * Math.PI / 180;
+    const s = Math.sin(dLat / 2) ** 2 + Math.cos(a.lat * Math.PI / 180) * Math.cos(b.lat * Math.PI / 180) * Math.sin(dLng / 2) ** 2;
+    return R * 2 * Math.atan2(Math.sqrt(s), Math.sqrt(1 - s));
+  };
+  const startAutoMileageTracking = () => {
+    if (!autoMileageEnabled || !navigator.geolocation || gpsWatchIdRef.current != null) return;
+    lastGpsPosRef.current = null;
+    try {
+      gpsWatchIdRef.current = navigator.geolocation.watchPosition(
+        (pos) => {
+          const { latitude: lat, longitude: lng, accuracy } = pos.coords;
+          const now = Date.now();
+          // Filter GPS noise: ignore low-accuracy fixes (>100m) and any
+          // implied speed over 100mph, which is almost always a jump/glitch
+          // rather than real movement — without this, a stationary phone's
+          // jittering fix alone can silently rack up "miles."
+          if (accuracy != null && accuracy > 100) return;
+          const prev = lastGpsPosRef.current;
+          if (prev) {
+            const miles = haversineMiles(prev, { lat, lng });
+            const hours = Math.max((now - prev.t) / 3600000, 1 / 3600);
+            if (miles / hours <= 100 && miles > 0.005) {
+              setDayTrackedMiles((m: number) => Math.round((m + miles) * 100) / 100);
+            }
+          }
+          lastGpsPosRef.current = { lat, lng, t: now };
+        },
+        (err) => console.warn("[Mileage] GPS watch error:", err.message),
+        { enableHighAccuracy: true, maximumAge: 15000, timeout: 20000 }
+      );
+      console.log("[Mileage] auto-tracking started");
+    } catch (e: any) {
+      console.warn("[Mileage] couldn't start GPS tracking:", e?.message);
+    }
+  };
+  const stopAutoMileageTracking = () => {
+    if (gpsWatchIdRef.current != null) {
+      navigator.geolocation.clearWatch(gpsWatchIdRef.current);
+      gpsWatchIdRef.current = null;
+      console.log("[Mileage] auto-tracking stopped —", dayTrackedMiles, "mi logged");
+    }
+  };
+  // Stop tracking if the component unmounts mid-shift (nav away, tab close).
+  useEffect(() => () => stopAutoMileageTracking(), []); // eslint-disable-line react-hooks/exhaustive-deps
+  // Resume tracking on mount if a shift is already in progress (e.g. the
+  // employee reloaded the page mid-shift) — otherwise it would only ever
+  // start from a fresh tap of "Start My Day."
+  useEffect(() => {
+    if ((myEmployee as any)?.dayClockInAt) startAutoMileageTracking();
+  }, [(myEmployee as any)?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
   useEffect(() => {
     if (optimisticDayClockInAt !== undefined && (myEmployee as any)?.dayClockInAt === optimisticDayClockInAt) {
       setOptimisticDayClockInAt(undefined);
@@ -3272,7 +3344,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
       catch (e: any) { console.error("[OTW] — error:", e?.message); toast(e?.message || "Failed to send OTW text", "red"); }
     } else if (cust!.email) {
       try {
-        const html = emailShell(settings?.companyName || "Crew Boss", "On My Way", `<p>${msg}</p>`);
+        const html = emailShell(settings, "On My Way", `<p>${msg}</p>`);
         await withTimeout(sendOwnerGmailOnly(settings as any, cust!.email, "Your technician is on the way", html), 15000, "OTW email");
         toast("On the way message sent to " + cust!.firstName + " ✓", "green");
       } catch (e: any) { console.error("[OTW] — error:", e?.message); toast(e?.message || "Failed to send OTW email", "red"); }
@@ -4164,7 +4236,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   const notifyOwnerArrival = (job: Job, cust: Customer | undefined) => {
     const ownerEmail = (settings as any)?.myEmail || (settings as any)?.companyEmail;
     if (!ownerEmail) return;
-    const html = emailShell(settings?.companyName || "Crew Boss", "Crew Arrived", `<p>${myEmployee.firstName} ${myEmployee.lastName} has arrived at a job:</p><ul><li><b>Address:</b> ${job.address}</li>${cust ? `<li><b>Customer:</b> ${cust.firstName} ${cust.lastName}</li>` : ""}<li><b>Time:</b> ${new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</li></ul>`);
+    const html = emailShell(settings, "Crew Arrived", `<p>${myEmployee.firstName} ${myEmployee.lastName} has arrived at a job:</p><ul><li><b>Address:</b> ${job.address}</li>${cust ? `<li><b>Customer:</b> ${cust.firstName} ${cust.lastName}</li>` : ""}<li><b>Time:</b> ${new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</li></ul>`);
     sendEmail(settings, { to: ownerEmail, subject: `${myEmployee.firstName} arrived — ${job.address}`, body: html }).catch(() => {});
   };
 
@@ -4197,7 +4269,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
           logOutboundSmsToInbox({ contactName: `${customer.firstName} ${customer.lastName}`, contactPhone: customer.phone, customerId: customer.id, body: msg }).catch(() => {});
         } else {
           if (!customer.email) throw new Error("No email on file for this customer.");
-          const html = emailShell(settings?.companyName || "Crew Boss", "On My Way", `<p>${msg}</p>`);
+          const html = emailShell(settings, "On My Way", `<p>${msg}</p>`);
           await withTimeout(sendOwnerGmailOnly(settings as any, customer.email, "Your technician is on the way", html), 15000, "OTW email");
         }
         updateJob(job.id, { commLog: [...(job.commLog || []), { id: uid(), type: "note" as const, date: today(), note: `📍 On my way message sent via ${otwCardChannel === "sms" ? "text" : "email"}` }] });
@@ -4227,13 +4299,13 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
           logOutboundSmsToInbox({ contactName: `${customer.firstName} ${customer.lastName}`, contactPhone: customer.phone, customerId: customer.id, body: `Hi ${customer.firstName}, ${msg}` }).catch(() => {});
         } else {
           if (!customer.email) throw new Error("No email on file for this customer.");
-          const html = emailShell(settings?.companyName || "Crew Boss", "Running Late", `<p>Hi ${customer.firstName},</p><p>${msg}</p>`);
+          const html = emailShell(settings, "Running Late", `<p>Hi ${customer.firstName},</p><p>${msg}</p>`);
           await withTimeout(sendOwnerGmailOnly(settings as any, customer.email, "Your technician is running late", html), 15000, "Running late email");
           toast(`✅ Message sent to ${customer.firstName}`, "green");
         }
         const ownerEmail = (settings as any)?.myEmail || (settings as any)?.companyEmail;
         if (ownerEmail) {
-          const ownerMsg = emailShell(settings?.companyName || "Crew Boss", "Crew Running Late", `<p>${myEmployee.firstName} ${myEmployee.lastName} is running ~${minutes} min late to ${job.address}${lateNote.trim() ? ` (${lateNote.trim()})` : ""}.</p>`);
+          const ownerMsg = emailShell(settings, "Crew Running Late", `<p>${myEmployee.firstName} ${myEmployee.lastName} is running ~${minutes} min late to ${job.address}${lateNote.trim() ? ` (${lateNote.trim()})` : ""}.</p>`);
           sendOwnerGmailOnly(settings as any, ownerEmail, `Running late — ${job.address}`, ownerMsg).catch(() => {});
         }
         const newScheduledTime = shiftScheduledTime(job.scheduledTime, minutes);
@@ -4754,11 +4826,11 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                 const companyName = settings?.companyName || "Crew Boss";
 
                 if (myEmployee?.email) {
-                  sendEmail(settings as any, { to: myEmployee.email, subject: `Your day summary — ${todayStr}`, body: emailShell(companyName, "End of Day Summary", `<p>Nice work today, ${myEmployee.firstName}!</p>${summaryRows}`) }).catch(() => {});
+                  sendEmail(settings as any, { to: myEmployee.email, subject: `Your day summary — ${todayStr}`, body: emailShell(settings, "End of Day Summary", `<p>Nice work today, ${myEmployee.firstName}!</p>${summaryRows}`) }).catch(() => {});
                 }
                 const ownerEmail = settings?.myEmail || settings?.companyEmail;
                 if (ownerEmail) {
-                  sendEmail(settings as any, { to: ownerEmail, subject: `Day summary — ${empName} — ${todayStr}`, body: emailShell(companyName, `Day Summary — ${empName}`, `${summaryRows}<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #eee"><span>Revenue today (this employee)</span><strong>${fmt(revenueToday)}</strong></div>`) }).catch(() => {});
+                  sendEmail(settings as any, { to: ownerEmail, subject: `Day summary — ${empName} — ${todayStr}`, body: emailShell(settings, `Day Summary — ${empName}`, `${summaryRows}<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #eee"><span>Revenue today (this employee)</span><strong>${fmt(revenueToday)}</strong></div>`) }).catch(() => {});
                 }
               };
               const toggleDay = async () => {
@@ -4800,9 +4872,20 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                   sendEndOfDaySummary(finalHours);
                   // Persist for the rest of the day (no auto-hide) — FIX 11.
                   setShiftEndedMsg(`Shift ended · Total ${totalLabel}`);
+                  // ISSUE 16 (round 4) — stop GPS tracking; the accumulated
+                  // total is already in dayTrackedMiles (persisted), where the
+                  // Log Mileage panel picks it up as a pre-fillable suggestion
+                  // the employee reviews/edits before submitting — never
+                  // auto-submitted on their behalf.
+                  stopAutoMileageTracking();
+                  if (dayTrackedMiles > 0.1) {
+                    setMileageForm(f => (f.miles ? f : { ...f, miles: dayTrackedMiles.toFixed(1) }));
+                  }
                 } else {
                   // Starting a fresh shift clears any prior "shift ended" banner.
                   setShiftEndedMsg(null);
+                  setDayTrackedMiles(0);
+                  startAutoMileageTracking();
                 }
                 // Always write the localStorage fallback immediately, regardless of
                 // how the Supabase write below goes — this is what guarantees
@@ -5956,13 +6039,23 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                       {mileageEstimating ? "Estimating…" : "🧭 Auto-Estimate"}
                     </button>
                   </div>
+                  {/* ISSUE 16 (round 4) — GPS auto-tracking status + one-tap
+                      fill, distinct from the Maps-based Auto-Estimate above
+                      (that one looks up job addresses; this one is the
+                      phone's actual measured movement today). */}
+                  {autoMileageEnabled && dayTrackedMiles > 0 && (
+                    <div className="flex items-center justify-between gap-2 mb-2 px-2.5 py-1.5 rounded-lg bg-green-950/20 border border-green-800/30">
+                      <span className="text-[10px] text-green-300">📍 {dayTrackedMiles.toFixed(1)} mi tracked automatically today</span>
+                      <button onClick={() => setMileageForm(f => ({ ...f, miles: dayTrackedMiles.toFixed(1) }))} className="text-[9px] font-semibold px-2 py-0.5 rounded bg-green-800/50 hover:bg-green-700/60 text-white flex-shrink-0">Use this</button>
+                    </div>
+                  )}
                   <div className="grid grid-cols-2 gap-2 mb-2">
                     <GDate value={mileageForm.date} onChange={(e: any) => setMileageForm(f => ({ ...f, date: e.target.value }))} className="!text-xs !py-2" />
                     <GInput type="number" min="0" step="0.1" placeholder="Miles" value={mileageForm.miles} onChange={(e: any) => setMileageForm(f => ({ ...f, miles: e.target.value }))} className="!text-xs !py-2" />
                     <GInput placeholder="From" value={mileageForm.from} onChange={(e: any) => setMileageForm(f => ({ ...f, from: e.target.value }))} className="!text-xs !py-2" />
                     <GInput placeholder="To" value={mileageForm.to} onChange={(e: any) => setMileageForm(f => ({ ...f, to: e.target.value }))} className="!text-xs !py-2" />
                   </div>
-                  <div className="text-[10px] text-white/30 mb-2">Auto-Estimate uses your home base address (or that day's first job) through your last job of the day, via Google Maps.</div>
+                  <div className="text-[10px] text-white/30 mb-2">Auto-Estimate uses your home base address (or that day's first job) through your last job of the day, via Google Maps. {autoMileageEnabled ? "GPS auto-tracking runs in the background while you're clocked in on this device." : "GPS auto-tracking is off — enable it in Settings."}</div>
                   <GInput placeholder="Purpose (optional)" value={mileageForm.purpose} onChange={(e: any) => setMileageForm(f => ({ ...f, purpose: e.target.value }))} className="!text-xs !py-2 mb-2" />
                   <GBtn onClick={submitMileageLog} disabled={mileageSubmitting} className="w-full !text-xs">{mileageSubmitting ? "Saving…" : "Log Mileage"}</GBtn>
                   {mileageLogs.length > 0 && (

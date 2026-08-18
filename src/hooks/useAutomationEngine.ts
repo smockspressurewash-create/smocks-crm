@@ -361,7 +361,7 @@ export function useAutomationEngine({
     if (channel === "email") {
       if (!c.email) return false;
       try {
-        await sendOwnerGmailOnly(settings as any, c.email, subject, emailShell((settings as any).companyName || "Crew Boss", subject, `<p>${body.replace(/\n/g, "<br/>")}</p>`));
+        await sendOwnerGmailOnly(settings as any, c.email, subject, emailShell(settings as any,subject, `<p>${body.replace(/\n/g, "<br/>")}</p>`));
         onSent();
         toast(`📧 ${auto.name} → ${c.firstName}`);
         return true;
@@ -397,7 +397,7 @@ export function useAutomationEngine({
           console.warn(`[Automations] Twilio not configured — falling back to email for ${auto.name}`);
         }
         try {
-          await sendOwnerGmailOnly(settings as any, c.email, subject, emailShell((settings as any).companyName || "Crew Boss", subject, `<p>${body.replace(/\n/g, "<br/>")}</p>`));
+          await sendOwnerGmailOnly(settings as any, c.email, subject, emailShell(settings as any,subject, `<p>${body.replace(/\n/g, "<br/>")}</p>`));
           onSent();
           toast(`📧 ${auto.name} → ${c.firstName} (SMS unavailable — sent via email)`);
           return true;

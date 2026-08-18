@@ -48,7 +48,7 @@ export function PromotionsPage({ promotions = [], setPromotions = (() => {}) as 
       <p style="font-size:14px;color:#444">${p.description || `Enjoy ${discountLabel(p)} on your next service with ${companyName}!`}</p>
       <p style="font-size:12px;color:#888">Valid ${p.validFrom} through ${p.validTo}${p.usageLimit ? ` · Limited to ${p.usageLimit} uses` : ""}</p>
     `;
-    return emailShell(companyName, p.name, body + emailButton("Claim This Offer", `${window.location.origin}${window.location.pathname}#/customers`));
+    return emailShell(settings, p.name, body + emailButton("Claim This Offer", `${window.location.origin}${window.location.pathname}#/customers`));
   };
 
   const promoSms = (p: Promotion, cust: Customer) =>

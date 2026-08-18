@@ -22,7 +22,7 @@ import {
 } from "recharts";
 import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, describeRecurringSchedule, buildChecklistFromServices, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, withTimeout } from "../../lib/utils";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
-import { twilioSend, sendEmail } from "../../lib/messaging";
+import { twilioSend, sendEmail, emailShell, emailButton } from "../../lib/messaging";
 import { supabase } from "../../lib/supabase";
 import { seedWeather } from "../../lib/weather";
 import { seedCustomers, seedEstimates, seedJobs, seedEmployees, seedVehicles, seedExpenses, seedChemicals, seedServices, seedAutomations, seedEmailTemplates, seedSmsTemplates, seedRewardTiers, seedReferrals, seedMaintenance, campaignTemplates, seedSocialPosts, seedTimeline, seedGoals, seedReminders, seedAccountabilityEntries, seedMileage, seedLeadSrc, STEP_TYPES, AUTOMATION_TEMPLATES } from "../../lib/seed";
@@ -338,7 +338,8 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
                 if (!c?.email) continue;
                 const estCoName = (settings as any)?.companyName || "Crew Boss";
                 const estCoPhone = (settings as any)?.companyPhone || "(717) 555-0100";
-                await sendEmail(settings, { to: c.email, subject: "Your estimate from " + estCoName + " — " + fmt(est.total), body: "Hi " + c.firstName + ",\n\nYour estimate of " + fmt(est.total) + " is ready to review and sign.\n\nView estimate: smocks.com/portal/" + est.id + "\n\nQuestions? Call " + estCoPhone + ".\n\n— " + estCoName }).catch(() => {});
+                const estHtml = emailShell(settings as any, "Your Estimate", `<p>Hi ${c.firstName},</p><p>Your estimate of <strong>${fmt(est.total)}</strong> is ready to review and sign.</p><p>Questions? Call ${estCoPhone}.</p>` + emailButton("View & Sign Estimate", "smocks.com/portal/" + est.id));
+                await sendEmail(settings, { to: c.email, subject: "Your estimate from " + estCoName + " — " + fmt(est.total), body: estHtml }).catch(() => {});
                 setEstimates(prev => prev.map(e => e.id === id ? { ...e, sentAt: today() } : e));
                 sent++;
               }
