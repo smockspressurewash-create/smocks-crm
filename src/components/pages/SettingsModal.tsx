@@ -1074,7 +1074,11 @@ export function SettingsModal({ open, onClose, settings, setSettings, jobs = [],
                       const GOOGLE_SCOPES = [
                         "https://www.googleapis.com/auth/calendar",
                         "https://www.googleapis.com/auth/gmail.send",
-                        "https://www.googleapis.com/auth/gmail.readonly",
+                        // ISSUE 1 (Inbox audit) — gmail.modify (a superset
+                        // of gmail.readonly) so InboxPage.tsx's
+                        // markGmailRead() can actually clear the UNREAD
+                        // label instead of 403ing on every attempt.
+                        "https://www.googleapis.com/auth/gmail.modify",
                         "https://www.googleapis.com/auth/tasks",
                         "https://www.googleapis.com/auth/drive.file",
                         "https://www.googleapis.com/auth/contacts",

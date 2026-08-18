@@ -1,14 +1,15 @@
 // FEATURE — Twilio A2P 10DLC compliance: real STOP/START opt-out handling,
-// plus a keyword-based "via text" double opt-in flow.
-// Twilio's own carrier-level Advanced Opt-Out (if enabled on the Messaging
-// Service) can auto-reply to STOP and block the number at Twilio's layer,
-// but this app's OWN customers table has no visibility into that — nothing
-// here would know to stop queuing automations/manual sends to that person.
-// InboxPage.tsx also detects STOP/START, but only via polling Twilio's REST
-// API once every 15s AND only while the owner's Inbox tab happens to be
-// open — an opt-out sent while the app is closed would sit unprocessed
-// until someone next opens the Inbox. This is a real Twilio-called webhook:
-// it fires immediately, every time, regardless of whether the app is open.
+// plus a keyword-based "via text" double opt-in flow. ALSO (Inbox audit,
+// round 2) persists every inbound message — not just STOP/START/keyword
+// ones — straight to inbox_threads, so a text arrives in the owner's Inbox
+// (via the existing Supabase realtime subscription InboxPage.tsx already
+// has on that table) the instant Twilio receives it, whether or not the
+// app happens to be open. Before this, ordinary messages relied entirely
+// on InboxPage.tsx polling Twilio's REST API every 15s WHILE the owner's
+// Inbox tab was open — nothing arrived if it wasn't. That client-side poll
+// still exists as a fallback (e.g. for a deployment that hasn't configured
+// this webhook yet), just at a longer interval now that it's not the only
+// path.
 //
 // One-time setup in the Twilio console (code alone can't do this part):
 // Messaging -> Services -> (your Messaging Service) -> Integration ->
@@ -85,7 +86,8 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
       console.warn("[TwilioSmsWebhook] TWILIO_AUTH_TOKEN not set — processing without signature verification");
     }
 
-    const body = (params.Body || "").trim().toUpperCase();
+    const bodyRaw = params.Body || "";
+    const body = bodyRaw.trim().toUpperCase();
     const from = params.From || "";
     if (!from) return twiml();
 
@@ -94,17 +96,60 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
     const { companyName, keyword } = await fetchAppSettings();
     const isOptInKeyword = body === keyword;
     const isConfirm = CONFIRM_WORDS.includes(body);
-    if (!isStop && !isStart && !isOptInKeyword && !isConfirm) return twiml(); // ordinary message — InboxPage's poll handles display
 
     const fromDigits = normalizePhoneDigits(from);
     // No normalized phone column to filter on server-side (formats vary:
     // "(717) 555-0100" vs "+17175550100") — fetch and match in JS. Fine at
     // this app's single-tenant scale (CLAUDE.md).
-    const listRes = await fetch(`${SUPABASE_URL}/rest/v1/customers?select=id,phone,firstName,smsOptInPending`, {
+    const listRes = await fetch(`${SUPABASE_URL}/rest/v1/customers?select=id,phone,firstName,lastName,smsOptInPending`, {
       headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}` },
     });
     const list = await listRes.json().catch(() => []);
     const match = Array.isArray(list) ? list.find((c: any) => normalizePhoneDigits(c.phone) === fromDigits) : null;
+
+    // ISSUE 7 (Inbox audit) — this webhook used to bail out immediately for
+    // any ORDINARY message ("InboxPage's poll handles display"), meaning
+    // real-time inbound SMS only ever reached inbox_threads while the
+    // owner's browser tab happened to be open and polling Twilio's REST API
+    // every 15s. Writing it here too means it's captured the instant it
+    // arrives regardless of whether the app is open, via the SAME
+    // find-existing-thread-by-phone-or-create merge every other write path
+    // in this app uses (see lib/messaging.ts's logOutboundSmsToInbox and
+    // InboxPage.tsx's syncThreadToSupabase) — one consistent place threads
+    // get merged, instead of the client being the only thing that can do it.
+    // This also means the client-side poll can safely run less often (it's
+    // now just a fallback/catch-up for whenever this webhook isn't
+    // configured yet), directly reducing Twilio REST API usage.
+    try {
+      const threadsRes = await fetch(`${SUPABASE_URL}/rest/v1/inbox_threads?channel=eq.sms&select=id,contact_phone,messages`, {
+        headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}` },
+      });
+      const existingThreads = await threadsRes.json().catch(() => []);
+      const existingThread = Array.isArray(existingThreads)
+        ? existingThreads.find((t: any) => normalizePhoneDigits(t.contact_phone) === fromDigits)
+        : null;
+      const newMsg = { id: crypto.randomUUID(), dir: "in", body: bodyRaw, ts: Date.now() };
+      if (existingThread) {
+        const merged = [...(Array.isArray(existingThread.messages) ? existingThread.messages : []), newMsg];
+        await fetch(`${SUPABASE_URL}/rest/v1/inbox_threads?id=eq.${encodeURIComponent(existingThread.id)}`, {
+          method: "PATCH",
+          headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}`, "Content-Type": "application/json", Prefer: "return=minimal" },
+          body: JSON.stringify({ messages: merged, unread: true, last_message_at: newMsg.ts, updated_at: new Date().toISOString() }),
+        });
+      } else {
+        const contactName = match ? `${match.firstName || ""} ${match.lastName || ""}`.trim() || from : from;
+        await fetch(`${SUPABASE_URL}/rest/v1/inbox_threads`, {
+          method: "POST",
+          headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}`, "Content-Type": "application/json", Prefer: "return=minimal" },
+          body: JSON.stringify({ id: crypto.randomUUID(), channel: "sms", contact_name: contactName, contact_phone: from, customer_id: match?.id || null, unread: true, messages: [newMsg], last_message_at: newMsg.ts, updated_at: new Date().toISOString() }),
+        });
+      }
+    } catch (e: any) {
+      console.error("[TwilioSmsWebhook] failed to persist inbound message to inbox_threads:", e?.message);
+      // Non-fatal — the client-side poll is still a fallback for this.
+    }
+
+    if (!isStop && !isStart && !isOptInKeyword && !isConfirm) return twiml(); // ordinary message — already persisted above
 
     const origin = new URL(context.request.url).origin;
     const termsUrl = `${origin}/#/terms?co=${encodeURIComponent(companyName)}`;

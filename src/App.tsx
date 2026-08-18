@@ -2639,7 +2639,17 @@ export function App() {
         provider: "google",
         options: {
           redirectTo: window.location.origin + window.location.pathname,
-          scopes: "email profile https://www.googleapis.com/auth/calendar https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/drive.readonly",
+          // ISSUE 1 (Inbox audit) — this scope list was missing gmail.modify
+          // (which implies read access, so it replaces gmail.readonly rather
+          // than sitting alongside it). InboxPage.tsx's markGmailRead() calls
+          // Gmail's .../modify endpoint to clear the UNREAD label, and
+          // fetchGmailMessages() lists/reads inbox messages — neither
+          // permission was ever actually granted by this consent screen, so
+          // EVERY such call came back 403 "insufficient permission" no
+          // matter how fresh the token was — not an expiry problem, a scope
+          // problem. Matches GoogleWorkspacePage.tsx/SettingsModal.tsx's own
+          // "Connect Google" scope lists (see the same fix there).
+          scopes: "email profile https://www.googleapis.com/auth/calendar https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/gmail.modify https://www.googleapis.com/auth/drive.readonly",
           // BLOCKER 3 (mobile round 7) — without access_type:"offline", Google
           // only ever hands back an access token (good for ~1h) and no
           // refresh_token, so once it expires the ONLY way to fix "Gmail 401"

@@ -22,7 +22,7 @@ import {
 } from "recharts";
 import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE } from "../../lib/utils";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
-import { twilioSend, sendEmail, checkTwilioAccountStatus, checkA2pCampaignStatus, type TwilioAccountStatus } from "../../lib/messaging";
+import { twilioSend, sendEmail, checkTwilioAccountStatus, checkA2pCampaignStatus, logOutboundSmsToInbox, type TwilioAccountStatus } from "../../lib/messaging";
 import { getStoredGoogleConnection } from "../../lib/supabase";
 import { seedWeather } from "../../lib/weather";
 import { seedCustomers, seedEstimates, seedJobs, seedEmployees, seedVehicles, seedExpenses, seedChemicals, seedServices, seedAutomations, seedEmailTemplates, seedSmsTemplates, seedRewardTiers, seedReferrals, seedMaintenance, campaignTemplates, seedSocialPosts, seedTimeline, seedGoals, seedReminders, seedAccountabilityEntries, seedMileage, seedLeadSrc, STEP_TYPES, AUTOMATION_TEMPLATES } from "../../lib/seed";
@@ -210,7 +210,8 @@ export function CampaignsPage({ campaigns = [], setCampaigns, customers = [], es
       try {
         if (ch === "sms") {
           await twilioSend(settings, customer.phone, personalized);
-          // Add to inbox as outgoing campaign message
+          // Add to inbox as outgoing campaign message — local optimistic
+          // update for this session's own UI...
           if (setInboxThreads) {
             setInboxThreads(prev => {
               const existing = prev.find(t => t.channel === "sms" && t.contactPhone?.replace(/\D/g, "") === customer.phone?.replace(/\D/g, ""));
@@ -222,6 +223,21 @@ export function CampaignsPage({ campaigns = [], setCampaigns, customers = [], es
               }
             });
           }
+          // ISSUE 7 — ...but that local update alone never reached
+          // Supabase, unlike every other outbound-SMS path in the app
+          // (owner Inbox replies, employee OTW/Running Late/invoice texts).
+          // A campaign text was therefore invisible to any OTHER device/
+          // session, and if the customer replied, InboxPage's own
+          // phone-matching poll would create a thread with only their
+          // reply in it — no record of the campaign message that prompted
+          // it. logOutboundSmsToInbox does the same find-existing-thread-
+          // by-phone-or-create merge every other send path already uses.
+          logOutboundSmsToInbox({
+            contactName: `${customer.firstName} ${customer.lastName}`,
+            contactPhone: customer.phone,
+            customerId: customer.id,
+            body: personalized,
+          }).catch((e: any) => console.warn("[Campaigns] failed to sync SMS to inbox:", e?.message));
         } else {
           await sendEmail(settings, { to: customer.email, subject: merge(subj, customer), body: personalized });
         }

@@ -90,6 +90,17 @@ export function InboxPage({ threads = [], setThreads, customers = [], setCustome
   const [polling, setPolling] = useState(false);
   const [gmailThreads, setGmailThreads] = useState<any[]>([]);
   const [gmailLoading, setGmailLoading] = useState(false);
+  // ISSUE 1 — Gmail 403s (missing gmail.modify scope — see the OAuth scope
+  // fix in App.tsx/GoogleWorkspacePage.tsx/SettingsModal.tsx) used to retry
+  // silently forever: fetchGmailMessages() re-ran on every gmailToken
+  // reference change, and markGmailRead() fired on every single click into
+  // a Gmail thread regardless of whether it had already failed — burning
+  // API quota on a call that could never succeed until the owner
+  // reconnects with the right permission. A 403 now sets this flag, which
+  // (a) shows a real "reconnect" banner instead of silently doing nothing,
+  // and (b) gates OFF further Gmail calls for the rest of this session so
+  // a permanently-missing scope can't keep re-failing on every click/poll.
+  const [gmailPermissionError, setGmailPermissionError] = useState(false);
   // GoogleConnect — this page used to read `settings.googleToken`, a field
   // NOTHING in the app ever writes (the real field everywhere else is
   // googleProviderToken) — so Gmail-in-Inbox was silently non-functional
@@ -153,7 +164,10 @@ export function InboxPage({ threads = [], setThreads, customers = [], setCustome
     loadInboxThreads();
     // EGRESS FIX — was an unconditional 3s poll; realtime below already
     // covers instant updates, this is now just the fallback.
-    const interval = setInterval(() => { if (shouldPollInbox()) loadInboxThreads(); }, 10000);
+    // ISSUE 7 (round 2) — widened 10s -> 20s. The realtime subscription
+    // below is the actual instant-update path; this interval only exists to
+    // recover from a missed realtime event, so it doesn't need to be tight.
+    const interval = setInterval(() => { if (shouldPollInbox()) loadInboxThreads(); }, 20000);
     const channel = (supabase as any)
       .channel("inbox_threads_changes")
       .on("postgres_changes", { event: "*", schema: "public", table: "inbox_threads" }, () => { loadInboxThreads(); })
@@ -163,13 +177,38 @@ export function InboxPage({ threads = [], setThreads, customers = [], setCustome
 
   // Upserts one sms thread's full row to Supabase — called after any local
   // mutation (send, incoming poll, mark read) so other devices/sessions see it.
-  const syncThreadToSupabase = (t: any) => {
+  //
+  // ISSUE 3/7 — this used to blindly overwrite the server's `messages`
+  // array with whatever this session's local `t.messages` happened to be.
+  // At least THREE independent writers can touch the same thread row
+  // (this page's own send/poll, an employee's OTW/Running Late text via
+  // logOutboundSmsToInbox in lib/messaging.ts, and Campaigns' bulk sends) —
+  // if two writes raced, whichever landed second silently discarded any
+  // message the other had just added, since each write only knew about
+  // its OWN local snapshot. A message that got wiped this way would look
+  // exactly like "a sent message is missing" or, once the array shifts,
+  // like the whole conversation's dir/order looks wrong. Re-reads the
+  // server's current messages right before writing and merges by message
+  // id (local copy wins on conflict, since it reflects the freshest
+  // status like "sent" vs "sending") instead of blind-overwriting.
+  const syncThreadToSupabase = async (t: any) => {
     if (t.channel !== "sms") return;
-    (supabase as any).from("inbox_threads").upsert({
-      id: t.id, channel: "sms", contact_name: t.contactName, contact_phone: t.contactPhone,
-      customer_id: t.customerId || null, unread: !!t.unread, messages: t.messages,
-      last_message_at: t.messages[t.messages.length - 1]?.ts || Date.now(), updated_at: new Date().toISOString(),
-    }, { onConflict: "id" }).then((r: any) => { if (r?.error) console.warn("[Inbox] thread sync failed:", r.error.message); }).catch(() => {});
+    try {
+      const { data: serverRow } = await (supabase as any).from("inbox_threads").select("messages").eq("id", t.id).maybeSingle();
+      const serverMessages: any[] = Array.isArray(serverRow?.messages) ? serverRow.messages : [];
+      const byId = new Map<string, any>();
+      serverMessages.forEach(m => { if (m?.id) byId.set(m.id, m); });
+      (t.messages || []).forEach((m: any) => { if (m?.id) byId.set(m.id, m); }); // local wins on conflict
+      const merged = Array.from(byId.values()).sort((a, b) => (a.ts || 0) - (b.ts || 0));
+      const r: any = await (supabase as any).from("inbox_threads").upsert({
+        id: t.id, channel: "sms", contact_name: t.contactName, contact_phone: t.contactPhone,
+        customer_id: t.customerId || null, unread: !!t.unread, messages: merged,
+        last_message_at: merged[merged.length - 1]?.ts || Date.now(), updated_at: new Date().toISOString(),
+      }, { onConflict: "id" });
+      if (r?.error) console.warn("[Inbox] thread sync failed:", r.error.message);
+    } catch (e: any) {
+      console.warn("[Inbox] thread sync threw:", e?.message);
+    }
   };
 
   // Auto-scroll to bottom of messages
@@ -246,52 +285,97 @@ export function InboxPage({ threads = [], setThreads, customers = [], setCustome
       } catch { /* silent */ } finally { setPolling(false); }
     };
     poll();
-    const h = setInterval(() => { if (shouldPollInbox()) poll(); }, 15000);
+    // ISSUE 7 (round 2) — widened 15s -> 30s. This hits Twilio's REST API
+    // directly (real API usage, unlike the realtime-backed inbox_threads
+    // poll above) and is now mostly a fallback: functions/api/
+    // twilio-sms-webhook.ts persists inbound SMS straight to inbox_threads
+    // the instant Twilio receives it (once configured as the Messaging
+    // Service's inbound webhook — see that file's setup comment), which the
+    // realtime subscription above already picks up instantly. This poll
+    // only still matters for STOP/START detection on a deployment that
+    // hasn't set up that webhook yet, or as a catch-up if it's briefly down.
+    const h = setInterval(() => { if (shouldPollInbox()) poll(); }, 30000);
     return () => clearInterval(h);
   }, [settings.twilioSid, settings.googleBackendUrl]);
 
   // Load Gmail messages when Google is connected
   useEffect(() => {
-    if (!gmailToken) { console.log("[GoogleConnect] Inbox — no gmail token available, skipping Gmail load"); return; }
+    if (!gmailToken || gmailPermissionError) {
+      if (gmailPermissionError) console.log("[GoogleConnect] Inbox — skipping Gmail load, missing permission (reconnect required)");
+      else console.log("[GoogleConnect] Inbox — no gmail token available, skipping Gmail load");
+      return;
+    }
     console.log("[GoogleConnect] Inbox — loading Gmail messages, token source:", storedGoogle?.token ? "localStorage" : "settings (legacy)");
     setGmailLoading(true);
     fetchGmailMessages(gmailToken)
       .then(msgs => {
-        const gThreads = msgs.map(m => {
-          const nameMatch = m.from.match(/^(.+?)\s*<(.+?)>$/);
-          const contactName = nameMatch ? nameMatch[1].replace(/"/g, "").trim() : m.from;
-          const contactEmail = nameMatch ? nameMatch[2] : m.from;
+        // ISSUE 7 — this used to make ONE "thread" per individual Gmail
+        // MESSAGE (id: "gmail-" + m.id), so a back-and-forth conversation
+        // with several inbox messages from the same person showed up as
+        // that many separate, disconnected conversations in the sidebar
+        // instead of one thread — exactly "messages from the same
+        // conversation appearing as separate incoming messages." Gmail's
+        // API already tells us the real grouping via each message's
+        // threadId; group by that instead.
+        const byThread = new Map<string, typeof msgs>();
+        msgs.forEach(m => { const arr = byThread.get(m.threadId) || []; arr.push(m); byThread.set(m.threadId, arr); });
+        const gThreads = Array.from(byThread.entries()).map(([threadId, msgsInThread]) => {
+          const sorted = [...msgsInThread].sort((a, b) => (new Date(a.date).getTime() || 0) - (new Date(b.date).getTime() || 0));
+          const latest = sorted[sorted.length - 1];
+          const nameMatch = latest.from.match(/^(.+?)\s*<(.+?)>$/);
+          const contactName = nameMatch ? nameMatch[1].replace(/"/g, "").trim() : latest.from;
+          const contactEmail = nameMatch ? nameMatch[2] : latest.from;
           return {
-            id: "gmail-" + m.id,
-            gmailMessageId: m.id,
+            id: "gmail-" + threadId,
+            gmailThreadId: threadId,
+            unreadGmailMessageIds: sorted.filter(m => !m.read).map(m => m.id),
             channel: "email" as const,
             contactName,
             contactEmail,
             contactPhone: "",
             customerId: null,
-            unread: !m.read,
-            messages: [{
+            unread: sorted.some(m => !m.read),
+            messages: sorted.map(m => ({
               id: m.id,
               dir: "in",
               body: m.snippet,
               subject: m.subject,
               ts: new Date(m.date).getTime() || Date.now(),
-            }],
+            })),
           };
         });
         setGmailThreads(gThreads);
       })
-      .catch(() => {})
+      .catch((e: any) => {
+        if (e?.status === 403) {
+          console.error("[GoogleConnect] Inbox — Gmail 403 (insufficient permission) — disabling further Gmail calls this session. Reconnect Google in Settings → Integrations to grant gmail.modify.");
+          setGmailPermissionError(true);
+        } else {
+          console.warn("[GoogleConnect] Inbox — Gmail load failed:", e?.message);
+        }
+      })
       .finally(() => setGmailLoading(false));
-  }, [gmailToken]);
+  }, [gmailToken, gmailPermissionError]);
 
   const markRead = id => {
     if (id.startsWith("gmail-")) {
       const gThread = gmailThreads.find(t => t.id === id);
-      if (gThread?.gmailMessageId && gmailToken) {
-        markGmailRead(gmailToken, gThread.gmailMessageId).catch(() => {});
+      // Skip the API call entirely if there's nothing unread (repeat clicks
+      // into an already-read thread used to keep re-firing markGmailRead
+      // for no reason) or if Gmail has already told us this session lacks
+      // permission for it.
+      if (gThread?.unread && gmailToken && !gmailPermissionError) {
+        const idsToMark: string[] = gThread.unreadGmailMessageIds?.length ? gThread.unreadGmailMessageIds : (gThread.gmailMessageId ? [gThread.gmailMessageId] : []);
+        Promise.all(idsToMark.map((mid: string) => markGmailRead(gmailToken, mid))).catch((e: any) => {
+          if (e?.status === 403) {
+            console.error("[GoogleConnect] Inbox — markGmailRead 403 — disabling further Gmail calls this session. Reconnect Google in Settings → Integrations to grant gmail.modify.");
+            setGmailPermissionError(true);
+          } else {
+            console.warn("[GoogleConnect] Inbox — markGmailRead failed:", e?.message);
+          }
+        });
       }
-      setGmailThreads(prev => prev.map(t => t.id === id ? { ...t, unread: false } : t));
+      setGmailThreads(prev => prev.map(t => t.id === id ? { ...t, unread: false, unreadGmailMessageIds: [] } : t));
     } else {
       const next = threads.map(t => t.id === id ? { ...t, unread: false } : t);
       setThreads(next);
@@ -355,37 +439,77 @@ export function InboxPage({ threads = [], setThreads, customers = [], setCustome
     if (newDraft.channel === "sms" && !newDraft.phone) { toast("Enter a phone number", "error"); return; }
     if (newDraft.channel === "email" && !newDraft.email) { toast("Enter an email", "error"); return; }
     const outMsg = { id: uid(), dir: "out", body: newDraft.body, ts: Date.now(), status: "sending", subject: newDraft.subject };
-    const newThread = { id: uid(), channel: newDraft.channel, contactName: newDraft.to, contactPhone: newDraft.phone, contactEmail: newDraft.email, customerId: customer?.id || null, unread: false, messages: [outMsg] };
-    setThreads(prev => [newThread, ...prev]);
-    setActive(newThread.id);
+    // ISSUE 7 — this always created a brand-new thread, even when one
+    // already existed for the same phone/email — "New Message" to someone
+    // you already had a conversation with silently forked it into a second,
+    // disconnected thread instead of continuing the real one.
+    const existing = newDraft.channel === "sms"
+      ? threads.find(t => t.channel === "sms" && t.contactPhone && newDraft.phone && t.contactPhone.replace(/\D/g, "") === newDraft.phone.replace(/\D/g, ""))
+      : threads.find(t => t.channel === "email" && t.contactEmail && newDraft.email && t.contactEmail.toLowerCase() === newDraft.email.toLowerCase());
+    const threadId = existing?.id || uid();
+    if (existing) {
+      setThreads(prev => prev.map(t => t.id === threadId ? { ...t, messages: [...t.messages, outMsg] } : t));
+    } else {
+      const newThread = { id: threadId, channel: newDraft.channel, contactName: newDraft.to, contactPhone: newDraft.phone, contactEmail: newDraft.email, customerId: customer?.id || null, unread: false, messages: [outMsg] };
+      setThreads(prev => [newThread, ...prev]);
+    }
+    setActive(threadId);
     setNewModal(false);
+    const finalize = (status: "sent" | "failed", extra: any = {}) => {
+      setThreads(prev => {
+        const next = prev.map(t => t.id === threadId ? { ...t, messages: t.messages.map(m => m.id === outMsg.id ? { ...m, status, ...extra } : m) } : t);
+        const t = next.find(x => x.id === threadId);
+        if (t) syncThreadToSupabase(t);
+        return next;
+      });
+    };
     try {
       if (newDraft.channel === "sms") {
         await twilioSend(settings, newDraft.phone, newDraft.body);
       } else {
         await sendEmail(settings, { to: newDraft.email, subject: newDraft.subject, body: newDraft.body });
       }
-      setThreads(prev => {
-        const next = prev.map(t => t.id === newThread.id ? { ...t, messages: t.messages.map(m => m.id === outMsg.id ? { ...m, status: "sent" } : m) } : t);
-        const t = next.find(x => x.id === newThread.id);
-        if (t) syncThreadToSupabase(t);
-        return next;
-      });
-      toast("Sent ✓");
+      finalize("sent");
+      toast(existing ? "Sent ✓ (added to existing conversation)" : "Sent ✓");
     } catch (err) {
-      setThreads(prev => {
-        const next = prev.map(t => t.id === newThread.id ? { ...t, messages: t.messages.map(m => m.id === outMsg.id ? { ...m, status: "failed", error: err.message } : m) } : t);
-        const t = next.find(x => x.id === newThread.id);
-        if (t) syncThreadToSupabase(t);
-        return next;
-      });
+      finalize("failed", { error: err.message });
       toast("Send failed: " + err.message + (err.message.includes("Twilio not configured") ? " — add Twilio credentials in Settings" : ""), "error");
     }
     setNewDraft({ channel: "sms", to: "", phone: "", email: "", subject: "", body: "" });
   };
 
   const allThreads = [...threads, ...gmailThreads];
-  const filteredThreads = allThreads.filter(t => !search || (t.contactName || "").toLowerCase().includes(search.toLowerCase()) || t.messages.some(m => (m.body || "").toLowerCase().includes(search.toLowerCase())));
+  // ISSUE 4 — no way to view just Email or just SMS, only a combined list
+  // with no way to tell them apart besides a small colored dot.
+  const [channelView, setChannelView] = useState<"all" | "sms" | "email">("all");
+  // ISSUE 6 — no sort or unread-only filter existed at all, just substring
+  // search.
+  const [sortBy, setSortBy] = useState<"recent" | "sender" | "unread">("recent");
+  const [unreadOnly, setUnreadOnly] = useState(false);
+  // ISSUE 5 — a thread only ever showed contactName; the matching customer
+  // record's tags (set up in CustomersPage — see its folder/tag system)
+  // never surfaced here, so there was no way to tell at a glance who's a
+  // VIP/problem customer/etc. straight from the inbox. Threads created by
+  // the incoming-SMS poll set customerId when a phone match is found;
+  // gmail threads never do (no customer FK on a raw email), so also try a
+  // live email match as a fallback.
+  const findCustomer = (t: any) => {
+    if (t.customerId) return customers.find(c => c.id === t.customerId);
+    if (t.contactEmail) return customers.find(c => c.email && c.email.toLowerCase() === t.contactEmail.toLowerCase());
+    if (t.contactPhone) return customers.find(c => c.phone && c.phone.replace(/\D/g, "") === t.contactPhone.replace(/\D/g, ""));
+    return null;
+  };
+  const filteredThreads = allThreads
+    .filter(t => channelView === "all" || t.channel === channelView)
+    .filter(t => !unreadOnly || t.unread)
+    .filter(t => !search || (t.contactName || "").toLowerCase().includes(search.toLowerCase()) || t.messages.some(m => (m.body || "").toLowerCase().includes(search.toLowerCase())))
+    .sort((a, b) => {
+      if (sortBy === "sender") return (a.contactName || "").localeCompare(b.contactName || "");
+      if (sortBy === "unread") return (b.unread ? 1 : 0) - (a.unread ? 1 : 0);
+      const aLast = a.messages[a.messages.length - 1]?.ts || 0;
+      const bLast = b.messages[b.messages.length - 1]?.ts || 0;
+      return bLast - aLast;
+    });
   const twilioReady = !!(settings.twilioSid && settings.twilioToken && settings.twilioFrom);
   const emailReady = !!gmailToken;
   const relTime = ts => { const s = Math.floor((Date.now() - ts) / 1000); if (s < 60) return "now"; if (s < 3600) return Math.floor(s/60)+"m"; if (s < 86400) return Math.floor(s/3600)+"h"; return Math.floor(s/86400)+"d"; };
@@ -403,13 +527,33 @@ export function InboxPage({ threads = [], setThreads, customers = [], setCustome
             </div>
           </div>
           <div className="relative"><Search size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-white/40" /><input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search..." className="w-full bg-black/40 border border-red-900/30 rounded-lg pl-7 pr-2 py-1.5 text-xs text-white placeholder-white/30 focus:outline-none focus:border-red-500/60" /></div>
+          {/* ISSUE 4 — Email / SMS / Combined channel switch */}
+          <div className="flex gap-1 p-0.5 bg-black/40 border border-white/10 rounded-lg">
+            {([["all", "All"], ["sms", "SMS"], ["email", "Email"]] as const).map(([k, l]) => (
+              <button key={k} onClick={() => setChannelView(k)} className={"flex-1 text-[10px] py-1 rounded font-medium transition " + (channelView === k ? "bg-red-700/60 text-white" : "text-white/40 hover:text-white/60")}>{l}</button>
+            ))}
+          </div>
+          {/* ISSUE 6 — sort + unread-only filter */}
+          <div className="flex items-center gap-1.5">
+            <GSel value={sortBy} onChange={e => setSortBy(e.target.value as any)} className="!text-[10px] !py-1.5 flex-1">
+              <option value="recent">Sort: Most recent</option>
+              <option value="sender">Sort: Sender A-Z</option>
+              <option value="unread">Sort: Unread first</option>
+            </GSel>
+            <button onClick={() => setUnreadOnly(v => !v)} className={"flex-shrink-0 px-2.5 py-1.5 rounded-lg text-[10px] font-medium border transition " + (unreadOnly ? "bg-red-900/40 border-red-600/50 text-white" : "bg-black/40 border-white/10 text-white/50 hover:text-white")}>
+              Unread only
+            </button>
+          </div>
           {(!twilioReady && !emailReady) && <div className="text-[9px] text-yellow-400/80 bg-yellow-950/20 border border-yellow-800/30 rounded px-2 py-1">⚠ Connect Twilio or Gmail in Settings to send/receive</div>}
+          {gmailPermissionError && <div className="text-[9px] text-red-400/90 bg-red-950/20 border border-red-800/30 rounded px-2 py-1">⚠ Gmail is missing permission (reconnect required) — go to Settings → Integrations and reconnect Google to restore email in the inbox.</div>}
         </div>
         <div className="flex-1 overflow-y-auto">
-          {filteredThreads.length === 0 && <div className="text-center py-10 text-xs text-white/40">No conversations yet</div>}
+          {filteredThreads.length === 0 && <div className="text-center py-10 text-xs text-white/40">No conversations{search || unreadOnly || channelView !== "all" ? " match these filters" : " yet"}</div>}
           {filteredThreads.map(t => {
             const last = t.messages[t.messages.length - 1];
             const isActive = t.id === active;
+            const cust = findCustomer(t);
+            const tags: string[] = Array.isArray(cust?.tags) ? cust.tags : [];
             return <button key={t.id} onClick={() => { setActive(t.id); markRead(t.id); }} className={"w-full flex items-start gap-3 p-3 border-b border-red-900/20 text-left hover:bg-white/5 transition " + (isActive ? "bg-red-950/20" : "")}>
               <div className="relative flex-shrink-0">
                 <div className="w-9 h-9 rounded-full bg-gradient-to-br from-red-700 to-red-950 flex items-center justify-center text-xs font-bold">{t.contactName[0]}</div>
@@ -422,6 +566,14 @@ export function InboxPage({ threads = [], setThreads, customers = [], setCustome
                   <div className={"text-xs font-semibold truncate " + (t.unread ? "text-white" : "text-white/70")}>{t.contactName}</div>
                   <div className="text-[9px] text-white/40 flex-shrink-0">{relTime(last?.ts || 0)}</div>
                 </div>
+                {/* ISSUE 5 — customer tags/labels, when a matching customer record has any */}
+                {tags.length > 0 && (
+                  <div className="flex flex-wrap gap-1 mt-0.5">
+                    {tags.slice(0, 3).map((tag: string) => (
+                      <span key={tag} className="text-[8px] px-1.5 py-0.5 rounded-full bg-blue-950/40 border border-blue-700/30 text-blue-300 leading-none">{tag}</span>
+                    ))}
+                  </div>
+                )}
                 <div className={"text-[10px] truncate mt-0.5 " + (t.unread ? "text-white/80" : "text-white/40")}>{last?.dir === "out" ? "You: " : ""}{last?.body || "…"}</div>
               </div>
               {t.unread && <div className="w-2 h-2 rounded-full bg-red-500 flex-shrink-0 mt-1.5" />}
@@ -438,7 +590,15 @@ export function InboxPage({ threads = [], setThreads, customers = [], setCustome
             <button onClick={() => setActive(null)} className="md:hidden p-1.5 rounded-lg hover:bg-white/5 text-white/60"><ChevronLeft size={16} /></button>
             <div className="w-8 h-8 rounded-full bg-gradient-to-br from-red-700 to-red-950 flex items-center justify-center text-xs font-bold flex-shrink-0">{activeThread.contactName[0]}</div>
             <div className="flex-1 min-w-0">
-              <div className="font-semibold text-sm">{activeThread.contactName}</div>
+              <div className="font-semibold text-sm flex items-center gap-1.5 flex-wrap">
+                {activeThread.contactName}
+                {/* ISSUE 5 — customer labels in the conversation header too */}
+                {(() => {
+                  const cust = findCustomer(activeThread);
+                  const tags: string[] = Array.isArray(cust?.tags) ? cust.tags : [];
+                  return tags.map((tag: string) => <span key={tag} className="text-[9px] px-1.5 py-0.5 rounded-full bg-blue-950/40 border border-blue-700/30 text-blue-300 font-normal leading-none">{tag}</span>);
+                })()}
+              </div>
               <div className="text-[10px] text-white/50 flex items-center gap-2">
                 <span className={"px-1.5 py-0.5 rounded text-[8px] uppercase font-bold " + (activeThread.channel === "sms" ? "bg-green-900/40 text-green-300" : "bg-blue-900/40 text-blue-300")}>{activeThread.channel}</span>
                 {activeThread.contactPhone && <span>{activeThread.contactPhone}</span>}

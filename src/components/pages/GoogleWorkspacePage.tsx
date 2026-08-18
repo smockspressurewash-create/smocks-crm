@@ -960,7 +960,13 @@ export function GoogleWorkspacePage({
   const GOOGLE_SCOPES = [
     "https://www.googleapis.com/auth/calendar",
     "https://www.googleapis.com/auth/gmail.send",
-    "https://www.googleapis.com/auth/gmail.readonly",
+    // ISSUE 1 (Inbox audit) — gmail.modify (implies read access, so this
+    // replaces gmail.readonly rather than adding to it) — InboxPage.tsx's
+    // markGmailRead() needs the .../modify endpoint to clear the UNREAD
+    // label; gmail.readonly alone let messages LIST/GET but 403'd on every
+    // "mark as read," repeatedly, burning quota for a permission that was
+    // never actually granted.
+    "https://www.googleapis.com/auth/gmail.modify",
     "https://www.googleapis.com/auth/tasks",
     "https://www.googleapis.com/auth/drive.readonly",
     "https://www.googleapis.com/auth/contacts.readonly",
