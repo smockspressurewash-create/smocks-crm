@@ -142,8 +142,27 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
       // not showing in the inbox despite the webhook being set up" nearly
       // undiagnosable from the Cloudflare Function logs. Log the actual
       // Supabase response body on failure now.
-      const newMsg = { id: crypto.randomUUID(), dir: "in", body: bodyRaw, ts: Date.now() };
-      if (existingThread) {
+      //
+      // ISSUE 2 (round 6) — ROOT CAUSE of double-showing messages: this used
+      // crypto.randomUUID() for every message's id, a value with no
+      // relationship to the physical Twilio message. InboxPage.tsx's OWN
+      // Twilio REST poll (a fallback that also runs while the owner's tab is
+      // open) can independently pick up the SAME inbound message and, since
+      // it used a locally-generated uid() too, had no way to recognize "this
+      // is the one the webhook already recorded." Both this file and
+      // InboxPage.tsx's poll now key the message's id off Twilio's own
+      // MessageSid (always present on an inbound webhook POST) — the one
+      // identifier both write paths can agree on regardless of which side
+      // processes it first or what "now" happens to read on each side (the
+      // two paths previously used DIFFERENT timestamp sources for the same
+      // message — Date.now() here vs. Twilio's own DateSent on the poll
+      // side — so a body+ts dedup check could never reliably catch this).
+      const msgId = params.MessageSid || crypto.randomUUID();
+      const newMsg = { id: msgId, sid: params.MessageSid || null, dir: "in", body: bodyRaw, ts: Date.now() };
+      const alreadyHave = existingThread && (Array.isArray(existingThread.messages) ? existingThread.messages : []).some((m: any) => m?.id === msgId);
+      if (alreadyHave) {
+        console.log("[TwilioSmsWebhook] message", msgId, "already recorded — skipping duplicate insert");
+      } else if (existingThread) {
         const merged = [...(Array.isArray(existingThread.messages) ? existingThread.messages : []), newMsg];
         const patchRes = await fetch(`${SUPABASE_URL}/rest/v1/inbox_threads?id=eq.${encodeURIComponent(existingThread.id)}`, {
           method: "PATCH",

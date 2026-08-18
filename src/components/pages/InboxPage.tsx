@@ -148,18 +148,32 @@ export function InboxPage({ threads = [], setThreads, customers = [], setCustome
   const customersRef = useRef(customers);
   useEffect(() => { customersRef.current = customers; }, [customers]);
 
-  // Defensive de-dup for the bug above: collapse messages that share the
-  // same direction/body/timestamp (what the stale-closure bug produced),
+  // Defensive de-dup: collapse messages that are the same physical message,
   // keeping the first. Applied wherever threads are normalized so any
   // already-corrupted server data self-heals on load instead of needing a
   // manual database fix.
+  //
+  // ISSUE 2 (round 6) — primary key is now Twilio's own message `sid` when
+  // present (both the webhook and the client poll tag inbound messages with
+  // it — see twilio-sms-webhook.ts and the poll effect below), which is the
+  // one identifier both write paths actually agree on. Falls back to the
+  // dir/body/ts composite for messages with no sid (manual sends, campaign
+  // sends, Gmail messages) — this was the ONLY check before, which missed
+  // duplicates whenever the two write paths recorded different timestamps
+  // for the same real message.
   const dedupeMessages = (msgs: any[]) => {
-    const seen = new Set<string>();
+    const seenSids = new Set<string>();
+    const seenKeys = new Set<string>();
     const out: any[] = [];
     for (const m of msgs) {
-      const key = (m?.dir || "") + "|" + (m?.ts || "") + "|" + (m?.body || "");
-      if (seen.has(key)) continue;
-      seen.add(key);
+      if (m?.sid) {
+        if (seenSids.has(m.sid)) continue;
+        seenSids.add(m.sid);
+      } else {
+        const key = (m?.dir || "") + "|" + (m?.ts || "") + "|" + (m?.body || "");
+        if (seenKeys.has(key)) continue;
+        seenKeys.add(key);
+      }
       out.push(m);
     }
     return out;
@@ -277,13 +291,32 @@ export function InboxPage({ threads = [], setThreads, customers = [], setCustome
         const lastTs = Math.max(0, ...threadsRef.current.filter(t => t.channel === "sms").flatMap(t => t.messages.map((m: any) => m.ts)));
         const incoming = await pollTwilioIncoming(settings, new Date(lastTs).toISOString());
         if (incoming.length > 0) {
+          // ISSUE 2/4 (round 6) — ROOT CAUSE of double-showing messages AND
+          // duplicate opt-in/opt-out toasts: this used to generate a fresh
+          // uid() for every message every poll and only checked for a
+          // content match (dir/body/ts) against the CURRENT thread — but
+          // functions/api/twilio-sms-webhook.ts (when configured) already
+          // records the same inbound message the instant Twilio receives
+          // it, using Date.now() as its ts, while this poll used Twilio's
+          // own DateSent as ITS ts — two different clocks for the same
+          // physical message, so the content-match check could never
+          // reliably catch it as a duplicate, and the STOP/START handling
+          // below ran a second time for a message the webhook had already
+          // processed. Both sides now key on Twilio's own MessageSid, so a
+          // message already present ANYWHERE in the current threads is
+          // skipped entirely here — before the STOP/START side effects run,
+          // not just before the final append.
+          const knownSids = new Set<string>(
+            threadsRef.current.flatMap(t => t.messages.map((m: any) => m.sid).filter(Boolean))
+          );
           const touchedIds = new Set<string>();
           setThreads(prev => {
             let updated = [...prev];
             incoming.forEach(msg => {
+              if (msg.sid && knownSids.has(msg.sid)) return; // already recorded (likely by the webhook) — skip entirely
               const phone = msg.from;
               const customer = customersRef.current.find(c => c.phone?.replace(/\D/g, "") === phone.replace(/\D/g, ""));
-              const newMsg = { id: uid(), dir: "in", body: msg.body, ts: msg.dateSent ? new Date(msg.dateSent).getTime() : Date.now() };
+              const newMsg = { id: msg.sid || uid(), sid: msg.sid || null, dir: "in", body: msg.body, ts: msg.dateSent ? new Date(msg.dateSent).getTime() : Date.now() };
 
               // Handle STOP/UNSTOP opt-out keywords (Twilio compliance).
               // AUDIT FIX — this used to only toast; it never actually wrote
@@ -564,6 +597,38 @@ export function InboxPage({ threads = [], setThreads, customers = [], setCustome
   const [hiddenThreadIds, setHiddenThreadIds] = usePersistent<string[]>("smocks.inboxHiddenThreadIds", []);
   const [showHidden, setShowHidden] = useState(false);
   const [menuOpenId, setMenuOpenId] = useState<string | null>(null);
+  // ISSUE 3 (round 6) — nickname/rename. "sms" threads are backed by a real
+  // inbox_threads row with its own contact_name column, so renaming one
+  // updates that column directly (synced cross-device, same as any other
+  // field on the row). Gmail/local threads have no server row to update —
+  // for those the override lives in localStorage only, applied at display
+  // time via displayName() below.
+  const [nicknameOverrides, setNicknameOverrides] = usePersistent<Record<string, string>>("smocks.inboxNicknames", {});
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameDraft, setRenameDraft] = useState("");
+  const displayName = (t: any) => nicknameOverrides[t.id] || t.contactName;
+  const startRename = (t: any) => {
+    setRenamingId(t.id);
+    setRenameDraft(displayName(t));
+    setMenuOpenId(null);
+  };
+  const saveRename = async (t: any) => {
+    const name = renameDraft.trim();
+    setRenamingId(null);
+    if (!name || name === displayName(t)) return;
+    if (t.channel === "sms") {
+      setThreads((prev: any[]) => prev.map(x => x.id === t.id ? { ...x, contactName: name } : x));
+      try {
+        const r: any = await (supabase as any).from("inbox_threads").update({ contact_name: name }).eq("id", t.id);
+        if (r?.error) toast("Renamed locally, but failed to sync — " + r.error.message, "error");
+      } catch (e: any) {
+        toast("Renamed locally, but failed to sync — " + (e?.message || "unknown error"), "error");
+      }
+    } else {
+      setNicknameOverrides((prev: Record<string, string>) => ({ ...prev, [t.id]: name }));
+    }
+    toast("Renamed to " + name + " ✓");
+  };
   const hideThread = (id: string) => {
     setHiddenThreadIds((prev: string[]) => prev.includes(id) ? prev : [...prev, id]);
     setMenuOpenId(null);
@@ -595,11 +660,12 @@ export function InboxPage({ threads = [], setThreads, customers = [], setCustome
     setMenuOpenId(null);
     if (!setCustomers) { toast("Can't create customers from this view", "error"); return; }
     const existing = findCustomer(t);
-    if (existing) { toast((t.contactName || "This contact") + " is already a customer"); return; }
-    const nameParts = (t.contactName || "").trim().split(/\s+/);
+    const name = nicknameOverrides[t.id] || t.contactName;
+    if (existing) { toast((name || "This contact") + " is already a customer"); return; }
+    const nameParts = (name || "").trim().split(/\s+/);
     const newCustomer: any = {
       id: uid(),
-      firstName: nameParts[0] || t.contactName || "Unknown",
+      firstName: nameParts[0] || name || "Unknown",
       lastName: nameParts.slice(1).join(" ") || "",
       phone: t.contactPhone || "",
       email: t.contactEmail || "",
@@ -730,16 +796,29 @@ export function InboxPage({ threads = [], setThreads, customers = [], setCustome
             const cust = findCustomer(t);
             const tags: string[] = Array.isArray(cust?.tags) ? cust.tags : [];
             return <div key={t.id} className={"relative w-full flex items-start gap-3 p-3 border-b border-red-900/20 hover:bg-white/5 transition " + (isActive ? "bg-red-950/20" : "")}>
-              <button onClick={() => { setActive(t.id); markRead(t.id); }} className="flex-1 min-w-0 flex items-start gap-3 text-left">
+              <button onClick={() => { if (renamingId !== t.id) { setActive(t.id); markRead(t.id); } }} className="flex-1 min-w-0 flex items-start gap-3 text-left">
                 <div className="relative flex-shrink-0">
-                  <div className="w-9 h-9 rounded-full bg-gradient-to-br from-red-700 to-red-950 flex items-center justify-center text-xs font-bold">{t.contactName[0]}</div>
+                  <div className="w-9 h-9 rounded-full bg-gradient-to-br from-red-700 to-red-950 flex items-center justify-center text-xs font-bold">{displayName(t)[0]}</div>
                   <div className={"absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full border border-black flex items-center justify-center " + (t.channel === "sms" ? "bg-green-500" : "bg-blue-500")}>
                     {t.channel === "sms" ? <MessageSquare size={6} /> : <Mail size={6} />}
                   </div>
                 </div>
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center justify-between">
-                    <div className={"text-xs font-semibold truncate " + (t.unread ? "text-white" : "text-white/70")}>{t.contactName}</div>
+                    {/* ISSUE 3 (round 6) — inline rename */}
+                    {renamingId === t.id ? (
+                      <input
+                        autoFocus
+                        value={renameDraft}
+                        onChange={e => setRenameDraft(e.target.value)}
+                        onClick={e => e.stopPropagation()}
+                        onKeyDown={e => { e.stopPropagation(); if (e.key === "Enter") saveRename(t); if (e.key === "Escape") setRenamingId(null); }}
+                        onBlur={() => saveRename(t)}
+                        className="text-xs font-semibold bg-black/60 border border-red-500/50 rounded px-1.5 py-0.5 w-full text-white focus:outline-none"
+                      />
+                    ) : (
+                      <div className={"text-xs font-semibold truncate " + (t.unread ? "text-white" : "text-white/70")}>{displayName(t)}</div>
+                    )}
                     <div className="text-[9px] text-white/40 flex-shrink-0">{relTime(last?.ts || 0)}</div>
                   </div>
                   {/* ISSUE 5 — customer tags/labels, when a matching customer record has any */}
@@ -768,6 +847,7 @@ export function InboxPage({ threads = [], setThreads, customers = [], setCustome
                       ) : (
                         <button onClick={() => hideThread(t.id)} className="w-full flex items-center gap-2 px-3 py-2 text-[11px] text-white/80 hover:bg-white/10 text-left"><EyeOff size={11} />Hide</button>
                       )}
+                      <button onClick={() => startRename(t)} className="w-full flex items-center gap-2 px-3 py-2 text-[11px] text-white/80 hover:bg-white/10 text-left"><Edit size={11} />Rename</button>
                       {!findCustomer(t) && (
                         <button onClick={() => convertToLead(t)} className="w-full flex items-center gap-2 px-3 py-2 text-[11px] text-white/80 hover:bg-white/10 text-left"><UserCheck size={11} />Convert to lead</button>
                       )}
@@ -787,10 +867,25 @@ export function InboxPage({ threads = [], setThreads, customers = [], setCustome
           {/* Header */}
           <div className="flex items-center gap-3 p-3 border-b border-red-900/30 bg-black/40">
             <button onClick={() => setActive(null)} className="md:hidden p-1.5 rounded-lg hover:bg-white/5 text-white/60"><ChevronLeft size={16} /></button>
-            <div className="w-8 h-8 rounded-full bg-gradient-to-br from-red-700 to-red-950 flex items-center justify-center text-xs font-bold flex-shrink-0">{activeThread.contactName[0]}</div>
+            <div className="w-8 h-8 rounded-full bg-gradient-to-br from-red-700 to-red-950 flex items-center justify-center text-xs font-bold flex-shrink-0">{displayName(activeThread)[0]}</div>
             <div className="flex-1 min-w-0">
               <div className="font-semibold text-sm flex items-center gap-1.5 flex-wrap">
-                {activeThread.contactName}
+                {/* ISSUE 3 (round 6) — rename from the open-conversation header too */}
+                {renamingId === activeThread.id ? (
+                  <input
+                    autoFocus
+                    value={renameDraft}
+                    onChange={e => setRenameDraft(e.target.value)}
+                    onKeyDown={e => { if (e.key === "Enter") saveRename(activeThread); if (e.key === "Escape") setRenamingId(null); }}
+                    onBlur={() => saveRename(activeThread)}
+                    className="text-sm font-semibold bg-black/60 border border-red-500/50 rounded px-1.5 py-0.5 text-white focus:outline-none"
+                  />
+                ) : (
+                  <>
+                    {displayName(activeThread)}
+                    <button onClick={() => startRename(activeThread)} title="Rename" className="text-white/30 hover:text-white/70 transition"><Edit size={11} /></button>
+                  </>
+                )}
                 {/* ISSUE 5 — customer labels in the conversation header too */}
                 {(() => {
                   const cust = findCustomer(activeThread);
@@ -812,7 +907,11 @@ export function InboxPage({ threads = [], setThreads, customers = [], setCustome
           </div>
           {/* Messages */}
           <div className="flex-1 overflow-y-auto p-4 space-y-3">
-            {activeThread.messages.map(m => {
+            {/* ISSUE 2 (round 6) — final safety net: dedupe at render time too,
+                so even a row that somehow still has duplicate entries (e.g.
+                loaded before this round's fix ran once to self-heal it via
+                syncThreadToSupabase) never visibly shows them twice. */}
+            {dedupeMessages(activeThread.messages).map(m => {
               const isOut = m.dir === "out";
               return <div key={m.id} className={"flex " + (isOut ? "justify-end" : "justify-start")}>
                 <div className={"max-w-[80%]"}>
