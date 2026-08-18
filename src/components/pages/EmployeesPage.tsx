@@ -311,6 +311,27 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setJobs
     const b = getPayPeriodBounds();
     setPayPeriodStart(b.start); setPayPeriodEnd(b.end);
   };
+  // ISSUE 7 (round 3) — the Hours tab shared payPeriodStart/payPeriodEnd
+  // with the Payroll tab, both defaulting to the current fixed 14-day pay
+  // period. That's the right default for "what do I owe right now" (Payroll)
+  // but wrong for "does this employee's logged time look right" (Hours) —
+  // an owner checking hours for a job completed weeks or months ago (July 9,
+  // June 28) saw an all-zero table and reasonably read it as "hours aren't
+  // showing," when the data was fine and only the 14-day window was hiding
+  // it. Hours now gets its OWN date range, independent of Payroll's,
+  // defaulting to the last 30 days with "All Time" and "This Pay Period"
+  // quick-jump buttons.
+  const ALL_TIME_START = "2000-01-01";
+  const [hoursRangeStart, setHoursRangeStart] = usePersistent("smocks.hoursRangeStart", daysFromNow(-30));
+  const [hoursRangeEnd, setHoursRangeEnd] = usePersistent("smocks.hoursRangeEnd", today());
+  const [hoursEmpFilter, setHoursEmpFilter] = useState("");
+  const jumpHoursToLast30 = () => { setHoursRangeStart(daysFromNow(-30)); setHoursRangeEnd(today()); };
+  const jumpHoursToAllTime = () => { setHoursRangeStart(ALL_TIME_START); setHoursRangeEnd(today()); };
+  const jumpHoursToCurrentPayPeriod = () => {
+    const b = getPayPeriodBounds();
+    setHoursRangeStart(b.start); setHoursRangeEnd(b.end);
+  };
+  const isHoursAllTime = hoursRangeStart === ALL_TIME_START;
   const [f, setF] = useState<any>({ id: "", firstName: "", lastName: "", role: "Technician", status: "active", hourlyRate: 18, phone: "", email: "", startDate: today(), emergencyContact: "", notes: "", permissions: { ...DEFAULT_PERMS } });
   const [showPortalInfo, setShowPortalInfo] = useState(false);
   const [inviteOpen, setInviteOpen] = useState(false);
@@ -756,37 +777,52 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setJobs
       {view === "hours" && <>
         <div className="flex gap-3 items-center flex-wrap">
           <div className="flex items-center gap-2 text-xs text-white/60">
-            <span>Period:</span>
-            <GDate value={payPeriodStart} onChange={e => setPayPeriodStart(e.target.value)} className="!text-xs !py-1.5 !w-36" />
+            <span>Range:</span>
+            <GDate value={hoursRangeStart} onChange={e => setHoursRangeStart(e.target.value)} className="!text-xs !py-1.5 !w-36" />
             <span>to</span>
-            <GDate value={payPeriodEnd} onChange={e => setPayPeriodEnd(e.target.value)} className="!text-xs !py-1.5 !w-36" />
+            <GDate value={hoursRangeEnd} onChange={e => setHoursRangeEnd(e.target.value)} className="!text-xs !py-1.5 !w-36" />
           </div>
-          <button onClick={jumpToCurrentPayPeriod} className="px-2.5 py-1 rounded-lg bg-green-950/30 border border-green-700/40 text-green-300 hover:bg-green-900/40 text-xs transition" title="Jump to the actual current 14-day pay period — if hours look missing, this is usually why">
-            This Pay Period
-          </button>
+          <div className="flex gap-1">
+            <button onClick={jumpHoursToLast30} className="px-2.5 py-1 rounded-lg bg-black/40 border border-white/10 text-white/60 hover:text-white text-xs transition">
+              Last 30 Days
+            </button>
+            <button onClick={jumpHoursToAllTime} className={"px-2.5 py-1 rounded-lg border text-xs transition " + (isHoursAllTime ? "bg-blue-900/40 border-blue-600/50 text-blue-200" : "bg-black/40 border-white/10 text-white/60 hover:text-white")}>
+              All Time
+            </button>
+            <button onClick={jumpHoursToCurrentPayPeriod} className="px-2.5 py-1 rounded-lg bg-green-950/30 border border-green-700/40 text-green-300 hover:bg-green-900/40 text-xs transition" title="Jump to the actual current 14-day pay period">
+              This Pay Period
+            </button>
+          </div>
           <div className="flex gap-1">
             <button onClick={() => {
-              const s = new Date(payPeriodStart); s.setDate(s.getDate() - 7);
-              const e = new Date(payPeriodEnd); e.setDate(e.getDate() - 7);
-              setPayPeriodStart(s.toISOString().slice(0, 10)); setPayPeriodEnd(e.toISOString().slice(0, 10));
+              const s = new Date(hoursRangeStart); s.setDate(s.getDate() - 7);
+              const e = new Date(hoursRangeEnd); e.setDate(e.getDate() - 7);
+              setHoursRangeStart(s.toISOString().slice(0, 10)); setHoursRangeEnd(e.toISOString().slice(0, 10));
             }} className="px-2.5 py-1 rounded-lg bg-black/40 border border-white/10 text-white/50 hover:text-white text-xs transition flex items-center gap-1">
               <ChevronLeft size={11} />Prev Week
             </button>
             <button
-              disabled={payPeriodEnd >= today()}
+              disabled={hoursRangeEnd >= today()}
               onClick={() => {
-                const s = new Date(payPeriodStart); s.setDate(s.getDate() + 7);
-                const e = new Date(payPeriodEnd); e.setDate(e.getDate() + 7);
+                const s = new Date(hoursRangeStart); s.setDate(s.getDate() + 7);
+                const e = new Date(hoursRangeEnd); e.setDate(e.getDate() + 7);
                 const nextEnd = e.toISOString().slice(0, 10);
                 // ISSUE 6 — Hours is a timesheet view; letting the owner page
                 // into future weeks showed an all-zero table that looked broken.
                 // Clamp the window so it never starts past today.
-                if (nextEnd > today()) { setPayPeriodStart(today()); setPayPeriodEnd(today()); return; }
-                setPayPeriodStart(s.toISOString().slice(0, 10)); setPayPeriodEnd(nextEnd);
+                if (nextEnd > today()) { setHoursRangeStart(today()); setHoursRangeEnd(today()); return; }
+                setHoursRangeStart(s.toISOString().slice(0, 10)); setHoursRangeEnd(nextEnd);
               }}
               className="px-2.5 py-1 rounded-lg bg-black/40 border border-white/10 text-white/50 hover:text-white text-xs transition flex items-center gap-1 disabled:opacity-30 disabled:cursor-not-allowed">
               Next Week<ChevronRight size={11} />
             </button>
+          </div>
+          <div className="flex items-center gap-2 text-xs text-white/60 ml-auto">
+            <span>Employee:</span>
+            <GSel value={hoursEmpFilter} onChange={e => setHoursEmpFilter(e.target.value)} className="!text-xs !py-1.5 !w-44">
+              <option value="">All employees</option>
+              {employees.filter(e => e.status !== "inactive").map(e => <option key={e.id} value={e.id}>{e.firstName} {e.lastName}</option>)}
+            </GSel>
           </div>
         </div>
         <Glass className="overflow-hidden">
@@ -796,23 +832,23 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setJobs
               <th className="text-right px-4 py-3 text-xs uppercase tracking-wider text-white/60">Today</th>
               <th className="text-right px-4 py-3 text-xs uppercase tracking-wider text-white/60">This Week</th>
               <th className="text-right px-4 py-3 text-xs uppercase tracking-wider text-white/60">Jobs</th>
-              <th className="text-right px-4 py-3 text-xs uppercase tracking-wider text-white/60">Period Hours</th>
+              <th className="text-right px-4 py-3 text-xs uppercase tracking-wider text-white/60">Range Hours</th>
               <th className="text-right px-4 py-3 text-xs uppercase tracking-wider text-white/60">Rate</th>
               <th className="text-right px-4 py-3 text-xs uppercase tracking-wider text-white/60">Est. Pay</th>
               <th className="text-right px-4 py-3 text-xs uppercase tracking-wider text-white/60"></th>
             </tr></thead>
             <tbody>
-              {employees.filter(e => e.status !== "inactive").map(e => {
-                const empJobs = jobs.filter(j => crewIncludesEmployee(j.crew, e.id, (e as any).user_id) && j.status === "completed" && j.scheduledDate >= payPeriodStart && j.scheduledDate <= payPeriodEnd);
+              {employees.filter(e => e.status !== "inactive" && (!hoursEmpFilter || e.id === hoursEmpFilter)).map(e => {
+                const empJobs = jobs.filter(j => crewIncludesEmployee(j.crew, e.id, (e as any).user_id) && j.status === "completed" && j.scheduledDate >= hoursRangeStart && j.scheduledDate <= hoursRangeEnd);
                 // FIX 5 (mobile round 5) — was job.loggedHours only, missing
                 // the shift-timer top-up getEmployeeHours (used everywhere
                 // else in this file, e.g. the Payroll tab/CSV export below)
                 // already accounts for — an employee currently clocked in, or
                 // who ended a shift without every minute captured on a
-                // completed job, showed fewer "Period Hours" here than their
+                // completed job, showed fewer "Range Hours" here than their
                 // actual Payroll-tab total.
-                const hrs = getEmployeeHours(e.id, payPeriodStart, payPeriodEnd);
-                const cost = getEmployeePay(e, payPeriodStart, payPeriodEnd);
+                const hrs = getEmployeeHours(e.id, hoursRangeStart, hoursRangeEnd);
+                const cost = getEmployeePay(e, hoursRangeStart, hoursRangeEnd);
                 // AUDIT — this [Hours] trace (BLOCKER 2, mobile round 9)
                 // logged once per employee on every render of this table,
                 // which re-renders on every jobs/employees poll while the
@@ -860,8 +896,10 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setJobs
                 </React.Fragment>;
               })}
               <tr className="bg-red-950/20 font-bold border-t border-red-900/30">
-                <td className="px-4 py-3" colSpan={6}>Total Payroll Est.</td>
-                <td className="px-4 py-3 text-right text-red-400 text-base">{fmt(totalPayroll)}</td>
+                <td className="px-4 py-3" colSpan={6}>Total{hoursEmpFilter ? "" : " Payroll"} Est. ({isHoursAllTime ? "all time" : hoursRangeStart + " – " + hoursRangeEnd})</td>
+                <td className="px-4 py-3 text-right text-red-400 text-base">
+                  {fmt(employees.filter(e => e.status !== "inactive" && (!hoursEmpFilter || e.id === hoursEmpFilter)).reduce((s, e) => s + getEmployeePay(e, hoursRangeStart, hoursRangeEnd), 0))}
+                </td>
                 <td></td>
               </tr>
             </tbody>
