@@ -1349,10 +1349,21 @@ export function App() {
   // the owner notices even without opening the Alfred tab.
   useEffect(() => {
     if (!crmUserId) return;
-    // Re-evaluated on mount AND hourly thereafter (no server cron in a
-    // client-only app — same pattern the "Tomorrow's Jobs" email effect
-    // uses below) so a session left open all day still gets its up-to-3
-    // check-ins spread across the day, not just a single mount-time check.
+    // ROUND 5 REWRITE — two separate complaints, one root cause. (1) "creates
+    // a new chat every time" — every fire pushed a brand-new conversation via
+    // setAlfredConversations, so a session left open all day (up to 3 fires)
+    // left 3 separate throwaway chats titled "Check-in — <time>", exactly
+    // like the estimate-viewed notifications did before that got routed
+    // through a single persistent thread (functions/api/alfred-notify.ts).
+    // (2) "chat is empty" — hasSomethingToSay (removed below) required an
+    // open goal, a 5+ day stale estimate, an overdue invoice, or an
+    // incomplete job to even fire; on a day with none of those, tryCheckin
+    // returned before building any message, and the ONLY thing distinguishing
+    // "nothing fired" from "fired but rendered blank" from outside the
+    // console was silence either way. Now always sends real content (job
+    // counts, weather, today's revenue) so there's always something to say,
+    // and posts to the same persistent "Alfred Notifications" thread the
+    // estimate-viewed flow already uses — one thread, always non-empty.
     const tryCheckin = () => {
       const todayStr = today();
       const checkinDate = (settingsRef.current as any)?.alfredCheckinDate;
@@ -1364,38 +1375,47 @@ export function App() {
       const hour = new Date().getHours();
       if (hour < 8 || hour > 20) { console.log("[AlfredCheckin] skipped — outside 8am-8pm window"); return; }
 
+      const todaysJobs = jobs.filter(j => j.scheduledDate === todayStr);
+      const scheduledCount = todaysJobs.filter(j => j.status === "scheduled").length;
+      const inProgressCount = todaysJobs.filter(j => j.status === "in_progress").length;
+      const completedCount = todaysJobs.filter(j => j.status === "completed").length;
+      const revenueToday = todaysJobs.filter(j => j.status === "completed").reduce((s, j) => s + (Number(j.amount) || 0), 0);
       const openGoals = (goalsList || []).filter((g: any) => !g.completed && !g.achieved);
       const staleEstimates = estimates.filter(e => e.status === "pending" && daysSince(e.createdAt) >= 5);
+      const pendingQuotes = estimates.filter(e => e.status === "pending");
       const overdueInvoices = estimates.filter(e => e.invoiced && !e.paidAt && e.invoicedAt && daysSince(e.invoicedAt) > 7);
-      const incompleteJobsToday = jobs.filter(j => j.scheduledDate === todayStr && j.status !== "completed" && j.status !== "cancelled");
-      const hasSomethingToSay = openGoals.length > 0 || staleEstimates.length > 0 || overdueInvoices.length > 0 || incompleteJobsToday.length > 0;
-      if (!hasSomethingToSay) { console.log("[AlfredCheckin] skipped — nothing worth checking in about right now"); return; }
+      const weatherLine = weatherData?.current ? Math.round(weatherData.current.temp) + "°F, " + weatherData.current.description : null;
 
       const lines = [
-        "👋 Checking in on you.",
+        "👋 Checking in — " + new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) + ".",
         "",
-        openGoals.length > 0 ? "🎯 " + openGoals.length + " personal goal" + (openGoals.length !== 1 ? "s" : "") + " still open." : "",
-        incompleteJobsToday.length > 0 ? "🧰 " + incompleteJobsToday.length + " job" + (incompleteJobsToday.length !== 1 ? "s" : "") + " today not marked complete yet." : "",
-        staleEstimates.length > 0 ? "💬 Clients waiting on a follow-up: " + staleEstimates.slice(0, 3).map(e => { const c = customers.find(x => x.id === e.customerId); return c ? c.firstName + " " + c.lastName : "?"; }).join(", ") + (staleEstimates.length > 3 ? " +" + (staleEstimates.length - 3) + " more" : "") + "." : "",
+        "📅 Today: " + scheduledCount + " scheduled, " + inProgressCount + " in progress, " + completedCount + " completed.",
+        weatherLine ? "🌤️ Weather: " + weatherLine + "." : "",
+        revenueToday > 0 ? "💰 " + fmt(revenueToday) + " collected today so far." : "",
         overdueInvoices.length > 0 ? "💸 " + overdueInvoices.length + " overdue invoice" + (overdueInvoices.length !== 1 ? "s" : "") + " to collect on." : "",
-        "",
-        "Anything you want help tackling right now?",
+        pendingQuotes.length > 0 ? "📋 " + pendingQuotes.length + " pending quote" + (pendingQuotes.length !== 1 ? "s" : "") + (staleEstimates.length > 0 ? " (" + staleEstimates.length + " stale — follow up)" : "") + "." : "",
+        openGoals.length > 0 ? "🎯 " + openGoals.length + " personal goal" + (openGoals.length !== 1 ? "s" : "") + " still open." : "",
       ].filter(Boolean);
       const msg = lines.join("\n");
-      const newConv = { id: uid(), title: "Check-in — " + new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }), personality, messages: [{ id: uid(), role: "alfred", content: msg, timestamp: Date.now() }], createdAt: Date.now(), updatedAt: Date.now() };
       console.log("[AlfredCheckin] firing check-in", countToday + 1, "of 3 for", todayStr);
-      setAlfredConversations((prev: any[]) => [newConv, ...(prev || [])]);
-      setActiveConvId(newConv.id);
+      fetch("/api/alfred-notify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: "Alfred Notifications", message: msg }),
+      })
+        .then(r => { if (!r.ok) console.warn("[AlfredCheckin] alfred-notify failed:", r.status); })
+        .catch((e: any) => console.warn("[AlfredCheckin] alfred-notify threw:", e?.message));
       setSettings?.((prev: any) => ({ ...prev, alfredCheckinDate: todayStr, alfredCheckinsToday: countToday + 1, alfredLastCheckinAt: Date.now() }));
-      toast?.("🤖 Alfred checked in — see the Alfred tab", "green");
+      toast?.("🤖 Alfred checked in — see Alfred Notifications", "green");
     };
     const t = setTimeout(tryCheckin, 1500);
     const interval = setInterval(tryCheckin, 60 * 60 * 1000);
     return () => { clearTimeout(t); clearInterval(interval); };
     // Deliberately keyed only on crmUserId, not jobs/estimates/goalsList/
-    // settings — tryCheckin reads settingsRef.current for the latest gating
-    // state at fire-time without needing to re-subscribe this effect (and
-    // therefore reset the hourly interval) on every unrelated data change.
+    // settings/weatherData — tryCheckin reads settingsRef.current for the
+    // latest gating state, and closes over the rest, at fire-time without
+    // needing to re-subscribe this effect (and therefore reset the hourly
+    // interval) on every unrelated data change.
   }, [crmUserId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // AUDIT FIX — same relocation as the general check-in effect above, for the
