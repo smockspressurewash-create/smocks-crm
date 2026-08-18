@@ -22,7 +22,7 @@ import {
 } from "recharts";
 import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE } from "../../lib/utils";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
-import { twilioSend, sendEmail } from "../../lib/messaging";
+import { twilioSend, sendEmail, checkTwilioAccountStatus, checkA2pCampaignStatus, type TwilioAccountStatus } from "../../lib/messaging";
 import { getStoredGoogleConnection } from "../../lib/supabase";
 import { seedWeather } from "../../lib/weather";
 import { seedCustomers, seedEstimates, seedJobs, seedEmployees, seedVehicles, seedExpenses, seedChemicals, seedServices, seedAutomations, seedEmailTemplates, seedSmsTemplates, seedRewardTiers, seedReferrals, seedMaintenance, campaignTemplates, seedSocialPosts, seedTimeline, seedGoals, seedReminders, seedAccountabilityEntries, seedMileage, seedLeadSrc, STEP_TYPES, AUTOMATION_TEMPLATES } from "../../lib/seed";
@@ -99,7 +99,57 @@ export function CampaignsPage({ campaigns = [], setCampaigns, customers = [], es
   const [preview, setPreview] = useState(null);
   const [scheduleTime, setScheduleTime] = useState("");
 
-  const twilioReady = !!(settings.twilioSid && settings.twilioToken && settings.twilioFrom);
+  const twilioConfigured = !!(settings.twilioSid && settings.twilioToken && settings.twilioFrom);
+  // ISSUE 34 (round 3) — "connected" used to mean only "credentials are
+  // typed in," which reads as ready even while the Twilio account is
+  // suspended for non-payment or the A2P campaign was never approved —
+  // both of which make every real send fail despite the badge saying
+  // "✓ ready." Live-checked once on mount (if creds are present) and again
+  // on demand via the Refresh button below, same same-origin-proxy pattern
+  // SettingsModal's existing "Check Campaign Status" button already uses
+  // (Twilio's API has no browser CORS headers, so this can't be a direct
+  // fetch from here).
+  const [twilioLive, setTwilioLive] = useState<TwilioAccountStatus | null>(null);
+  const [twilioCampaignStatus, setTwilioCampaignStatus] = useState<string | null>(null);
+  const [twilioCheckError, setTwilioCheckError] = useState<string | null>(null);
+  const [twilioChecking, setTwilioChecking] = useState(false);
+  const [twilioCheckedAt, setTwilioCheckedAt] = useState<number | null>(null);
+
+  const refreshTwilioStatus = useCallback(async () => {
+    if (!twilioConfigured) return;
+    setTwilioChecking(true);
+    setTwilioCheckError(null);
+    try {
+      const acct = await checkTwilioAccountStatus(settings as any);
+      setTwilioLive(acct);
+      if ((settings as any).twilioMessagingServiceSid) {
+        try {
+          const camp = await checkA2pCampaignStatus(settings as any);
+          setTwilioCampaignStatus(camp.campaignStatus || (camp.registered ? "UNKNOWN" : "NOT_REGISTERED"));
+        } catch (e: any) {
+          console.warn("[Campaigns] A2P campaign status check failed:", e?.message);
+        }
+      }
+    } catch (e: any) {
+      setTwilioCheckError(e?.message || "Status check failed");
+      setTwilioLive(null);
+    } finally {
+      setTwilioChecking(false);
+      setTwilioCheckedAt(Date.now());
+    }
+  }, [twilioConfigured, settings]);
+
+  useEffect(() => { refreshTwilioStatus(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Hard-gate on account status (suspended/closed genuinely can't send);
+  // treat a failed/not-yet-run check as "unknown, don't block" rather than
+  // assuming the worst, since a transient network error shouldn't stop the
+  // owner from sending a real campaign.
+  const twilioSuspended = twilioLive?.accountStatus === "suspended" || twilioLive?.accountStatus === "closed";
+  const twilioCampaignBlocked = twilioCampaignStatus === "FAILED";
+  const twilioReady = twilioConfigured && !twilioSuspended && !twilioCampaignBlocked;
+  const twilioBalanceNum = twilioLive?.balance != null ? Number(twilioLive.balance) : null;
+  const twilioLowBalance = twilioBalanceNum != null && twilioBalanceNum <= 0;
   // ISSUE 13 — this read settings.googleScopes?.gmail, a display-only
   // toggle in Settings → Integrations that defaults to OFF and has no
   // bearing on whether Gmail send actually works (sendOwnerGmailOnly uses
@@ -301,19 +351,48 @@ export function CampaignsPage({ campaigns = [], setCampaigns, customers = [], es
       {tab === "compose" && <div className="grid lg:grid-cols-[1fr_280px] gap-4">
         <div className="space-y-4">
           <Glass className="p-4">
-            <div className="text-xs text-white/50 uppercase tracking-wider mb-3">Channel</div>
+            <div className="flex items-center justify-between mb-3">
+              <div className="text-xs text-white/50 uppercase tracking-wider">Channel</div>
+              {twilioConfigured && (
+                <button onClick={refreshTwilioStatus} disabled={twilioChecking} className="text-[10px] text-white/40 hover:text-white/70 transition flex items-center gap-1 disabled:opacity-40">
+                  <RefreshCw size={10} className={twilioChecking ? "animate-spin" : ""} />
+                  {twilioChecking ? "Checking…" : "Refresh status"}
+                </button>
+              )}
+            </div>
             <div className="grid grid-cols-2 gap-2">
               <button onClick={() => setCh("sms")} className={"p-3 rounded-xl border transition flex items-center justify-center gap-2 text-sm " + (ch === "sms" ? "bg-green-900/30 border-green-500/50 text-green-200" : "bg-white/5 border-white/10 text-white/60 hover:text-white")}>
                 <MessageSquare size={14} /> SMS
-                {twilioReady ? <span className="text-[9px] text-green-400">✓ ready</span> : <span className="text-[9px] text-yellow-400">not configured</span>}
+                {!twilioConfigured ? <span className="text-[9px] text-yellow-400">not configured</span>
+                  : twilioChecking ? <span className="text-[9px] text-white/40">checking…</span>
+                  : twilioSuspended ? <span className="text-[9px] text-red-400">✗ suspended</span>
+                  : twilioCampaignBlocked ? <span className="text-[9px] text-red-400">✗ campaign rejected</span>
+                  : twilioCheckError ? <span className="text-[9px] text-yellow-400" title={twilioCheckError}>status unknown</span>
+                  : <span className="text-[9px] text-green-400">✓ ready</span>}
               </button>
               <button onClick={() => setCh("email")} className={"p-3 rounded-xl border transition flex items-center justify-center gap-2 text-sm " + (ch === "email" ? "bg-blue-900/30 border-blue-500/50 text-blue-200" : "bg-white/5 border-white/10 text-white/60 hover:text-white")}>
                 <Mail size={14} /> Email
                 {emailReady ? <span className="text-[9px] text-green-400">✓ ready</span> : <span className="text-[9px] text-yellow-400">not connected</span>}
               </button>
             </div>
+            {/* Live Twilio account detail — balance, account type, A2P campaign status */}
+            {twilioConfigured && twilioLive && (
+              <div className="mt-2 text-[10px] text-white/40 flex flex-wrap gap-x-3 gap-y-1">
+                {twilioLive.accountStatus && <span>Account: <span className={twilioSuspended ? "text-red-400" : "text-white/60"}>{twilioLive.accountStatus}</span></span>}
+                {twilioLive.balance != null && <span>Balance: <span className={twilioLowBalance ? "text-yellow-400" : "text-white/60"}>{twilioLive.currency || "USD"} {twilioLive.balance}</span></span>}
+                {twilioCampaignStatus && <span>A2P campaign: <span className={twilioCampaignBlocked ? "text-red-400" : twilioCampaignStatus === "VERIFIED" ? "text-green-400" : "text-yellow-400"}>{twilioCampaignStatus}</span></span>}
+              </div>
+            )}
+            {twilioConfigured && twilioCheckError && (
+              <div className="mt-2 text-[10px] text-yellow-400/80">Couldn't verify live Twilio status — {twilioCheckError}. Send button still works off the last known config; this just couldn't confirm suspension/balance right now.</div>
+            )}
             {!canSend && <div className="mt-2 text-[10px] text-yellow-400/80 bg-yellow-950/20 border border-yellow-800/30 rounded px-2.5 py-1.5">
-              {ch === "sms" ? "⚠ Add Twilio SID, Token, and From number in Settings to send real SMS blasts" : "⚠ Connect Gmail in Settings → Integrations → Google to send real email blasts"}
+              {ch === "sms"
+                ? (!twilioConfigured ? "⚠ Add Twilio SID, Token, and From number in Settings to send real SMS blasts"
+                  : twilioSuspended ? "⚠ This Twilio account is " + twilioLive?.accountStatus + " — add funds / resolve billing in the Twilio console, then Refresh status."
+                  : twilioCampaignBlocked ? "⚠ Your A2P 10DLC campaign was rejected — re-register it in the Twilio console, then Refresh status."
+                  : "⚠ Twilio isn't ready to send")
+                : "⚠ Connect Gmail in Settings → Integrations → Google to send real email blasts"}
             </div>}
           </Glass>
           <Glass className="p-4 space-y-3">

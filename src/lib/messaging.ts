@@ -229,6 +229,43 @@ export const checkA2pCampaignStatus = async (settings: TwilioSettings): Promise<
   return { registered: !!data.registered, campaignStatus: data.campaignStatus || null, campaignId: data.campaignId || null };
 };
 
+// ─── Live Twilio account status (balance + suspension) ─────────────────────
+// checkA2pCampaignStatus above answers "is the 10DLC campaign approved";
+// this answers the more basic "can this account send AT ALL right now" —
+// settings.twilioSid/Token/From being present only means credentials were
+// typed in once, not that the account isn't suspended for non-payment or
+// out of funds. See functions/api/twilio-account-status.ts.
+export interface TwilioAccountStatus {
+  accountStatus: string | null; // "active" | "suspended" | "closed"
+  accountType: string | null;   // "Trial" | "Full"
+  balance: string | null;
+  currency: string | null;
+  balanceError: string | null;
+}
+
+export const checkTwilioAccountStatus = async (settings: TwilioSettings): Promise<TwilioAccountStatus> => {
+  const { twilioSid, twilioToken, twilioBackendUrl } = settings;
+  if (!twilioSid || !twilioToken) {
+    throw new Error("Add your Twilio Account SID and Auth Token in Settings → Integrations first.");
+  }
+  const endpoint = twilioBackendUrl ? `${twilioBackendUrl}/account-status` : "/api/twilio-account-status";
+  const payload = twilioBackendUrl ? { sid: twilioSid, token: twilioToken } : { sid: twilioSid, token: twilioToken };
+  const res = await fetch(endpoint, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  const data = await res.json().catch(() => ({} as any));
+  if (!res.ok) throw new Error(data?.error || `Twilio error ${res.status}`);
+  return {
+    accountStatus: data.accountStatus ?? null,
+    accountType: data.accountType ?? null,
+    balance: data.balance ?? null,
+    currency: data.currency ?? null,
+    balanceError: data.balanceError ?? null,
+  };
+};
+
 // ─── Inbox sync (SMS) ─────────────────────────────────────────────────────────
 // Every outbound SMS sent from anywhere in the app (owner's own Inbox compose,
 // or an employee's OTW/Running Late/invoice-text from the field portal) needs
