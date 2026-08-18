@@ -3644,11 +3644,20 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   // up that token from the auth callback with no further action needed here.
   const handleEmployeeGoogleLogin = () => {
     setOAuthIntent("employee");
+    // ISSUE 13 (round 2) — this was the one Google sign-in call site in the
+    // whole app missing access_type:"offline"+prompt:"consent" (every other
+    // one — App.tsx, the other employee-side connect flow further down this
+    // file, SettingsModal.tsx, GoogleWorkspacePage.tsx — already has it).
+    // Without it Google never returns a refresh_token, so the provider_token
+    // this flow hands to App.tsx's persistEmployeeGoogleToken silently
+    // expires after ~1hr with nothing able to refresh it — exactly "keeps
+    // disconnecting."
     supabase.auth.signInWithOAuth({
       provider: "google",
       options: {
         redirectTo: window.location.origin + window.location.pathname,
         scopes: "email profile https://www.googleapis.com/auth/calendar https://www.googleapis.com/auth/gmail.send",
+        queryParams: { access_type: "offline", prompt: "consent" },
       },
     });
   };

@@ -55,7 +55,7 @@ import { CustomerReviewPage } from "./components/pages/CustomerReviewPage";
 import { LeadFormPage } from "./components/pages/LeadFormPage";
 import { TermsPage, PrivacyPolicyPage } from "./components/pages/LegalPages";
 import { EmployeePortal } from "./components/pages/EmployeePortal";
-import { saveEmpGoogleToken } from "./lib/googleApi";
+import { saveEmpGoogleToken, refreshEmpGoogleToken } from "./lib/googleApi";
 import { ResetPassword } from "./components/pages/ResetPassword";
 import { OnboardingFlow } from "./components/ui/OnboardingFlow";
 import { AutomationBatchModal } from "./components/ui/AutomationBatchModal";
@@ -578,6 +578,15 @@ export function App() {
   // once it has opened the modal (see CustomersPage/EstimatesPage/JobsPage's
   // own autoOpenNew effect + onAutoOpenNewConsumed callback).
   const [fabAutoOpenNew, setFabAutoOpenNew] = useState<string | null>(null);
+  // ISSUE (round 2) — the drag-to-dismiss zone used to flip
+  // settings.fabEnabled to false, which is a PERSISTED setting (synced to
+  // Supabase/localStorage) — so a drag-dismiss looked identical to the
+  // owner going into Settings and turning the FAB off entirely, and it
+  // stayed gone forever, including after a reload. A drag-dismiss should
+  // only clear the FAB for the current session; plain (non-persisted)
+  // React state resets on every reload by construction, which is exactly
+  // "reappears on reload unless fully disabled in Settings".
+  const [fabSessionHidden, setFabSessionHidden] = useState(false);
   // FEATURE 1 — mobile FAB drag-and-drop. Hold the button for 2s to enter drag
   // mode; pointermove repositions it (clamped to the viewport); releasing
   // saves the position via usePersistent (localStorage key smocks.fabPosition)
@@ -671,8 +680,8 @@ export function App() {
       const inDismissZoneY = y + FAB_SIZE > getViewportHeight() * 0.85;
       if (inDismissZoneX && inDismissZoneY) {
         setFabPosition(null);
-        setSettings((s: any) => ({ ...s, fabEnabled: false }));
-        toast?.("Quick actions hidden — re-enable in Settings → Quick Action FAB", "yellow");
+        setFabSessionHidden(true);
+        toast?.("Quick actions hidden for this session — reload the page, or turn it off for good in Settings → Quick Action FAB", "yellow");
       }
     };
     window.addEventListener("pointermove", onMove);
@@ -826,6 +835,38 @@ export function App() {
   // changes.
   const settingsRef = useRef(settings);
   useEffect(() => { settingsRef.current = settings; }, [settings]);
+
+  // ISSUE 13 (round 2) — "owner Google token keeps disconnecting". The
+  // employee side (EmployeePortal.tsx) has always had a proactive 5-minute
+  // refresh interval calling the same-origin /api/google-refresh Cloudflare
+  // Function; the owner side had NO equivalent — its only refresh path was
+  // the TOKEN_REFRESHED branch above, which only fires when SUPABASE'S OWN
+  // background session-refresh cycle happens to also come back with a fresh
+  // Google provider_token attached, which is not guaranteed to happen (or
+  // happen often enough) — so the owner's Google access token, which Google
+  // only issues for ~1hr, was largely left to just expire. Mirrors the
+  // employee interval exactly: proactively refresh a few minutes before
+  // expiry using the stored googleRefreshToken, so a real usage attempt
+  // essentially never lands on an expired token.
+  useEffect(() => {
+    if (!hasCrmSession) return;
+    const tryRefresh = async () => {
+      const s = settingsRef.current as any;
+      if (!s?.googleRefreshToken) return;
+      const expiresAt = Number(s.googleTokenExpiresAt) || 0;
+      if (expiresAt - Date.now() > 5 * 60 * 1000) return; // not close to expiring yet
+      const refreshed = await refreshEmpGoogleToken(s.googleBackendUrl, s.googleRefreshToken);
+      if (!refreshed || !refreshed.token) {
+        if (refreshed?.configMissing) console.warn("[GoogleConnect] owner token refresh not configured — set GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET in the Cloudflare Pages dashboard");
+        return;
+      }
+      console.log("[GoogleConnect] owner token proactively refreshed ✓");
+      setSettings((prev: any) => ({ ...prev, googleProviderToken: refreshed.token, googleTokenExpiresAt: refreshed.expiresAt }));
+    };
+    tryRefresh();
+    const interval = setInterval(tryRefresh, 5 * 60 * 1000);
+    return () => clearInterval(interval);
+  }, [hasCrmSession]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Cross-device settings sync (BUG 9) ──────────────────────────────────────
   // Settings (API keys, model prefs, integrations, branding) live in
@@ -3236,20 +3277,34 @@ export function App() {
             // Customer-side approval also needs to surface as a job needing
             // scheduling — same convention (scheduledDate: "") as the owner's
             // own "Approve Estimate" button in EstimatesPage.
+            // ISSUE 12 (round 2) — this was local-state-only (setJobs with no
+            // matching Supabase insert), unlike the identical block in the
+            // OTHER ClientPortal usage above (the public #/estimate/:id
+            // route), which does insert. A job created here (e.g. via the
+            // owner's own "Preview as Customer" approve button) looked like
+            // it worked, but never reached the jobs table — the very next
+            // 3s cross-device poll (or a reload) wholesale-replaces local
+            // state from Supabase and it silently vanished, which is exactly
+            // "no Unscheduled — Needs a Date section" after testing this
+            // path.
             setJobs(prev => {
               if (prev.some(j => (j as any).estimateId === id)) return prev;
               const est = estimates.find(e => e.id === id);
               if (!est) return prev;
               const cust = customers.find(c => c.id === est.customerId);
               const combinedChecklist = buildChecklistFromServices(est.lineItems, services);
-              return [...prev, {
+              const newJob = {
                 id: uid(), customerId: est.customerId, address: cust?.address || "",
                 amount: est.total, status: "scheduled", scheduledDate: "", duration: 2,
                 priority: "normal", crew: [], checklist: combinedChecklist, preChecklist: combinedChecklist, photos: [], chemicalsUsed: [],
                 equipment: [], tags: ["Needs Scheduling"], commLog: [],
                 notes: "From approved estimate #" + id.slice(-4).toUpperCase(),
                 createdAt: today(), estimateId: id,
-              } as any];
+              } as any;
+              (supabase as any).from("jobs").insert(newJob)
+                .then((r: any) => { if (r?.error) toast?.("Job created locally, but failed to save to the server — " + r.error.message, "red"); })
+                .catch((e: any) => toast?.("Job created locally, but failed to save to the server — " + (e?.message || "unknown error"), "red"));
+              return [...prev, newJob];
             });
             toast(paid ? "✓ Paid — " + fmt(data.totalPaid) : "✓ Signed — customer will pay later");
             setPortalEstId(null);
@@ -3271,7 +3326,7 @@ export function App() {
       )}
 
       {/* FAB — floating quick-action button */}
-      {settings.fabEnabled !== false && (
+      {settings.fabEnabled !== false && !fabSessionHidden && (
         <>
           {fabOpen && <div className="fixed inset-0 z-40" onClick={() => setFabOpen(false)} />}
           {/* Raised above the mobile bottom nav (bottom-20) so it never overlaps

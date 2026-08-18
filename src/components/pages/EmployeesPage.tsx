@@ -147,7 +147,13 @@ function PayrollCalendar({ employees, jobs = [] }: { employees: any[]; jobs?: an
   });
 
   // Job completion events — show all completed jobs by date so the calendar isn't empty before any payments are marked
+  // ISSUE 6 (round 2) — the Jobs view showed a job count + hours per day but
+  // no dollar figure, even though the owner asked specifically for "a #
+  // amount for the day total." Tracked per-job (not per-empName row, which
+  // would double count a job with 2+ crew) via jobAmountsByDay below.
   const jobsByDay: Record<string, { empName: string; hours: number; address: string; status: string }[]> = {};
+  const jobAmountsByDay: Record<string, number> = {};
+  const countedJobIdsByDay: Record<string, Set<string>> = {};
   jobs.forEach((j: any) => {
     if (j.status !== "completed" && j.status !== "scheduled") return;
     const dateKey = j.scheduledDate || (j.completedAt ? String(j.completedAt).slice(0, 10) : "");
@@ -168,6 +174,11 @@ function PayrollCalendar({ employees, jobs = [] }: { employees: any[]; jobs?: an
     empNames.forEach(name => {
       (jobsByDay[dateKey] ||= []).push({ empName: name, hours: Number(j.loggedHours) || 0, address: j.address || "—", status: j.status });
     });
+    const seen = (countedJobIdsByDay[dateKey] ||= new Set());
+    if (!seen.has(j.id)) {
+      seen.add(j.id);
+      jobAmountsByDay[dateKey] = (jobAmountsByDay[dateKey] || 0) + (Number(j.amount) || 0);
+    }
   });
 
   // ISSUE 5 — this used to be a Jobs/Payments toggle the owner had to
@@ -213,8 +224,13 @@ function PayrollCalendar({ employees, jobs = [] }: { employees: any[]; jobs?: an
                   : "text-white/30 cursor-default")}>
               <div>{d}</div>
               {hasData && (
-                <div className="flex items-center gap-1">
-                  {dayJobs.length > 0 && <span className="text-[8px] font-bold leading-none text-blue-300">{dayJobs.length}j{totalHours ? " " + totalHours.toFixed(1) + "h" : ""}</span>}
+                <div className="flex flex-col items-center gap-0.5">
+                  {dayJobs.length > 0 && (
+                    <>
+                      <span className="text-[8px] font-bold leading-none text-blue-300">{dayJobs.length}j{totalHours ? " " + totalHours.toFixed(1) + "h" : ""}</span>
+                      {(jobAmountsByDay[key] || 0) > 0 && <span className="text-[8px] font-bold leading-none text-blue-200">{fmt(jobAmountsByDay[key])}</span>}
+                    </>
+                  )}
                   {dayPayments.length > 0 && <span className="text-[8px] font-bold leading-none text-green-300">{fmt(totalPaid)}</span>}
                 </div>
               )}
@@ -224,7 +240,10 @@ function PayrollCalendar({ employees, jobs = [] }: { employees: any[]; jobs?: an
       </div>
       {selectedDay && (jobsByDay[selectedDay]?.length || paymentsByDay[selectedDay]?.length) && (
         <div className="mt-3 pt-3 border-t border-white/10 space-y-1.5">
-          <div className="text-[10px] text-white/40 uppercase tracking-wider">{selectedDay}</div>
+          <div className="flex items-center justify-between">
+            <div className="text-[10px] text-white/40 uppercase tracking-wider">{selectedDay}</div>
+            {(jobAmountsByDay[selectedDay] || 0) > 0 && <div className="text-xs font-bold text-blue-300">{fmt(jobAmountsByDay[selectedDay])} job value</div>}
+          </div>
           {(paymentsByDay[selectedDay] || []).map(ev => (
             <div key={ev.id} className="flex items-center justify-between text-xs bg-black/40 rounded-lg px-2.5 py-1.5">
               <span className="text-white/70">{ev.empName} <span className="text-white/40">({ev.periodStart}{ev.periodEnd !== ev.periodStart ? " – " + ev.periodEnd : ""})</span></span>
@@ -275,8 +294,23 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setJobs
       .then((r: any) => { if (r?.error) toast?.("Couldn't save — " + r.error.message, "red"); else toast?.(status === "approved" ? "Mileage approved ✓" : "Mileage denied", "green"); })
       .catch((e: any) => toast?.("Couldn't save — " + (e?.message || "unknown error"), "red"));
   };
-  const [payPeriodStart, setPayPeriodStart] = usePersistent("smocks.payPeriodStart", (() => { const d = new Date(); d.setDate(1); return d.toISOString().slice(0,10); })());
-  const [payPeriodEnd, setPayPeriodEnd] = usePersistent("smocks.payPeriodEnd", today());
+  // ISSUE 7 (round 2) — this used to default to "1st of the month → today",
+  // a date range with no relationship to the fixed 14-day pay period
+  // (getPayPeriodBounds) the rest of payroll now runs on. Hours completed
+  // in a period that started in the PREVIOUS calendar month (e.g. viewing
+  // on the 3rd of a new month, but the current pay period started on the
+  // 27th) fell outside this window and looked like "missing hours" even
+  // though the underlying job/crew data was correct — it was just the wrong
+  // date range being displayed. Defaults to the actual current pay period
+  // now; existing owners with an already-persisted range keep whatever
+  // they had (usePersistent only applies this default when no value exists
+  // yet) — the "This Pay Period" button below fixes it for them on demand.
+  const [payPeriodStart, setPayPeriodStart] = usePersistent("smocks.payPeriodStart", getPayPeriodBounds().start);
+  const [payPeriodEnd, setPayPeriodEnd] = usePersistent("smocks.payPeriodEnd", getPayPeriodBounds().end);
+  const jumpToCurrentPayPeriod = () => {
+    const b = getPayPeriodBounds();
+    setPayPeriodStart(b.start); setPayPeriodEnd(b.end);
+  };
   const [f, setF] = useState<any>({ id: "", firstName: "", lastName: "", role: "Technician", status: "active", hourlyRate: 18, phone: "", email: "", startDate: today(), emergencyContact: "", notes: "", permissions: { ...DEFAULT_PERMS } });
   const [showPortalInfo, setShowPortalInfo] = useState(false);
   const [inviteOpen, setInviteOpen] = useState(false);
@@ -727,6 +761,9 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setJobs
             <span>to</span>
             <GDate value={payPeriodEnd} onChange={e => setPayPeriodEnd(e.target.value)} className="!text-xs !py-1.5 !w-36" />
           </div>
+          <button onClick={jumpToCurrentPayPeriod} className="px-2.5 py-1 rounded-lg bg-green-950/30 border border-green-700/40 text-green-300 hover:bg-green-900/40 text-xs transition" title="Jump to the actual current 14-day pay period — if hours look missing, this is usually why">
+            This Pay Period
+          </button>
           <div className="flex gap-1">
             <button onClick={() => {
               const s = new Date(payPeriodStart); s.setDate(s.getDate() - 7);
