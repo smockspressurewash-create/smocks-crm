@@ -758,7 +758,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
               return "Found customer but SMS failed: " + e.message + "\n\nSlot options:\n" + slotsText + "\n\nManually text: " + matchedCustomer.phone;
             }
           } else {
-            window.location.href = "sms:" + matchedCustomer.phone.replace(/\D/g,"") + "?body=" + encodeURIComponent("Hi " + matchedCustomer.firstName + "! Openings:\n" + slotsText + "\nReply 1/2/3 — Crew Boss");
+            window.location.href = "sms:" + matchedCustomer.phone.replace(/\D/g,"") + "?body=" + encodeURIComponent("Hi " + matchedCustomer.firstName + "! Openings:\n" + slotsText + "\nReply 1/2/3 — " + ((settings as any)?.companyName || "Crew Boss"));
             return "📅 Scheduling for " + matchedCustomer.firstName + "\n\nOpened SMS with slot options. Connect Twilio in Settings for automatic sending. Alfred out.";
           }
         }

@@ -660,6 +660,7 @@ export interface AppSettings {
   maxLunchMinutes?: number;
   homeBaseAddress?: string;
   paidLunchBreaks?: boolean;
+  hideJobAmountsFromEmployees?: boolean;
 
   // Onboarding — explicitly false only for brand-new owner registrations;
   // undefined (pre-existing accounts) is treated as already complete.

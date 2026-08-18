@@ -820,7 +820,8 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
       const startDt = new Date(`${job.scheduledDate}T${timeStr}:00`);
       const endDt = new Date(startDt.getTime() + (Number(job.duration) || 2) * 3600000);
       const customer = customers.find((x: any) => x.id === job.customerId);
-      const title = customer ? `${customer.firstName} ${customer.lastName} — Crew Boss Service` : "Crew Boss Service";
+      const calCoName = settings?.companyName || "Crew Boss";
+      const title = customer ? `${customer.firstName} ${customer.lastName} — ${calCoName} Service` : `${calCoName} Service`;
       if (job.googleEventId) {
         await updateGCalEventApi(gToken, job.googleEventId, { title, start: startDt.toISOString(), end: endDt.toISOString(), location: job.address, description: job.notes || "" });
         toast("Google Calendar event updated ✓");

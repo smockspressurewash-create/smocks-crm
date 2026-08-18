@@ -124,25 +124,35 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
       const threadsRes = await fetch(`${SUPABASE_URL}/rest/v1/inbox_threads?channel=eq.sms&select=id,contact_phone,messages`, {
         headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}` },
       });
+      if (!threadsRes.ok) console.error("[TwilioSmsWebhook] inbox_threads read failed (" + threadsRes.status + "):", await threadsRes.clone().text().catch(() => ""));
       const existingThreads = await threadsRes.json().catch(() => []);
       const existingThread = Array.isArray(existingThreads)
         ? existingThreads.find((t: any) => normalizePhoneDigits(t.contact_phone) === fromDigits)
         : null;
+      // ISSUE 17 (round 3) — neither write below checked res.ok; a non-2xx
+      // (RLS rejection, a column that doesn't exist, a malformed JSONB
+      // payload) was completely silent — no error log, no thrown exception,
+      // just a text message that vanished with zero trace. That made "SMS
+      // not showing in the inbox despite the webhook being set up" nearly
+      // undiagnosable from the Cloudflare Function logs. Log the actual
+      // Supabase response body on failure now.
       const newMsg = { id: crypto.randomUUID(), dir: "in", body: bodyRaw, ts: Date.now() };
       if (existingThread) {
         const merged = [...(Array.isArray(existingThread.messages) ? existingThread.messages : []), newMsg];
-        await fetch(`${SUPABASE_URL}/rest/v1/inbox_threads?id=eq.${encodeURIComponent(existingThread.id)}`, {
+        const patchRes = await fetch(`${SUPABASE_URL}/rest/v1/inbox_threads?id=eq.${encodeURIComponent(existingThread.id)}`, {
           method: "PATCH",
           headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}`, "Content-Type": "application/json", Prefer: "return=minimal" },
           body: JSON.stringify({ messages: merged, unread: true, last_message_at: newMsg.ts, updated_at: new Date().toISOString() }),
         });
+        if (!patchRes.ok) console.error("[TwilioSmsWebhook] inbox_threads PATCH failed (" + patchRes.status + "):", await patchRes.text().catch(() => ""));
       } else {
         const contactName = match ? `${match.firstName || ""} ${match.lastName || ""}`.trim() || from : from;
-        await fetch(`${SUPABASE_URL}/rest/v1/inbox_threads`, {
+        const postRes = await fetch(`${SUPABASE_URL}/rest/v1/inbox_threads`, {
           method: "POST",
           headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}`, "Content-Type": "application/json", Prefer: "return=minimal" },
           body: JSON.stringify({ id: crypto.randomUUID(), channel: "sms", contact_name: contactName, contact_phone: from, customer_id: match?.id || null, unread: true, messages: [newMsg], last_message_at: newMsg.ts, updated_at: new Date().toISOString() }),
         });
+        if (!postRes.ok) console.error("[TwilioSmsWebhook] inbox_threads POST failed (" + postRes.status + "):", await postRes.text().catch(() => ""));
       }
     } catch (e: any) {
       console.error("[TwilioSmsWebhook] failed to persist inbound message to inbox_threads:", e?.message);

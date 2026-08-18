@@ -315,7 +315,9 @@ export function CalendarPage({ jobs = [], setJobs, customers = [], employees = [
     if (job && oldDate && oldDate !== targetKey) {
       const c = customers.find(x => x.id === job.customerId);
       if (c?.phone && settings?.twilioSid) {
-        const msg = "Hi " + c.firstName + "! Your Crew Boss service has been rescheduled from " + oldDate + " to " + targetKey + ". Questions? Call (717) 555-0100. — Crew Boss";
+        const coName = (settings as any)?.companyName || "Crew Boss";
+        const coPhone = (settings as any)?.companyPhone || "(717) 555-0100";
+        const msg = "Hi " + c.firstName + "! Your " + coName + " service has been rescheduled from " + oldDate + " to " + targetKey + ". Questions? Call " + coPhone + ". — " + coName;
         twilioSend(settings, c.phone, msg).catch(() => {});
       }
       // Update Google Calendar event if connected

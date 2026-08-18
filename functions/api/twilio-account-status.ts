@@ -25,9 +25,19 @@ export const onRequestPost = async (context: { request: Request }) => {
     ]);
     const acctData = await acctRes.json().catch(() => ({} as any));
     if (!acctRes.ok) {
-      // A 401 here almost always means a bad SID/Token, not an account
-      // problem — surface Twilio's own message rather than guessing.
-      return new Response(JSON.stringify({ error: acctData?.message || `Twilio error ${acctRes.status}`, raw: acctData }), {
+      // ISSUE 10 (round 3) — a 404 here (as opposed to a 401) means the SID
+      // resolved to no Account at all — almost always because the value in
+      // Settings is a Messaging Service SID ("MG...") or an API Key SID
+      // ("SK...") pasted into the Account SID field instead of the real
+      // Account SID ("AC..."), not a credentials/funds problem. Surface that
+      // distinction directly instead of Twilio's generic "not found" text so
+      // it's actually actionable from the Campaigns page tooltip.
+      const hint = acctRes.status === 404
+        ? (sid.startsWith("AC") ? " (this Account SID doesn't exist on Twilio — check for a typo or a revoked subaccount)" : ` (this SID starts with "${sid.slice(0, 2)}", but an Account SID always starts with "AC" — you may have pasted a Messaging Service or API Key SID into the Account SID field)`)
+        : acctRes.status === 401
+        ? " (bad Account SID or Auth Token — re-copy both from the Twilio Console)"
+        : "";
+      return new Response(JSON.stringify({ error: (acctData?.message || `Twilio error ${acctRes.status}`) + hint, raw: acctData }), {
         status: acctRes.status, headers: { "Content-Type": "application/json" },
       });
     }

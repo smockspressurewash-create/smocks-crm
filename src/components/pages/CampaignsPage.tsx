@@ -83,7 +83,7 @@ export function CampaignsPage({ campaigns = [], setCampaigns, customers = [], es
   const [tab, setTab] = useState("compose");
   const [ch, setCh] = useState("sms");
   const [subj, setSubj] = useState("");
-  const [body, setBody] = useState("Hi {{first_name}}, spring special — 15% off house soft washes this month. Reply BOOK or call (717) 555-0100. — Crew Boss");
+  const [body, setBody] = useState("Hi {{first_name}}, spring special — 15% off house soft washes this month. Reply BOOK or call " + ((settings as any)?.companyPhone || "(717) 555-0100") + ". — " + ((settings as any)?.companyName || "Crew Boss"));
   const [fCity, setFCity] = useState("");
   const [fLast, setFLast] = useState(""); // last service date (most recent completed job)
   const [fTag, setFTag] = useState("");
@@ -140,6 +140,31 @@ export function CampaignsPage({ campaigns = [], setCampaigns, customers = [], es
   }, [twilioConfigured, settings]);
 
   useEffect(() => { refreshTwilioStatus(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ISSUE 11 (round 3) — no way to verify a campaign body/subject actually
+  // sends before blasting the whole recipient list. Reuses the exact same
+  // merge()+twilioSend/sendEmail path launch() uses below, just for one
+  // ad-hoc recipient, with a fake customer object so {{first_name}} etc.
+  // still resolve to something sensible.
+  const [testRecipient, setTestRecipient] = useState("");
+  const [testSending, setTestSending] = useState(false);
+  const sendTestMessage = async () => {
+    if (!testRecipient.trim() || !body.trim() || (ch === "email" && !subj.trim())) return;
+    setTestSending(true);
+    const fakeCustomer = { firstName: "Test", lastName: "Customer", address: "123 Test St", phone: testRecipient.trim() };
+    try {
+      if (ch === "sms") {
+        await twilioSend(settings, testRecipient.trim(), "[TEST] " + merge(body, fakeCustomer));
+      } else {
+        await sendEmail(settings, { to: testRecipient.trim(), subject: "[TEST] " + merge(subj, fakeCustomer), body: merge(body, fakeCustomer) });
+      }
+      toast("Test " + (ch === "sms" ? "text" : "email") + " sent to " + testRecipient.trim() + " ✓", "green");
+    } catch (e: any) {
+      toast("Test send failed: " + (e?.message || "unknown error"), "red");
+    } finally {
+      setTestSending(false);
+    }
+  };
 
   // Hard-gate on account status (suspended/closed genuinely can't send);
   // treat a failed/not-yet-run check as "unknown, don't block" rather than
@@ -255,7 +280,7 @@ export function CampaignsPage({ campaigns = [], setCampaigns, customers = [], es
     setSendProgress(null);
     setCampaigns(prev => prev.map(c => c.id === campaignId ? { ...c, status: "sent", sentCount: sent, failedCount: failed, openRate: Math.floor(35 + Math.random() * 30), clickRate: Math.floor(8 + Math.random() * 15) } : c));
     toast(`Campaign sent! ${sent} delivered${failed > 0 ? ", " + failed + " failed" : ""}`, sent > 0 ? "success" : "error");
-    setBody("Hi {{first_name}}, spring special — 15% off house soft washes this month. Reply BOOK or call (717) 555-0100. — Crew Boss");
+    setBody("Hi {{first_name}}, spring special — 15% off house soft washes this month. Reply BOOK or call " + ((settings as any)?.companyPhone || "(717) 555-0100") + ". — " + ((settings as any)?.companyName || "Crew Boss"));
     setSubj("");
   };
 
@@ -410,6 +435,24 @@ export function CampaignsPage({ campaigns = [], setCampaigns, customers = [], es
                   : "⚠ Twilio isn't ready to send")
                 : "⚠ Connect Gmail in Settings → Integrations → Google to send real email blasts"}
             </div>}
+            {/* ISSUE 11 (round 3) — send a single test message using the current
+                body/subject before committing to the full recipient list. */}
+            <div className="mt-3 pt-3 border-t border-white/5 flex items-center gap-2">
+              <GInput
+                placeholder={ch === "sms" ? "Test phone (+15551234567)" : "Test email address"}
+                value={testRecipient}
+                onChange={e => setTestRecipient(e.target.value)}
+                className="!text-xs !py-1.5 flex-1"
+              />
+              <GBtn
+                variant="ghost"
+                disabled={testSending || !testRecipient.trim() || !body.trim() || (ch === "email" && !subj.trim()) || !canSend}
+                onClick={sendTestMessage}
+                className="!text-xs !py-1.5 flex-shrink-0"
+              >
+                {testSending ? "Sending…" : "Send Test"}
+              </GBtn>
+            </div>
           </Glass>
           <Glass className="p-4 space-y-3">
             <div>

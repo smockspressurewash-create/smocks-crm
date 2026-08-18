@@ -6137,17 +6137,27 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                                 </div>
                                 <div className="text-right flex-shrink-0">
                                   <div className={"text-[10px] font-bold px-2 py-0.5 rounded-full " + (j.status === "completed" ? "bg-green-900/40 text-green-300" : "bg-blue-900/40 text-blue-300")}>{j.status}</div>
-                                  {Number(j.loggedHours) > 0 && <div className="text-white/40 text-[9px] mt-0.5">{j.loggedHours}h · {fmt(Number(j.loggedHours) * getEffectiveRate(myEmployee, j))}</div>}
+                                  {/* ISSUE 14/15 (round 3) — this used to hide entirely for any
+                                      job with 0 logged hours (a scheduled-but-not-yet-worked job
+                                      showed nothing at all), and always included the $ earned
+                                      with no way for the owner to suppress it. Now always shows
+                                      hours; the $ figure is gated by the owner's
+                                      hideJobAmountsFromEmployees Settings toggle. */}
+                                  <div className="text-white/40 text-[9px] mt-0.5">
+                                    {j.loggedHours || 0}h{!(settings as any)?.hideJobAmountsFromEmployees && <> · {fmt(Number(j.loggedHours || 0) * getEffectiveRate(myEmployee, j))}</>}
+                                  </div>
                                 </div>
                               </div>
                             );
                           })}
                         </div>
                       )}
-                      <div className="flex items-center justify-between mt-3 pt-2 border-t border-white/10 text-[10px]">
-                        <span className="text-white/40">Month total</span>
-                        <span className="font-bold text-white/70">{fmt(monthTotal)}</span>
-                      </div>
+                      {!(settings as any)?.hideJobAmountsFromEmployees && (
+                        <div className="flex items-center justify-between mt-3 pt-2 border-t border-white/10 text-[10px]">
+                          <span className="text-white/40">Month total</span>
+                          <span className="font-bold text-white/70">{fmt(monthTotal)}</span>
+                        </div>
+                      )}
                       <div className="flex items-center gap-3 mt-2 text-[9px] text-white/30 flex-wrap">
                         <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-blue-700/60" />Scheduled</span>
                         <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-yellow-700/60" />Unpaid hours</span>
@@ -6411,9 +6421,16 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                 "https://www.googleapis.com/auth/tasks",
               ].join(" ");
               const redirectTo = `${window.location.origin}${window.location.pathname}#/portal`;
+              // ISSUE 13 (round 3) — linkIdentity is the path Supabase actually
+              // takes here (it redirects straight to Google without throwing),
+              // so the signInWithOAuth fallback below — the ONLY place that had
+              // access_type/prompt — almost never ran. Without offline+consent
+              // on THIS call, Google never issues a refresh_token, so the
+              // silent-refresh effect above has nothing to refresh with and the
+              // access token dies after ~1hr — exactly "keeps disconnecting."
               const { error } = await (supabase.auth as any).linkIdentity({
                 provider: "google",
-                options: { redirectTo, scopes: SCOPES },
+                options: { redirectTo, scopes: SCOPES, queryParams: { access_type: "offline", prompt: "consent" } },
               });
               if (error) {
                 // Fallback: full OAuth sign-in (some Supabase plans don't support linkIdentity)

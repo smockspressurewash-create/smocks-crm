@@ -101,6 +101,14 @@ export function InboxPage({ threads = [], setThreads, customers = [], setCustome
   // and (b) gates OFF further Gmail calls for the rest of this session so
   // a permanently-missing scope can't keep re-failing on every click/poll.
   const [gmailPermissionError, setGmailPermissionError] = useState(false);
+  // ISSUE 1 (round 3) — reconnecting Google generates a brand new token, but
+  // the 403 gate above never reset once tripped, so the banner (and the
+  // Gmail-load effect it gates) stayed stuck forever even after a real
+  // reconnect — "reconnect required" even after reconnecting. Track WHICH
+  // token actually failed; only suppress retries against that same token,
+  // and clear the flag the moment a different (freshly reconnected) token
+  // shows up.
+  const lastFailedGmailTokenRef = useRef<string>("");
   // GoogleConnect — this page used to read `settings.googleToken`, a field
   // NOTHING in the app ever writes (the real field everywhere else is
   // googleProviderToken) — so Gmail-in-Inbox was silently non-functional
@@ -124,6 +132,39 @@ export function InboxPage({ threads = [], setThreads, customers = [], setCustome
 
   const activeThread = threads.find(t => t.id === active) || gmailThreads.find(t => t.id === active);
 
+  // ISSUE 9/17 (round 3) — a real customer thread (+17173841589) was found
+  // with the SAME automated message duplicated 8-10x, every duplicate
+  // sharing the identical Twilio timestamp. Root cause: the Twilio poll
+  // effect below only re-runs when settings.twilioSid/googleBackendUrl
+  // change, so its `poll` closure captured `threads`/`customers` from the
+  // moment it was created and never saw newer state — `since` was
+  // recomputed from that frozen snapshot on every single interval tick
+  // forever, so the same already-seen messages kept re-qualifying against
+  // Twilio's DateSent> filter and got re-appended with a fresh uid() each
+  // time. Refs give the poll closure a way to always read current state
+  // without re-subscribing the effect.
+  const threadsRef = useRef(threads);
+  useEffect(() => { threadsRef.current = threads; }, [threads]);
+  const customersRef = useRef(customers);
+  useEffect(() => { customersRef.current = customers; }, [customers]);
+
+  // Defensive de-dup for the bug above: collapse messages that share the
+  // same direction/body/timestamp (what the stale-closure bug produced),
+  // keeping the first. Applied wherever threads are normalized so any
+  // already-corrupted server data self-heals on load instead of needing a
+  // manual database fix.
+  const dedupeMessages = (msgs: any[]) => {
+    const seen = new Set<string>();
+    const out: any[] = [];
+    for (const m of msgs) {
+      const key = (m?.dir || "") + "|" + (m?.ts || "") + "|" + (m?.body || "");
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(m);
+    }
+    return out;
+  };
+
   // FIX — SMS Inbox sync. `inbox_threads` in Supabase is the shared source of
   // truth for SMS conversations (written by both this page and, critically, by
   // employees sending OTW/Running Late/invoice texts from their own devices in
@@ -139,7 +180,7 @@ export function InboxPage({ threads = [], setThreads, customers = [], setCustome
     contactEmail: r.contact_email || r.contactEmail || "",
     customerId: r.customer_id || r.customerId || null,
     unread: !!r.unread,
-    messages: Array.isArray(r.messages) ? r.messages : [],
+    messages: dedupeMessages(Array.isArray(r.messages) ? r.messages : []),
   });
   useEffect(() => {
     let cancelled = false;
@@ -199,7 +240,7 @@ export function InboxPage({ threads = [], setThreads, customers = [], setCustome
       const byId = new Map<string, any>();
       serverMessages.forEach(m => { if (m?.id) byId.set(m.id, m); });
       (t.messages || []).forEach((m: any) => { if (m?.id) byId.set(m.id, m); }); // local wins on conflict
-      const merged = Array.from(byId.values()).sort((a, b) => (a.ts || 0) - (b.ts || 0));
+      const merged = dedupeMessages(Array.from(byId.values()).sort((a, b) => (a.ts || 0) - (b.ts || 0)));
       const r: any = await (supabase as any).from("inbox_threads").upsert({
         id: t.id, channel: "sms", contact_name: t.contactName, contact_phone: t.contactPhone,
         customer_id: t.customerId || null, unread: !!t.unread, messages: merged,
@@ -211,8 +252,14 @@ export function InboxPage({ threads = [], setThreads, customers = [], setCustome
     }
   };
 
-  // Auto-scroll to bottom of messages
-  useEffect(() => { msgEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [active, activeThread?.messages.length]);
+  // ISSUE 6 (round 3) — opening a conversation used "smooth" scroll for the
+  // very first render of a freshly-mounted, un-scrolled messages panel,
+  // which animated from the top all the way down — reads as an ugly
+  // instant "jump" rather than loading already at the right spot. Jump to
+  // the correct position immediately when switching threads; only animate
+  // for a new message arriving while a thread is already open.
+  useEffect(() => { msgEndRef.current?.scrollIntoView({ behavior: "auto" }); }, [active]);
+  useEffect(() => { if (active) msgEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [activeThread?.messages.length]);
 
   // Poll for incoming Twilio messages every 15s
   useEffect(() => {
@@ -227,7 +274,7 @@ export function InboxPage({ threads = [], setThreads, customers = [], setCustome
         // that arrived in the gap between the true last-SMS time and that
         // email time would never satisfy Twilio's DateSent> filter on any
         // future poll, permanently disappearing instead of just being late.
-        const lastTs = Math.max(0, ...threads.filter(t => t.channel === "sms").flatMap(t => t.messages.map((m: any) => m.ts)));
+        const lastTs = Math.max(0, ...threadsRef.current.filter(t => t.channel === "sms").flatMap(t => t.messages.map((m: any) => m.ts)));
         const incoming = await pollTwilioIncoming(settings, new Date(lastTs).toISOString());
         if (incoming.length > 0) {
           const touchedIds = new Set<string>();
@@ -235,7 +282,7 @@ export function InboxPage({ threads = [], setThreads, customers = [], setCustome
             let updated = [...prev];
             incoming.forEach(msg => {
               const phone = msg.from;
-              const customer = customers.find(c => c.phone?.replace(/\D/g, "") === phone.replace(/\D/g, ""));
+              const customer = customersRef.current.find(c => c.phone?.replace(/\D/g, "") === phone.replace(/\D/g, ""));
               const newMsg = { id: uid(), dir: "in", body: msg.body, ts: msg.dateSent ? new Date(msg.dateSent).getTime() : Date.now() };
 
               // Handle STOP/UNSTOP opt-out keywords (Twilio compliance).
@@ -269,8 +316,14 @@ export function InboxPage({ threads = [], setThreads, customers = [], setCustome
 
               const existingThread = updated.find(t => t.channel === "sms" && t.contactPhone?.replace(/\D/g, "") === phone.replace(/\D/g, ""));
               if (existingThread) {
-                updated = updated.map(t => t.id === existingThread.id ? { ...t, unread: true, messages: [...t.messages, newMsg] } : t);
-                touchedIds.add(existingThread.id);
+                // Belt-and-suspenders against the stale-closure duplicate bug
+                // above: never append a message that's identical (dir/body/ts)
+                // to one already in the thread.
+                const isDup = existingThread.messages.some((m: any) => m.dir === newMsg.dir && m.body === newMsg.body && m.ts === newMsg.ts);
+                if (!isDup) {
+                  updated = updated.map(t => t.id === existingThread.id ? { ...t, unread: true, messages: [...t.messages, newMsg] } : t);
+                  touchedIds.add(existingThread.id);
+                }
               } else {
                 const newThreadId = uid();
                 updated = [{ id: newThreadId, channel: "sms", contactName: customer ? customer.firstName + " " + customer.lastName : phone, contactPhone: phone, contactEmail: "", customerId: customer?.id || null, unread: true, messages: [newMsg] }, ...updated];
@@ -300,10 +353,20 @@ export function InboxPage({ threads = [], setThreads, customers = [], setCustome
 
   // Load Gmail messages when Google is connected
   useEffect(() => {
-    if (!gmailToken || gmailPermissionError) {
-      if (gmailPermissionError) console.log("[GoogleConnect] Inbox — skipping Gmail load, missing permission (reconnect required)");
-      else console.log("[GoogleConnect] Inbox — no gmail token available, skipping Gmail load");
+    if (!gmailToken) {
+      console.log("[GoogleConnect] Inbox — no gmail token available, skipping Gmail load");
       return;
+    }
+    // A new/different token (e.g. just reconnected) always gets a fresh
+    // attempt, regardless of whether some OLDER token previously 403'd.
+    if (gmailPermissionError && gmailToken === lastFailedGmailTokenRef.current) {
+      console.log("[GoogleConnect] Inbox — skipping Gmail load, this token already failed with a permission error (reconnect required)");
+      return;
+    }
+    if (gmailPermissionError && gmailToken !== lastFailedGmailTokenRef.current) {
+      console.log("[GoogleConnect] Inbox — token changed since last failure, clearing permission-error gate and retrying");
+      setGmailPermissionError(false);
+      return; // the state flip above re-triggers this effect with a clean pass
     }
     console.log("[GoogleConnect] Inbox — loading Gmail messages, token source:", storedGoogle?.token ? "localStorage" : "settings (legacy)");
     setGmailLoading(true);
@@ -347,8 +410,13 @@ export function InboxPage({ threads = [], setThreads, customers = [], setCustome
         setGmailThreads(gThreads);
       })
       .catch((e: any) => {
-        if (e?.status === 403) {
-          console.error("[GoogleConnect] Inbox — Gmail 403 (insufficient permission) — disabling further Gmail calls this session. Reconnect Google in Settings → Integrations to grant gmail.modify.");
+        // 401 (expired/invalid token) is grouped with 403 (insufficient
+        // scope) here — both mean "this exact token can't be used again
+        // until the owner reconnects," and the token-change check above is
+        // what lets a real reconnect clear this, not a timer.
+        if (e?.status === 403 || e?.status === 401) {
+          console.error("[GoogleConnect] Inbox — Gmail " + e.status + " — disabling further Gmail calls for this token. Reconnect Google in Settings → Integrations.");
+          lastFailedGmailTokenRef.current = gmailToken;
           setGmailPermissionError(true);
         } else {
           console.warn("[GoogleConnect] Inbox — Gmail load failed:", e?.message);
@@ -367,8 +435,9 @@ export function InboxPage({ threads = [], setThreads, customers = [], setCustome
       if (gThread?.unread && gmailToken && !gmailPermissionError) {
         const idsToMark: string[] = gThread.unreadGmailMessageIds?.length ? gThread.unreadGmailMessageIds : (gThread.gmailMessageId ? [gThread.gmailMessageId] : []);
         Promise.all(idsToMark.map((mid: string) => markGmailRead(gmailToken, mid))).catch((e: any) => {
-          if (e?.status === 403) {
-            console.error("[GoogleConnect] Inbox — markGmailRead 403 — disabling further Gmail calls this session. Reconnect Google in Settings → Integrations to grant gmail.modify.");
+          if (e?.status === 403 || e?.status === 401) {
+            console.error("[GoogleConnect] Inbox — markGmailRead " + e.status + " — disabling further Gmail calls for this token. Reconnect Google in Settings → Integrations.");
+            lastFailedGmailTokenRef.current = gmailToken;
             setGmailPermissionError(true);
           } else {
             console.warn("[GoogleConnect] Inbox — markGmailRead failed:", e?.message);
@@ -486,6 +555,67 @@ export function InboxPage({ threads = [], setThreads, customers = [], setCustome
   // search.
   const [sortBy, setSortBy] = useState<"recent" | "sender" | "unread">("recent");
   const [unreadOnly, setUnreadOnly] = useState(false);
+  // ISSUE 7 (round 3) — date-range filter, on top of the existing sort/unread controls.
+  const [dateRange, setDateRange] = useState<"all" | "today" | "week" | "month">("all");
+  // ISSUE 4 (round 3) — the three-dot menu did nothing; hide is a local-only
+  // preference (doesn't touch other devices' view of the same server data),
+  // delete removes the row from Supabase for sms threads (gmail/local-only
+  // threads have no server row to delete).
+  const [hiddenThreadIds, setHiddenThreadIds] = usePersistent<string[]>("smocks.inboxHiddenThreadIds", []);
+  const [showHidden, setShowHidden] = useState(false);
+  const [menuOpenId, setMenuOpenId] = useState<string | null>(null);
+  const hideThread = (id: string) => {
+    setHiddenThreadIds((prev: string[]) => prev.includes(id) ? prev : [...prev, id]);
+    setMenuOpenId(null);
+    toast("Conversation hidden");
+  };
+  const unhideThread = (id: string) => {
+    setHiddenThreadIds((prev: string[]) => prev.filter(x => x !== id));
+  };
+  const deleteThread = async (t: any) => {
+    setMenuOpenId(null);
+    if (t.channel === "sms") {
+      try {
+        const r: any = await (supabase as any).from("inbox_threads").delete().eq("id", t.id);
+        if (r?.error) { toast("Delete failed: " + r.error.message, "error"); return; }
+      } catch (e: any) {
+        toast("Delete failed: " + (e?.message || "unknown error"), "error");
+        return;
+      }
+      setThreads((prev: any[]) => prev.filter(x => x.id !== t.id));
+    } else {
+      setGmailThreads(prev => prev.filter(x => x.id !== t.id));
+    }
+    if (active === t.id) setActive(null);
+    toast("Conversation deleted");
+  };
+  // ISSUE 5 (round 3) — convert a conversation's contact into a real customer
+  // lead, same insert shape LeadFormPage.tsx uses (customers table, pipelineStage "lead").
+  const convertToLead = async (t: any) => {
+    setMenuOpenId(null);
+    if (!setCustomers) { toast("Can't create customers from this view", "error"); return; }
+    const existing = findCustomer(t);
+    if (existing) { toast((t.contactName || "This contact") + " is already a customer"); return; }
+    const nameParts = (t.contactName || "").trim().split(/\s+/);
+    const newCustomer: any = {
+      id: uid(),
+      firstName: nameParts[0] || t.contactName || "Unknown",
+      lastName: nameParts.slice(1).join(" ") || "",
+      phone: t.contactPhone || "",
+      email: t.contactEmail || "",
+      pipelineStage: "lead",
+      createdAt: new Date().toISOString(),
+    };
+    try {
+      const r: any = await (supabase as any).from("customers").insert(newCustomer);
+      if (r?.error) { toast("Failed to create lead: " + r.error.message, "error"); return; }
+    } catch (e: any) {
+      toast("Failed to create lead: " + (e?.message || "unknown error"), "error");
+      return;
+    }
+    setCustomers((prev: Customer[]) => [newCustomer, ...prev]);
+    toast("✅ Lead created for " + (t.contactName || "contact"));
+  };
   // ISSUE 5 — a thread only ever showed contactName; the matching customer
   // record's tags (set up in CustomersPage — see its folder/tag system)
   // never surfaced here, so there was no way to tell at a glance who's a
@@ -499,9 +629,19 @@ export function InboxPage({ threads = [], setThreads, customers = [], setCustome
     if (t.contactPhone) return customers.find(c => c.phone && c.phone.replace(/\D/g, "") === t.contactPhone.replace(/\D/g, ""));
     return null;
   };
+  const dateRangeCutoff = (() => {
+    if (dateRange === "all") return 0;
+    const d = new Date();
+    d.setHours(0, 0, 0, 0);
+    if (dateRange === "today") return d.getTime();
+    if (dateRange === "week") return d.getTime() - 6 * 86400000;
+    return d.getTime() - 29 * 86400000; // month
+  })();
   const filteredThreads = allThreads
+    .filter(t => showHidden ? hiddenThreadIds.includes(t.id) : !hiddenThreadIds.includes(t.id))
     .filter(t => channelView === "all" || t.channel === channelView)
     .filter(t => !unreadOnly || t.unread)
+    .filter(t => dateRange === "all" || (t.messages[t.messages.length - 1]?.ts || 0) >= dateRangeCutoff)
     .filter(t => !search || (t.contactName || "").toLowerCase().includes(search.toLowerCase()) || t.messages.some(m => (m.body || "").toLowerCase().includes(search.toLowerCase())))
     .sort((a, b) => {
       if (sortBy === "sender") return (a.contactName || "").localeCompare(b.contactName || "");
@@ -544,8 +684,43 @@ export function InboxPage({ threads = [], setThreads, customers = [], setCustome
               Unread only
             </button>
           </div>
+          {/* ISSUE 7 (round 3) — date-range filter */}
+          <div className="flex items-center gap-1.5">
+            <GSel value={dateRange} onChange={e => setDateRange(e.target.value as any)} className="!text-[10px] !py-1.5 flex-1">
+              <option value="all">Any date</option>
+              <option value="today">Today</option>
+              <option value="week">Last 7 days</option>
+              <option value="month">Last 30 days</option>
+            </GSel>
+            <button onClick={() => setShowHidden(v => !v)} title="Show hidden conversations" className={"flex-shrink-0 px-2.5 py-1.5 rounded-lg text-[10px] font-medium border transition " + (showHidden ? "bg-red-900/40 border-red-600/50 text-white" : "bg-black/40 border-white/10 text-white/50 hover:text-white")}>
+              {showHidden ? <><Eye size={10} className="inline mr-1" />Hidden ({hiddenThreadIds.length})</> : <EyeOff size={10} className="inline mr-1" />}
+              {!showHidden && "Hidden"}
+            </button>
+          </div>
           {(!twilioReady && !emailReady) && <div className="text-[9px] text-yellow-400/80 bg-yellow-950/20 border border-yellow-800/30 rounded px-2 py-1">⚠ Connect Twilio or Gmail in Settings to send/receive</div>}
-          {gmailPermissionError && <div className="text-[9px] text-red-400/90 bg-red-950/20 border border-red-800/30 rounded px-2 py-1">⚠ Gmail is missing permission (reconnect required) — go to Settings → Integrations and reconnect Google to restore email in the inbox.</div>}
+          {/* ISSUE 8 — a text-only banner made "reconnect" a multi-page hunt
+              (Settings → Integrations → find the button). Fire the same
+              OAuth flow (with gmail.modify included) directly from here. */}
+          {gmailPermissionError && (
+            <div className="text-[9px] text-red-400/90 bg-red-950/20 border border-red-800/30 rounded px-2 py-1.5 flex items-center justify-between gap-2">
+              <span>⚠ Gmail needs to be reconnected to restore email in the inbox.</span>
+              <button
+                onClick={() => {
+                  supabase.auth.signInWithOAuth({
+                    provider: "google",
+                    options: {
+                      redirectTo: window.location.origin + window.location.pathname,
+                      scopes: "email profile https://www.googleapis.com/auth/calendar https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/gmail.modify https://www.googleapis.com/auth/drive.readonly",
+                      queryParams: { access_type: "offline", prompt: "consent" },
+                    },
+                  });
+                }}
+                className="flex-shrink-0 px-2 py-0.5 rounded bg-red-800/50 hover:bg-red-700/60 text-white font-semibold"
+              >
+                Reconnect
+              </button>
+            </div>
+          )}
         </div>
         <div className="flex-1 overflow-y-auto">
           {filteredThreads.length === 0 && <div className="text-center py-10 text-xs text-white/40">No conversations{search || unreadOnly || channelView !== "all" ? " match these filters" : " yet"}</div>}
@@ -554,30 +729,54 @@ export function InboxPage({ threads = [], setThreads, customers = [], setCustome
             const isActive = t.id === active;
             const cust = findCustomer(t);
             const tags: string[] = Array.isArray(cust?.tags) ? cust.tags : [];
-            return <button key={t.id} onClick={() => { setActive(t.id); markRead(t.id); }} className={"w-full flex items-start gap-3 p-3 border-b border-red-900/20 text-left hover:bg-white/5 transition " + (isActive ? "bg-red-950/20" : "")}>
-              <div className="relative flex-shrink-0">
-                <div className="w-9 h-9 rounded-full bg-gradient-to-br from-red-700 to-red-950 flex items-center justify-center text-xs font-bold">{t.contactName[0]}</div>
-                <div className={"absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full border border-black flex items-center justify-center " + (t.channel === "sms" ? "bg-green-500" : "bg-blue-500")}>
-                  {t.channel === "sms" ? <MessageSquare size={6} /> : <Mail size={6} />}
-                </div>
-              </div>
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center justify-between">
-                  <div className={"text-xs font-semibold truncate " + (t.unread ? "text-white" : "text-white/70")}>{t.contactName}</div>
-                  <div className="text-[9px] text-white/40 flex-shrink-0">{relTime(last?.ts || 0)}</div>
-                </div>
-                {/* ISSUE 5 — customer tags/labels, when a matching customer record has any */}
-                {tags.length > 0 && (
-                  <div className="flex flex-wrap gap-1 mt-0.5">
-                    {tags.slice(0, 3).map((tag: string) => (
-                      <span key={tag} className="text-[8px] px-1.5 py-0.5 rounded-full bg-blue-950/40 border border-blue-700/30 text-blue-300 leading-none">{tag}</span>
-                    ))}
+            return <div key={t.id} className={"relative w-full flex items-start gap-3 p-3 border-b border-red-900/20 hover:bg-white/5 transition " + (isActive ? "bg-red-950/20" : "")}>
+              <button onClick={() => { setActive(t.id); markRead(t.id); }} className="flex-1 min-w-0 flex items-start gap-3 text-left">
+                <div className="relative flex-shrink-0">
+                  <div className="w-9 h-9 rounded-full bg-gradient-to-br from-red-700 to-red-950 flex items-center justify-center text-xs font-bold">{t.contactName[0]}</div>
+                  <div className={"absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full border border-black flex items-center justify-center " + (t.channel === "sms" ? "bg-green-500" : "bg-blue-500")}>
+                    {t.channel === "sms" ? <MessageSquare size={6} /> : <Mail size={6} />}
                   </div>
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center justify-between">
+                    <div className={"text-xs font-semibold truncate " + (t.unread ? "text-white" : "text-white/70")}>{t.contactName}</div>
+                    <div className="text-[9px] text-white/40 flex-shrink-0">{relTime(last?.ts || 0)}</div>
+                  </div>
+                  {/* ISSUE 5 — customer tags/labels, when a matching customer record has any */}
+                  {tags.length > 0 && (
+                    <div className="flex flex-wrap gap-1 mt-0.5">
+                      {tags.slice(0, 3).map((tag: string) => (
+                        <span key={tag} className="text-[8px] px-1.5 py-0.5 rounded-full bg-blue-950/40 border border-blue-700/30 text-blue-300 leading-none">{tag}</span>
+                      ))}
+                    </div>
+                  )}
+                  <div className={"text-[10px] truncate mt-0.5 " + (t.unread ? "text-white/80" : "text-white/40")}>{last?.dir === "out" ? "You: " : ""}{last?.body || "…"}</div>
+                </div>
+                {t.unread && <div className="w-2 h-2 rounded-full bg-red-500 flex-shrink-0 mt-1.5" />}
+              </button>
+              {/* ISSUE 4 (round 3) — three-dot menu: Hide/Unhide + Delete */}
+              <div className="relative flex-shrink-0">
+                <button onClick={e => { e.stopPropagation(); setMenuOpenId(menuOpenId === t.id ? null : t.id); }} className="p-1 rounded hover:bg-white/10 text-white/40 hover:text-white/70">
+                  <MoreVertical size={14} />
+                </button>
+                {menuOpenId === t.id && (
+                  <>
+                    <div className="fixed inset-0 z-10" onClick={() => setMenuOpenId(null)} />
+                    <div className="absolute right-0 top-6 z-20 w-36 rounded-lg bg-black border border-red-900/40 shadow-xl overflow-hidden">
+                      {showHidden ? (
+                        <button onClick={() => { unhideThread(t.id); setMenuOpenId(null); }} className="w-full flex items-center gap-2 px-3 py-2 text-[11px] text-white/80 hover:bg-white/10 text-left"><Eye size={11} />Unhide</button>
+                      ) : (
+                        <button onClick={() => hideThread(t.id)} className="w-full flex items-center gap-2 px-3 py-2 text-[11px] text-white/80 hover:bg-white/10 text-left"><EyeOff size={11} />Hide</button>
+                      )}
+                      {!findCustomer(t) && (
+                        <button onClick={() => convertToLead(t)} className="w-full flex items-center gap-2 px-3 py-2 text-[11px] text-white/80 hover:bg-white/10 text-left"><UserCheck size={11} />Convert to lead</button>
+                      )}
+                      <button onClick={() => deleteThread(t)} className="w-full flex items-center gap-2 px-3 py-2 text-[11px] text-red-400 hover:bg-red-950/40 text-left"><Trash2 size={11} />Delete</button>
+                    </div>
+                  </>
                 )}
-                <div className={"text-[10px] truncate mt-0.5 " + (t.unread ? "text-white/80" : "text-white/40")}>{last?.dir === "out" ? "You: " : ""}{last?.body || "…"}</div>
               </div>
-              {t.unread && <div className="w-2 h-2 rounded-full bg-red-500 flex-shrink-0 mt-1.5" />}
-            </button>;
+            </div>;
           })}
         </div>
       </div>
@@ -605,7 +804,11 @@ export function InboxPage({ threads = [], setThreads, customers = [], setCustome
                 {activeThread.contactEmail && <span>{activeThread.contactEmail}</span>}
               </div>
             </div>
-            {activeThread.customerId && <GBtn variant="ghost" className="!text-xs !py-1"><Users size={11} className="inline mr-1" />View CRM</GBtn>}
+            {findCustomer(activeThread) ? (
+              <GBtn variant="ghost" className="!text-xs !py-1"><Users size={11} className="inline mr-1" />View CRM</GBtn>
+            ) : (
+              <GBtn variant="ghost" onClick={() => convertToLead(activeThread)} className="!text-xs !py-1"><UserCheck size={11} className="inline mr-1" />Convert to Lead</GBtn>
+            )}
           </div>
           {/* Messages */}
           <div className="flex-1 overflow-y-auto p-4 space-y-3">

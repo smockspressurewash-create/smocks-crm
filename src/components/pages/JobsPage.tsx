@@ -240,7 +240,9 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
       const j = jobs.find(x => x.id === jid);
       const c = j && customers.find(x => x.id === j.customerId);
       if (c?.phone && settings?.twilioSid) {
-        const msg = "Hi " + c.firstName + "! Your pressure washing service has been confirmed for " + (j.scheduledDate || "your requested date") + ". We'll text you when we're on the way. Questions? Call (717) 555-0100. — Crew Boss";
+        const coName = (settings as any)?.companyName || "Crew Boss";
+        const coPhone = (settings as any)?.companyPhone || "(717) 555-0100";
+        const msg = "Hi " + c.firstName + "! Your pressure washing service has been confirmed for " + (j.scheduledDate || "your requested date") + ". We'll text you when we're on the way. Questions? Call " + coPhone + ". — " + coName;
         twilioSend(settings, c.phone, msg).catch(() => {});
       }
     }
@@ -980,7 +982,9 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
               const j = jobs.find(x => x.id === jid);
               const c = customers.find(x => x.id === j?.customerId);
               if (!c?.phone) continue;
-              const msg = "Hi " + c.firstName + ", reminder about your scheduled pressure wash on " + (j?.scheduledDate || "your upcoming date") + ". Questions? Call (717) 555-0100 — Crew Boss";
+              const coName = (settings as any)?.companyName || "Crew Boss";
+              const coPhone = (settings as any)?.companyPhone || "(717) 555-0100";
+              const msg = "Hi " + c.firstName + ", reminder about your scheduled pressure wash on " + (j?.scheduledDate || "your upcoming date") + ". Questions? Call " + coPhone + " — " + coName;
               try {
                 if (settings?.twilioSid) { await twilioSend(settings, c.phone, msg); sent++; }
                 else { window.location.href = "sms:" + c.phone.replace(/\D/g, "") + "?body=" + encodeURIComponent(msg); sent++; break; }
@@ -1105,7 +1109,7 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
                 <button onClick={() => { updateJob(rj.id, { scheduledDate: "" }); toast("Moved to unscheduled — reschedule from Calendar"); }} className="px-2 py-1 rounded-lg text-[10px] bg-blue-900/40 hover:bg-blue-800/50 text-blue-300 border border-blue-700/40 whitespace-nowrap">Reschedule</button>
                 <button onClick={async () => {
                   if (!c?.phone) { toast("No phone number for " + c?.firstName, "error"); return; }
-                  const msg = "Hi " + c.firstName + ", we have rain forecast for your service on " + rj.scheduledDate + ". Would you like to reschedule? What day works for you? — Crew Boss";
+                  const msg = "Hi " + c.firstName + ", we have rain forecast for your service on " + rj.scheduledDate + ". Would you like to reschedule? What day works for you? — " + ((settings as any)?.companyName || "Crew Boss");
                   if (settings?.twilioSid) { try { await twilioSend(settings, c.phone, msg); toast("Weather reschedule text sent to " + c.firstName + " ✓"); } catch(e) { toast(e.message, "error"); } }
                   else { window.location.href = "sms:" + c.phone.replace(/\D/g,"") + "?body=" + encodeURIComponent(msg); }
                 }} className="px-2 py-1 rounded-lg text-[10px] bg-white/5 hover:bg-white/10 text-white/60 border border-white/10 whitespace-nowrap">Text customer</button>
@@ -1482,7 +1486,7 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
                   move(j.id, "scheduled");
                   setJobs(prev => prev.map(x => x.id === j.id ? { ...x, scheduledDate: newDate, status: "scheduled", cancelReason: "" } : x));
                   if (c?.phone) {
-                    const msg = "Hi " + c.firstName + ", we've rescheduled your service to " + newDate + ". Reply to confirm or request a different date. — Crew Boss";
+                    const msg = "Hi " + c.firstName + ", we've rescheduled your service to " + newDate + ". Reply to confirm or request a different date. — " + ((settings as any)?.companyName || "Crew Boss");
                     if (settings?.twilioSid) {
                       try { await twilioSend(settings, c.phone, msg); toast("Rescheduled + customer texted ✓"); } catch { toast("Rescheduled — text failed"); }
                     } else {

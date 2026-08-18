@@ -342,7 +342,15 @@ export function useAutomationEngine({
       || (dir.templateKey && SMS_TEMPLATES[dir.templateKey])
       || (spec.smsTemplateKey && SMS_TEMPLATES[spec.smsTemplateKey])
       || `Hi {{first_name}}, ${dir.label || auto.action || auto.name}. — Crew Boss`;
-    return { subject: auto.name || dir.label || "Update from Crew Boss", body: fillTemplate(raw, vars) };
+    // ISSUE 23 (round 3) — SMS_TEMPLATES above is a static module-level
+    // Record with "Crew Boss" baked into ~20 templates; turning each into a
+    // function of settings would be a much bigger diff for the same result.
+    // Every automated send passes through here, so substituting the brand
+    // name once at build time covers all of them (and dir.messageBody /
+    // the inline fallback above) without touching the template table.
+    const coName = (settings as any).companyName || "Crew Boss";
+    const branded = coName === "Crew Boss" ? raw : raw.replace(/Crew Boss/g, coName);
+    return { subject: auto.name || dir.label || `Update from ${coName}`, body: fillTemplate(branded, vars) };
   };
 
   // Actually performs one send (email or SMS, with the existing Twilio ->

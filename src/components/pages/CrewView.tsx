@@ -443,7 +443,7 @@ export function CrewView({ jobs = [], setJobs, customers = [], employees = [], t
                   if (!ok) return;
                 }
                 const eta = new Date(Date.now() + 17 * 60000).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-                const msg = `Hi ${c.firstName}! Your technician is on the way! ETA: ${eta}. — Crew Boss`;
+                const msg = `Hi ${c.firstName}! Your technician is on the way! ETA: ${eta}. — ${(settings as any)?.companyName || "Crew Boss"}`;
                 if (settings?.twilioSid && c.phone) {
                   try { await twilioSend(settings, c.phone, msg); toast("OTW text sent to " + c.firstName + " ✓"); }
                   catch (e: any) { toast(e?.message || "Failed to send OTW text", "red"); }

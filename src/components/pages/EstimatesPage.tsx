@@ -336,7 +336,9 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
                 const est = estimates.find(x => x.id === id);
                 const c = est && customers.find(x => x.id === est.customerId);
                 if (!c?.email) continue;
-                await sendEmail(settings, { to: c.email, subject: "Your estimate from Crew Boss — " + fmt(est.total), body: "Hi " + c.firstName + ",\n\nYour estimate of " + fmt(est.total) + " is ready to review and sign.\n\nView estimate: smocks.com/portal/" + est.id + "\n\nQuestions? Call (717) 555-0100.\n\n— Crew Boss" }).catch(() => {});
+                const estCoName = (settings as any)?.companyName || "Crew Boss";
+                const estCoPhone = (settings as any)?.companyPhone || "(717) 555-0100";
+                await sendEmail(settings, { to: c.email, subject: "Your estimate from " + estCoName + " — " + fmt(est.total), body: "Hi " + c.firstName + ",\n\nYour estimate of " + fmt(est.total) + " is ready to review and sign.\n\nView estimate: smocks.com/portal/" + est.id + "\n\nQuestions? Call " + estCoPhone + ".\n\n— " + estCoName }).catch(() => {});
                 setEstimates(prev => prev.map(e => e.id === id ? { ...e, sentAt: today() } : e));
                 sent++;
               }

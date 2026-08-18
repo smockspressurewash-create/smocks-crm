@@ -317,13 +317,13 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
 
     // Payment confirmation SMS to customer
     if (settings?.twilioSid && c.phone) {
-      const confirmMsg = "Hi " + c.firstName + "! Your payment of $" + totalWithTip.toFixed(2) + " to Crew Boss has been received ✅ We'll be in touch to confirm your service date. Thank you! — " + (settings?.companyName || "Crew Boss");
+      const confirmMsg = "Hi " + c.firstName + "! Your payment of $" + totalWithTip.toFixed(2) + " to " + (settings?.companyName || "Crew Boss") + " has been received ✅ We'll be in touch to confirm your service date. Thank you! — " + (settings?.companyName || "Crew Boss");
       twilioSend(settings, c.phone, confirmMsg).catch(() => {});
     }
 
     // Payment confirmation email to customer
     if (c.email && settings?.googleConnected) {
-      const subject = "Payment Receipt — Crew Boss";
+      const subject = "Payment Receipt — " + (settings?.companyName || "Crew Boss");
       const body = "Hi " + c.firstName + ",\n\nThank you for your payment of $" + totalWithTip.toFixed(2) + ".\n\nServices: " + (e.lineItems || []).map(li => li.description).join(", ") + "\nAmount: $" + totalWithTip.toFixed(2) + "\n\nWe'll contact you soon to schedule your service.\n\n— " + (settings?.companyName || "Crew Boss") + "\n" + (settings?.companyPhone || "(717) 555-0100");
       sendEmail(settings, { to: c.email, subject, body }).catch(() => {});
     }
