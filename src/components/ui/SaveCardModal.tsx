@@ -1,18 +1,19 @@
 import React, { useEffect, useRef, useState } from "react";
 import { CreditCard, AlertCircle, CheckCircle } from "lucide-react";
 import { loadStripeJs, createStripeCustomer, createSetupIntent } from "../../lib/stripe";
-import { deobfuscate } from "../../lib/crypto";
 import { Modal } from "./Modal";
 import { GBtn } from "./GBtn";
 
 // Mirrors StripePaymentModal's flow but for SetupIntent (save card, no charge) —
 // used by the client portal to attach a payment method for future/recurring use.
+// See lib/stripe.ts's round-12 security comment — the secret key lives
+// server-side only now, in functions/api/stripe-action.ts.
 export function SaveCardModal({
-  open, onClose, publishableKey, secretKeyEnc, email, name, existingStripeCustomerId,
+  open, onClose, publishableKey, email, name, existingStripeCustomerId,
   onSaved,
 }: {
   open: boolean; onClose: () => void;
-  publishableKey: string; secretKeyEnc: string;
+  publishableKey: string;
   email: string; name: string; existingStripeCustomerId?: string;
   onSaved: (stripeCustomerId: string, paymentMethodId: string, label: string) => void;
 }) {
@@ -30,12 +31,11 @@ export function SaveCardModal({
     setError("");
     (async () => {
       try {
-        const secretKey = deobfuscate(secretKeyEnc);
-        if (!publishableKey || !secretKey) throw new Error("Stripe is not fully configured.");
-        const customerId = existingStripeCustomerId || (await createStripeCustomer(secretKey, email, name)).id;
+        if (!publishableKey) throw new Error("Stripe is not fully configured.");
+        const customerId = existingStripeCustomerId || (await createStripeCustomer(email, name)).id;
         if (cancelled) return;
         customerIdRef.current = customerId;
-        const intent = await createSetupIntent(secretKey, customerId);
+        const intent = await createSetupIntent(customerId);
         if (cancelled) return;
         const stripe = await loadStripeJs(publishableKey);
         if (cancelled) return;
@@ -50,7 +50,7 @@ export function SaveCardModal({
       }
     })();
     return () => { cancelled = true; };
-  }, [open, publishableKey, secretKeyEnc, email, name, existingStripeCustomerId]);
+  }, [open, publishableKey, email, name, existingStripeCustomerId]);
 
   const confirm = async () => {
     if (!stripeRef.current || !elementsRef.current) return;

@@ -384,9 +384,9 @@ export function ClientAuthPortal({
         open={!!payingInv}
         onClose={() => setPayingInv(null)}
         publishableKey={settings?.stripePublishableKey || ""}
-        secretKeyEnc={settings?.stripeSecretKeyEnc || ""}
         amount={payingInv?.total || 0}
         description={`${companyName} — Invoice #${payingInv?.id || ""}`}
+        invoiceId={payingInv?.id}
         onSuccess={(paymentIntentId) => {
           const invId = payingInv?.id;
           setEstimates((prev: Estimate[]) => prev.map(e => e.id === invId ? { ...e, paidAt: today(), stripePaymentIntentId: paymentIntentId, stripePaymentStatus: "paid" as const } : e));
@@ -404,7 +404,6 @@ export function ClientAuthPortal({
         open={showSaveCard}
         onClose={() => setShowSaveCard(false)}
         publishableKey={settings?.stripePublishableKey || ""}
-        secretKeyEnc={settings?.stripeSecretKeyEnc || ""}
         email={cust.email}
         name={`${cust.firstName} ${cust.lastName}`}
         existingStripeCustomerId={cust.stripeCustomerId}

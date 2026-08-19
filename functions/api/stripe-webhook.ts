@@ -56,8 +56,26 @@ const verifyStripeSignature = async (payload: string, sigHeader: string, secret:
   return diff === 0;
 };
 
-const markInvoicePaid = async (invoiceId: string, paymentIntentId: string): Promise<boolean> => {
-  const paidAt = new Date().toISOString().slice(0, 10);
+// AUDIT (round 12) — every write now goes through this one helper: reads the
+// invoice's current paymentLog, appends the new event, and PATCHes both the
+// log and whatever status fields this event type implies. paymentFailedAt/
+// refundedAt/disputedAt are what App.tsx's existing owner-notification diff
+// effect watches (same mechanism paidAt/clientViewedAt already use), so a
+// webhook event surfaces as a toast/bell/email without this function needing
+// its own email-sending logic (which would mean re-implementing Gmail OAuth
+// token handling here — the notification path already exists client-side).
+const logPaymentEvent = async (
+  invoiceId: string,
+  entry: { type: "paid" | "failed" | "refunded" | "disputed"; amount?: number; stripePaymentIntentId?: string; note?: string },
+  statusPatch: Record<string, unknown>
+): Promise<boolean> => {
+  const getRes = await fetch(`${SUPABASE_URL}/rest/v1/estimates?id=eq.${encodeURIComponent(invoiceId)}&select=paymentLog`, {
+    headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}` },
+  });
+  const rows = await getRes.json().catch(() => []);
+  const existingLog = Array.isArray(rows) && Array.isArray(rows[0]?.paymentLog) ? rows[0].paymentLog : [];
+  const newLog = [...existingLog, { id: crypto.randomUUID(), at: new Date().toISOString(), ...entry }];
+
   const res = await fetch(`${SUPABASE_URL}/rest/v1/estimates?id=eq.${encodeURIComponent(invoiceId)}`, {
     method: "PATCH",
     headers: {
@@ -66,13 +84,22 @@ const markInvoicePaid = async (invoiceId: string, paymentIntentId: string): Prom
       "Content-Type": "application/json",
       Prefer: "return=minimal",
     },
-    body: JSON.stringify({ paidAt, stripePaymentStatus: "paid", stripePaymentIntentId: paymentIntentId }),
+    body: JSON.stringify({ ...statusPatch, paymentLog: newLog }),
   });
   if (!res.ok) {
     const errText = await res.text().catch(() => "");
     console.error("[StripeWebhook] Supabase update failed:", res.status, errText);
   }
   return res.ok;
+};
+
+const markInvoicePaid = (invoiceId: string, paymentIntentId: string, amount?: number): Promise<boolean> => {
+  const paidAt = new Date().toISOString().slice(0, 10);
+  return logPaymentEvent(
+    invoiceId,
+    { type: "paid", amount, stripePaymentIntentId: paymentIntentId, note: "Paid via Stripe" },
+    { paidAt, stripePaymentStatus: "paid", stripePaymentIntentId: paymentIntentId }
+  );
 };
 
 export const onRequestPost = async (context: { request: Request; env: Record<string, string> }) => {
@@ -105,32 +132,73 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
   }
 
   try {
-    let invoiceId: string | undefined;
-    let paymentIntentId: string | undefined;
-    let isPaid = false;
+    let ok = true;
 
     if (event.type === "checkout.session.completed" || event.type === "checkout.session.async_payment_succeeded") {
       const session = event.data?.object || {};
-      invoiceId = session.metadata?.invoiceId || session.client_reference_id;
-      paymentIntentId = session.payment_intent || session.id;
-      isPaid = session.payment_status === "paid";
+      const invoiceId = session.metadata?.invoiceId || session.client_reference_id;
+      const paymentIntentId = session.payment_intent || session.id;
+      if (invoiceId && session.payment_status === "paid") {
+        ok = await markInvoicePaid(invoiceId, paymentIntentId || "", (session.amount_total || 0) / 100);
+      }
     } else if (event.type === "payment_intent.succeeded") {
       const intent = event.data?.object || {};
-      invoiceId = intent.metadata?.invoiceId;
-      paymentIntentId = intent.id;
-      isPaid = true;
+      const invoiceId = intent.metadata?.invoiceId;
+      if (invoiceId) ok = await markInvoicePaid(invoiceId, intent.id, (intent.amount || 0) / 100);
+    } else if (event.type === "payment_intent.payment_failed") {
+      // AUDIT (round 12) — previously unhandled entirely: a declined card
+      // meant Stripe knew, but this app never did — no log, no owner
+      // notification, nothing. Sets paymentFailedAt, which App.tsx's
+      // existing owner-notification diff effect already watches (toast +
+      // bell), so the owner finds out the moment it happens instead of only
+      // noticing an invoice is still unpaid days later.
+      const intent = event.data?.object || {};
+      const invoiceId = intent.metadata?.invoiceId;
+      if (invoiceId) {
+        const reason = intent.last_payment_error?.message || "Card declined";
+        ok = await logPaymentEvent(
+          invoiceId,
+          { type: "failed", amount: (intent.amount || 0) / 100, stripePaymentIntentId: intent.id, note: reason },
+          { paymentFailedAt: new Date().toISOString() }
+        );
+      }
+    } else if (event.type === "charge.refunded") {
+      // AUDIT (round 12) — catches refunds issued directly from the Stripe
+      // dashboard too, not just the app's own Refund button (InvoicesPage.tsx),
+      // so the CRM's paid/refunded status can never drift out of sync with
+      // what Stripe itself actually did.
+      const charge = event.data?.object || {};
+      const invoiceId = charge.metadata?.invoiceId;
+      const paymentIntentId = typeof charge.payment_intent === "string" ? charge.payment_intent : undefined;
+      if (invoiceId) {
+        ok = await logPaymentEvent(
+          invoiceId,
+          { type: "refunded", amount: (charge.amount_refunded || 0) / 100, stripePaymentIntentId: paymentIntentId, note: "Refunded via Stripe" },
+          { refundedAt: new Date().toISOString().slice(0, 10), stripePaymentStatus: "refunded", paidAt: null }
+        );
+      }
+    } else if (event.type === "charge.dispute.created") {
+      // AUDIT (round 12) — a chargeback/dispute is the single highest-urgency
+      // payment event this app can receive (the owner has a very short
+      // window to respond with evidence in the Stripe dashboard) and was
+      // previously invisible to the CRM entirely.
+      const dispute = event.data?.object || {};
+      const paymentIntentId = typeof dispute.payment_intent === "string" ? dispute.payment_intent : undefined;
+      const invoiceId = dispute.metadata?.invoiceId; // rarely present on the dispute object itself
+      if (invoiceId) {
+        ok = await logPaymentEvent(
+          invoiceId,
+          { type: "disputed", amount: (dispute.amount || 0) / 100, stripePaymentIntentId: paymentIntentId, note: dispute.reason || "Dispute opened" },
+          { disputedAt: new Date().toISOString() }
+        );
+      } else {
+        console.warn("[StripeWebhook] dispute.created with no invoiceId on the charge metadata — check the Stripe dashboard directly:", paymentIntentId);
+      }
     } else {
       // Unhandled event type — acknowledge so Stripe stops retrying it.
       return new Response(JSON.stringify({ received: true, ignored: event.type }), { headers: { "Content-Type": "application/json" } });
     }
 
-    if (!invoiceId || !isPaid) {
-      // Nothing to do (e.g. a session that expired unpaid) — not a transient
-      // failure, so acknowledge rather than making Stripe retry forever.
-      return new Response(JSON.stringify({ received: true, skipped: true }), { headers: { "Content-Type": "application/json" } });
-    }
-
-    const ok = await markInvoicePaid(invoiceId, paymentIntentId || "");
     if (!ok) {
       // Genuine failure writing to Supabase — ask Stripe to retry later.
       return new Response(JSON.stringify({ error: "Failed to update invoice" }), {

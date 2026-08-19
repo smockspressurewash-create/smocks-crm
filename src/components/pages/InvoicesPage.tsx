@@ -39,8 +39,7 @@ import { GTxt } from "../ui/GTxt";
 import { Modal } from "../ui/Modal";
 import { InvoicePreviewModal } from "../ui/InvoicePreviewModal";
 import { StripePaymentModal } from "../ui/StripePaymentModal";
-import { createCheckoutSession, retrieveCheckoutSession } from "../../lib/stripe";
-import { deobfuscate } from "../../lib/crypto";
+import { createCheckoutSession, retrieveCheckoutSession, refundPaymentIntent } from "../../lib/stripe";
 import { Badge } from "../ui/Badge";
 import { Stat } from "../ui/Stat";
 import { PBar } from "../ui/PBar";
@@ -182,7 +181,12 @@ export function InvoicesPage({ estimates = [], setEstimates, customers = [], set
   const [selected, setSelected] = useState([]);
   const [stripePayInvoice, setStripePayInvoice] = useState<any>(null);
   const [checkoutLoadingId, setCheckoutLoadingId] = useState<string | null>(null);
-  const stripeReady = !!(settings?.stripePublishableKey && settings?.stripeSecretKeyEnc);
+  const [refundingInvoice, setRefundingInvoice] = useState<string | null>(null);
+  // ROUND 12 — the secret key check (stripeSecretKeyEnc) no longer lives
+  // client-side at all (see lib/stripe.ts); readiness is just "publishable
+  // key is set." If STRIPE_SECRET_KEY isn't configured server-side, the
+  // actual charge attempt fails with a clear error from stripe-action.ts.
+  const stripeReady = !!settings?.stripePublishableKey;
 
   const sendStripeReceipt = (inv: any) => {
     const cust = customers.find(c => c.id === inv.customerId);
@@ -204,16 +208,15 @@ export function InvoicesPage({ estimates = [], setEstimates, customers = [], set
   // instead of the embedded Payment Element (StripePaymentModal). Stripe redirects
   // back here afterward with ?stripe_checkout=success|cancel&invoice=&session_id=.
   const payWithStripeCheckout = async (inv: any) => {
-    if (!settings?.stripeSecretKeyEnc || !settings?.stripePublishableKey) {
+    if (!settings?.stripePublishableKey) {
       toast?.("Set up Stripe in Settings → Integrations first", "yellow");
       return;
     }
     setCheckoutLoadingId(inv.id);
     try {
-      const secretKey = deobfuscate(settings.stripeSecretKeyEnc);
       const cust = customers.find(c => c.id === inv.customerId);
       const base = window.location.origin + window.location.pathname + window.location.hash.split("?")[0];
-      const session = await createCheckoutSession(secretKey, {
+      const session = await createCheckoutSession({
         amountCents: Math.round(Number(inv.amount || 0) * 100),
         currency: "usd",
         description: `Invoice — ${inv.address || inv.id}`,
@@ -273,20 +276,15 @@ export function InvoicesPage({ estimates = [], setEstimates, customers = [], set
         }
         if (!confirmedViaWebhook) {
           console.warn("[Stripe] webhook hasn't confirmed payment yet — falling back to client-side session check. If this keeps happening, verify STRIPE_WEBHOOK_SECRET is set in Cloudflare Pages and the webhook endpoint is registered in Stripe.");
-          if (settings?.stripeSecretKeyEnc) {
-            try {
-              const secretKey = deobfuscate(settings.stripeSecretKeyEnc!);
-              const session = await retrieveCheckoutSession(secretKey, sessionId);
-              if (session.payment_status === "paid") {
-                markPaidViaStripe(invId, session.payment_intent || session.id);
-              } else {
-                toast?.("Payment not completed", "yellow");
-              }
-            } catch (e: any) {
-              toast?.(e.message || "Couldn't verify Stripe payment", "red");
+          try {
+            const session = await retrieveCheckoutSession(sessionId);
+            if (session.payment_status === "paid") {
+              markPaidViaStripe(invId, session.payment_intent || session.id);
+            } else {
+              toast?.("Payment not completed", "yellow");
             }
-          } else {
-            toast?.("Payment may have succeeded, but couldn't be confirmed yet — check back shortly", "yellow");
+          } catch (e: any) {
+            toast?.(e.message || "Couldn't verify Stripe payment", "red");
           }
         }
         cleanUrl();
@@ -669,6 +667,35 @@ export function InvoicesPage({ estimates = [], setEstimates, customers = [], set
               {viewing.paidAt && <div className="mt-5 p-3 bg-green-50 border border-green-300 rounded-lg text-center text-green-900"><CheckCircle size={18} className="inline mb-0.5 mr-1.5" />Paid on {viewing.paidAt}</div>}
               {!viewing.paidAt && age > 14 && <div className="mt-5 p-3 bg-yellow-50 border border-yellow-300 rounded-lg text-yellow-900 text-sm"><AlertTriangle size={14} className="inline mr-1.5 mb-0.5" />{age} days past due</div>}
             </div>
+            {/* AUDIT (round 12) — full payment history (paid/failed/refunded/
+                disputed), written by functions/api/stripe-webhook.ts and this
+                page's own Refund button — previously there was nowhere to
+                see this at all, only the single most-recent paidAt/
+                refundedAt field. */}
+            {Array.isArray((viewing as any).paymentLog) && (viewing as any).paymentLog.length > 0 && (
+              <Glass className="p-4 !bg-black/40">
+                <div className="text-xs text-white/50 uppercase tracking-wider mb-2">Payment History</div>
+                <div className="space-y-1.5">
+                  {[...(viewing as any).paymentLog].reverse().map((p: any) => (
+                    <div key={p.id} className="flex items-center justify-between gap-2 text-xs bg-black/30 rounded-lg px-2.5 py-1.5">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span className={"text-[9px] font-bold px-1.5 py-0.5 rounded-full flex-shrink-0 " + (
+                          p.type === "paid" ? "bg-green-900/40 text-green-300" :
+                          p.type === "failed" ? "bg-red-900/40 text-red-300" :
+                          p.type === "refunded" ? "bg-orange-900/40 text-orange-300" :
+                          "bg-red-900/60 text-red-200"
+                        )}>{p.type.toUpperCase()}</span>
+                        <span className="text-white/50 truncate">{p.note || "—"}</span>
+                      </div>
+                      <div className="text-right flex-shrink-0">
+                        {typeof p.amount === "number" && <span className="text-white/70 font-semibold mr-2">{fmt(p.amount)}</span>}
+                        <span className="text-white/30">{new Date(p.at).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </Glass>
+            )}
             <div className="flex gap-2 justify-end flex-wrap">
               <GBtn variant="ghost" onClick={() => {
                 const payLink = "https://smocks.com/pay/" + viewing.id;
@@ -733,16 +760,45 @@ export function InvoicesPage({ estimates = [], setEstimates, customers = [], set
                 <GBtn variant="ghost" onClick={() => { markPaid(viewing.id); setViewing({ ...viewing, paidAt: today() }); }}><CheckCircle size={12} className="inline mr-1.5" />Mark Paid</GBtn>
               </>}
               {viewing.paidAt && <>
-                <GBtn variant="ghost" className="!text-xs !border-red-800/40 !text-red-400" onClick={() => {
-                  if (!confirm("Issue a refund for this invoice? This marks it as unpaid.")) return;
-                  const refundedAt = today();
-                  markUnpaid(viewing.id);
-                  setEstimates(prev => prev.map(e => e.id === viewing.id ? { ...e, refundedAt } : e));
-                  setViewing({ ...viewing, paidAt: null, refundedAt });
-                  // markUnpaid already persists paidAt: null and its own toast;
-                  // refundedAt wasn't part of that write at all before — persist it too.
-                  (supabase as any).from("estimates").update({ refundedAt }).eq("id", viewing.id).catch((e: any) => console.warn("[MarkPaid] refundedAt sync failed:", e?.message));
-                }}><Undo2 size={11} className="inline mr-1" />Refund</GBtn>
+                {/* SECURITY/CORRECTNESS AUDIT (round 12) — this button used to
+                    ONLY flip local paidAt/refundedAt fields — it never called
+                    Stripe's refund API at all. For a Stripe-paid invoice, that
+                    meant the CRM would confidently show "Refunded" while the
+                    customer's card was never actually credited — a real
+                    customer-facing lie that would surface as a dispute/
+                    chargeback down the line, not a "someday" gap. Now issues
+                    the real Stripe refund first (when the invoice has a
+                    stripePaymentIntentId) and only updates local state once
+                    Stripe confirms it; a manually-paid (cash/check) invoice
+                    has nothing to refund through Stripe, so it still just
+                    unmarks locally. */}
+                <GBtn
+                  variant="ghost"
+                  disabled={refundingInvoice === viewing.id}
+                  className="!text-xs !border-red-800/40 !text-red-400"
+                  onClick={async () => {
+                    const hasStripeCharge = !!viewing.stripePaymentIntentId && viewing.stripePaymentStatus !== "refunded";
+                    if (!confirm(hasStripeCharge
+                      ? "Issue a real Stripe refund for this invoice? This will actually return the money to the customer's card."
+                      : "Mark this invoice as refunded/unpaid? (No Stripe charge on file to reverse — this was paid another way.)")) return;
+                    setRefundingInvoice(viewing.id);
+                    try {
+                      if (hasStripeCharge) {
+                        await refundPaymentIntent(viewing.stripePaymentIntentId);
+                      }
+                      const refundedAt = today();
+                      markUnpaid(viewing.id);
+                      setEstimates(prev => prev.map(e => e.id === viewing.id ? { ...e, refundedAt, stripePaymentStatus: hasStripeCharge ? ("refunded" as const) : e.stripePaymentStatus } : e));
+                      setViewing({ ...viewing, paidAt: null, refundedAt, stripePaymentStatus: hasStripeCharge ? "refunded" : viewing.stripePaymentStatus });
+                      (supabase as any).from("estimates").update({ refundedAt, ...(hasStripeCharge ? { stripePaymentStatus: "refunded" } : {}) }).eq("id", viewing.id).catch((e: any) => console.warn("[MarkPaid] refundedAt sync failed:", e?.message));
+                      toast?.(hasStripeCharge ? "Refunded via Stripe ✓" : "Marked refunded", "green");
+                    } catch (e: any) {
+                      toast?.("Refund failed — " + (e?.message || "unknown error") + ". The invoice was NOT changed.", "red");
+                    } finally {
+                      setRefundingInvoice(null);
+                    }
+                  }}
+                ><Undo2 size={11} className="inline mr-1" />{refundingInvoice === viewing.id ? "Refunding…" : "Refund"}</GBtn>
                 <GBtn variant="ghost" onClick={() => { markUnpaid(viewing.id); setViewing({ ...viewing, paidAt: null }); }}><Undo2 size={12} className="inline mr-1.5" />Unpaid</GBtn>
               </>}
               <GBtn variant="danger" onClick={() => deleteInvoice(viewing)}><Trash2 size={12} className="inline mr-1.5" />Delete</GBtn>
@@ -755,7 +811,6 @@ export function InvoicesPage({ estimates = [], setEstimates, customers = [], set
         open={!!stripePayInvoice}
         onClose={() => setStripePayInvoice(null)}
         publishableKey={settings?.stripePublishableKey || ""}
-        secretKeyEnc={settings?.stripeSecretKeyEnc || ""}
         amount={stripePayInvoice?.total || 0}
         description={`Invoice #${stripePayInvoice?.id?.slice(-8).toUpperCase() || ""}`}
         onSuccess={(paymentIntentId) => stripePayInvoice && markPaidViaStripe(stripePayInvoice.id, paymentIntentId)}

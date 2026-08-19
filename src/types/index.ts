@@ -153,6 +153,25 @@ export interface Estimate {
   conversions?: number;
   stripePaymentIntentId?: string;
   stripePaymentStatus?: "unpaid" | "paid" | "refunded";
+  // AUDIT (round 12) — payment activity log + failure/refund/dispute
+  // timestamps. paymentFailedAt/refundedAt/disputedAt are what the existing
+  // owner-notification diff effect in App.tsx watches (same pattern as
+  // paidAt/clientViewedAt already used there) so a Stripe webhook event
+  // surfaces as a toast/bell/email without needing its own notification
+  // logic inside the Cloudflare Function itself. paymentLog is the
+  // full history for display in InvoicesPage's invoice detail view.
+  paymentFailedAt?: string;
+  refundedAt?: string;
+  disputedAt?: string;
+  paymentLog?: Array<{
+    id: string;
+    type: "paid" | "failed" | "refunded" | "disputed";
+    amount?: number;
+    at: string;
+    method?: string;
+    stripePaymentIntentId?: string;
+    note?: string;
+  }>;
   templateId?: string;
   sendChannel?: "email" | "sms" | "both";
   payChoice?: "now" | "later" | "deposit";

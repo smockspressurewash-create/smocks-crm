@@ -1,20 +1,20 @@
 import React, { useEffect, useRef, useState } from "react";
 import { CreditCard, X, AlertCircle, CheckCircle } from "lucide-react";
 import { loadStripeJs, createPaymentIntent } from "../../lib/stripe";
-import { deobfuscate } from "../../lib/crypto";
 import { Modal } from "./Modal";
 import { GBtn } from "./GBtn";
 
 // Real Stripe Payment Element flow: loads Stripe.js, creates a PaymentIntent
-// directly from the browser (see lib/stripe.ts for the security tradeoff this
-// implies), mounts the Payment Element against its client_secret, and confirms
-// payment in-place without leaving the page.
+// via the same-origin functions/api/stripe-action.ts proxy (the secret key
+// lives server-side only — see that file and lib/stripe.ts's own comments
+// for the round-12 security fix), mounts the Payment Element against its
+// client_secret, and confirms payment in-place without leaving the page.
 export function StripePaymentModal({
-  open, onClose, publishableKey, secretKeyEnc, amount, currency = "usd", description = "",
+  open, onClose, publishableKey, amount, currency = "usd", description = "",
   onSuccess, invoiceId,
 }: {
   open: boolean; onClose: () => void;
-  publishableKey: string; secretKeyEnc: string;
+  publishableKey: string;
   amount: number; currency?: string; description?: string;
   onSuccess: (paymentIntentId: string) => void; invoiceId?: string;
 }) {
@@ -32,13 +32,15 @@ export function StripePaymentModal({
     setError("");
     (async () => {
       try {
-        const secretKey = deobfuscate(secretKeyEnc);
-        if (!publishableKey || !secretKey) throw new Error("Stripe is not fully configured — add both keys in Settings → Integrations.");
+        if (!publishableKey) throw new Error("Stripe is not fully configured — add your publishable key in Settings → Integrations.");
         // FIX 1 (mobile round 8) — metadata.invoiceId lets the server-side
         // stripe-webhook function identify and mark this invoice paid itself
         // once Stripe confirms the charge, instead of relying only on this
-        // modal's own client-side onSuccess callback.
-        const intent = await createPaymentIntent(secretKey, Math.round(amount * 100), currency, description, invoiceId ? { invoiceId } : undefined);
+        // modal's own client-side onSuccess callback. The server-side
+        // functions/api/stripe-action.ts also re-derives the real amount from
+        // the invoice itself when invoiceId is present, ignoring whatever
+        // amount this client claims.
+        const intent = await createPaymentIntent(Math.round(amount * 100), currency, description, invoiceId ? { invoiceId } : undefined);
         if (cancelled) return;
         intentIdRef.current = intent.id;
         const stripe = await loadStripeJs(publishableKey);
@@ -54,7 +56,7 @@ export function StripePaymentModal({
       }
     })();
     return () => { cancelled = true; };
-  }, [open, publishableKey, secretKeyEnc, amount, currency, description, invoiceId]);
+  }, [open, publishableKey, amount, currency, description, invoiceId]);
 
   const confirmPayment = async () => {
     if (!stripeRef.current || !elementsRef.current) return;

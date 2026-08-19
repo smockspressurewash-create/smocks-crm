@@ -720,11 +720,22 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
               )}
               <GBtn variant="ghost" onClick={() => setStep("sign")} className="w-full">← Back to signature</GBtn>
 
+              {/* NOTE (round 12 audit) — no invoiceId passed here deliberately:
+                  this flow can include a customer-chosen tip on top of the
+                  estimate's stored total, so the server-side amount
+                  verification in functions/api/stripe-action.ts (which
+                  overrides the amount with the invoice's own `total` when an
+                  invoiceId IS given) would silently strip the tip. This is
+                  the one payment path that still trusts the client's amount —
+                  a real but much lower-severity residual gap than the secret-
+                  key exposure this round fixed; worth a dedicated follow-up
+                  (e.g. validating amount >= estimate.total server-side
+                  instead of an exact match) if tampering here becomes a
+                  concern. */}
               <StripePaymentModal
                 open={showStripeModal}
                 onClose={() => setShowStripeModal(false)}
                 publishableKey={settings?.stripePublishableKey || ""}
-                secretKeyEnc={settings?.stripeSecretKeyEnc || ""}
                 amount={totalWithTip}
                 description={`${companyName} — ${e?.lineItems?.[0]?.description || "Estimate"} #${e?.id || ""}`}
                 onSuccess={(paymentIntentId) => { setShowStripeModal(false); handleApprove(paymentIntentId); }}

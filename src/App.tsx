@@ -1192,7 +1192,7 @@ export function App() {
   // onto the estimate row in Supabase; the owner's 3s poll pulls those in. Diff
   // each poll against the previous snapshot and surface a toast + bell entry the
   // moment a client opens, pays, or fails to pay an invoice.
-  const invoiceActivityRef = useRef<Record<string, { viewed?: string; paid?: string; failed?: string; status?: string }>>({});
+  const invoiceActivityRef = useRef<Record<string, { viewed?: string; paid?: string; failed?: string; refunded?: string; disputed?: string; status?: string }>>({});
   const invoiceActivitySeededRef = useRef(false);
   // FEATURE — notification center (audit round). This used to be a plain
   // useState capped at 20 entries — anything older just silently fell off
@@ -1211,10 +1211,10 @@ export function App() {
   const markNotificationRead = (id: string) => setNotifications((prev: AppNotification[]) => prev.map(n => n.id === id ? { ...n, read: true } : n));
   useEffect(() => {
     if (!hasCrmSession) return;
-    const snapshot: Record<string, { viewed?: string; paid?: string; failed?: string; status?: string }> = {};
+    const snapshot: Record<string, { viewed?: string; paid?: string; failed?: string; refunded?: string; disputed?: string; status?: string }> = {};
     const newEvents: { id: string; text: string; at: number }[] = [];
     for (const e of estimates as any[]) {
-      const cur = { viewed: e.clientViewedAt, paid: e.paidAt, failed: e.paymentFailedAt, status: e.status };
+      const cur = { viewed: e.clientViewedAt, paid: e.paidAt, failed: e.paymentFailedAt, refunded: e.refundedAt, disputed: e.disputedAt, status: e.status };
       snapshot[e.id] = cur;
       if (!invoiceActivitySeededRef.current) continue; // don't fire on first load
       const prev = invoiceActivityRef.current[e.id] || {};
@@ -1225,7 +1225,14 @@ export function App() {
       // the paid/failed events are inherently invoice-only (you can't pay or
       // fail to pay something that was never invoiced); "viewed" needs the
       // same invoiced-aware wording ClientPortal.tsx now uses.
-      if (cur.paid && !prev.paid) newEvents.push({ id: e.id + ":paid", text: `💰 ${custName} paid invoice ${fmt(e.total)}`, at: Date.now() });
+      //
+      // AUDIT (round 12) — refunded/disputed are new: functions/api/
+      // stripe-webhook.ts now writes refundedAt/disputedAt for charge.refunded
+      // and charge.dispute.created events (previously unhandled entirely —
+      // neither was visible to the owner at all before this).
+      if (cur.disputed && cur.disputed !== prev.disputed) newEvents.push({ id: e.id + ":disputed", text: `🚨 DISPUTE opened by ${custName} on ${fmt(e.total)} — respond in your Stripe dashboard`, at: Date.now() });
+      else if (cur.refunded && cur.refunded !== prev.refunded) newEvents.push({ id: e.id + ":refunded", text: `↩️ ${fmt(e.total)} refunded to ${custName}`, at: Date.now() });
+      else if (cur.paid && !prev.paid) newEvents.push({ id: e.id + ":paid", text: `💰 ${custName} paid invoice ${fmt(e.total)}`, at: Date.now() });
       else if (cur.failed && cur.failed !== prev.failed) newEvents.push({ id: e.id + ":failed", text: `⚠️ ${custName}'s payment failed on ${fmt(e.total)}`, at: Date.now() });
       else if (cur.viewed && !prev.viewed) newEvents.push({ id: e.id + ":viewed", text: `👀 ${custName} opened ${(e as any).invoiced ? "invoice" : "estimate"} ${fmt(e.total)}`, at: Date.now() });
       else if (cur.status === "rejected" && prev.status !== "rejected") newEvents.push({ id: e.id + ":rejected", text: `❌ ${custName} declined estimate ${fmt(e.total)}`, at: Date.now() });
@@ -1254,6 +1261,16 @@ export function App() {
         // connected Gmail, matching every other in-app automated send.
         newEvents.filter(ev => ev.id.endsWith(":paid")).forEach(ev => {
           sendOwnerGmailOnly(settings as any, ownerEmail, "💰 Invoice paid — " + ((settings as any)?.companyName || "Crew Boss"), emailShell(settings as any, "Invoice Paid", `<p>${ev.text.replace("💰 ", "")}</p>`)).catch(() => {});
+        });
+        // AUDIT (round 12) — refunds and disputes are the two highest-stakes
+        // payment events (real money leaving the account, or a chargeback
+        // clock running) and previously had no owner email at all — a bell/
+        // toast only reaches someone with the CRM tab open.
+        newEvents.filter(ev => ev.id.endsWith(":refunded")).forEach(ev => {
+          sendOwnerGmailOnly(settings as any, ownerEmail, "↩️ Invoice refunded — " + ((settings as any)?.companyName || "Crew Boss"), emailShell(settings as any, "Invoice Refunded", `<p>${ev.text.replace("↩️ ", "")}</p>`)).catch(() => {});
+        });
+        newEvents.filter(ev => ev.id.endsWith(":disputed")).forEach(ev => {
+          sendOwnerGmailOnly(settings as any, ownerEmail, "🚨 Payment dispute opened — " + ((settings as any)?.companyName || "Crew Boss"), emailShell(settings as any, "Payment Dispute", `<p>${ev.text.replace("🚨 ", "")}</p><p>Disputes have a short response window — check your Stripe dashboard for evidence submission.</p>`)).catch(() => {});
         });
       }
     }

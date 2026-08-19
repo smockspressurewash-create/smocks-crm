@@ -16,13 +16,30 @@ export const loadStripeJs = (publishableKey: string): Promise<any> => {
   return stripeJsPromise.then(Stripe => Stripe(publishableKey));
 };
 
-// ─── Payment Intents (direct from browser) ────────────────────────────────────
-// NOTE: this calls the Stripe API directly from the browser using the secret key,
-// the same direct-from-browser pattern this codebase already uses for Twilio
-// (see lib/messaging.ts twilioSend). That means the secret key is reachable from
-// the browser session it's configured in. It is NOT safe for a multi-tenant or
-// public-facing deployment — a real backend should create payment intents. This
-// is the "no backend yet" tradeoff explicitly accepted for this app.
+// SECURITY AUDIT (round 12) — every function below used to take a `secretKey`
+// and call api.stripe.com DIRECTLY FROM THE BROWSER with it. That secret key
+// came from `settings.stripeSecretKeyEnc`, which is loaded into every
+// session's settings object — including ClientPortal.tsx/ClientAuthPortal.tsx,
+// the customer-facing payment pages. "Encrypted" there only meant XOR'd with
+// a hardcoded salt shipped in the same bundle (lib/crypto.ts) — trivially
+// reversible, handing full Stripe account access to any customer who opened
+// a payment link. All of that now routes through functions/api/stripe-action.ts,
+// a same-origin Cloudflare Function that holds the real secret key in an
+// environment variable and never returns it to the client. Nothing in this
+// file touches a Stripe secret key anymore — only the publishable key
+// (loadStripeJs above), which is safe to expose by design.
+const stripeAction = async (action: string, params: Record<string, any> = {}): Promise<any> => {
+  const res = await fetch("/api/stripe-action", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action, ...params }),
+  });
+  const data = await res.json().catch(() => ({} as any));
+  if (!res.ok) throw new Error(data?.error || `Stripe error ${res.status}`);
+  return data;
+};
+
+// ─── Payment Intents ───────────────────────────────────────────────────────────
 
 export interface StripePaymentIntent {
   id: string;
@@ -31,51 +48,22 @@ export interface StripePaymentIntent {
 }
 
 export const createPaymentIntent = async (
-  secretKey: string,
   amountCents: number,
   currency: string,
   description: string,
   metadata?: Record<string, string>
-): Promise<StripePaymentIntent> => {
-  const body = new URLSearchParams({
-    amount: String(Math.round(amountCents)),
+): Promise<StripePaymentIntent> =>
+  stripeAction("create_payment_intent", {
+    amountCents,
     currency,
     description,
-    "automatic_payment_methods[enabled]": "true",
+    invoiceId: metadata?.invoiceId,
   });
-  // FIX 1 (mobile round 8) — metadata.invoiceId is how the server-side
-  // stripe-webhook function (functions/api/stripe-webhook.ts) knows which
-  // invoice a payment_intent.succeeded event belongs to, so it can mark that
-  // invoice paid itself instead of trusting the client's own claim.
-  if (metadata) Object.entries(metadata).forEach(([k, v]) => body.set(`metadata[${k}]`, v));
-  const res = await fetch("https://api.stripe.com/v1/payment_intents", {
-    method: "POST",
-    headers: {
-      Authorization: `Basic ${btoa(secretKey + ":")}`,
-      "Content-Type": "application/x-www-form-urlencoded",
-    },
-    body: body.toString(),
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({})) as { error?: { message?: string } };
-    throw new Error(err.error?.message ?? `Stripe error ${res.status}`);
-  }
-  return res.json();
-};
 
-export const retrievePaymentIntent = async (secretKey: string, id: string): Promise<StripePaymentIntent> => {
-  const res = await fetch(`https://api.stripe.com/v1/payment_intents/${id}`, {
-    headers: { Authorization: `Basic ${btoa(secretKey + ":")}` },
-  });
-  if (!res.ok) throw new Error(`Stripe error ${res.status}`);
-  return res.json();
-};
+export const retrievePaymentIntent = async (id: string): Promise<StripePaymentIntent> =>
+  stripeAction("retrieve_payment_intent", { id });
 
 // ─── Checkout Sessions (hosted checkout page) ─────────────────────────────────
-// Alternative to the embedded Payment Element flow above: creates a Checkout
-// Session and redirects the browser to Stripe's own hosted page, then Stripe
-// redirects back to successUrl/cancelUrl. Same direct-from-browser secret-key
-// tradeoff as createPaymentIntent above.
 
 export interface StripeCheckoutSession {
   id: string;
@@ -85,123 +73,35 @@ export interface StripeCheckoutSession {
 }
 
 export const createCheckoutSession = async (
-  secretKey: string,
   opts: { amountCents: number; currency: string; description: string; successUrl: string; cancelUrl: string; customerEmail?: string; invoiceId?: string }
-): Promise<StripeCheckoutSession> => {
-  const body = new URLSearchParams({
-    mode: "payment",
-    success_url: opts.successUrl,
-    cancel_url: opts.cancelUrl,
-    "line_items[0][price_data][currency]": opts.currency,
-    "line_items[0][price_data][product_data][name]": opts.description,
-    "line_items[0][price_data][unit_amount]": String(Math.round(opts.amountCents)),
-    "line_items[0][quantity]": "1",
-  });
-  if (opts.customerEmail) body.set("customer_email", opts.customerEmail);
-  // FIX 1 (mobile round 8) — client_reference_id is how the server-side
-  // stripe-webhook function identifies which invoice a checkout.session
-  // belongs to, so IT (not the client) is the one that marks the invoice paid.
-  if (opts.invoiceId) {
-    body.set("client_reference_id", opts.invoiceId);
-    body.set("metadata[invoiceId]", opts.invoiceId);
-  }
-  const res = await fetch("https://api.stripe.com/v1/checkout/sessions", {
-    method: "POST",
-    headers: {
-      Authorization: `Basic ${btoa(secretKey + ":")}`,
-      "Content-Type": "application/x-www-form-urlencoded",
-    },
-    body: body.toString(),
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({})) as { error?: { message?: string } };
-    throw new Error(err.error?.message ?? `Stripe error ${res.status}`);
-  }
-  return res.json();
-};
+): Promise<StripeCheckoutSession> =>
+  stripeAction("create_checkout_session", opts);
 
-export const retrieveCheckoutSession = async (secretKey: string, sessionId: string): Promise<StripeCheckoutSession> => {
-  const res = await fetch(`https://api.stripe.com/v1/checkout/sessions/${sessionId}`, {
-    headers: { Authorization: `Basic ${btoa(secretKey + ":")}` },
-  });
-  if (!res.ok) throw new Error(`Stripe error ${res.status}`);
-  return res.json();
-};
+export const retrieveCheckoutSession = async (sessionId: string): Promise<StripeCheckoutSession> =>
+  stripeAction("retrieve_checkout_session", { sessionId });
 
 // ─── Customers + saved payment methods (for the client portal) ───────────────
 
 export interface StripeCustomerObj { id: string; email?: string; name?: string }
 
-export const createStripeCustomer = async (secretKey: string, email: string, name: string): Promise<StripeCustomerObj> => {
-  const body = new URLSearchParams({ email, name });
-  const res = await fetch("https://api.stripe.com/v1/customers", {
-    method: "POST",
-    headers: { Authorization: `Basic ${btoa(secretKey + ":")}`, "Content-Type": "application/x-www-form-urlencoded" },
-    body: body.toString(),
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({})) as { error?: { message?: string } };
-    throw new Error(err.error?.message ?? `Stripe error ${res.status}`);
-  }
-  return res.json();
-};
+export const createStripeCustomer = async (email: string, name: string): Promise<StripeCustomerObj> =>
+  stripeAction("create_customer", { email, name });
 
 export interface StripeSetupIntent { id: string; client_secret: string; status: string }
 
-export const createSetupIntent = async (secretKey: string, customerId: string): Promise<StripeSetupIntent> => {
-  const body = new URLSearchParams({ customer: customerId, "payment_method_types[0]": "card" });
-  const res = await fetch("https://api.stripe.com/v1/setup_intents", {
-    method: "POST",
-    headers: { Authorization: `Basic ${btoa(secretKey + ":")}`, "Content-Type": "application/x-www-form-urlencoded" },
-    body: body.toString(),
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({})) as { error?: { message?: string } };
-    throw new Error(err.error?.message ?? `Stripe error ${res.status}`);
-  }
-  return res.json();
-};
+export const createSetupIntent = async (customerId: string): Promise<StripeSetupIntent> =>
+  stripeAction("create_setup_intent", { customerId });
 
 export const chargeSavedPaymentMethod = async (
-  secretKey: string,
   customerId: string,
   paymentMethodId: string,
   amountCents: number,
   currency: string,
-  description: string
-): Promise<StripePaymentIntent> => {
-  const body = new URLSearchParams({
-    amount: String(Math.round(amountCents)),
-    currency,
-    description,
-    customer: customerId,
-    payment_method: paymentMethodId,
-    off_session: "true",
-    confirm: "true",
-  });
-  const res = await fetch("https://api.stripe.com/v1/payment_intents", {
-    method: "POST",
-    headers: { Authorization: `Basic ${btoa(secretKey + ":")}`, "Content-Type": "application/x-www-form-urlencoded" },
-    body: body.toString(),
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({})) as { error?: { message?: string } };
-    throw new Error(err.error?.message ?? `Stripe error ${res.status}`);
-  }
-  return res.json();
-};
+  description: string,
+  invoiceId?: string
+): Promise<StripePaymentIntent> =>
+  stripeAction("charge_saved_payment_method", { customerId, paymentMethodId, amountCents, currency, description, invoiceId });
 
-export const refundPaymentIntent = async (secretKey: string, paymentIntentId: string): Promise<void> => {
-  const res = await fetch("https://api.stripe.com/v1/refunds", {
-    method: "POST",
-    headers: {
-      Authorization: `Basic ${btoa(secretKey + ":")}`,
-      "Content-Type": "application/x-www-form-urlencoded",
-    },
-    body: new URLSearchParams({ payment_intent: paymentIntentId }).toString(),
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({})) as { error?: { message?: string } };
-    throw new Error(err.error?.message ?? `Stripe refund error ${res.status}`);
-  }
+export const refundPaymentIntent = async (paymentIntentId: string): Promise<void> => {
+  await stripeAction("refund", { paymentIntentId });
 };
