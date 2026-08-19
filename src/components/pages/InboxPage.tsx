@@ -148,6 +148,27 @@ export function InboxPage({ threads = [], setThreads, customers = [], setCustome
   const customersRef = useRef(customers);
   useEffect(() => { customersRef.current = customers; }, [customers]);
 
+  // ISSUE 4 (round 8) — ROOT CAUSE of repeated opt-in/opt-out notifications:
+  // deriving "have we already told the owner about this STOP/START message"
+  // purely from `threadsRef.current` (live React state) breaks the instant
+  // that state gets rebuilt from a server refetch (loadInboxThreads below
+  // runs on its own poll AND on every realtime change to inbox_threads —
+  // not just changes to the thread involved). If a refetch lands before a
+  // message's `sid` has been synced back to the server, the next Twilio
+  // poll's `knownSids` set (built from the same live state) is missing it
+  // and reprocesses it as brand new — re-toasting "re-subscribed" for a
+  // message already handled. A localStorage-backed set of notified sids
+  // survives any such state rebuild, so a given physical message can only
+  // ever trigger the opt-in/opt-out toast once, full stop.
+  const [notifiedSmsSids, setNotifiedSmsSids] = usePersistent<string[]>("smocks.inboxNotifiedSids", []);
+  const notifiedSidsRef = useRef<Set<string>>(new Set(notifiedSmsSids));
+  useEffect(() => { notifiedSidsRef.current = new Set(notifiedSmsSids); }, [notifiedSmsSids]);
+  const markSidNotified = (sid: string) => {
+    if (!sid || notifiedSidsRef.current.has(sid)) return;
+    notifiedSidsRef.current.add(sid);
+    setNotifiedSmsSids((prev: string[]) => prev.includes(sid) ? prev : [...prev, sid].slice(-1000));
+  };
+
   // Defensive de-dup: collapse messages that are the same physical message,
   // keeping the first. Applied wherever threads are normalized so any
   // already-corrupted server data self-heals on load instead of needing a
@@ -206,11 +227,32 @@ export function InboxPage({ threads = [], setThreads, customers = [], setCustome
         const fromServer = data.map(normalizeInboxThread);
         setThreads((prev: any[]) => {
           const byId = new Map(fromServer.map(t => [t.id, t]));
+          // ISSUE 1 (round 8) — this used to wholesale-replace an EXISTING
+          // thread's messages with whatever the server had, even if a message
+          // had just been optimistically added locally (e.g. a manual send —
+          // see send() below) but hadn't finished its own upsert yet. This
+          // effect re-runs on every realtime change to inbox_threads for the
+          // WHOLE table (any row, any column, any other conversation), so it
+          // could fire mid-send and silently wipe the just-composed message
+          // from view before it ever synced — a message the owner just typed
+          // vanishing (or a later poll re-adding it via a different path with
+          // different metadata) is exactly the kind of thing that reads as
+          // "my message showed up wrong." Merge in any locally-known message
+          // the server fetch doesn't have yet, instead of dropping it.
+          const merged = fromServer.map(t => {
+            const local = prev.find(p => p.id === t.id);
+            if (!local || !Array.isArray(local.messages) || local.messages.length === 0) return t;
+            const serverIds = new Set(t.messages.map((m: any) => m.id));
+            const pendingLocal = local.messages.filter((m: any) => !serverIds.has(m.id));
+            if (pendingLocal.length === 0) return t;
+            const combined = dedupeMessages([...t.messages, ...pendingLocal]).sort((a: any, b: any) => (a.ts || 0) - (b.ts || 0));
+            return { ...t, messages: combined };
+          });
           // Keep any local sms thread not yet confirmed server-side (e.g. a message
           // just sent, before its own upsert lands) so it doesn't flicker away.
           const localOnlySms = prev.filter(t => t.channel === "sms" && !byId.has(t.id));
           const nonSms = prev.filter(t => t.channel !== "sms");
-          return [...fromServer, ...localOnlySms, ...nonSms];
+          return [...merged, ...localOnlySms, ...nonSms];
         });
       } catch (e: any) {
         console.warn("[Inbox] inbox_threads fetch threw:", e?.message);
@@ -310,6 +352,17 @@ export function InboxPage({ threads = [], setThreads, customers = [], setCustome
             threadsRef.current.flatMap(t => t.messages.map((m: any) => m.sid).filter(Boolean))
           );
           const touchedIds = new Set<string>();
+          // ISSUE 2 (round 8) — ROOT CAUSE of the "N new messages" toast (and,
+          // by extension, its accompanying opt-in/opt-out toast) firing
+          // repeatedly with nothing actually new: this counted `incoming.length`
+          // — Twilio's RAW fetch count for this poll — regardless of how many
+          // of those messages the knownSids check below actually treated as
+          // new. A poll that re-fetched 7 already-seen messages (e.g. because
+          // `since` briefly regressed after a concurrent full-table refetch
+          // reset threadsRef — see loadInboxThreads below) reported "7 new
+          // messages" even though every single one was skipped. Track the
+          // ACTUAL processed count instead.
+          let newlyProcessedCount = 0;
           setThreads(prev => {
             let updated = [...prev];
             incoming.forEach(msg => {
@@ -328,23 +381,33 @@ export function InboxPage({ threads = [], setThreads, customers = [], setCustome
               // polling) — functions/api/twilio-sms-webhook.ts is the real,
               // always-on fix once configured as the Twilio Messaging
               // Service's inbound webhook URL.
+              //
+              // ISSUE 2 (round 8) — gated on notifiedSidsRef (localStorage-
+              // backed, see above) rather than only on the knownSids check
+              // above: knownSids is rebuilt from live thread state every poll
+              // and can be briefly incomplete after a concurrent server
+              // refetch, which previously let the SAME sid re-trigger this
+              // toast on a later poll even though it had already fired once.
               const body = (msg.body || "").trim().toUpperCase();
+              const alreadyNotified = !!(msg.sid && notifiedSidsRef.current.has(msg.sid));
               if (["STOP", "STOPALL", "UNSUBSCRIBE", "CANCEL", "END", "QUIT"].includes(body)) {
                 if (customer?.id && setCustomers) {
                   setCustomers((prev: Customer[]) => prev.map(c => c.id === customer.id
                     ? { ...c, smsOptOut: true, optOutDate: today(), smsOptIn: false } as Customer
                     : c));
-                  toast("⛔ " + (customer.firstName || phone) + " replied STOP — unsubscribed");
-                } else {
+                  if (!alreadyNotified) toast("⛔ " + (customer.firstName || phone) + " replied STOP — unsubscribed");
+                } else if (!alreadyNotified) {
                   toast("⛔ STOP received from unknown number " + phone + " — no matching customer to unsubscribe");
                 }
+                if (msg.sid) markSidNotified(msg.sid);
               } else if (["START", "UNSTOP", "YES"].includes(body)) {
                 if (customer?.id && setCustomers) {
                   setCustomers((prev: Customer[]) => prev.map(c => c.id === customer.id
                     ? { ...c, smsOptOut: false, smsOptIn: true, smsOptInAt: new Date().toISOString() } as Customer
                     : c));
                 }
-                toast("✅ " + (customer?.firstName || phone) + " re-subscribed");
+                if (!alreadyNotified) toast("✅ " + (customer?.firstName || phone) + " re-subscribed");
+                if (msg.sid) markSidNotified(msg.sid);
               }
 
               const existingThread = updated.find(t => t.channel === "sms" && t.contactPhone?.replace(/\D/g, "") === phone.replace(/\D/g, ""));
@@ -356,17 +419,19 @@ export function InboxPage({ threads = [], setThreads, customers = [], setCustome
                 if (!isDup) {
                   updated = updated.map(t => t.id === existingThread.id ? { ...t, unread: true, messages: [...t.messages, newMsg] } : t);
                   touchedIds.add(existingThread.id);
+                  newlyProcessedCount++;
                 }
               } else {
                 const newThreadId = uid();
                 updated = [{ id: newThreadId, channel: "sms", contactName: customer ? customer.firstName + " " + customer.lastName : phone, contactPhone: phone, contactEmail: "", customerId: customer?.id || null, unread: true, messages: [newMsg] }, ...updated];
                 touchedIds.add(newThreadId);
+                newlyProcessedCount++;
               }
             });
             touchedIds.forEach(id => { const t = updated.find(x => x.id === id); if (t) syncThreadToSupabase(t); });
             return updated;
           });
-          if (incoming.length > 0) toast(incoming.length + " new message" + (incoming.length > 1 ? "s" : ""));
+          if (newlyProcessedCount > 0) toast(newlyProcessedCount + " new message" + (newlyProcessedCount > 1 ? "s" : ""));
         }
       } catch { /* silent */ } finally { setPolling(false); }
     };
@@ -496,6 +561,18 @@ export function InboxPage({ threads = [], setThreads, customers = [], setCustome
       setGmailThreads(prev => prev.map(t => t.id === active ? { ...t, messages: [...t.messages, outMsg] } : t));
     } else {
       setThreads(prev => prev.map(t => t.id === active ? { ...t, messages: [...t.messages, outMsg] } : t));
+      // ISSUE 1 (round 8) — sync this message to Supabase RIGHT NOW, not only
+      // after twilioSend resolves. Previously the message sat in local-only
+      // state for the whole duration of the outbound API call; if a realtime
+      // refresh (any inbox_threads change, any conversation) landed during
+      // that window, the old wholesale-replace in loadInboxThreads (fixed
+      // above) could wipe it before it was ever written — after which
+      // finishing the send couldn't re-attach "sent" status either, since the
+      // message was gone from local state to match against. Persisting it
+      // immediately, with dir "out" already set, closes that window: even if
+      // a concurrent refetch runs a moment later, the merge fix above will
+      // already find this message on the server and keep it correctly.
+      syncThreadToSupabase({ ...activeThread, messages: [...activeThread.messages, outMsg] });
     }
     setInput("");
     setSending(true);
@@ -545,16 +622,48 @@ export function InboxPage({ threads = [], setThreads, customers = [], setCustome
     // already existed for the same phone/email — "New Message" to someone
     // you already had a conversation with silently forked it into a second,
     // disconnected thread instead of continuing the real one.
-    const existing = newDraft.channel === "sms"
+    let existing = newDraft.channel === "sms"
       ? threads.find(t => t.channel === "sms" && t.contactPhone && newDraft.phone && t.contactPhone.replace(/\D/g, "") === newDraft.phone.replace(/\D/g, ""))
       : threads.find(t => t.channel === "email" && t.contactEmail && newDraft.email && t.contactEmail.toLowerCase() === newDraft.email.toLowerCase());
-    const threadId = existing?.id || uid();
-    if (existing) {
-      setThreads(prev => prev.map(t => t.id === threadId ? { ...t, messages: [...t.messages, outMsg] } : t));
-    } else {
-      const newThread = { id: threadId, channel: newDraft.channel, contactName: newDraft.to, contactPhone: newDraft.phone, contactEmail: newDraft.email, customerId: customer?.id || null, unread: false, messages: [outMsg] };
-      setThreads(prev => [newThread, ...prev]);
+    // ISSUE 1 (round 8) — the local `threads` state above only knows about
+    // conversations already loaded into this session. If Twilio's inbound
+    // webhook (functions/api/twilio-sms-webhook.ts) already created a server
+    // row for this exact phone number — e.g. this contact texted the opt-in
+    // keyword moments ago and this session's periodic/realtime refresh
+    // hasn't caught up yet — composing "New Message" here used to mint a
+    // SECOND, disconnected thread row for the same phone number instead of
+    // reusing that one. That leaves the conversation split across two rows:
+    // one holding only the webhook's inbound message, one holding only this
+    // outbound reply — from inside the "wrong" half it looks exactly like
+    // "my sent message never shows up with their replies." Check the server
+    // directly by phone before deciding to create a new row.
+    if (!existing && newDraft.channel === "sms" && newDraft.phone) {
+      try {
+        const digits = newDraft.phone.replace(/\D/g, "");
+        const { data } = await (supabase as any).from("inbox_threads").select("*").eq("channel", "sms");
+        const serverMatch = Array.isArray(data) ? data.find((r: any) => (r.contact_phone || "").replace(/\D/g, "") === digits && digits) : null;
+        if (serverMatch) existing = normalizeInboxThread(serverMatch);
+      } catch (e: any) {
+        console.warn("[Inbox] startNew server thread lookup failed, creating new thread:", e?.message);
+      }
     }
+    const threadId = existing?.id || uid();
+    let composedThread: any;
+    if (existing) {
+      const alreadyLocal = threads.some(t => t.id === existing.id);
+      composedThread = { ...existing, messages: [...existing.messages, outMsg] };
+      if (alreadyLocal) {
+        setThreads(prev => prev.map(t => t.id === threadId ? composedThread : t));
+      } else {
+        // Found server-side but this session's local `threads` doesn't have
+        // it yet — hydrate it in now instead of waiting for the next poll.
+        setThreads(prev => [composedThread, ...prev]);
+      }
+    } else {
+      composedThread = { id: threadId, channel: newDraft.channel, contactName: newDraft.to, contactPhone: newDraft.phone, contactEmail: newDraft.email, customerId: customer?.id || null, unread: false, messages: [outMsg] };
+      setThreads(prev => [composedThread, ...prev]);
+    }
+    if (newDraft.channel === "sms") syncThreadToSupabase(composedThread);
     setActive(threadId);
     setNewModal(false);
     const finalize = (status: "sent" | "failed", extra: any = {}) => {

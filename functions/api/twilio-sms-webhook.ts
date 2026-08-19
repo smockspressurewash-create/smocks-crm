@@ -200,6 +200,50 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
       return res.ok;
     };
 
+    // ISSUE 1 (round 8) — the confirmation/welcome TwiML replies below are
+    // real outbound SMS Twilio sends to the customer, but until now nothing
+    // ever recorded them in inbox_threads — they were invisible in the
+    // owner's Inbox, which read as "the auto-reply isn't showing as
+    // outgoing" (it wasn't showing at all). Persist each one as a normal
+    // dir:"out" message in the same thread the inbound trigger message just
+    // landed in. Id is derived from the triggering MessageSid (not a fresh
+    // random one) so a Twilio webhook retry of the SAME inbound request can
+    // never log the reply twice.
+    const persistOutboundReply = async (text: string) => {
+      try {
+        const threadsRes = await fetch(`${SUPABASE_URL}/rest/v1/inbox_threads?channel=eq.sms&select=id,contact_phone,messages`, {
+          headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}` },
+        });
+        const existingThreads = await threadsRes.json().catch(() => []);
+        const existingThread = Array.isArray(existingThreads)
+          ? existingThreads.find((t: any) => normalizePhoneDigits(t.contact_phone) === fromDigits)
+          : null;
+        const replyId = params.MessageSid ? params.MessageSid + "-reply" : crypto.randomUUID();
+        const alreadyHave = existingThread && (Array.isArray(existingThread.messages) ? existingThread.messages : []).some((m: any) => m?.id === replyId);
+        if (alreadyHave) return;
+        const replyMsg = { id: replyId, dir: "out", body: text, ts: Date.now() };
+        if (existingThread) {
+          const merged = [...(Array.isArray(existingThread.messages) ? existingThread.messages : []), replyMsg];
+          const patchRes = await fetch(`${SUPABASE_URL}/rest/v1/inbox_threads?id=eq.${encodeURIComponent(existingThread.id)}`, {
+            method: "PATCH",
+            headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}`, "Content-Type": "application/json", Prefer: "return=minimal" },
+            body: JSON.stringify({ messages: merged, last_message_at: replyMsg.ts, updated_at: new Date().toISOString() }),
+          });
+          if (!patchRes.ok) console.error("[TwilioSmsWebhook] auto-reply PATCH failed (" + patchRes.status + "):", await patchRes.text().catch(() => ""));
+        } else {
+          const contactName = match ? `${match.firstName || ""} ${match.lastName || ""}`.trim() || from : from;
+          const postRes = await fetch(`${SUPABASE_URL}/rest/v1/inbox_threads`, {
+            method: "POST",
+            headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}`, "Content-Type": "application/json", Prefer: "return=minimal" },
+            body: JSON.stringify({ id: crypto.randomUUID(), channel: "sms", contact_name: contactName, contact_phone: from, customer_id: match?.id || null, unread: false, messages: [replyMsg], last_message_at: replyMsg.ts, updated_at: new Date().toISOString() }),
+          });
+          if (!postRes.ok) console.error("[TwilioSmsWebhook] auto-reply POST failed (" + postRes.status + "):", await postRes.text().catch(() => ""));
+        }
+      } catch (e: any) {
+        console.error("[TwilioSmsWebhook] failed to persist auto-reply:", e?.message);
+      }
+    };
+
     if (isStop) {
       if (match?.id) {
         await patchCustomer(match.id, { smsOptOut: true, optOutDate: new Date().toISOString().slice(0, 10), smsOptIn: false, smsOptInPending: false });
@@ -220,7 +264,9 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
     if (isConfirm && match?.smsOptInPending) {
       await patchCustomer(match.id, { smsOptIn: true, smsOptInAt: new Date().toISOString(), smsOptInPending: false, smsOptOut: false });
       console.log("[TwilioSmsWebhook] confirmed opt-in for customer", match.id);
-      return twiml(`You're confirmed! Welcome to ${companyName} text updates — appointment reminders, on-my-way alerts, and occasional offers. Msg freq varies (~1-4/mo). Msg&data rates may apply. Reply HELP for help, STOP to cancel anytime.`);
+      const replyText = `You're confirmed! Welcome to ${companyName} text updates — appointment reminders, on-my-way alerts, and occasional offers. Msg freq varies (~1-4/mo). Msg&data rates may apply. Reply HELP for help, STOP to cancel anytime.`;
+      await persistOutboundReply(replyText);
+      return twiml(replyText);
     }
 
     if (isOptInKeyword) {
@@ -241,7 +287,9 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
         await patchCustomer(customerId, { smsOptInPending: true, smsOptInPendingAt: new Date().toISOString() });
       }
       console.log("[TwilioSmsWebhook] opt-in keyword received, pending confirmation for", customerId || from);
-      return twiml(`Thanks for texting ${keyword} to ${companyName}! Reply Y to confirm you want text updates (appointment reminders & offers, ~1-4 msgs/mo). Msg&data rates may apply. Terms: ${termsUrl} Privacy: ${privacyUrl}`);
+      const replyText = `Thanks for texting ${keyword} to ${companyName}! Reply Y to confirm you want text updates (appointment reminders & offers, ~1-4 msgs/mo). Msg&data rates may apply. Terms: ${termsUrl} Privacy: ${privacyUrl}`;
+      await persistOutboundReply(replyText);
+      return twiml(replyText);
     }
 
     // isStart (plain STOP-reversal, not the keyword flow above) — checked
