@@ -71,7 +71,7 @@ import {
 import { seedWeather } from "./lib/weather";
 import { fetchRealWeather } from "./lib/weather";
 import { fmt, uid, today, daysSince, daysFromNow, consumeOAuthIntent, getLastOwnerSessionFlag, setLastOwnerSessionFlag, getLastOwnerId, setLastOwnerId, buildChecklistFromServices, withTimeout, normalizeJobRow, totalJobPhotoCount, notifyDesktop, stripLegacyJobFields, getPollIntervalMs, purgeOldJobMedia } from "./lib/utils";
-import { sendEmail, buildTomorrowJobsEmailHtml, buildDailyBriefingEmailHtml, setOptedOutPhones } from "./lib/messaging";
+import { sendEmail, sendOwnerGmailOnly, emailShell, buildTomorrowJobsEmailHtml, buildDailyBriefingEmailHtml, setOptedOutPhones } from "./lib/messaging";
 import { exchangeSocialOAuthCode, type SocialPlatform } from "./lib/socialOAuth";
 import type {
   Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense,
@@ -835,6 +835,23 @@ export function App() {
   // changes.
   const settingsRef = useRef(settings);
   useEffect(() => { settingsRef.current = settings; }, [settings]);
+  // ISSUE 14 (round 11) — ROOT CAUSE of "all Alfred check-in messages look
+  // the same": the check-in effect further down is deliberately keyed only
+  // on [crmUserId] (see its own comment) so its hourly setInterval survives
+  // unrelated re-renders — but its tryCheckin() closure read `jobs`,
+  // `estimates`, `goalsList`, and `weatherData` directly from component
+  // scope, not via a ref. A closure created once (when the effect first ran,
+  // near login) keeps referencing whatever those variables equalled AT THAT
+  // MOMENT for its entire lifetime — every hourly firing for the rest of the
+  // session used that same frozen snapshot, so the job counts/weather/
+  // revenue never changed between check-ins even though the real data did.
+  // Mirrors the settingsRef pattern above for the same reason.
+  const jobsRef = useRef(jobs);
+  useEffect(() => { jobsRef.current = jobs; }, [jobs]);
+  const estimatesRef = useRef(estimates);
+  useEffect(() => { estimatesRef.current = estimates; }, [estimates]);
+  const goalsListRef = useRef(goalsList);
+  useEffect(() => { goalsListRef.current = goalsList; }, [goalsList]);
 
   // ISSUE 13 (round 2) — "owner Google token keeps disconnecting". The
   // employee side (EmployeePortal.tsx) has always had a proactive 5-minute
@@ -1202,9 +1219,15 @@ export function App() {
       if (!invoiceActivitySeededRef.current) continue; // don't fire on first load
       const prev = invoiceActivityRef.current[e.id] || {};
       const custName = (() => { const c = customers.find(x => x.id === e.customerId); return c ? `${c.firstName} ${c.lastName}` : "A customer"; })();
+      // ISSUE 11 (round 11) — "opened invoice" was hardcoded regardless of
+      // whether this estimate row is actually invoiced yet (invoiced: true)
+      // — a fresh, un-invoiced quote being viewed said "invoice" too. Only
+      // the paid/failed events are inherently invoice-only (you can't pay or
+      // fail to pay something that was never invoiced); "viewed" needs the
+      // same invoiced-aware wording ClientPortal.tsx now uses.
       if (cur.paid && !prev.paid) newEvents.push({ id: e.id + ":paid", text: `💰 ${custName} paid invoice ${fmt(e.total)}`, at: Date.now() });
       else if (cur.failed && cur.failed !== prev.failed) newEvents.push({ id: e.id + ":failed", text: `⚠️ ${custName}'s payment failed on ${fmt(e.total)}`, at: Date.now() });
-      else if (cur.viewed && !prev.viewed) newEvents.push({ id: e.id + ":viewed", text: `👀 ${custName} opened invoice ${fmt(e.total)}`, at: Date.now() });
+      else if (cur.viewed && !prev.viewed) newEvents.push({ id: e.id + ":viewed", text: `👀 ${custName} opened ${(e as any).invoiced ? "invoice" : "estimate"} ${fmt(e.total)}`, at: Date.now() });
       else if (cur.status === "rejected" && prev.status !== "rejected") newEvents.push({ id: e.id + ":rejected", text: `❌ ${custName} declined estimate ${fmt(e.total)}`, at: Date.now() });
       // FIX 17 — accepting a quote previously only fired the toast the CLIENT's
       // own browser showed itself (worthless to the owner, a different
@@ -1223,6 +1246,14 @@ export function App() {
       if (ownerEmail) {
         newEvents.filter(ev => ev.id.endsWith(":approved") || ev.id.endsWith(":rejected")).forEach(ev => {
           sendEmail(settings as any, { to: ownerEmail, subject: "Quote update — " + (settings as any)?.companyName || "Crew Boss", body: ev.text }).catch(() => {});
+        });
+        // ISSUE 11 (round 11) — getting paid was the one invoice event that
+        // DIDN'T email the owner (only approved/rejected quotes did) despite
+        // being the most important one to not miss if their CRM tab isn't
+        // open. Branded (emailShell) + routed through the owner's own
+        // connected Gmail, matching every other in-app automated send.
+        newEvents.filter(ev => ev.id.endsWith(":paid")).forEach(ev => {
+          sendOwnerGmailOnly(settings as any, ownerEmail, "💰 Invoice paid — " + ((settings as any)?.companyName || "Crew Boss"), emailShell(settings as any, "Invoice Paid", `<p>${ev.text.replace("💰 ", "")}</p>`)).catch(() => {});
         });
       }
     }
@@ -1375,16 +1406,16 @@ export function App() {
       const hour = new Date().getHours();
       if (hour < 8 || hour > 20) { console.log("[AlfredCheckin] skipped — outside 8am-8pm window"); return; }
 
-      const todaysJobs = jobs.filter(j => j.scheduledDate === todayStr);
+      const todaysJobs = jobsRef.current.filter(j => j.scheduledDate === todayStr);
       const scheduledCount = todaysJobs.filter(j => j.status === "scheduled").length;
       const inProgressCount = todaysJobs.filter(j => j.status === "in_progress").length;
       const completedCount = todaysJobs.filter(j => j.status === "completed").length;
       const revenueToday = todaysJobs.filter(j => j.status === "completed").reduce((s, j) => s + (Number(j.amount) || 0), 0);
-      const openGoals = (goalsList || []).filter((g: any) => !g.completed && !g.achieved);
-      const staleEstimates = estimates.filter(e => e.status === "pending" && daysSince(e.createdAt) >= 5);
-      const pendingQuotes = estimates.filter(e => e.status === "pending");
-      const overdueInvoices = estimates.filter(e => e.invoiced && !e.paidAt && e.invoicedAt && daysSince(e.invoicedAt) > 7);
-      const weatherLine = weatherData?.current ? Math.round(weatherData.current.temp) + "°F, " + weatherData.current.description : null;
+      const openGoals = (goalsListRef.current || []).filter((g: any) => !g.completed && !g.achieved);
+      const staleEstimates = estimatesRef.current.filter(e => e.status === "pending" && daysSince(e.createdAt) >= 5);
+      const pendingQuotes = estimatesRef.current.filter(e => e.status === "pending");
+      const overdueInvoices = estimatesRef.current.filter(e => e.invoiced && !e.paidAt && e.invoicedAt && daysSince(e.invoicedAt) > 7);
+      const weatherLine = weatherDataRef.current?.current ? Math.round(weatherDataRef.current.current.temp) + "°F, " + weatherDataRef.current.current.description : null;
 
       const lines = [
         "👋 Checking in — " + new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) + ".",
@@ -1412,10 +1443,12 @@ export function App() {
     const interval = setInterval(tryCheckin, 60 * 60 * 1000);
     return () => { clearTimeout(t); clearInterval(interval); };
     // Deliberately keyed only on crmUserId, not jobs/estimates/goalsList/
-    // settings/weatherData — tryCheckin reads settingsRef.current for the
-    // latest gating state, and closes over the rest, at fire-time without
-    // needing to re-subscribe this effect (and therefore reset the hourly
-    // interval) on every unrelated data change.
+    // settings/weatherData — tryCheckin reads ALL of those from refs
+    // (settingsRef/jobsRef/estimatesRef/goalsListRef/weatherDataRef) at
+    // fire-time now, specifically so it never needs to re-subscribe this
+    // effect (and therefore reset the hourly interval) on every unrelated
+    // data change, while still seeing live data instead of a snapshot frozen
+    // at whatever those variables equalled when the effect first ran.
   }, [crmUserId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // AUDIT FIX — same relocation as the general check-in effect above, for the
@@ -1568,6 +1601,12 @@ export function App() {
   // explicit error instead of ever falling back to seedWeather silently.
   const [weatherData, setWeatherData] = useState<typeof seedWeather | null>(null);
   const [weatherFetchError, setWeatherFetchError] = useState<string | null>(null);
+  // ISSUE 14 (round 11) — see jobsRef/estimatesRef/goalsListRef comment near
+  // settingsRef; weatherData has to be ref'd separately down here since it
+  // isn't declared until this point in the component body (referencing it
+  // any earlier would be a TDZ error).
+  const weatherDataRef = useRef(weatherData);
+  useEffect(() => { weatherDataRef.current = weatherData; }, [weatherData]);
 
   // Computed stats
   const thisMonth = today().slice(0, 7);

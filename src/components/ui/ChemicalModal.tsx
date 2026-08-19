@@ -53,9 +53,9 @@ export function ChemicalModal({ open, onClose, data, onSave }) {
         <div><label className="text-xs text-white/60 mb-1 block">Category</label><GInput value={f.category} onChange={e => setF({ ...f, category: e.target.value })} /></div>
       </div>
       <div className="grid grid-cols-3 gap-3">
-        <div><label className="text-xs text-white/60 mb-1 block">Stock</label><GInput type="number" value={f.stock} onChange={e => setF({ ...f, stock: e.target.value })} /></div>
-        <div><label className="text-xs text-white/60 mb-1 block">Reorder</label><GInput type="number" value={f.reorderLevel} onChange={e => setF({ ...f, reorderLevel: e.target.value })} /></div>
-        <div><label className="text-xs text-white/60 mb-1 block">Unit $</label><GInput type="number" step="0.01" value={f.unitCost} onChange={e => setF({ ...f, unitCost: e.target.value })} /></div>
+        <div><label className="text-xs text-white/60 mb-1 block">Gallons Remaining</label><GInput type="number" value={f.stock} onChange={e => setF({ ...f, stock: e.target.value })} /></div>
+        <div><label className="text-xs text-white/60 mb-1 block">Reorder at (gal)</label><GInput type="number" value={f.reorderLevel} onChange={e => setF({ ...f, reorderLevel: e.target.value })} /></div>
+        <div><label className="text-xs text-white/60 mb-1 block">Cost per Gallon</label><GInput type="number" step="0.01" value={f.unitCost} onChange={e => setF({ ...f, unitCost: e.target.value })} /></div>
       </div>
       <div className="flex gap-2 justify-end pt-3"><GBtn variant="ghost" onClick={onClose}>Cancel</GBtn><GBtn onClick={() => { if (!f.name) return; onSave(data ? { ...data, ...f, stock: Number(f.stock), reorderLevel: Number(f.reorderLevel), unitCost: Number(f.unitCost) } : { ...f, stock: Number(f.stock), reorderLevel: Number(f.reorderLevel), unitCost: Number(f.unitCost) }); }}>{data ? "Save" : "Add"}</GBtn></div>
     </div>

@@ -227,7 +227,19 @@ function PayrollCalendar({ employees, jobs = [] }: { employees: any[]; jobs?: an
                 <div className="flex flex-col items-center gap-0.5">
                   {dayJobs.length > 0 && (
                     <>
-                      <span className="text-[8px] font-bold leading-none text-blue-300">{dayJobs.length}j{totalHours ? " " + totalHours.toFixed(1) + "h" : ""}</span>
+                      {/* ISSUE 7 (round 11) — hours only rendered when
+                          truthy, so a day whose jobs were all still
+                          "scheduled" (0 logged hours — correct, nothing
+                          worked yet) looked identical to a day whose
+                          COMPLETED jobs had hours that failed to show. Show
+                          the hours figure any time at least one job on this
+                          day is completed, so "no hours shown" only ever
+                          means "nothing completed here yet" — never an
+                          ambiguous blank. */}
+                      <span className="text-[8px] font-bold leading-none text-blue-300">
+                        {dayJobs.length}j
+                        {dayJobs.some(ev => ev.status === "completed") ? " " + totalHours.toFixed(1) + "h" : ""}
+                      </span>
                       {(jobAmountsByDay[key] || 0) > 0 && <span className="text-[8px] font-bold leading-none text-blue-200">{fmt(jobAmountsByDay[key])}</span>}
                     </>
                   )}

@@ -20,7 +20,7 @@ import {
   Tooltip, ResponsiveContainer, Area, AreaChart, LineChart, Line,
   ComposedChart, Legend
 } from "recharts";
-import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE } from "../../lib/utils";
+import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, formatPhoneInput } from "../../lib/utils";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField, CustomerAddress } from "../../types";
 import { twilioSend, sendEmail } from "../../lib/messaging";
 import { seedWeather } from "../../lib/weather";
@@ -76,7 +76,7 @@ export function CustomerModal({ open, onClose, data, onSave, mapsKey = "", custo
           <div><label className="text-xs text-white/60 mb-1 block">Last *</label><GInput value={f.lastName} onChange={e => setF({ ...f, lastName: e.target.value })} /></div>
         </div>
         <div><label className="text-xs text-white/60 mb-1 block">Email</label><GInput type="email" value={f.email} onChange={e => setF({ ...f, email: e.target.value })} /></div>
-        <div><label className="text-xs text-white/60 mb-1 block">Phone</label><GInput value={f.phone} onChange={e => setF({ ...f, phone: e.target.value })} /></div>
+        <div><label className="text-xs text-white/60 mb-1 block">Phone</label><GInput value={f.phone} onChange={e => setF({ ...f, phone: formatPhoneInput(e.target.value) })} placeholder="(717) 555-0100" /></div>
         <div><label className="text-xs text-white/60 mb-1 block">Address</label><AddressAutocomplete value={f.address} onChange={v => setF({ ...f, address: v })} onPlaceSelect={place => setF(p => ({ ...p, address: place.street, city: place.city, state: place.state, zip: place.zip }))} mapsKey={mapsKey} placeholder="412 Oak Ridge Ln, York PA" knownAddresses={customers.map((c: any) => c.address).filter(Boolean)} /></div>
 
         <div className="grid grid-cols-2 gap-3">

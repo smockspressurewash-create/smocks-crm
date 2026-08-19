@@ -1,5 +1,5 @@
 import { supabase, getStoredGoogleConnection, setStoredGoogleToken, fetchOwnerGoogleToken } from "./supabase";
-import { uid, withTimeout } from "./utils";
+import { uid, withTimeout, toE164 } from "./utils";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -164,8 +164,15 @@ export const twilioSend = async (
     throw new Error("Twilio not configured — add Account SID, Auth Token, and From number in Settings → Integrations.");
   }
 
-  const from = channel === "whatsapp" ? `whatsapp:${twilioPhone}` : twilioPhone;
-  const toNum = channel === "whatsapp" ? `whatsapp:${to}` : to;
+  // ISSUE 3 (round 11) — normalize to E.164 right here, the one place every
+  // SMS send path (OTW, Running Late, Campaigns, automations, Alfred, the
+  // owner's Inbox) actually funnels through, regardless of what format the
+  // number was stored/typed in upstream. See toE164 in lib/utils.ts.
+  const fromE164 = toE164(twilioPhone);
+  const toE164Num = toE164(to);
+  if (!toE164Num) throw new Error("Invalid phone number — can't send SMS.");
+  const from = channel === "whatsapp" ? `whatsapp:${fromE164}` : fromE164;
+  const toNum = channel === "whatsapp" ? `whatsapp:${toE164Num}` : toE164Num;
 
   // AUDIT 6 — Twilio's REST API never returns CORS headers for browser-origin
   // requests, so a direct fetch() from here to api.twilio.com always fails

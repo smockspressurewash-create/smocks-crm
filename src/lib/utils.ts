@@ -140,6 +140,39 @@ export const uid = (): string => {
   });
 };
 
+// ISSUE 3 (round 11) — Twilio requires E.164 (+1XXXXXXXXXX) for the To/From
+// numbers on every send; customer/employee phone fields across the app get
+// typed in every format imaginable ("(717) 555-0100", "717.555.0100",
+// "7175550100", already-correct "+17175550100"). Normalizing at every input
+// site would be easy to miss on a new form; normalizing once at the actual
+// Twilio call site (see twilioSend in lib/messaging.ts) guarantees every
+// send path — OTW, Running Late, Campaigns, automations, Alfred, the owner's
+// Inbox — gets a valid number regardless of how it was originally entered.
+// US/Canada (10-digit) numbers are assumed absent an explicit country code,
+// since that's this app's whole install base; a number that already starts
+// with "+" is trusted as-is (international).
+export const toE164 = (raw: string): string => {
+  const trimmed = (raw || "").trim();
+  if (!trimmed) return "";
+  if (trimmed.startsWith("+")) return "+" + trimmed.slice(1).replace(/\D/g, "");
+  const digits = trimmed.replace(/\D/g, "");
+  if (!digits) return "";
+  if (digits.length === 10) return "+1" + digits;
+  if (digits.length === 11 && digits.startsWith("1")) return "+" + digits;
+  return "+" + digits;
+};
+
+// Live-format a US phone number as the user types, e.g. "(717) 555-0100" —
+// purely cosmetic for input fields; toE164 above is what actually matters
+// for sending. Keeps a leading "+" (international entry) untouched.
+export const formatPhoneInput = (raw: string): string => {
+  if ((raw || "").trim().startsWith("+")) return raw;
+  const digits = (raw || "").replace(/\D/g, "").slice(0, 10);
+  if (digits.length <= 3) return digits;
+  if (digits.length <= 6) return `(${digits.slice(0, 3)}) ${digits.slice(3)}`;
+  return `(${digits.slice(0, 3)}) ${digits.slice(3, 6)}-${digits.slice(6)}`;
+};
+
 export const today = (): string => new Date().toISOString().slice(0, 10);
 
 // AUDIT 3 — `today()` is UTC-based (toISOString), which rolls over to the

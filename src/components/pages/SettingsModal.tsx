@@ -1177,8 +1177,27 @@ export function SettingsModal({ open, onClose, settings, setSettings, jobs = [],
               <div className="text-xs text-white/60 mb-3">Send and receive SMS. Get credentials at <a href="https://console.twilio.com" target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:text-blue-300">console.twilio.com</a></div>
               <div className="space-y-2">
                 <div>
-                  <label className="text-[10px] text-white/50 uppercase tracking-wider">Account SID</label>
-                  <GInput value={f.twilioSid || ""} onChange={e => setF({ ...f, twilioSid: e.target.value })} placeholder="ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" className="!text-xs mt-1" />
+                  {/* ISSUE 6 (round 11) — Campaigns' Twilio 404 ("Account
+                      /SK.../json not found") turned out to be an API Key SID
+                      (starts "SK", used for short-lived signed JWTs — not
+                      what any REST call in this app uses) pasted into this
+                      field instead of the actual Account SID (starts "AC").
+                      The label already said "Account SID" but nothing caught
+                      the mistake before it silently 404'd every Twilio call.
+                      Validate the prefix so it's caught right where it's
+                      typed, with the specific wrong-prefix named instead of
+                      a generic "invalid" message. */}
+                  <label className="text-[10px] text-white/50 uppercase tracking-wider">Account SID <span className="text-white/30 normal-case">(starts with "AC" — not your API Key SID, which starts "SK")</span></label>
+                  <GInput value={f.twilioSid || ""} onChange={e => setF({ ...f, twilioSid: e.target.value.trim() })} placeholder="ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" className="!text-xs mt-1" />
+                  {f.twilioSid && !f.twilioSid.startsWith("AC") && (
+                    <div className="text-[10px] text-red-400 mt-1">
+                      {f.twilioSid.startsWith("SK")
+                        ? "This looks like an API Key SID (starts \"SK\"), not your Account SID. Copy the \"Account SID\" value from your Twilio Console dashboard — it starts with \"AC\"."
+                        : f.twilioSid.startsWith("MG")
+                        ? "This looks like a Messaging Service SID (starts \"MG\") — that goes in Campaigns' Messaging Service field, not here. Your Account SID starts with \"AC\"."
+                        : "Twilio Account SIDs start with \"AC\". Double-check this value in your Twilio Console."}
+                    </div>
+                  )}
                 </div>
                 <div>
                   <label className="text-[10px] text-white/50 uppercase tracking-wider">Auth Token</label>

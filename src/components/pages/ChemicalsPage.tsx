@@ -22,7 +22,7 @@ import {
 } from "recharts";
 import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE } from "../../lib/utils";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
-import { twilioSend, sendEmail } from "../../lib/messaging";
+import { twilioSend, sendEmail, sendOwnerGmailOnly, emailShell } from "../../lib/messaging";
 import { seedWeather } from "../../lib/weather";
 import { seedCustomers, seedEstimates, seedJobs, seedEmployees, seedVehicles, seedExpenses, seedChemicals, seedServices, seedAutomations, seedEmailTemplates, seedSmsTemplates, seedRewardTiers, seedReferrals, seedMaintenance, campaignTemplates, seedSocialPosts, seedTimeline, seedGoals, seedReminders, seedAccountabilityEntries, seedMileage, seedLeadSrc, STEP_TYPES, AUTOMATION_TEMPLATES } from "../../lib/seed";
 import { callModel, MODELS } from "../../lib/api";
@@ -89,11 +89,37 @@ export function ChemicalsPage({ chemicals = [], setChemicals, toast = () => {}, 
   };
   const bump = (id, delta) => setChemicals(chemicals.map(c => c.id === id ? { ...c, stock: Math.max(0, c.stock + delta) } : c));
 
-  const sendReorderAlert = () => {
-    if (!settings?.myPhone || !settings?.twilioSid) { toast("Add Twilio + your mobile # in Settings to send SMS alerts"); return; }
-    const msg = "🧪 CHEMICAL REORDER NEEDED\n\n" + low.map(c => "• " + c.name + " — " + c.stock + " left (reorder at " + c.reorderLevel + ")").join("\n") + "\n\nTotal restock cost: " + fmt(low.reduce((s, c) => s + ((Math.max(c.reorderLevel * 2, 20) - c.stock) * c.unitCost), 0)) + " — Alfred out.";
-    twilioSend(settings, settings.myPhone, msg).then(() => toast("Reorder alert sent ✓")).catch(() => toast("SMS failed — check Twilio in Settings"));
+  // ISSUE 13 (round 11) — replaced SMS ("Text Me List") with email, per
+  // explicit request; also used by the auto-reminder effect below so a
+  // manual click and the automatic daily nudge send the exact same content.
+  const reorderListHtml = () => `
+    <p>Chemicals at or below their reorder point:</p>
+    <ul>${low.map(c => `<li><b>${c.name}</b> — ${c.stock} gal left (reorder at ${c.reorderLevel} gal, ${fmt(c.unitCost)}/gal)</li>`).join("")}</ul>
+    <p>Total restock cost: <b>${fmt(low.reduce((s, c) => s + ((Math.max(c.reorderLevel * 2, 20) - c.stock) * c.unitCost), 0))}</b></p>`;
+  const sendReorderEmail = () => {
+    const ownerEmail = (settings as any)?.myEmail || (settings as any)?.companyEmail;
+    if (!ownerEmail) { toast("Add your email in Settings → My Profile to get reorder emails"); return; }
+    sendOwnerGmailOnly(settings as any, ownerEmail, "🧪 Chemical reorder needed", emailShell(settings as any, "Chemical Reorder List", reorderListHtml()))
+      .then(() => toast("Reorder list emailed ✓"))
+      .catch((e: any) => toast("Email failed — " + (e?.message || "check Google connection in Settings"), "red"));
   };
+
+  // ISSUE 13 (round 11) — auto-reminder: previously reordering was
+  // ENTIRELY manual (the owner had to notice low stock themselves and tap
+  // the button). Once per calendar day, if anything is at/below its reorder
+  // point, email the same list automatically — same dedupe pattern as the
+  // daily briefing/summary auto-sends elsewhere in the app (a persisted
+  // date-stamp key, so a reload/re-render can't re-fire it).
+  const [lastAutoReorderDate, setLastAutoReorderDate] = usePersistent<string>("smocks.chemReorderEmailDate", "");
+  useEffect(() => {
+    if (low.length === 0) return;
+    const todayKey = today();
+    if (lastAutoReorderDate === todayKey) return;
+    const ownerEmail = (settings as any)?.myEmail || (settings as any)?.companyEmail;
+    if (!ownerEmail) return;
+    setLastAutoReorderDate(todayKey);
+    sendOwnerGmailOnly(settings as any, ownerEmail, "🧪 Chemical reorder needed", emailShell(settings as any, "Chemical Reorder List", reorderListHtml())).catch(() => {});
+  }, [low.length]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div className="space-y-4">
@@ -105,7 +131,7 @@ export function ChemicalsPage({ chemicals = [], setChemicals, toast = () => {}, 
       {low.length > 0 && <Glass className="p-4 !bg-red-950/30 !border-red-600/50">
         <div className="flex items-center justify-between mb-3">
           <div className="flex items-center gap-2"><AlertTriangle size={16} className="text-red-400" /><span className="font-semibold text-red-300">Reorder Suggestion</span></div>
-          <button onClick={sendReorderAlert} className="text-[10px] px-2.5 py-1.5 bg-red-900/40 border border-red-700/40 text-red-300 rounded-lg hover:bg-red-800/50 transition flex items-center gap-1">📱 Text Me List</button>
+          <button onClick={sendReorderEmail} className="text-[10px] px-2.5 py-1.5 bg-red-900/40 border border-red-700/40 text-red-300 rounded-lg hover:bg-red-800/50 transition flex items-center gap-1">📧 Email Me List</button>
         </div>
         <div className="space-y-2">
           {low.map(c => {
@@ -132,8 +158,8 @@ export function ChemicalsPage({ chemicals = [], setChemicals, toast = () => {}, 
           <thead><tr className="border-b border-red-900/30 bg-black/40">
             <th className="text-left px-5 py-3 text-xs uppercase tracking-wider text-white/60">Name</th>
             <th className="text-left px-5 py-3 text-xs uppercase tracking-wider text-white/60 hidden md:table-cell">Brand</th>
-            <th className="text-right px-5 py-3 text-xs uppercase tracking-wider text-white/60">Stock</th>
-            <th className="text-right px-5 py-3 text-xs uppercase tracking-wider text-white/60">Unit $</th>
+            <th className="text-right px-5 py-3 text-xs uppercase tracking-wider text-white/60">Gallons Remaining</th>
+            <th className="text-right px-5 py-3 text-xs uppercase tracking-wider text-white/60">Cost/Gal</th>
             <th className="text-right px-5 py-3 text-xs uppercase tracking-wider text-white/60">Actions</th>
           </tr></thead>
           <tbody>

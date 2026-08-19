@@ -692,7 +692,11 @@ export function InboxPage({ threads = [], setThreads, customers = [], setCustome
   const allThreads = [...threads, ...gmailThreads];
   // ISSUE 4 — no way to view just Email or just SMS, only a combined list
   // with no way to tell them apart besides a small colored dot.
-  const [channelView, setChannelView] = useState<"all" | "sms" | "email">("all");
+  // ISSUE 12 (round 11) — this reset to "all" on every reload/navigation
+  // away and back, even though the owner had deliberately switched to just
+  // SMS or just Email. Persisted the same way as the other Inbox view
+  // preferences (hiddenThreadIds, nicknameOverrides) below.
+  const [channelView, setChannelView] = usePersistent<"all" | "sms" | "email">("smocks.inboxChannelView", "all");
   // ISSUE 6 — no sort or unread-only filter existed at all, just substring
   // search.
   const [sortBy, setSortBy] = useState<"recent" | "sender" | "unread">("recent");

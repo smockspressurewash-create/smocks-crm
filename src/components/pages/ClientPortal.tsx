@@ -219,8 +219,16 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
     const key = "smocks.estimateViewed." + e.id;
     if (sessionStorage.getItem(key)) return; // only fire once per session
     sessionStorage.setItem(key, "1");
+    // ISSUE 11 (round 11) — this said "ESTIMATE VIEWED" unconditionally, even
+    // when the row being viewed is actually an invoice (invoiced: true — an
+    // invoice is just an estimate row with that flag set, per how this app
+    // models the two, see CLAUDE.md). A customer opening their invoice after
+    // the job was done got the same "estimate" wording as a fresh quote,
+    // which is confusing/wrong once money is actually being requested.
+    const isInvoice = !!(e as any).invoiced;
+    const kind = isInvoice ? "INVOICE" : "ESTIMATE";
     if (settings?.twilioSid && settings?.myPhone && c) {
-      const msg = "👀 ESTIMATE VIEWED\n\n" + c.firstName + " " + c.lastName + " just opened their estimate for " + fmt(e.total) + ".\n\nNow's a great time to follow up if they don't sign in 30 min. — Alfred";
+      const msg = `👀 ${kind} VIEWED\n\n` + c.firstName + " " + c.lastName + ` just opened their ${isInvoice ? "invoice" : "estimate"} for ` + fmt(e.total) + `.\n\nNow's a great time to follow up if they don't ${isInvoice ? "pay" : "sign"} in 30 min. — Alfred`;
       twilioSend(settings, settings.myPhone, msg).catch(() => {});
     }
     // ISSUE 21 (round 4) — this page is unauthenticated (a customer, not the
@@ -236,7 +244,7 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           title: "Alfred Notifications",
-          message: "👀 ESTIMATE VIEWED\n\n" + c.firstName + " " + c.lastName + " just opened their estimate for " + fmt(e.total) + ".\n\nNow's a great time to follow up if they don't sign in 30 min.",
+          message: `👀 ${kind} VIEWED\n\n` + c.firstName + " " + c.lastName + ` just opened their ${isInvoice ? "invoice" : "estimate"} for ` + fmt(e.total) + `.\n\nNow's a great time to follow up if they don't ${isInvoice ? "pay" : "sign"} in 30 min.`,
         }),
       }).catch(() => {});
     }

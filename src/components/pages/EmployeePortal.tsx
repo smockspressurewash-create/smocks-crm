@@ -1876,77 +1876,14 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     return () => { cancelled = true; window.removeEventListener("focus", check); };
   }, []);
   const [routeLoading, setRouteLoading] = useState(false);
-  // FIX 10 — employee-side "Mark as Paid" confirmation, synced to the same
-  // employees.paidPeriods JSONB the owner's Employees > Payroll view reads,
-  // so either side marking a period paid is immediately visible to the other.
-  const [markingPaidPeriod, setMarkingPaidPeriod] = useState<string | null>(null);
-  // Turns a PostgREST "column not found" error into an actionable message —
-  // this exact column has a documented history of not existing on some
-  // deployments (see migration 0019's own comment), so a generic error here
-  // has repeatedly read as "Mark as Paid is broken" when the real fix is a
-  // one-line SQL migration the owner just hasn't run yet.
-  const paidColumnMigrationHint = (msg: string, column: string): string =>
-    new RegExp(`${column}.*schema cache|column.*${column}`, "i").test(msg)
-      ? ` — the "${column}" column hasn't been added to your database yet. Ask the owner to run supabase/migrations/0019_employee_payment_log.sql in the Supabase SQL editor.`
-      : "";
-  const markPeriodPaid = async (periodStart: string) => {
-    const empId = (myEmployee as any)?.id;
-    if (!empId) return;
-    setMarkingPaidPeriod(periodStart);
-    // Optimistic — shown immediately and held until the server confirms this
-    // exact key, so a slow refetch/poll cycle can never make this look like
-    // it "reverted" (see BUG FIX comment near optimisticPaidPeriods' declaration).
-    setOptimisticPaidPeriods(prev => ({ ...prev, [periodStart]: "paid" }));
-    const nextPaid = { ...((myEmployee as any)?.paidPeriods || {}), [periodStart]: "paid" as const };
-    try {
-      const result = await (supabase as any).from("employees").update({ paidPeriods: nextPaid }).eq("id", empId);
-      if (result?.error) {
-        console.error("[Mark as Paid] — error:", result.error.message);
-        // Genuine failure — revert the optimistic flag instead of leaving a
-        // "paid" badge showing for something that never actually saved.
-        setOptimisticPaidPeriods(prev => { const n = { ...prev }; delete n[periodStart]; return n; });
-        toast("Couldn't save — " + result.error.message + paidColumnMigrationHint(result.error.message, "paidPeriods"), "red");
-      } else {
-        refetchEmployees?.();
-        toast("Marked as paid — owner notified ✓", "green");
-      }
-    } catch (e: any) {
-      console.error("[Mark as Paid] — error:", e?.message || e);
-      setOptimisticPaidPeriods(prev => { const n = { ...prev }; delete n[periodStart]; return n; });
-      toast("Couldn't save: " + (e?.message || "unknown error"), "red");
-    } finally {
-      setMarkingPaidPeriod(null);
-    }
-  };
-  // FIX 3 — per-day "Mark as Paid" for the Pay tab's daily calendar view,
-  // parallel to markPeriodPaid but keyed by individual date (employees.paidDays).
-  const [markingPaidDay, setMarkingPaidDay] = useState<string | null>(null);
-  const markDayPaid = async (dateKey: string) => {
-    const empId = (myEmployee as any)?.id;
-    if (!empId) return;
-    setMarkingPaidDay(dateKey);
-    const current = (myEmployee as any)?.paidDays || {};
-    const nextStatus: "paid" | "unpaid" = current[dateKey] === "paid" ? "unpaid" : "paid";
-    const nextPaid = { ...current, [dateKey]: nextStatus };
-    setOptimisticPaidDays(prev => ({ ...prev, [dateKey]: nextStatus }));
-    try {
-      const result = await (supabase as any).from("employees").update({ paidDays: nextPaid }).eq("id", empId);
-      if (result?.error) {
-        console.error("[HoursSync] markDayPaid — error:", result.error.message);
-        setOptimisticPaidDays(prev => { const n = { ...prev }; delete n[dateKey]; return n; });
-        toast("Couldn't save — " + result.error.message + paidColumnMigrationHint(result.error.message, "paidDays"), "red");
-      } else {
-        refetchEmployees?.();
-        toast(nextStatus === "paid" ? "Day marked as paid ✓" : "Day marked unpaid");
-      }
-    } catch (e: any) {
-      console.error("[HoursSync] markDayPaid — error:", e?.message || e);
-      setOptimisticPaidDays(prev => { const n = { ...prev }; delete n[dateKey]; return n; });
-      toast("Couldn't save: " + (e?.message || "unknown error"), "red");
-    } finally {
-      setMarkingPaidDay(null);
-    }
-  };
+  // ISSUE 5 (round 11) — this used to let the EMPLOYEE write their own
+  // paidPeriods/paidDays as a "confirm you received this pay" self-
+  // attestation. The owner explicitly does not want that: only the owner's
+  // own "Mark as Paid" (EmployeesPage.tsx, writes the same employees.
+  // paidPeriods/paidDays/paidJobs columns) should ever flip a period/day to
+  // paid — the employee side is read-only status display now (see the Pay
+  // tab render below, which reads paidPeriods/paidDays directly with no
+  // click-to-mark affordance).
   const [payCalMonthOffset, setPayCalMonthOffset] = useState(0);
   const [selectedCalDay, setSelectedCalDay] = useState<string | null>(null);
   const [routeInfo, setRouteInfo] = useState<{ order: Job[]; totalDuration: string; totalDistance: string; etas: string[]; origin: { lat: number; lng: number } | string } | null>(null);
@@ -2032,19 +1969,6 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   // up" — the fix mirrors the existing optimistic pattern for this pair too.
   const [optimisticLastShiftHours, setOptimisticLastShiftHours] = useState<number | undefined>(undefined);
   const [optimisticLastShiftDate, setOptimisticLastShiftDate] = useState<string | undefined>(undefined);
-  // BUG FIX (Pay tab audit) — same class of bug as dayClockInAt/lastShiftHours
-  // above: paidPeriods/paidDays have a documented history of the column not
-  // existing on some deployments at all (see supabase/migrations/0019's own
-  // comment — "Mark as Paid was never actually working... that column never
-  // existed here"). Without an optimistic override, tapping "Mark as Paid"
-  // only ever LOOKED like it worked if the write, the refetchEmployees()
-  // round trip, AND the myEmployee prop re-render all lined up — any hiccup
-  // in that chain (a missing column, a slow poll, a stale employees.find()
-  // match) meant the button flipped back to "unpaid" on the very next
-  // render, which is indistinguishable from "shows paid temporarily, then
-  // reverts after reload." Undefined per-key means "trust the server value."
-  const [optimisticPaidPeriods, setOptimisticPaidPeriods] = useState<Record<string, "paid" | "unpaid"> | undefined>(undefined);
-  const [optimisticPaidDays, setOptimisticPaidDays] = useState<Record<string, "paid" | "unpaid"> | undefined>(undefined);
   const [payChartRange, setPayChartRange] = useState<"7d" | "4wk" | "12mo" | "custom">("7d");
   // FEATURE — employee-submitted mileage log (mileage_logs table, migration
   // 0023), synced via Supabase so the owner can see/approve it from any
@@ -2302,26 +2226,6 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
       setOptimisticLastShiftDate(undefined);
     }
   }, [(myEmployee as any)?.lastShiftDate]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // Reconciliation for optimisticPaidPeriods/optimisticPaidDays (declared
-  // above, near the other optimistic overrides) — clears once the server's
-  // paidPeriods/paidDays actually agrees with every key this session marked,
-  // same pattern as dayClockInAt/lastShiftHours above.
-  useEffect(() => {
-    if (!optimisticPaidPeriods) return;
-    const real = (myEmployee as any)?.paidPeriods || {};
-    if (Object.keys(optimisticPaidPeriods).every(k => real[k] === optimisticPaidPeriods[k])) {
-      setOptimisticPaidPeriods(undefined);
-    }
-  }, [(myEmployee as any)?.paidPeriods]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  useEffect(() => {
-    if (!optimisticPaidDays) return;
-    const real = (myEmployee as any)?.paidDays || {};
-    if (Object.keys(optimisticPaidDays).every(k => real[k] === optimisticPaidDays[k])) {
-      setOptimisticPaidDays(undefined);
-    }
-  }, [(myEmployee as any)?.paidDays]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Effective dayClockInAt — used by shift timer bar AND startDayShiftIfNeeded.
   // Keeps optimistic value until Supabase confirms it so the timer never flickers.
@@ -4858,12 +4762,17 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                 `;
                 const companyName = settings?.companyName || "Crew Boss";
 
+                // ISSUE 10 (round 11) — used generic sendEmail (Resend-capable
+                // fallback) for an in-portal automated send; per CLAUDE.md's
+                // critical rule, field-portal automated sends must go through
+                // the owner's own connected Gmail (sendOwnerGmailOnly), never
+                // silently fall back to Resend.
                 if (myEmployee?.email) {
-                  sendEmail(settings as any, { to: myEmployee.email, subject: `Your day summary — ${todayStr}`, body: emailShell(settings, "End of Day Summary", `<p>Nice work today, ${myEmployee.firstName}!</p>${summaryRows}`) }).catch(() => {});
+                  sendOwnerGmailOnly(settings as any, myEmployee.email, `Your day summary — ${todayStr}`, emailShell(settings, "End of Day Summary", `<p>Nice work today, ${myEmployee.firstName}!</p>${summaryRows}`)).catch(() => {});
                 }
                 const ownerEmail = settings?.myEmail || settings?.companyEmail;
                 if (ownerEmail) {
-                  sendEmail(settings as any, { to: ownerEmail, subject: `Day summary — ${empName} — ${todayStr}`, body: emailShell(settings, `Day Summary — ${empName}`, `${summaryRows}<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #eee"><span>Revenue today (this employee)</span><strong>${fmt(revenueToday)}</strong></div>`) }).catch(() => {});
+                  sendOwnerGmailOnly(settings as any, ownerEmail, `Day summary — ${empName} — ${todayStr}`, emailShell(settings, `Day Summary — ${empName}`, `${summaryRows}<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #eee"><span>Revenue today (this employee)</span><strong>${fmt(revenueToday)}</strong></div>`)).catch(() => {});
                 }
               };
               const toggleDay = async () => {
@@ -5801,6 +5710,27 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                             <div className="px-3 py-2 border-b border-white/10">
                               <div className="text-[11px] font-semibold text-white/80 truncate">{ctxJob.address}</div>
                               <div className="text-[10px] text-white/40">{ctxJob.scheduledDate}</div>
+                              {/* ISSUE 9 (round 11) — tapping a completed job on this
+                                  calendar used to only ever show address/date here — no
+                                  hours, no earnings, no paid status, even though the job
+                                  itself already has all of it (loggedHours, getEffectiveRate,
+                                  employees.paidJobs). "Says completed but shows nothing" was
+                                  literally true for this popup specifically. */}
+                              {ctxJob.status === "completed" && (
+                                <div className="flex items-center gap-2 mt-1.5 flex-wrap">
+                                  <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-green-900/40 text-green-300">
+                                    {Number(ctxJob.loggedHours) || 0}h
+                                  </span>
+                                  {!(settings as any)?.hideJobAmountsFromEmployees && (
+                                    <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-green-900/40 text-green-300">
+                                      {fmt(Number(ctxJob.loggedHours || 0) * getEffectiveRate(myEmployee, ctxJob))}
+                                    </span>
+                                  )}
+                                  <span className={"text-[10px] font-bold px-1.5 py-0.5 rounded-full " + (((myEmployee as any)?.paidJobs?.[ctxJob.id] === "paid") ? "bg-green-900/40 text-green-300" : "bg-yellow-900/30 text-yellow-300")}>
+                                    {(myEmployee as any)?.paidJobs?.[ctxJob.id] === "paid" ? "Paid" : "Pending"}
+                                  </span>
+                                </div>
+                              )}
                             </div>
                             <button onClick={() => { setSelectedJobId(calCtxMenu.jobId); setCalCtxMenu(null); }}
                               className="w-full text-left px-3 py-2 text-xs text-white/70 hover:bg-white/10 hover:text-white transition flex items-center gap-2">
@@ -5989,13 +5919,12 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
             // Supabase query happens in this component — it all reads
             // already-fetched, live-polled parent state.
 
-            // Outstanding balance — the owner marks individual 14-day pay
-            // periods as paid/unpaid (Employees → Pay), keyed by each
-            // period's start date in paidPeriods. Anything not explicitly
-            // marked paid counts as pending.
-            // Optimistic overrides layered on top of the server value — see
-            // optimisticPaidPeriods' declaration for why this exists.
-            const paidPeriodsMap: Record<string, "paid" | "unpaid"> = { ...((myEmployee as any)?.paidPeriods || {}), ...optimisticPaidPeriods };
+            // Outstanding balance — ONLY the owner marks individual 14-day pay
+            // periods as paid/unpaid (Employees → Pay — see EmployeesPage.tsx's
+            // "Mark as Paid"), keyed by each period's start date in
+            // paidPeriods. Anything not explicitly marked paid counts as
+            // pending. Read-only here — no employee-side write path.
+            const paidPeriodsMap: Record<string, "paid" | "unpaid"> = (myEmployee as any)?.paidPeriods || {};
             const periodsWithStatus = periods.filter(p => p.pay > 0).map(p => ({ ...p, status: paidPeriodsMap[p.start] || "unpaid" }));
             const totalPaid = Math.round(periodsWithStatus.filter(p => p.status === "paid").reduce((s, p) => s + p.pay, 0) * 100) / 100;
             const pendingPay = Math.round(periodsWithStatus.filter(p => p.status === "unpaid").reduce((s, p) => s + p.pay, 0) * 100) / 100;
@@ -6159,17 +6088,13 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                     {periodsWithStatus.map(p => (
                       <div key={p.start} className="flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg bg-white/5">
                         <span className="text-[10px] text-white/50">{p.label}</span>
+                        {/* ISSUE 5 (round 11) — read-only status; only the
+                            owner's own "Mark as Paid" (EmployeesPage.tsx)
+                            can flip this. */}
                         {p.status === "paid" ? (
                           <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-green-900/40 text-green-300">Paid</span>
                         ) : (
-                          <button
-                            onClick={() => markPeriodPaid(p.start)}
-                            disabled={markingPaidPeriod === p.start}
-                            className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-yellow-900/30 text-yellow-300 hover:bg-yellow-800/40 transition disabled:opacity-50"
-                            title="Confirm you received this pay — this notifies the owner"
-                          >
-                            {markingPaidPeriod === p.start ? "Saving…" : "Mark as Paid"}
-                          </button>
+                          <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-yellow-900/30 text-yellow-300" title="Waiting on the owner to mark this period paid">Pending</span>
                         )}
                       </div>
                     ))}
@@ -6198,7 +6123,9 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                   const year = calBase.getFullYear(), month = calBase.getMonth();
                   const daysInMonth = new Date(year, month + 1, 0).getDate();
                   const firstDow = new Date(year, month, 1).getDay();
-                  const paidDaysMap: Record<string, "paid" | "unpaid"> = { ...((myEmployee as any)?.paidDays || {}), ...optimisticPaidDays };
+                  // ISSUE 5 (round 11) — read-only status; only the owner's
+                  // own "Mark as Paid" (EmployeesPage.tsx) writes paidDays.
+                  const paidDaysMap: Record<string, "paid" | "unpaid"> = (myEmployee as any)?.paidDays || {};
                   type DayCell = { key: string; day: number; hours: number; pay: number; status: "paid" | "unpaid"; jobCount: number; hasScheduled: boolean };
                   const dayCells: Array<DayCell | null> = [];
                   for (let i = 0; i < firstDow; i++) dayCells.push(null);
@@ -6228,21 +6155,22 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                         {dayCells.map((c, i) => c === null ? <div key={i} /> : (
                           <button
                             key={i}
+                            // ISSUE 5 (round 11) — tapping a worked day used to
+                            // call markDayPaid (toggle paid/unpaid) directly;
+                            // now it only ever opens the day's job detail
+                            // panel below — status is view-only, set solely by
+                            // the owner's own Mark as Paid.
                             onClick={() => {
-                              if (c.hours > 0) {
-                                markDayPaid(c.key);
-                              } else if (c.hasScheduled) {
-                                setSelectedCalDay(selectedCalDay === c.key ? null : c.key);
-                              }
+                              if (c.hours > 0 || c.hasScheduled) setSelectedCalDay(selectedCalDay === c.key ? null : c.key);
                             }}
-                            disabled={(!c.hasScheduled && c.hours === 0) || markingPaidDay === c.key}
+                            disabled={!c.hasScheduled && c.hours === 0}
                             className={"aspect-square rounded-lg text-[9px] flex flex-col items-center justify-center gap-0.5 transition " +
                               (c.hours > 0
                                 ? (c.status === "paid" ? "bg-green-900/40 border border-green-600/40 text-green-300 hover:bg-green-800/40" : "bg-yellow-950/30 border border-yellow-700/40 text-yellow-300 hover:bg-yellow-900/40")
                                 : c.hasScheduled
                                   ? "bg-blue-950/30 border border-blue-700/30 text-blue-300 hover:bg-blue-900/30"
                                   : "text-white/20")}
-                            title={c.hours > 0 ? `${c.hours}h · ${fmt(c.pay)} · ${c.status === "paid" ? "Paid — tap to unmark" : "Unpaid — tap to mark paid"}` : c.hasScheduled ? `${c.jobCount} job${c.jobCount !== 1 ? "s" : ""} scheduled — tap for details` : undefined}
+                            title={c.hours > 0 ? `${c.hours}h · ${fmt(c.pay)} · ${c.status === "paid" ? "Paid" : "Pending — waiting on the owner to mark this paid"} — tap for details` : c.hasScheduled ? `${c.jobCount} job${c.jobCount !== 1 ? "s" : ""} scheduled — tap for details` : undefined}
                           >
                             <span className="font-semibold">{c.day}</span>
                             {c.hours > 0 ? <span>{c.hours}h</span> : c.hasScheduled ? <span className="w-1 h-1 rounded-full bg-blue-400 mx-auto" /> : null}
