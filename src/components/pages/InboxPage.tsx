@@ -763,6 +763,54 @@ export function InboxPage({ threads = [], setThreads, customers = [], setCustome
     if (active === t.id) setActive(null);
     toast("Conversation deleted");
   };
+  // ISSUE 3 (round 9) — copy a single message's text to the clipboard. Bubble
+  // text also has `select-text` (see render below) so manual drag-select +
+  // Ctrl/Cmd-C works too; this is just a one-click shortcut for it.
+  const copyMessage = async (body: string) => {
+    try {
+      await navigator.clipboard.writeText(body || "");
+      toast("Copied ✓");
+    } catch {
+      toast("Couldn't copy automatically — select the text and copy manually", "error");
+    }
+  };
+  // ISSUE 3 (round 9) — per-message delete. This removes the message from
+  // the CRM's own record (inbox_threads / this session's Gmail view), not
+  // from Twilio's or Gmail's own server-side history — Twilio does expose a
+  // DELETE-message endpoint, but calling it would permanently erase the
+  // carrier-side delivery record too (no undo, and it'd need a new backend
+  // proxy + the account's Twilio credentials round-tripped again), which is
+  // more than "let the owner clean up an accidental send" calls for. This is
+  // the same fallback the owner already has for whole conversations
+  // (deleteThread above) — hide/remove it from the CRM view.
+  //
+  // Deliberately does NOT reuse syncThreadToSupabase — that helper is
+  // union/merge-based by design (never drops a message either side already
+  // has, so concurrent writers can't stomp each other — see its own
+  // comments), which would silently un-delete this message on the very next
+  // sync. Deletion needs an explicit overwrite of the server's message list.
+  const deleteMessage = async (t: any, messageId: string) => {
+    const isGmailThread = !!(t as any).gmailMessageId || (t.id || "").startsWith("gmail-");
+    if (isGmailThread) {
+      // No Gmail delete/trash scope wired up here — remove from this CRM
+      // view only; the real email is untouched in the owner's mailbox.
+      setGmailThreads(prev => prev.map(x => x.id === t.id ? { ...x, messages: x.messages.filter((m: any) => m.id !== messageId) } : x));
+      toast("Removed from CRM view (source email is unaffected)");
+      return;
+    }
+    setThreads((prev: any[]) => prev.map(x => x.id === t.id ? { ...x, messages: x.messages.filter((m: any) => m.id !== messageId) } : x));
+    if (t.channel !== "sms") { toast("Message deleted"); return; }
+    try {
+      const { data: serverRow } = await (supabase as any).from("inbox_threads").select("messages").eq("id", t.id).maybeSingle();
+      const serverMessages: any[] = Array.isArray(serverRow?.messages) ? serverRow.messages : [];
+      const filtered = serverMessages.filter((m: any) => m.id !== messageId);
+      const r: any = await (supabase as any).from("inbox_threads").update({ messages: filtered, updated_at: new Date().toISOString() }).eq("id", t.id);
+      if (r?.error) { toast("Deleted locally, but failed to sync — " + r.error.message, "error"); return; }
+      toast("Message deleted");
+    } catch (e: any) {
+      toast("Deleted locally, but failed to sync — " + (e?.message || "unknown error"), "error");
+    }
+  };
   // ISSUE 5 (round 3) — convert a conversation's contact into a real customer
   // lead, same insert shape LeadFormPage.tsx uses (customers table, pipelineStage "lead").
   const convertToLead = async (t: any) => {
@@ -1022,10 +1070,21 @@ export function InboxPage({ threads = [], setThreads, customers = [], setCustome
                 syncThreadToSupabase) never visibly shows them twice. */}
             {dedupeMessages(activeThread.messages).map(m => {
               const isOut = m.dir === "out";
-              return <div key={m.id} className={"flex " + (isOut ? "justify-end" : "justify-start")}>
+              return <div key={m.id} className={"group flex items-center gap-1 " + (isOut ? "justify-end" : "justify-start")}>
+                {/* ISSUE 3 (round 9) — per-message copy/delete. Placed on the
+                    OUTER side of the bubble (left of an outgoing bubble,
+                    right of an incoming one) so the toolbar never sits on
+                    top of message text, and only shown on hover so the
+                    thread doesn't look cluttered by default. */}
+                {isOut && (
+                  <div className="opacity-0 group-hover:opacity-100 transition flex items-center gap-1 flex-shrink-0">
+                    <button onClick={() => copyMessage(m.body)} title="Copy" className="p-1 rounded hover:bg-white/10 text-white/40 hover:text-white/80"><Copy size={12} /></button>
+                    <button onClick={() => deleteMessage(activeThread, m.id)} title="Delete" className="p-1 rounded hover:bg-red-900/40 text-white/40 hover:text-red-400"><Trash2 size={12} /></button>
+                  </div>
+                )}
                 <div className={"max-w-[80%]"}>
                   {m.subject && <div className="text-[10px] text-white/50 mb-1 font-medium">Subject: {m.subject}</div>}
-                  <div className={"px-4 py-2.5 rounded-2xl text-sm whitespace-pre-wrap " + (isOut ? "bg-gradient-to-br from-red-600 to-red-800 text-white rounded-br-sm" : "bg-black/50 border border-red-900/30 text-white/90 rounded-bl-sm")}>
+                  <div className={"px-4 py-2.5 rounded-2xl text-sm whitespace-pre-wrap select-text " + (isOut ? "bg-gradient-to-br from-red-600 to-red-800 text-white rounded-br-sm" : "bg-black/50 border border-red-900/30 text-white/90 rounded-bl-sm")}>
                     {m.body}
                   </div>
                   <div className={"text-[9px] mt-1 flex items-center gap-1 " + (isOut ? "justify-end text-white/40" : "text-white/30")}>
@@ -1035,6 +1094,12 @@ export function InboxPage({ threads = [], setThreads, customers = [], setCustome
                     {isOut && m.status === "failed" && <span className="text-red-400"> · ✗ {m.error?.slice(0, 40)}</span>}
                   </div>
                 </div>
+                {!isOut && (
+                  <div className="opacity-0 group-hover:opacity-100 transition flex items-center gap-1 flex-shrink-0">
+                    <button onClick={() => copyMessage(m.body)} title="Copy" className="p-1 rounded hover:bg-white/10 text-white/40 hover:text-white/80"><Copy size={12} /></button>
+                    <button onClick={() => deleteMessage(activeThread, m.id)} title="Delete" className="p-1 rounded hover:bg-red-900/40 text-white/40 hover:text-red-400"><Trash2 size={12} /></button>
+                  </div>
+                )}
               </div>;
             })}
             <div ref={msgEndRef} />

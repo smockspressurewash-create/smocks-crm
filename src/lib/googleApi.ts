@@ -59,6 +59,23 @@ export interface GmailMessage {
   read: boolean;
 }
 
+// ISSUE 2 (round 9) — Gmail's `snippet` field comes back from the API
+// pre-escaped as HTML entities (e.g. "Smock's" -> "Smock&#39;s") since Google
+// generates it to be safely droppable straight into an HTML page. InboxPage
+// renders message bodies as plain React text (`{m.body}`), which does NOT
+// interpret entities — so they showed up completely literally instead of as
+// the apostrophe/quote/etc. they represent. Decode the handful of entities
+// Gmail actually emits in snippets before storing it as the message body.
+const decodeHtmlEntities = (s: string): string =>
+  (s || "")
+    .replace(/&#39;/g, "'")
+    .replace(/&#(\d+);/g, (_, code) => String.fromCharCode(Number(code)))
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">");
+
 export const fetchGmailMessages = async (token: string): Promise<GmailMessage[]> => {
   const list = await gFetch(
     "https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=20&labelIds=INBOX",
@@ -80,7 +97,7 @@ export const fetchGmailMessages = async (token: string): Promise<GmailMessage[]>
         threadId: m.threadId,
         from: get("From"),
         subject: get("Subject") || "(No subject)",
-        snippet: msg.snippet || "",
+        snippet: decodeHtmlEntities(msg.snippet || ""),
         date: get("Date"),
         read: !(msg.labelIds || []).includes("UNREAD"),
       };

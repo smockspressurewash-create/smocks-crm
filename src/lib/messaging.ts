@@ -785,7 +785,6 @@ export const emailShell = (brandOrName: string | EmailBrand, title: string, body
   const b: EmailBrand = typeof brandOrName === "string" ? { companyName: brandOrName } : (brandOrName || {});
   const companyName = b.companyName || "Crew Boss";
   const brandColor = b.brandColor || "#dc2626";
-  const brandAccent = b.brandAccent || "#7f1d1d";
   const headerInner = b.logoUrl
     ? `<img src="${b.logoUrl}" alt="${companyName}" style="max-height:44px;max-width:220px;display:inline-block" />`
     : `<div style="font-size:21px;font-weight:800;letter-spacing:-0.02em;color:#fff">${companyName}</div>`;
@@ -795,9 +794,9 @@ export const emailShell = (brandOrName: string | EmailBrand, title: string, body
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#000;padding:24px 12px">
   <tr><td align="center">
     <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;background:#0a0a0a;color:#fff;border-radius:16px;overflow:hidden">
-      <tr><td style="background:linear-gradient(135deg,${brandColor},${brandAccent});padding:28px 24px;text-align:center">
+      <tr><td bgcolor="${brandColor}" style="background-color:${brandColor};padding:28px 24px;text-align:center">
         ${headerInner}
-        <div style="font-size:13px;opacity:0.85;margin-top:4px;color:#fff">${title}</div>
+        <div style="font-size:13px;margin-top:4px;color:#ffffff">${title}</div>
       </td></tr>
       <tr><td style="padding:28px 24px;background:#111;font-size:14px;line-height:1.6;color:rgba(255,255,255,0.85)">${bodyHtml}</td></tr>
       <tr><td style="padding:16px 24px;text-align:center;font-size:11px;color:rgba(255,255,255,0.3);background:#0a0a0a">
