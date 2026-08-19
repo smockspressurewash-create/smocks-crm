@@ -1228,15 +1228,30 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
                 <div>
                   <div className="text-[10px] text-white/50 mb-1.5">Send via</div>
                   <div className="flex gap-1.5">
-                    <button disabled={!customer?.phone} onClick={() => setLateChannel("sms")}
-                      className={"flex-1 py-1.5 rounded-lg border text-xs font-semibold transition disabled:opacity-30 " + (lateChannel === "sms" ? "border-orange-500 bg-orange-900/40 text-orange-200" : "border-white/10 bg-black/30 text-white/50 hover:border-white/30")}>
+                    {/* ISSUE (round 10) — these used to be `disabled` outright
+                        whenever the customer had no phone/email, which reads
+                        from the owner's side as "the button just doesn't
+                        work" with zero explanation (the same silent-disable
+                        problem already fixed for Send Invoice above — see
+                        that comment). Always clickable now; a missing-contact
+                        state is explained via title tooltip + the warning
+                        banner below, and the actual send still refuses with a
+                        clear toast (see sendRunningLate) if picked anyway. */}
+                    <button title={!customer?.phone ? "This customer has no phone number on file" : "Send by text"} onClick={() => setLateChannel("sms")}
+                      className={"flex-1 py-1.5 rounded-lg border text-xs font-semibold transition " + (lateChannel === "sms" ? "border-orange-500 bg-orange-900/40 text-orange-200" : !customer?.phone ? "border-white/5 bg-black/20 text-white/25" : "border-white/10 bg-black/30 text-white/50 hover:border-white/30")}>
                       💬 Text
                     </button>
-                    <button disabled={!customer?.email} onClick={() => setLateChannel("email")}
-                      className={"flex-1 py-1.5 rounded-lg border text-xs font-semibold transition disabled:opacity-30 " + (lateChannel === "email" ? "border-orange-500 bg-orange-900/40 text-orange-200" : "border-white/10 bg-black/30 text-white/50 hover:border-white/30")}>
+                    <button title={!customer?.email ? "This customer has no email on file" : "Send by email (via the owner's connected Gmail)"} onClick={() => setLateChannel("email")}
+                      className={"flex-1 py-1.5 rounded-lg border text-xs font-semibold transition " + (lateChannel === "email" ? "border-orange-500 bg-orange-900/40 text-orange-200" : !customer?.email ? "border-white/5 bg-black/20 text-white/25" : "border-white/10 bg-black/30 text-white/50 hover:border-white/30")}>
                       📧 Email
                     </button>
                   </div>
+                  {lateChannel === "email" && !customer?.email && (
+                    <div className="text-[10px] text-yellow-400/80 mt-1">This customer has no email on file — add one in customer settings, or switch to Text.</div>
+                  )}
+                  {lateChannel === "sms" && !customer?.phone && (
+                    <div className="text-[10px] text-yellow-400/80 mt-1">This customer has no phone on file — add one in customer settings, or switch to Email.</div>
+                  )}
                   {lateChannel === "sms" && !settings?.twilioSid && (
                     <div className="text-[10px] text-yellow-400/80 mt-1">Twilio isn't configured — add it in Settings → Integrations, or switch to Email.</div>
                   )}
@@ -1293,15 +1308,21 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
                 <div>
                   <div className="text-[10px] text-white/50 mb-1.5">Send via</div>
                   <div className="flex gap-1.5">
-                    <button disabled={!customer?.phone} onClick={() => setOtwChannel("sms")}
-                      className={"flex-1 py-1.5 rounded-lg border text-xs font-semibold transition disabled:opacity-30 " + (otwChannel === "sms" ? "border-blue-500 bg-blue-900/40 text-blue-200" : "border-white/10 bg-black/30 text-white/50 hover:border-white/30")}>
+                    <button title={!customer?.phone ? "This customer has no phone number on file" : "Send by text"} onClick={() => setOtwChannel("sms")}
+                      className={"flex-1 py-1.5 rounded-lg border text-xs font-semibold transition " + (otwChannel === "sms" ? "border-blue-500 bg-blue-900/40 text-blue-200" : !customer?.phone ? "border-white/5 bg-black/20 text-white/25" : "border-white/10 bg-black/30 text-white/50 hover:border-white/30")}>
                       💬 Text
                     </button>
-                    <button disabled={!customer?.email} onClick={() => setOtwChannel("email")}
-                      className={"flex-1 py-1.5 rounded-lg border text-xs font-semibold transition disabled:opacity-30 " + (otwChannel === "email" ? "border-blue-500 bg-blue-900/40 text-blue-200" : "border-white/10 bg-black/30 text-white/50 hover:border-white/30")}>
+                    <button title={!customer?.email ? "This customer has no email on file" : "Send by email (via the owner's connected Gmail)"} onClick={() => setOtwChannel("email")}
+                      className={"flex-1 py-1.5 rounded-lg border text-xs font-semibold transition " + (otwChannel === "email" ? "border-blue-500 bg-blue-900/40 text-blue-200" : !customer?.email ? "border-white/5 bg-black/20 text-white/25" : "border-white/10 bg-black/30 text-white/50 hover:border-white/30")}>
                       📧 Email
                     </button>
                   </div>
+                  {otwChannel === "email" && !customer?.email && (
+                    <div className="text-[10px] text-yellow-400/80 mt-1">This customer has no email on file — add one in customer settings, or switch to Text.</div>
+                  )}
+                  {otwChannel === "sms" && !customer?.phone && (
+                    <div className="text-[10px] text-yellow-400/80 mt-1">This customer has no phone on file — add one in customer settings, or switch to Email.</div>
+                  )}
                   {otwChannel === "sms" && !settings?.twilioSid && (
                     <div className="text-[10px] text-yellow-400/80 mt-1">Twilio isn't configured — add it in Settings → Integrations, or switch to Email.</div>
                   )}
@@ -4429,19 +4450,25 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                 <div className="text-[10px] text-orange-300 font-semibold">Running Late</div>
                 {/* Send via — explicit choice, never silently defaults away from the chosen channel */}
                 <div className="flex gap-1">
-                  <button disabled={!customer?.phone} onClick={e => { e.stopPropagation(); setLateCardChannel("sms"); }}
-                    className={"flex-1 py-1 rounded-lg border text-[10px] font-semibold transition disabled:opacity-30 " + (lateCardChannel === "sms" ? "border-orange-500 bg-orange-900/40 text-orange-200" : "border-white/10 bg-black/30 text-white/50")}>
+                  <button title={!customer?.phone ? "This customer has no phone number on file" : "Send by text"} onClick={e => { e.stopPropagation(); setLateCardChannel("sms"); }}
+                    className={"flex-1 py-1 rounded-lg border text-[10px] font-semibold transition " + (lateCardChannel === "sms" ? "border-orange-500 bg-orange-900/40 text-orange-200" : !customer?.phone ? "border-white/5 bg-black/20 text-white/25" : "border-white/10 bg-black/30 text-white/50")}>
                     💬 Text
                   </button>
-                  <button disabled={!customer?.email} onClick={e => { e.stopPropagation(); setLateCardChannel("email"); }}
-                    className={"flex-1 py-1 rounded-lg border text-[10px] font-semibold transition disabled:opacity-30 " + (lateCardChannel === "email" ? "border-orange-500 bg-orange-900/40 text-orange-200" : "border-white/10 bg-black/30 text-white/50")}>
+                  <button title={!customer?.email ? "This customer has no email on file" : "Send by email (via the owner's connected Gmail)"} onClick={e => { e.stopPropagation(); setLateCardChannel("email"); }}
+                    className={"flex-1 py-1 rounded-lg border text-[10px] font-semibold transition " + (lateCardChannel === "email" ? "border-orange-500 bg-orange-900/40 text-orange-200" : !customer?.email ? "border-white/5 bg-black/20 text-white/25" : "border-white/10 bg-black/30 text-white/50")}>
                     📧 Email
                   </button>
                 </div>
                 {lateCardChannel === "sms" && !settings?.twilioSid && (
                   <div className="text-[9px] text-yellow-400/80">Twilio isn't configured — add it in Settings, or switch to Email.</div>
                 )}
-                {lateCardChannel === "email" && !googleLiveCard && (
+                {lateCardChannel === "email" && !customer?.email && (
+                  <div className="text-[9px] text-yellow-400/80">This customer has no email on file — add one in customer settings, or switch to Text.</div>
+                )}
+                {lateCardChannel === "sms" && !customer?.phone && (
+                  <div className="text-[9px] text-yellow-400/80">This customer has no phone on file — add one in customer settings, or switch to Email.</div>
+                )}
+                {lateCardChannel === "email" && customer?.email && !googleLiveCard && (
                   <div className="text-[9px] text-yellow-400/80">Google isn't connected — connect it in Settings, or switch to Text.</div>
                 )}
                 {/* Reason templates */}
@@ -4484,19 +4511,25 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
               <div className="p-2 rounded-xl bg-blue-950/20 border border-blue-700/30 space-y-2">
                 <div className="text-[10px] text-blue-300 font-semibold">On My Way</div>
                 <div className="flex gap-1">
-                  <button disabled={!customer?.phone} onClick={e => { e.stopPropagation(); setOtwCardChannel("sms"); }}
-                    className={"flex-1 py-1 rounded-lg border text-[10px] font-semibold transition disabled:opacity-30 " + (otwCardChannel === "sms" ? "border-blue-500 bg-blue-900/40 text-blue-200" : "border-white/10 bg-black/30 text-white/50")}>
+                  <button title={!customer?.phone ? "This customer has no phone number on file" : "Send by text"} onClick={e => { e.stopPropagation(); setOtwCardChannel("sms"); }}
+                    className={"flex-1 py-1 rounded-lg border text-[10px] font-semibold transition " + (otwCardChannel === "sms" ? "border-blue-500 bg-blue-900/40 text-blue-200" : !customer?.phone ? "border-white/5 bg-black/20 text-white/25" : "border-white/10 bg-black/30 text-white/50")}>
                     💬 Text
                   </button>
-                  <button disabled={!customer?.email} onClick={e => { e.stopPropagation(); setOtwCardChannel("email"); }}
-                    className={"flex-1 py-1 rounded-lg border text-[10px] font-semibold transition disabled:opacity-30 " + (otwCardChannel === "email" ? "border-blue-500 bg-blue-900/40 text-blue-200" : "border-white/10 bg-black/30 text-white/50")}>
+                  <button title={!customer?.email ? "This customer has no email on file" : "Send by email (via the owner's connected Gmail)"} onClick={e => { e.stopPropagation(); setOtwCardChannel("email"); }}
+                    className={"flex-1 py-1 rounded-lg border text-[10px] font-semibold transition " + (otwCardChannel === "email" ? "border-blue-500 bg-blue-900/40 text-blue-200" : !customer?.email ? "border-white/5 bg-black/20 text-white/25" : "border-white/10 bg-black/30 text-white/50")}>
                     📧 Email
                   </button>
                 </div>
                 {otwCardChannel === "sms" && !settings?.twilioSid && (
                   <div className="text-[9px] text-yellow-400/80">Twilio isn't configured — add it in Settings, or switch to Email.</div>
                 )}
-                {otwCardChannel === "email" && !googleLiveCard && (
+                {otwCardChannel === "email" && !customer?.email && (
+                  <div className="text-[9px] text-yellow-400/80">This customer has no email on file — add one in customer settings, or switch to Text.</div>
+                )}
+                {otwCardChannel === "sms" && !customer?.phone && (
+                  <div className="text-[9px] text-yellow-400/80">This customer has no phone on file — add one in customer settings, or switch to Email.</div>
+                )}
+                {otwCardChannel === "email" && customer?.email && !googleLiveCard && (
                   <div className="text-[9px] text-yellow-400/80">Google isn't connected — connect it in Settings, or switch to Text.</div>
                 )}
                 <div className="flex gap-1">
