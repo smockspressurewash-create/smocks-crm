@@ -56,6 +56,8 @@ export function EstimateBuilder({ open, onClose, customers = [], services = [], 
   const [depositRequired, setDepositRequired] = useState(0);
   // FEATURE 6 — whether depositRequired is a flat dollar amount or a % of total.
   const [depositType, setDepositType] = useState<"amount" | "percent">("amount");
+  // FEATURE (round 13, item 4) — mandatory vs optional deposit.
+  const [depositMandatory, setDepositMandatory] = useState(false);
   // FIX 4 (mobile round 2) — recurring services quoted at the estimate
   // stage. Same field shape as Job's recurring fields (see types/index.ts)
   // so createJobFromApprovedEstimate can copy these straight onto the job.
@@ -88,6 +90,7 @@ export function EstimateBuilder({ open, onClose, customers = [], services = [], 
       setDiscounts([]);
       setDepositRequired(0);
       setDepositType("amount");
+      setDepositMandatory(false);
       setIsRecurring(false);
       setRecurringMode("preset");
       setRecurringFreq("monthly");
@@ -138,6 +141,7 @@ export function EstimateBuilder({ open, onClose, customers = [], services = [], 
     if (tpl.discounts) setDiscounts(tpl.discounts.map((d: any) => ({ ...d, id: uid() })));
     if (tpl.depositRequired) setDepositRequired(tpl.depositRequired);
     if (tpl.depositType) setDepositType(tpl.depositType);
+    setDepositMandatory(!!tpl.depositMandatory);
     if (tpl.isRecurring) {
       setIsRecurring(true);
       setRecurringMode(tpl.recurringMode || "preset");
@@ -181,7 +185,7 @@ export function EstimateBuilder({ open, onClose, customers = [], services = [], 
   const saveAsTemplate = () => {
     if (!templateName.trim()) return;
     const tpl = {
-      id: uid(), name: templateName.trim(), lineItems: items, discount: Number(discount), discounts, depositRequired: Number(depositRequired), depositType, terms, notes, createdAt: today(),
+      id: uid(), name: templateName.trim(), lineItems: items, discount: Number(discount), discounts, depositRequired: Number(depositRequired), depositType, depositMandatory, terms, notes, createdAt: today(),
       ...(isRecurring ? { isRecurring, recurringMode, recurringFreq, recurringInterval, recurringWeekdays } : {}),
     };
     setEstimateTemplates(prev => [...prev, tpl]);
@@ -198,7 +202,7 @@ export function EstimateBuilder({ open, onClose, customers = [], services = [], 
     })) : undefined;
     const usedItems = estimateType === "package" ? [] : items;
     onSave({
-      id: uid(), customerId: cid, estimateType, lineItems: usedItems, packages: pkgData, subtotal: sub, discount: Number(discount), discounts, depositRequired: Number(depositRequired), depositType, tax, total: tot, status: "pending", createdAt: today(), validUntil: vu, viewed: false, viewedAt: null, terms, notes, internalNote,
+      id: uid(), customerId: cid, estimateType, lineItems: usedItems, packages: pkgData, subtotal: sub, discount: Number(discount), discounts, depositRequired: Number(depositRequired), depositType, depositMandatory, tax, total: tot, status: "pending", createdAt: today(), validUntil: vu, viewed: false, viewedAt: null, terms, notes, internalNote,
       ...(isRecurring ? { isRecurring, recurringMode, recurringFreq, recurringInterval, recurringWeekdays } : {}),
     });
   };
@@ -452,6 +456,17 @@ export function EstimateBuilder({ open, onClose, customers = [], services = [], 
             </GSel>
           </div>
           {Number(depositRequired) > 0 && <div className="text-[10px] text-white/40 mt-1">Deposit due now: {fmt(depositAmt)} · Balance due after service: {fmt(Math.max(0, tot - depositAmt))}</div>}
+          {/* FEATURE (round 13, item 4) — mandatory vs optional deposit. When
+              mandatory, the customer's estimate page only offers "Pay a
+              Deposit Now" — no "Pay in Full Now"/"Pay in Full After Service"
+              alternative — so the deposit actually gets collected before the
+              job is booked instead of being skippable. */}
+          {Number(depositRequired) > 0 && (
+            <label className="flex items-center gap-2 mt-2 text-xs text-white/60 cursor-pointer">
+              <input type="checkbox" checked={depositMandatory} onChange={e => setDepositMandatory(e.target.checked)} className="accent-red-600" />
+              Require this deposit — customer can't skip to "pay in full" or "pay later"
+            </label>
+          )}
         </div>
 
         {/* FIX 4 (mobile round 2) — recurring option at the quote stage, so a

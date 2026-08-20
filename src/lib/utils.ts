@@ -1170,3 +1170,69 @@ export function setLastOwnerId(id: string): void {
     else localStorage.removeItem(LAST_OWNER_ID_KEY);
   } catch { /* ignore */ }
 }
+
+// ─── Route building (round 13, items 19/24) ─────────────────────────────────
+// No Google Directions/Distance Matrix integration exists in this codebase
+// (would mean a new billed API + a Cloudflare proxy function, out of scope
+// for this pass) — this is a straight-line-distance nearest-neighbor route
+// instead: greedy, starts from whichever job is scheduled earliest, then
+// repeatedly picks the closest remaining stop. It's a real, useful ordering
+// (typically within ~25% of true optimal for same-day local routes) using
+// only lat/lng already stored on Job (set via AddressAutocomplete), with no
+// external API calls or added cost. Jobs missing lat/lng fall back to
+// scheduled-time order and are appended at the end, un-optimized.
+export function haversineMiles(lat1: number, lng1: number, lat2: number, lng2: number): number {
+  const R = 3958.8;
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLng = (lng2 - lng1) * Math.PI / 180;
+  const a = Math.sin(dLat / 2) ** 2 + Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLng / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+export interface RouteStop { jobId: string; kind: "job" }
+export interface RouteLunchStop { kind: "lunch"; afterMinutes: number; durationMinutes: number }
+export type RouteEntry = (RouteStop & { estMinutes: number }) | RouteLunchStop;
+
+// Builds a same-day route order for a set of jobs, each needing lat/lng and
+// an estimated on-site duration (minutes). Inserts a lunch break entry once
+// cumulative elapsed time crosses lunchEarliestMinutes (minutes since route
+// start, e.g. 240 = 4 hours in) — 0/undefined lunchMinutes skips it entirely.
+export function buildOptimizedRoute(
+  jobs: Array<{ id: string; lat?: number; lng?: number; scheduledTime?: string; estMinutes: number }>,
+  opts: { lunchMinutes?: number; lunchEarliestMinutes?: number } = {}
+): RouteEntry[] {
+  const withCoords = jobs.filter(j => typeof j.lat === "number" && typeof j.lng === "number");
+  const withoutCoords = jobs.filter(j => !(typeof j.lat === "number" && typeof j.lng === "number"))
+    .sort((a, b) => (a.scheduledTime || "23:59").localeCompare(b.scheduledTime || "23:59"));
+
+  const ordered: typeof jobs = [];
+  const remaining = [...withCoords].sort((a, b) => (a.scheduledTime || "23:59").localeCompare(b.scheduledTime || "23:59"));
+  let current = remaining.shift();
+  if (current) ordered.push(current);
+  while (remaining.length > 0 && current) {
+    let bestIdx = 0, bestDist = Infinity;
+    for (let i = 0; i < remaining.length; i++) {
+      const d = haversineMiles(current.lat!, current.lng!, remaining[i].lat!, remaining[i].lng!);
+      if (d < bestDist) { bestDist = d; bestIdx = i; }
+    }
+    current = remaining.splice(bestIdx, 1)[0];
+    ordered.push(current);
+  }
+  const fullOrder = [...ordered, ...withoutCoords];
+
+  const lunchMinutes = opts.lunchMinutes || 0;
+  const lunchEarliest = opts.lunchEarliestMinutes ?? 240;
+  const entries: RouteEntry[] = [];
+  let elapsed = 0;
+  let lunchInserted = lunchMinutes <= 0;
+  for (const j of fullOrder) {
+    if (!lunchInserted && elapsed >= lunchEarliest) {
+      entries.push({ kind: "lunch", afterMinutes: elapsed, durationMinutes: lunchMinutes });
+      elapsed += lunchMinutes;
+      lunchInserted = true;
+    }
+    entries.push({ kind: "job", jobId: j.id, estMinutes: j.estMinutes });
+    elapsed += j.estMinutes;
+  }
+  return entries;
+}

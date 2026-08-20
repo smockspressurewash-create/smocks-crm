@@ -3,7 +3,7 @@ import {
   Clock, Briefcase, Calendar, ChevronLeft, CheckSquare, Camera,
   LogOut, MapPin, Phone, User, Play, Pause, Square, Plus, X, Eye, EyeOff, DollarSign,
   ChevronRight, Home, List, CheckCircle, AlertCircle, AlertTriangle, Image, FileText,
-  Video, PenLine, Shield, Navigation, Database, Route, ToggleRight, ToggleLeft, Download, Bell
+  Video, PenLine, Shield, Navigation, Database, Route, ToggleRight, ToggleLeft, Download, Bell, CreditCard
 } from "lucide-react";
 import { supabase, getStoredGoogleConnection, fetchOwnerGoogleToken } from "../../lib/supabase";
 import { getEmpGoogleToken, isEmpGoogleTokenValid, saveEmpGoogleToken, refreshEmpGoogleToken, getValidEmpGoogleToken, createGCalEvent, updateGCalEvent } from "../../lib/googleApi";
@@ -17,6 +17,8 @@ import { BeforeAfterSlider } from "../ui/BeforeAfterSlider";
 import { loadMapsScript, AddressAutocomplete } from "../ui/AddressAutocomplete";
 import { LiveMap } from "../ui/LiveMap";
 import { PropertyMapEmbed } from "../ui/PropertyMapEmbed";
+import { SaveCardModal } from "../ui/SaveCardModal";
+import { chargeSavedPaymentMethod } from "../../lib/stripe";
 import { BarChart, Bar, LineChart, Line, XAxis, YAxis, ResponsiveContainer, Tooltip, CartesianGrid } from "recharts";
 import { fmt, uid, today, localDateStr, localDateKey, shiftDayStr, daysFromNow, computeJobRatingScore, setOAuthIntent, compressImageFile, getEffectiveRate, computeNextRecurringDate, weekdayLabels, normalizeJobRow, totalJobPhotoCount, mediaSrc, dataUrlToBlob, uploadJobMedia, checkVideoLimits, stripLegacyJobFields, reconcileCrewAfterAssign, getPollIntervalMs, getPayPeriodBounds } from "../../lib/utils";
 import { usePollGate } from "../../hooks/usePollGate";
@@ -260,15 +262,22 @@ const DEFAULT_SIGNOFF_DISCLAIMER = "I confirm that all services have been comple
 // streamlined, mobile-optimized job view a field employee sees (sign-off,
 // checklist with photo upload, clock in/out — no admin fields) instead of
 // opening the full JobDetailModal for a job the OWNER is personally working.
-export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName = "the company", onComplete, perms: permsOverride, maxLunchMinutes = 30, onJobCompleted, googleMapsKey = "", paidLunchBreaks = false, signOffDisclaimer = "", settings = {} as AppSettings, setEstimates = (() => {}) as any, nextJob = null, nextJobCustomer = null, onArrived, autoComplete = false, employeeName = "", employeeEmail = "", isPreview = false }: {
+export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName = "the company", onComplete, perms: permsOverride, maxLunchMinutes = 30, onJobCompleted, googleMapsKey = "", paidLunchBreaks = false, signOffDisclaimer = "", settings = {} as AppSettings, setEstimates = (() => {}) as any, setCustomers = (() => {}) as any, nextJob = null, nextJobCustomer = null, laterJobsToday = [], onArrived, autoComplete = false, employeeName = "", employeeEmail = "", isPreview = false }: {
   job: Job; customer?: Customer; onBack: () => void;
   onUpdateJob: (patch: Partial<Job>) => void | Promise<any>; toast: (msg: string, tone?: any) => void;
   companyName?: string; onComplete?: () => void; perms?: Record<string, boolean>; maxLunchMinutes?: number;
   onJobCompleted?: (job: Job) => void; googleMapsKey?: string; paidLunchBreaks?: boolean; signOffDisclaimer?: string;
-  settings?: AppSettings; setEstimates?: any; nextJob?: Job | null; nextJobCustomer?: Customer | null;
+  settings?: AppSettings; setEstimates?: any; setCustomers?: any; nextJob?: Job | null; nextJobCustomer?: Customer | null;
+  // FEATURE (round 13, item 20) — every job scheduled later TODAY (after this
+  // one), used by the Running Late cascade-notify prompt below.
+  laterJobsToday?: Array<{ job: Job; customer: Customer | null }>;
   onArrived?: () => void; autoComplete?: boolean; employeeName?: string; employeeEmail?: string; isPreview?: boolean;
 }) {
   const effPerms = { ...DEFAULT_PERMISSIONS, ...(permsOverride || {}) };
+  const [addCardOpen, setAddCardOpen] = useState(false);
+  const [cascadePrompt, setCascadePrompt] = useState<{ minutes: number } | null>(null);
+  const [cascadeSending, setCascadeSending] = useState(false);
+  const [chargingFee, setChargingFee] = useState(false);
   const [note, setNote] = useState("");
   const [delayNote, setDelayNote] = useState("");
   const [delayNoteOpen, setDelayNoteOpen] = useState(false);
@@ -369,12 +378,45 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
       console.log("[Verify] Running Late toast + send — working");
       setRunningLateOpen(false);
       setLateReasonNote("");
+      // FEATURE (round 13, item 20) — offer to cascade the delay notice to
+      // every OTHER customer scheduled later today, instead of leaving them
+      // to find out only when their own job runs late too.
+      if (laterJobsToday.length > 0) setCascadePrompt({ minutes });
     } catch (e: any) {
       console.error("[RunningLate] — error:", e?.message || e);
       toast(`❌ Failed to send — ${e?.message || "reason unknown"}`, "red");
     } finally {
       setSendingRunningLate(false);
     }
+  };
+
+  // FEATURE (round 13, item 20) — best-effort notify of every later job
+  // today; each send is caught individually so one bad contact doesn't stop
+  // the rest, and the final toast reports real sent/failed counts.
+  const sendCascadeRunningLate = async (minutes: number) => {
+    setCascadeSending(true);
+    let sent = 0, failed = 0;
+    for (const { job: lj, customer: lc } of laterJobsToday) {
+      if (!lc) { failed++; continue; }
+      const msg = `Hi ${lc.firstName}, heads up — your CrewBoss crew is running about ${minutes} minutes behind schedule today. We'll keep you posted as we get closer. Thanks for your patience!`;
+      try {
+        if (lc.phone) {
+          await twilioSend(settings as any, lc.phone, msg);
+          logOutboundSmsToInbox({ contactName: `${lc.firstName} ${lc.lastName}`, contactPhone: lc.phone, customerId: lc.id, body: msg }).catch(() => {});
+        } else if (lc.email) {
+          await sendOwnerGmailOnly(settings as any, lc.email, "Running a bit behind today", emailShell(settings, "Running Late", `<p>Hi ${lc.firstName},</p><p>${msg}</p>`));
+        } else {
+          throw new Error("No phone or email on file");
+        }
+        sent++;
+      } catch (e: any) {
+        failed++;
+        console.warn("[RunningLate cascade] failed for", lc.id, "—", e?.message);
+      }
+    }
+    setCascadeSending(false);
+    setCascadePrompt(null);
+    toast(failed > 0 ? `Notified ${sent} customer${sent !== 1 ? "s" : ""}, ${failed} failed` : `Notified ${sent} following customer${sent !== 1 ? "s" : ""} ✓`, failed > 0 ? "yellow" : "green");
   };
 
   const sendOtw = async () => {
@@ -1346,6 +1388,98 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
               </button>
             )}
           </Glass>
+        )}
+
+        {/* FEATURE (round 13, item 10) — lets an employee put a customer's
+            card on file in person (e.g. the customer wants to pay on-site).
+            Reuses SaveCardModal (same component the customer's own portal
+            uses), with enteredByEmployee wording on its legal consent
+            checkbox, and syncs the resulting Stripe references back onto the
+            customer record so the owner sees it immediately. Not shown in
+            the owner's read-only preview (isPreview) or without Stripe
+            configured. */}
+        {!isPreview && !!settings?.stripePublishableKey && customer && (
+          <Glass className="p-3 !bg-emerald-950/15 !border-emerald-700/30">
+            <button onClick={() => setAddCardOpen(true)} className="w-full flex items-center justify-center gap-1.5 py-1.5 text-xs text-emerald-300 hover:text-emerald-200 transition">
+              <CreditCard size={12} />
+              {customer.savedPaymentMethodId ? `Card on file: ${customer.savedPaymentMethodLabel || "saved"} — update` : "Add Card on File"}
+            </button>
+          </Glass>
+        )}
+        {/* FEATURE (round 13, item 22) — trash-can jobs only: bill an
+            inconvenience fee (owner-named/-priced, Settings → Trash Cans)
+            when the employee arrives and the cans aren't out, charging the
+            customer's card on file directly via Stripe. */}
+        {!isPreview && job.serviceCategory === "trash_can" && job.status !== "completed" && job.status !== "cancelled" && customer && (
+          <Glass className="p-3 !bg-red-950/15 !border-red-700/30">
+            {!customer.savedPaymentMethodId ? (
+              <div className="text-[11px] text-white/40 text-center py-1">No card on file — add one above to enable the inconvenience fee.</div>
+            ) : (job as any).inconvenienceFeeCharged ? (
+              <div className="text-[11px] text-yellow-300 text-center py-1">⚠ Inconvenience fee already charged this visit (${(job as any).inconvenienceFeeCharged.toFixed(2)})</div>
+            ) : (
+              <button
+                disabled={chargingFee}
+                onClick={async () => {
+                  const feeName = (settings as any)?.trashCanInconvenienceFeeName || "Cans Not Out Fee";
+                  const feeAmount = Number((settings as any)?.trashCanInconvenienceFeeAmount) || 15;
+                  if (!confirm(`Charge ${customer.firstName} ${fmt(feeAmount)} for "${feeName}" (cans not out)?`)) return;
+                  setChargingFee(true);
+                  try {
+                    await chargeSavedPaymentMethod(customer.stripeCustomerId!, customer.savedPaymentMethodId!, Math.round(feeAmount * 100), "usd", feeName);
+                    onUpdateJob({ inconvenienceFeeCharged: feeAmount, inconvenienceFeeChargedAt: new Date().toISOString(), commLog: [...(job.commLog || []), { id: uid(), type: "note" as const, date: today(), note: `🗑 Cans not out — charged ${feeName} (${fmt(feeAmount)})` }] } as any);
+                    if (customer.phone) twilioSend(settings as any, customer.phone, `Hi ${customer.firstName}, we stopped by for your trash can cleaning but your cans weren't out, so a ${fmt(feeAmount)} ${feeName.toLowerCase()} was charged to your card on file. — ${(settings as any)?.companyName || "Crew Boss"}`).catch(() => {});
+                    toast(`Charged ${fmt(feeAmount)} ✓`, "green");
+                  } catch (e: any) {
+                    toast(`Charge failed — ${e?.message || "unknown error"}`, "red");
+                  } finally {
+                    setChargingFee(false);
+                  }
+                }}
+                className="w-full flex items-center justify-center gap-1.5 py-1.5 text-xs text-red-300 hover:text-red-200 transition disabled:opacity-40"
+              >
+                <AlertTriangle size={12} />{chargingFee ? "Charging…" : `Cans Not Out — Charge Inconvenience Fee`}
+              </button>
+            )}
+          </Glass>
+        )}
+
+        {/* FEATURE (round 13, item 20) — cascade Running Late prompt. */}
+        {cascadePrompt && (
+          <Glass className="p-3 !bg-orange-950/20 !border-orange-700/40 space-y-2">
+            <div className="text-xs font-semibold text-orange-300">Notify the other {laterJobsToday.length} customer{laterJobsToday.length !== 1 ? "s" : ""} scheduled today too?</div>
+            <div className="text-[10px] text-white/50">They'll get a heads-up that the crew is running ~{cascadePrompt.minutes} min behind, without a specific new time.</div>
+            <div className="flex gap-2">
+              <button disabled={cascadeSending} onClick={() => sendCascadeRunningLate(cascadePrompt.minutes)} className="flex-1 py-2 rounded-lg bg-orange-700/40 border border-orange-500/50 text-white text-xs font-bold disabled:opacity-40">
+                {cascadeSending ? "Sending…" : "Yes, notify them"}
+              </button>
+              <button disabled={cascadeSending} onClick={() => setCascadePrompt(null)} className="px-3 text-[11px] text-white/40 hover:text-white/60">No thanks</button>
+            </div>
+          </Glass>
+        )}
+
+        {!isPreview && customer && (
+          <SaveCardModal
+            open={addCardOpen}
+            onClose={() => setAddCardOpen(false)}
+            publishableKey={settings?.stripePublishableKey || ""}
+            email={customer.email || ""}
+            name={`${customer.firstName} ${customer.lastName}`}
+            existingStripeCustomerId={customer.stripeCustomerId}
+            companyName={companyName}
+            enteredByEmployee
+            onSaved={(stripeCustomerId, paymentMethodId, label) => {
+              setCustomers((prev: Customer[]) => prev.map(c => c.id === customer.id ? { ...c, stripeCustomerId, savedPaymentMethodId: paymentMethodId, savedPaymentMethodLabel: label } : c));
+              // Explicit Supabase write — an employee's own device otherwise
+              // has no path back to the owner's CRM; every other customer
+              // edit in the app writes through a page-level save handler
+              // (CustomersPage.tsx), which this portal has never needed
+              // before now.
+              (supabase as any).from("customers").update({ stripeCustomerId, savedPaymentMethodId: paymentMethodId, savedPaymentMethodLabel: label }).eq("id", customer.id)
+                .catch((e: any) => console.warn("[AddCardOnFile] Supabase sync failed:", e?.message));
+              toast?.("Card saved on file ✓", "green");
+              setAddCardOpen(false);
+            }}
+          />
         )}
 
         {/* FIX 8 — Report Problem: unlike OTW/Running Late, this doesn't need
@@ -4117,6 +4251,12 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
       .filter(j => j.id !== job.id && j.status !== "completed" && j.status !== "cancelled" && j.scheduledDate >= todayStr)
       .sort((a, b) => (a.scheduledDate + (a.scheduledTime || "23:59")).localeCompare(b.scheduledDate + (b.scheduledTime || "23:59")))[0] || null;
     const nextJobCustomer = nextJob ? findCustomer(nextJob.customerId) || null : null;
+    // FEATURE (round 13, item 20) — every OTHER job scheduled later today
+    // (not just the immediate next one), for the Running Late cascade prompt.
+    const laterJobsToday = myJobs
+      .filter(j => j.id !== job.id && j.status !== "completed" && j.status !== "cancelled" && j.scheduledDate === todayStr && (j.scheduledTime || "23:59") > (job.scheduledTime || ""))
+      .sort((a, b) => (a.scheduledTime || "23:59").localeCompare(b.scheduledTime || "23:59"))
+      .map(j => ({ job: j, customer: findCustomer(j.customerId) || null }));
     return (
       <JobDetailView
         job={job}
@@ -4134,8 +4274,10 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
         signOffDisclaimer={job.signOffTerms || settings.termsAndConditions || settings.terms || ""}
         settings={settings}
         setEstimates={setEstimates}
+        setCustomers={setCustomers}
         nextJob={nextJob}
         nextJobCustomer={nextJobCustomer}
+        laterJobsToday={laterJobsToday}
         onArrived={startDayShiftIfNeeded}
         autoComplete={pendingCompleteJobId === selectedJobId}
         employeeName={myEmployee ? `${myEmployee.firstName} ${myEmployee.lastName || ""}`.trim() : ""}

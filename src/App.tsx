@@ -4,7 +4,7 @@ import {
   Calendar, MessageSquare, Megaphone, Star, Zap, Share2, UserPlus,
   Bot, Database, Users2, Truck, DollarSign, FlaskConical, BarChart3,
   TrendingUp, PiggyBank, Wallet, Heart, Gift, Monitor, Tag,
-  Bell, Settings, X, Lock, Globe, ChevronLeft, ChevronRight, Plus, Undo2, Redo2, CheckCircle, Eye, EyeOff, Menu, AlertTriangle
+  Bell, Settings, X, Lock, Globe, ChevronLeft, ChevronRight, Plus, Undo2, Redo2, CheckCircle, Eye, EyeOff, Menu, AlertTriangle, Trash2
 } from "lucide-react";
 
 import { useGlobalStyles } from "./hooks/useGlobalStyles";
@@ -33,6 +33,8 @@ import { ReviewsPage } from "./components/pages/ReviewsPage";
 import { AutomationsPage } from "./components/pages/AutomationsPage";
 import { SocialPage } from "./components/pages/SocialPage";
 import { LeadIntakePage } from "./components/pages/LeadIntakePage";
+import { TrashCanPage } from "./components/pages/TrashCanPage";
+import { TrashCanSignupPage } from "./components/pages/TrashCanSignupPage";
 import { AlfredPage } from "./components/pages/AlfredPage";
 import { GoogleWorkspacePage } from "./components/pages/GoogleWorkspacePage";
 import { EmployeesPage } from "./components/pages/EmployeesPage";
@@ -72,7 +74,7 @@ import {
 import { seedWeather } from "./lib/weather";
 import { fetchRealWeather } from "./lib/weather";
 import { fmt, uid, today, daysSince, daysFromNow, consumeOAuthIntent, getLastOwnerSessionFlag, setLastOwnerSessionFlag, getLastOwnerId, setLastOwnerId, buildChecklistFromServices, withTimeout, normalizeJobRow, totalJobPhotoCount, notifyDesktop, stripLegacyJobFields, getPollIntervalMs, purgeOldJobMedia } from "./lib/utils";
-import { sendEmail, sendOwnerGmailOnly, emailShell, buildTomorrowJobsEmailHtml, buildDailyBriefingEmailHtml, setOptedOutPhones } from "./lib/messaging";
+import { sendEmail, sendOwnerGmailOnly, emailShell, buildTomorrowJobsEmailHtml, buildDailyBriefingEmailHtml, setOptedOutPhones, setTestModeContacts } from "./lib/messaging";
 import { exchangeSocialOAuthCode, type SocialPlatform } from "./lib/socialOAuth";
 import type {
   Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense,
@@ -137,6 +139,7 @@ const navGroups = [
     items: [
       { id: "referrals",   label: "Referrals",   icon: Gift },
       { id: "promotions",  label: "Promotions",  icon: Tag  },
+      { id: "trashcans",   label: "Trash Cans",  icon: Trash2 },
     ],
   },
   {
@@ -443,6 +446,10 @@ export function App() {
     // Embed Code"). No owner session/auth — see LeadFormPage.tsx for why it
     // deliberately never reads app_settings (secrets exposure).
     if (hash === "lead-form" || hash.startsWith("lead-form?")) return "lead-form";
+    // FEATURE (round 13, items 16-18) — public, unauthenticated Trash Can
+    // Cleaning signup form. Same reasoning as lead-form above (no app_settings
+    // read — see TrashCanSignupPage.tsx).
+    if (hash === "trash-cans" || hash.startsWith("trash-cans?")) return "trash-cans";
     // FEATURE — public, unauthenticated legal pages required as live HTTPS
     // links for Twilio A2P 10DLC campaign registration (see LeadFormPage.tsx's
     // SMS opt-in checkbox and LegalPages.tsx).
@@ -466,7 +473,7 @@ export function App() {
     // is exactly why the reset page sometimes never even loaded. Prefix-match
     // it like "portal/" and "estimate/" above.
     if (hash === "reset-password" || hash.startsWith("reset-password&") || hash.startsWith("reset-password?")) return "reset-password";
-    const valid = ["dashboard","alfred","inbox","notifications","customers","estimates","invoices","pipeline","intake","jobs","calendar","crew","campaigns","reviews","automations","social","referrals","promotions","expenses","reports","analytics","budget","personal","accountability","employees","fleet","chemicals","google","portal","reset-password","client","referral","rate"];
+    const valid = ["dashboard","alfred","inbox","notifications","customers","estimates","invoices","pipeline","intake","jobs","calendar","crew","campaigns","reviews","automations","social","referrals","promotions","trashcans","expenses","reports","analytics","budget","personal","accountability","employees","fleet","chemicals","google","portal","reset-password","client","referral","rate"];
     return valid.includes(hash) ? hash : "dashboard";
   });
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -743,7 +750,7 @@ export function App() {
 
   // Listen for browser back/forward
   useEffect(() => {
-    const valid = ["dashboard","alfred","inbox","notifications","customers","estimates","invoices","pipeline","intake","jobs","calendar","crew","campaigns","reviews","automations","social","referrals","promotions","expenses","reports","analytics","budget","personal","accountability","employees","fleet","chemicals","google","portal","reset-password","client","referral","rate","lead-form","terms","privacy"];
+    const valid = ["dashboard","alfred","inbox","notifications","customers","estimates","invoices","pipeline","intake","jobs","calendar","crew","campaigns","reviews","automations","social","referrals","promotions","trashcans","expenses","reports","analytics","budget","personal","accountability","employees","fleet","chemicals","google","portal","reset-password","client","referral","rate","lead-form","trash-cans","terms","privacy"];
     const handler = () => {
       const hash = window.location.hash.replace(/^#\/?/, "").split("?")[0];
       if (hash === "portal" || hash.startsWith("portal/")) { setPage("portal"); return; }
@@ -2034,6 +2041,13 @@ export function App() {
     setOptedOutPhones(customers);
   }, [customers]);
 
+  // FEATURE (round 13, item 12) — Testing Mode, same registry pattern as
+  // opt-out above. Recomputed whenever customers change OR the owner flips
+  // the master switch in Settings.
+  useEffect(() => {
+    setTestModeContacts(customers, !!(settings as any)?.testModeEnabled);
+  }, [customers, (settings as any)?.testModeEnabled]);
+
   // On first load, immediately push any localStorage customers + estimates to
   // Supabase so employees (and any other device) can read them right away,
   // without waiting up to 30s for the auto-save interval to fire.
@@ -2633,6 +2647,12 @@ export function App() {
   // URL: #/lead-form?co=COMPANY_NAME&ph=COMPANY_PHONE
   if (page === "lead-form") {
     return <LeadFormPage />;
+  }
+
+  // ── Public Trash Can Cleaning signup — no auth. See TrashCanSignupPage.tsx.
+  // URL: #/trash-cans?co=...&ph=...&cost=...&min=...&freq=...&pk=...
+  if (page === "trash-cans") {
+    return <TrashCanSignupPage />;
   }
 
   // ── Public legal pages — no auth, required as live HTTPS links for Twilio
@@ -3313,6 +3333,7 @@ export function App() {
                 {page === "accountability" && (managerBlocked("accountability") ? <RestrictedNotice label="Accountability Tools" /> : <AccountabilityPage entries={accountability} setEntries={setAccountability} goals={goalsList} setGoals={setGoalsList} wins={wins} setWins={setWins} toast={toast} settings={settings} />)}
                 {page === "referrals"      && <ReferralsPage customers={customers} setCustomers={setCustomers} jobs={jobs} toast={toast} settings={settings} setSettings={setSettings} />}
                 {page === "promotions"     && <PromotionsPage promotions={promotions} setPromotions={setPromotions} customers={customers} services={services} settings={settings} toast={toast} />}
+                {page === "trashcans"      && <TrashCanPage jobs={jobs} customers={customers} settings={settings} setSettings={setSettings} toast={toast} />}
                 {page === "crew"           && <CrewView jobs={jobs} setJobs={setJobs} customers={customers} employees={employees} toast={toast} settings={settings} setSettings={setSettings} estimates={estimates} setEstimates={setEstimates} refetchEmployees={refetchEmployees} ownerId={crmUserId} />}
               </SafePage>
             </PageFade>

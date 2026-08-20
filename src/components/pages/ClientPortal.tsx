@@ -98,6 +98,7 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
   // absent entirely; the only agreement language in the flow was on the
   // signature step, about the estimate total, not payment terms).
   const [agreedToPaymentTerms, setAgreedToPaymentTerms] = useState(false);
+  const [payLaterBusy, setPayLaterBusy] = useState(false);
   // FIX 14 — promo code (business coupon, Settings → Promotions) or a referral
   // code (another customer's referralCode) entered at checkout. Only one of
   // "promotion" | "referral" applies at a time — whichever the code matches.
@@ -182,6 +183,12 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
   const alreadyPaid = Number(e?.paidDeposit) || 0;
   const remainingAmt = Math.max(0, effectiveTotal - alreadyPaid);
   const hasRemainingBalance = alreadyPaid > 0 && !e?.paidFull && remainingAmt > 0;
+  // FEATURE (round 13, item 4) — mandatory deposit only applies before the
+  // job exists/is invoiced and before any partial payment is already on record.
+  const isDepositMandatory = !!e?.depositMandatory && Number(e?.depositRequired) > 0 && !e?.invoiced && !hasRemainingBalance;
+  useEffect(() => {
+    if (isDepositMandatory) setPayType("deposit");
+  }, [isDepositMandatory, e?.id]);
   const payAmt = payType === "deposit" ? depositAmt : payType === "remaining" ? remainingAmt : effectiveTotal;
 
   // FIX 14 — promo/referral code discount, applied to the payment amount
@@ -367,8 +374,14 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
   return (
     <Modal open={!!e} onClose={onClose} title="" maxW="max-w-2xl">
       <div className="-mx-5 -mt-5" style={fontFamily ? { fontFamily } : undefined}>
-        {/* Portal header */}
-        <div className={"px-6 py-4 rounded-t-2xl " + (headerColor ? "" : "bg-gradient-to-r from-red-600 to-red-800")} style={headerColor ? { background: headerColor } : undefined}>
+        {/* Portal header — FIX (round 13, item 2): sticky so it stays pinned
+            at the top of the scrollable estimate content instead of
+            scrolling away with the rest of the page (mobile especially).
+            Rounded top corners removed — the card's own overflow-hidden +
+            rounded-2xl (Modal.tsx) already clips this to the right shape at
+            rest; keeping rounded-t-2xl here looked wrong once the header
+            sticks mid-scroll below that clipped edge. */}
+        <div className={"px-6 py-4 sticky top-0 z-20 " + (headerColor ? "" : "bg-gradient-to-r from-red-600 to-red-800")} style={headerColor ? { background: headerColor } : undefined}>
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2.5">
               {tpl?.logoUrl && <img src={tpl.logoUrl} alt="" className="w-9 h-9 rounded-lg object-contain bg-white/90 p-1" />}
@@ -611,17 +624,31 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
                   letting me pay only part of a bill for work that's already
                   finished?" — only estimates (not-yet-invoiced, job still
                   ahead of them) should ever offer the deposit choice. */}
-              <div className={"grid gap-3 " + (hasRemainingBalance || e?.invoiced ? "grid-cols-1" : "grid-cols-2")}>
+              {/* FEATURE (round 13, item 4) — a mandatory deposit removes the
+                  "pay in full" / "pay later" choices entirely, so the
+                  customer can't skip the deposit the owner requires to book. */}
+              {isDepositMandatory && (
+                <div className="text-xs text-yellow-300 bg-yellow-950/20 border border-yellow-700/30 rounded-xl px-3 py-2">
+                  A deposit is required to book this job.
+                </div>
+              )}
+              <div className={"grid gap-3 " + (hasRemainingBalance || e?.invoiced || isDepositMandatory ? "grid-cols-1" : "grid-cols-2")}>
                 {(hasRemainingBalance
                   ? [{ k: "remaining", l: "Pay Remaining Balance", sub: fmt(remainingAmt) + " due — " + fmt(alreadyPaid) + " already paid" }]
                   : e?.invoiced
                   ? [{ k: "full", l: "Pay in Full", sub: fmt(e.total) + " due for completed service" }]
+                  : isDepositMandatory
+                  ? [{ k: "deposit", l: "Pay a Deposit Now", sub: "Deposit Due Now: " + fmt(depositAmt) + " · Balance Due After Service: " + fmt(depositBalanceAmt) + " · required to book" }]
                   : [
                       // FEATURE 6 — explicit "Deposit Due Now" / "Balance Due
                       // After Service" wording so both figures are visible
                       // before the client picks an option, not just the deposit.
-                      { k: "deposit", l: "Pay Deposit", sub: "Deposit Due Now: " + fmt(depositAmt) + " · Balance Due After Service: " + fmt(depositBalanceAmt) },
-                      { k: "full", l: "Pay in Full", sub: fmt(e.total) + " — save time on service day" }
+                      // WORDING FIX (round 13, item 3) — "Pay Deposit" vs "Pay
+                      // in Full" was ambiguous about WHEN each charge happens;
+                      // both labels below now say explicitly whether money
+                      // moves today or later.
+                      { k: "deposit", l: "Pay a Deposit Now", sub: "Deposit Due Now: " + fmt(depositAmt) + " · Balance Due After Service: " + fmt(depositBalanceAmt) },
+                      { k: "full", l: "Pay in Full Now", sub: fmt(e.total) + " charged today — nothing due after service" }
                     ]
                 ).map(o => (
                   <button key={o.k} onClick={() => setPayType(o.k)} className={"p-4 rounded-xl border-2 text-left transition-all " + (payType === o.k ? "border-red-500 bg-red-950/30" : "border-white/10 bg-black/40 hover:border-white/20")}>
@@ -651,8 +678,12 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
                 {promoError && <div className="text-xs text-red-400 mt-1.5">{promoError}</div>}
               </div>
 
-              {/* Tip */}
-              <div>
+              {/* Tip — FIX (round 13, item 5): only offered once the job is
+                  actually done (this estimate has become an invoice) or the
+                  customer is settling a remaining balance after service —
+                  never on a pre-service quote/estimate, where there's
+                  nothing yet to tip for. */}
+              {(e?.invoiced || hasRemainingBalance) && <div>
                 <div className="text-xs text-white/60 mb-2">Add a tip? (optional)</div>
                 <div className="flex gap-2">
                   {[0, 0.10, 0.15, 0.20].map(pct => (
@@ -664,7 +695,7 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
                 <div className="flex items-center gap-2 mt-2">
                   <GInput type="number" step="1" min="0" placeholder="Custom tip amount" value={customTip} onChange={e => { setCustomTip(e.target.value); setTip(Number(e.target.value) || 0); }} className="!text-sm flex-1" />
                 </div>
-              </div>
+              </div>}
 
               <Glass className="p-4 !bg-black/60">
                 <div className="space-y-1 text-sm">
@@ -692,8 +723,14 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
                 </span>
               </label>
 
-              {/* Stripe payment — real Payment Element if keys are configured, otherwise a connect prompt */}
-              {settings?.stripePublishableKey && settings?.stripeSecretKeyEnc ? (
+              {/* Stripe payment — real Payment Element if keys are configured, otherwise a connect prompt.
+                  BUG FIX (round 13) — this used to also require settings.stripeSecretKeyEnc, a field the
+                  round-12 Stripe security fix stopped writing entirely (the secret key now lives only in
+                  a Cloudflare env var, never in settings). That left this condition permanently false for
+                  every owner post-fix, so the real Stripe pay button never showed — only the "not set up
+                  yet" fallback — even with Stripe fully connected. Publishable key is the only client-side
+                  signal of "connected" now. */}
+              {settings?.stripePublishableKey ? (
                 <div className="space-y-2">
                   <button
                     onClick={() => setShowStripeModal(true)}
@@ -713,9 +750,19 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
                   <div className="text-xs text-white/40">{companyName} hasn't connected Stripe — contact us directly to arrange payment.</div>
                 </div>
               )}
-              {!hasRemainingBalance && (
-                <button onClick={() => handleApprove(undefined, "later")} className="w-full py-3 rounded-xl border border-white/15 text-white/70 hover:text-white hover:bg-white/5 transition text-sm font-medium">
-                  I'll Pay Later — just sign for now
+              {/* WORDING FIX (round 13, item 3) — relabeled to match the
+                  "Pay a Deposit Now" / "Pay in Full Now" pair above: this is
+                  the true third option, zero dollars today, full amount
+                  once the job is actually done. BUG FIX (item 6) — this
+                  already called handleApprove(undefined, "later"), which
+                  signs the estimate and does persist the choice (payChoice:
+                  "later") via onApprove; the button wasn't actually dead —
+                  but disabled={busy} guards against a double-tap leaving it
+                  looking unresponsive on a slow connection, which wasn't
+                  handled before. */}
+              {!hasRemainingBalance && !e?.invoiced && !isDepositMandatory && (
+                <button onClick={() => { if (!payLaterBusy) { setPayLaterBusy(true); Promise.resolve(handleApprove(undefined, "later")).finally(() => setPayLaterBusy(false)); } }} disabled={payLaterBusy} className="w-full py-3 rounded-xl border border-white/15 text-white/70 hover:text-white hover:bg-white/5 transition text-sm font-medium disabled:opacity-50">
+                  {payLaterBusy ? "Signing…" : "Pay in Full After Service — just sign for now"}
                 </button>
               )}
               <GBtn variant="ghost" onClick={() => setStep("sign")} className="w-full">← Back to signature</GBtn>

@@ -58,6 +58,11 @@ export interface Customer {
   utmCampaign?: string;
   smsOptOut?: boolean;
   optOutDate?: string;
+  // FEATURE (round 13, item 12) — flags this customer as a test client. When
+  // Settings → Testing Mode is on, every real SMS/email/automation send to
+  // this customer is blocked at the source (lib/messaging.ts) so the owner
+  // can safely run end-to-end tests without messaging a real person.
+  isTestClient?: boolean;
   customFields?: CustomField[];
   referralCode?: string;
   referralCreditOwed?: number;
@@ -128,6 +133,11 @@ export interface Estimate {
   // computeDepositAmount (lib/utils.ts) is the single place that resolves
   // either representation to an actual dollar figure.
   depositType?: "amount" | "percent";
+  // FEATURE (round 13, item 4) — whether the deposit above is mandatory
+  // (customer must pay it to book — "Pay in Full Now"/"Pay in Full After
+  // Service" are hidden) or just an optional convenience the customer can
+  // still skip in favor of paying everything at once or after service.
+  depositMandatory?: boolean;
   tax: number;
   total: number;
   status: "pending" | "approved" | "rejected" | "expired";
@@ -323,6 +333,22 @@ export interface Job {
   lostReason?: string;
   lat?: number;
   lng?: number;
+  // FEATURE (round 13, items 16-23) — Trash Can Cleaning. undefined/"wash"
+  // means a normal pressure-washing job (default, back-compat); "trash_can"
+  // jobs are otherwise ordinary Job rows (reusing all existing recurring/
+  // checklist/photo/clock/calendar-sync infra) with these extra fields.
+  serviceCategory?: "wash" | "trash_can";
+  cansCount?: number;
+  inconvenienceFeeCharged?: number;
+  inconvenienceFeeChargedAt?: string;
+  // FEATURE (round 13, item 7) — customer-initiated reschedule request from
+  // the client portal (ClientAuthPortal.tsx). Doesn't move the job itself —
+  // the owner still confirms and reschedules manually from Jobs/Calendar,
+  // this just surfaces the request clearly instead of it arriving only as a
+  // one-off text/call.
+  rescheduleRequested?: boolean;
+  rescheduleRequestNote?: string;
+  rescheduleRequestedAt?: string;
   _showProfit?: boolean;
   paymentType?: "Cash" | "Check" | "Card" | "Zelle" | "Venmo" | "Invoice";
   paymentStatus?: "Pending" | "Partial" | "Paid";
@@ -848,6 +874,19 @@ export interface AppSettings {
   // Defaults every existing owner to paused after the automation-spam
   // incident; see AutomationsPage.tsx's banner and useAutomationEngine.ts.
   automationsPaused?: boolean;
+  // FEATURE (round 13, item 12) — master switch for Testing Mode (see
+  // Customer.isTestClient and lib/messaging.ts's setTestModeContacts).
+  testModeEnabled?: boolean;
+  // FEATURE (round 13, items 16-23) — Trash Can Cleaning owner settings.
+  trashCanCostPerCan?: number;
+  trashCanMinutesPerCan?: number;
+  trashCanDefaultFrequency?: "weekly" | "monthly" | "quarterly";
+  trashCanInconvenienceFeeName?: string;
+  trashCanInconvenienceFeeAmount?: number;
+  // FEATURE (round 13, item 24) — route builder lunch break, applies to any
+  // day's job route, not just trash-can jobs.
+  routeLunchMinutes?: number;
+  routeLunchEarliestTime?: string;
   // Batch-approval guardrail — customerId -> last date (YYYY-MM-DD) any
   // automation actually emailed/texted them, across ALL automations. Caps
   // every customer to at most one automation touch per day regardless of

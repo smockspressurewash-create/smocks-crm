@@ -23,7 +23,21 @@ export function StripePaymentModal({
   const stripeRef = useRef<any>(null);
   const elementsRef = useRef<any>(null);
   const intentIdRef = useRef<string>("");
+  const clientSecretRef = useRef<string>("");
   const mountRef = useRef<HTMLDivElement | null>(null);
+  // FEATURE (round 13, item 8) — "tap to pay" investigation. True merchant-
+  // side NFC tap-to-pay (the owner's phone acting as a card reader, e.g.
+  // Stripe's "Tap to Pay on iPhone/Android") requires the Stripe Terminal
+  // SDK running inside a native iOS/Android app (or dedicated Stripe reader
+  // hardware) — it is NOT available to a web page in a mobile browser, so it
+  // isn't buildable in this Vite/React CRM without shipping a native app.
+  // What IS achievable from the web today: the customer's OWN device doing a
+  // contactless one-tap confirmation (Face ID/fingerprint) via their saved
+  // Apple Pay/Google Pay card, using Stripe's Payment Request Button API.
+  // That's implemented below — it mounts automatically only when the
+  // visiting browser/device actually supports it (canMakePayment()).
+  const [prButtonAvailable, setPrButtonAvailable] = useState(false);
+  const prMountRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     if (!open) return;
@@ -43,6 +57,7 @@ export function StripePaymentModal({
         const intent = await createPaymentIntent(Math.round(amount * 100), currency, description, invoiceId ? { invoiceId } : undefined);
         if (cancelled) return;
         intentIdRef.current = intent.id;
+        clientSecretRef.current = intent.client_secret;
         const stripe = await loadStripeJs(publishableKey);
         if (cancelled) return;
         stripeRef.current = stripe;
@@ -50,6 +65,42 @@ export function StripePaymentModal({
         elementsRef.current = elements;
         const paymentElement = elements.create("payment");
         if (mountRef.current) paymentElement.mount(mountRef.current);
+
+        // Payment Request Button (Apple Pay / Google Pay) — see comment
+        // above on why this, not real NFC terminal tap-to-pay, is what's
+        // feasible from a web page.
+        const pr = stripe.paymentRequest({
+          country: "US",
+          currency,
+          total: { label: description || "Payment", amount: Math.round(amount * 100) },
+          requestPayerName: true,
+        });
+        const canPay = await pr.canMakePayment().catch(() => null);
+        if (!cancelled && canPay) {
+          setPrButtonAvailable(true);
+          const prButton = elements.create("paymentRequestButton", { paymentRequest: pr });
+          if (prMountRef.current) prButton.mount(prMountRef.current);
+          pr.on("paymentmethod", async (ev: any) => {
+            const { error: confirmErr, paymentIntent } = await stripe.confirmCardPayment(
+              clientSecretRef.current,
+              { payment_method: ev.paymentMethod.id },
+              { handleActions: false }
+            );
+            if (confirmErr) {
+              ev.complete("fail");
+              setError(confirmErr.message || "Payment failed");
+              setStatus("ready");
+              return;
+            }
+            ev.complete("success");
+            if (paymentIntent.status === "requires_action") {
+              const { error: actionErr } = await stripe.confirmCardPayment(clientSecretRef.current);
+              if (actionErr) { setError(actionErr.message || "Payment failed"); setStatus("ready"); return; }
+            }
+            setStatus("success");
+            onSuccess(intentIdRef.current);
+          });
+        }
         setStatus("ready");
       } catch (e: any) {
         if (!cancelled) { setError(e.message || "Failed to start payment"); setStatus("error"); }
@@ -94,6 +145,12 @@ export function StripePaymentModal({
           </div>
         ) : (
           <>
+            {prButtonAvailable && (status === "ready" || status === "processing") && (
+              <div className="space-y-2">
+                <div ref={prMountRef} />
+                <div className="text-center text-[10px] text-white/30 flex items-center gap-2"><div className="flex-1 h-px bg-white/10" />or pay by card<div className="flex-1 h-px bg-white/10" /></div>
+              </div>
+            )}
             <div ref={mountRef} className={status === "loading" || status === "error" ? "hidden" : ""} />
             {(status === "ready" || status === "processing") && (
               <GBtn onClick={confirmPayment} disabled={status === "processing"} className="w-full !justify-center !py-3">

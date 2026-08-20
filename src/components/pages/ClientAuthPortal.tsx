@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import { Lock, Mail, User, Phone, LogOut, CreditCard, Receipt, CheckCircle, Clock, Gift, Copy, Repeat, ImageIcon, ChevronRight } from "lucide-react";
+import { Lock, Mail, User, Phone, LogOut, CreditCard, Receipt, CheckCircle, Clock, Gift, Copy, Repeat, ImageIcon, ChevronRight, FileText, Briefcase, CalendarClock } from "lucide-react";
 import { supabase } from "../../lib/supabase";
 import { fmt, uid, today, mediaSrc } from "../../lib/utils";
 import type { Customer, Estimate, Job, AppSettings } from "../../types";
@@ -37,7 +37,10 @@ export function ClientAuthPortal({
   const [authBusy, setAuthBusy] = useState(false);
   const [forgotBusy, setForgotBusy] = useState(false);
   const [forgotSent, setForgotSent] = useState(false);
-  const [tab, setTab] = useState<"invoices" | "jobs" | "referrals" | "payment">("invoices");
+  const [tab, setTab] = useState<"invoices" | "quotes" | "jobs" | "referrals" | "payment">("invoices");
+  const [rescheduleJobId, setRescheduleJobId] = useState<string | null>(null);
+  const [rescheduleNote, setRescheduleNote] = useState("");
+  const [reschedulingSend, setReschedulingSend] = useState(false);
   const [payingInv, setPayingInv] = useState<Estimate | null>(null);
   // FEATURE — legal disclaimer/T&Cs gate before the Stripe modal opens (this
   // portal jumps straight from "Pay Now" to the card form with no review
@@ -235,6 +238,39 @@ export function ClientAuthPortal({
   const paid = myInvoices.filter(e => !!e.paidAt);
   const myJobs = jobs.filter(j => j.customerId === cust.id).sort((a, b) => (b.scheduledDate || "").localeCompare(a.scheduledDate || ""));
   const completedJobs = myJobs.filter(j => j.status === "completed");
+  // AUDIT FIX (round 13, item 7) — upcoming vs past, instead of one
+  // undifferentiated list newest-first (a customer's next job could be
+  // buried below a year of completed history).
+  const upcomingJobs = myJobs.filter(j => j.status !== "completed" && j.status !== "cancelled").sort((a, b) => (a.scheduledDate || "").localeCompare(b.scheduledDate || ""));
+  const pastJobs = myJobs.filter(j => j.status === "completed" || j.status === "cancelled");
+  const myQuotes = estimates.filter(e => e.customerId === cust.id && !e.invoiced).sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""));
+
+  const requestReschedule = async (jobId: string) => {
+    setReschedulingSend(true);
+    try {
+      const j = jobs.find(x => x.id === jobId);
+      await (supabase as any).from("jobs").update({
+        rescheduleRequested: true, rescheduleRequestNote: rescheduleNote.trim() || null, rescheduleRequestedAt: new Date().toISOString(),
+      }).eq("id", jobId);
+      // Same anonymous-safe owner-notification proxy CustomerReviewPage.tsx/
+      // ClientPortal.tsx use — see functions/api/alfred-notify.ts.
+      fetch("/api/alfred-notify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          title: "Alfred Notifications",
+          message: `📅 RESCHEDULE REQUESTED\n\n${cust.firstName} ${cust.lastName} asked to reschedule their ${j?.scheduledDate || "upcoming"} job at ${j?.address || "their property"}.${rescheduleNote.trim() ? `\n\nNote: "${rescheduleNote.trim()}"` : ""}`,
+        }),
+      }).catch(() => {});
+      toast?.("Reschedule request sent — we'll be in touch to confirm a new date ✓", "green");
+      setRescheduleJobId(null);
+      setRescheduleNote("");
+    } catch (e: any) {
+      toast?.("Couldn't send request — please call or text us directly", "red");
+    } finally {
+      setReschedulingSend(false);
+    }
+  };
   const referredCustomers = customers.filter(c => c.referredBy === cust.id);
   const referralLink = `${window.location.origin}${window.location.pathname}#/referral?ref=${cust.referralCode || ""}`;
   const isCommercial = !!cust.isCommercial || (cust.tags || []).includes("Commercial");
@@ -257,7 +293,12 @@ export function ClientAuthPortal({
         </div>
 
         <div className="flex gap-1 p-1 bg-white/5 border border-white/10 rounded-xl overflow-x-auto">
-          {([["invoices", "Invoices", Receipt], ["jobs", "Past Jobs", Clock], ["referrals", "Referrals", Gift], ["payment", "Payment", CreditCard]] as const).map(([key, label, Icon]) => (
+          {/* AUDIT FIX (round 13, item 7) — added a Quotes tab (pending,
+              not-yet-invoiced estimates were previously invisible here —
+              only invoiced ones showed, under "Invoices"), and renamed
+              "Past Jobs" -> "Jobs" since that tab now shows upcoming AND
+              past jobs together (see below). */}
+          {([["invoices", "Invoices", Receipt], ["quotes", "Quotes", FileText], ["jobs", "Jobs", Clock], ["referrals", "Referrals", Gift], ["payment", "Payment", CreditCard]] as const).map(([key, label, Icon]) => (
             <button key={key} onClick={() => setTab(key)} className={"flex-1 py-2 rounded-lg text-xs font-medium transition flex items-center justify-center gap-1.5 whitespace-nowrap " + (tab === key ? "bg-red-700/40 text-white border border-red-700/50" : "text-white/50")}><Icon size={12} />{label}</button>
           ))}
         </div>
@@ -310,23 +351,79 @@ export function ClientAuthPortal({
           </div>
         )}
 
-        {tab === "jobs" && (
+        {/* AUDIT FIX (round 13, item 7) — Quotes tab: pending (not yet
+            invoiced) estimates, previously invisible in this portal — only
+            invoiced ones ever showed, under Invoices. */}
+        {tab === "quotes" && (
           <div className="space-y-3">
-            {myJobs.length === 0 && <div className="text-center py-6 text-white/30 text-sm">No jobs on file yet</div>}
-            {myJobs.map(j => (
-              <Glass key={j.id} className="p-4">
-                <div className="flex items-center justify-between mb-2">
-                  <div className="text-sm font-medium">{j.address}</div>
-                  <Badge tone={j.status === "completed" ? "green" : j.status === "cancelled" ? "red" : "blue"}>{j.status}</Badge>
+            {myQuotes.length === 0 && <div className="text-center py-6 text-white/30 text-sm">No quotes on file</div>}
+            {myQuotes.map(q => (
+              <Glass key={q.id} className="p-4 flex items-center justify-between gap-3">
+                <div>
+                  <div className="font-semibold">{fmt(q.total)}</div>
+                  <div className="text-xs text-white/40">{q.createdAt}</div>
                 </div>
-                <div className="text-xs text-white/40">{j.scheduledDate}</div>
-                {(j.photos || []).length > 0 && (
-                  <div className="flex gap-2 mt-2 overflow-x-auto">
-                    {j.photos.map(p => <img key={p.id} src={mediaSrc(p.url, p.dataUrl)} alt="" className="w-16 h-16 rounded-lg object-cover border border-white/10 flex-shrink-0" />)}
-                  </div>
-                )}
+                <Badge tone={q.status === "approved" ? "green" : q.status === "rejected" ? "red" : "yellow"}>{q.status}</Badge>
               </Glass>
             ))}
+          </div>
+        )}
+
+        {tab === "jobs" && (
+          <div className="space-y-5">
+            <div>
+              <div className="text-xs text-white/50 uppercase tracking-wider font-semibold mb-2 flex items-center gap-1.5"><CalendarClock size={12} />Upcoming</div>
+              {upcomingJobs.length === 0 && <div className="text-center py-6 text-white/30 text-sm">No upcoming jobs</div>}
+              {upcomingJobs.map(j => (
+                <Glass key={j.id} className="p-4 mb-2">
+                  <div className="flex items-center justify-between mb-2 gap-2">
+                    <div className="text-sm font-medium truncate">{j.address}</div>
+                    <div className="flex items-center gap-1.5 flex-shrink-0">
+                      {j.jobType === "commercial" && <Badge tone="blue">Commercial</Badge>}
+                      {j.isRecurring && <Badge tone="purple"><Repeat size={9} className="inline mr-0.5" />{j.recurringFreq || "Recurring"}</Badge>}
+                      <Badge tone={j.status === "cancelled" ? "red" : "blue"}>{j.status}</Badge>
+                    </div>
+                  </div>
+                  <div className="text-xs text-white/40">{j.scheduledDate}{j.scheduledTime ? ` · ${j.scheduledTime}` : ""}</div>
+                  {/* FEATURE (round 13, item 7) — request a reschedule. */}
+                  {j.rescheduleRequested ? (
+                    <div className="text-[11px] text-yellow-300/80 mt-2">📅 Reschedule requested — we'll confirm a new date soon.</div>
+                  ) : rescheduleJobId === j.id ? (
+                    <div className="mt-2 space-y-2">
+                      <textarea value={rescheduleNote} onChange={e => setRescheduleNote(e.target.value)} rows={2} placeholder="Preferred new date/time (optional)" className="w-full bg-white/5 border border-white/15 rounded-lg px-2.5 py-1.5 text-xs text-white placeholder-white/25 resize-none focus:outline-none focus:border-red-500/50" />
+                      <div className="flex gap-2">
+                        <button disabled={reschedulingSend} onClick={() => requestReschedule(j.id)} className="flex-1 py-1.5 rounded-lg bg-red-700/40 border border-red-600/50 text-white text-xs font-semibold disabled:opacity-50">{reschedulingSend ? "Sending…" : "Send Request"}</button>
+                        <button disabled={reschedulingSend} onClick={() => { setRescheduleJobId(null); setRescheduleNote(""); }} className="px-3 text-[11px] text-white/40 hover:text-white/60">Cancel</button>
+                      </div>
+                    </div>
+                  ) : (
+                    <button onClick={() => setRescheduleJobId(j.id)} className="mt-2 text-[11px] text-blue-400 hover:text-blue-300 flex items-center gap-1"><CalendarClock size={11} />Request Reschedule</button>
+                  )}
+                </Glass>
+              ))}
+            </div>
+            <div>
+              <div className="text-xs text-white/50 uppercase tracking-wider font-semibold mb-2 flex items-center gap-1.5"><Clock size={12} />Past Jobs</div>
+              {pastJobs.length === 0 && <div className="text-center py-6 text-white/30 text-sm">No past jobs yet</div>}
+              {pastJobs.map(j => (
+                <Glass key={j.id} className="p-4 mb-2">
+                  <div className="flex items-center justify-between mb-2 gap-2">
+                    <div className="text-sm font-medium truncate">{j.address}</div>
+                    <div className="flex items-center gap-1.5 flex-shrink-0">
+                      {j.jobType === "commercial" && <Badge tone="blue">Commercial</Badge>}
+                      {j.isRecurring && <Badge tone="purple"><Repeat size={9} className="inline mr-0.5" />{j.recurringFreq || "Recurring"}</Badge>}
+                      <Badge tone={j.status === "completed" ? "green" : "red"}>{j.status}</Badge>
+                    </div>
+                  </div>
+                  <div className="text-xs text-white/40">{j.scheduledDate}</div>
+                  {(j.photos || []).length > 0 && (
+                    <div className="flex gap-2 mt-2 overflow-x-auto">
+                      {j.photos.map(p => <img key={p.id} src={mediaSrc(p.url, p.dataUrl)} alt="" className="w-16 h-16 rounded-lg object-cover border border-white/10 flex-shrink-0" />)}
+                    </div>
+                  )}
+                </Glass>
+              ))}
+            </div>
           </div>
         )}
 

@@ -147,6 +147,40 @@ export const isPhoneOptedOut = (phone: string): boolean => {
   return !!digits && optedOutPhoneDigits.has(digits);
 };
 
+// ─── Testing mode (round 13, item 12) ───────────────────────────────────────
+// Same in-memory-registry pattern as opt-out above (see comment there for
+// why): App.tsx calls setTestModeContacts(customers, settings.testModeEnabled)
+// whenever customers or that setting changes, and every send path below
+// checks it before actually dispatching — so an owner can flag specific
+// customers "Test Client" (CustomerModal) and, with the Settings → Testing
+// Mode master switch on, run real end-to-end flows (estimates, automations,
+// campaigns) against them with zero chance of a real SMS/email escaping to
+// an actual customer, without needing to touch each of the ~45 call sites.
+let testModeActive = false;
+let testClientPhoneDigits = new Set<string>();
+let testClientEmailsLower = new Set<string>();
+
+export const setTestModeContacts = (
+  customers: { phone?: string; email?: string; isTestClient?: boolean }[],
+  enabled: boolean
+): void => {
+  testModeActive = !!enabled;
+  testClientPhoneDigits = new Set(customers.filter(c => c.isTestClient && c.phone).map(c => normalizePhoneDigits(c.phone)));
+  testClientEmailsLower = new Set(customers.filter(c => c.isTestClient && c.email).map(c => (c.email || "").trim().toLowerCase()));
+};
+
+const isTestModeBlockedPhone = (phone: string): boolean => {
+  if (!testModeActive) return false;
+  const digits = normalizePhoneDigits(phone);
+  return !!digits && testClientPhoneDigits.has(digits);
+};
+
+const isTestModeBlockedEmail = (email: string): boolean => {
+  if (!testModeActive) return false;
+  const e = (email || "").trim().toLowerCase();
+  return !!e && testClientEmailsLower.has(e);
+};
+
 // ─── Twilio SMS / WhatsApp ────────────────────────────────────────────────────
 
 export const twilioSend = async (
@@ -157,6 +191,10 @@ export const twilioSend = async (
 ): Promise<void> => {
   if (channel === "sms" && isPhoneOptedOut(to)) {
     throw new Error("This contact has opted out of text messages (replied STOP) — SMS blocked.");
+  }
+  if (isTestModeBlockedPhone(to)) {
+    console.log("[TestMode] SMS to test client blocked — would have sent:", body);
+    return;
   }
   const { twilioSid, twilioToken, twilioBackendUrl } = settings;
   const twilioPhone = settings.twilioFrom || settings.twilioPhone;
@@ -524,6 +562,10 @@ export const sendViaGmail = async (
   html: string,
   opts?: { refreshToken?: string; tokenExpiresAt?: number; backendUrl?: string; onTokenRefreshed?: (token: string, expiresAt: number) => void; fromName?: string }
 ): Promise<void> => {
+  if (isTestModeBlockedEmail(to)) {
+    console.log("[TestMode] Email to test client blocked — would have sent:", subject);
+    return;
+  }
   let activeToken = googleProviderToken;
 
   // ITEM 10 — proactive refresh: if we know this token is already past (or

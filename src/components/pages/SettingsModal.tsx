@@ -535,6 +535,22 @@ export function SettingsModal({ open, onClose, settings, setSettings, jobs = [],
             </div>
             <div><label className="text-xs text-white/60 mb-1 block flex items-center gap-1"><Star size={10} />Google Place ID <span className="text-white/30 font-normal">(fallback if no review link above)</span></label><GInput value={f.googlePlaceId || ""} onChange={e => setF({ ...f, googlePlaceId: e.target.value })} placeholder="ChIJ..." className="!text-xs" /><div className="text-[10px] text-white/30 mt-1">Find at <a href="https://developers.google.com/maps/documentation/places/web-service/place-id" target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:underline">developers.google.com/maps/…/place-id</a></div></div>
             <div><label className="text-xs text-white/60 mb-1 block flex items-center gap-1"><Clock size={10} />Max Lunch Break <span className="text-white/30 font-normal">(minutes)</span></label><GInput type="number" value={f.maxLunchMinutes ?? 30} onChange={e => setF({ ...f, maxLunchMinutes: Number(e.target.value) || 0 })} placeholder="30" className="!text-xs" /><div className="text-[10px] text-white/30 mt-1">Crew lunch breaks longer than this are flagged on the job</div></div>
+            {/* FEATURE (round 13, item 12) — Testing Mode master switch. With
+                this on, any customer flagged "Test Client" (checkbox on
+                CustomerModal) never receives a real SMS/email/automation —
+                every send path is blocked at the source, see
+                lib/messaging.ts's setTestModeContacts. */}
+            <div className="p-3 rounded-xl border border-yellow-700/30 bg-yellow-950/10">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <div className="text-xs font-semibold text-yellow-300 flex items-center gap-1">🧪 Testing Mode</div>
+                  <div className="text-[10px] text-white/50 mt-0.5">When on, customers flagged "Test Client" never receive real SMS/email/automations — safe for end-to-end testing.</div>
+                </div>
+                <button onClick={() => setF({ ...f, testModeEnabled: !f.testModeEnabled })} className={"flex-shrink-0 w-11 h-6 rounded-full transition relative " + (f.testModeEnabled ? "bg-yellow-600" : "bg-white/10")}>
+                  <div className={"absolute top-1 w-4 h-4 rounded-full bg-white transition " + (f.testModeEnabled ? "left-6" : "left-1")} />
+                </button>
+              </div>
+            </div>
             {/* ISSUE 15 (round 3) — owner control over whether employees see
                 job/pay dollar amounts in their own Pay tab. */}
             <div className="flex items-center justify-between p-3 bg-black/40 border border-red-900/20 rounded-xl">

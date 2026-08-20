@@ -101,6 +101,11 @@ export function CustomerModal({ open, onClose, data, onSave, mapsKey = "", custo
             <div className="flex gap-1 flex-wrap">
               {availTags.map(t => <button key={t} type="button" onClick={() => setF({ ...f, tags: (f.tags || []).includes(t) ? f.tags.filter(x => x !== t) : [...(f.tags || []), t] })} className={"text-[9px] px-1.5 py-0.5 rounded-full border transition " + ((f.tags || []).includes(t) ? "bg-red-600/30 border-red-500/50 text-red-200" : "bg-white/5 border-white/10 text-white/50 hover:text-white")}>{t}</button>)}
             </div>
+            {/* FEATURE (round 13, item 12) — see Settings → Testing Mode. */}
+            <label className="flex items-center gap-1.5 mt-2 text-[10px] text-yellow-300/80 cursor-pointer">
+              <input type="checkbox" checked={!!(f as any).isTestClient} onChange={e => setF({ ...(f as any), isTestClient: e.target.checked } as any)} className="accent-yellow-500" />
+              🧪 Test Client — blocked from real sends when Testing Mode is on
+            </label>
           </div>
           <div>
             <label className="text-xs text-white/60 mb-1 block">Folder</label>

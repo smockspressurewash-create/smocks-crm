@@ -99,18 +99,30 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
   // estimate view; #/estimate/ID is the public no-login sign/decline/pay portal.
   const portalUrlFor = (estId: string) => `${window.location.origin}${window.location.pathname}#/estimate/${estId}`;
 
+  // FEATURE (round 13, item 1) — a "package"/"options" estimate has no
+  // single final price until the customer actually picks between tiers or
+  // toggles optional line items on the estimate page itself (ClientPortal.tsx
+  // computes effectiveTotal live off their selection). Quoting est.total (the
+  // saved default/starting total) in the SMS/email up front was misleading —
+  // it read as a fixed price when it was really just one possible outcome.
+  // Only "standard"/fixed-price estimates have one real number to quote.
+  const hasSelectableOptions = (est: any) => est?.estimateType === "package" || est?.estimateType === "options";
+
   const buildSendHtml = (est: any, cust: any) => {
     const tpl = estimateTemplates.find((t: any) => t.id === sendTemplateId);
     const link = portalUrlFor(est.id);
     const headerColor = tpl?.colorHeader || "#dc2626";
     const textColor = tpl?.colorText || "#111111";
     const font = tpl?.font || "Arial";
+    const priceLine = hasSelectableOptions(est)
+      ? `<p>Your ${est.estimateType === "package" ? "packages" : "service options"} are ready to review — pick what works for you and see your total.</p>`
+      : `<p>Your estimate of <strong>${fmt(est.total)}</strong> is ready to review${(tpl?.layout) ? "" : ""}.</p>`;
     const bodyInner = `
       <div style="font-family:'${font}',sans-serif;color:${textColor}">
         ${tpl?.logoUrl ? `<img src="${tpl.logoUrl}" style="max-height:48px;margin-bottom:12px" />` : ""}
         <h2 style="margin:0 0 6px;color:${headerColor}">${tpl?.headerText || "Your Estimate"}</h2>
         <p>Hi ${cust.firstName},</p>
-        <p>Your estimate of <strong>${fmt(est.total)}</strong> is ready to review${(tpl?.layout) ? "" : ""}.</p>
+        ${priceLine}
         <p>Valid until ${est.validUntil}.</p>
         ${(tpl?.photoSlots || []).filter(Boolean).length ? `<div style="display:flex;gap:8px;margin:12px 0">${tpl.photoSlots.filter(Boolean).map((p: string) => `<img src="${p}" style="width:70px;height:70px;object-fit:cover;border-radius:8px" />`).join("")}</div>` : ""}
         <div style="text-align:center;margin:20px 0"><a href="${link}" style="display:inline-block;background:${headerColor};color:#fff;text-decoration:none;font-weight:700;padding:12px 28px;border-radius:10px">Review &amp; Sign</a></div>
@@ -121,7 +133,10 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
 
   const buildSendSms = (est: any, cust: any) => {
     const link = portalUrlFor(est.id);
-    return "Hi " + cust.firstName + "! Your estimate of " + fmt(est.total) + " from " + (settings?.companyName || "Crew Boss") + " is ready. Review and sign here: " + link + " — questions? Call " + (settings?.companyPhone || "(717) 555-0100");
+    const priceText = hasSelectableOptions(est)
+      ? `Your ${est.estimateType === "package" ? "packages" : "service options"} from ` + (settings?.companyName || "Crew Boss") + " are ready — pick what works for you."
+      : "Your estimate of " + fmt(est.total) + " from " + (settings?.companyName || "Crew Boss") + " is ready.";
+    return "Hi " + cust.firstName + "! " + priceText + " Review and sign here: " + link + " — questions? Call " + (settings?.companyPhone || "(717) 555-0100");
   };
 
   const doSend = async () => {
@@ -323,7 +338,13 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
                 const est = estimates.find(x => x.id === id);
                 const c = est && customers.find(x => x.id === est.customerId);
                 if (!c?.phone || !settings?.twilioSid) continue;
-                const msg = "Hi " + c.firstName + "! Your estimate of " + fmt(est.total) + " from Crew Boss is ready. View it here: smocks.com/portal/" + est.id + " — Questions? Call (717) 555-0100.";
+                // BUG FIX (round 13) — this pointed to a hardcoded fake
+                // "smocks.com" domain that doesn't route anywhere real for
+                // any deployment; every other send path uses portalUrlFor()
+                // (window.location.origin-based). Also applies the same
+                // amount-hiding rule as buildSendSms for options/package
+                // estimates.
+                const msg = buildSendSms(est, c);
                 await twilioSend(settings, c.phone, msg).catch(() => {});
                 setEstimates(prev => prev.map(e => e.id === id ? { ...e, sentAt: today() } : e));
                 sent++;
@@ -338,8 +359,15 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
                 if (!c?.email) continue;
                 const estCoName = (settings as any)?.companyName || "Crew Boss";
                 const estCoPhone = (settings as any)?.companyPhone || "(717) 555-0100";
-                const estHtml = emailShell(settings as any, "Your Estimate", `<p>Hi ${c.firstName},</p><p>Your estimate of <strong>${fmt(est.total)}</strong> is ready to review and sign.</p><p>Questions? Call ${estCoPhone}.</p>` + emailButton("View & Sign Estimate", "smocks.com/portal/" + est.id));
-                await sendEmail(settings, { to: c.email, subject: "Your estimate from " + estCoName + " — " + fmt(est.total), body: estHtml }).catch(() => {});
+                // BUG FIX (round 13) — same broken "smocks.com" domain + fixed-
+                // price wording issue as the SMS bulk-send above; now uses the
+                // real portal link and hides the amount for options/package
+                // estimates.
+                const priceLine = hasSelectableOptions(est)
+                  ? `Your ${est.estimateType === "package" ? "packages" : "service options"} are ready to review and sign.`
+                  : `Your estimate of <strong>${fmt(est.total)}</strong> is ready to review and sign.`;
+                const estHtml = emailShell(settings as any, "Your Estimate", `<p>Hi ${c.firstName},</p><p>${priceLine}</p><p>Questions? Call ${estCoPhone}.</p>` + emailButton("View & Sign Estimate", portalUrlFor(est.id)));
+                await sendEmail(settings, { to: c.email, subject: "Your estimate from " + estCoName + (hasSelectableOptions(est) ? "" : " — " + fmt(est.total)), body: estHtml }).catch(() => {});
                 setEstimates(prev => prev.map(e => e.id === id ? { ...e, sentAt: today() } : e));
                 sent++;
               }
