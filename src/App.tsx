@@ -4,7 +4,7 @@ import {
   Calendar, MessageSquare, Megaphone, Star, Zap, Share2, UserPlus,
   Bot, Database, Users2, Truck, DollarSign, FlaskConical, BarChart3,
   TrendingUp, PiggyBank, Wallet, Heart, Gift, Monitor, Tag,
-  Bell, Settings, X, Lock, Globe, ChevronLeft, ChevronRight, Plus, Undo2, Redo2, CheckCircle, Eye, EyeOff, Menu, AlertTriangle, Trash2
+  Bell, Settings, X, Lock, Globe, ChevronLeft, ChevronRight, Plus, Undo2, Redo2, CheckCircle, Eye, EyeOff, Menu, AlertTriangle, Trash2, BookOpen
 } from "lucide-react";
 
 import { useGlobalStyles } from "./hooks/useGlobalStyles";
@@ -22,6 +22,8 @@ import { GlobalSearch } from "./components/ui/GlobalSearch";
 // ─── Pages ────────────────────────────────────────────────────────────────────
 import { Dashboard } from "./components/pages/Dashboard";
 import { CustomersPage } from "./components/pages/CustomersPage";
+import { CustomerModal } from "./components/ui/CustomerModal";
+import { SopModal } from "./components/ui/SopModal";
 import { EstimatesPage } from "./components/pages/EstimatesPage";
 import { InvoicesPage } from "./components/pages/InvoicesPage";
 import { JobsPage } from "./components/pages/JobsPage";
@@ -123,6 +125,8 @@ const navGroups = [
       { id: "jobs",       label: "Jobs",       icon: Briefcase  },
       { id: "calendar",   label: "Calendar",   icon: Calendar   },
       { id: "crew",       label: "Crew View",  icon: Monitor    },
+      { id: "trashcans",  label: "Trash Cans", icon: Trash2     },
+      { id: "sops",       label: "SOPs",       icon: BookOpen   },
     ],
   },
   {
@@ -139,7 +143,6 @@ const navGroups = [
     items: [
       { id: "referrals",   label: "Referrals",   icon: Gift },
       { id: "promotions",  label: "Promotions",  icon: Tag  },
-      { id: "trashcans",   label: "Trash Cans",  icon: Trash2 },
     ],
   },
   {
@@ -473,7 +476,7 @@ export function App() {
     // is exactly why the reset page sometimes never even loaded. Prefix-match
     // it like "portal/" and "estimate/" above.
     if (hash === "reset-password" || hash.startsWith("reset-password&") || hash.startsWith("reset-password?")) return "reset-password";
-    const valid = ["dashboard","alfred","inbox","notifications","customers","estimates","invoices","pipeline","intake","jobs","calendar","crew","campaigns","reviews","automations","social","referrals","promotions","trashcans","expenses","reports","analytics","budget","personal","accountability","employees","fleet","chemicals","google","portal","reset-password","client","referral","rate"];
+    const valid = ["dashboard","alfred","inbox","notifications","customers","estimates","invoices","pipeline","intake","jobs","calendar","crew","campaigns","reviews","automations","social","referrals","promotions","trashcans","sops","expenses","reports","analytics","budget","personal","accountability","employees","fleet","chemicals","google","portal","reset-password","client","referral","rate"];
     return valid.includes(hash) ? hash : "dashboard";
   });
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -586,6 +589,23 @@ export function App() {
   // once it has opened the modal (see CustomersPage/EstimatesPage/JobsPage's
   // own autoOpenNew effect + onAutoOpenNewConsumed callback).
   const [fabAutoOpenNew, setFabAutoOpenNew] = useState<string | null>(null);
+  // ITEM 18 — "New Customer" now opens as a true popup over whatever page
+  // the owner is already on, instead of navigating to Customers first. Jobs
+  // and Alfred still navigate (their "New"/chat UI isn't a standalone
+  // component the way CustomerModal is — extracting one would be a much
+  // larger, riskier refactor), but at least don't lose the owner's place for
+  // the one FAB action that had an easy, safe path to a real popup.
+  const [fabQuickCustomerOpen, setFabQuickCustomerOpen] = useState(false);
+  const saveFabQuickCustomer = (d: any) => {
+    const id = uid();
+    const referralCode = (d.firstName?.slice(0, 3) || "REF").toUpperCase() + id.slice(-4).toUpperCase();
+    const record = { ...d, id, totalSpent: 0, createdAt: today(), referralCode };
+    setCustomers((prev: any[]) => [...prev, record]);
+    setFabQuickCustomerOpen(false);
+    (supabase as any).from("customers").insert(record)
+      .then((result: any) => { if (result?.error) toast("Saved locally, but failed to sync — " + result.error.message, "red"); else toast("Customer added ✓", "green"); })
+      .catch((e: any) => toast("Saved locally, but failed to sync — " + (e?.message || "unknown error"), "red"));
+  };
   // ISSUE (round 2) — the drag-to-dismiss zone used to flip
   // settings.fabEnabled to false, which is a PERSISTED setting (synced to
   // Supabase/localStorage) — so a drag-dismiss looked identical to the
@@ -750,7 +770,7 @@ export function App() {
 
   // Listen for browser back/forward
   useEffect(() => {
-    const valid = ["dashboard","alfred","inbox","notifications","customers","estimates","invoices","pipeline","intake","jobs","calendar","crew","campaigns","reviews","automations","social","referrals","promotions","trashcans","expenses","reports","analytics","budget","personal","accountability","employees","fleet","chemicals","google","portal","reset-password","client","referral","rate","lead-form","trash-cans","terms","privacy"];
+    const valid = ["dashboard","alfred","inbox","notifications","customers","estimates","invoices","pipeline","intake","jobs","calendar","crew","campaigns","reviews","automations","social","referrals","promotions","trashcans","sops","expenses","reports","analytics","budget","personal","accountability","employees","fleet","chemicals","google","portal","reset-password","client","referral","rate","lead-form","trash-cans","terms","privacy"];
     const handler = () => {
       const hash = window.location.hash.replace(/^#\/?/, "").split("?")[0];
       if (hash === "portal" || hash.startsWith("portal/")) { setPage("portal"); return; }
@@ -1512,12 +1532,21 @@ export function App() {
         "Type /route to optimize today · /status for quick stats · Alfred out."
       ];
       const briefing = lines.join("\n");
-      const newConv = { id: uid(), title: "Morning Briefing — " + todayStr, personality, messages: [{ id: uid(), role: "alfred", content: briefing, timestamp: Date.now() }], createdAt: Date.now(), updatedAt: Date.now() };
       console.log("[AlfredBriefing] firing morning briefing for", todayStr);
-      setAlfredConversations((prev: any[]) => [newConv, ...(prev || [])]);
-      setActiveConvId(newConv.id);
+      // ITEM 22 — this used to create a brand-new "Morning Briefing — <date>"
+      // conversation every single day, exactly the same throwaway-chat
+      // problem the check-in effect above already got fixed for (see its own
+      // comment) — route through the same persistent "Alfred Notifications"
+      // thread (functions/api/alfred-notify.ts) instead of setAlfredConversations.
+      fetch("/api/alfred-notify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: "Alfred Notifications", message: briefing }),
+      })
+        .then(r => { if (!r.ok) console.warn("[AlfredBriefing] alfred-notify failed:", r.status); })
+        .catch((e: any) => console.warn("[AlfredBriefing] alfred-notify threw:", e?.message));
       setSettings?.((prev: any) => ({ ...prev, alfredBriefingDate: todayStr }));
-      toast?.("🌅 Alfred's morning briefing is ready — see the Alfred tab", "green");
+      toast?.("🌅 Alfred's morning briefing is ready — see Alfred Notifications", "green");
     };
     const t = setTimeout(tryBriefing, 1800);
     const interval = setInterval(tryBriefing, 60 * 60 * 1000);
@@ -3314,11 +3343,11 @@ export function App() {
                 {page === "pipeline"       && <PipelinePage jobs={jobs} setJobs={setJobs} customers={customers} toast={toast} />}
                 {page === "calendar"       && <CalendarPage jobs={jobs} setJobs={setJobs} customers={customers} employees={employees} toast={toast} settings={settings} setSettings={setSettings} ownerId={crmUserId} />}
                 {page === "inbox"          && (managerBlocked("inbox") ? <RestrictedNotice label="the Inbox" /> : <InboxPage threads={inboxThreads} setThreads={setInboxThreads} customers={customers} setCustomers={setCustomers} settings={settings} toast={toast} />)}
-                {page === "campaigns"      && <CampaignsPage campaigns={campaigns} setCampaigns={setCampaigns} customers={customers} estimates={estimates} jobs={jobs} settings={settings} inboxThreads={inboxThreads} setInboxThreads={setInboxThreads} automations={automations} setAutomations={setAutomations} toast={toast} />}
+                {page === "campaigns"      && <CampaignsPage campaigns={campaigns} setCampaigns={setCampaigns} customers={customers} estimates={estimates} jobs={jobs} settings={settings} setSettings={setSettings} inboxThreads={inboxThreads} setInboxThreads={setInboxThreads} automations={automations} setAutomations={setAutomations} toast={toast} />}
                 {page === "reviews"        && <ReviewsPage reviews={reviews} setReviews={setReviews} jobs={jobs} customers={customers} toast={toast} negativeAlerts={negativeAlerts} setNegativeAlerts={setNegativeAlerts} settings={settings} setSettings={setSettings} />}
                 {page === "automations"    && <AutomationsPage automations={automations} setAutomations={setAutomations} jobs={jobs} customers={customers} estimates={estimates} settings={settings} setSettings={setSettings} toast={toast} />}
                 {page === "social"         && <SocialPage posts={socialPosts} setPosts={setSocialPosts} toast={toast} settings={settings} />}
-                {page === "intake"         && <LeadIntakePage customers={customers} setCustomers={setCustomers} estimates={estimates} setEstimates={setEstimates} services={services} settings={settings} toast={toast} onNav={setPage} />}
+                {page === "intake"         && <LeadIntakePage customers={customers} setCustomers={setCustomers} estimates={estimates} setEstimates={setEstimates} services={services} settings={settings} setSettings={setSettings} toast={toast} onNav={setPage} />}
                 {page === "alfred"         && (managerBlocked("alfred") ? <RestrictedNotice label="Alfred AI" /> : <AlfredPage conversations={alfredConversations} setConversations={setAlfredConversations} activeConvId={activeConvId} setActiveConvId={setActiveConvId} memory={alfredMemory} setMemory={setAlfredMemory} personality={personality} setPersonality={setPersonality} apiKey={settings.anthropicKey ?? settings.geminiKey ?? ""} openSettings={() => setSettingsOpen(true)} toast={toast} jobs={jobs} setJobs={setJobs} estimates={estimates} setEstimates={setEstimates} customers={customers} setCustomers={setCustomers} employees={employees} automations={automations} setAutomations={setAutomations} stats={{ totalRev, activeJobs, pendingEst, closeRate, doneMonth }} setWins={setWins} goals={goalsList} setGoals={setGoalsList} setSettings={setSettings} settings={settings} modelStatus={modelStatus} setModelStatus={setModelStatus} onNav={setPage} ownerId={crmUserId} />)}
                 {page === "google"         && (managerBlocked("google") ? <RestrictedNotice label="Google Workspace" /> : <GoogleWorkspacePage settings={settings} setSettings={setSettings} googleData={googleData as any} setGoogleData={setGoogleData} customers={customers} setCustomers={setCustomers} jobs={jobs} toast={toast} onNav={setPage} />)}
                 {page === "employees"      && <EmployeesPage employees={employees} setEmployees={setEmployees} jobs={jobs} setJobs={setJobs} customers={customers} settings={settings} toast={toast} autoOpenManagerInvite={autoOpenManagerInvite} onAutoOpenManagerInviteConsumed={() => setAutoOpenManagerInvite(false)} initialView={employeesInitialView} onInitialViewConsumed={() => setEmployeesInitialView(undefined)} />}
@@ -3333,7 +3362,8 @@ export function App() {
                 {page === "accountability" && (managerBlocked("accountability") ? <RestrictedNotice label="Accountability Tools" /> : <AccountabilityPage entries={accountability} setEntries={setAccountability} goals={goalsList} setGoals={setGoalsList} wins={wins} setWins={setWins} toast={toast} settings={settings} />)}
                 {page === "referrals"      && <ReferralsPage customers={customers} setCustomers={setCustomers} jobs={jobs} toast={toast} settings={settings} setSettings={setSettings} />}
                 {page === "promotions"     && <PromotionsPage promotions={promotions} setPromotions={setPromotions} customers={customers} services={services} settings={settings} toast={toast} />}
-                {page === "trashcans"      && <TrashCanPage jobs={jobs} customers={customers} settings={settings} setSettings={setSettings} toast={toast} />}
+                {page === "trashcans"      && <TrashCanPage jobs={jobs} setJobs={setJobs} customers={customers} settings={settings} setSettings={setSettings} toast={toast} ownerId={crmUserId} />}
+                {page === "sops"           && <SopModal open={true} onClose={() => setPage("dashboard")} editable />}
                 {page === "crew"           && <CrewView jobs={jobs} setJobs={setJobs} customers={customers} employees={employees} toast={toast} settings={settings} setSettings={setSettings} estimates={estimates} setEstimates={setEstimates} refetchEmployees={refetchEmployees} ownerId={crmUserId} />}
               </SafePage>
             </PageFade>
@@ -3534,13 +3564,21 @@ export function App() {
                       <button
                         key={item.dest}
                         onClick={() => {
+                          // ITEM 18 — New Customer pops up right here, no
+                          // navigation. See fabQuickCustomerOpen above.
+                          if (item.dest === "customers") {
+                            setFabQuickCustomerOpen(true);
+                            setFabOpen(false);
+                            setSidebarOpen(false);
+                            return;
+                          }
                           setPage(item.dest);
-                          // ISSUE 21 — customers/estimates/jobs support
-                          // auto-opening their "New" modal; other FAB
-                          // destinations (Alfred, Expenses, New Lead) just
-                          // navigate as before, since they have no separate
-                          // creation modal to pop.
-                          if (item.dest === "customers" || item.dest === "estimates" || item.dest === "jobs") setFabAutoOpenNew(item.dest);
+                          // ISSUE 21 — estimates/jobs support auto-opening
+                          // their "New" modal; other FAB destinations
+                          // (Alfred, Expenses, New Lead) just navigate as
+                          // before, since they have no separate creation
+                          // modal to pop.
+                          if (item.dest === "estimates" || item.dest === "jobs") setFabAutoOpenNew(item.dest);
                           setFabOpen(false);
                           setSidebarOpen(false);
                         }}
@@ -3583,6 +3621,10 @@ export function App() {
           </div>
         </>
       )}
+
+      {/* ITEM 18 — FAB "New Customer" popup, rendered at the top level so it
+          overlays whatever page the owner is currently on. */}
+      <CustomerModal open={fabQuickCustomerOpen} onClose={() => setFabQuickCustomerOpen(false)} data={null} onSave={saveFabQuickCustomer} mapsKey={(settings as any).googleMapsKey || (settings as any).mapsKey || ""} customers={customers} />
 
       {/* Company first-run setup modal */}
       {companySetupOpen && (

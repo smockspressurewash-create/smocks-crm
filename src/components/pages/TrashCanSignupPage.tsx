@@ -1,20 +1,24 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { CheckCircle, Trash2, CreditCard } from "lucide-react";
 import { supabase } from "../../lib/supabase";
 import { uid, today } from "../../lib/utils";
 import { loadStripeJs, createStripeCustomer, createSetupIntent } from "../../lib/stripe";
 
 // Public-facing Trash Can Cleaning signup form (round 13, items 16-18) — no
-// auth required. URL: #/trash-cans?co=COMPANY_NAME&ph=COMPANY_PHONE&
+// auth required. URL: #/trash-cans?oid=OWNER_ID&co=COMPANY_NAME&ph=COMPANY_PHONE&
 // cost=COST_PER_CAN&min=MINUTES_PER_CAN&freq=DEFAULT_FREQUENCY&pk=STRIPE_PUBLISHABLE_KEY
 //
-// Same reasoning as LeadFormPage.tsx: deliberately does NOT read the
-// app_settings table (holds live secrets behind a permissive RLS policy) —
-// every value this page needs is either non-secret (company name/phone,
-// pricing) or a Stripe PUBLISHABLE key (designed to be public/client-side),
-// so TrashCanPage.tsx bakes them into the copied link as query params
-// instead of this page fetching settings itself.
-
+// Same reasoning as LeadFormPage.tsx: deliberately does NOT read the whole
+// app_settings row (holds live secrets — Twilio token, Stripe SECRET key,
+// Google token — behind a permissive RLS policy). The co/ph/cost/min/freq/pk
+// query params remain as an offline fallback for pre-existing copied links,
+// but on load (ITEM 10) this now also tries a live, narrow refetch keyed by
+// `oid` (the owner's id) using PostgREST's `column->>path` selector, which
+// asks Postgres to project only these specific JSONB keys out of the
+// `settings` blob server-side — the secret fields never leave the database,
+// so this is safe to call from an anonymous page unlike `select("*")` would
+// be. That means pricing/schedule changes the owner makes in Settings show
+// up on this page immediately, without needing to re-copy/re-share the link.
 function hashParam(key: string): string {
   const hash = window.location.hash;
   const q = hash.includes("?") ? hash.slice(hash.indexOf("?") + 1) : "";
@@ -22,12 +26,36 @@ function hashParam(key: string): string {
 }
 
 export function TrashCanSignupPage() {
-  const companyName = decodeURIComponent(hashParam("co") || "") || "Trash Can Cleaning";
-  const companyPhone = decodeURIComponent(hashParam("ph") || "");
-  const costPerCan = Number(hashParam("cost")) || 5;
-  const minutesPerCan = Number(hashParam("min")) || 5;
-  const defaultFreq = (hashParam("freq") || "weekly") as "weekly" | "monthly" | "quarterly";
-  const publishableKey = hashParam("pk");
+  const ownerId = hashParam("oid");
+  const [companyName, setCompanyName] = useState(decodeURIComponent(hashParam("co") || "") || "Trash Can Cleaning");
+  const [companyPhone, setCompanyPhone] = useState(decodeURIComponent(hashParam("ph") || ""));
+  const [costPerCan, setCostPerCan] = useState(Number(hashParam("cost")) || 5);
+  const [minutesPerCan, setMinutesPerCan] = useState(Number(hashParam("min")) || 5);
+  const [defaultFreq, setDefaultFreq] = useState((hashParam("freq") || "weekly") as "weekly" | "monthly" | "quarterly");
+  const [publishableKey, setPublishableKey] = useState(hashParam("pk"));
+
+  useEffect(() => {
+    if (!ownerId) return;
+    (async () => {
+      try {
+        const { data, error } = await (supabase as any)
+          .from("app_settings")
+          .select("cost:settings->>trashCanCostPerCan, minutes:settings->>trashCanMinutesPerCan, freq:settings->>trashCanDefaultFrequency, co:settings->>companyName, ph:settings->>companyPhone, pk:settings->>stripePublishableKey")
+          .eq("owner_id", ownerId)
+          .single();
+        if (error || !data) return;
+        if (data.cost != null) setCostPerCan(Number(data.cost) || costPerCan);
+        if (data.minutes != null) setMinutesPerCan(Number(data.minutes) || minutesPerCan);
+        if (data.freq) setDefaultFreq(data.freq);
+        if (data.co) setCompanyName(data.co);
+        if (data.ph) setCompanyPhone(data.ph);
+        if (data.pk) setPublishableKey(data.pk);
+      } catch (e: any) {
+        console.warn("[TrashCanSignup] live settings refresh failed, using link params:", e?.message);
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ownerId]);
 
   const [f, setF] = useState({ firstName: "", lastName: "", email: "", phone: "", address: "", cans: 2 });
   const [frequency, setFrequency] = useState<"weekly" | "monthly" | "quarterly" | "onetime">(defaultFreq);

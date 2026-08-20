@@ -77,7 +77,7 @@ import { ChemicalModal } from "../ui/ChemicalModal";
 import { WeeklyBusinessReview } from "../ui/WeeklyBusinessReview";
 import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 
-export function LeadIntakePage({ customers = [], setCustomers, estimates = [], setEstimates, services = [], jobs = [], settings = {} as AppSettings, toast, onNav }: { customers?: any[]; setCustomers?: any; estimates?: any[]; setEstimates?: any; services?: any[]; jobs?: any[]; settings?: AppSettings; toast?: any; onNav?: any }) {
+export function LeadIntakePage({ customers = [], setCustomers, estimates = [], setEstimates, services = [], jobs = [], settings = {} as AppSettings, setSettings, toast, onNav }: { customers?: any[]; setCustomers?: any; estimates?: any[]; setEstimates?: any; services?: any[]; jobs?: any[]; settings?: AppSettings; setSettings?: any; toast?: any; onNav?: any }) {
   const [submissions, setSubmissions] = usePersistent("smocks.intakeLeads", []);
   const [preview, setPreview] = useState(false);
   const [embedOpen, setEmbedOpen] = useState(false);
@@ -172,13 +172,33 @@ export function LeadIntakePage({ customers = [], setCustomers, estimates = [], s
           (LeadFormPage.tsx) that inserts straight into Supabase's customers
           table with no owner session required. */}
       {embedOpen && (() => {
-        const embedUrl = `${window.location.origin}${window.location.pathname}#/lead-form?co=${encodeURIComponent(companyName)}&ph=${encodeURIComponent(settings?.companyPhone || "")}`;
+        // ITEM 1 — owner-set colors ride along as bg/btn/text query params;
+        // LeadFormPage.tsx reads and applies them, same non-secret pattern as
+        // co/ph above.
+        const leadBg = (settings as any)?.leadFormBgColor || "#0a0a0a";
+        const leadBtn = (settings as any)?.leadFormButtonColor || "#dc2626";
+        const leadText = (settings as any)?.leadFormTextColor || "#ffffff";
+        const embedUrl = `${window.location.origin}${window.location.pathname}#/lead-form?co=${encodeURIComponent(companyName)}&ph=${encodeURIComponent(settings?.companyPhone || "")}&bg=${encodeURIComponent(leadBg)}&btn=${encodeURIComponent(leadBtn)}&text=${encodeURIComponent(leadText)}`;
         const embedHtml = `<!-- ${companyName} — Request a Quote -->\n<iframe\n  src="${embedUrl}"\n  width="100%"\n  height="720"\n  frameborder="0"\n  style="border-radius:12px;box-shadow:0 4px 20px rgba(0,0,0,0.15)"\n  title="Request a Quote"\n></iframe>`;
         return (
           <Glass className="p-5 space-y-3">
             <div className="text-sm font-semibold">Embed on your website</div>
             <div className="text-xs text-white/60 leading-relaxed">
               Paste this snippet into your website's HTML (most site builders — Wix, Squarespace, WordPress — have an "Embed HTML" or "Custom Code" block). Every submission creates a customer record in this CRM automatically — no setup needed on your end.
+            </div>
+            <div className="grid grid-cols-3 gap-3">
+              <div>
+                <label className="text-[10px] text-white/50 mb-1 block">Background</label>
+                <input type="color" value={leadBg} onChange={(e: any) => setSettings?.((s: any) => ({ ...s, leadFormBgColor: e.target.value }))} className="w-full h-8 rounded-lg bg-transparent cursor-pointer" />
+              </div>
+              <div>
+                <label className="text-[10px] text-white/50 mb-1 block">Buttons / Header</label>
+                <input type="color" value={leadBtn} onChange={(e: any) => setSettings?.((s: any) => ({ ...s, leadFormButtonColor: e.target.value }))} className="w-full h-8 rounded-lg bg-transparent cursor-pointer" />
+              </div>
+              <div>
+                <label className="text-[10px] text-white/50 mb-1 block">Text</label>
+                <input type="color" value={leadText} onChange={(e: any) => setSettings?.((s: any) => ({ ...s, leadFormTextColor: e.target.value }))} className="w-full h-8 rounded-lg bg-transparent cursor-pointer" />
+              </div>
             </div>
             <pre className="text-[11px] bg-black/60 border border-white/10 rounded-xl p-3 overflow-x-auto whitespace-pre-wrap break-all text-white/80">{embedHtml}</pre>
             <div className="flex gap-2">

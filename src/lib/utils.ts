@@ -154,12 +154,22 @@ export const uid = (): string => {
 export const toE164 = (raw: string): string => {
   const trimmed = (raw || "").trim();
   if (!trimmed) return "";
-  if (trimmed.startsWith("+")) return "+" + trimmed.slice(1).replace(/\D/g, "");
+  if (trimmed.startsWith("+")) {
+    const digits = trimmed.slice(1).replace(/\D/g, "");
+    // ITEM 33 — E.164 numbers are 8-15 digits after the "+" (ITU E.164 spec).
+    // Anything shorter/longer almost always means the owner/customer typed a
+    // partial or garbled number — fail here with an empty string (caller
+    // treats "" as invalid) instead of forwarding junk to Twilio, which
+    // rejects it with an opaque error far from the actual input.
+    return digits.length >= 8 && digits.length <= 15 ? "+" + digits : "";
+  }
   const digits = trimmed.replace(/\D/g, "");
   if (!digits) return "";
   if (digits.length === 10) return "+1" + digits;
   if (digits.length === 11 && digits.startsWith("1")) return "+" + digits;
-  return "+" + digits;
+  // No "+" and not a recognizable 10/11-digit US number (e.g. a 7-digit
+  // local number with no area code) — invalid rather than guessing.
+  return "";
 };
 
 // Live-format a US phone number as the user types, e.g. "(717) 555-0100" —

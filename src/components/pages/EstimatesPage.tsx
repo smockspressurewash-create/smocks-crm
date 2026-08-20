@@ -22,7 +22,7 @@ import {
 } from "recharts";
 import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, describeRecurringSchedule, buildChecklistFromServices, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, withTimeout } from "../../lib/utils";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
-import { twilioSend, sendEmail, emailShell, emailButton } from "../../lib/messaging";
+import { twilioSend, sendEmail, emailShell, emailButton, logOutboundSmsToInbox } from "../../lib/messaging";
 import { supabase } from "../../lib/supabase";
 import { seedWeather } from "../../lib/weather";
 import { seedCustomers, seedEstimates, seedJobs, seedEmployees, seedVehicles, seedExpenses, seedChemicals, seedServices, seedAutomations, seedEmailTemplates, seedSmsTemplates, seedRewardTiers, seedReferrals, seedMaintenance, campaignTemplates, seedSocialPosts, seedTimeline, seedGoals, seedReminders, seedAccountabilityEntries, seedMileage, seedLeadSrc, STEP_TYPES, AUTOMATION_TEMPLATES } from "../../lib/seed";
@@ -153,7 +153,11 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
       }
       if ((sendChannel === "sms" || sendChannel === "both")) {
         if (!cust.phone) { toast?.("No phone on file for " + cust.firstName, "error"); }
-        else if (settings?.twilioSid) await withTimeout(twilioSend(settings, cust.phone, buildSendSms(sendModalEst, cust)), 10000, "Estimate SMS");
+        else if (settings?.twilioSid) {
+          const smsMsg = buildSendSms(sendModalEst, cust);
+          await withTimeout(twilioSend(settings, cust.phone, smsMsg), 10000, "Estimate SMS");
+          logOutboundSmsToInbox({ contactName: `${cust.firstName} ${cust.lastName}`, contactPhone: cust.phone, customerId: cust.id, body: smsMsg }).catch(() => {});
+        }
         else { window.location.href = "sms:" + cust.phone.replace(/\D/g, "") + "?body=" + encodeURIComponent(buildSendSms(sendModalEst, cust)); }
       }
       setEstimates((prev: any[]) => prev.map((x: any) => x.id === sendModalEst.id ? { ...x, sentAt: today(), sendChannel, templateId: sendTemplateId || undefined } : x));
@@ -240,7 +244,23 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
     }
   };
   const cn = id => { const c = customers.find(x => x.id === id); return c ? c.firstName + " " + c.lastName : "Unknown"; };
-  const filtered = filter === "all" ? estimates : estimates.filter(e => e.status === filter);
+  // ITEM 29 — Quotes tab had status pills but no way to sort or search a
+  // growing list; added a text search (customer name) and a sort dropdown.
+  const [quoteSearch, setQuoteSearch] = useState("");
+  const [quoteSort, setQuoteSort] = useState<"newest" | "oldest" | "amount_high" | "amount_low" | "expiring">("newest");
+  const statusFiltered = filter === "all" ? estimates : estimates.filter(e => e.status === filter);
+  const searchFiltered = quoteSearch.trim()
+    ? statusFiltered.filter(e => cn(e.customerId).toLowerCase().includes(quoteSearch.trim().toLowerCase()))
+    : statusFiltered;
+  const filtered = [...searchFiltered].sort((a, b) => {
+    switch (quoteSort) {
+      case "oldest": return (a.createdAt || "").localeCompare(b.createdAt || "");
+      case "amount_high": return (b.total || 0) - (a.total || 0);
+      case "amount_low": return (a.total || 0) - (b.total || 0);
+      case "expiring": return (a.validUntil || "").localeCompare(b.validUntil || "");
+      default: return (b.createdAt || "").localeCompare(a.createdAt || "");
+    }
+  });
 
   const toggleSel = id => setSelected(s => s.includes(id) ? s.filter(x => x !== id) : [...s, id]);
   const toggleSelAll = () => setSelected(selected.length === filtered.length ? [] : filtered.map(e => e.id));
@@ -322,6 +342,14 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
       <div className="flex flex-wrap gap-2 items-center justify-between">
         <div className="flex gap-2 flex-wrap items-center">
           {["all", "pending", "approved", "rejected"].map(s => <button key={s} onClick={() => setFilter(s)} className={"px-3 py-1.5 rounded-xl text-xs font-medium transition border " + (filter === s ? "bg-red-900/40 border-red-500/50 text-white" : "bg-black/40 border-red-900/30 text-white/60 hover:text-white")}>{s === "all" ? "All (" + estimates.length + ")" : (s === "rejected" ? "declined" : s) + " (" + estimates.filter(e => e.status === s).length + ")"}</button>)}
+          <input value={quoteSearch} onChange={(e: any) => setQuoteSearch(e.target.value)} placeholder="Search customer…" className="px-3 py-1.5 rounded-xl text-xs bg-black/40 border border-red-900/30 text-white placeholder-white/30 focus:outline-none focus:border-red-500/50 w-36" />
+          <select value={quoteSort} onChange={(e: any) => setQuoteSort(e.target.value)} className="px-2 py-1.5 rounded-xl text-xs bg-black/40 border border-red-900/30 text-white/70 focus:outline-none">
+            <option value="newest" className="bg-black">Newest first</option>
+            <option value="oldest" className="bg-black">Oldest first</option>
+            <option value="amount_high" className="bg-black">Amount: high → low</option>
+            <option value="amount_low" className="bg-black">Amount: low → high</option>
+            <option value="expiring" className="bg-black">Expiring soonest</option>
+          </select>
           {filtered.length > 0 && (
             <label className="flex items-center gap-1.5 text-xs text-white/50 pl-2 cursor-pointer">
               <input type="checkbox" checked={selected.length === filtered.length} onChange={toggleSelAll} className="w-4 h-4 rounded accent-red-600" />
@@ -345,7 +373,9 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
                 // amount-hiding rule as buildSendSms for options/package
                 // estimates.
                 const msg = buildSendSms(est, c);
-                await twilioSend(settings, c.phone, msg).catch(() => {});
+                await twilioSend(settings, c.phone, msg).then(() => {
+                  logOutboundSmsToInbox({ contactName: `${c.firstName} ${c.lastName}`, contactPhone: c.phone, customerId: c.id, body: msg }).catch(() => {});
+                }).catch(() => {});
                 setEstimates(prev => prev.map(e => e.id === id ? { ...e, sentAt: today() } : e));
                 sent++;
               }

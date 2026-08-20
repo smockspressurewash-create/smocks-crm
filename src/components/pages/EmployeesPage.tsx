@@ -98,12 +98,18 @@ const PERMISSION_DEFS_EMP = [
   { key: "can_view_pay",           label: "View pay info",         desc: "See pay & history" },
   { key: "can_view_calendar",      label: "View calendar",         desc: "Weekly/monthly view" },
   { key: "can_add_notes",          label: "Add job notes",         desc: "Leave notes on jobs" },
+  // ITEMS 3/5 — granular billing permissions, off by default (opt-in, unlike
+  // the operational perms above) since these touch money.
+  { key: "can_create_invoices",    label: "Create invoices",       desc: "Generate a new invoice from a job" },
+  { key: "can_send_invoices",      label: "Send invoices",         desc: "Email/text an invoice to the customer" },
+  { key: "can_process_payments",   label: "Process payments",      desc: "Add cards on file, charge fees on-site" },
 ] as const;
 
 const DEFAULT_PERMS: Record<string, boolean> = {
   can_view_jobs: true, can_clock_in: true, can_upload_photos: true,
   can_complete_checklist: true, can_get_signoff: true,
   can_view_pay: true, can_view_calendar: true, can_add_notes: true,
+  can_create_invoices: false, can_send_invoices: false, can_process_payments: false,
 };
 
 // FIX 8 — CRM-side permissions for a "Manager" role employee (distinct from

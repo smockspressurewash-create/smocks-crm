@@ -1271,10 +1271,21 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           // report success before Supabase confirmed it. Same table
           // ("jobs"), same columns, same bare (non-`.select()`) insert
           // method as the manual form.
-          const insertResp: any = await withTimeout<any>(
-            (supabase as any).from("jobs").insert(newJ),
-            15000, "Save job"
-          );
+          // ITEM 23 — "Save job timed out" persisted even after the
+          // navigator-lock passthrough fix (lib/supabase.ts) for some owners,
+          // which points at plain slow-network/cold-connection cases too, not
+          // only the lock deadlock. A single insert with no retry meant one
+          // slow round-trip failed the whole tool call outright; bumped the
+          // budget 15s → 25s and added one retry attempt with a further 20s
+          // of headroom before actually giving up, same as the existing
+          // safe-column retry a few lines down already does for column errors.
+          let insertResp: any;
+          try {
+            insertResp = await withTimeout<any>((supabase as any).from("jobs").insert(newJ), 25000, "Save job");
+          } catch (timeoutErr: any) {
+            console.warn("[AlfredTool schedule_job] first insert attempt timed out — retrying once:", timeoutErr?.message);
+            insertResp = await withTimeout<any>((supabase as any).from("jobs").insert(newJ), 20000, "Save job (retry)");
+          }
           // Log the ENTIRE raw response object, not just .error — status/
           // statusText/count reveal e.g. a silent 0-row write that reports
           // no `error` but also didn't actually insert anything.

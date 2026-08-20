@@ -121,6 +121,13 @@ export interface Discount {
 export interface Estimate {
   id: string;
   customerId: string;
+  // ITEM 16 — link back to the Job this invoice was generated from (only set
+  // when created via "Send Invoice" on a completed job; owner-built
+  // estimates/quotes have no job yet). Lets markPaid/markPaidViaStripe also
+  // flip the job's own paymentStatus so the field/employee portal (which
+  // reads job.paymentStatus, not the estimates table) reflects payment
+  // immediately instead of only updating once the job is separately synced.
+  jobId?: string;
   estimateType?: "standard" | "options" | "package";
   packages?: EstimatePackage[];
   lineItems: LineItem[];
@@ -961,8 +968,9 @@ export interface Promotion {
   serviceRestrictions?: string[];
   usageLimit?: number;
   code?: string;
-  audience: "all" | "tag" | "location" | "lastService" | "individual";
+  audience: "all" | "tag" | "folder" | "location" | "lastService" | "individual";
   audienceTag?: string;
+  audienceFolder?: string;
   audienceCity?: string;
   audienceLastServiceBefore?: number;
   audienceCustomerIds?: string[];

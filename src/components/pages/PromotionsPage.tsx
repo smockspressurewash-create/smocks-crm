@@ -2,7 +2,7 @@ import React, { useState } from "react";
 import { Plus, Trash2, Edit, Mail, MessageSquare, Tag, MapPin, Calendar, Percent, DollarSign, Send, Eye, X, Users } from "lucide-react";
 import { fmt, uid, today, daysSince } from "../../lib/utils";
 import type { Customer, Promotion, Service, AppSettings } from "../../types";
-import { twilioSend, sendEmail, emailShell, emailButton } from "../../lib/messaging";
+import { twilioSend, sendEmail, emailShell, emailButton, logOutboundSmsToInbox } from "../../lib/messaging";
 import { supabase } from "../../lib/supabase";
 import { Glass } from "../ui/Glass";
 import { GBtn } from "../ui/GBtn";
@@ -32,6 +32,7 @@ export function PromotionsPage({ promotions = [], setPromotions = (() => {}) as 
     if (p.audience === "all") return customers;
     if (p.audience === "individual") return customers.filter(c => (p.audienceCustomerIds || []).includes(c.id));
     if (p.audience === "tag") return customers.filter(c => (c.tags || []).includes(p.audienceTag || ""));
+    if (p.audience === "folder") return customers.filter(c => c.folder === p.audienceFolder);
     if (p.audience === "location") return customers.filter(c => (c.city || "").toLowerCase() === (p.audienceCity || "").toLowerCase());
     if (p.audience === "lastService") return customers.filter(c => (p.audienceLastServiceBefore || 0) > 0 && daysSince(c.createdAt) >= (p.audienceLastServiceBefore || 0));
     return customers;
@@ -68,7 +69,9 @@ export function PromotionsPage({ promotions = [], setPromotions = (() => {}) as 
           sentCount++;
         }
         if ((p.channel === "sms" || p.channel === "both") && cust.phone) {
-          await twilioSend(settings as any, cust.phone, promoSms(p, cust));
+          const smsBody = promoSms(p, cust);
+          await twilioSend(settings as any, cust.phone, smsBody);
+          logOutboundSmsToInbox({ contactName: `${cust.firstName} ${cust.lastName}`, contactPhone: cust.phone, customerId: cust.id, body: smsBody }).catch(() => {});
           sentCount++;
         }
       } catch (e: any) {
@@ -99,6 +102,7 @@ export function PromotionsPage({ promotions = [], setPromotions = (() => {}) as 
 
   const allTags = Array.from(new Set(customers.flatMap(c => c.tags || [])));
   const cities = Array.from(new Set(customers.map(c => c.city).filter(Boolean))) as string[];
+  const allFolders = Array.from(new Set(customers.map(c => c.folder).filter(Boolean))) as string[];
 
   return (
     <div className="space-y-4">
@@ -193,6 +197,7 @@ export function PromotionsPage({ promotions = [], setPromotions = (() => {}) as 
               <GSel value={editing.audience} onChange={(e: any) => setEditing({ ...editing, audience: e.target.value })}>
                 <option value="all" className="bg-black">All customers</option>
                 <option value="tag" className="bg-black">By tag</option>
+                <option value="folder" className="bg-black">By folder</option>
                 <option value="location" className="bg-black">By location (city)</option>
                 <option value="lastService" className="bg-black">By last-service date</option>
                 <option value="individual" className="bg-black">Select individual customers</option>
@@ -201,6 +206,12 @@ export function PromotionsPage({ promotions = [], setPromotions = (() => {}) as 
                 <GSel value={editing.audienceTag || ""} onChange={(e: any) => setEditing({ ...editing, audienceTag: e.target.value })} className="mt-2">
                   <option value="" className="bg-black">— Choose tag —</option>
                   {allTags.map(t => <option key={t} value={t} className="bg-black">{t}</option>)}
+                </GSel>
+              )}
+              {editing.audience === "folder" && (
+                <GSel value={editing.audienceFolder || ""} onChange={(e: any) => setEditing({ ...editing, audienceFolder: e.target.value })} className="mt-2">
+                  <option value="" className="bg-black">— Choose folder —</option>
+                  {allFolders.map(f => <option key={f} value={f} className="bg-black">{f}</option>)}
                 </GSel>
               )}
               {editing.audience === "location" && (

@@ -190,7 +190,14 @@ export function CustomerDetail({ customer: c, onClose, onDelete, onEdit, estimat
               <div className="text-xs text-white/60 mt-0.5">Since {c.createdAt}</div>
               <div className="mt-2 space-y-1 text-sm">
                 <div className="flex items-center gap-2 text-white/70"><Mail size={12} />{c.email || "—"}</div>
-                <div className="flex items-center gap-2 text-white/70"><Phone size={12} />{c.phone || "—"}</div>
+                <div className="flex items-center gap-2 text-white/70">
+                  <Phone size={12} />{c.phone || "—"}
+                  {c.phone && (
+                    <span className={"text-[10px] px-1.5 py-0.5 rounded-full border " + (c.smsOptOut ? "border-red-800/50 bg-red-950/30 text-red-400" : "border-green-800/50 bg-green-950/30 text-green-400")}>
+                      {c.smsOptOut ? "SMS opted out" : "SMS opted in"}
+                    </span>
+                  )}
+                </div>
                 <div className="flex items-center gap-2 text-white/70"><MapPin size={12} />{c.address || "—"}</div>
               </div>
             </div>

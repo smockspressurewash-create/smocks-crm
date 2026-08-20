@@ -32,9 +32,20 @@ function hashParam(key: string): string {
 
 const COMMON_SERVICES = ["Pressure Washing", "House Washing", "Roof Cleaning", "Gutter Cleaning", "Window Cleaning", "Driveway/Concrete Cleaning", "Deck/Fence Cleaning", "Not sure yet"];
 
+// ITEM 1 — owner-customizable colors, same non-secret-query-param pattern as
+// company name/phone above: bg (page background), btn (button/header
+// accent), text (heading text color). Hex values, e.g. #111827.
+const isHex = (v: string) => /^#[0-9a-fA-F]{3,8}$/.test(v);
+
 export function LeadFormPage() {
   const companyName = decodeURIComponent(hashParam("co") || "") || "Get a Free Quote";
   const companyPhone = decodeURIComponent(hashParam("ph") || "");
+  const bgParam = hashParam("bg");
+  const btnParam = hashParam("btn");
+  const textParam = hashParam("text");
+  const bgColor = isHex(bgParam) ? bgParam : "#0a0a0a";
+  const btnColor = isHex(btnParam) ? btnParam : "#dc2626";
+  const textColor = isHex(textParam) ? textParam : "#ffffff";
 
   const [f, setF] = useState({ firstName: "", lastName: "", email: "", phone: "", address: "", service: "", message: "" });
   const [submitting, setSubmitting] = useState(false);
@@ -108,10 +119,10 @@ export function LeadFormPage() {
   }
 
   return (
-    <div className="min-h-screen bg-neutral-950 text-white">
-      <div className="bg-gradient-to-r from-red-600 to-red-800 px-6 py-5">
-        <div className="font-bold text-lg text-white">{companyName}</div>
-        <div className="text-red-200 text-xs mt-0.5">Get a free estimate — we respond fast{companyPhone ? ` · ${companyPhone}` : ""}</div>
+    <div className="min-h-screen text-white" style={{ backgroundColor: bgColor }}>
+      <div className="px-6 py-5" style={{ backgroundColor: btnColor }}>
+        <div className="font-bold text-lg" style={{ color: textColor }}>{companyName}</div>
+        <div className="text-xs mt-0.5" style={{ color: textColor, opacity: 0.8 }}>Get a free estimate — we respond fast{companyPhone ? ` · ${companyPhone}` : ""}</div>
       </div>
       <div className="p-6 max-w-lg mx-auto space-y-4">
         <div className="grid grid-cols-2 gap-3">
@@ -166,7 +177,8 @@ export function LeadFormPage() {
         <button
           onClick={handleSubmit}
           disabled={!f.firstName.trim() || !f.phone.trim() || !smsOptIn || submitting}
-          className="w-full py-4 bg-gradient-to-r from-red-600 to-red-800 text-white font-bold rounded-xl hover:from-red-500 hover:to-red-700 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+          style={{ backgroundColor: btnColor, color: textColor }}
+          className="w-full py-4 font-bold rounded-xl transition-all disabled:opacity-50 disabled:cursor-not-allowed hover:opacity-90"
         >
           {submitting ? "Submitting…" : "Get My Free Estimate →"}
         </button>

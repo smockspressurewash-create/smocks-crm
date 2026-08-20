@@ -142,8 +142,10 @@ const SEQUENCE_DEFS = [
   },
 ];
 
-export function CampaignsPage({ campaigns = [], setCampaigns, customers = [], estimates = [], jobs = [], settings = {} as AppSettings, inboxThreads = [], setInboxThreads, automations = [], setAutomations, toast }: { campaigns?: any[]; setCampaigns?: any; customers?: any[]; estimates?: any[]; jobs?: any[]; settings?: AppSettings; inboxThreads?: any[]; setInboxThreads?: any; automations?: any[]; setAutomations?: any; toast?: any }) {
+export function CampaignsPage({ campaigns = [], setCampaigns, customers = [], estimates = [], jobs = [], settings = {} as AppSettings, setSettings, inboxThreads = [], setInboxThreads, automations = [], setAutomations, toast }: { campaigns?: any[]; setCampaigns?: any; customers?: any[]; estimates?: any[]; jobs?: any[]; settings?: AppSettings; setSettings?: any; inboxThreads?: any[]; setInboxThreads?: any; automations?: any[]; setAutomations?: any; toast?: any }) {
   const [savedSegments, setSavedSegments] = usePersistent("smocks.savedSegments", []);
+  // ITEM 27 — owner-created campaign templates.
+  const customTemplates = ((settings as any)?.customCampaignTemplates || []) as { id: string; name: string; subject?: string; body: string }[];
   const [tab, setTab] = useState("compose");
   const [ch, setCh] = useState("sms");
   const [subj, setSubj] = useState("");
@@ -544,10 +546,39 @@ export function CampaignsPage({ campaigns = [], setCampaigns, customers = [], es
           <Glass className="p-4 space-y-3">
             <div>
               <label className="text-xs text-white/60 mb-1 block">Template</label>
-              <GSel defaultValue="" onChange={e => { const t = campaignTemplates.find(x => x.id === e.target.value); if (t) { setSubj(t.subject); setBody(t.body); } }}>
-                <option value="" className="bg-black">Load template…</option>
-                {campaignTemplates.map(t => <option key={t.id} value={t.id} className="bg-black">{t.name}</option>)}
-              </GSel>
+              {/* ITEM 27 — custom templates the owner creates/renames/deletes,
+                  stored in settings.customCampaignTemplates (JSONB — no
+                  migration needed), alongside the built-in seed list. */}
+              <div className="flex gap-2">
+                <GSel defaultValue="" className="flex-1" onChange={e => {
+                  const val = e.target.value;
+                  const built = campaignTemplates.find(x => x.id === val);
+                  const custom = customTemplates.find((x: any) => x.id === val);
+                  const t = built || custom;
+                  if (t) { setSubj(t.subject); setBody(t.body); }
+                }}>
+                  <option value="" className="bg-black">Load template…</option>
+                  {campaignTemplates.length > 0 && <optgroup label="Built-in">{campaignTemplates.map(t => <option key={t.id} value={t.id} className="bg-black">{t.name}</option>)}</optgroup>}
+                  {customTemplates.length > 0 && <optgroup label="My Templates">{customTemplates.map((t: any) => <option key={t.id} value={t.id} className="bg-black">{t.name}</option>)}</optgroup>}
+                </GSel>
+                <GBtn variant="ghost" className="!text-xs flex-shrink-0" onClick={() => {
+                  const name = prompt("Template name:");
+                  if (!name?.trim()) return;
+                  const newTpl = { id: uid(), name: name.trim(), subject: subj, body };
+                  setSettings?.((s: any) => ({ ...s, customCampaignTemplates: [...(s.customCampaignTemplates || []), newTpl] }));
+                  toast?.("Template saved ✓", "green");
+                }}>Save As…</GBtn>
+                {customTemplates.length > 0 && (
+                  <GBtn variant="ghost" className="!text-xs flex-shrink-0" onClick={() => {
+                    const name = prompt("Delete which template? Type its exact name:");
+                    if (!name) return;
+                    const match = customTemplates.find((t: any) => t.name === name.trim());
+                    if (!match) { toast?.("No template found with that name", "yellow"); return; }
+                    setSettings?.((s: any) => ({ ...s, customCampaignTemplates: (s.customCampaignTemplates || []).filter((t: any) => t.id !== match.id) }));
+                    toast?.("Template deleted");
+                  }}>Delete…</GBtn>
+                )}
+              </div>
             </div>
             {ch === "email" && <div><label className="text-xs text-white/60 mb-1 block">Subject</label><GInput value={subj} onChange={e => setSubj(e.target.value)} /></div>}
             <div>

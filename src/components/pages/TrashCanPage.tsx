@@ -6,9 +6,11 @@
 // pricing/timing settings, the filtered job list, a same-day route builder
 // (see lib/utils.ts's buildOptimizedRoute), and the public signup link.
 import React, { useState } from "react";
-import { Trash2, Copy, DollarSign, Clock, Route as RouteIcon, Users, Calendar } from "lucide-react";
-import { fmt, uid, today, buildOptimizedRoute } from "../../lib/utils";
+import { Trash2, Copy, DollarSign, Clock, Route as RouteIcon, Users, Calendar, GripVertical, Send } from "lucide-react";
+import { fmt, uid, today, daysFromNow, buildOptimizedRoute } from "../../lib/utils";
 import type { Job, Customer, AppSettings } from "../../types";
+import { supabase } from "../../lib/supabase";
+import { twilioSend, logOutboundSmsToInbox } from "../../lib/messaging";
 import { Glass } from "../ui/Glass";
 import { GBtn } from "../ui/GBtn";
 import { GInput } from "../ui/GInput";
@@ -16,7 +18,7 @@ import { GSel } from "../ui/GSel";
 import { Badge } from "../ui/Badge";
 import { Stat } from "../ui/Stat";
 
-export function TrashCanPage({ jobs = [], customers = [], settings = {} as AppSettings, setSettings, toast }: { jobs?: Job[]; customers?: Customer[]; settings?: AppSettings; setSettings?: any; toast?: any }) {
+export function TrashCanPage({ jobs = [], customers = [], settings = {} as AppSettings, setSettings, setJobs, toast, ownerId }: { jobs?: Job[]; customers?: Customer[]; settings?: AppSettings; setSettings?: any; setJobs?: any; toast?: any; ownerId?: string }) {
   const trashJobs = jobs.filter((j: any) => j.serviceCategory === "trash_can");
   const upcoming = trashJobs.filter(j => j.status !== "cancelled" && j.status !== "completed").sort((a, b) => (a.scheduledDate || "").localeCompare(b.scheduledDate || ""));
   const [routeDate, setRouteDate] = useState(today());
@@ -24,10 +26,13 @@ export function TrashCanPage({ jobs = [], customers = [], settings = {} as AppSe
 
   const costPerCan = Number((settings as any)?.trashCanCostPerCan) || 5;
   const minutesPerCan = Number((settings as any)?.trashCanMinutesPerCan) || 5;
-  // Non-secret settings baked into the link at copy time — see
-  // TrashCanSignupPage.tsx's comment on why it never fetches app_settings
-  // directly (that table holds live secrets behind permissive RLS).
+  // ITEM 10 — `oid` (owner id) lets TrashCanSignupPage.tsx do a live, narrow
+  // refetch of just the pricing/schedule fields on load (see that file's
+  // comment), so this link keeps working correctly even after the owner
+  // changes pricing later — the co/ph/cost/min/freq/pk params below still
+  // ride along as an offline fallback for links copied before this fix.
   const signupParams = new URLSearchParams({
+    oid: ownerId || "",
     co: (settings as any)?.companyName || "Crew Boss",
     ph: (settings as any)?.companyPhone || "",
     cost: String(costPerCan),
@@ -38,6 +43,53 @@ export function TrashCanPage({ jobs = [], customers = [], settings = {} as AppSe
   const signupLink = `${window.location.origin}${window.location.pathname}#/trash-cans?${signupParams.toString()}`;
 
   const cf = (id?: string) => customers.find((c: any) => c.id === id);
+
+  // ITEMS 11-12 — Planning stage: new/unconfirmed trash-can leads (or any
+  // trash-can job the owner hasn't locked in a day for yet) get dragged onto
+  // one of the next 14 days, staged locally, then confirmed in a batch —
+  // which is also the point an SMS offer goes out to everyone whose day was
+  // just set. `dayAssignmentConfirmed` (migration 0032) is what keeps a
+  // once-confirmed job out of this planning list on future visits.
+  const unassigned = trashJobs.filter((j: any) => !j.dayAssignmentConfirmed && j.status !== "cancelled" && j.status !== "completed");
+  const planningDays = Array.from({ length: 14 }, (_, i) => daysFromNow(i));
+  const [draggedId, setDraggedId] = useState<string | null>(null);
+  const [staged, setStaged] = useState<Record<string, string>>({}); // jobId -> date
+  const [confirming, setConfirming] = useState(false);
+  const dayOf = (j: Job) => staged[j.id] || j.scheduledDate || "";
+
+  const stagedCount = Object.keys(staged).length;
+  const confirmDayAssignments = async () => {
+    if (stagedCount === 0) return;
+    setConfirming(true);
+    const touched = Object.entries(staged);
+    const patchedJobs: Job[] = [];
+    for (const [jobId, date] of touched) {
+      const patch = { scheduledDate: date, dayAssignmentConfirmed: true };
+      setJobs?.((prev: any[]) => prev.map(j => j.id === jobId ? { ...j, ...patch } : j));
+      const j = trashJobs.find(x => x.id === jobId);
+      if (j) patchedJobs.push({ ...j, ...patch } as Job);
+      await (supabase as any).from("jobs").update(patch).eq("id", jobId)
+        .then((r: any) => { if (r?.error) console.error("[TrashCan] day-assignment save failed:", r.error.message); });
+    }
+    setStaged({});
+    setConfirming(false);
+    toast?.(`${touched.length} customer${touched.length !== 1 ? "s" : ""} assigned to their service day ✓`, "green");
+
+    if (window.confirm(`Text all ${touched.length} customer${touched.length !== 1 ? "s" : ""} to let them know their scheduled day?`)) {
+      let sent = 0, failed = 0;
+      for (const j of patchedJobs) {
+        const c = cf(j.customerId);
+        if (!c?.phone) { failed++; continue; }
+        const msg = `Hi ${c.firstName}! Your trash can cleaning with ${(settings as any)?.companyName || "us"} is scheduled for ${j.scheduledDate}. Reply STOP to opt out.`;
+        try {
+          await twilioSend(settings as any, c.phone, msg);
+          logOutboundSmsToInbox({ contactName: `${c.firstName} ${c.lastName}`, contactPhone: c.phone, customerId: c.id, body: msg }).catch(() => {});
+          sent++;
+        } catch { failed++; }
+      }
+      toast?.(`Notified ${sent}${failed ? " · " + failed + " failed" : ""}`, failed ? "yellow" : "green");
+    }
+  };
 
   const buildRoute = () => {
     const dayJobs = trashJobs.filter(j => j.scheduledDate === routeDate && j.status !== "cancelled" && j.status !== "completed");
@@ -104,6 +156,59 @@ export function TrashCanPage({ jobs = [], customers = [], settings = {} as AppSe
                 <span className="text-white/40">{(j as any)?.cansCount || 1} cans · ~{entry.estMinutes}m</span>
               </div>;
             })())}
+          </div>
+        )}
+      </Glass>
+
+      <Glass className="p-4 space-y-3">
+        <div className="flex items-center justify-between flex-wrap gap-2">
+          <div className="font-semibold text-sm flex items-center gap-2"><Calendar size={14} className="text-yellow-400" />Planning — Assign Customers to Days</div>
+          {stagedCount > 0 && <GBtn onClick={confirmDayAssignments} disabled={confirming} className="!text-xs !py-1.5"><Send size={11} className="inline mr-1" />{confirming ? "Saving…" : `Confirm ${stagedCount} Assignment${stagedCount !== 1 ? "s" : ""}`}</GBtn>}
+        </div>
+        <div className="text-[10px] text-white/40">Drag a customer card onto a day to assign their trash-can service day. Nothing is saved until you hit Confirm — which then offers to text everyone their scheduled day.</div>
+        {unassigned.length === 0 ? (
+          <div className="text-center py-6 text-white/40 text-xs">No unassigned trash-can customers — new signups will appear here.</div>
+        ) : (
+          <div className="flex gap-3 overflow-x-auto pb-2">
+            <div className="flex-shrink-0 w-48">
+              <div className="text-[10px] uppercase tracking-wider text-white/40 mb-1.5">Unassigned ({unassigned.filter(j => !staged[j.id]).length})</div>
+              <div className="space-y-1.5 min-h-[60px] p-1.5 rounded-xl bg-black/30 border border-dashed border-white/10"
+                onDragOver={(e) => e.preventDefault()}
+                onDrop={() => { if (draggedId) setStaged(prev => { const n = { ...prev }; delete n[draggedId]; return n; }); setDraggedId(null); }}>
+                {unassigned.filter(j => !staged[j.id]).map(j => {
+                  const c = cf(j.customerId);
+                  return (
+                    <div key={j.id} draggable onDragStart={() => setDraggedId(j.id)} onDragEnd={() => setDraggedId(null)}
+                      className="p-2 rounded-lg bg-black/60 border border-white/10 text-[11px] cursor-grab active:cursor-grabbing flex items-center gap-1.5">
+                      <GripVertical size={10} className="text-white/30 flex-shrink-0" />
+                      <span className="truncate">{c ? `${c.firstName} ${c.lastName}` : "Customer"} · {(j as any).cansCount || 1} cans</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+            {planningDays.map(d => {
+              const dayJobs = unassigned.filter(j => staged[j.id] === d);
+              return (
+                <div key={d} className="flex-shrink-0 w-40">
+                  <div className="text-[10px] uppercase tracking-wider text-white/40 mb-1.5">{d} ({dayJobs.length})</div>
+                  <div className="space-y-1.5 min-h-[60px] p-1.5 rounded-xl bg-black/30 border border-dashed border-white/10"
+                    onDragOver={(e) => e.preventDefault()}
+                    onDrop={() => { if (draggedId) setStaged(prev => ({ ...prev, [draggedId]: d })); setDraggedId(null); }}>
+                    {dayJobs.map(j => {
+                      const c = cf(j.customerId);
+                      return (
+                        <div key={j.id} draggable onDragStart={() => setDraggedId(j.id)} onDragEnd={() => setDraggedId(null)}
+                          className="p-2 rounded-lg bg-yellow-950/30 border border-yellow-700/30 text-[11px] cursor-grab active:cursor-grabbing flex items-center gap-1.5">
+                          <GripVertical size={10} className="text-yellow-500/50 flex-shrink-0" />
+                          <span className="truncate">{c ? `${c.firstName} ${c.lastName}` : "Customer"}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })}
           </div>
         )}
       </Glass>

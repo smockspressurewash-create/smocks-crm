@@ -22,7 +22,7 @@ import {
 } from "recharts";
 import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, withTimeout } from "../../lib/utils";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
-import { twilioSend, sendEmail, emailShell } from "../../lib/messaging";
+import { twilioSend, sendEmail, emailShell, logOutboundSmsToInbox } from "../../lib/messaging";
 import { seedWeather } from "../../lib/weather";
 import { seedCustomers, seedEstimates, seedJobs, seedEmployees, seedVehicles, seedExpenses, seedChemicals, seedServices, seedAutomations, seedEmailTemplates, seedSmsTemplates, seedRewardTiers, seedReferrals, seedMaintenance, campaignTemplates, seedSocialPosts, seedTimeline, seedGoals, seedReminders, seedAccountabilityEntries, seedMileage, seedLeadSrc, STEP_TYPES, AUTOMATION_TEMPLATES } from "../../lib/seed";
 import { callModel, MODELS } from "../../lib/api";
@@ -82,6 +82,11 @@ import { WeeklyBusinessReview } from "../ui/WeeklyBusinessReview";
 import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 
 export function InvoicesPage({ estimates = [], setEstimates, customers = [], settings = {} as AppSettings, toast, jobs = [], setJobs = (() => {}) as any }: { estimates?: any[]; setEstimates?: any; customers?: any[]; settings?: AppSettings; toast?: any; jobs?: any[]; setJobs?: any }) {
+  // ITEM 30 — same fake "smocks.com" domain bug fixed in EstimatesPage.tsx
+  // last round existed here too (Copy Link / Text Link on an invoice),
+  // pointing every invoice link at a domain that resolves nowhere for any
+  // deployment. Same real, origin-based helper.
+  const portalUrlFor = (estId: string) => `${window.location.origin}${window.location.pathname}#/estimate/${estId}`;
   const [sendingJobInvoiceId, setSendingJobInvoiceId] = useState<string | null>(null);
   const [showSentJobs, setShowSentJobs] = useState(false);
   const needsInvoiceJobs = jobs.filter((j: any) => j.status === "completed" && j.paymentStatus !== "Paid" && !j.invoiceSentAt);
@@ -102,7 +107,7 @@ export function InvoicesPage({ estimates = [], setEstimates, customers = [], set
     setSendingJobInvoiceId(job.id);
     try {
       const newInv = {
-        id: uid(), customerId: job.customerId,
+        id: uid(), customerId: job.customerId, jobId: job.id,
         lineItems: [{ id: uid(), description: job.notes || job.address || "Service", quantity: 1, unitPrice: Number(job.amount) || 0 }],
         subtotal: Number(job.amount) || 0, discount: 0, depositRequired: 0, tax: 0, total: Number(job.amount) || 0,
         status: "approved" as const, createdAt: today(), validUntil: daysFromNow(30), invoiced: true, invoicedAt: today(),
@@ -197,6 +202,7 @@ export function InvoicesPage({ estimates = [], setEstimates, customers = [], set
   };
 
   const markPaidViaStripe = (invId: string, paymentIntentId: string) => {
+    syncJobPaymentStatus((estimates.find(e => e.id === invId) as any)?.jobId, "Paid");
     setEstimates(estimates.map(e => e.id === invId ? { ...e, paidAt: today(), status: "approved", stripePaymentIntentId: paymentIntentId, stripePaymentStatus: "paid" as const } : e));
     setStripePayInvoice(null);
     toast?.("Payment received ✓");
@@ -341,9 +347,22 @@ export function InvoicesPage({ estimates = [], setEstimates, customers = [], set
   // merges the server row straight over local state — so within seconds the
   // still-unpaid server row silently overwrote the local paidAt, snapping
   // the invoice back to unpaid. That's exactly "Mark as Paid doesn't work."
+  // ITEM 16 — also flip the linked job's paymentStatus (both local state and
+  // Supabase) so the employee/field portal, which reads job.paymentStatus
+  // rather than the estimates table, reflects a payment the owner marks here
+  // immediately instead of showing "Unpaid" until something else syncs it.
+  const syncJobPaymentStatus = (jobId: string | undefined, paymentStatus: "Paid" | "Pending") => {
+    if (!jobId) return;
+    setJobs((prev: any[]) => prev.map(j => j.id === jobId ? { ...j, paymentStatus } : j));
+    (supabase as any).from("jobs").update({ paymentStatus }).eq("id", jobId)
+      .then((r: any) => { if (r?.error) console.error("[MarkPaid] job paymentStatus sync failed:", r.error.message); })
+      .catch((e: any) => console.error("[MarkPaid] job paymentStatus sync threw:", e?.message));
+  };
   const markPaid = id => {
     const paidAt = today();
+    const inv = estimates.find(e => e.id === id);
     setEstimates(estimates.map(e => e.id === id ? { ...e, paidAt, status: "approved" } : e));
+    syncJobPaymentStatus((inv as any)?.jobId, "Paid");
     (supabase as any).from("estimates").update({ paidAt, status: "approved" }).eq("id", id)
       .then((r: any) => {
         if (r?.error) { console.error("[MarkPaid] failed:", r.error.message); toast("Saved locally, but failed to sync — " + r.error.message, "red"); }
@@ -352,7 +371,9 @@ export function InvoicesPage({ estimates = [], setEstimates, customers = [], set
       .catch((e: any) => { console.error("[MarkPaid] threw:", e?.message); toast("Saved locally, but failed to sync — " + (e?.message || "unknown error"), "red"); });
   };
   const markUnpaid = id => {
+    const inv = estimates.find(e => e.id === id);
     setEstimates(estimates.map(e => e.id === id ? { ...e, paidAt: null } : e));
+    syncJobPaymentStatus((inv as any)?.jobId, "Pending");
     (supabase as any).from("estimates").update({ paidAt: null }).eq("id", id)
       .then((r: any) => {
         if (r?.error) { console.error("[MarkPaid] unpaid failed:", r.error.message); toast("Saved locally, but failed to sync — " + r.error.message, "red"); }
@@ -379,6 +400,7 @@ export function InvoicesPage({ estimates = [], setEstimates, customers = [], set
     if (settings?.twilioSid && c.phone) {
       try {
         await twilioSend(settings, c.phone, msg);
+        logOutboundSmsToInbox({ contactName: `${c.firstName} ${c.lastName}`, contactPhone: c.phone, customerId: c.id, body: msg }).catch(() => {});
         toast("Reminder sent to " + c.firstName + " via SMS ✓");
       } catch (e) {
         toast("SMS failed: " + e.message, "error");
@@ -398,7 +420,7 @@ export function InvoicesPage({ estimates = [], setEstimates, customers = [], set
       const age = inv.invoicedAt ? daysSince(inv.invoicedAt) : 0;
       const msg = "Hi " + c.firstName + ", friendly reminder that your invoice of " + fmt(inv.total) + " from Crew Boss is " + (age > 0 ? age + " days " : "") + "past due. Please pay at your convenience. Call (717) 555-0100 with questions. Thank you!";
       try {
-        if (settings?.twilioSid && c.phone) { await twilioSend(settings, c.phone, msg); sent++; }
+        if (settings?.twilioSid && c.phone) { await twilioSend(settings, c.phone, msg); logOutboundSmsToInbox({ contactName: `${c.firstName} ${c.lastName}`, contactPhone: c.phone, customerId: c.id, body: msg }).catch(() => {}); sent++; }
         else if (c.phone) { window.location.href = "sms:" + c.phone.replace(/\D/g,"") + "?body=" + encodeURIComponent(msg); sent++; break; }
       } catch { failed++; }
     }
@@ -721,14 +743,14 @@ export function InvoicesPage({ estimates = [], setEstimates, customers = [], set
               }}><Download size={12} className="inline mr-1.5" />PDF</GBtn>
               {!viewing.paidAt && <>
                 <GBtn variant="ghost" className="!text-xs" onClick={() => {
-                  navigator.clipboard?.writeText("smocks.com/portal/" + viewing.id).catch(() => {});
+                  navigator.clipboard?.writeText(portalUrlFor(viewing.id)).catch(() => {});
                   toast("Payment link copied ✓");
                 }}><Link size={11} className="inline mr-1" />Copy Link</GBtn>
                 <GBtn variant="ghost" onClick={() => {
                   const cv = customers.find(x => x.id === viewing?.customerId);
                   if (!cv?.phone) { toast("No phone for this customer"); return; }
-                  const msg2 = "Hi " + cv.firstName + "! Your invoice for " + fmt(viewing.total) + " from Crew Boss is ready: smocks.com/portal/" + viewing.id;
-                  if (settings?.twilioSid) twilioSend(settings, cv.phone, msg2).then(() => toast("Link sent ✓")).catch(e => toast(e.message, "error"));
+                  const msg2 = "Hi " + cv.firstName + "! Your invoice for " + fmt(viewing.total) + " from Crew Boss is ready: " + portalUrlFor(viewing.id);
+                  if (settings?.twilioSid) twilioSend(settings, cv.phone, msg2).then(() => { logOutboundSmsToInbox({ contactName: `${cv.firstName} ${cv.lastName}`, contactPhone: cv.phone, customerId: cv.id, body: msg2 }).catch(() => {}); toast("Link sent ✓"); }).catch(e => toast(e.message, "error"));
                   else window.location.href = "sms:" + cv.phone.replace(/\D/g,"") + "?body=" + encodeURIComponent(msg2);
                 }} className="!text-xs"><Send size={11} className="inline mr-1" />Text Link</GBtn>
                 <GBtn variant="ghost" onClick={() => {

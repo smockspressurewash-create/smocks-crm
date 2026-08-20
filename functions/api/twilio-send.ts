@@ -33,7 +33,16 @@ export const onRequestPost = async (context: { request: Request }) => {
     });
     const data = await twilioRes.json().catch(() => ({} as any));
     if (!twilioRes.ok) {
-      return new Response(JSON.stringify({ error: data?.message || `Twilio error ${twilioRes.status}` }), {
+      // ITEM 32 — a 404 here almost always means the value saved as the
+      // Twilio Account SID isn't actually an Account SID ("AC...") — most
+      // often an API Key SID ("SK...") or Messaging Service SID ("MG...")
+      // pasted into the wrong Settings field. Same hint twilio-account-status
+      // already gives on its own SID check, added here too since this is the
+      // path a real SMS send (not just the "Check Status" button) hits.
+      const hint = twilioRes.status === 404 && !sid.startsWith("AC")
+        ? ` (this SID starts with "${sid.slice(0, 2)}", but a Twilio Account SID always starts with "AC" — check Settings → Integrations)`
+        : "";
+      return new Response(JSON.stringify({ error: (data?.message || `Twilio error ${twilioRes.status}`) + hint }), {
         status: twilioRes.status, headers: { "Content-Type": "application/json" },
       });
     }

@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import {
   Clock, Briefcase, Calendar, ChevronLeft, CheckSquare, Camera,
-  LogOut, MapPin, Phone, User, Play, Pause, Square, Plus, X, Eye, EyeOff, DollarSign,
+  LogOut, MapPin, Phone, User, Play, Pause, Square, Plus, X, Eye, EyeOff, DollarSign, BookOpen,
   ChevronRight, Home, List, CheckCircle, AlertCircle, AlertTriangle, Image, FileText,
   Video, PenLine, Shield, Navigation, Database, Route, ToggleRight, ToggleLeft, Download, Bell, CreditCard
 } from "lucide-react";
@@ -18,6 +18,7 @@ import { loadMapsScript, AddressAutocomplete } from "../ui/AddressAutocomplete";
 import { LiveMap } from "../ui/LiveMap";
 import { PropertyMapEmbed } from "../ui/PropertyMapEmbed";
 import { SaveCardModal } from "../ui/SaveCardModal";
+import { SopModal } from "../ui/SopModal";
 import { chargeSavedPaymentMethod } from "../../lib/stripe";
 import { BarChart, Bar, LineChart, Line, XAxis, YAxis, ResponsiveContainer, Tooltip, CartesianGrid } from "recharts";
 import { fmt, uid, today, localDateStr, localDateKey, shiftDayStr, daysFromNow, computeJobRatingScore, setOAuthIntent, compressImageFile, getEffectiveRate, computeNextRecurringDate, weekdayLabels, normalizeJobRow, totalJobPhotoCount, mediaSrc, dataUrlToBlob, uploadJobMedia, checkVideoLimits, stripLegacyJobFields, reconcileCrewAfterAssign, getPollIntervalMs, getPayPeriodBounds } from "../../lib/utils";
@@ -134,6 +135,10 @@ export const DEFAULT_PERMISSIONS: Record<string, boolean> = {
   can_view_jobs: true, can_clock_in: true, can_upload_photos: true,
   can_complete_checklist: true, can_get_signoff: true,
   can_view_pay: true, can_view_calendar: true, can_add_notes: true,
+  // ITEMS 3/5 — mirrors EmployeesPage.tsx's PERMISSION_DEFS_EMP/DEFAULT_PERMS;
+  // off by default since these touch invoicing/money, unlike the operational
+  // perms above.
+  can_create_invoices: false, can_send_invoices: false, can_process_payments: false,
 };
 
 function PortalChecklistSection({ jobId, title, emoji, items, onUpdate, allowPhotos = false, disabled = false, toast = () => {} }: {
@@ -278,6 +283,8 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
   const [cascadePrompt, setCascadePrompt] = useState<{ minutes: number } | null>(null);
   const [cascadeSending, setCascadeSending] = useState(false);
   const [chargingFee, setChargingFee] = useState(false);
+  // ITEM 7 — on-site checkout: charging the job total to a card on file.
+  const [chargingCardNow, setChargingCardNow] = useState(false);
   const [note, setNote] = useState("");
   const [delayNote, setDelayNote] = useState("");
   const [delayNoteOpen, setDelayNoteOpen] = useState(false);
@@ -997,6 +1004,33 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
           {completeStep === "method" && (
             <>
               <div className="text-lg font-bold">How did they pay?</div>
+              {/* ITEM 7 — on-site checkout: charge the customer's card on
+                  file for real via Stripe (not just a manual "Card" note),
+                  gated behind can_process_payments same as the other Stripe
+                  actions in this file. If they have no card on file, "Add
+                  Card on File" further up this same job screen covers "enter
+                  payment details in person." */}
+              {effPerms.can_process_payments && customer?.savedPaymentMethodId && customer?.stripeCustomerId && !!settings?.stripePublishableKey && (
+                <button
+                  onClick={async () => {
+                    if (chargingCardNow) return;
+                    setChargingCardNow(true);
+                    try {
+                      await chargeSavedPaymentMethod(customer.stripeCustomerId!, customer.savedPaymentMethodId!, Math.round((Number(job.amount) || 0) * 100), "usd", `Job payment — ${job.address || ""}`);
+                      toast(`Charged ${fmt(job.amount)} to card on file ✓`, "green");
+                      await finalizeCompletion("Paid", "Card (charged on file)");
+                    } catch (e: any) {
+                      toast("Charge failed: " + (e?.message || "unknown error"), "red");
+                    } finally {
+                      setChargingCardNow(false);
+                    }
+                  }}
+                  disabled={chargingCardNow}
+                  className="w-full py-3 rounded-xl border-2 border-emerald-600/50 bg-emerald-950/30 text-emerald-300 font-semibold hover:bg-emerald-900/40 transition flex items-center justify-center gap-1.5"
+                >
+                  <CreditCard size={14} />{chargingCardNow ? "Charging…" : `Charge ${fmt(job.amount)} to card on file (${customer.savedPaymentMethodLabel || "saved"})`}
+                </button>
+              )}
               <div className="grid grid-cols-2 gap-2">
                 {["Cash", "Check", "Card", "Zelle", "Venmo", "Other"].map(m => (
                   <button key={m} onClick={() => setPaymentMethod(m)} className={"py-3 rounded-xl border-2 text-sm font-semibold transition " + (paymentMethod === m ? "border-green-500 bg-green-950/30 text-green-300" : "border-white/10 bg-black/40 text-white/60 hover:border-white/30")}>{m}</button>
@@ -1008,7 +1042,19 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
             </>
           )}
 
-          {completeStep === "invoice" && (
+          {/* ITEMS 3/5 — an employee without can_send_invoices can still mark
+              a job unpaid, but skips straight past the invoice-composing
+              step instead of being offered a Send Invoice action. */}
+          {completeStep === "invoice" && !effPerms.can_send_invoices && (
+            <>
+              <div className="text-lg font-bold">Job marked unpaid</div>
+              <div className="text-sm text-white/50">You don't have permission to send invoices — ask {companyName} to send one, or an owner/manager can send it from the CRM.</div>
+              <GBtn onClick={() => finalizeCompletion("Pending", undefined, false)} className="w-full !justify-center !py-3">
+                <CheckCircle size={16} className="inline mr-1.5" />Mark Complete
+              </GBtn>
+            </>
+          )}
+          {completeStep === "invoice" && effPerms.can_send_invoices && (
             <>
               <div className="text-lg font-bold">Send invoice to customer?</div>
               <div className="text-sm text-white/50">Amount: <span className="text-green-400 font-semibold">{fmt(job.amount)}</span> · {customer?.firstName || "Customer"}</div>
@@ -1398,7 +1444,7 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
             customer record so the owner sees it immediately. Not shown in
             the owner's read-only preview (isPreview) or without Stripe
             configured. */}
-        {!isPreview && !!settings?.stripePublishableKey && customer && (
+        {!isPreview && effPerms.can_process_payments && !!settings?.stripePublishableKey && customer && (
           <Glass className="p-3 !bg-emerald-950/15 !border-emerald-700/30">
             <button onClick={() => setAddCardOpen(true)} className="w-full flex items-center justify-center gap-1.5 py-1.5 text-xs text-emerald-300 hover:text-emerald-200 transition">
               <CreditCard size={12} />
@@ -1409,8 +1455,9 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
         {/* FEATURE (round 13, item 22) — trash-can jobs only: bill an
             inconvenience fee (owner-named/-priced, Settings → Trash Cans)
             when the employee arrives and the cans aren't out, charging the
-            customer's card on file directly via Stripe. */}
-        {!isPreview && job.serviceCategory === "trash_can" && job.status !== "completed" && job.status !== "cancelled" && customer && (
+            customer's card on file directly via Stripe. ITEMS 3/5 — gated
+            behind can_process_payments, same as Add Card on File above. */}
+        {!isPreview && effPerms.can_process_payments && job.serviceCategory === "trash_can" && job.status !== "completed" && job.status !== "cancelled" && customer && (
           <Glass className="p-3 !bg-red-950/15 !border-red-700/30">
             {!customer.savedPaymentMethodId ? (
               <div className="text-[11px] text-white/40 text-center py-1">No card on file — add one above to enable the inconvenience fee.</div>
@@ -2104,6 +2151,10 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   const [optimisticLastShiftHours, setOptimisticLastShiftHours] = useState<number | undefined>(undefined);
   const [optimisticLastShiftDate, setOptimisticLastShiftDate] = useState<string | undefined>(undefined);
   const [payChartRange, setPayChartRange] = useState<"7d" | "4wk" | "12mo" | "custom">("7d");
+  // ITEM 17 — which pay period's per-job breakdown is expanded.
+  const [expandedPayPeriod, setExpandedPayPeriod] = useState<string | null>(null);
+  // ITEM 2 — SOPs modal, reachable from the header on any tab.
+  const [sopOpen, setSopOpen] = useState(false);
   // FEATURE — employee-submitted mileage log (mileage_logs table, migration
   // 0023), synced via Supabase so the owner can see/approve it from any
   // device — the existing ExpensesPage.tsx mileage tab is owner-side and
@@ -4676,11 +4727,19 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
           <div className="w-8 h-8 rounded-full bg-gradient-to-br from-red-700/60 to-red-900/60 border border-red-700/30 flex items-center justify-center text-xs font-bold flex-shrink-0">
             {myEmployee.firstName?.[0] || "?"}{myEmployee.lastName?.[0] || ""}
           </div>
+          {/* ITEM 2 — SOPs, always reachable from the header (not folded into
+              the today/calendar/jobs/pay/google tab union, which threads
+              through this whole file and would be a much larger/riskier
+              change to extend). */}
+          <button onClick={() => setSopOpen(true)} className="p-2 rounded-xl hover:bg-white/10 text-white/40 hover:text-white transition flex-shrink-0" title="SOPs & Instructions">
+            <BookOpen size={16} />
+          </button>
           <button onClick={doSignOut} className="p-2 rounded-xl hover:bg-white/10 text-white/40 hover:text-white transition flex-shrink-0" title="Sign out">
             <LogOut size={16} />
           </button>
         </div>
       </header>
+      <SopModal open={sopOpen} onClose={() => setSopOpen(false)} />
 
       {/* Persistent shift timer bar — visible on all tabs while clocked in */}
       {empDayClockInAt && (() => {
@@ -6024,7 +6083,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
             // instead of vanishing.
             const jobDateKey = (j: any): string => j.scheduledDate || (j.completedAt ? String(j.completedAt).slice(0, 10) : "");
             // Build pay period history (14-day periods going back 3 months)
-            const periods: Array<{ label: string; start: string; end: string; hours: number; pay: number; jobs: number }> = [];
+            const periods: Array<{ label: string; start: string; end: string; hours: number; pay: number; jobs: number; jobsList: any[] }> = [];
             const now = new Date();
             for (let i = 0; i < 6; i++) {
               // ISSUE 2 — fixed-anchor periods (see getPayPeriodBounds) so this
@@ -6046,6 +6105,11 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                 hours: Math.round(hrs * 10) / 10,
                 pay: Math.round(hrs * (myEmployee?.hourlyRate || 0) * 100) / 100,
                 jobs: pJobs.filter(j => j.status === "completed").length,
+                // ITEM 17 — per-job breakdown for this period, so the owner's
+                // aggregate hours/pay total (which was the only thing shown
+                // before) can be expanded into what it's actually made of.
+                jobsList: pJobs.filter(j => j.status === "completed" && Number(j.loggedHours) > 0)
+                  .map(j => ({ id: j.id, address: j.address, date: jobDateKey(j), hours: Number(j.loggedHours) || 0, pay: Math.round((Number(j.loggedHours) || 0) * (myEmployee?.hourlyRate || 0) * 100) / 100 })),
               });
             }
             const current = periods[0];
@@ -6228,15 +6292,34 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                   </div>
                   <div className="space-y-1.5 mb-3">
                     {periodsWithStatus.map(p => (
-                      <div key={p.start} className="flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg bg-white/5">
-                        <span className="text-[10px] text-white/50">{p.label}</span>
-                        {/* ISSUE 5 (round 11) — read-only status; only the
-                            owner's own "Mark as Paid" (EmployeesPage.tsx)
-                            can flip this. */}
-                        {p.status === "paid" ? (
-                          <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-green-900/40 text-green-300">Paid</span>
-                        ) : (
-                          <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-yellow-900/30 text-yellow-300" title="Waiting on the owner to mark this period paid">Pending</span>
+                      <div key={p.start} className="rounded-lg bg-white/5 overflow-hidden">
+                        <button onClick={() => setExpandedPayPeriod(prev => prev === p.start ? null : p.start)} className="w-full flex items-center justify-between gap-2 px-2.5 py-1.5 text-left">
+                          <span className="text-[10px] text-white/50 flex items-center gap-1.5">
+                            <ChevronRight size={10} className={"transition-transform " + (expandedPayPeriod === p.start ? "rotate-90" : "")} />
+                            {p.label} <span className="text-white/30">({p.jobsList.length} job{p.jobsList.length !== 1 ? "s" : ""})</span>
+                          </span>
+                          {/* ISSUE 5 (round 11) — read-only status; only the
+                              owner's own "Mark as Paid" (EmployeesPage.tsx)
+                              can flip this. */}
+                          {p.status === "paid" ? (
+                            <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-green-900/40 text-green-300">Paid</span>
+                          ) : (
+                            <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-yellow-900/30 text-yellow-300" title="Waiting on the owner to mark this period paid">Pending</span>
+                          )}
+                        </button>
+                        {/* ITEM 17 — per-job breakdown, expandable, instead of
+                            only ever showing the period's combined total. */}
+                        {expandedPayPeriod === p.start && (
+                          <div className="px-2.5 pb-2 space-y-1">
+                            {p.jobsList.length === 0 ? (
+                              <div className="text-[10px] text-white/30 py-1">No individual jobs logged this period</div>
+                            ) : p.jobsList.map(jb => (
+                              <div key={jb.id} className="flex items-center justify-between text-[10px] text-white/50 px-1.5 py-1 rounded bg-black/30">
+                                <span className="truncate flex-1">{jb.date} · {jb.address || "Job"}</span>
+                                <span className="flex-shrink-0 ml-2">{jb.hours}h · {fmt(jb.pay)}</span>
+                              </div>
+                            ))}
+                          </div>
                         )}
                       </div>
                     ))}
