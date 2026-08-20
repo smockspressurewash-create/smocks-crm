@@ -42,7 +42,15 @@ import { PBar } from "./PBar";
 import { PageFade } from "./PageFade";
 import { TimeframeSelector } from "./TimeframeSelector";
 
-export function ReviewPreview({ review: r, onClose, customer: c, onUpdate, onSubmit, apiKey, companyName = "Crew Boss", toast = (..._args: any[]) => {} }) {
+export function ReviewPreview({ review: r, onClose, customer: c, onUpdate, onSubmit, apiKey, companyName = "Crew Boss", googleReviewLink, googlePlaceId, toast = (..._args: any[]) => {} }) {
+  // AUDIT FIX (mobile round 10) — this used to hardcode a search-query link
+  // for one specific business ("smocks pressure washing") regardless of
+  // which deployment/owner was using the app, ignoring the configurable
+  // Google Maps Review Link in Settings that CustomerReviewPage.tsx and
+  // ReviewLandingPage.tsx already both correctly read. Same fallback order
+  // as those two: direct review link, else Place-ID-constructed URL, else
+  // no Google link to offer.
+  const googleUrl = googleReviewLink || (googlePlaceId ? `https://search.google.com/local/writereview?placeid=${googlePlaceId}` : "");
   const [lr, setLr] = useState(0);
   const [lf, setLf] = useState("");
   const [aiDraft, setAiDraft] = useState("");
@@ -95,11 +103,17 @@ export function ReviewPreview({ review: r, onClose, customer: c, onUpdate, onSub
           </div>
         </div>
 
-        {isHappy && (
+        {isHappy && googleUrl && (
           <Glass className="p-4 !bg-green-950/30 !border-green-700/50 text-center">
             <div className="text-sm font-semibold text-green-300 mb-1">🎉 Share on Google?</div>
             <div className="text-xs text-white/60 mb-3">Your review helps other homeowners.</div>
-            <GBtn onClick={() => window.open("https://www.google.com/search?q=smocks+pressure+washing", "_blank")} className="w-full"><ExternalLink size={12} className="inline mr-1.5" />Google Review</GBtn>
+            <GBtn onClick={() => window.open(googleUrl, "_blank")} className="w-full"><ExternalLink size={12} className="inline mr-1.5" />Google Review</GBtn>
+          </Glass>
+        )}
+        {isHappy && !googleUrl && (
+          <Glass className="p-4 !bg-green-950/30 !border-green-700/50 text-center">
+            <div className="text-sm font-semibold text-green-300 mb-1">🎉 Thank you!</div>
+            <div className="text-xs text-white/60">Set a Google Maps Review Link in Settings → Company to offer a one-tap Google review here.</div>
           </Glass>
         )}
 

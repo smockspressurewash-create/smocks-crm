@@ -470,13 +470,21 @@ export interface Campaign {
   ch: "sms" | "email";
   subject?: string;
   body: string;
-  status: "draft" | "scheduled" | "sent";
+  status: "draft" | "scheduled" | "sending" | "sent";
+  createdAt?: string;
   sendAt?: string;
   sentAt?: string;
   recipientCount?: number;
   matches?: string[];
   conversions?: number;
   segment?: SegmentFilter;
+  sentCount?: number;
+  failedCount?: number;
+  failureSamples?: string[];
+  // AUDIT (mobile round 10) — replaces the old Math.random()-fabricated
+  // openRate/clickRate; this app has no open-pixel/click-tracking
+  // infrastructure, so the only honest metric is real send success rate.
+  deliveryRate?: number;
 }
 
 export interface SegmentFilter {

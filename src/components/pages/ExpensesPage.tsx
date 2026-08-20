@@ -29,6 +29,7 @@ import { callModel, MODELS } from "../../lib/api";
 import { createCalendarEvent, updateCalendarEvent, deleteCalendarEvent, fetchDriveFiles, MOCK_GOOGLE_DATA, fmtSize, fmtDate, fileIcon } from "../../lib/google";
 import { usePersistent } from "../../hooks/usePersistent";
 import { usePersistentRaw } from "../../hooks/usePersistentRaw";
+import { supabase } from "../../lib/supabase";
 import { Glass } from "../ui/Glass";
 import { GBtn } from "../ui/GBtn";
 import { GInput } from "../ui/GInput";
@@ -86,13 +87,46 @@ export function ExpensesPage({ expenses = [], setExpenses }) {
   const [f, setF] = useState({ id: "", date: today(), category: "Supplies", description: "", amount: "", vendor: "", isCash: false, taxDeductible: true, receiptDataUrl: null });
   const [mf, setMf] = useState({ date: today(), from: "Shop - York, PA", to: "", miles: "", purpose: "", roundTrip: false });
   const [mileModal, setMileModal] = useState(false);
+  // AUDIT FIX (mobile round 10) — "Mileage does not appear in the Expenses
+  // section": this tab used to only read/write smocks.mileage (owner's own
+  // manual local entries) and never touched the mileage_logs Supabase table
+  // employees actually submit to from the field portal (EmployeePortal.tsx)
+  // and the owner approves in EmployeesPage.tsx. Approved employee mileage
+  // now merges into this tab's totals so it actually shows up as an expense.
+  const [employeeMileage, setEmployeeMileage] = useState<any[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    const fetchEmployeeMileage = async () => {
+      try {
+        const { data, error } = await (supabase as any).from("mileage_logs").select("*").eq("status", "approved");
+        if (!cancelled && !error && Array.isArray(data)) setEmployeeMileage(data);
+      } catch (e: any) {
+        console.warn("[Expenses] mileage_logs fetch failed:", e?.message);
+      }
+    };
+    fetchEmployeeMileage();
+    const interval = setInterval(fetchEmployeeMileage, 60000);
+    return () => { cancelled = true; clearInterval(interval); };
+  }, []);
 
   const categories = ["Supplies", "Chemicals", "Equipment", "Fuel", "Advertising", "Insurance", "Vehicle", "Tools", "Software", "Meals", "Phone", "Other"];
   const IRS_RATE = 0.67; // 2024 IRS mileage rate per mile
 
+  // Normalized, unified shape so the mileage list/totals below don't need to
+  // special-case the owner's local entries vs. employee-submitted (approved)
+  // Supabase entries.
+  const combinedMileageLog = [
+    ...mileageLog,
+    ...employeeMileage.map((m: any) => ({
+      id: m.id, date: m.date, from: m.from, to: m.to, miles: Number(m.miles) || 0,
+      deduction: (Number(m.miles) || 0) * IRS_RATE, purpose: m.purpose || "",
+      source: "employee", employeeId: m.employee_id,
+    })),
+  ];
+
   const tfExp = filterByTimeframe(expenses, "date", timeframe);
   const displayed = filterCat === "all" ? tfExp : tfExp.filter(e => e.category === filterCat);
-  const tfMiles = filterByTimeframe(mileageLog, "date", timeframe);
+  const tfMiles = filterByTimeframe(combinedMileageLog, "date", timeframe);
 
   const totExp = displayed.reduce((s, e) => s + Number(e.amount), 0);
   const totMiles = tfMiles.reduce((s, m) => s + Number(m.miles), 0);
@@ -124,7 +158,8 @@ export function ExpensesPage({ expenses = [], setExpenses }) {
     <div class="header"><div><h1>Crew Boss</h1><h2>Expense Report · ${tfLabel} · Generated ${today()}</h2></div><div style="text-align:right;font-size:12px;color:#666">York, PA · (717) 555-0100</div></div>
     <h3>Expenses</h3><table><thead><tr><th>Date</th><th>Category</th><th>Vendor</th><th>Description</th><th style="text-align:right">Amount</th><th style="text-align:center">Method</th><th style="text-align:center">Deductible</th></tr></thead><tbody>${rows}<tr class="total"><td colspan="4">TOTAL</td><td style="text-align:right">${fmt(totExp)}</td><td></td><td></td></tr></tbody></table>
     <div class="sum">Tax-deductible total: <strong>${fmt(deductible)}</strong></div>
-    ${tfMiles.length ? `<h3 style="margin-top:32px">Mileage Log (IRS rate $${IRS_RATE}/mi)</h3><table><thead><tr><th>Date</th><th>Route</th><th>Miles</th><th>Deduction</th><th>Purpose</th></tr></thead><tbody>${mileRows}<tr class="total"><td colspan="2">TOTAL</td><td>${totMiles.toFixed(1)} mi</td><td>${fmt(mileDeduction)}</td><td></td></tr></tbody></table>` : ""}
+    ${tfMiles.length ? `<h3 style="margin-top:32px">Mileage Log (IRS rate $${IRS_RATE}/mi)</h3><table><thead><tr><th>Date</th><th>Route</th><th>Miles</th><th>Deduction</th><th>Purpose</th></tr></thead><tbody>${mileRows}<tr class="total"><td colspan="2">TOTAL</td><td>${totMiles.toFixed(1)} mi</td><td>${fmt(mileDeduction)}</td><td></td></tr></tbody></table>
+    <div class="sum">Grand total (expenses + mileage deduction): <strong>${fmt(totExp + mileDeduction)}</strong></div>` : ""}
     <script>window.onload=()=>setTimeout(window.print,300)</script></body></html>`;
     const w = window.open("", "_blank");
     if (w) { w.document.write(html); w.document.close(); }
@@ -149,11 +184,15 @@ export function ExpensesPage({ expenses = [], setExpenses }) {
 
       {tab === "expenses" && <>
         {/* KPIs */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
           <Stat icon={DollarSign} label={"Total (" + tfLabel + ")"} value={fmt(totExp)} />
           <Stat icon={Receipt} label="Entries" value={displayed.length} />
           <Stat icon={TrendingUp} label="Tax Deductible" value={fmt(deductible)} />
           <Stat icon={Percent} label="Deductible %" value={totExp > 0 ? Math.round(deductible / totExp * 100) + "%" : "—"} />
+          {/* AUDIT FIX (mobile round 10) — mileage previously only showed up
+              on its own separate tab; surfaced here too, in the main
+              Expenses view, since mileage IS a deductible expense. */}
+          <button onClick={() => setTab("mileage")} className="text-left"><Stat icon={Route} label={"Mileage Deduction (" + totMiles.toFixed(0) + " mi)"} value={fmt(mileDeduction)} /></button>
         </div>
 
         {/* Category breakdown */}
@@ -220,14 +259,19 @@ export function ExpensesPage({ expenses = [], setExpenses }) {
               <div key={m.id} className="flex items-center gap-3 p-4 hover:bg-white/5 group">
                 <div className="w-9 h-9 rounded-xl bg-black/40 border border-red-900/30 flex items-center justify-center flex-shrink-0 text-lg">🚗</div>
                 <div className="flex-1 min-w-0">
-                  <div className="text-sm font-medium">{m.from} → {m.to}</div>
+                  <div className="text-sm font-medium flex items-center gap-1.5 flex-wrap">
+                    {m.from} → {m.to}
+                    {m.source === "employee" && <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-blue-900/30 border border-blue-700/40 text-blue-300">👤 Employee</span>}
+                  </div>
                   <div className="text-xs text-white/50">{m.date} · {m.purpose}</div>
                 </div>
                 <div className="text-right flex-shrink-0">
                   <div className="font-bold text-red-400">{m.miles} mi</div>
                   <div className="text-xs text-white/50">{fmt(m.deduction)}</div>
                 </div>
-                <button onClick={() => setMileageLog(prev => prev.filter(x => x.id !== m.id))} className="p-1.5 rounded hover:bg-red-900/30 text-white/50 hover:text-red-400 opacity-0 group-hover:opacity-100 transition"><Trash2 size={11} /></button>
+                {m.source === "employee"
+                  ? <div className="w-[27px] flex-shrink-0" title="Approved from an employee's field-portal submission — manage in Employees" />
+                  : <button onClick={() => setMileageLog(prev => prev.filter(x => x.id !== m.id))} className="p-1.5 rounded hover:bg-red-900/30 text-white/50 hover:text-red-400 opacity-0 group-hover:opacity-100 transition"><Trash2 size={11} /></button>}
               </div>
             ))}
           </div>}

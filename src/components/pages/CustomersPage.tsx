@@ -560,7 +560,7 @@ export function CustomersPage({ customers = [], setCustomers, estimates = [], jo
                   <GBtn variant="ghost" onClick={() => setDupPairs(prev => prev.filter((_, j) => j !== i))} className="!text-xs !py-1">Not a dup</GBtn>
                 </div>
               </div>
-              <div className="grid grid-cols-2 gap-4 text-xs">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
                 {[pair.a, pair.b].map((c, ci) => (
                   <div key={c.id} className={"p-3 rounded-xl border " + (ci === 0 ? "border-blue-700/40 bg-blue-950/20" : "border-purple-700/40 bg-purple-950/20")}>
                     <div className="font-bold">{c.firstName} {c.lastName}</div>
@@ -589,16 +589,18 @@ export function CustomersPage({ customers = [], setCustomers, estimates = [], jo
             { key: "sqFootage", label: "Sq Footage" }, { key: "gateCode", label: "Gate Code" },
             { key: "notes", label: "Notes" }
           ].filter(f => mergeModal.a[f.key] || mergeModal.b[f.key]).map(f => (
-            <div key={f.key} className="grid grid-cols-3 gap-2 items-center">
+            <div key={f.key} className="grid grid-cols-1 sm:grid-cols-3 gap-2 sm:items-center">
               <div className="text-[10px] text-white/50 uppercase tracking-wider">{f.label}</div>
-              {["a","b"].map(side => {
-                const c = mergeModal[side];
-                const val = c[f.key];
-                const active = mergeChoices[f.key] === side;
-                return <button key={side} onClick={() => setMergeChoices(prev => ({ ...prev, [f.key]: side }))} className={"p-2.5 rounded-xl border text-left text-xs transition " + (active ? "border-green-500/60 bg-green-950/30 text-green-300" : "border-white/10 bg-black/40 text-white/50 hover:text-white hover:border-white/20") + (!val ? " opacity-30" : "")}>
-                  {active && <span className="text-green-400 mr-1">✓</span>}{val || <span className="italic text-white/30">empty</span>}
-                </button>;
-              })}
+              <div className="grid grid-cols-2 gap-2 sm:contents">
+                {["a","b"].map(side => {
+                  const c = mergeModal[side];
+                  const val = c[f.key];
+                  const active = mergeChoices[f.key] === side;
+                  return <button key={side} onClick={() => setMergeChoices(prev => ({ ...prev, [f.key]: side }))} className={"p-2.5 rounded-xl border text-left text-xs transition " + (active ? "border-green-500/60 bg-green-950/30 text-green-300" : "border-white/10 bg-black/40 text-white/50 hover:text-white hover:border-white/20") + (!val ? " opacity-30" : "")}>
+                    {active && <span className="text-green-400 mr-1">✓</span>}{val || <span className="italic text-white/30">empty</span>}
+                  </button>;
+                })}
+              </div>
             </div>
           ))}
           <div className="flex gap-2 justify-end pt-3 border-t border-red-900/20">
@@ -614,9 +616,9 @@ export function CustomersPage({ customers = [], setCustomers, estimates = [], jo
           is for structural changes to the folders themselves. */}
       {folderManagerOpen && (
         <Modal open={folderManagerOpen} onClose={() => { setFolderManagerOpen(false); setRenamingFolder(null); }} title="Manage Folders">
-          <div className="space-y-4 min-w-[320px]">
-            <div className="flex gap-2">
-              <GSel value={newFolderParent} onChange={e => setNewFolderParent(e.target.value)} className="!text-xs !w-36 flex-shrink-0">
+          <div className="space-y-4 w-full">
+            <div className="flex flex-col sm:flex-row gap-2">
+              <GSel value={newFolderParent} onChange={e => setNewFolderParent(e.target.value)} className="!text-xs sm:!w-36 flex-shrink-0">
                 <option value="">Top level</option>
                 {allFolderPaths.map(f => <option key={f} value={f}>{"—".repeat(folderDepth(f))} {folderLabel(f)}</option>)}
               </GSel>

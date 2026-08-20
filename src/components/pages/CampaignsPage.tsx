@@ -78,7 +78,71 @@ import { ChemicalModal } from "../ui/ChemicalModal";
 import { WeeklyBusinessReview } from "../ui/WeeklyBusinessReview";
 import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 
-export function CampaignsPage({ campaigns = [], setCampaigns, customers = [], estimates = [], jobs = [], settings = {} as AppSettings, inboxThreads = [], setInboxThreads, toast }: { campaigns?: any[]; setCampaigns?: any; customers?: any[]; estimates?: any[]; jobs?: any[]; settings?: AppSettings; inboxThreads?: any[]; setInboxThreads?: any; toast?: any }) {
+// Re-engagement sequence definitions (Campaigns → Sequences tab). Each
+// becomes a real Automation record when "Activate" is clicked (see
+// useAutomationEngine.ts) — step delays are CUMULATIVE minutes-since-trigger,
+// same convention extractDirectives() in that engine already uses for
+// AUTOMATION_TEMPLATES' multi-touch drips (lib/seed.ts).
+const SEQUENCE_DEFS = [
+  {
+    id: "seq_reengage_6mo", name: "6-Month Re-engagement", desc: "Customers not seen in 6+ months",
+    triggerLabel: "No service 6 months",
+    audienceCount: (customers: any[]) => customers.filter(c => daysSince(c.createdAt) > 180).length,
+    display: [
+      "Day 1: SMS — \"Hey {{first_name}}, it's been a while! Want to refresh your home?\"",
+      "Day 4: Email — 15% off offer",
+      "Day 10: Final SMS — offer expires soon",
+    ],
+    steps: [
+      { id: uid(), type: "trigger", label: "No service 6 months", icon: "🔄" },
+      { id: uid(), type: "action", label: "Day 1: SMS check-in", channel: "sms", messageBody: "Hi {{first_name}}, it's been a while! Want to refresh your home? Reply BOOK or call {{company_phone}}. — Crew Boss" },
+      { id: uid(), type: "condition", label: "Wait 3 more days", delay: 3 * 1440 },
+      { id: uid(), type: "action", label: "Day 4: Email — 15% off offer", channel: "email", messageBody: "Hi {{first_name}}, still thinking about a refresh? Here's 15% off your next service if you book this week. Reply BOOK or call {{company_phone}}. — Crew Boss" },
+      { id: uid(), type: "condition", label: "Wait 6 more days", delay: 6 * 1440 },
+      { id: uid(), type: "action", label: "Day 10: Final SMS — offer expires soon", channel: "sms", messageBody: "Hi {{first_name}}, your 15% off offer expires soon — reply BOOK to lock it in. — Crew Boss" },
+    ],
+  },
+  {
+    id: "seq_abandoned_estimate", name: "Abandoned Estimate", desc: "Quotes pending, no response",
+    triggerLabel: "Estimate abandoned, no response",
+    audienceCount: (_customers: any[], estimatesArg: any[] = []) => estimatesArg.filter(e => e.status === "pending" && e.sentAt).length,
+    display: [
+      "Day 3: SMS — \"Just checking in on your estimate\"",
+      "Day 7: Email — FAQ + testimonial",
+      "Day 14: SMS — last chance, offer expires in 48h",
+    ],
+    steps: [
+      { id: uid(), type: "trigger", label: "Estimate abandoned, no response", icon: "⚡" },
+      { id: uid(), type: "condition", label: "Wait 3 days", delay: 3 * 1440 },
+      { id: uid(), type: "action", label: "Day 3: Soft check-in SMS", channel: "sms", messageBody: "Hi {{first_name}}, just checking in on your {{amount}} estimate. Any questions? Reply BOOK to schedule. — Crew Boss" },
+      { id: uid(), type: "condition", label: "Wait 4 more days", delay: 4 * 1440 },
+      { id: uid(), type: "action", label: "Day 7: Email — FAQ + testimonial", channel: "email", messageBody: "Hi {{first_name}}, still deciding? We'd love to earn your business — call {{company_phone}} with any questions about your {{amount}} estimate. — Crew Boss" },
+      { id: uid(), type: "condition", label: "Wait 7 more days", delay: 7 * 1440 },
+      { id: uid(), type: "action", label: "Day 14: Final SMS — offer expires in 48h", channel: "sms", messageBody: "Hi {{first_name}}, last check-in on your {{amount}} estimate — reply BOOK within 48h to lock in this price. — Crew Boss" },
+    ],
+  },
+  {
+    id: "seq_post_service_nurture", name: "Post-Service Nurture", desc: "After a completed job",
+    triggerLabel: "Maintenance nurture — since service",
+    audienceCount: (_customers: any[], _estimatesArg: any[], jobsArg: any[] = []) => jobsArg.filter(j => j.status === "completed").length,
+    display: [
+      "Day 2: Thank-you + review-ask SMS",
+      "Day 30: Maintenance check-in email",
+      "Day 90: Re-booking offer SMS",
+    ],
+    steps: [
+      { id: uid(), type: "trigger", label: "Maintenance nurture — since service", icon: "🔁" },
+      { id: uid(), type: "condition", label: "Wait 2 days", delay: 2 * 1440 },
+      { id: uid(), type: "action", label: "Day 2: Thank-you SMS", channel: "sms", messageBody: "Hi {{first_name}}, thanks for choosing Crew Boss! We'd love a quick review if you have a moment. Questions? Call {{company_phone}}." },
+      { id: uid(), type: "condition", label: "Wait 28 more days", delay: 28 * 1440 },
+      { id: uid(), type: "action", label: "Day 30: Maintenance check-in email", channel: "email", messageBody: "Hi {{first_name}}, it's been about a month since your last service — everything still looking good? Reach out any time at {{company_phone}}. — Crew Boss" },
+      { id: uid(), type: "condition", label: "Wait 60 more days", delay: 60 * 1440 },
+      { id: uid(), type: "action", label: "Day 90: Re-booking offer SMS", channel: "sms", messageBody: "Hi {{first_name}}, it's been 90 days — ready for another wash? Reply BOOK or call {{company_phone}} for 10% off. — Crew Boss" },
+    ],
+  },
+];
+
+export function CampaignsPage({ campaigns = [], setCampaigns, customers = [], estimates = [], jobs = [], settings = {} as AppSettings, inboxThreads = [], setInboxThreads, automations = [], setAutomations, toast }: { campaigns?: any[]; setCampaigns?: any; customers?: any[]; estimates?: any[]; jobs?: any[]; settings?: AppSettings; inboxThreads?: any[]; setInboxThreads?: any; automations?: any[]; setAutomations?: any; toast?: any }) {
   const [savedSegments, setSavedSegments] = usePersistent("smocks.savedSegments", []);
   const [tab, setTab] = useState("compose");
   const [ch, setCh] = useState("sms");
@@ -218,12 +282,14 @@ export function CampaignsPage({ campaigns = [], setCampaigns, customers = [], es
     .replace(/{{first_name}}/g, customer.firstName || "there")
     .replace(/{{last_name}}/g, customer.lastName || "")
     .replace(/{{address}}/g, customer.address || "")
-    .replace(/{{phone}}/g, customer.phone || "");
+    .replace(/{{phone}}/g, customer.phone || "")
+    .replace(/{{company_name}}/g, (settings as any)?.companyName || "Crew Boss")
+    .replace(/{{company_phone}}/g, (settings as any)?.companyPhone || "(717) 555-0100");
 
   const launch = async () => {
     if (!body.trim() || (ch === "email" && !subj.trim()) || matches.length === 0) return;
     const campaignId = uid();
-    const nc = { id: campaignId, channel: ch, subject: ch === "email" ? subj : "", body, recipientCount: matches.length, status: "sending", createdAt: today(), sentCount: 0, failedCount: 0, delivered: [] };
+    const nc = { id: campaignId, name: ch === "email" ? subj : "Campaign " + today(), ch, subject: ch === "email" ? subj : "", body, recipientCount: matches.length, status: "sending", createdAt: today(), sentCount: 0, failedCount: 0, delivered: [] };
     setCampaigns(prev => [nc, ...prev]);
     setTab("scheduled");
     setSending(true);
@@ -287,7 +353,14 @@ export function CampaignsPage({ campaigns = [], setCampaigns, customers = [], es
 
     setSending(false);
     setSendProgress(null);
-    setCampaigns(prev => prev.map(c => c.id === campaignId ? { ...c, status: "sent", sentCount: sent, failedCount: failed, failureSamples, openRate: Math.floor(35 + Math.random() * 30), clickRate: Math.floor(8 + Math.random() * 15) } : c));
+    // AUDIT (mobile round 10) — openRate/clickRate used to be
+    // Math.random()-fabricated on every send with no basis in reality
+    // ("Analytics inside campaigns don't work properly"). This app has no
+    // email-open-pixel or link-click-tracking infrastructure, so rather than
+    // keep faking those numbers, campaigns now only report what's actually
+    // known: how many sends really succeeded vs failed (deliveryRate), plus
+    // the existing real, manually-tracked conversions counter below.
+    setCampaigns(prev => prev.map(c => c.id === campaignId ? { ...c, status: "sent", sentCount: sent, failedCount: failed, failureSamples, deliveryRate: matches.length > 0 ? Math.round((sent / matches.length) * 100) : 0 } : c));
     if (failed > 0) {
       toast(`Campaign sent — ${sent} delivered, ${failed} failed. First failure: ${failureSamples[0] || "unknown error"}`, sent > 0 ? "yellow" : "error");
     } else {
@@ -331,7 +404,7 @@ export function CampaignsPage({ campaigns = [], setCampaigns, customers = [], es
         <Glass className="overflow-hidden">
           <div className="px-4 py-3 border-b border-red-900/20 flex items-center justify-between">
             <div className="font-semibold text-sm">Campaign Performance</div>
-            <div className="text-[10px] text-white/40">Open rate is estimated — connect email platform for live tracking</div>
+            <div className="text-[10px] text-white/40">Delivery rate = actually confirmed sent by Twilio/Gmail. Conversions are tracked manually with the +1 button.</div>
           </div>
           {campaigns.length === 0 ? <div className="p-8 text-center text-white/40 text-sm">No campaigns yet — compose your first in the Compose tab</div>
           : <table className="w-full text-sm">
@@ -340,13 +413,13 @@ export function CampaignsPage({ campaigns = [], setCampaigns, customers = [], es
               <th className="text-right px-4 py-2.5 text-[10px] uppercase tracking-wider text-white/40">Channel</th>
               <th className="text-right px-4 py-2.5 text-[10px] uppercase tracking-wider text-white/40">Recipients</th>
               <th className="text-right px-4 py-2.5 text-[10px] uppercase tracking-wider text-white/40">Status</th>
-              <th className="text-right px-4 py-2.5 text-[10px] uppercase tracking-wider text-white/40">Est. Open Rate</th>
+              <th className="text-right px-4 py-2.5 text-[10px] uppercase tracking-wider text-white/40">Delivery Rate</th>
               <th className="text-right px-4 py-2.5 text-[10px] uppercase tracking-wider text-white/40">Conversions</th>
             </tr></thead>
             <tbody>
               {campaigns.slice().sort((a,b) => (b.sentAt||b.sendAt||"").localeCompare(a.sentAt||a.sendAt||"")).map(camp => {
                 const recipients = camp.recipientCount || (camp.matches || []).length || 0;
-                const openRate = camp.ch === "sms" ? 98 : Math.min(45, Math.max(18, ((camp.id || "x").charCodeAt(0) % 25) + 20));
+                const deliveryRate = camp.deliveryRate ?? (recipients > 0 ? Math.round(((camp.sentCount || 0) / recipients) * 100) : null);
                 const isSent = camp.status === "sent" || camp.sentAt;
                 const isScheduled = camp.status === "scheduled" && camp.sendAt;
                 return <tr key={camp.id} className="border-b border-red-900/10 hover:bg-white/5">
@@ -358,7 +431,7 @@ export function CampaignsPage({ campaigns = [], setCampaigns, customers = [], es
                   <td className="px-4 py-3 text-right font-semibold">{recipients}</td>
                   <td className="px-4 py-3 text-right"><Badge tone={isSent ? "green" : isScheduled ? "yellow" : "gray"}>{isSent ? "Sent" : isScheduled ? "Scheduled" : "Draft"}</Badge></td>
                   <td className="px-4 py-3 text-right">
-                    {isSent ? <span className={openRate >= 90 ? "text-green-400 font-bold" : "text-yellow-400 font-bold"}>{openRate}%</span> : <span className="text-white/30">—</span>}
+                    {isSent && deliveryRate != null ? <span className={deliveryRate >= 90 ? "text-green-400 font-bold" : "text-yellow-400 font-bold"}>{deliveryRate}%</span> : <span className="text-white/30">—</span>}
                   </td>
                   <td className="px-4 py-3 text-right">
                     <div className="flex items-center justify-end gap-2">
@@ -377,13 +450,14 @@ export function CampaignsPage({ campaigns = [], setCampaigns, customers = [], es
           {["sms","email"].map(ch_ => {
             const chCampaigns = campaigns.filter(c => c.ch === ch_ && (c.status === "sent" || c.sentAt));
             const totalRecip = chCampaigns.reduce((s,c) => s + (c.recipientCount || (c.matches||[]).length || 0), 0);
+            const totalSent = chCampaigns.reduce((s,c) => s + (c.sentCount || 0), 0);
             const totalConv = chCampaigns.reduce((s,c) => s + (c.conversions || 0), 0);
             return <Glass key={ch_} className="p-4">
               <div className="font-semibold text-sm mb-3">{ch_ === "sms" ? "📱 SMS Campaigns" : "📧 Email Campaigns"}</div>
               <div className="space-y-2 text-sm">
                 <div className="flex justify-between"><span className="text-white/60">Campaigns sent</span><span className="font-bold">{chCampaigns.length}</span></div>
                 <div className="flex justify-between"><span className="text-white/60">Total recipients</span><span className="font-bold">{totalRecip}</span></div>
-                <div className="flex justify-between"><span className="text-white/60">Est. open rate</span><span className={"font-bold " + (ch_ === "sms" ? "text-green-400" : "text-yellow-400")}>{ch_ === "sms" ? "~98%" : "~25%"}</span></div>
+                <div className="flex justify-between"><span className="text-white/60">Delivery rate</span><span className="font-bold text-green-400">{totalRecip > 0 ? Math.round(totalSent / totalRecip * 100) : 0}%</span></div>
                 <div className="flex justify-between"><span className="text-white/60">Conversions</span><span className="font-bold text-red-400">{totalConv}</span></div>
                 <div className="flex justify-between border-t border-white/5 pt-2"><span className="text-white/60">Conv. rate</span><span className="font-bold">{totalRecip > 0 ? (totalConv/totalRecip*100).toFixed(1) : 0}%</span></div>
               </div>
@@ -535,7 +609,7 @@ export function CampaignsPage({ campaigns = [], setCampaigns, customers = [], es
         {campaigns.length ? campaigns.map(c => <Glass key={c.id} className="p-4 hover:border-red-600/50">
           <div className="flex items-start justify-between gap-4 mb-3 flex-wrap">
             <div className="flex-1 min-w-0">
-              <div className="flex items-center gap-2 mb-1"><Badge tone={c.channel === "email" ? "gray" : "green"}>{c.channel}</Badge><Badge tone="yellow">{c.status}</Badge><span className="text-xs text-white/50">{c.createdAt}</span></div>
+              <div className="flex items-center gap-2 mb-1"><Badge tone={c.ch === "email" ? "gray" : "green"}>{c.ch}</Badge><Badge tone="yellow">{c.status}</Badge><span className="text-xs text-white/50">{c.createdAt}</span></div>
               {c.subject && <div className="font-semibold text-sm">{c.subject}</div>}
               <div className="text-xs text-white/60 line-clamp-2 mt-1">{c.body.slice(0, 120)}...</div>
             </div>
@@ -544,11 +618,11 @@ export function CampaignsPage({ campaigns = [], setCampaigns, customers = [], es
               <div className="text-xs text-white/50">recipients</div>
             </div>
           </div>
-          <div className="grid grid-cols-4 gap-2 pt-3 border-t border-red-900/30 text-xs">
-            <div className="p-2 bg-black/40 rounded-lg"><div className="text-white/50 mb-0.5">Open rate</div><div className="font-bold text-green-400">{c.openRate}%</div></div>
-            <div className="p-2 bg-black/40 rounded-lg"><div className="text-white/50 mb-0.5">Click rate</div><div className="font-bold text-yellow-400">{c.clickRate}%</div></div>
-            <div className="p-2 bg-black/40 rounded-lg"><div className="text-white/50 mb-0.5">Conversions</div><div className="font-bold text-blue-400">{Math.floor((c.recipientCount || 0) * (c.openRate || 0) / 100 * 0.12)}</div></div>
-            <div className="p-2 bg-black/40 rounded-lg"><div className="text-white/50 mb-0.5">Conv. rate</div><div className="font-bold text-purple-400">{c.openRate ? Math.round((c.openRate * 0.12)) : 0}%</div></div>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-3 border-t border-red-900/30 text-xs">
+            <div className="p-2 bg-black/40 rounded-lg"><div className="text-white/50 mb-0.5">Sent</div><div className="font-bold text-green-400">{c.sentCount ?? 0}</div></div>
+            <div className="p-2 bg-black/40 rounded-lg"><div className="text-white/50 mb-0.5">Failed</div><div className="font-bold text-red-400">{c.failedCount ?? 0}</div></div>
+            <div className="p-2 bg-black/40 rounded-lg"><div className="text-white/50 mb-0.5">Delivery rate</div><div className="font-bold text-yellow-400">{c.deliveryRate ?? 0}%</div></div>
+            <div className="p-2 bg-black/40 rounded-lg"><div className="text-white/50 mb-0.5">Conversions</div><div className="font-bold text-purple-400">{c.conversions || 0}</div></div>
           </div>
           {/* AUDIT #6 (round 4) — surface WHY sends failed, not just a count. */}
           {(c.failedCount || 0) > 0 && (
@@ -562,40 +636,111 @@ export function CampaignsPage({ campaigns = [], setCampaigns, customers = [], es
         </Glass>) : <div className="text-center py-16 text-white/40">No campaigns yet</div>}
       </div>}
 
-      {/* Re-engagement Sequences */}
+      {/* Re-engagement Sequences — AUDIT FIX (mobile round 10): these used to
+          be a hardcoded local array whose "Activate" button just called
+          toast(...) and touched no state at all — nothing was ever
+          persisted or actually sent. Each sequence below now Activates into
+          a REAL, running Automation record (the same engine that already
+          powers Automation Hub: 15-min poll, owner batch-approval gate,
+          per-customer cooldown/dedup, opt-out respect, daily/hourly/minute
+          send caps — see useAutomationEngine.ts). The condition steps'
+          `delay` values are CUMULATIVE minutes-since-trigger (matching how
+          extractDirectives walks the step list), which is how a multi-touch
+          drip like AUTOMATION_TEMPLATES' "Abandoned Estimate Nurture"
+          already works — these are built the same way, just pre-filled with
+          re-engagement-specific copy and surfaced here instead of only in
+          the Automation Hub template gallery. Toggle them off any time from
+          either this page or Automation Hub (same underlying record). */}
       {tab === "sequences" && <div className="space-y-4">
         <Glass className="p-4 !bg-blue-950/20 !border-blue-700/30">
           <div className="font-semibold mb-1 flex items-center gap-2"><RefreshCw size={14} className="text-blue-400" />Re-engagement Sequences</div>
-          <div className="text-xs text-white/60">Automated multi-step campaigns for inactive customers. Set it once and it runs automatically.</div>
+          <div className="text-xs text-white/60">Multi-step automated campaigns for inactive customers, abandoned quotes, and post-job follow-up. Activating one creates a real workflow in Automation Hub — it fires automatically from then on (subject to your normal automation approval + send caps).</div>
         </Glass>
-        {[
-          { name: "6-Month Re-engagement", desc: "Customers not seen in 6+ months", steps: ["Day 1: SMS — 'Hey {{first_name}}, it's been a while! Spring is here, want to refresh your home?'", "Day 4: Email — Before/after photo + offer", "Day 10: Final SMS — '15% off expires soon'"], trigger: "6 months inactive", audience: customers.filter(c => daysSince(c.createdAt) > 180).length },
-          { name: "Abandoned Estimate", desc: "Quotes pending > 7 days", steps: ["Day 3: SMS — 'Hi {{first_name}}, just checking in on your estimate'", "Day 7: Email — FAQ + testimonial", "Day 14: SMS — 'Last chance — offer expires in 48h'"], trigger: "Estimate pending 3+ days", audience: customers.filter(c => c.pipelineStage === "estimate_sent").length },
-          { name: "Post-Service Nurture", desc: "After completed job", steps: ["Day 2: Review request SMS", "Day 30: Maintenance reminder", "Day 90: Re-booking offer"], trigger: "Job completed", audience: customers.filter(c => c.pipelineStage === "paid").length },
-          { name: "Holiday Greeting", desc: "Christmas, New Year, Spring", steps: ["Dec 20: Holiday SMS greeting", "Jan 2: New Year offer", "Mar 15: Spring wash reminder"], trigger: "Annual dates", audience: customers.length },
-        ].map(seq => (
-          <Glass key={seq.name} className="p-4">
-            <div className="flex items-start justify-between gap-3 mb-3">
-              <div>
-                <div className="font-semibold text-sm">{seq.name}</div>
-                <div className="text-xs text-white/50 mt-0.5">{seq.desc}</div>
-                <div className="flex items-center gap-2 mt-1">
-                  <Badge tone="blue">{seq.trigger}</Badge>
-                  <span className="text-[10px] text-white/40">{seq.audience} customers eligible</span>
+        {SEQUENCE_DEFS.map(seq => {
+          const auto = automations.find((a: any) => a.id === seq.id);
+          const isActive = !!auto?.active;
+          return (
+            <Glass key={seq.id} className="p-4">
+              <div className="flex items-start justify-between gap-3 mb-3 flex-wrap">
+                <div>
+                  <div className="font-semibold text-sm flex items-center gap-2">{seq.name} {isActive && <Badge tone="green">Active</Badge>}</div>
+                  <div className="text-xs text-white/50 mt-0.5">{seq.desc}</div>
+                  <div className="flex items-center gap-2 mt-1 flex-wrap">
+                    <Badge tone="blue">{seq.triggerLabel}</Badge>
+                    <span className="text-[10px] text-white/40">{seq.audienceCount(customers, estimates, jobs)} roughly eligible now</span>
+                  </div>
                 </div>
+                <GBtn
+                  variant={isActive ? "ghost" : undefined}
+                  className="!text-xs !py-1.5 flex-shrink-0"
+                  onClick={() => {
+                    if (isActive) {
+                      setAutomations((prev: any[]) => prev.map(a => a.id === seq.id ? { ...a, active: false } : a));
+                      toast(`"${seq.name}" paused`);
+                      return;
+                    }
+                    const existing = automations.find((a: any) => a.id === seq.id);
+                    const newAuto = {
+                      id: seq.id, name: seq.name, category: "sequence", isWorkflow: true, icon: "🔄",
+                      trigger: seq.steps[0]?.label, action: seq.steps.find((s: any) => s.type === "action")?.label || "",
+                      steps: seq.steps, description: seq.desc,
+                      count: existing?.count ?? 0, lastTriggered: existing?.lastTriggered ?? null,
+                      active: true, sentLog: existing?.sentLog ?? {}, runLog: existing?.runLog ?? [],
+                    };
+                    setAutomations((prev: any[]) => existing ? prev.map(a => a.id === seq.id ? newAuto : a) : [...prev, newAuto]);
+                    toast(`"${seq.name}" activated — it'll run automatically from Automation Hub`, "green");
+                  }}
+                >{isActive ? "Pause" : "Activate"}</GBtn>
               </div>
-              <GBtn className="!text-xs !py-1.5 flex-shrink-0" onClick={() => toast("Sequence activated for " + seq.audience + " customers")}>Activate</GBtn>
+              <div className="space-y-1.5 pl-3 border-l-2 border-blue-600/30">
+                {seq.display.map((step, i) => (
+                  <div key={i} className="text-[11px] text-white/60 flex items-start gap-2">
+                    <span className="text-blue-400 font-bold flex-shrink-0">{i + 1}.</span>
+                    <span>{step}</span>
+                  </div>
+                ))}
+              </div>
+            </Glass>
+          );
+        })}
+
+        {/* Holiday Greeting — calendar-anchored, not per-customer nurture, so
+            it's modeled as three real one-time scheduled Campaign sends
+            (same record CampaignScheduler.tsx already creates for "Schedule
+            for later") rather than forced into the per-customer automation
+            engine above. AUDIT FIX: scheduled campaigns previously saved a
+            record but nothing ever fired it when sendAt arrived — fixed by
+            useScheduledCampaigns.ts, wired globally in App.tsx, which polls
+            for due scheduled campaigns and actually sends them. */}
+        <Glass className="p-4">
+          <div className="flex items-start justify-between gap-3 mb-3 flex-wrap">
+            <div>
+              <div className="font-semibold text-sm">Holiday Greeting</div>
+              <div className="text-xs text-white/50 mt-0.5">Christmas, New Year, Spring reminder — scheduled sends to all customers</div>
+              <div className="flex items-center gap-2 mt-1"><Badge tone="blue">Annual dates</Badge><span className="text-[10px] text-white/40">{customers.length} customers</span></div>
             </div>
-            <div className="space-y-1.5 pl-3 border-l-2 border-blue-600/30">
-              {seq.steps.map((step, i) => (
-                <div key={i} className="text-[11px] text-white/60 flex items-start gap-2">
-                  <span className="text-blue-400 font-bold flex-shrink-0">{i + 1}.</span>
-                  <span>{step}</span>
-                </div>
-              ))}
-            </div>
-          </Glass>
-        ))}
+            <GBtn className="!text-xs !py-1.5 flex-shrink-0" onClick={() => {
+              const year = new Date().getFullYear();
+              const dec20 = new Date(year, 11, 20); if (dec20.getTime() < Date.now()) dec20.setFullYear(year + 1);
+              const jan2 = new Date(dec20.getFullYear() + (dec20.getMonth() === 11 ? 1 : 0), 0, 2); if (jan2.getTime() < Date.now()) jan2.setFullYear(jan2.getFullYear() + 1);
+              const mar15 = new Date(jan2.getFullYear(), 2, 15); if (mar15.getTime() < Date.now()) mar15.setFullYear(mar15.getFullYear() + 1);
+              const recipientIds = customers.filter((c: any) => c.phone).map((c: any) => c.id);
+              const iso = (d: Date) => d.toISOString().slice(0, 16);
+              const scheduled = [
+                { id: uid(), name: "Holiday Greeting — Christmas", ch: "sms", body: "Hi {{first_name}}, wishing you a wonderful holiday season from {{company_name}}! Book early for spring — slots fill fast. Call {{company_phone}}.", matches: recipientIds, sendAt: iso(dec20), status: "scheduled", createdAt: today() },
+                { id: uid(), name: "Holiday Greeting — New Year", ch: "sms", body: "Hi {{first_name}}, happy new year from {{company_name}}! 10% off any service booked this month. Reply NEWYEAR or call {{company_phone}}.", matches: recipientIds, sendAt: iso(jan2), status: "scheduled", createdAt: today() },
+                { id: uid(), name: "Holiday Greeting — Spring Reminder", ch: "sms", body: "Hi {{first_name}}, spring is almost here! Book your wash now before the calendar fills up. Reply BOOK or call {{company_phone}}. — {{company_name}}", matches: recipientIds, sendAt: iso(mar15), status: "scheduled", createdAt: today() },
+              ];
+              setCampaigns((prev: any[]) => [...scheduled, ...prev]);
+              toast(`Holiday Greeting scheduled — 3 sends queued for ${recipientIds.length} customers`, "green");
+            }}>Activate</GBtn>
+          </div>
+          <div className="space-y-1.5 pl-3 border-l-2 border-blue-600/30 text-[11px] text-white/60">
+            <div><span className="text-blue-400 font-bold">1.</span> Dec 20: Holiday SMS greeting</div>
+            <div><span className="text-blue-400 font-bold">2.</span> Jan 2: New Year offer</div>
+            <div><span className="text-blue-400 font-bold">3.</span> Mar 15: Spring wash reminder</div>
+          </div>
+        </Glass>
       </div>}
 
       {/* A/B Testing */}

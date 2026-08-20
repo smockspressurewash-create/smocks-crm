@@ -59,20 +59,31 @@ export function PromotionsPage({ promotions = [], setPromotions = (() => {}) as 
     if (targets.length === 0) { toast?.("No customers match this audience", "red"); return; }
     setBusy(true);
     let sentCount = 0;
+    let failedCount = 0;
+    const failureSamples: string[] = [];
     for (const cust of targets) {
       try {
         if ((p.channel === "email" || p.channel === "both") && cust.email) {
           await sendEmail(settings as any, { to: cust.email, subject: `${p.name} — ${companyName}`, body: promoHtml(p, cust) });
           sentCount++;
         }
-        if ((p.channel === "sms" || p.channel === "both") && cust.phone && settings?.twilioSid) {
+        if ((p.channel === "sms" || p.channel === "both") && cust.phone) {
           await twilioSend(settings as any, cust.phone, promoSms(p, cust));
           sentCount++;
         }
-      } catch { /* skip failures, keep going */ }
+      } catch (e: any) {
+        failedCount++;
+        const reason = e?.message || "Unknown error";
+        if (failureSamples.length < 5) failureSamples.push(`${cust.firstName || cust.email || cust.phone}: ${reason}`);
+        console.error("[Promotions] send failed for", cust.id, "—", reason);
+      }
     }
     setPromotions((prev: Promotion[]) => prev.map(x => x.id === p.id ? { ...x, status: "sent", sentAt: today(), sentCount: (x.sentCount || 0) + sentCount } : x));
-    toast?.(`Promotion sent to ${sentCount} recipient${sentCount !== 1 ? "s" : ""} ✓`, "green");
+    if (failedCount > 0) {
+      toast?.(`Promotion sent to ${sentCount} recipient${sentCount !== 1 ? "s" : ""} — ${failedCount} failed. First failure: ${failureSamples[0] || "unknown error"}`, sentCount > 0 ? "yellow" : "red");
+    } else {
+      toast?.(`Promotion sent to ${sentCount} recipient${sentCount !== 1 ? "s" : ""} ✓`, "green");
+    }
     setBusy(false);
     setSending(null);
   };

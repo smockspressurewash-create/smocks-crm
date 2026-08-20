@@ -383,13 +383,28 @@ export const seedTimeline: Record<string, Array<{ id: string; type: string; note
 
 // ─── Campaign templates ───────────────────────────────────────────────────────
 
+// AUDIT FIX — "need more and better templates for campaigns": grew from 6 to
+// 14 real, usable templates, and every body now uses {{company_phone}}/
+// {{company_name}} tokens instead of a hardcoded "(717) 555-0100"/"Crew
+// Boss" — CampaignsPage.tsx's merge() (extended alongside this) fills those
+// in from the owner's real settings, same as the default compose body
+// already did, so a loaded template reflects the actual business, not a
+// placeholder one.
 export const campaignTemplates = [
-  { id: "ct1", name: "Spring Special",   subject: "Spring Cleaning Deal — Crew Boss", body: "Hi {{first_name}}, spring special — 15% off house soft washes this month. Reply BOOK or call (717) 555-0100. — Crew Boss" },
-  { id: "ct2", name: "Pre-Winter Roof",  subject: "Protect your roof before winter — Crew Boss", body: "Hi {{first_name}}, algae and moss freeze and damage shingles. Get a roof soft wash before cold hits. Reply ROOF or call (717) 555-0100. — Crew Boss" },
-  { id: "ct3", name: "Referral Program", subject: "Refer a friend, get $25 — Crew Boss", body: "Hi {{first_name}}, refer a friend and get $25 off your next service when they book. Reply REFER or call (717) 555-0100. — Crew Boss" },
-  { id: "ct4", name: "Holiday Greeting", subject: "Happy Holidays from Crew Boss!", body: "Hi {{first_name}}, wishing you a wonderful holiday season! Book early for spring — slots fill fast. — Will @ Crew Boss" },
-  { id: "ct5", name: "New Year Offer",   subject: "New year, clean home — Crew Boss", body: "Hi {{first_name}}, 10% off any service booked in January. Reply NEWYEAR or call (717) 555-0100. — Crew Boss" },
-  { id: "ct6", name: "Win-Back",         subject: "We miss you — Crew Boss", body: "Hi {{first_name}}, it's been a while! Reply BACK for a special returning customer discount. — Will @ Crew Boss" },
+  { id: "ct1",  name: "Spring Special",       subject: "Spring Cleaning Deal — {{company_name}}", body: "Hi {{first_name}}, spring special — 15% off house soft washes this month. Reply BOOK or call {{company_phone}}. — {{company_name}}" },
+  { id: "ct2",  name: "Pre-Winter Roof",      subject: "Protect your roof before winter — {{company_name}}", body: "Hi {{first_name}}, algae and moss freeze and damage shingles. Get a roof soft wash before cold hits. Reply ROOF or call {{company_phone}}. — {{company_name}}" },
+  { id: "ct3",  name: "Referral Program",     subject: "Refer a friend, get $25 — {{company_name}}", body: "Hi {{first_name}}, refer a friend and get $25 off your next service when they book. Reply REFER or call {{company_phone}}. — {{company_name}}" },
+  { id: "ct4",  name: "Holiday Greeting",     subject: "Happy Holidays from {{company_name}}!", body: "Hi {{first_name}}, wishing you a wonderful holiday season! Book early for spring — slots fill fast. — {{company_name}}" },
+  { id: "ct5",  name: "New Year Offer",       subject: "New year, clean home — {{company_name}}", body: "Hi {{first_name}}, 10% off any service booked in January. Reply NEWYEAR or call {{company_phone}}. — {{company_name}}" },
+  { id: "ct6",  name: "Win-Back",             subject: "We miss you — {{company_name}}", body: "Hi {{first_name}}, it's been a while! Reply BACK for a special returning customer discount. — {{company_name}}" },
+  { id: "ct7",  name: "Summer Driveway Sale", subject: "Summer driveway & sidewalk sale — {{company_name}}", body: "Hi {{first_name}}, beat the summer grime — 15% off driveway and sidewalk cleaning this month. Reply DRIVE or call {{company_phone}}. — {{company_name}}" },
+  { id: "ct8",  name: "Deck & Patio Refresh", subject: "Get your deck ready for summer — {{company_name}}", body: "Hi {{first_name}}, make your deck or patio party-ready! Book a soft wash before the season gets busy. Reply DECK or call {{company_phone}}. — {{company_name}}" },
+  { id: "ct9",  name: "Fall Gutter Cleanout", subject: "Clogged gutters cause ice damage — {{company_name}}", body: "Hi {{first_name}}, don't let clogged gutters cause ice dams this winter. Book a gutter cleanout now. Reply GUTTERS or call {{company_phone}}. — {{company_name}}" },
+  { id: "ct10", name: "Black Friday Deal",    subject: "Black Friday special — {{company_name}}", body: "Hi {{first_name}}, our biggest discount of the year — 20% off any service booked this weekend. Reply BF20 or call {{company_phone}}. — {{company_name}}" },
+  { id: "ct11", name: "Storm Cleanup",        subject: "Storm cleanup special — {{company_name}}", body: "Hi {{first_name}}, storm debris and stains on your property? We're offering priority storm cleanup this week. Reply STORM or call {{company_phone}}. — {{company_name}}" },
+  { id: "ct12", name: "Maintenance Plan",     subject: "Never think about it again — {{company_name}}", body: "Hi {{first_name}}, ask about our seasonal maintenance plan — scheduled washes year-round so your property always looks its best. Reply PLAN or call {{company_phone}}. — {{company_name}}" },
+  { id: "ct13", name: "Move-In/Move-Out",     subject: "Moving? Let us handle the exterior — {{company_name}}", body: "Hi {{first_name}}, buying, selling, or moving? A fresh exterior wash makes a huge first impression. Reply MOVE or call {{company_phone}}. — {{company_name}}" },
+  { id: "ct14", name: "Commercial Storefront",subject: "Keep your storefront spotless — {{company_name}}", body: "Hi {{first_name}}, a clean storefront brings in customers. Ask about our recurring commercial wash plans. Reply BIZ or call {{company_phone}}. — {{company_name}}" },
 ];
 
 // ─── Step types ───────────────────────────────────────────────────────────────

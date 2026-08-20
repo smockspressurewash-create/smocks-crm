@@ -82,14 +82,27 @@ export function ReviewsPage({ reviews = [], setReviews, jobs = [], customers = [
   const [landingReview, setLandingReview] = useState(null);
   const [tab, setTab] = useState("inbox");
 
-  const cf = jid => { const j = jobs.find(x => x.id === jid); return j ? customers.find(c => c.id === j.customerId) : null; };
+  // AUDIT FIX (mobile round 10) — real customer-submitted reviews (from the
+  // public #/rate page, CustomerReviewPage.tsx -> Supabase "reviews" table,
+  // merged into this `reviews` array in App.tsx) only carry a customerId,
+  // not a jobId — the seeded/local review-request records this page
+  // originally modeled only ever had a jobId. cf() now resolves either way
+  // so real submissions actually render in Inbox/Showcase/Analytics instead
+  // of being silently dropped by every `cf(r)` call returning null.
+  const cf = (jidOrReview: any, maybeCustomerId?: string) => {
+    const jid = typeof jidOrReview === "object" ? jidOrReview?.jobId : jidOrReview;
+    const directCustomerId = typeof jidOrReview === "object" ? jidOrReview?.customerId : maybeCustomerId;
+    if (jid) { const j = jobs.find(x => x.id === jid); if (j) return customers.find(c => c.id === j.customerId) || null; }
+    if (directCustomerId) return customers.find(c => c.id === directCustomerId) || null;
+    return null;
+  };
   const jf = jid => jobs.find(x => x.id === jid);
 
   // 90-day throttling check
   const canSend = rid => {
     const r = reviews.find(x => x.id === rid);
     if (!r) return false;
-    const c = cf(r.jobId);
+    const c = cf(r);
     if (!c) return false;
     const recentSent = reviews.filter(x => {
       const xj = jf(x.jobId);
@@ -101,7 +114,7 @@ export function ReviewsPage({ reviews = [], setReviews, jobs = [], customers = [
   const sendReq = async rid => {
     if (!canSend(rid)) { toast("Throttled — review request sent within last 90 days", "error"); return; }
     const r = reviews.find(x => x.id === rid);
-    const c = cf(r?.jobId);
+    const c = cf(r);
     if (!c) return;
     if ((settings.unsubscribedEmails || []).includes(c.email)) { toast("Customer has unsubscribed from review requests"); return; }
     if ((settings.reviewUnsubscribedPhones || []).includes(c.phone)) { toast("Customer opted out of SMS review requests"); return; }
@@ -140,7 +153,7 @@ export function ReviewsPage({ reviews = [], setReviews, jobs = [], customers = [
     setReviews(reviews.map(r => r.id === rid ? { ...r, status: "completed" } : r));
     if (rating > 0 && rating <= 3) {
       const r = reviews.find(x => x.id === rid);
-      const c = cf(r.jobId);
+      const c = cf(r);
       setNegativeAlerts(prev => [...prev, { id: uid(), reviewId: rid, customerName: c ? c.firstName + " " + c.lastName : "?", rating, at: today() }]);
       toast("Negative feedback flagged", "error");
     } else if (rating >= 4) {
@@ -242,7 +255,7 @@ export function ReviewsPage({ reviews = [], setReviews, jobs = [], customers = [
             <div className="text-xs text-white/50 uppercase tracking-wider mb-4">Recent Reviews</div>
             <div className="space-y-3">
               {completed.slice(0, 5).map(r => {
-                const c = cf(r.jobId);
+                const c = cf(r);
                 return <div key={r.id} className="flex items-start gap-2">
                   <div className="flex gap-0.5 flex-shrink-0 mt-0.5">{[1,2,3,4,5].map(s => <Star key={s} size={9} className={s <= r.rating ? "text-yellow-400 fill-yellow-400" : "text-white/20"} />)}</div>
                   <div className="flex-1 min-w-0">
@@ -300,9 +313,8 @@ export function ReviewsPage({ reviews = [], setReviews, jobs = [], customers = [
             </tr></thead>
             <tbody>
               {reviews.map(r => {
-                const cu = cf(r.jobId);
-                const jo = jf(r.jobId);
-                if (!cu || !jo) return null;
+                const cu = cf(r);
+                if (!cu) return null;
                 const throttled = !canSend(r.id);
                 return (
                   <tr key={r.id} className="border-b border-red-900/10 hover:bg-white/5 transition">
@@ -312,7 +324,7 @@ export function ReviewsPage({ reviews = [], setReviews, jobs = [], customers = [
                     <td className="px-5 py-4 text-right">
                       <div className="flex items-center justify-end gap-1.5">
                         <button onClick={() => setLandingReview(r)} className="p-1.5 rounded-lg hover:bg-blue-900/30 text-white/50 hover:text-blue-400" title="Customer view"><Globe size={12} /></button>
-                        <button onClick={() => { const cu2 = cf(r.jobId); if (cu2?.phone) unsubscribe(cu2.phone, "phone"); else if (cu2?.email) unsubscribe(cu2.email, "email"); }} title="Opt out of review requests" className="p-1.5 rounded-lg hover:bg-red-900/30 text-white/50 hover:text-red-400"><Ban size={12} /></button>
+                        <button onClick={() => { const cu2 = cf(r); if (cu2?.phone) unsubscribe(cu2.phone, "phone"); else if (cu2?.email) unsubscribe(cu2.email, "email"); }} title="Opt out of review requests" className="p-1.5 rounded-lg hover:bg-red-900/30 text-white/50 hover:text-red-400"><Ban size={12} /></button>
                         {r.status === "pending" ? <GBtn onClick={() => sendReq(r.id)} disabled={throttled} className="!text-xs !py-1 !px-2.5"><Send size={10} className="inline mr-1" />{throttled ? "Throttled" : "Send"}</GBtn> : <GBtn variant="ghost" onClick={() => setPreview(r)} className="!text-xs !py-1 !px-2.5"><Eye size={10} className="inline mr-1" />View</GBtn>}
                       </div>
                     </td>
@@ -341,7 +353,7 @@ export function ReviewsPage({ reviews = [], setReviews, jobs = [], customers = [
         </Glass>
         <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
           {completed.filter(r => r.rating >= (settings.reviewShowcaseMinRating || 5)).map(r => {
-            const cu = cf(r.jobId);
+            const cu = cf(r);
             if (!cu) return null;
             return <Glass key={r.id} className="p-5 hover:border-yellow-500/40 transition relative overflow-hidden">
               <div className="absolute -top-4 -right-4 text-6xl opacity-10">★</div>
@@ -365,8 +377,8 @@ export function ReviewsPage({ reviews = [], setReviews, jobs = [], customers = [
         </div>
       </div>}
 
-      <ReviewPreview review={preview} onClose={() => setPreview(null)} customer={preview ? cf(preview.jobId) : null} apiKey={settings.geminiKey} companyName={settings.companyName} onUpdate={u => preview && updRev(preview.id, u)} onSubmit={r => preview && subRev(preview.id, r)} toast={toast} />
-      {landingReview && <ReviewLandingPage review={landingReview} customer={cf(landingReview.jobId)} settings={settings} onClose={() => setLandingReview(null)} onSubmit={(rating, feedback) => { updRev(landingReview.id, { rating, feedback: feedback || undefined, status: "completed" }); if (rating > 0 && rating <= 3) { const cu = cf(landingReview.jobId); setNegativeAlerts(prev => [...prev, { id: uid(), reviewId: landingReview.id, customerName: cu ? cu.firstName + " " + cu.lastName : "?", rating, at: today() }]); } }} />}
+      <ReviewPreview review={preview} onClose={() => setPreview(null)} customer={preview ? cf(preview) : null} apiKey={settings.geminiKey} companyName={settings.companyName} googleReviewLink={(settings as any)?.googleReviewLink} googlePlaceId={(settings as any)?.googlePlaceId} onUpdate={u => preview && updRev(preview.id, u)} onSubmit={r => preview && subRev(preview.id, r)} toast={toast} />
+      {landingReview && <ReviewLandingPage review={landingReview} customer={cf(landingReview)} settings={settings} onClose={() => setLandingReview(null)} onSubmit={(rating, feedback) => { updRev(landingReview.id, { rating, feedback: feedback || undefined, status: "completed" }); if (rating > 0 && rating <= 3) { const cu = cf(landingReview); setNegativeAlerts(prev => [...prev, { id: uid(), reviewId: landingReview.id, customerName: cu ? cu.firstName + " " + cu.lastName : "?", rating, at: today() }]); } }} />}
     </div>
   );
 }

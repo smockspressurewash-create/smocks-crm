@@ -12,6 +12,7 @@ import { usePersistent } from "./hooks/usePersistent";
 import { usePersistentRaw } from "./hooks/usePersistentRaw";
 import { usePollGate } from "./hooks/usePollGate";
 import { useAutomationEngine } from "./hooks/useAutomationEngine";
+import { useScheduledCampaigns } from "./hooks/useScheduledCampaigns";
 import { useIsMobile } from "./hooks/useIsMobile";
 import { supabase } from "./lib/supabase";
 import { SafePage } from "./components/ui/ErrorBoundary";
@@ -1736,11 +1737,12 @@ export function App() {
   const refetchData = async () => {
     setIsSyncing(true);
     try {
-      const [{ data: sbJobs, error: jobsErr }, { data: sbCustomers, error: customersErr }, { data: sbEstimates, error: estimatesErr }, { data: sbPromotions }] = await Promise.all([
+      const [{ data: sbJobs, error: jobsErr }, { data: sbCustomers, error: customersErr }, { data: sbEstimates, error: estimatesErr }, { data: sbPromotions }, { data: sbReviews }] = await Promise.all([
         (supabase as any).from("jobs").select("*"),
         (supabase as any).from("customers").select("*"),
         (supabase as any).from("estimates").select("*"),
         (supabase as any).from("promotions").select("*").then((r: any) => r).catch(() => ({ data: null })),
+        (supabase as any).from("reviews").select("*").then((r: any) => r).catch(() => ({ data: null })),
       ]);
       // EGRESS/QUOTA — supabase-js resolves with {data: null, error} rather
       // than throwing, so this Promise.all never hits the catch block below
@@ -1800,6 +1802,44 @@ export function App() {
           const added = sbPromotions.filter((p: any) => !existingIds.has(p.id));
           return [...merged, ...added];
         });
+      }
+      // AUDIT FIX (mobile round 10) — real customer-submitted reviews (public
+      // #/rate page -> Supabase "reviews" table, see CustomerReviewPage.tsx)
+      // need to reach the owner's Review Wall/Showcase/Analytics, which all
+      // read from the local `reviews` array (ReviewsPage.tsx). The DB row
+      // shape (customerId/text/status: "pending"|"private") differs from the
+      // legacy local review-request shape (jobId/token/feedback/status:
+      // "completed") — normalized here into the local shape so ReviewsPage
+      // doesn't need to know about two formats. Any DB row with a rating
+      // represents a review that already happened, so it's always mapped to
+      // "completed" (the DB's own "pending"/"private" status tracks whether
+      // it's public-worthy or private feedback, tracked separately as
+      // source/negative-alert material, not whether it was submitted).
+      if (Array.isArray(sbReviews) && sbReviews.length > 0) {
+        let newlyAddedLowRated: any[] = [];
+        setReviews(prev => {
+          const normalized = sbReviews.map((r: any) => ({
+            id: r.id, customerId: r.customerId, rating: Number(r.rating) || 0,
+            feedback: r.text || undefined, createdAt: r.createdAt || today(),
+            source: r.source || "customer-submitted", status: "completed" as const,
+          }));
+          const sbMap = new Map(normalized.map((r: any) => [r.id, r]));
+          const merged = prev.map(r => sbMap.has(r.id) ? { ...r, ...sbMap.get(r.id) } : r);
+          const existingIds = new Set(prev.map(r => r.id));
+          const added = normalized.filter((r: any) => !existingIds.has(r.id));
+          newlyAddedLowRated = added.filter((r: any) => r.rating > 0 && r.rating <= 3);
+          return [...merged, ...added];
+        });
+        if (newlyAddedLowRated.length > 0) {
+          (setNegativeAlerts as any)((prev: any[]) => {
+            const existingReviewIds = new Set(prev.map((a: any) => a.reviewId));
+            const toAdd = newlyAddedLowRated.filter((r: any) => !existingReviewIds.has(r.id)).map((r: any) => {
+              const cust = customers.find(c => c.id === r.customerId);
+              return { id: uid(), reviewId: r.id, customerName: cust ? `${cust.firstName} ${cust.lastName}` : "Customer", rating: r.rating, at: today() };
+            });
+            return toAdd.length > 0 ? [...prev, ...toAdd] : prev;
+          });
+        }
       }
       setLastSynced(new Date());
     } catch {
@@ -2464,6 +2504,11 @@ export function App() {
   // approves each batch via AutomationBatchModal, rendered below.
   const { pendingBatch: pendingAutomationBatch, approveBatch: approveAutomationBatch, skipBatch: skipAutomationBatch } =
     useAutomationEngine({ automations, setAutomations, jobs, customers, estimates, referrals, settings, setSettings, toast });
+
+  // Scheduled-campaign executor — see useScheduledCampaigns.ts. Fires
+  // regardless of which page is open, same reasoning as the automation
+  // engine above.
+  useScheduledCampaigns({ campaigns, setCampaigns, customers, settings, toast });
 
   // Sign out — clears Supabase session and forces login page.
   // signOut() defaults to scope: "global", which revokes the refresh token
@@ -3249,7 +3294,7 @@ export function App() {
                 {page === "pipeline"       && <PipelinePage jobs={jobs} setJobs={setJobs} customers={customers} toast={toast} />}
                 {page === "calendar"       && <CalendarPage jobs={jobs} setJobs={setJobs} customers={customers} employees={employees} toast={toast} settings={settings} setSettings={setSettings} ownerId={crmUserId} />}
                 {page === "inbox"          && (managerBlocked("inbox") ? <RestrictedNotice label="the Inbox" /> : <InboxPage threads={inboxThreads} setThreads={setInboxThreads} customers={customers} setCustomers={setCustomers} settings={settings} toast={toast} />)}
-                {page === "campaigns"      && <CampaignsPage campaigns={campaigns} setCampaigns={setCampaigns} customers={customers} estimates={estimates} jobs={jobs} settings={settings} inboxThreads={inboxThreads} setInboxThreads={setInboxThreads} toast={toast} />}
+                {page === "campaigns"      && <CampaignsPage campaigns={campaigns} setCampaigns={setCampaigns} customers={customers} estimates={estimates} jobs={jobs} settings={settings} inboxThreads={inboxThreads} setInboxThreads={setInboxThreads} automations={automations} setAutomations={setAutomations} toast={toast} />}
                 {page === "reviews"        && <ReviewsPage reviews={reviews} setReviews={setReviews} jobs={jobs} customers={customers} toast={toast} negativeAlerts={negativeAlerts} setNegativeAlerts={setNegativeAlerts} settings={settings} setSettings={setSettings} />}
                 {page === "automations"    && <AutomationsPage automations={automations} setAutomations={setAutomations} jobs={jobs} customers={customers} estimates={estimates} settings={settings} setSettings={setSettings} toast={toast} />}
                 {page === "social"         && <SocialPage posts={socialPosts} setPosts={setSocialPosts} toast={toast} settings={settings} />}

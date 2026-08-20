@@ -243,7 +243,7 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
         const coName = (settings as any)?.companyName || "Crew Boss";
         const coPhone = (settings as any)?.companyPhone || "(717) 555-0100";
         const msg = "Hi " + c.firstName + "! Your pressure washing service has been confirmed for " + (j.scheduledDate || "your requested date") + ". We'll text you when we're on the way. Questions? Call " + coPhone + ". — " + coName;
-        twilioSend(settings, c.phone, msg).catch(() => {});
+        twilioSend(settings, c.phone, msg).catch((e: any) => console.warn("[JobsPage] scheduled-confirmation text failed:", e?.message));
       }
     }
     // Job completed thank-you text (separate from review request)
@@ -252,7 +252,7 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
       const c = j && customers.find(x => x.id === j.customerId);
       if (c?.phone && settings?.twilioSid) {
         const msg = "Hi " + c.firstName + "! Your home is looking great 🙌 Thank you for choosing Crew Boss. We appreciate your business! If you ever need us again, reply or call (717) 555-0100. — Will @ Crew Boss";
-        setTimeout(() => twilioSend(settings, c.phone, msg).catch(() => {}), 1000);
+        setTimeout(() => twilioSend(settings, c.phone, msg).catch((e: any) => console.warn("[JobsPage] job-completed thank-you text failed:", e?.message)), 1000);
       }
       // Auto-add to customer timeline
       if (j && c) {

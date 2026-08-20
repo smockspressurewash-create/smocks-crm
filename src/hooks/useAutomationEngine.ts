@@ -824,6 +824,7 @@ export function useAutomationEngine({
       const sentThisApprovalForCustomer = new Set<string>();
       const throttleDelayMs = computeThrottleDelayMs(settingsRef.current);
       let sentCountThisApproval = 0;
+      let failedCountThisApproval = 0;
 
       for (const item of batch.items) {
         // GUARDRAIL — never send twice to the same customer in this approval
@@ -849,6 +850,7 @@ export function useAutomationEngine({
           newDailyLog[item.customerId] = todayStr;
           sentThisApprovalForCustomer.add(item.customerId);
         } else {
+          failedCountThisApproval++;
           firedThisSession.delete(item.id); // failed send — allow a real retry next batch
         }
       }
@@ -861,6 +863,14 @@ export function useAutomationEngine({
         }));
       }
       setSettingsRef.current((s: any) => ({ ...s, automationDailySendLog: newDailyLog }));
+      // AUDIT (mobile round 10) — per-item send failures were only ever
+      // console-logged (see sendOne above); the owner clicking "Send All"
+      // had no way to know anything failed. Every success already toasts
+      // individually via toastRef inside sendOne — this adds the missing
+      // aggregate signal for failures once the whole batch is done.
+      if (failedCountThisApproval > 0) {
+        toastRef.current(`⚠ ${failedCountThisApproval} automation send${failedCountThisApproval !== 1 ? "s" : ""} failed — check console for reasons (Twilio/Gmail may not be configured)`);
+      }
     } finally {
       isApprovingRef.current = false;
     }
