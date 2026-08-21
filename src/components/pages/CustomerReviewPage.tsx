@@ -1,12 +1,17 @@
 import React, { useState } from "react";
 import { Star, CheckCircle } from "lucide-react";
-import { supabase } from "../../lib/supabase";
-import { uid, today } from "../../lib/utils";
 
 // Public-facing customer review page — no auth required.
 // URL: #/rate?c=CUSTOMER_ID&n=CUSTOMER_FIRST_NAME&g=GOOGLE_PLACE_ID&rl=GOOGLE_REVIEW_LINK&co=COMPANY_NAME
 // 4–5 stars → offers a Google Maps review link, if one is configured.
 // 1–3 stars → private feedback form saved to Supabase reviews table.
+//
+// MULTI-TENANT (Phase D) — was a direct anon-key `.from("reviews").insert(...)`.
+// Once RLS is owner_id-scoped (0033_multitenant_owner_scoping.sql), an
+// anonymous visitor has no session for current_owner_id() to resolve, so a
+// client-side insert has no owner_id to satisfy WITH CHECK. Routed through
+// /api/public-data's "submit_review" action instead (service role, resolves
+// owner_id server-side from the customerId already in the review link).
 
 function hashParam(key: string): string {
   const hash = window.location.hash;
@@ -36,19 +41,18 @@ export function CustomerReviewPage() {
   const [feedback, setFeedback] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
-  const saveToSupabase = async (r: number, text: string, status: "pending" | "private") => {
+  const saveToSupabase = async (r: number, text: string, _status: "pending" | "private") => {
     try {
-      await (supabase as any).from("reviews").insert({
-        id: uid(),
-        customerId: customerId || "unknown",
-        customerName: firstName,
-        rating: r,
-        text,
-        createdAt: today(),
-        source: "sms-request",
-        status,
+      const res = await fetch("/api/public-data", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "submit_review", customerId: customerId || undefined, rating: r, comment: text || undefined }),
       });
-    } catch { /* reviews table may not exist yet */ }
+      const data = await res.json().catch(() => null);
+      if (!res.ok || data?.error) console.warn("[CustomerReview] submit_review failed:", data?.error);
+    } catch (e: any) {
+      console.warn("[CustomerReview] submit_review failed:", e?.message);
+    }
   };
 
   const pick = (r: number) => {

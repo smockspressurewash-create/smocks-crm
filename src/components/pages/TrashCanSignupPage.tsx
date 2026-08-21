@@ -38,12 +38,19 @@ export function TrashCanSignupPage() {
     if (!ownerId) return;
     (async () => {
       try {
-        const { data, error } = await (supabase as any)
-          .from("app_settings")
-          .select("cost:settings->>trashCanCostPerCan, minutes:settings->>trashCanMinutesPerCan, freq:settings->>trashCanDefaultFrequency, co:settings->>companyName, ph:settings->>companyPhone, pk:settings->>stripePublishableKey")
-          .eq("owner_id", ownerId)
-          .single();
-        if (error || !data) return;
+        // MULTI-TENANT (Phase D) — was a direct anon-key `.from("app_settings")`
+        // read scoped by `.eq("owner_id", ownerId)`. Once RLS is owner_id-scoped
+        // (0033_multitenant_owner_scoping.sql), current_owner_id() can't resolve
+        // for this anonymous visitor, so that read would return nothing. Routed
+        // through /api/public-data (service role, bypasses RLS) instead — same
+        // narrow field projection, just resolved server-side.
+        const res = await fetch("/api/public-data", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "get_trashcan_signup_settings", ownerId }),
+        });
+        const data = await res.json().catch(() => null);
+        if (!res.ok || !data || data.error) return;
         if (data.cost != null) setCostPerCan(Number(data.cost) || costPerCan);
         if (data.minutes != null) setMinutesPerCan(Number(data.minutes) || minutesPerCan);
         if (data.freq) setDefaultFreq(data.freq);

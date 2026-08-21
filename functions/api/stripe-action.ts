@@ -31,6 +31,66 @@
 const SUPABASE_URL = "https://boaqaihymgmrhnjtiqrs.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_8aEa3wsYJ7ghVPcGbtHymw_ugj0aEfm";
 
+// MULTI-TENANT (Phase F) — each business can now store its own Stripe keys
+// in owner_stripe_accounts (service-role-only table, see migration
+// 0033_multitenant_owner_scoping.sql). This resolves which secret key to
+// charge with:
+//   1. If an invoiceId is given, the invoice's OWN owner_id (read from the
+//      estimates row itself, never trusted from the client) wins — this is
+//      the same "never trust client-claimed amounts/identity" pattern this
+//      file already uses for amountCents.
+//   2. Otherwise fall back to a client-supplied ownerId (only meaningful for
+//      actions that don't reference an invoice, e.g. create_customer for a
+//      saved card — still safe, since it only affects which business's
+//      Stripe account the resulting object lives in, not who gets charged).
+//   3. If no owner-specific key is on file, fall back to the platform-wide
+//      STRIPE_SECRET_KEY env var, so deployments that haven't set up
+//      per-owner keys yet keep working unmodified.
+const getOwnerStripeAccount = async (
+  ownerId: string,
+  serviceRoleKey: string
+): Promise<{ secretKey?: string; publishableKey?: string; webhookSecret?: string; mode?: string } | null> => {
+  if (!ownerId || !serviceRoleKey) return null;
+  const res = await fetch(
+    `${SUPABASE_URL}/rest/v1/owner_stripe_accounts?owner_id=eq.${encodeURIComponent(ownerId)}&select=stripe_secret_key,stripe_publishable_key,stripe_webhook_secret,stripe_mode`,
+    { headers: { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}` } }
+  );
+  const rows = await res.json().catch(() => []);
+  const row = Array.isArray(rows) ? rows[0] : null;
+  if (!row) return null;
+  return { secretKey: row.stripe_secret_key || undefined, publishableKey: row.stripe_publishable_key || undefined, webhookSecret: row.stripe_webhook_secret || undefined, mode: row.stripe_mode };
+};
+
+const getEstimateOwnerId = async (invoiceId: string): Promise<string | null> => {
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/estimates?id=eq.${encodeURIComponent(invoiceId)}&select=owner_id`, {
+    headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}` },
+  });
+  const rows = await res.json().catch(() => []);
+  return Array.isArray(rows) && rows[0]?.owner_id ? rows[0].owner_id : null;
+};
+
+// Resolves the authenticated caller's own owner_id from a Supabase access
+// token, via the SAME current_owner_id() logic the DB uses (looked up here
+// through the employees table with the anon key + the caller's own JWT, so
+// RLS on `employees` itself enforces "you can only ever resolve to your own
+// tenant" — this function cannot be tricked into returning someone else's
+// owner_id no matter what the client claims).
+const resolveCallerOwnerId = async (accessToken: string): Promise<string | null> => {
+  if (!accessToken) return null;
+  const userRes = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
+    headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${accessToken}` },
+  });
+  if (!userRes.ok) return null;
+  const user = await userRes.json().catch(() => null) as any;
+  const uid = user?.id;
+  if (!uid) return null;
+  const empRes = await fetch(`${SUPABASE_URL}/rest/v1/employees?user_id=eq.${encodeURIComponent(uid)}&select=owner_id&limit=1`, {
+    headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${accessToken}` },
+  });
+  const empRows = await empRes.json().catch(() => []);
+  return Array.isArray(empRows) && empRows[0]?.owner_id ? empRows[0].owner_id : uid;
+};
+
 const stripeFetch = async (secretKey: string, method: string, path: string, params?: Record<string, string>) => {
   const res = await fetch(`https://api.stripe.com/v1/${path}`, {
     method,
@@ -62,15 +122,77 @@ const getInvoiceAmountCents = async (invoiceId: string): Promise<number> => {
 };
 
 export const onRequestPost = async (context: { request: Request; env: Record<string, string> }) => {
-  const secretKey = context.env.STRIPE_SECRET_KEY;
-  if (!secretKey) {
-    return new Response(JSON.stringify({ error: "Server missing STRIPE_SECRET_KEY env var — add it in the Cloudflare Pages dashboard (Settings → Environment variables), then redeploy." }), {
-      status: 500, headers: { "Content-Type": "application/json" },
-    });
-  }
+  const platformSecretKey = context.env.STRIPE_SECRET_KEY;
   try {
     const body = await context.request.json() as Record<string, any>;
     const action = body?.action;
+
+    // save_owner_keys / get_owner_keys_status manage owner_stripe_accounts
+    // directly and never touch api.stripe.com — handled before the
+    // platform-key check below, since a business using ONLY their own keys
+    // shouldn't need a platform STRIPE_SECRET_KEY configured at all.
+    if (action === "save_owner_keys" || action === "get_owner_keys_status") {
+      const serviceRoleKey = context.env.SUPABASE_SERVICE_ROLE_KEY;
+      if (!serviceRoleKey) {
+        return new Response(JSON.stringify({ error: "Server missing SUPABASE_SERVICE_ROLE_KEY env var — add it in the Cloudflare Pages dashboard, then redeploy." }), { status: 500, headers: { "Content-Type": "application/json" } });
+      }
+      const accessToken = (context.request.headers.get("authorization") || "").replace(/^Bearer\s+/i, "");
+      const callerOwnerId = await resolveCallerOwnerId(accessToken);
+      if (!callerOwnerId) {
+        return new Response(JSON.stringify({ error: "Not signed in." }), { status: 401, headers: { "Content-Type": "application/json" } });
+      }
+
+      if (action === "get_owner_keys_status") {
+        const acct = await getOwnerStripeAccount(callerOwnerId, serviceRoleKey);
+        return json({
+          hasSecretKey: !!acct?.secretKey,
+          hasWebhookSecret: !!acct?.webhookSecret,
+          publishableKey: acct?.publishableKey || "",
+          mode: acct?.mode || "test",
+          webhookUrl: `${new URL(context.request.url).origin}/api/stripe-webhook?oid=${encodeURIComponent(callerOwnerId)}`,
+        });
+      }
+
+      // save_owner_keys — caller can only ever write their OWN owner_id row,
+      // resolved server-side above, never a client-supplied one.
+      const { publishableKey, secretKey: newSecretKey, webhookSecret, mode } = body;
+      const patch: Record<string, any> = { owner_id: callerOwnerId, updated_at: new Date().toISOString() };
+      if (publishableKey !== undefined) patch.stripe_publishable_key = publishableKey || null;
+      if (newSecretKey !== undefined && newSecretKey !== "") patch.stripe_secret_key = newSecretKey; // blank = leave existing key untouched
+      if (webhookSecret !== undefined && webhookSecret !== "") patch.stripe_webhook_secret = webhookSecret;
+      if (mode !== undefined) patch.stripe_mode = mode === "live" ? "live" : "test";
+      const saveRes = await fetch(`${SUPABASE_URL}/rest/v1/owner_stripe_accounts`, {
+        method: "POST",
+        headers: { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}`, "Content-Type": "application/json", Prefer: "resolution=merge-duplicates,return=minimal" },
+        body: JSON.stringify(patch),
+      });
+      if (!saveRes.ok) {
+        const errText = await saveRes.text().catch(() => "");
+        return new Response(JSON.stringify({ error: "Failed to save Stripe keys: " + errText }), { status: 500, headers: { "Content-Type": "application/json" } });
+      }
+      return json({ success: true });
+    }
+
+    // Every remaining action calls api.stripe.com and needs a secret key —
+    // resolve the calling owner's own key first, falling back to the
+    // platform-wide env var (requirement: existing/legacy deployments keep
+    // working unmodified).
+    let secretKey = platformSecretKey;
+    const serviceRoleKey = context.env.SUPABASE_SERVICE_ROLE_KEY;
+    if (serviceRoleKey) {
+      let resolvedOwnerId: string | null = null;
+      if (body.invoiceId) resolvedOwnerId = await getEstimateOwnerId(body.invoiceId);
+      if (!resolvedOwnerId && body.ownerId) resolvedOwnerId = body.ownerId;
+      if (resolvedOwnerId) {
+        const acct = await getOwnerStripeAccount(resolvedOwnerId, serviceRoleKey);
+        if (acct?.secretKey) secretKey = acct.secretKey;
+      }
+    }
+    if (!secretKey) {
+      return new Response(JSON.stringify({ error: "Stripe isn't configured for this business yet — add keys in Settings → Integrations → Stripe, or (platform admin) set STRIPE_SECRET_KEY in the Cloudflare Pages dashboard." }), {
+        status: 500, headers: { "Content-Type": "application/json" },
+      });
+    }
 
     switch (action) {
       case "create_payment_intent": {

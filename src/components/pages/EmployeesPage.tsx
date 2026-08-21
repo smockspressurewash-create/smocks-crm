@@ -286,7 +286,7 @@ function PayrollCalendar({ employees, jobs = [] }: { employees: any[]; jobs?: an
   );
 }
 
-export function EmployeesPage({ employees = [], setEmployees, jobs = [], setJobs = (() => {}) as any, customers = [], settings = {} as any, toast = (_msg: string, _tone?: string) => {}, autoOpenManagerInvite = false, onAutoOpenManagerInviteConsumed, initialView, onInitialViewConsumed }: { employees?: any[]; setEmployees: any; jobs?: any[]; setJobs?: any; customers?: any[]; settings?: any; toast?: any; autoOpenManagerInvite?: boolean; onAutoOpenManagerInviteConsumed?: () => void; initialView?: "list" | "hours" | "payroll"; onInitialViewConsumed?: () => void }) {
+export function EmployeesPage({ employees = [], setEmployees, jobs = [], setJobs = (() => {}) as any, customers = [], settings = {} as any, toast = (_msg: string, _tone?: string) => {}, autoOpenManagerInvite = false, onAutoOpenManagerInviteConsumed, initialView, onInitialViewConsumed, ownerId }: { employees?: any[]; setEmployees: any; jobs?: any[]; setJobs?: any; customers?: any[]; settings?: any; toast?: any; autoOpenManagerInvite?: boolean; onAutoOpenManagerInviteConsumed?: () => void; initialView?: "list" | "hours" | "payroll"; onInitialViewConsumed?: () => void; ownerId?: string }) {
   const [modal, setModal] = useState({ open: false, data: null });
   const [view, setView] = useState("list"); // list | hours | payroll
   // Hours tab — which employee's per-shift/per-job paid/unpaid breakdown is
@@ -378,6 +378,7 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setJobs
         role: inv.role,
         hourly_rate: inv.hourlyRate,
         created_by: user?.id ?? null,
+        owner_id: ownerId,
       });
     } catch { /* table may not exist yet — invite still works via localStorage in the same browser */ }
     // Pre-create employee record so the portal can match immediately. This
@@ -393,6 +394,7 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setJobs
         startDate: today(), emergencyContact: "", notes: "Invited — account pending",
         permissions: invitePerms,
         managerPermissions: inv.role.toLowerCase().includes("manager") ? inviteManagerPerms : undefined,
+        owner_id: ownerId,
       };
       setEmployees((prev: any[]) => [...prev, preCreated as any]);
       (supabase as any).from("employees").insert(preCreated)

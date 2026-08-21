@@ -50,6 +50,41 @@ export function ClientAuthPortal({
   const [agreedInvoiceTerms, setAgreedInvoiceTerms] = useState(false);
   const [showSaveCard, setShowSaveCard] = useState(false);
 
+  // MULTI-TENANT (Phase D) — was `customers.find(...)` against the App.tsx
+  // global `customers`/`estimates`/`jobs` props (owner_id-scoped once RLS
+  // 0033_multitenant_owner_scoping.sql is live, so empty for a customer
+  // session — current_owner_id() only resolves for staff). Fetched instead
+  // via /api/public-data's "get_customer_portal_data" action (service role,
+  // resolves the caller's own customer record + their jobs/estimates
+  // server-side from their VERIFIED session email, sent as a bearer token —
+  // never a client-claimed id). Stored in local state; `customers`/
+  // `estimates`/`jobs` props are still accepted (harmless, and referral-list
+  // lookups below still use the `customers` prop) but no longer the source
+  // of truth for the logged-in customer's own record/invoices/jobs.
+  const [portalData, setPortalData] = useState<{ customer: Customer | null; jobs: Job[]; estimates: Estimate[] } | null>(null);
+  const [portalDataLoading, setPortalDataLoading] = useState(false);
+
+  const fetchPortalData = async () => {
+    setPortalDataLoading(true);
+    try {
+      const { data: sessData } = await supabase.auth.getSession();
+      const token = sessData.session?.access_token;
+      if (!token) { setPortalData({ customer: null, jobs: [], estimates: [] }); return; }
+      const res = await fetch("/api/public-data", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ action: "get_customer_portal_data" }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok || data?.error) { setPortalData({ customer: null, jobs: [], estimates: [] }); return; }
+      setPortalData({ customer: data.customer || null, jobs: data.jobs || [], estimates: data.estimates || [] });
+    } catch {
+      setPortalData({ customer: null, jobs: [], estimates: [] });
+    } finally {
+      setPortalDataLoading(false);
+    }
+  };
+
   useEffect(() => {
     (async () => {
       const { data } = await supabase.auth.getSession();
@@ -60,9 +95,15 @@ export function ClientAuthPortal({
     return () => subscription.unsubscribe();
   }, []);
 
-  const cust = session?.user?.email
-    ? customers.find(c => (c.email || "").toLowerCase() === session.user.email.toLowerCase())
-    : null;
+  // Fetch (or re-fetch, e.g. right after signup/login flips `session`) the
+  // customer's own portal data whenever a session becomes available.
+  useEffect(() => {
+    if (session?.user?.email) fetchPortalData();
+    else setPortalData(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session?.user?.id]);
+
+  const cust = portalData?.customer || null;
 
   // FIX 17 — "View & Pay Invoice" / "Review & Sign" links emailed/texted to
   // customers all point at #/client?invoice=ID (this portal), NOT the old
@@ -80,9 +121,9 @@ export function ClientAuthPortal({
     const params = new URLSearchParams(hash.slice(qIndex + 1));
     const invoiceId = params.get("invoice");
     if (!invoiceId) return;
-    const inv = estimates.find(e => e.id === invoiceId && e.customerId === cust.id);
+    const inv = (portalData?.estimates || []).find(e => e.id === invoiceId && e.customerId === cust.id);
     if (inv) { setTab("invoices"); setPayingInv(inv); deepLinkHandledRef.current = true; }
-  }, [cust, estimates]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [cust, portalData]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // BUG 10 — if an OWNER/employee is logged in and lands on #/client, they'll
   // have a session but no matching customer record, which used to strand them
@@ -114,6 +155,19 @@ export function ClientAuthPortal({
       if (mode === "signup") {
         const { data, error } = await supabase.auth.signUp({ email: email.trim(), password });
         if (error) throw error;
+        // TODO(multitenant): this local-only setCustomers() was already a
+        // pre-existing gap (no matching Supabase insert ever fired here, so
+        // a brand-new signup with no prior CRM customer record never
+        // actually reached the `customers` table on any device but this
+        // one). Since `cust` below now comes from portalData (fetched via
+        // /api/public-data's get_customer_portal_data, resolved server-side
+        // by verified session email), a genuinely new signup with no
+        // existing customer row will land on the "Setting up your account"
+        // screen instead of a locally-faked one — surfacing the gap sooner
+        // rather than papering over it with state that silently never
+        // persisted. Not fixing here since it needs a real server-side
+        // insert path (with an owner_id to satisfy the new RLS) that
+        // doesn't exist yet in public-data.ts.
         if (!customers.find(c => (c.email || "").toLowerCase() === email.trim().toLowerCase())) {
           const id = uid();
           const referralCode = (firstName.slice(0, 3) || "REF").toUpperCase() + id.slice(-4).toUpperCase();
@@ -157,7 +211,7 @@ export function ClientAuthPortal({
 
   const companyName = settings?.companyName || "Crew Boss";
 
-  if (!checked) {
+  if (!checked || (session?.user?.email && portalData === null)) {
     return <div className="min-h-screen bg-black flex items-center justify-center text-white/40 text-sm">Loading…</div>;
   }
 
@@ -220,7 +274,8 @@ export function ClientAuthPortal({
     );
   }
 
-  const myInvoices = estimates.filter(e => e.customerId === cust.id && e.invoiced);
+  const myEstimates = portalData?.estimates || [];
+  const myInvoices = myEstimates.filter(e => e.customerId === cust.id && e.invoiced);
   const outstanding = myInvoices.filter(e => !e.paidAt);
 
   // Mark outstanding invoices as viewed once per session so the owner gets a
@@ -236,19 +291,20 @@ export function ClientAuthPortal({
     });
   }, [outstanding.map(i => i.id).join(",")]); // eslint-disable-line react-hooks/exhaustive-deps
   const paid = myInvoices.filter(e => !!e.paidAt);
-  const myJobs = jobs.filter(j => j.customerId === cust.id).sort((a, b) => (b.scheduledDate || "").localeCompare(a.scheduledDate || ""));
+  const myJobsList = portalData?.jobs || [];
+  const myJobs = myJobsList.filter(j => j.customerId === cust.id).sort((a, b) => (b.scheduledDate || "").localeCompare(a.scheduledDate || ""));
   const completedJobs = myJobs.filter(j => j.status === "completed");
   // AUDIT FIX (round 13, item 7) — upcoming vs past, instead of one
   // undifferentiated list newest-first (a customer's next job could be
   // buried below a year of completed history).
   const upcomingJobs = myJobs.filter(j => j.status !== "completed" && j.status !== "cancelled").sort((a, b) => (a.scheduledDate || "").localeCompare(b.scheduledDate || ""));
   const pastJobs = myJobs.filter(j => j.status === "completed" || j.status === "cancelled");
-  const myQuotes = estimates.filter(e => e.customerId === cust.id && !e.invoiced).sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""));
+  const myQuotes = myEstimates.filter(e => e.customerId === cust.id && !e.invoiced).sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""));
 
   const requestReschedule = async (jobId: string) => {
     setReschedulingSend(true);
     try {
-      const j = jobs.find(x => x.id === jobId);
+      const j = myJobsList.find(x => x.id === jobId);
       await (supabase as any).from("jobs").update({
         rescheduleRequested: true, rescheduleRequestNote: rescheduleNote.trim() || null, rescheduleRequestedAt: new Date().toISOString(),
       }).eq("id", jobId);
@@ -260,8 +316,14 @@ export function ClientAuthPortal({
         body: JSON.stringify({
           title: "Alfred Notifications",
           message: `📅 RESCHEDULE REQUESTED\n\n${cust.firstName} ${cust.lastName} asked to reschedule their ${j?.scheduledDate || "upcoming"} job at ${j?.address || "their property"}.${rescheduleNote.trim() ? `\n\nNote: "${rescheduleNote.trim()}"` : ""}`,
+          jobId: jobId, customerId: cust.id,
         }),
       }).catch(() => {});
+      // Optimistic local update — portalData is now this page's source of
+      // truth for `jobs` (see MULTI-TENANT note above), so without this the
+      // "Reschedule requested" badge wouldn't show until the next full
+      // fetchPortalData() call.
+      setPortalData(prev => prev ? { ...prev, jobs: prev.jobs.map(x => x.id === jobId ? { ...x, rescheduleRequested: true } as any : x) } : prev);
       toast?.("Reschedule request sent — we'll be in touch to confirm a new date ✓", "green");
       setRescheduleJobId(null);
       setRescheduleNote("");
@@ -271,9 +333,28 @@ export function ClientAuthPortal({
       setReschedulingSend(false);
     }
   };
+  // TODO(multitenant): referredCustomers still reads the App.tsx global
+  // `customers` prop, which is owner_id-scoped and will be empty for this
+  // customer session once RLS is live — public-data.ts has no action for
+  // "customers this customer referred" yet, so this list will just render
+  // empty rather than crash. Flagging rather than guessing at a new
+  // server-side action for it.
   const referredCustomers = customers.filter(c => c.referredBy === cust.id);
   const referralLink = `${window.location.origin}${window.location.pathname}#/referral?ref=${cust.referralCode || ""}`;
   const isCommercial = !!cust.isCommercial || (cust.tags || []).includes("Commercial");
+
+  // `cust` now comes from portalData (see MULTI-TENANT note above), not from
+  // the `customers` prop array — so a setCustomers() call updating that prop
+  // array no longer touches what `cust` reads from. Mirror any patch into
+  // portalData.customer too so recurring-payment/save-card UI still updates
+  // immediately, same as it did when `cust` was sourced from `customers`.
+  const patchCust = (patch: Partial<Customer> | ((c: Customer) => Partial<Customer>)) => {
+    setPortalData(prev => {
+      if (!prev?.customer) return prev;
+      const p = typeof patch === "function" ? patch(prev.customer) : patch;
+      return { ...prev, customer: { ...prev.customer, ...p } };
+    });
+  };
 
   return (
     <div className="min-h-screen bg-black text-white">
@@ -459,15 +540,15 @@ export function ClientAuthPortal({
             {isCommercial && (
               <Glass className="p-4 space-y-3">
                 <div className="text-sm font-medium flex items-center gap-1.5"><Repeat size={14} />Recurring Payment</div>
-                <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={!!cust.recurringPayment?.enabled} onChange={(e: any) => setCustomers((prev: Customer[]) => prev.map(c => c.id === cust.id ? { ...c, recurringPayment: { ...(c.recurringPayment || { frequency: "monthly" }), enabled: e.target.checked } } : c))} className="accent-red-600" />Enable recurring billing</label>
+                <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={!!cust.recurringPayment?.enabled} onChange={(e: any) => patchCust(c => ({ recurringPayment: { ...(c.recurringPayment || { frequency: "monthly" }), enabled: e.target.checked } }))} className="accent-red-600" />Enable recurring billing</label>
                 {cust.recurringPayment?.enabled && (
                   <>
                     <div className="flex gap-1 p-1 bg-black/40 border border-white/10 rounded-xl">
                       {(["monthly", "quarterly"] as const).map(f => (
-                        <button key={f} onClick={() => setCustomers((prev: Customer[]) => prev.map(c => c.id === cust.id ? { ...c, recurringPayment: { ...c.recurringPayment!, frequency: f } } : c))} className={"flex-1 py-1.5 rounded-lg text-xs capitalize transition " + (cust.recurringPayment?.frequency === f ? "bg-red-700/40 text-white" : "text-white/50")}>{f}</button>
+                        <button key={f} onClick={() => patchCust(c => ({ recurringPayment: { ...c.recurringPayment!, frequency: f } }))} className={"flex-1 py-1.5 rounded-lg text-xs capitalize transition " + (cust.recurringPayment?.frequency === f ? "bg-red-700/40 text-white" : "text-white/50")}>{f}</button>
                       ))}
                     </div>
-                    <GInput type="number" placeholder="Amount per charge ($)" value={cust.recurringPayment?.amount || ""} onChange={(e: any) => setCustomers((prev: Customer[]) => prev.map(c => c.id === cust.id ? { ...c, recurringPayment: { ...c.recurringPayment!, amount: Number(e.target.value) } } : c))} className="!text-sm" />
+                    <GInput type="number" placeholder="Amount per charge ($)" value={cust.recurringPayment?.amount || ""} onChange={(e: any) => patchCust(c => ({ recurringPayment: { ...c.recurringPayment!, amount: Number(e.target.value) } }))} className="!text-sm" />
                     <div className="text-[10px] text-white/30">{companyName} will reach out before each charge — saved card required.</div>
                   </>
                 )}
@@ -486,7 +567,12 @@ export function ClientAuthPortal({
         invoiceId={payingInv?.id}
         onSuccess={(paymentIntentId) => {
           const invId = payingInv?.id;
+          // Global `estimates` prop is owner_id-scoped/empty for this
+          // customer session now — this page renders from portalData, so
+          // update that instead. Still call setEstimates too in case it's
+          // ever non-empty (e.g. owner previewing this portal).
           setEstimates((prev: Estimate[]) => prev.map(e => e.id === invId ? { ...e, paidAt: today(), stripePaymentIntentId: paymentIntentId, stripePaymentStatus: "paid" as const } : e));
+          setPortalData(prev => prev ? { ...prev, estimates: prev.estimates.map(e => e.id === invId ? { ...e, paidAt: today(), stripePaymentIntentId: paymentIntentId, stripePaymentStatus: "paid" as const } : e) } : prev);
           // Persist to Supabase so the OWNER's CRM poll sees the payment and
           // fires an owner notification (BUG 15 / FEATURE 5).
           if (invId) {
@@ -506,6 +592,7 @@ export function ClientAuthPortal({
         existingStripeCustomerId={cust.stripeCustomerId}
         onSaved={(stripeCustomerId, paymentMethodId, label) => {
           setCustomers((prev: Customer[]) => prev.map(c => c.id === cust.id ? { ...c, stripeCustomerId, savedPaymentMethodId: paymentMethodId, savedPaymentMethodLabel: label } : c));
+          patchCust({ stripeCustomerId, savedPaymentMethodId: paymentMethodId, savedPaymentMethodLabel: label } as any);
           toast?.("Card saved ✓", "green");
           setShowSaveCard(false);
         }}

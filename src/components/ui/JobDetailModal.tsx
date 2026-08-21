@@ -487,6 +487,7 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
         validUntil: daysFromNow(30),
         invoiced: true,
         invoicedAt: today(),
+        owner_id: ownerId,
       };
       // [SendInvoice] this used to only call setEstimates (local React state)
       // with no Supabase write — the payLink texted/emailed to the customer

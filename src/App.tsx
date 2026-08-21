@@ -202,72 +202,90 @@ const setCachedRole = (userId: string, role: "employee" | "manager"): void => {
 // them as an owner. A Google identity only means "owner" for a user who isn't
 // in the employees table at all. Managers get CRM access like owners (see the
 // auth-state handler below) but with Settings restricted to their own profile.
-async function resolveUserRole(session: any): Promise<"owner" | "manager" | "employee"> {
-  if (!session?.user) return "owner";
+// MULTI-TENANT (Phase C) — now also resolves `ownerId`: the tenant every
+// owner_id-scoped Supabase call (see App.tsx's refetch/write paths and the
+// new RLS in supabase/migrations/0033_multitenant_owner_scoping.sql) must
+// filter/write by. For an owner this is their own auth uid (self-
+// referential — matches the owner's employees row, which App.tsx's owner
+// self-assign effect already writes as owner_id: <own uid>). For a manager
+// or employee it's the OWNING business's id, read off THEIR employees row —
+// critically NOT their own session.user.id. Before this fix, every call
+// site downstream used the owner's own uid unconditionally (crmUserId =
+// session.user.id), which is correct only for an owner session; a manager
+// signed into the main CRM would have had every owner_id-scoped query
+// resolve to their OWN uid instead of the business they work for, matching
+// zero rows.
+async function resolveUserRole(session: any): Promise<{ role: "owner" | "manager" | "employee"; ownerId: string }> {
+  if (!session?.user) return { role: "owner", ownerId: "" };
+  const selfId = session.user.id;
 
   const cached = getCachedRole(session.user.id);
   if (cached) {
-    return cached;
+    // Cache only ever stores "employee"/"manager" (see setCachedRole call
+    // sites below) — re-resolve ownerId from the employees row even on a
+    // cache hit, since the cache predates this field and doesn't store it.
+    try {
+      const { data } = await (supabase as any).from("employees").select("owner_id").eq("user_id", selfId).maybeSingle();
+      if (data?.owner_id) return { role: cached, ownerId: data.owner_id };
+    } catch { /* fall through */ }
+    return { role: cached, ownerId: selfId };
   }
 
   try {
     const { data } = await (supabase as any)
       .from("employees")
-      .select("id, role")
-      .eq("user_id", session.user.id)
+      .select("id, role, owner_id")
+      .eq("user_id", selfId)
       .maybeSingle();
     if (data) {
       const role = (data.role || "").toLowerCase();
+      const ownerId = data.owner_id || selfId;
       if (role === "owner") {
-        return "owner";
+        return { role: "owner", ownerId };
       }
       if (role === "manager") {
-        setCachedRole(session.user.id, "manager");
-        return "manager";
+        setCachedRole(selfId, "manager");
+        return { role: "manager", ownerId };
       }
-      setCachedRole(session.user.id, "employee");
-      return "employee";
+      setCachedRole(selfId, "employee");
+      return { role: "employee", ownerId };
     }
   } catch { /* employees table may not exist */ }
 
   // No row matched by user_id — for a Google sign-in this is normal the
   // FIRST time an employee uses Google (their employees row was created by
-  // the owner with just an email, never linked to an auth user_id yet). Try
-  // matching by email and link it so every future lookup hits the fast
-  // user_id path above.
-  const email = session.user.email;
-  if (email) {
+  // the owner with just an email, never linked to an auth user_id yet).
+  // link_own_employee_by_email() (SECURITY DEFINER RPC, see migration
+  // 0033_multitenant_owner_scoping.sql) finds AND links that row by the
+  // caller's OWN verified JWT email in one atomic step — a direct table
+  // query here can't do this under the new owner_id-scoped RLS, since
+  // there's no user_id link yet for current_owner_id() to resolve through.
+  if (session.user.email) {
     try {
-      const { data: byEmail } = await (supabase as any)
-        .from("employees")
-        .select("id, role, user_id")
-        .ilike("email", email)
-        .maybeSingle();
+      const { data: byEmail } = await (supabase as any).rpc("link_own_employee_by_email").maybeSingle();
       if (byEmail) {
-        if (!byEmail.user_id) {
-          (supabase as any).from("employees").update({ user_id: session.user.id }).eq("id", byEmail.id).catch(() => {});
-        }
         const role = (byEmail.role || "").toLowerCase();
-        if (role === "owner") return "owner";
-        if (role === "manager") { setCachedRole(session.user.id, "manager"); return "manager"; }
-        setCachedRole(session.user.id, "employee");
-        return "employee";
+        const ownerId = byEmail.owner_id || selfId;
+        if (role === "owner") return { role: "owner", ownerId };
+        if (role === "manager") { setCachedRole(selfId, "manager"); return { role: "manager", ownerId }; }
+        setCachedRole(selfId, "employee");
+        return { role: "employee", ownerId };
       }
-    } catch { /* employees table may not exist or have no email column */ }
+    } catch { /* RPC may not exist yet (migration not applied) or no matching row */ }
   }
 
   const oauthIntent = consumeOAuthIntent();
   if (oauthIntent === "employee") {
-    return "employee";
+    return { role: "employee", ownerId: selfId };
   }
 
   const identities = session.user.identities || [];
   const hasGoogle = identities.some((i: any) => i.provider === "google");
   if (hasGoogle) {
-    return "owner";
+    return { role: "owner", ownerId: selfId };
   }
 
-  return "employee";
+  return { role: "employee", ownerId: selfId };
 }
 
 // Captures the Google OAuth token bridged via sessionStorage (see the manual
@@ -599,7 +617,7 @@ export function App() {
   const saveFabQuickCustomer = (d: any) => {
     const id = uid();
     const referralCode = (d.firstName?.slice(0, 3) || "REF").toUpperCase() + id.slice(-4).toUpperCase();
-    const record = { ...d, id, totalSpent: 0, createdAt: today(), referralCode };
+    const record = { ...d, id, totalSpent: 0, createdAt: today(), referralCode, owner_id: crmUserId };
     setCustomers((prev: any[]) => [...prev, record]);
     setFabQuickCustomerOpen(false);
     (supabase as any).from("customers").insert(record)
@@ -1181,7 +1199,7 @@ export function App() {
     const firstName = rawName.split(" ")[0] || "Owner";
     const lastName = rawName.split(" ").slice(1).join(" ") || "";
     const ownerEmpRow: any = {
-      id: ownerId, firstName, lastName, role: "owner", status: "active", email: ownerEmail, hourlyRate: 0,
+      id: ownerId, firstName, lastName, role: "owner", status: "active", email: ownerEmail, hourlyRate: 0, owner_id: crmUserId,
     };
     setEmployees(prev => prev.some(e => e.id === ownerId) ? prev : [...prev, ownerEmpRow as Employee]);
     (supabase as any).from("employees").upsert(ownerEmpRow, { onConflict: "id" })
@@ -1477,7 +1495,7 @@ export function App() {
       fetch("/api/alfred-notify", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ title: "Alfred Notifications", message: msg }),
+        body: JSON.stringify({ title: "Alfred Notifications", message: msg, ownerId: crmUserId }),
       })
         .then(r => { if (!r.ok) console.warn("[AlfredCheckin] alfred-notify failed:", r.status); })
         .catch((e: any) => console.warn("[AlfredCheckin] alfred-notify threw:", e?.message));
@@ -1541,7 +1559,7 @@ export function App() {
       fetch("/api/alfred-notify", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ title: "Alfred Notifications", message: briefing }),
+        body: JSON.stringify({ title: "Alfred Notifications", message: briefing, ownerId: crmUserId }),
       })
         .then(r => { if (!r.ok) console.warn("[AlfredBriefing] alfred-notify failed:", r.status); })
         .catch((e: any) => console.warn("[AlfredBriefing] alfred-notify threw:", e?.message));
@@ -1601,6 +1619,36 @@ export function App() {
   // Portal
   const [portalEstId, setPortalEstId] = useState<string | null>(null);
   const [openJobId, setOpenJobId] = useState<string | null>(null);
+
+  // MULTI-TENANT (Phase D) — public #/estimate/:id data. Once RLS is
+  // owner_id-scoped, an anonymous visitor (or a customer with no `employees`
+  // row) can't resolve current_owner_id(), so the global `estimates`/
+  // `customers` arrays are empty for this route. Fetched via the
+  // service-role-backed /api/public-data endpoint (functions/api/public-data.ts,
+  // action "get_estimate"), scoped narrowly by the unguessable estimate id.
+  const [publicEstimate, setPublicEstimate] = useState<{ estimate: any; customer: any; settings: any } | null>(null);
+  const [publicEstimateLoading, setPublicEstimateLoading] = useState(true);
+  useEffect(() => {
+    if (page !== "estimate") return;
+    const estId = window.location.hash.replace(/^#\/?/, "").split("?")[0].replace(/^estimate\/?/, "");
+    if (!estId) { setPublicEstimateLoading(false); return; }
+    let cancelled = false;
+    setPublicEstimateLoading(true);
+    fetch("/api/public-data", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "get_estimate", id: estId }),
+    })
+      .then(res => res.json().then((data: any) => ({ ok: res.ok, data })))
+      .then(({ ok, data }) => {
+        if (cancelled) return;
+        if (!ok || data?.error) { setPublicEstimate(null); return; }
+        setPublicEstimate({ estimate: data.estimate, customer: data.customer, settings: data.settings });
+      })
+      .catch(() => { if (!cancelled) setPublicEstimate(null); })
+      .finally(() => { if (!cancelled) setPublicEstimateLoading(false); });
+    return () => { cancelled = true; };
+  }, [page]);
 
   // Company first-run setup
   const [setupDone, setSetupDone] = usePersistentRaw("smocks.setupDone", "");
@@ -1747,7 +1795,7 @@ export function App() {
 
   const refetchEmployees = async () => {
     try {
-      const { data, error } = await (supabase as any).from("employees").select("*");
+      const { data, error } = await (supabase as any).from("employees").select("*").eq("owner_id", crmUserId);
       if (error) {
         console.warn("[LiveCrew] employees fetch error:", error.message, "— (RLS may be blocking reads; run the employees RLS SQL) — keeping cached data");
         setCrewFetchError(true);
@@ -1774,11 +1822,11 @@ export function App() {
     setIsSyncing(true);
     try {
       const [{ data: sbJobs, error: jobsErr }, { data: sbCustomers, error: customersErr }, { data: sbEstimates, error: estimatesErr }, { data: sbPromotions }, { data: sbReviews }] = await Promise.all([
-        (supabase as any).from("jobs").select("*"),
-        (supabase as any).from("customers").select("*"),
-        (supabase as any).from("estimates").select("*"),
-        (supabase as any).from("promotions").select("*").then((r: any) => r).catch(() => ({ data: null })),
-        (supabase as any).from("reviews").select("*").then((r: any) => r).catch(() => ({ data: null })),
+        (supabase as any).from("jobs").select("*").eq("owner_id", crmUserId),
+        (supabase as any).from("customers").select("*").eq("owner_id", crmUserId),
+        (supabase as any).from("estimates").select("*").eq("owner_id", crmUserId),
+        (supabase as any).from("promotions").select("*").eq("owner_id", crmUserId).then((r: any) => r).catch(() => ({ data: null })),
+        (supabase as any).from("reviews").select("*").eq("owner_id", crmUserId).then((r: any) => r).catch(() => ({ data: null })),
       ]);
       // EGRESS/QUOTA — supabase-js resolves with {data: null, error} rather
       // than throwing, so this Promise.all never hits the catch block below
@@ -1949,6 +1997,7 @@ export function App() {
         const safeJobs = jobs.map(j => {
           const copy: any = stripLegacyJobFields(j);
           EMPLOYEE_OWNED_FIELDS.forEach(f => delete copy[f]);
+          copy.owner_id = crmUserId;
           return copy;
         });
         // FIX 1b (mobile round 6) — newer optional fields (recurring
@@ -2034,10 +2083,11 @@ export function App() {
   const upsertCustomersSafely = async (list: any[], label: string) => {
     if (list.length === 0) return;
     try {
-      const { error } = await (supabase as any).from("customers").upsert(list, { onConflict: "id" });
+      const withOwner = list.map((c: any) => ({ ...c, owner_id: crmUserId }));
+      const { error } = await (supabase as any).from("customers").upsert(withOwner, { onConflict: "id" });
       if (!error) return;
       console.warn(`${label} failed:`, error.message, "— retrying without", CUSTOMER_OPTIONAL_NEWER_FIELDS.join("/"));
-      const coreList = list.map((c: any) => {
+      const coreList = withOwner.map((c: any) => {
         const copy = { ...c };
         CUSTOMER_OPTIONAL_NEWER_FIELDS.forEach(f => delete copy[f]);
         return copy;
@@ -2054,7 +2104,7 @@ export function App() {
       await upsertCustomersSafely(customers, "Customer auto-save");
       if (estimates.length > 0) {
         try {
-          const { error } = await (supabase as any).from("estimates").upsert(estimates, { onConflict: "id" });
+          const { error } = await (supabase as any).from("estimates").upsert(estimates.map((e: any) => ({ ...e, owner_id: crmUserId })), { onConflict: "id" });
           if (error) console.warn("Estimate auto-save failed:", error.message);
         } catch (err: any) { console.warn("Estimate auto-save failed:", err?.message); }
       }
@@ -2086,7 +2136,7 @@ export function App() {
       const storedEst = estimates;
       if (storedEst.length > 0) {
         try {
-          const { error } = await (supabase as any).from("estimates").upsert(storedEst, { onConflict: "id" });
+          const { error } = await (supabase as any).from("estimates").upsert(storedEst.map((e: any) => ({ ...e, owner_id: crmUserId })), { onConflict: "id" });
           if (error) console.warn("Initial estimate sync failed:", error.message);
         } catch (err: any) { console.warn("Initial estimate sync failed:", err?.message); }
       }
@@ -2127,10 +2177,10 @@ export function App() {
     try {
       channel = (supabase as any)
         .channel("jobs-sync")
-        .on("postgres_changes", { event: "*", schema: "public", table: "jobs" }, () => { refetchData(); })
-        .on("postgres_changes", { event: "*", schema: "public", table: "customers" }, () => { refetchData(); })
-        .on("postgres_changes", { event: "*", schema: "public", table: "estimates" }, () => { refetchData(); })
-        .on("postgres_changes", { event: "*", schema: "public", table: "employees" }, () => { refetchEmployees(); })
+        .on("postgres_changes", { event: "*", schema: "public", table: "jobs", filter: `owner_id=eq.${crmUserId}` }, () => { refetchData(); })
+        .on("postgres_changes", { event: "*", schema: "public", table: "customers", filter: `owner_id=eq.${crmUserId}` }, () => { refetchData(); })
+        .on("postgres_changes", { event: "*", schema: "public", table: "estimates", filter: `owner_id=eq.${crmUserId}` }, () => { refetchData(); })
+        .on("postgres_changes", { event: "*", schema: "public", table: "employees", filter: `owner_id=eq.${crmUserId}` }, () => { refetchEmployees(); })
         .subscribe();
     } catch { /* realtime may not be enabled on this project */ }
     // EGRESS FIX — jobs/customers/estimates carry inline base64 photos/videos
@@ -2152,7 +2202,7 @@ export function App() {
       clearInterval(crewInterval);
       try { channel?.unsubscribe(); } catch { /* ignore */ }
     };
-  }, [hasCrmSession, !!empSession, (settings as any)?.pollIntervalMs]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [hasCrmSession, !!empSession, crmUserId, (settings as any)?.pollIntervalMs]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Supabase Google OAuth / identity-link capture ────────────────────────
   useEffect(() => {
@@ -2320,7 +2370,7 @@ export function App() {
             if (event === "TOKEN_REFRESHED") {
               const freshProviderToken = (session as any)?.provider_token;
               if (freshProviderToken) {
-                const refreshRole = await resolveUserRole(session);
+                const { role: refreshRole } = await resolveUserRole(session);
                 if (refreshRole === "employee") {
                   console.log("[GoogleConnect] TOKEN_REFRESHED — active session is an EMPLOYEE — updating employees.google_token only, owner's settings.googleProviderToken left untouched");
                   persistEmployeeGoogleToken(session);
@@ -2346,7 +2396,7 @@ export function App() {
               return;
             }
 
-            const userRole = await resolveUserRole(session);
+            const { role: userRole, ownerId: resolvedOwnerId } = await resolveUserRole(session);
 
             if (userRole === "employee") {
               // Force the hash to #/portal immediately too — belt-and-suspenders so the
@@ -2370,7 +2420,7 @@ export function App() {
             else { setHasCrmSession(false); setLastOwnerSessionFlag(false); }
             setCrmRole(userRole === "manager" ? "manager" : "owner");
             if (session?.user?.email) setCrmUserEmail(session.user.email);
-            if (session?.user?.id) { setCrmUserId(session.user.id); setLastOwnerId(session.user.id); }
+            if (session?.user?.id) { setCrmUserId(resolvedOwnerId || session.user.id); setLastOwnerId(resolvedOwnerId || session.user.id); }
             applyGoogleIdentity(session);
 
             if (event === "SIGNED_IN" || (event as string) === "IDENTITY_LINKED") {
@@ -2403,7 +2453,7 @@ export function App() {
         }
         const { data: { session: initial } } = await supabase.auth.getSession();
         const initIsGoogle = (initial?.user?.identities || []).some((i: any) => i.provider === "google");
-        const initRole = await resolveUserRole(initial);
+        const { role: initRole, ownerId: initOwnerId } = await resolveUserRole(initial);
         if (initial && initRole === "employee") {
           if (!window.location.hash.startsWith("#/portal")) window.location.hash = "/portal";
           setEmpSession(initial);
@@ -2414,7 +2464,7 @@ export function App() {
           if (initial) { setHasCrmSession(true); setLastOwnerSessionFlag(true); }
           else { setHasCrmSession(false); setLastOwnerSessionFlag(false); }
           setCrmRole(initRole === "manager" ? "manager" : "owner");
-          if (initial?.user?.id) { setCrmUserId(initial.user.id); setLastOwnerId(initial.user.id); }
+          if (initial?.user?.id) { setCrmUserId(initOwnerId || initial.user.id); setLastOwnerId(initOwnerId || initial.user.id); }
           applyGoogleIdentity(initial);
           if (isOAuthCallback && initIsGoogle) {
             setPage("google");
@@ -2591,14 +2641,23 @@ export function App() {
   // internal preview button, wired to write approve/decline straight to
   // Supabase — this visitor has no CRM session for the App-level state
   // setters to mean anything beyond this one render.
+  // Reads AND writes for this anonymous route both go through
+  // /api/public-data (service role, bypasses RLS) — see approve_estimate/
+  // decline_estimate there. A direct anon-client write here would be
+  // rejected by the new owner_id-scoped WITH CHECK policies, since an
+  // anonymous visitor has no owner_id-satisfying session.
   if (page === "estimate") {
-    const estId = window.location.hash.replace(/^#\/?/, "").split("?")[0].replace(/^estimate\/?/, "");
-    const est = estimates.find(e => e.id === estId);
-    const estCust = est ? customers.find(c => c.id === est.customerId) : undefined;
+    const est = publicEstimate?.estimate;
+    const estCust = publicEstimate?.customer;
+    // publicEstimateLoading distinguishes "still fetching" from "fetched and
+    // truly not found" (expired/bad link) — both render the same message
+    // today, but keeping the flag around in case that copy needs to diverge.
     if (!est) {
       return (
         <div className="min-h-screen bg-black flex items-center justify-center text-white/50 text-sm p-4 text-center">
-          Loading your estimate… if this doesn't load in a few seconds, the link may have expired — contact {settings.companyName || "the business"} for a new one.
+          {publicEstimateLoading
+            ? "Loading your estimate…"
+            : <>Loading your estimate… if this doesn't load in a few seconds, the link may have expired — contact {publicEstimate?.settings?.companyName || settings.companyName || "the business"} for a new one.</>}
         </div>
       );
     }
@@ -2608,7 +2667,7 @@ export function App() {
         customer={estCust}
         jobs={jobs}
         invoices={estimates.filter(e => e.invoiced)}
-        settings={settings}
+        settings={{ ...settings, ...(publicEstimate?.settings || {}) } as any}
         estimateTemplates={estimateTemplates}
         promotions={promotions}
         customers={customers}
@@ -2623,37 +2682,45 @@ export function App() {
             paidDeposit: data.payType === "deposit" ? data.totalPaid : (e.paidDeposit || 0),
             paidFull: data.payType === "full" ? data.totalPaid : data.payType === "remaining" ? (e.paidDeposit || 0) + data.totalPaid : (e.paidFull || 0),
           } : e));
-          (supabase as any).from("estimates").update({
-            status: "approved", signedAt: data.signedAt, sigData: data.sigData, payChoice: data.payChoice,
-            ...(paid ? { paidAt: today() } : {}),
-          }).eq("id", id).catch(() => {});
-          setJobs(prev => {
-            if (prev.some(j => (j as any).estimateId === id)) return prev;
-            const cust = customers.find(c => c.id === est.customerId);
-            // FEATURE 4 — combine every linked service's checklist template
-            // (instead of always starting the job with an empty checklist).
-            // Seeds BOTH job.checklist (legacy, CrewView/JobsPage progress %)
-            // AND job.preChecklist (what EmployeePortal's field-portal flow
-            // actually renders to the crew — it only falls back to hardcoded
-            // defaults when empty).
-            const combinedChecklist = buildChecklistFromServices(est.lineItems, services);
-            const newJob = {
-              id: uid(), customerId: est.customerId, address: cust?.address || "",
-              amount: est.total, status: "scheduled", scheduledDate: "", duration: 2,
-              priority: "normal", crew: [], checklist: combinedChecklist, preChecklist: combinedChecklist, photos: [], chemicalsUsed: [],
-              equipment: [], tags: ["Needs Scheduling"], commLog: [],
-              notes: "From approved estimate #" + id.slice(-4).toUpperCase(),
-              createdAt: today(), estimateId: id,
-            } as any;
-            (supabase as any).from("jobs").insert(newJob).catch(() => {});
-            return [...prev, newJob];
-          });
+          const cust = customers.find(c => c.id === est.customerId);
+          // FEATURE 4 — combine every linked service's checklist template
+          // (instead of always starting the job with an empty checklist).
+          // Seeds BOTH job.checklist (legacy, CrewView/JobsPage progress %)
+          // AND job.preChecklist (what EmployeePortal's field-portal flow
+          // actually renders to the crew — it only falls back to hardcoded
+          // defaults when empty).
+          const combinedChecklist = buildChecklistFromServices(est.lineItems, services);
+          const newJob = {
+            id: uid(), customerId: est.customerId, address: cust?.address || "",
+            amount: est.total, status: "scheduled", scheduledDate: "", duration: 2,
+            priority: "normal", crew: [], checklist: combinedChecklist, preChecklist: combinedChecklist, photos: [], chemicalsUsed: [],
+            equipment: [], tags: ["Needs Scheduling"], commLog: [],
+            notes: "From approved estimate #" + id.slice(-4).toUpperCase(),
+            createdAt: today(), estimateId: id,
+          } as any;
+          setJobs(prev => prev.some(j => (j as any).estimateId === id) ? prev : [...prev, { ...newJob, owner_id: (est as any).owner_id }]);
+          // Anonymous visitor — no owner_id-satisfying session, so this
+          // write goes through the service-role approve_estimate action
+          // (see functions/api/public-data.ts) rather than the anon client.
+          fetch("/api/public-data", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              action: "approve_estimate", id, signedAt: data.signedAt, sigData: data.sigData, payChoice: data.payChoice,
+              paid, totalPaid: data.totalPaid, payType: data.payType,
+              job: newJob,
+            }),
+          }).catch(() => {});
           toast(paid ? "✓ Paid — " + fmt(data.totalPaid) : "✓ Signed — you'll pay later");
         }}
         onDecline={async (id: string, data: { reason?: string }) => {
           const declinedAt = new Date().toISOString();
           setEstimates(prev => prev.map(e => e.id === id ? { ...e, status: "rejected", declinedAt, declineReason: data.reason || "" } as any : e));
-          try { await (supabase as any).from("estimates").update({ status: "rejected", declinedAt, declineReason: data.reason || "" }).eq("id", id); } catch { /* ignore */ }
+          try {
+            await fetch("/api/public-data", {
+              method: "POST", headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ action: "decline_estimate", id, reason: data.reason || "" }),
+            });
+          } catch { /* ignore */ }
         }}
       />
     );
@@ -3350,7 +3417,7 @@ export function App() {
                 {page === "intake"         && <LeadIntakePage customers={customers} setCustomers={setCustomers} estimates={estimates} setEstimates={setEstimates} services={services} settings={settings} setSettings={setSettings} toast={toast} onNav={setPage} />}
                 {page === "alfred"         && (managerBlocked("alfred") ? <RestrictedNotice label="Alfred AI" /> : <AlfredPage conversations={alfredConversations} setConversations={setAlfredConversations} activeConvId={activeConvId} setActiveConvId={setActiveConvId} memory={alfredMemory} setMemory={setAlfredMemory} personality={personality} setPersonality={setPersonality} apiKey={settings.anthropicKey ?? settings.geminiKey ?? ""} openSettings={() => setSettingsOpen(true)} toast={toast} jobs={jobs} setJobs={setJobs} estimates={estimates} setEstimates={setEstimates} customers={customers} setCustomers={setCustomers} employees={employees} automations={automations} setAutomations={setAutomations} stats={{ totalRev, activeJobs, pendingEst, closeRate, doneMonth }} setWins={setWins} goals={goalsList} setGoals={setGoalsList} setSettings={setSettings} settings={settings} modelStatus={modelStatus} setModelStatus={setModelStatus} onNav={setPage} ownerId={crmUserId} />)}
                 {page === "google"         && (managerBlocked("google") ? <RestrictedNotice label="Google Workspace" /> : <GoogleWorkspacePage settings={settings} setSettings={setSettings} googleData={googleData as any} setGoogleData={setGoogleData} customers={customers} setCustomers={setCustomers} jobs={jobs} toast={toast} onNav={setPage} />)}
-                {page === "employees"      && <EmployeesPage employees={employees} setEmployees={setEmployees} jobs={jobs} setJobs={setJobs} customers={customers} settings={settings} toast={toast} autoOpenManagerInvite={autoOpenManagerInvite} onAutoOpenManagerInviteConsumed={() => setAutoOpenManagerInvite(false)} initialView={employeesInitialView} onInitialViewConsumed={() => setEmployeesInitialView(undefined)} />}
+                {page === "employees"      && <EmployeesPage employees={employees} setEmployees={setEmployees} jobs={jobs} setJobs={setJobs} customers={customers} settings={settings} toast={toast} autoOpenManagerInvite={autoOpenManagerInvite} onAutoOpenManagerInviteConsumed={() => setAutoOpenManagerInvite(false)} initialView={employeesInitialView} onInitialViewConsumed={() => setEmployeesInitialView(undefined)} ownerId={crmUserId} />}
                 {page === "fleet"          && <FleetPage vehicles={vehicles} setVehicles={setVehicles} maintenance={maintenance} setMaintenance={setMaintenance} toast={toast} />}
                 {page === "expenses"       && <ExpensesPage expenses={expenses} setExpenses={setExpenses} />}
                 {page === "chemicals"      && <ChemicalsPage chemicals={chemicals} setChemicals={setChemicals} toast={toast} settings={settings} />}
@@ -3481,7 +3548,7 @@ export function App() {
                 priority: "normal", crew: [], checklist: combinedChecklist, preChecklist: combinedChecklist, photos: [], chemicalsUsed: [],
                 equipment: [], tags: ["Needs Scheduling"], commLog: [],
                 notes: "From approved estimate #" + id.slice(-4).toUpperCase(),
-                createdAt: today(), estimateId: id,
+                createdAt: today(), estimateId: id, owner_id: crmUserId,
               } as any;
               (supabase as any).from("jobs").insert(newJob)
                 .then((r: any) => { if (r?.error) toast?.("Job created locally, but failed to save to the server — " + r.error.message, "red"); })

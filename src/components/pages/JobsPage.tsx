@@ -811,7 +811,7 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
                 notes: newJobForm.notes,
                 duration: newJobForm.duration ? Number(newJobForm.duration) : undefined,
                 crew: directAssignEmps.map(e => e.id), checklist: [], photos: [], commLog: [], chemicalsUsed: [], equipment: [], tags: [],
-                loggedHours: 0, createdAt: today(),
+                loggedHours: 0, createdAt: today(), owner_id: ownerId,
                 // REVERTED — organizationId here caused the App.tsx 30s bulk
                 // autosave to fail for every job ("Could not find the
                 // organizationId column of jobs in the schema cache") once
@@ -1411,7 +1411,7 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
                     // from before that bug was reverted (see lib/utils.ts); a
                     // bare {...j} spread would carry it into this brand-new
                     // row and fail the insert below.
-                    const nextJob: any = { ...stripLegacyJobFields(j), id: uid(), status: "scheduled", scheduledDate: nextDate, loggedHours: 0, clockInAt: null, arrivedAt: null, completedAt: null, checklist: (j.checklist || []).map(ck => ({ ...ck, done: false })), preChecklist: (j.preChecklist || []).map((ck: any) => ({ ...ck, done: false })), duringChecklist: (j.duringChecklist || []).map((ck: any) => ({ ...ck, done: false })), postChecklist: (j.postChecklist || []).map((ck: any) => ({ ...ck, done: false })), commLog: [], photos: [], videos: [], chemicalsUsed: [], paymentStatus: undefined, amountCollected: undefined };
+                    const nextJob: any = { ...stripLegacyJobFields(j), id: uid(), status: "scheduled", scheduledDate: nextDate, loggedHours: 0, clockInAt: null, arrivedAt: null, completedAt: null, checklist: (j.checklist || []).map(ck => ({ ...ck, done: false })), preChecklist: (j.preChecklist || []).map((ck: any) => ({ ...ck, done: false })), duringChecklist: (j.duringChecklist || []).map((ck: any) => ({ ...ck, done: false })), postChecklist: (j.postChecklist || []).map((ck: any) => ({ ...ck, done: false })), commLog: [], photos: [], videos: [], chemicalsUsed: [], paymentStatus: undefined, amountCollected: undefined, owner_id: ownerId };
                     console.log("[Recurring] auto-scheduling next occurrence for", nextDate, "— crew:", nextJob.crew);
                     setJobs(prev => [...prev.map(x => x.id === j.id ? { ...x, status: "completed" } : x), nextJob]);
                     (supabase as any).from("jobs").insert(nextJob)

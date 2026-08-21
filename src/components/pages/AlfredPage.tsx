@@ -1078,7 +1078,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
         }
         case "create_customer": {
           if (!inputs.firstName || !inputs.lastName) return { error: "firstName and lastName required" };
-          const newC = { id: uid(), firstName: inputs.firstName, lastName: inputs.lastName, email: inputs.email || "", phone: inputs.phone || "", address: inputs.address || "", totalSpent: 0, createdAt: today(), notes: inputs.notes || "", gateCode: "", hasDog: false, dogName: "", sensitivePlants: "" };
+          const newC = { id: uid(), firstName: inputs.firstName, lastName: inputs.lastName, email: inputs.email || "", phone: inputs.phone || "", address: inputs.address || "", totalSpent: 0, createdAt: today(), notes: inputs.notes || "", gateCode: "", hasDog: false, dogName: "", sensitivePlants: "", owner_id: ownerId };
           // Alfred must never claim a customer was created unless the Supabase
           // write actually succeeded — local setState always "succeeds" (it's
           // just a React render), so that alone was the literal cause of
@@ -1122,7 +1122,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           const subtotal = items.reduce((s, i) => s + i.quantity * i.unitPrice, 0);
           const tax = subtotal * ((Number(settings.taxRate) || 6) / 100);
           const total = subtotal + tax;
-          const newE = { id: uid(), customerId: c.id, lineItems: items, subtotal, discount: 0, depositRequired: 0, tax, total, status: "pending", createdAt: today(), validUntil: daysFromNow(30), viewed: false, viewedAt: null, terms: "Payment due upon completion.", notes: inputs.notes || "" };
+          const newE = { id: uid(), customerId: c.id, lineItems: items, subtotal, discount: 0, depositRequired: 0, tax, total, status: "pending", createdAt: today(), validUntil: daysFromNow(30), viewed: false, viewedAt: null, terms: "Payment due upon completion.", notes: inputs.notes || "", owner_id: ownerId };
           let savedE: any = null;
           let saveErrorE: any = null;
           try {
@@ -1245,7 +1245,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
             notes: inputs.notes || "",
             duration: inputs.duration ? Number(inputs.duration) : undefined,
             crew: [] as any[], checklist: [] as any[], photos: [], commLog: [], chemicalsUsed: [], equipment: [], tags: [],
-            loggedHours: 0, createdAt: today(),
+            loggedHours: 0, createdAt: today(), owner_id: ownerId,
             // REVERTED — organizationId was added here on the strength of a
             // one-off console log that turned out not to hold up: live
             // testing now shows the App.tsx 30s bulk jobs autosave (which
@@ -1304,7 +1304,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
               id: newJ.id, customerId: newJ.customerId, address: newJ.address, amount: newJ.amount,
               status: newJ.status, scheduledDate: newJ.scheduledDate, scheduledTime: newJ.scheduledTime,
               priority: newJ.priority, notes: newJ.notes, crew: newJ.crew, checklist: newJ.checklist,
-              photos: newJ.photos, commLog: newJ.commLog, createdAt: newJ.createdAt,
+              photos: newJ.photos, commLog: newJ.commLog, createdAt: newJ.createdAt, owner_id: newJ.owner_id,
             };
             console.log("[AlfredTool schedule_job] core-column retry payload:", JSON.stringify(coreJob, null, 2));
             const retry: any = await (supabase as any).from("jobs").insert(coreJob);
@@ -1524,7 +1524,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           const newInv = {
             id: uid(), customerId: c.id, lineItems: items, subtotal, discount: 0, depositRequired: 0, tax, total,
             status: "approved", createdAt: today(), validUntil: daysFromNow(30), viewed: false, viewedAt: null,
-            terms: "Payment due upon receipt.", notes: inputs.notes || "", invoiced: true, invoicedAt: today(),
+            terms: "Payment due upon receipt.", notes: inputs.notes || "", invoiced: true, invoicedAt: today(), owner_id: ownerId,
           };
           const { data: savedInv, error: invErr } = await withTimeoutRetry<any>(
             () => (supabase as any).from("estimates").insert(newInv).select().single(),

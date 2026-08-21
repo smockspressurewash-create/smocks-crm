@@ -20,9 +20,8 @@
 // Optional hardening: set TWILIO_AUTH_TOKEN in Cloudflare Pages -> Settings
 // -> Environment variables to verify requests are genuinely from Twilio
 // (X-Twilio-Signature). Without it, this endpoint still works, just
-// unverified — acceptable here since the worst case of a forged request is
-// one customer's opt-in flag flipping, not a data breach (this app's RLS is
-// already fully permissive per CLAUDE.md — single-owner app, not multi-tenant).
+// unverified — worst case of a forged request without it is one customer's
+// opt-in flag flipping at the business whose Twilio number was guessed.
 
 const SUPABASE_URL = "https://boaqaihymgmrhnjtiqrs.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_8aEa3wsYJ7ghVPcGbtHymw_ugj0aEfm";
@@ -53,9 +52,64 @@ const twiml = (message?: string) => new Response(
   { headers: { "Content-Type": "text/xml" } }
 );
 
-const fetchAppSettings = async (): Promise<{ companyName: string; keyword: string }> => {
+// MULTI-TENANT (Phase G) — under migration 0033_multitenant_owner_scoping.sql,
+// app_settings is now owner_id-scoped RLS, so an anon-key `limit=1` read
+// (a) can't resolve current_owner_id() at all on this server-to-server call
+// (no session) and would return zero rows regardless, and (b) was already an
+// unsound "there's only ever one business" assumption. This webhook receives
+// an inbound SMS to a specific Twilio number — Twilio sends that as the `To`
+// field in the POST body — and each owner's own outbound Twilio number is
+// already stored as `settings.twilioFrom` (see lib/messaging.ts / the Twilio
+// section of SettingsModal.tsx). Match the inbound `To` against every
+// owner's stored `twilioFrom` (service role, bypasses RLS) to find which
+// business this text belongs to, instead of guessing "the" owner.
+//
+// Falls back to the OLD limit=1/anon-key behavior when
+// SUPABASE_SERVICE_ROLE_KEY isn't configured yet, so a single-owner
+// deployment that hasn't set up the new env var (or hasn't applied migration
+// 0033 yet, so RLS is still permissive) keeps working unmodified — same
+// fallback style stripe-action.ts uses for STRIPE_SECRET_KEY.
+const fetchAppSettings = async (env: Record<string, string>, toNumber: string): Promise<{ companyName: string; keyword: string; ownerId: string | null }> => {
+  const serviceRoleKey = env.SUPABASE_SERVICE_ROLE_KEY;
+  const toDigits = normalizePhoneDigits(toNumber);
   try {
-    const res = await fetch(`${SUPABASE_URL}/rest/v1/app_settings?select=data-%3E%3EcompanyName,data-%3E%3EsmsOptInKeyword&limit=1`, {
+    if (serviceRoleKey) {
+      const headers = { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}` };
+      // Prefer a direct PostgREST JSONB-text filter (matches the exact
+      // stored string) — falls back to fetching all rows and matching in JS
+      // (digits-only) below if that finds nothing, since `twilioFrom` may be
+      // stored in a different format than Twilio's E.164 `To` (e.g.
+      // "(717) 555-0100" vs "+17175550100").
+      if (toNumber) {
+        const exactRes = await fetch(`${SUPABASE_URL}/rest/v1/app_settings?select=owner_id,data-%3E%3EcompanyName,data-%3E%3EsmsOptInKeyword&data-%3E%3EtwilioFrom=eq.${encodeURIComponent(toNumber)}&limit=1`, { headers });
+        const exactRows = await exactRes.json().catch(() => []);
+        const exactRow = Array.isArray(exactRows) ? exactRows[0] : null;
+        if (exactRow) {
+          return {
+            companyName: exactRow?.companyName || "Crew Boss",
+            keyword: (exactRow?.smsOptInKeyword || DEFAULT_OPT_IN_KEYWORD).toUpperCase(),
+            ownerId: exactRow?.owner_id || null,
+          };
+        }
+      }
+      const allRes = await fetch(`${SUPABASE_URL}/rest/v1/app_settings?select=owner_id,data`, { headers });
+      const allRows = await allRes.json().catch(() => []);
+      const match = Array.isArray(allRows)
+        ? allRows.find((r: any) => toDigits && normalizePhoneDigits(r?.data?.twilioFrom || "") === toDigits)
+        : null;
+      if (match) {
+        return {
+          companyName: match?.data?.companyName || "Crew Boss",
+          keyword: (match?.data?.smsOptInKeyword || DEFAULT_OPT_IN_KEYWORD).toUpperCase(),
+          ownerId: match?.owner_id || null,
+        };
+      }
+      console.warn("[TwilioSmsWebhook] no app_settings row's twilioFrom matched inbound To:", toNumber);
+      return { companyName: "Crew Boss", keyword: DEFAULT_OPT_IN_KEYWORD, ownerId: null };
+    }
+
+    // Fallback — no service role key configured, old single-tenant behavior.
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/app_settings?select=owner_id,data-%3E%3EcompanyName,data-%3E%3EsmsOptInKeyword&limit=1`, {
       headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}` },
     });
     const rows = await res.json().catch(() => []);
@@ -63,9 +117,10 @@ const fetchAppSettings = async (): Promise<{ companyName: string; keyword: strin
     return {
       companyName: row?.companyName || "Crew Boss",
       keyword: (row?.smsOptInKeyword || DEFAULT_OPT_IN_KEYWORD).toUpperCase(),
+      ownerId: row?.owner_id || null,
     };
   } catch {
-    return { companyName: "Crew Boss", keyword: DEFAULT_OPT_IN_KEYWORD };
+    return { companyName: "Crew Boss", keyword: DEFAULT_OPT_IN_KEYWORD, ownerId: null };
   }
 };
 
@@ -99,16 +154,27 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
 
     const isStop = STOP_WORDS.includes(body);
     const isStart = START_WORDS.includes(body);
-    const { companyName, keyword } = await fetchAppSettings();
+    const { companyName, keyword, ownerId } = await fetchAppSettings(context.env, params.To || "");
     const isOptInKeyword = body === keyword;
     const isConfirm = CONFIRM_WORDS.includes(body);
 
+    // MULTI-TENANT — every read/write below now goes through the SAME
+    // credentials + owner scoping fetchAppSettings resolved above: service
+    // role key + this business's owner_id when both are available (RLS is
+    // live and we identified the owner), otherwise the old anon-key/
+    // unscoped behavior (RLS still permissive, or no service role key
+    // configured yet) — same fallback contract as fetchAppSettings itself.
+    const serviceRoleKey = context.env.SUPABASE_SERVICE_ROLE_KEY;
+    const authHeaders = serviceRoleKey
+      ? { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}` }
+      : { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}` };
+    const ownerFilter = ownerId ? `&owner_id=eq.${encodeURIComponent(ownerId)}` : "";
+
     const fromDigits = normalizePhoneDigits(from);
     // No normalized phone column to filter on server-side (formats vary:
-    // "(717) 555-0100" vs "+17175550100") — fetch and match in JS. Fine at
-    // this app's single-tenant scale (CLAUDE.md).
-    const listRes = await fetch(`${SUPABASE_URL}/rest/v1/customers?select=id,phone,firstName,lastName,smsOptInPending`, {
-      headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}` },
+    // "(717) 555-0100" vs "+17175550100") — fetch and match in JS.
+    const listRes = await fetch(`${SUPABASE_URL}/rest/v1/customers?select=id,phone,firstName,lastName,smsOptInPending${ownerFilter}`, {
+      headers: authHeaders,
     });
     const list = await listRes.json().catch(() => []);
     const match = Array.isArray(list) ? list.find((c: any) => normalizePhoneDigits(c.phone) === fromDigits) : null;
@@ -127,8 +193,8 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
     // now just a fallback/catch-up for whenever this webhook isn't
     // configured yet), directly reducing Twilio REST API usage.
     try {
-      const threadsRes = await fetch(`${SUPABASE_URL}/rest/v1/inbox_threads?channel=eq.sms&select=id,contact_phone,messages`, {
-        headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}` },
+      const threadsRes = await fetch(`${SUPABASE_URL}/rest/v1/inbox_threads?channel=eq.sms&select=id,contact_phone,messages${ownerFilter}`, {
+        headers: authHeaders,
       });
       if (!threadsRes.ok) console.error("[TwilioSmsWebhook] inbox_threads read failed (" + threadsRes.status + "):", await threadsRes.clone().text().catch(() => ""));
       const existingThreads = await threadsRes.json().catch(() => []);
@@ -166,7 +232,7 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
         const merged = [...(Array.isArray(existingThread.messages) ? existingThread.messages : []), newMsg];
         const patchRes = await fetch(`${SUPABASE_URL}/rest/v1/inbox_threads?id=eq.${encodeURIComponent(existingThread.id)}`, {
           method: "PATCH",
-          headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}`, "Content-Type": "application/json", Prefer: "return=minimal" },
+          headers: { ...authHeaders, "Content-Type": "application/json", Prefer: "return=minimal" },
           body: JSON.stringify({ messages: merged, unread: true, last_message_at: newMsg.ts, updated_at: new Date().toISOString() }),
         });
         if (!patchRes.ok) console.error("[TwilioSmsWebhook] inbox_threads PATCH failed (" + patchRes.status + "):", await patchRes.text().catch(() => ""));
@@ -174,8 +240,8 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
         const contactName = match ? `${match.firstName || ""} ${match.lastName || ""}`.trim() || from : from;
         const postRes = await fetch(`${SUPABASE_URL}/rest/v1/inbox_threads`, {
           method: "POST",
-          headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}`, "Content-Type": "application/json", Prefer: "return=minimal" },
-          body: JSON.stringify({ id: crypto.randomUUID(), channel: "sms", contact_name: contactName, contact_phone: from, customer_id: match?.id || null, unread: true, messages: [newMsg], last_message_at: newMsg.ts, updated_at: new Date().toISOString() }),
+          headers: { ...authHeaders, "Content-Type": "application/json", Prefer: "return=minimal" },
+          body: JSON.stringify({ id: crypto.randomUUID(), channel: "sms", contact_name: contactName, contact_phone: from, customer_id: match?.id || null, unread: true, messages: [newMsg], last_message_at: newMsg.ts, updated_at: new Date().toISOString(), owner_id: ownerId || null }),
         });
         if (!postRes.ok) console.error("[TwilioSmsWebhook] inbox_threads POST failed (" + postRes.status + "):", await postRes.text().catch(() => ""));
       }
@@ -193,7 +259,7 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
     const patchCustomer = async (id: string, patch: Record<string, unknown>) => {
       const res = await fetch(`${SUPABASE_URL}/rest/v1/customers?id=eq.${encodeURIComponent(id)}`, {
         method: "PATCH",
-        headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}`, "Content-Type": "application/json", Prefer: "return=minimal" },
+        headers: { ...authHeaders, "Content-Type": "application/json", Prefer: "return=minimal" },
         body: JSON.stringify(patch),
       });
       if (!res.ok) console.error("[TwilioSmsWebhook] patch failed for", id, ":", await res.text().catch(() => ""));
@@ -211,8 +277,8 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
     // never log the reply twice.
     const persistOutboundReply = async (text: string) => {
       try {
-        const threadsRes = await fetch(`${SUPABASE_URL}/rest/v1/inbox_threads?channel=eq.sms&select=id,contact_phone,messages`, {
-          headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}` },
+        const threadsRes = await fetch(`${SUPABASE_URL}/rest/v1/inbox_threads?channel=eq.sms&select=id,contact_phone,messages${ownerFilter}`, {
+          headers: authHeaders,
         });
         const existingThreads = await threadsRes.json().catch(() => []);
         const existingThread = Array.isArray(existingThreads)
@@ -226,7 +292,7 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
           const merged = [...(Array.isArray(existingThread.messages) ? existingThread.messages : []), replyMsg];
           const patchRes = await fetch(`${SUPABASE_URL}/rest/v1/inbox_threads?id=eq.${encodeURIComponent(existingThread.id)}`, {
             method: "PATCH",
-            headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}`, "Content-Type": "application/json", Prefer: "return=minimal" },
+            headers: { ...authHeaders, "Content-Type": "application/json", Prefer: "return=minimal" },
             body: JSON.stringify({ messages: merged, last_message_at: replyMsg.ts, updated_at: new Date().toISOString() }),
           });
           if (!patchRes.ok) console.error("[TwilioSmsWebhook] auto-reply PATCH failed (" + patchRes.status + "):", await patchRes.text().catch(() => ""));
@@ -234,8 +300,8 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
           const contactName = match ? `${match.firstName || ""} ${match.lastName || ""}`.trim() || from : from;
           const postRes = await fetch(`${SUPABASE_URL}/rest/v1/inbox_threads`, {
             method: "POST",
-            headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}`, "Content-Type": "application/json", Prefer: "return=minimal" },
-            body: JSON.stringify({ id: crypto.randomUUID(), channel: "sms", contact_name: contactName, contact_phone: from, customer_id: match?.id || null, unread: false, messages: [replyMsg], last_message_at: replyMsg.ts, updated_at: new Date().toISOString() }),
+            headers: { ...authHeaders, "Content-Type": "application/json", Prefer: "return=minimal" },
+            body: JSON.stringify({ id: crypto.randomUUID(), channel: "sms", contact_name: contactName, contact_phone: from, customer_id: match?.id || null, unread: false, messages: [replyMsg], last_message_at: replyMsg.ts, updated_at: new Date().toISOString(), owner_id: ownerId || null }),
           });
           if (!postRes.ok) console.error("[TwilioSmsWebhook] auto-reply POST failed (" + postRes.status + "):", await postRes.text().catch(() => ""));
         }
@@ -277,8 +343,8 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
         // bare-minimum new-lead shape.
         const insertRes = await fetch(`${SUPABASE_URL}/rest/v1/customers`, {
           method: "POST",
-          headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}`, "Content-Type": "application/json", Prefer: "return=representation" },
-          body: JSON.stringify([{ id: crypto.randomUUID(), firstName: "", lastName: "", phone: from, email: "", totalSpent: 0, createdAt: new Date().toISOString(), smsOptInPending: true, smsOptInPendingAt: new Date().toISOString() }]),
+          headers: { ...authHeaders, "Content-Type": "application/json", Prefer: "return=representation" },
+          body: JSON.stringify([{ id: crypto.randomUUID(), firstName: "", lastName: "", phone: from, email: "", totalSpent: 0, createdAt: new Date().toISOString(), smsOptInPending: true, smsOptInPendingAt: new Date().toISOString(), owner_id: ownerId || null }]),
         });
         const inserted = await insertRes.json().catch(() => null);
         customerId = Array.isArray(inserted) ? inserted[0]?.id : undefined;

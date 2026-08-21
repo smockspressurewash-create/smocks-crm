@@ -102,10 +102,39 @@ const markInvoicePaid = (invoiceId: string, paymentIntentId: string, amount?: nu
   );
 };
 
+// MULTI-TENANT (Phase F) — each business configures its OWN Stripe webhook
+// in its OWN Stripe dashboard, pointing at this same endpoint with an
+// `?oid=<ownerId>` query param (mirrors TrashCanSignupPage.tsx's existing
+// `?oid=` convention for public per-owner links). That query param — not
+// anything in the payload — is what selects WHICH webhook secret to verify
+// the signature against, so one owner's events can never be validated
+// against (and therefore never write into) another owner's data using a
+// stolen/guessed oid: an attacker without that owner's real webhook secret
+// simply fails signature verification below, same as always.
+const getOwnerWebhookSecret = async (ownerId: string, serviceRoleKey: string): Promise<string | null> => {
+  const res = await fetch(
+    `${SUPABASE_URL}/rest/v1/owner_stripe_accounts?owner_id=eq.${encodeURIComponent(ownerId)}&select=stripe_webhook_secret`,
+    { headers: { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}` } }
+  );
+  const rows = await res.json().catch(() => []);
+  return Array.isArray(rows) && rows[0]?.stripe_webhook_secret ? rows[0].stripe_webhook_secret : null;
+};
+
 export const onRequestPost = async (context: { request: Request; env: Record<string, string> }) => {
-  const secret = context.env.STRIPE_WEBHOOK_SECRET;
+  const url = new URL(context.request.url);
+  const oid = url.searchParams.get("oid");
+
+  let secret: string | null = null;
+  if (oid && context.env.SUPABASE_SERVICE_ROLE_KEY) {
+    secret = await getOwnerWebhookSecret(oid, context.env.SUPABASE_SERVICE_ROLE_KEY);
+  }
+  // Falls back to the platform-wide secret when no ?oid= is present (the
+  // original single-tenant webhook URL some deployments already have
+  // configured in their Stripe dashboard keeps working unmodified) or when
+  // that owner hasn't set their own webhook secret yet.
+  if (!secret) secret = context.env.STRIPE_WEBHOOK_SECRET;
   if (!secret) {
-    return new Response(JSON.stringify({ error: "Server missing STRIPE_WEBHOOK_SECRET env var — add it in the Cloudflare Pages dashboard" }), {
+    return new Response(JSON.stringify({ error: oid ? `No Stripe webhook secret on file for owner ${oid}, and no platform STRIPE_WEBHOOK_SECRET fallback is set.` : "Server missing STRIPE_WEBHOOK_SECRET env var — add it in the Cloudflare Pages dashboard" }), {
       status: 500, headers: { "Content-Type": "application/json" },
     });
   }

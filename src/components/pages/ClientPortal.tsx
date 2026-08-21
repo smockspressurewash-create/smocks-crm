@@ -252,6 +252,7 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
         body: JSON.stringify({
           title: "Alfred Notifications",
           message: `👀 ${kind} VIEWED\n\n` + c.firstName + " " + c.lastName + ` just opened their ${isInvoice ? "invoice" : "estimate"} for ` + fmt(e.total) + `.\n\nNow's a great time to follow up if they don't ${isInvoice ? "pay" : "sign"} in 30 min.`,
+          estimateId: e.id,
         }),
       }).catch(() => {});
     }

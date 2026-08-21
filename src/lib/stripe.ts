@@ -28,15 +28,40 @@ export const loadStripeJs = (publishableKey: string): Promise<any> => {
 // environment variable and never returns it to the client. Nothing in this
 // file touches a Stripe secret key anymore — only the publishable key
 // (loadStripeJs above), which is safe to expose by design.
-const stripeAction = async (action: string, params: Record<string, any> = {}): Promise<any> => {
+const stripeAction = async (action: string, params: Record<string, any> = {}, accessToken?: string): Promise<any> => {
   const res = await fetch("/api/stripe-action", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}) },
     body: JSON.stringify({ action, ...params }),
   });
   const data = await res.json().catch(() => ({} as any));
   if (!res.ok) throw new Error(data?.error || `Stripe error ${res.status}`);
   return data;
+};
+
+// ─── Per-owner Stripe account management (Settings → Integrations → Stripe) ──
+// Secret key / webhook secret never round-trip through app_settings.data
+// (loaded into every session including unauthenticated portals — see the
+// round-12 audit note above) — these two calls are the ONLY place they're
+// ever sent, straight to stripe-action.ts, which stores them in the
+// service-role-only owner_stripe_accounts table and never returns them.
+
+export interface OwnerStripeStatus {
+  hasSecretKey: boolean;
+  hasWebhookSecret: boolean;
+  publishableKey: string;
+  mode: "test" | "live";
+  webhookUrl: string;
+}
+
+export const getOwnerStripeStatus = async (accessToken: string): Promise<OwnerStripeStatus> =>
+  stripeAction("get_owner_keys_status", {}, accessToken);
+
+export const saveOwnerStripeKeys = async (
+  accessToken: string,
+  keys: { publishableKey?: string; secretKey?: string; webhookSecret?: string; mode?: "test" | "live" }
+): Promise<void> => {
+  await stripeAction("save_owner_keys", keys, accessToken);
 };
 
 // ─── Payment Intents ───────────────────────────────────────────────────────────

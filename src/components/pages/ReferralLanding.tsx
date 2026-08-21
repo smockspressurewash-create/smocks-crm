@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { Gift, Phone, Mail, MapPin, CheckCircle } from "lucide-react";
 import { uid, today } from "../../lib/utils";
 import type { Customer, AppSettings } from "../../types";
@@ -16,7 +16,31 @@ export function ReferralLanding({ customers = [], setCustomers = (() => {}) as a
   const params = new URLSearchParams(queryPart);
   const pathCode = hash.match(/^#\/?r\/([^?]+)/i)?.[1];
   const refCode = (params.get("ref") || pathCode || "").trim().toUpperCase();
-  const referrer = customers.find(c => (c.referralCode || "").toUpperCase() === refCode);
+
+  // MULTI-TENANT (Phase D) — was `customers.find(...)` against the App.tsx
+  // global `customers` array (a prop still accepted above, kept for any
+  // other harmless use, but it's owner_id-scoped now and empty for this
+  // anonymous route once RLS goes live). Resolved instead via
+  // /api/public-data's "get_referral_customer" action (service role,
+  // bypasses RLS, scoped by the unguessable referral code).
+  const [referrer, setReferrer] = useState<{ id: string; firstName: string; lastName: string; referralCode: string; owner_id?: string } | null>(null);
+  useEffect(() => {
+    if (!refCode) return;
+    let cancelled = false;
+    fetch("/api/public-data", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "get_referral_customer", code: refCode }),
+    })
+      .then(res => res.json().then((data: any) => ({ ok: res.ok, data })))
+      .then(({ ok, data }) => {
+        if (cancelled) return;
+        if (!ok || data?.error || !data?.customer) { setReferrer(null); return; }
+        setReferrer(data.customer);
+      })
+      .catch(() => { if (!cancelled) setReferrer(null); });
+    return () => { cancelled = true; };
+  }, [refCode]);
 
   const [showForm, setShowForm] = useState(false);
   const [submitted, setSubmitted] = useState(false);
@@ -35,7 +59,16 @@ export function ReferralLanding({ customers = [], setCustomers = (() => {}) as a
       ...f, id, tags: [], totalSpent: 0, createdAt: today(), referralCode,
       leadSource: "Referral", referredBy: referrer?.id,
       utmSource: "referral_link", utmMedium: refCode || undefined, utmCampaign: "referral",
+      // Inherit the referrer's owner_id so this record lines up with whichever
+      // business it belongs to — see TODO below re: this write path.
+      ...(referrer?.owner_id ? { owner_id: referrer.owner_id } : {}),
     } as Customer]);
+    // TODO(multitenant): this only updates local (localStorage-backed) state
+    // via setCustomers — there was never an actual Supabase insert here, even
+    // pre-RLS, so this signup silently never reached the `customers` table.
+    // Not something this pass introduced or was asked to fix, but worth
+    // flagging: an anonymous insert here will also need to satisfy the new
+    // owner_id-scoped WITH CHECK policy once it's wired up for real.
     setBusy(false);
     setSubmitted(true);
     toast?.("Thanks! We'll be in touch to schedule your quote.", "green");

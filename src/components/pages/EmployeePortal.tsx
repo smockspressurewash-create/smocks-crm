@@ -679,6 +679,11 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
         lineItems: [{ id: uid(), description: job.notes || job.address || "Service", quantity: 1, unitPrice: Number(job.amount) || 0 }],
         subtotal: Number(job.amount) || 0, discount: 0, depositRequired: 0, tax: 0, total: Number(job.amount) || 0,
         status: "approved" as const, createdAt: today(), validUntil: daysFromNow(30), invoiced: true, invoicedAt: today(),
+        // The employee has no separate "ownerId" concept of their own here —
+        // this invoice belongs to whichever owner the source job belongs to,
+        // so inherit it straight off the job row (fetched with owner_id via
+        // App.tsx's select("*")) rather than plumbing a new prop through.
+        owner_id: (job as any).owner_id,
       };
       // [SendInvoice] this used to ONLY call setEstimates (local React state)
       // with no Supabase insert at all — the same "local-state-only mutation"
@@ -2265,23 +2270,29 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
       const { data: { session: existingSession } } = await supabase.auth.getSession();
       if (existingSession) return;
 
-      // 1. Try Supabase first — works from any browser/device
+      // 1. Try the service-role invite-lookup function first — works from
+      // any browser/device. Routed through functions/api/invite-action.ts
+      // rather than a direct Supabase query because the invites table's RLS
+      // is now owner_id-scoped (supabase/migrations/0033_multitenant_owner_
+      // scoping.sql) and there's no session/owner_id yet to scope an
+      // anonymous code lookup by — a public `SELECT true` policy would leak
+      // every business's pending invites, not just this one code.
       try {
-        const { data, error } = await (supabase as any)
-          .from("invites")
-          .select("*")
-          .eq("code", code)
-          .maybeSingle();
-        if (!error) {
-          applyInvite(data);
+        const res = await fetch("/api/invite-action", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "lookup", code }),
+        });
+        const result = await res.json().catch(() => ({} as any));
+        if (res.ok && result?.invite) {
+          applyInvite(result.invite);
           return;
         }
-        // If the error is NOT "table doesn't exist", surface it
-        if (!(error.message || "").includes("does not exist")) {
+        if (res.status === 404 || res.status === 410) {
           applyInvite(null);
           return;
         }
-        // Table doesn't exist — fall through to localStorage
+        // Any other server error — fall through to localStorage
       } catch { /* fall through */ }
 
       // 2. Fallback: localStorage (same browser as owner)
@@ -3897,6 +3908,12 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
         hourlyRate: inviteRecord.hourlyRate ?? 0,
         user_id: session.user.id,
         status: "active",
+        // Inherit the owner_id the invite itself was created under (see
+        // EmployeesPage.tsx generateInvite) — this employee has no session
+        // of their own yet to derive it from. See the invite-lookup TODO
+        // above: this whole path is blocked pre-session under owner-scoped
+        // invites RLS anyway until that follow-up lands.
+        owner_id: inviteRecord.owner_id,
       };
       // AUDIT 9 — this insert used to be fire-and-forget with no error
       // handling at all. If it failed (RLS, a duplicate email constraint,
@@ -3956,14 +3973,25 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
       const newUserId = signInData.session.user.id;
       const newEmail = signInData.session.user.email || "";
 
-      // Mark invite as used — Supabase first, then localStorage
+      // Mark invite used + link the employees row to this new auth user —
+      // both routed through the service-role invite-action function (see
+      // its header comment): under the new owner_id-scoped RLS, this
+      // brand-new session has no employees.user_id link yet, so
+      // current_owner_id() can't resolve anything for it to write these
+      // rows directly, even though it's the same person who just proved
+      // ownership of the invite code.
+      const invEmpId = inviteRecord?.employeeId || inviteRecord?.employee_id;
+      let linkedEmployee: any = null;
       if (inviteCode) {
         try {
-          await (supabase as any)
-            .from("invites")
-            .update({ used: true, used_at: new Date().toISOString(), used_by: newUserId })
-            .eq("code", inviteCode);
-        } catch { /* table may not exist */ }
+          const res = await fetch("/api/invite-action", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ action: "consume", code: inviteCode, newUserId, employeeId: invEmpId, email: newEmail }),
+          });
+          const result = await res.json().catch(() => ({} as any));
+          if (res.ok) linkedEmployee = result?.employee || null;
+        } catch { /* fall through — worst case, employee stays unlinked until next lookup-by-email */ }
         try {
           const stored: any[] = JSON.parse(localStorage.getItem("smocks.invites") || "[]");
           localStorage.setItem("smocks.invites", JSON.stringify(
@@ -3971,22 +3999,6 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
           ));
         } catch { /* ignore */ }
       }
-
-      // Link employee record to the new Supabase user ID so email-less lookups work.
-      // Try by invite's employee ID first, then fall back to email match.
-      const invEmpId = inviteRecord?.employeeId || inviteRecord?.employee_id;
-      let linkedEmployee: any = null;
-      try {
-        if (invEmpId) {
-          await (supabase as any).from("employees").update({ user_id: newUserId }).eq("id", invEmpId);
-          const { data } = await (supabase as any).from("employees").select("*").eq("id", invEmpId).maybeSingle();
-          linkedEmployee = data;
-        } else if (newEmail) {
-          await (supabase as any).from("employees").update({ user_id: newUserId }).eq("email", newEmail);
-          const { data } = await (supabase as any).from("employees").select("*").ilike("email", newEmail).maybeSingle();
-          linkedEmployee = data;
-        }
-      } catch { /* employees table may not have user_id column yet */ }
 
       // Provide the employee record immediately so myEmployee resolves without waiting for parent re-fetch
       if (linkedEmployee) setLocalEmployee(normalizeEmp(linkedEmployee));

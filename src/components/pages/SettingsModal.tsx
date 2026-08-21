@@ -30,6 +30,7 @@ import { callModel, MODELS } from "../../lib/api";
 import { createCalendarEvent, updateCalendarEvent, deleteCalendarEvent, fetchDriveFiles, MOCK_GOOGLE_DATA, fmtSize, fmtDate, fileIcon } from "../../lib/google";
 import { refreshEmpGoogleToken } from "../../lib/googleApi";
 import { supabase, getStoredGoogleConnection, setStoredGoogleToken, clearStoredGoogleConnection } from "../../lib/supabase";
+import { getOwnerStripeStatus, saveOwnerStripeKeys, type OwnerStripeStatus } from "../../lib/stripe";
 import { usePersistent } from "../../hooks/usePersistent";
 import { usePersistentRaw } from "../../hooks/usePersistentRaw";
 import { Glass } from "../ui/Glass";
@@ -92,6 +93,60 @@ const isValidHttpsUrl = (value: string): boolean => {
 export function SettingsModal({ open, onClose, settings, setSettings, jobs = [], setJobs = (() => {}) as any, services, setServices, emailTemplates, setEmailTemplates, smsTemplates, setSmsTemplates, estimateTemplates = [], setEstimateTemplates = (() => {}) as any, modelStatus = {}, setModelStatus = (() => {}) as any, toast, onSignOut, restrictToProfile = false, onAddManager }: { open?: any; onClose?: any; settings?: any; setSettings?: any; jobs?: any[]; setJobs?: any; services?: any; setServices?: any; emailTemplates?: any; setEmailTemplates?: any; smsTemplates?: any; setSmsTemplates?: any; estimateTemplates?: any[]; setEstimateTemplates?: any; modelStatus?: any; setModelStatus?: any; toast?: any; onSignOut?: () => void; restrictToProfile?: boolean; onAddManager?: () => void }) {
   const [f, setF] = useState(settings);
   const [sec, setSec] = useState(restrictToProfile ? "profile" : "api");
+  // Per-owner Stripe keys (Phase F, multi-tenant) — deliberately NOT part of
+  // `f`/`settings` (that object syncs into app_settings.data, which every
+  // session loads including unauthenticated customer portals — see the
+  // round-12 audit note in the Stripe section below). Loaded/saved straight
+  // through stripe-action.ts's save_owner_keys/get_owner_keys_status, which
+  // never returns the secret values back to the browser once saved.
+  const [stripeStatus, setStripeStatus] = useState<OwnerStripeStatus | null>(null);
+  const [stripeStatusLoading, setStripeStatusLoading] = useState(false);
+  const [stripeSecretInput, setStripeSecretInput] = useState("");
+  const [stripeWebhookInput, setStripeWebhookInput] = useState("");
+  const [stripeMode, setStripeMode] = useState<"test" | "live">("test");
+  const [stripeSaving, setStripeSaving] = useState(false);
+  useEffect(() => {
+    if (!open) return;
+    (async () => {
+      setStripeStatusLoading(true);
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        const token = session?.access_token;
+        if (!token) return;
+        const status = await getOwnerStripeStatus(token);
+        setStripeStatus(status);
+        setStripeMode(status.mode);
+        if (status.publishableKey && !f.stripePublishableKey) setF((prev: any) => ({ ...prev, stripePublishableKey: status.publishableKey }));
+      } catch (e: any) {
+        console.error("[Stripe] get_owner_keys_status failed:", e?.message);
+      } finally {
+        setStripeStatusLoading(false);
+      }
+    })();
+  }, [open]);
+  const saveStripeKeys = async () => {
+    setStripeSaving(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const token = session?.access_token;
+      if (!token) throw new Error("Not signed in");
+      await saveOwnerStripeKeys(token, {
+        publishableKey: f.stripePublishableKey || "",
+        secretKey: stripeSecretInput || undefined,
+        webhookSecret: stripeWebhookInput || undefined,
+        mode: stripeMode,
+      });
+      const status = await getOwnerStripeStatus(token);
+      setStripeStatus(status);
+      setStripeSecretInput("");
+      setStripeWebhookInput("");
+      toast?.("Stripe settings saved.", "green");
+    } catch (e: any) {
+      toast?.("Failed to save Stripe settings: " + (e?.message || "unknown error"), "red");
+    } finally {
+      setStripeSaving(false);
+    }
+  };
   const [showKey, setShowKey] = useState(false);
   const [googleOAuth, setGoogleOAuth] = useState({ open: false, step: "account", email: "", selectedScopes: { gmail: true, calendar: true, drive: false, contacts: false } });
   const [googleRetrying, setGoogleRetrying] = useState(false);
@@ -1147,52 +1202,65 @@ export function SettingsModal({ open, onClose, settings, setSettings, jobs = [],
             <Glass className="p-4 !bg-black/40">
               <div className="flex items-center justify-between mb-2">
                 <div className="flex items-center gap-2"><CreditCard size={14} className="text-purple-400" /><div className="font-semibold text-sm">Stripe</div></div>
-                <Badge tone={f.stripePublishableKey?.trim() ? "green" : "gray"}>
-                  {f.stripePublishableKey?.trim() ? "Publishable Key Set" : "Not Connected"}
+                <Badge tone={stripeStatus?.hasSecretKey ? "green" : f.stripePublishableKey?.trim() ? "yellow" : "gray"}>
+                  {stripeStatus?.hasSecretKey ? "Connected" : f.stripePublishableKey?.trim() ? "Publishable Key Set" : "Not Connected"}
                 </Badge>
               </div>
-              <div className="text-xs text-white/60 mb-3">Accept deposits, payments, and tips on estimates and invoices.</div>
+              <div className="text-xs text-white/60 mb-3">Accept deposits, payments, and tips on estimates and invoices — using YOUR OWN Stripe account.</div>
               <div className="space-y-2.5">
                 <div>
                   <label className="text-[10px] text-white/50 mb-1 block uppercase tracking-wider">Publishable Key</label>
-                  <GInput placeholder="pk_live_…" value={f.stripePublishableKey || ""} onChange={e => setF({ ...f, stripePublishableKey: e.target.value })} className="!text-xs font-mono" />
+                  <GInput placeholder="pk_live_… or pk_test_…" value={f.stripePublishableKey || ""} onChange={e => setF({ ...f, stripePublishableKey: e.target.value })} className="!text-xs font-mono" />
                   <div className="text-[10px] text-white/30 mt-1">Safe to store here — this key is meant to be public, it can only start a payment, never move money on its own.</div>
                 </div>
-                {/* SECURITY AUDIT (round 12) — the Secret Key field used to
-                    live right here, "encrypted" with a reversible XOR and
-                    synced into every session's settings object — including
-                    the customer-facing ClientPortal/ClientAuthPortal, which
-                    used it to call Stripe's API directly from the browser.
-                    That handed full Stripe account access to any customer
-                    who opened a payment link. The secret key must never be
-                    typed into this app's UI again — it now lives ONLY in a
-                    Cloudflare Pages environment variable that no browser
-                    session, owner or customer, can read. See
-                    functions/api/stripe-action.ts. */}
-                <div className="p-3 bg-red-950/20 border border-red-700/40 rounded-xl text-[10px] text-white/70 space-y-1">
-                  <div className="font-semibold text-red-300">⚠️ Secret Key — required, but NOT entered here</div>
-                  <div>Payments (and everything else that needs the secret key — creating charges, refunds, saved cards) now run through a server-side function so the secret key is never exposed to a customer's browser. Set it up once:</div>
-                  <div className="mt-1">1. Cloudflare Pages → this project → Settings → Environment variables → add <span className="font-mono text-blue-400">STRIPE_SECRET_KEY</span> (your <span className="font-mono">sk_live_…</span> or <span className="font-mono">sk_test_…</span> key).</div>
-                  <div>2. Redeploy (or it'll take effect on the next deploy automatically).</div>
-                  {f.stripeSecretKeyEnc && (
-                    <div className="mt-1.5 pt-1.5 border-t border-red-800/30 text-yellow-300">
-                      A secret key was saved here in an older version of this app. It no longer does anything (nothing reads it anymore) but is still sitting in your synced settings — click below to remove it, and rotate that key in your Stripe dashboard since it may have been exposed to customers who viewed a payment page.
-                    </div>
-                  )}
+
+                <div className="flex gap-2">
+                  <button type="button" onClick={() => setStripeMode("test")} className={"flex-1 py-1.5 rounded-lg text-[11px] font-medium transition " + (stripeMode === "test" ? "bg-yellow-500/20 text-yellow-300 border border-yellow-600/40" : "bg-white/5 text-white/40 border border-white/10")}>Test Mode</button>
+                  <button type="button" onClick={() => setStripeMode("live")} className={"flex-1 py-1.5 rounded-lg text-[11px] font-medium transition " + (stripeMode === "live" ? "bg-green-500/20 text-green-300 border border-green-600/40" : "bg-white/5 text-white/40 border border-white/10")}>Live Mode</button>
                 </div>
-                {f.stripeSecretKeyEnc && (
-                  <GBtn variant="ghost" className="!text-xs !border-red-800/40 !text-red-400" onClick={() => setF({ ...f, stripeSecretKeyEnc: "" })}>
-                    <Trash2 size={12} className="inline mr-1.5" />Remove old stored secret key
-                  </GBtn>
-                )}
+
+                {/* SECURITY (multi-tenant Phase F + round-12 audit) — the
+                    Secret Key never joins `f`/`settings` state, which syncs
+                    into app_settings.data and is loaded by every session,
+                    including unauthenticated customer portals. It's sent
+                    ONLY via saveOwnerStripeKeys → stripe-action.ts's
+                    save_owner_keys action, which requires the caller's own
+                    Supabase session token and writes straight into the
+                    service-role-only owner_stripe_accounts table — never
+                    returned to any browser again, this one included. */}
+                <div>
+                  <label className="text-[10px] text-white/50 mb-1 block uppercase tracking-wider">Secret Key {stripeStatus?.hasSecretKey && <span className="text-green-400 normal-case">· a key is already saved</span>}</label>
+                  <GInput type="password" placeholder={stripeStatus?.hasSecretKey ? "•••••••••••••••• (leave blank to keep current key)" : "sk_live_… or sk_test_…"} value={stripeSecretInput} onChange={e => setStripeSecretInput(e.target.value)} className="!text-xs font-mono" />
+                  <div className="text-[10px] text-white/30 mt-1">Stored server-side only — never sent to customers' browsers, never visible again once saved.</div>
+                </div>
+
+                <div>
+                  <label className="text-[10px] text-white/50 mb-1 block uppercase tracking-wider">Webhook Secret (optional) {stripeStatus?.hasWebhookSecret && <span className="text-green-400 normal-case">· already saved</span>}</label>
+                  <GInput type="password" placeholder={stripeStatus?.hasWebhookSecret ? "•••••••••••••••• (leave blank to keep current)" : "whsec_…"} value={stripeWebhookInput} onChange={e => setStripeWebhookInput(e.target.value)} className="!text-xs font-mono" />
+                </div>
+
+                <GBtn onClick={saveStripeKeys} disabled={stripeSaving} className="!text-xs w-full">
+                  {stripeSaving ? "Saving…" : "Save Stripe Settings"}
+                </GBtn>
+
                 <div className="p-3 bg-black/60 rounded-xl border border-white/5 text-[10px] text-white/50 space-y-1">
-                  <div className="font-semibold text-white/70">Optional: Server-Verified Payment Webhook</div>
-                  <div>Payments already get marked paid automatically when a customer completes checkout. For extra tamper-resistance (a signature-verified check that can't be spoofed from a browser), also set up the Stripe webhook:</div>
-                  <div className="mt-1">1. Cloudflare Pages → this project → Settings → Environment variables → add <span className="font-mono text-blue-400">STRIPE_WEBHOOK_SECRET</span>.</div>
-                  <div>2. Stripe Dashboard → Developers → Webhooks → Add endpoint → <span className="font-mono text-blue-400 break-all">{window.location.origin}/api/stripe-webhook</span></div>
-                  <div>3. Select events: checkout.session.completed, checkout.session.async_payment_succeeded, payment_intent.succeeded, payment_intent.payment_failed, charge.refunded, charge.dispute.created.</div>
-                  <div>4. Stripe shows a signing secret ("whsec_…") when you create the endpoint — that's the value for step 1.</div>
+                  <div className="font-semibold text-white/70">Server-Verified Payment Webhook</div>
+                  <div>Payments already get marked paid automatically when a customer completes checkout. For extra tamper-resistance (a signature-verified check that can't be spoofed from a browser), also set up your webhook:</div>
+                  <div className="mt-1">1. Stripe Dashboard → Developers → Webhooks → Add endpoint → paste this exact URL:</div>
+                  <div className="font-mono text-blue-400 break-all p-1.5 bg-black/40 rounded">{stripeStatusLoading ? "loading…" : (stripeStatus?.webhookUrl || `${window.location.origin}/api/stripe-webhook`)}</div>
+                  <div className="mt-1">2. Select events: checkout.session.completed, checkout.session.async_payment_succeeded, payment_intent.succeeded, payment_intent.payment_failed, charge.refunded, charge.dispute.created.</div>
+                  <div>3. Stripe shows a signing secret ("whsec_…") when you create the endpoint — paste it into the Webhook Secret field above and save.</div>
                 </div>
+
+                {f.stripeSecretKeyEnc && (
+                  <div className="p-3 bg-red-950/20 border border-red-700/40 rounded-xl text-[10px] text-white/70 space-y-1.5">
+                    <div className="font-semibold text-red-300">⚠️ Old secret key found in synced settings</div>
+                    <div className="text-yellow-300">A secret key was saved here in an older version of this app. It no longer does anything, but is still sitting in your synced settings — click below to remove it, and rotate that key in your Stripe dashboard since it may have been exposed to customers who viewed a payment page.</div>
+                    <GBtn variant="ghost" className="!text-xs !border-red-800/40 !text-red-400" onClick={() => setF({ ...f, stripeSecretKeyEnc: "" })}>
+                      <Trash2 size={12} className="inline mr-1.5" />Remove old stored secret key
+                    </GBtn>
+                  </div>
+                )}
               </div>
             </Glass>
 
