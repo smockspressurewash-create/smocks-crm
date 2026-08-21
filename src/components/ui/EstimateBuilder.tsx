@@ -43,7 +43,7 @@ import { PageFade } from "./PageFade";
 import { TimeframeSelector } from "./TimeframeSelector";
 import { ChemicalCostCalc } from "./ChemicalCostCalc";
 
-export function EstimateBuilder({ open, onClose, customers = [], services = [], settings = {}, onSave, estimateTemplates = [], setEstimateTemplates = (..._args: any[]) => {} }) {
+export function EstimateBuilder({ open, onClose, customers = [], services = [], settings = {}, onSave, estimateTemplates = [], setEstimateTemplates = (..._args: any[]) => {}, initialCustomerId = "" }: { open: boolean; onClose: any; customers?: any[]; services?: any[]; settings?: any; onSave: any; estimateTemplates?: any[]; setEstimateTemplates?: any; initialCustomerId?: string }) {
   const [cid, setCid] = useState("");
   const [items, setItems] = useState([]);
   const [vu, setVu] = useState(daysFromNow(30));
@@ -83,7 +83,11 @@ export function EstimateBuilder({ open, onClose, customers = [], services = [], 
 
   useEffect(() => {
     if (open) {
-      setCid(customers[0]?.id || "");
+      // Lead Intake's "Convert to Estimate" (LeadIntakePage.tsx) opens this
+      // builder pre-targeted at a specific customer via initialCustomerId,
+      // same one-shot pattern as the FAB's autoOpenNew — falls back to the
+      // first customer in the list (prior default behavior) when unset.
+      setCid((initialCustomerId && customers.some((c: any) => c.id === initialCustomerId)) ? initialCustomerId : (customers[0]?.id || ""));
       setItems([{ id: uid(), description: "", quantity: 1, unitPrice: 0 }]);
       setVu(daysFromNow(30));
       setDiscount(0);
@@ -107,7 +111,7 @@ export function EstimateBuilder({ open, onClose, customers = [], services = [], 
         { id: uid(), name: "Premium", description: "", lineItems: [{ id: uid(), description: "", quantity: 1, unitPrice: 0 }] },
       ]);
     }
-  }, [open, customers]);
+  }, [open, customers, initialCustomerId]);
 
   const sub = items.reduce((s, i) => s + Number(i.quantity) * Number(i.unitPrice), 0);
   // FEATURE 7 — combined total of every stacked discount + the legacy flat field.

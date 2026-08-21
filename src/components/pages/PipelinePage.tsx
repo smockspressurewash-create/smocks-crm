@@ -29,6 +29,7 @@ import { callModel, MODELS } from "../../lib/api";
 import { createCalendarEvent, updateCalendarEvent, deleteCalendarEvent, fetchDriveFiles, MOCK_GOOGLE_DATA, fmtSize, fmtDate, fileIcon } from "../../lib/google";
 import { usePersistent } from "../../hooks/usePersistent";
 import { usePersistentRaw } from "../../hooks/usePersistentRaw";
+import { useIsMobile } from "../../hooks/useIsMobile";
 import { Glass } from "../ui/Glass";
 import { GBtn } from "../ui/GBtn";
 import { GInput } from "../ui/GInput";
@@ -78,6 +79,14 @@ import { WeeklyBusinessReview } from "../ui/WeeklyBusinessReview";
 import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 
 export function PipelinePage({ jobs = [], setJobs, customers = [], toast }) {
+  // BUG FIX (mobile pipeline) — native HTML5 drag-and-drop (`draggable`) is a
+  // mouse-oriented interaction. On touch devices it either does nothing or
+  // fights with scrolling/swipe gestures, which is how a stage got changed
+  // "by accident" while the owner was just trying to scroll a column. Same
+  // single source-of-truth breakpoint the rest of the app uses (App.tsx,
+  // Modal.tsx) — below it we swap drag-and-drop for an explicit "Move to…"
+  // picker on each card instead of relying on any implicit gesture.
+  const isMobile = useIsMobile();
   const [dragId, setDragId] = useState(null);
   const [lostJob, setLostJob] = useState(null);
   const [lostReason, setLostReason] = useState("Price too high");
@@ -262,7 +271,7 @@ export function PipelinePage({ jobs = [], setJobs, customers = [], toast }) {
             const sj = filtered.filter(j => effStage(j) === stg.key);
             const stgAvg = avgDays.find(a => a.stage === stg.label)?.avg || 0;
             return (
-              <div key={stg.key} onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); if (dragId) moveStg(dragId, stg.key); setDragId(null); }} className={"w-72 flex-shrink-0 bg-black/30 border rounded-2xl " + stg.border}>
+              <div key={stg.key} {...(isMobile ? {} : { onDragOver: e => e.preventDefault(), onDrop: e => { e.preventDefault(); if (dragId) moveStg(dragId, stg.key); setDragId(null); } })} className={"w-72 flex-shrink-0 bg-black/30 border rounded-2xl " + stg.border}>
                 <div className={"p-3 rounded-t-2xl border-b " + stg.border} style={{ background: "linear-gradient(to right, var(--tw-gradient-from), var(--tw-gradient-to))" }}>
                   <div className={"p-3 rounded-t-2xl border-b " + stg.border + " bg-black/40"}>
                     <div className="flex items-center gap-2 justify-between">
@@ -288,9 +297,17 @@ export function PipelinePage({ jobs = [], setJobs, customers = [], toast }) {
                   {(expandedStages[stg.key] ? sj : sj.slice(0, 5)).map(j => {
                     const cu = customers.find(c => c.id === j.customerId);
                     const prio = priorityLevels.find(p => p.key === (j.priority || "normal")) || priorityLevels[1];
-                    return (
-                      <SwipeableCard key={j.id} job={j} stages={pipelineStages} onMove={moveStg} currentStage={stg.key}>
-                      <div draggable onDragStart={() => setDragId(j.id)} className={"p-3 bg-black/60 rounded-xl cursor-grab hover:border active:cursor-grabbing select-none border " + stg.border + " hover:" + stg.border}>
+                    // BUG FIX (mobile pipeline) — desktop keeps the original
+                    // draggable + swipe-hint card untouched. On mobile widths
+                    // neither `draggable` (mouse-only) nor the swipe gesture
+                    // is attached at all, so scrolling a column can never be
+                    // misread as a stage change; an explicit "Move to…"
+                    // picker below replaces both.
+                    const card = (
+                      <div
+                        {...(isMobile ? {} : { draggable: true, onDragStart: () => setDragId(j.id) })}
+                        className={"p-3 bg-black/60 rounded-xl select-none border " + stg.border + " hover:" + stg.border + (isMobile ? "" : " cursor-grab hover:border active:cursor-grabbing")}
+                      >
                         <div className="flex items-start gap-2">
                           <div className={"w-1 h-full min-h-[40px] rounded-full flex-shrink-0 " + prio.color} />
                           <div className="flex-1 min-w-0">
@@ -315,7 +332,33 @@ export function PipelinePage({ jobs = [], setJobs, customers = [], toast }) {
                             <button onClick={() => cu?.email && (window.location.href = "mailto:" + cu.email)} className="flex-1 p-1 rounded hover:bg-purple-900/30 text-white/50 hover:text-purple-400 flex items-center justify-center" title={"Email " + cu?.firstName}><Mail size={10} /></button>
                           )}
                         </div>
+                        {/* BUG FIX (mobile pipeline) — explicit tap-to-select
+                            stage move, reusing the same GSel dropdown used
+                            elsewhere on this page (e.g. the "Why lost?"
+                            modal) rather than inventing a new picker
+                            component. Only rendered on touch/narrow widths;
+                            desktop is unaffected. */}
+                        {isMobile && (
+                          <div className="mt-2 pt-2 border-t border-white/5" onClick={e => e.stopPropagation()}>
+                            <GSel
+                              value=""
+                              onChange={e => { const dest = e.target.value; if (dest) moveStg(j.id, dest); }}
+                              className="!py-1 !text-[11px]"
+                            >
+                              <option value="" className="bg-black">Move to…</option>
+                              {pipelineStages.filter(s => s.key !== stg.key).map(s => (
+                                <option key={s.key} value={s.key} className="bg-black">{s.label}</option>
+                              ))}
+                            </GSel>
+                          </div>
+                        )}
                       </div>
+                    );
+                    return isMobile ? (
+                      <React.Fragment key={j.id}>{card}</React.Fragment>
+                    ) : (
+                      <SwipeableCard key={j.id} job={j} stages={pipelineStages} onMove={moveStg} currentStage={stg.key}>
+                        {card}
                       </SwipeableCard>
                     );
                   })}

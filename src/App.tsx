@@ -506,9 +506,21 @@ export function App() {
   // itself (see the <aside> style below) proportional to how far the swipe
   // has gone, instead of only revealing it once the threshold is crossed.
   // BLOCKER 16 (mobile round 9) — user report: "detection area too small" —
-  // widened from 120px to the requested 150px so a thumb swipe starting
-  // further from the literal screen edge still registers as an open-gesture.
-  const EDGE_ZONE_PX = 150;
+  // widened from 120px to 150px so a thumb swipe starting further from the
+  // literal screen edge still registers as an open-gesture.
+  // BUG (mobile round 10) — that 150px zone covered most of the left third
+  // of the screen, which overlapped in-page back buttons positioned near
+  // the left edge (e.g. the Inbox conversation-panel back button — see
+  // InboxPage.tsx). Tapping/dragging one's finger slightly while pressing
+  // such a button landed inside the zone and got misread as a sidebar-open
+  // swipe, eating the tap. Narrowed back down to a true edge zone (matches
+  // the iOS/Android edge-swipe-back convention) so only touches that
+  // actually start at the literal screen edge can arm the gesture; normal
+  // taps/drags on in-page controls, even ones near the left side, are no
+  // longer affected. Individual controls that still sit inside this zone
+  // (like the Inbox back button) additionally stopPropagation on their own
+  // touchstart as a second safeguard.
+  const EDGE_ZONE_PX = 24;
   const SWIPE_THRESHOLD_PX = 30;
   const MAX_VERTICAL_DRIFT_PX = 100;
   const SIDEBAR_WIDTH_PX = 256; // matches the aside's w-64
@@ -607,6 +619,11 @@ export function App() {
   // once it has opened the modal (see CustomersPage/EstimatesPage/JobsPage's
   // own autoOpenNew effect + onAutoOpenNewConsumed callback).
   const [fabAutoOpenNew, setFabAutoOpenNew] = useState<string | null>(null);
+  // LeadIntakePage's "Convert to Estimate" action — navigates to Estimates
+  // and reuses the same one-shot autoOpenNew mechanism above, plus this
+  // companion flag so EstimateBuilder opens pre-targeted at the lead's
+  // customer record instead of defaulting to the first customer in the list.
+  const [estimatePresetCustomerId, setEstimatePresetCustomerId] = useState<string | null>(null);
   // ITEM 18 — "New Customer" now opens as a true popup over whatever page
   // the owner is already on, instead of navigating to Customers first. Jobs
   // and Alfred still navigate (their "New"/chat UI isn't a standalone
@@ -2596,7 +2613,7 @@ export function App() {
   // every tick gathers candidates but never sends; the owner explicitly
   // approves each batch via AutomationBatchModal, rendered below.
   const { pendingBatch: pendingAutomationBatch, approveBatch: approveAutomationBatch, skipBatch: skipAutomationBatch } =
-    useAutomationEngine({ automations, setAutomations, jobs, customers, estimates, referrals, settings, setSettings, toast });
+    useAutomationEngine({ automations, setAutomations, jobs, customers, estimates, referrals, employees, goals: goalsList, settings, setSettings, toast });
 
   // Scheduled-campaign executor — see useScheduledCampaigns.ts. Fires
   // regardless of which page is open, same reasoning as the automation
@@ -3115,8 +3132,20 @@ export function App() {
   );
 
   // ── Main app ──────────────────────────────────────────────────────────────
+  // MOBILE HEADER FIX — h-screen (100vh) can be TALLER than the actual
+  // visible viewport on mobile Safari/Chrome (100vh is measured against the
+  // viewport with the browser's address/toolbar chrome hidden, not the
+  // shorter one it starts you on), which let this whole app div grow past
+  // what's actually on screen and made the OS page (not this div) scrollable
+  // by the difference — dragging the header/profile/notifications bar in it
+  // off the top of the screen along with everything else, with nothing
+  // pinning it in place. h-dvh tracks the real, currently-visible viewport
+  // instead, so this root's height always matches what's actually on screen
+  // and nothing needs to page-scroll. h-screen stays first as a fallback for
+  // browsers without dvh support; h-dvh (declared after) overrides it where
+  // supported.
   return (
-    <div className="flex h-screen overflow-hidden bg-black text-white">
+    <div className="flex h-screen h-dvh overflow-hidden bg-black text-white">
       {/* Sidebar overlay for mobile */}
       {sidebarOpen && <div className="fixed inset-0 bg-black/60 z-20 md:hidden" onClick={() => setSidebarOpen(false)} />}
 
@@ -3224,16 +3253,24 @@ export function App() {
       )}
 
       {/* Main content — its own touch handlers open the sidebar on an
-          edge-swipe-right (only armed when the touch starts within 50px of
-          the left edge, so normal scrolling/tapping elsewhere is untouched) */}
+          edge-swipe-right (only armed when the touch starts within
+          EDGE_ZONE_PX of the left edge, so normal scrolling/tapping
+          elsewhere, including in-page back buttons, is untouched) */}
       <div
-        className="flex-1 flex flex-col min-w-0 overflow-hidden"
+        className="flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden"
         onTouchStart={handleMainTouchStart}
         onTouchMove={handleMainTouchMove}
         onTouchEnd={handleMainTouchEnd}
       >
-        {/* Header */}
-        <header className="flex items-center gap-2 px-4 py-3 border-b border-red-900/30 bg-black/80 backdrop-blur flex-shrink-0 relative z-40">
+        {/* Header — sticky top-0 is belt-and-suspenders on top of the flex
+            layout above (which already pins it, since it's a flex-shrink-0
+            sibling before the scrollable <main>, not an ancestor of it): if
+            anything below it ever escapes its intended height (see the
+            min-h-0 fixes on this column and on <main>), sticky still keeps
+            the header/profile avatar/notifications bell pinned to the top
+            of whatever DOES end up scrolling instead of disappearing off
+            screen with it. */}
+        <header className="sticky top-0 flex items-center gap-2 px-4 py-3 border-b border-red-900/30 bg-black/80 backdrop-blur flex-shrink-0 relative z-40">
           <button onClick={() => setSidebarOpen(true)} className="md:hidden p-2.5 -ml-1 text-white/50 hover:text-white min-w-[44px] min-h-[44px] flex items-center justify-center">
             <Menu size={22} />
           </button>
@@ -3398,13 +3435,13 @@ export function App() {
             (see AlfredPage.tsx) fills exactly the remaining space next to
             the (still fully visible, unaffected — it's a sibling <aside>,
             not replaced) main sidebar, with no double scroll. */}
-        <main className={"flex-1 pb-16 md:pb-0 " + (page === "alfred" ? "flex flex-col overflow-hidden" : "overflow-y-auto")}>
+        <main className={"flex-1 min-h-0 pb-16 md:pb-0 " + (page === "alfred" ? "flex flex-col overflow-hidden" : "overflow-y-auto")}>
           <div className={page === "alfred" ? "flex-1 flex flex-col min-h-0 p-2 md:p-3" : "px-3 py-4 md:p-6 max-w-[1600px] mx-auto"}>
             <PageFade key={page} className={page === "alfred" ? "flex-1 min-h-0 flex flex-col" : ""}>
               <SafePage>
                 {page === "dashboard"      && <Dashboard jobs={jobs} setJobs={setJobs} customers={customers} estimates={estimates} setEstimates={setEstimates} automations={automations} stats={{ totalRev, activeJobs, pendingEst, closeRate, doneMonth }} goals={{ revenue: settings.monthlyRevenueGoal ?? 8000, jobCount: settings.monthlyJobsGoal ?? 20 }} vehicles={vehicles} maintenance={maintenance} chemicals={chemicals} settings={settings} setSettings={setSettings} onNav={setPage} toast={toast} weatherData={weatherData} weatherFetchError={weatherFetchError} inboxThreads={inboxThreads} employees={employees} crewFetchError={crewFetchError} reviews={reviews} onSendDailyBriefing={sendDailyBriefingNow} onViewJob={id => { setOpenJobId(id); setPage("jobs"); }} ownerId={crmUserId} />}
                 {page === "customers"      && <CustomersPage customers={customers} setCustomers={setCustomers} estimates={estimates} jobs={jobs} employees={employees} toast={toast} timeline={timeline} setTimeline={setTimeline} settings={settings} setSettings={setSettings} autoOpenNew={fabAutoOpenNew === "customers"} onAutoOpenNewConsumed={() => setFabAutoOpenNew(null)} />}
-                {page === "estimates"      && <EstimatesPage estimates={estimates} setEstimates={setEstimates} customers={customers} services={services} settings={settings} toast={toast} onPortal={id => setPortalEstId(id)} estimateTemplates={estimateTemplates} setEstimateTemplates={setEstimateTemplates} setJobs={setJobs} onNav={setPage} autoOpenNew={fabAutoOpenNew === "estimates"} onAutoOpenNewConsumed={() => setFabAutoOpenNew(null)} />}
+                {page === "estimates"      && <EstimatesPage estimates={estimates} setEstimates={setEstimates} customers={customers} services={services} settings={settings} toast={toast} onPortal={id => setPortalEstId(id)} estimateTemplates={estimateTemplates} setEstimateTemplates={setEstimateTemplates} setJobs={setJobs} onNav={setPage} autoOpenNew={fabAutoOpenNew === "estimates"} onAutoOpenNewConsumed={() => { setFabAutoOpenNew(null); setEstimatePresetCustomerId(null); }} presetCustomerId={estimatePresetCustomerId || ""} />}
                 {page === "invoices"       && <InvoicesPage estimates={estimates} setEstimates={setEstimates} customers={customers} settings={settings} toast={toast} jobs={jobs} setJobs={setJobs} />}
                 {page === "jobs"           && <JobsPage jobs={jobs} setJobs={setJobs} customers={customers} setCustomers={setCustomers} employees={employees} estimates={estimates} setEstimates={setEstimates} settings={settings} setSettings={setSettings} toast={toast} posts={socialPosts} setPosts={setSocialPosts} setTimeline={setTimeline} initialDetailId={openJobId} onInitialDetailIdConsumed={() => setOpenJobId(null)} onPortal={id => setPortalEstId(id)} ownerId={crmUserId} autoOpenNew={fabAutoOpenNew === "jobs"} onAutoOpenNewConsumed={() => setFabAutoOpenNew(null)} />}
                 {page === "pipeline"       && <PipelinePage jobs={jobs} setJobs={setJobs} customers={customers} toast={toast} />}
@@ -3414,7 +3451,7 @@ export function App() {
                 {page === "reviews"        && <ReviewsPage reviews={reviews} setReviews={setReviews} jobs={jobs} customers={customers} toast={toast} negativeAlerts={negativeAlerts} setNegativeAlerts={setNegativeAlerts} settings={settings} setSettings={setSettings} />}
                 {page === "automations"    && <AutomationsPage automations={automations} setAutomations={setAutomations} jobs={jobs} customers={customers} estimates={estimates} settings={settings} setSettings={setSettings} toast={toast} />}
                 {page === "social"         && <SocialPage posts={socialPosts} setPosts={setSocialPosts} toast={toast} settings={settings} />}
-                {page === "intake"         && <LeadIntakePage customers={customers} setCustomers={setCustomers} estimates={estimates} setEstimates={setEstimates} services={services} settings={settings} setSettings={setSettings} toast={toast} onNav={setPage} />}
+                {page === "intake"         && <LeadIntakePage customers={customers} setCustomers={setCustomers} estimates={estimates} setEstimates={setEstimates} services={services} jobs={jobs} settings={settings} setSettings={setSettings} toast={toast} onNav={setPage} onConvertToEstimate={(customerId: string) => { setEstimatePresetCustomerId(customerId); setFabAutoOpenNew("estimates"); setPage("estimates"); }} />}
                 {page === "alfred"         && (managerBlocked("alfred") ? <RestrictedNotice label="Alfred AI" /> : <AlfredPage conversations={alfredConversations} setConversations={setAlfredConversations} activeConvId={activeConvId} setActiveConvId={setActiveConvId} memory={alfredMemory} setMemory={setAlfredMemory} personality={personality} setPersonality={setPersonality} apiKey={settings.anthropicKey ?? settings.geminiKey ?? ""} openSettings={() => setSettingsOpen(true)} toast={toast} jobs={jobs} setJobs={setJobs} estimates={estimates} setEstimates={setEstimates} customers={customers} setCustomers={setCustomers} employees={employees} automations={automations} setAutomations={setAutomations} stats={{ totalRev, activeJobs, pendingEst, closeRate, doneMonth }} setWins={setWins} goals={goalsList} setGoals={setGoalsList} setSettings={setSettings} settings={settings} modelStatus={modelStatus} setModelStatus={setModelStatus} onNav={setPage} ownerId={crmUserId} />)}
                 {page === "google"         && (managerBlocked("google") ? <RestrictedNotice label="Google Workspace" /> : <GoogleWorkspacePage settings={settings} setSettings={setSettings} googleData={googleData as any} setGoogleData={setGoogleData} customers={customers} setCustomers={setCustomers} jobs={jobs} toast={toast} onNav={setPage} />)}
                 {page === "employees"      && <EmployeesPage employees={employees} setEmployees={setEmployees} jobs={jobs} setJobs={setJobs} customers={customers} settings={settings} toast={toast} autoOpenManagerInvite={autoOpenManagerInvite} onAutoOpenManagerInviteConsumed={() => setAutoOpenManagerInvite(false)} initialView={employeesInitialView} onInitialViewConsumed={() => setEmployeesInitialView(undefined)} ownerId={crmUserId} />}

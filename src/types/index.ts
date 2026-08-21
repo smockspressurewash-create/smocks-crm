@@ -53,6 +53,12 @@ export interface Customer {
   dogName?: string;
   sensitivePlants?: string;
   leadSource?: string;
+  // FEATURE — Lead Intake page (LeadIntakePage.tsx) "Archive" action. A lead
+  // is just a `customers` row with pipelineStage === "lead" (see
+  // LeadFormPage.tsx); archiving hides it from the active leads list without
+  // deleting the record, distinct from "Convert to Customer" (which advances
+  // pipelineStage) and "Delete" (which removes the row entirely).
+  leadArchived?: boolean;
   utmSource?: string;
   utmMedium?: string;
   utmCampaign?: string;

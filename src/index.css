@@ -11,6 +11,26 @@
   box-sizing: border-box;
 }
 
+/* MOBILE HEADER FIX — html/body/#root must have a hard, non-growing height
+   (not just min-height) so the app's own `h-dvh overflow-hidden` root div
+   (App.tsx) is the ONLY thing that ever scrolls. Without this, if any
+   descendant's flex sizing ever fails to constrain itself (missing
+   min-h-0 on a nested flex-1 column, a fixed-height guess like the old
+   h-screen on mobile Safari where 100vh can exceed the true visible
+   viewport, etc.), the overflow escapes onto the <body> — which page-
+   scrolls as a normal block element, dragging the top bar/profile
+   avatar/notifications bell off-screen with it since they're not
+   independently pinned to the viewport, only to their (now-scrolling)
+   flex ancestor. Locking body/html/#root to 100% + overflow hidden means
+   that failure mode simply can't happen — only the intentional
+   `overflow-y-auto` panes inside the app (conversation list, message
+   thread, page content, etc.) can ever scroll.
+*/
+html, body, #root {
+  height: 100%;
+  overflow: hidden;
+}
+
 body {
   margin: 0;
   padding: 0;

@@ -23,6 +23,7 @@ import {
 import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE } from "../../lib/utils";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
 import { twilioSend, sendEmail } from "../../lib/messaging";
+import { supabase } from "../../lib/supabase";
 import { seedWeather } from "../../lib/weather";
 import { seedCustomers, seedEstimates, seedJobs, seedEmployees, seedVehicles, seedExpenses, seedChemicals, seedServices, seedAutomations, seedEmailTemplates, seedSmsTemplates, seedRewardTiers, seedReferrals, seedMaintenance, campaignTemplates, seedSocialPosts, seedTimeline, seedGoals, seedReminders, seedAccountabilityEntries, seedMileage, seedLeadSrc, STEP_TYPES, AUTOMATION_TEMPLATES } from "../../lib/seed";
 import { callModel, MODELS } from "../../lib/api";
@@ -77,10 +78,22 @@ import { ChemicalModal } from "../ui/ChemicalModal";
 import { WeeklyBusinessReview } from "../ui/WeeklyBusinessReview";
 import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 
-export function LeadIntakePage({ customers = [], setCustomers, estimates = [], setEstimates, services = [], jobs = [], settings = {} as AppSettings, setSettings, toast, onNav }: { customers?: any[]; setCustomers?: any; estimates?: any[]; setEstimates?: any; services?: any[]; jobs?: any[]; settings?: AppSettings; setSettings?: any; toast?: any; onNav?: any }) {
+export function LeadIntakePage({ customers = [], setCustomers, estimates = [], setEstimates, services = [], jobs = [], settings = {} as AppSettings, setSettings, toast, onNav, onConvertToEstimate }: { customers?: any[]; setCustomers?: any; estimates?: any[]; setEstimates?: any; services?: any[]; jobs?: any[]; settings?: AppSettings; setSettings?: any; toast?: any; onNav?: any; onConvertToEstimate?: (customerId: string) => void }) {
   const [submissions, setSubmissions] = usePersistent("smocks.intakeLeads", []);
   const [preview, setPreview] = useState(false);
   const [embedOpen, setEmbedOpen] = useState(false);
+  // FEATURE — Lead Intake list: sort/filter/actions for incoming leads. A
+  // "lead" is any `customers` row with pipelineStage === "lead" (the row
+  // LeadFormPage.tsx's public embed form — or the in-app preview form below
+  // — inserts). Reading straight off `customers` (not the local-only
+  // `submissions` state above) is what makes this list actually reflect
+  // leads submitted from a real embedded form on another device: `submissions`
+  // is localStorage-only (usePersistent), so leads captured through the real
+  // public embed on the owner's website — a different browser/device
+  // entirely — never touched it and never showed up here.
+  const [leadSort, setLeadSort] = useState<"newest" | "oldest" | "name" | "source">("newest");
+  const [leadSourceFilter, setLeadSourceFilter] = useState("");
+  const [leadStatusFilter, setLeadStatusFilter] = useState<"active" | "archived" | "all">("active");
   const [f, setF] = useState({ firstName: "", lastName: "", email: "", phone: "", address: "", service: "", message: "", source: "Website", sqFootage: "" });
   const [submitting, setSubmitting] = useState(false);
   const [submitted, setSubmitted] = useState(false);
@@ -139,11 +152,91 @@ export function LeadIntakePage({ customers = [], setCustomers, estimates = [], s
     }, 1000);
   };
 
-  const dismiss = id => setSubmissions(prev => prev.filter(s => s.id !== id));
-  const convertToJob = sub => {
-    const c = customers.find(x => x.id === sub.customerId);
-    if (c) { toast("Opening pipeline for " + c.firstName); onNav("pipeline"); }
-    dismiss(sub.id);
+  // ── Incoming leads list — the real source of truth is `customers` rows
+  // still sitting in the "lead" pipeline stage (see comment above), so this
+  // reflects leads from the real embedded form, the in-app preview form, and
+  // manually-added customers alike, synced cross-device like every other
+  // list in this app.
+  const allLeads = customers.filter((c: any) => c.pipelineStage === "lead");
+  const leadSources = [...new Set(allLeads.map((c: any) => c.leadSource).filter(Boolean))] as string[];
+  const visibleLeads = allLeads
+    .filter((c: any) => leadStatusFilter === "all" ? true : leadStatusFilter === "archived" ? !!c.leadArchived : !c.leadArchived)
+    .filter((c: any) => leadSourceFilter ? c.leadSource === leadSourceFilter : true)
+    .sort((a: any, b: any) => {
+      if (leadSort === "name") return `${a.firstName} ${a.lastName}`.localeCompare(`${b.firstName} ${b.lastName}`);
+      if (leadSort === "source") return (a.leadSource || "").localeCompare(b.leadSource || "");
+      const at = new Date(a.createdAt || 0).getTime(), bt = new Date(b.createdAt || 0).getTime();
+      return leadSort === "oldest" ? at - bt : bt - at;
+    });
+
+  // Shared save path for lead-row actions — same local-update + Supabase
+  // upsert + success/failure toast pattern as CustomersPage.tsx's `save`,
+  // including its "safe column" retry for fields that might not have a
+  // migration applied yet (see CustomersPage.tsx's `folder` handling).
+  const updateLeadCustomer = (updated: any, successMsg: string, retryDropFields: string[] = []) => {
+    setCustomers((prev: any[]) => prev.map(c => c.id === updated.id ? updated : c));
+    (supabase as any).from("customers").upsert(updated, { onConflict: "id" })
+      .then(async (result: any) => {
+        if (result?.error) {
+          if (retryDropFields.length && retryDropFields.some(f => f in updated)) {
+            console.warn("[LeadIntake] update failed:", result.error.message, "— retrying without", retryDropFields.join(", "));
+            const core = { ...updated };
+            retryDropFields.forEach(f => delete core[f]);
+            const retry = await (supabase as any).from("customers").upsert(core, { onConflict: "id" });
+            if (retry?.error) {
+              console.error("[LeadIntake] core retry also failed:", retry.error.message);
+              toast("Saved locally, but failed to sync — " + retry.error.message, "red");
+            } else {
+              toast("Saved, but needs a pending database migration to fully sync", "yellow");
+            }
+            return;
+          }
+          console.error("[LeadIntake] update failed:", result.error.message);
+          toast("Saved locally, but failed to sync — " + result.error.message, "red");
+          return;
+        }
+        toast(successMsg, "green");
+      })
+      .catch((e: any) => {
+        console.error("[LeadIntake] update threw:", e?.message);
+        toast("Saved locally, but failed to sync — " + (e?.message || "unknown error"), "red");
+      });
+  };
+
+  const convertToCustomer = (lead: any) => {
+    updateLeadCustomer({ ...lead, pipelineStage: "contacted" }, `${lead.firstName} ${lead.lastName} converted to customer ✓`);
+  };
+
+  const convertToEstimateAction = (lead: any) => {
+    if (!onConvertToEstimate) { toast("Unable to open the estimate builder from here", "red"); return; }
+    onConvertToEstimate(lead.id);
+    toast(`Opening a new estimate for ${lead.firstName} ${lead.lastName} ✓`, "green");
+  };
+
+  const archiveLead = (lead: any) => {
+    updateLeadCustomer({ ...lead, leadArchived: true }, `${lead.firstName} ${lead.lastName} archived ✓`, ["leadArchived"]);
+  };
+
+  const unarchiveLead = (lead: any) => {
+    updateLeadCustomer({ ...lead, leadArchived: false }, `${lead.firstName} ${lead.lastName} restored ✓`, ["leadArchived"]);
+  };
+
+  const deleteLead = (lead: any) => {
+    if (!window.confirm(`Permanently delete lead "${lead.firstName} ${lead.lastName}"? This can't be undone.`)) return;
+    setCustomers((prev: any[]) => prev.filter(c => c.id !== lead.id));
+    (supabase as any).from("customers").delete().eq("id", lead.id)
+      .then((result: any) => {
+        if (result?.error) {
+          console.error("[LeadIntake] delete failed:", result.error.message);
+          toast("Deleted locally, but failed to delete from server — " + result.error.message, "red");
+          return;
+        }
+        toast(`${lead.firstName} ${lead.lastName} deleted ✓`, "green");
+      })
+      .catch((e: any) => {
+        console.error("[LeadIntake] delete threw:", e?.message);
+        toast("Deleted locally, but failed to delete from server — " + (e?.message || "unknown error"), "red");
+      });
   };
 
   const companyName = settings?.companyName || "Crew Boss";
@@ -213,43 +306,89 @@ export function LeadIntakePage({ customers = [], setCustomers, estimates = [], s
         );
       })()}
 
-      {/* New Submissions */}
-      {submissions.length > 0 && (
+      {/* Incoming Leads — sortable/filterable list of customers rows still in
+          the "lead" pipeline stage (see comment above allLeads), with row
+          actions. Table on desktop, same row content stacks/scrolls on
+          mobile via overflow-x-auto — same responsive convention as
+          CustomersPage.tsx's customer table (icon-only action buttons +
+          overflow-x-auto wrapper + hiding secondary columns on small
+          screens), rather than inventing a new mobile layout. */}
+      {allLeads.length > 0 && (
         <div className="space-y-2">
-          <div className="text-xs text-white/50 uppercase tracking-wider font-semibold flex items-center gap-2">
-            <span className="w-2 h-2 bg-green-400 rounded-full animate-pulse" />
-            {submissions.length} New Lead{submissions.length !== 1 ? "s" : ""}
+          <div className="flex items-center justify-between flex-wrap gap-2">
+            <div className="text-xs text-white/50 uppercase tracking-wider font-semibold flex items-center gap-2">
+              <span className="w-2 h-2 bg-green-400 rounded-full animate-pulse" />
+              {visibleLeads.length} Lead{visibleLeads.length !== 1 ? "s" : ""}
+            </div>
+            <div className="flex items-center gap-2 flex-wrap">
+              <GSel value={leadSourceFilter} onChange={(e: any) => setLeadSourceFilter(e.target.value)} className="!text-xs !py-1.5 !w-auto">
+                <option value="" className="bg-black">All Sources</option>
+                {leadSources.map(s => <option key={s} value={s} className="bg-black">{s}</option>)}
+              </GSel>
+              <GSel value={leadStatusFilter} onChange={(e: any) => setLeadStatusFilter(e.target.value)} className="!text-xs !py-1.5 !w-auto">
+                <option value="active" className="bg-black">Active</option>
+                <option value="archived" className="bg-black">Archived</option>
+                <option value="all" className="bg-black">All</option>
+              </GSel>
+              <GSel value={leadSort} onChange={(e: any) => setLeadSort(e.target.value)} className="!text-xs !py-1.5 !w-auto">
+                <option value="newest" className="bg-black">Newest First</option>
+                <option value="oldest" className="bg-black">Oldest First</option>
+                <option value="name" className="bg-black">Name (A–Z)</option>
+                <option value="source" className="bg-black">Source</option>
+              </GSel>
+            </div>
           </div>
-          {submissions.map(sub => {
-            const c = customers.find(x => x.id === sub.customerId);
-            return (
-              <Glass key={sub.id} className="p-4 !bg-green-950/20 !border-green-700/30">
-                <div className="flex items-start gap-3">
-                  <div className="w-10 h-10 rounded-full bg-gradient-to-br from-green-600 to-green-800 flex items-center justify-center text-base font-bold flex-shrink-0">
-                    {c?.firstName?.[0] || "?"}
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <span className="font-semibold">{c?.firstName} {c?.lastName}</span>
-                      <Badge tone="green">New Lead</Badge>
-                      <span className="text-[10px] text-white/40">{new Date(sub.submittedAt).toLocaleString()}</span>
-                    </div>
-                    <div className="text-xs text-white/60 mt-1 space-y-0.5">
-                      {c?.phone && <div>📱 {c.phone}</div>}
-                      {c?.email && <div>📧 {c.email}</div>}
-                      {sub.service && <div>🔨 Service: {sub.service}</div>}
-                      {c?.address && <div>📍 {c.address}</div>}
-                      {sub.message && <div className="text-white/50 italic mt-1">"{sub.message}"</div>}
-                    </div>
-                  </div>
-                  <div className="flex flex-col gap-1.5 flex-shrink-0">
-                    <GBtn onClick={() => convertToJob(sub)} className="!text-xs !py-1.5 !px-3">Send Estimate</GBtn>
-                    <GBtn variant="ghost" onClick={() => dismiss(sub.id)} className="!text-xs !py-1.5 !px-3">Dismiss</GBtn>
-                  </div>
-                </div>
-              </Glass>
-            );
-          })}
+
+          {visibleLeads.length === 0 ? (
+            <Glass className="p-6 text-center text-sm text-white/40">No leads match these filters.</Glass>
+          ) : (
+            <Glass className="overflow-hidden">
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b border-red-900/30 bg-black/40">
+                      <th className="text-left px-5 py-3 font-medium text-white/60 text-xs uppercase tracking-wider">Lead</th>
+                      <th className="text-left px-5 py-3 font-medium text-white/60 text-xs uppercase tracking-wider hidden md:table-cell">Source</th>
+                      <th className="text-left px-5 py-3 font-medium text-white/60 text-xs uppercase tracking-wider hidden lg:table-cell">Phone</th>
+                      <th className="text-left px-5 py-3 font-medium text-white/60 text-xs uppercase tracking-wider hidden sm:table-cell">Date</th>
+                      <th className="text-right px-5 py-3 font-medium text-white/60 text-xs uppercase tracking-wider">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {visibleLeads.map((c: any) => (
+                      <tr key={c.id} className={"border-b border-red-900/10 hover:bg-white/5 transition " + (c.leadArchived ? "opacity-50" : "")}>
+                        <td className="px-5 py-4">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="font-medium">{c.firstName} {c.lastName}</span>
+                            {c.leadArchived && <Badge tone="gray">Archived</Badge>}
+                          </div>
+                          <div className="text-xs text-white/50">{c.email}</div>
+                          <div className="text-xs text-white/50 md:hidden">{c.leadSource || "—"}</div>
+                          {c.address && <div className="text-[11px] text-white/40 mt-0.5">📍 {c.address}</div>}
+                          {c.notes && <div className="text-[11px] text-white/40 italic mt-0.5 max-w-xs truncate" title={c.notes}>"{c.notes}"</div>}
+                        </td>
+                        <td className="px-5 py-4 text-white/70 hidden md:table-cell">{c.leadSource ? <Badge tone="blue">{c.leadSource}</Badge> : "—"}</td>
+                        <td className="px-5 py-4 text-white/70 hidden lg:table-cell">{c.phone || "—"}</td>
+                        <td className="px-5 py-4 text-white/50 text-xs hidden sm:table-cell">{c.createdAt ? new Date(c.createdAt).toLocaleDateString() : "—"}</td>
+                        <td className="px-5 py-4">
+                          <div className="flex items-center justify-end gap-1 flex-wrap">
+                            <button onClick={() => convertToCustomer(c)} title="Convert to Customer" className="p-1.5 rounded-lg hover:bg-green-900/30 text-white/60 hover:text-green-400 transition"><UserCheck size={14} /></button>
+                            <button onClick={() => convertToEstimateAction(c)} title="Convert to Estimate" className="p-1.5 rounded-lg hover:bg-blue-900/30 text-white/60 hover:text-blue-400 transition"><FileText size={14} /></button>
+                            {c.leadArchived ? (
+                              <button onClick={() => unarchiveLead(c)} title="Unarchive" className="p-1.5 rounded-lg hover:bg-white/10 text-white/60 hover:text-white transition"><Eye size={14} /></button>
+                            ) : (
+                              <button onClick={() => archiveLead(c)} title="Archive" className="p-1.5 rounded-lg hover:bg-yellow-900/30 text-white/60 hover:text-yellow-400 transition"><EyeOff size={14} /></button>
+                            )}
+                            <button onClick={() => deleteLead(c)} title="Delete" className="p-1.5 rounded-lg hover:bg-red-900/30 text-white/60 hover:text-red-400 transition"><Trash2 size={14} /></button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </Glass>
+          )}
         </div>
       )}
 
@@ -318,7 +457,7 @@ export function LeadIntakePage({ customers = [], setCustomers, estimates = [], s
       )}
 
       {/* Empty state */}
-      {submissions.length === 0 && !preview && (
+      {allLeads.length === 0 && !preview && (
         <Glass className="p-10 text-center">
           <FileImage size={40} className="mx-auto mb-3 text-white/20 anim-float" />
           <div className="text-white/50 font-medium">No leads yet</div>

@@ -655,6 +655,99 @@ export const AUTOMATION_TEMPLATES = [
       { id: uid(), type: "action",  label: "Send referral-booked SMS", channel: "sms", template: "referral_booked" },
     ],
   },
+  // FEATURE — owner/employee/client report automations (useAutomationEngine.ts
+  // owner_daily_summary/owner_periodic_summary/weekly_scheduled/
+  // employee_shift_summary/employee_performance_report categories, plus the
+  // two client templates below which reuse the already-firing review_request
+  // and payment_received categories with custom messageBody text). Every
+  // trigger label here is exact-matched against classifyTrigger's regexes —
+  // see that function's comments for why label wording matters.
+  {
+    id: "tpl_owner_eod_summary", name: "Owner: End-of-Day Summary",
+    trigger: "End of day", action: "Email today's business summary",
+    description: "Emails you a same-day recap — jobs completed, revenue, and new leads — once in the 6-7pm window.",
+    steps: [
+      { id: uid(), type: "trigger", label: "End of day", icon: "🌆" },
+      { id: uid(), type: "action",  label: "Email end-of-day summary", channel: "email",
+        messageBody: "Hi {{first_name}}, here's your end-of-day summary: {{jobs_completed}} of {{jobs_total}} jobs completed today, {{revenue}} in revenue, and {{new_leads}} new lead(s). — Crew Boss Automations" },
+    ],
+  },
+  {
+    id: "tpl_owner_periodic_summary", name: "Owner: Quarterly & Yearly Summary",
+    trigger: "Quarterly business summary", action: "Email business performance summary",
+    // AUDIT — the engine has no arbitrary cron scheduler; this fires on the
+    // 1st of each calendar quarter (Jan/Apr/Jul/Oct), the closest supported
+    // cadence to "quarterly" — Jan 1st doubles as the yearly firing too. See
+    // owner_periodic_summary's comment in useAutomationEngine.ts.
+    description: "Emails a business performance summary (jobs, revenue, new customers) on the 1st of each quarter — the closest cadence the engine supports to quarterly/yearly.",
+    steps: [
+      { id: uid(), type: "trigger", label: "Quarterly business summary", icon: "📊" },
+      { id: uid(), type: "action",  label: "Email quarterly/yearly summary", channel: "email",
+        messageBody: "Hi {{first_name}}, your quarterly business summary: {{period_jobs}} jobs completed, {{period_revenue}} in revenue, and {{period_new_customers}} new customers this quarter. — Crew Boss Automations" },
+    ],
+  },
+  {
+    id: "tpl_owner_progress_report", name: "Owner: Weekly Progress Report",
+    trigger: "Weekly progress report", action: "Email goals/KPI progress",
+    description: "Emails your weekly goals progress (from Accountability → Goals) every Monday morning.",
+    steps: [
+      { id: uid(), type: "trigger", label: "Weekly progress report", icon: "🎯" },
+      { id: uid(), type: "action",  label: "Email weekly progress report", channel: "email",
+        messageBody: "Hi {{first_name}}, here's your weekly goals progress: {{goals_summary}} — Crew Boss Automations" },
+    ],
+  },
+  {
+    id: "tpl_employee_shift_summary", name: "Employee: Shift Summary",
+    trigger: "Shift ended", action: "Email that employee's shift summary",
+    description: "Emails an employee their own shift recap (hours worked, jobs completed) right after they tap \"End My Day.\"",
+    steps: [
+      { id: uid(), type: "trigger", label: "Shift ended", icon: "⏱" },
+      { id: uid(), type: "action",  label: "Email shift summary", channel: "email",
+        messageBody: "Hi {{first_name}}, shift summary for today: {{hours_worked}} hours worked, {{jobs_completed}} of {{jobs_total}} jobs completed. Nice work!" },
+    ],
+  },
+  {
+    id: "tpl_employee_performance_report", name: "Employee: Performance Report",
+    trigger: "Weekly performance report", action: "Email that employee's performance report",
+    description: "Emails each active employee a weekly recap of their completed jobs and current rating, every Monday morning.",
+    steps: [
+      { id: uid(), type: "trigger", label: "Weekly performance report", icon: "📈" },
+      { id: uid(), type: "action",  label: "Email performance report", channel: "email",
+        messageBody: "Hi {{first_name}}, your weekly performance report: {{jobs_completed}} jobs completed this week, current rating {{rating}}/5. Keep it up!" },
+    ],
+  },
+  {
+    id: "tpl_client_post_service_followup", name: "Client: Post-Service Follow-Up",
+    trigger: "Job completed", action: "Send thank-you follow-up SMS",
+    // Rides the already-implemented review_request engine category (job
+    // completed, within a 14-day window) but with a plain thank-you message
+    // instead of a review ask — deliberately distinct from the existing
+    // "Post-Job Review Request" template so an owner can run both without
+    // duplicate wording.
+    description: "Thanks a customer 48 hours after their job is marked complete — a warm follow-up, not a review ask.",
+    steps: [
+      { id: uid(), type: "trigger",   label: "Job completed",      icon: "✅" },
+      { id: uid(), type: "condition", label: "Wait 48 hours",      delay: 2880 },
+      { id: uid(), type: "action",    label: "Send thank-you SMS", channel: "sms",
+        messageBody: "Hi {{first_name}}, thanks for trusting us with your recent service! We hope you're loving the results — reach out anytime if you need anything. — Crew Boss" },
+    ],
+  },
+  {
+    id: "tpl_client_referral_request", name: "Client: Referral Request",
+    trigger: "Payment received", action: "Send referral request SMS",
+    // Rides the already-implemented payment_received engine category (fires
+    // within 3 days of an invoice being paid) with an explicit 1-day delay,
+    // and reuses the customer's existing referralCode/#/referral link
+    // (ReferralsPage.tsx/ClientAuthPortal.tsx) rather than inventing a new
+    // referral mechanism.
+    description: "Asks a customer for a referral a day after their invoice is paid, linking their existing referral code.",
+    steps: [
+      { id: uid(), type: "trigger",   label: "Payment received",  icon: "💵" },
+      { id: uid(), type: "condition", label: "Wait 1 day",        delay: 1440 },
+      { id: uid(), type: "action",    label: "Send referral-request SMS", channel: "sms",
+        messageBody: "Hi {{first_name}}, thanks for your payment! Know anyone who could use our services? Share your referral link and you'll both earn rewards: {{referral_link}} — Crew Boss" },
+    ],
+  },
 ];
 
 // ─── Seed revenue chart data ───────────────────────────────────────────────────

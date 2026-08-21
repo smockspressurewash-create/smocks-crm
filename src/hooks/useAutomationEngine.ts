@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from "react";
-import type { Automation, AutomationStep, Job, Customer, Estimate, Referral, AppSettings } from "../types";
+import type { Automation, AutomationStep, Job, Customer, Estimate, Referral, AppSettings, Employee, Goal } from "../types";
 import { today, daysSince } from "../lib/utils";
 import { twilioSend, logOutboundSmsToInbox, sendOwnerGmailOnly, emailShell } from "../lib/messaging";
 
@@ -10,6 +10,13 @@ interface AutomationEngineProps {
   customers: Customer[];
   estimates: Estimate[];
   referrals?: Referral[];
+  // FEATURE — owner/employee-facing report automations (end-of-day summary,
+  // quarterly/yearly summary, weekly progress report, shift summary,
+  // performance report) need employee records (to notify a specific tech)
+  // and goals (to summarize KPI progress). Both optional/default-empty so
+  // every existing caller of this hook keeps compiling unchanged.
+  employees?: Employee[];
+  goals?: Goal[];
   settings: AppSettings;
   setSettings: React.Dispatch<React.SetStateAction<AppSettings>>;
   toast: (msg: string) => void;
@@ -113,7 +120,14 @@ type Category =
   | "referral_ask" | "review_request" | "job_scheduled" | "estimate_followup" | "estimate_viewed"
   | "estimate_accepted" | "payment_received" | "payment_overdue" | "maintenance" | "birthday"
   | "seasonal_spring" | "seasonal_fall" | "abandoned_estimate" | "reengage" | "anniversary"
-  | "referral_reward" | "referral_booked" | "review_good" | "review_bad" | "manual" | "weekly_scheduled";
+  | "referral_reward" | "referral_booked" | "review_good" | "review_bad" | "manual" | "weekly_scheduled"
+  // FEATURE — owner/employee report automations. These target the owner's
+  // or an employee's own inbox instead of a customer, using a synthetic
+  // Candidate whose `customer` field is actually a pseudo-recipient (see
+  // ownerCandidate()/employee candidate builders below) so the rest of the
+  // pipeline (buildMessage, sendOne, dedup, daily cap) doesn't need to know
+  // the difference.
+  | "owner_daily_summary" | "owner_periodic_summary" | "employee_shift_summary" | "employee_performance_report";
 
 const classifyTrigger = (labelRaw: string): Category | null => {
   const t = (labelRaw || "").toLowerCase();
@@ -149,16 +163,32 @@ const classifyTrigger = (labelRaw: string): Category | null => {
   if (/review submitted|5 star/.test(t) && /review/.test(t)) return "review_good";
   if (/negative review|≤3|low.?rating/.test(t)) return "review_bad";
   if (/manual/.test(t)) return "manual";
+  // Owner/employee report categories — matched before the generic "weekly"
+  // check below so a label like "Weekly performance report" classifies as
+  // employee_performance_report, not the generic weekly_scheduled bucket.
+  if (/end of day|daily (business )?summary|eod summary/.test(t)) return "owner_daily_summary";
+  if (/quarterly|year-?end|yearly (business )?summary|annual (business )?summary/.test(t)) return "owner_periodic_summary";
+  if (/shift (summary|ended?|end)\b|end of shift|clock(ed)? out/.test(t)) return "employee_shift_summary";
+  if (/performance (report|summary)/.test(t)) return "employee_performance_report";
   if (/every monday|weekly/.test(t)) return "weekly_scheduled";
   return null;
 };
 
 interface Candidate {
   key: string;
+  // For owner/employee report categories, `customer` is a synthetic
+  // pseudo-recipient (id "owner:..."/"employee:<id>", firstName/email/phone
+  // populated from settings or the real Employee row) — this keeps
+  // buildMessage/sendOne/dedup/daily-cap logic identical for every category
+  // instead of forking a separate send path for internal reports.
   customer: Customer;
   job?: Job;
   estimate?: Estimate;
   referral?: Referral;
+  // Set only for employee_shift_summary/employee_performance_report — the
+  // real Employee row backing the pseudo `customer` above, so extraVars can
+  // read actual shift/rating data without re-deriving it from the pseudo id.
+  employee?: Employee;
   anchorMs: number;
 }
 type Direction = "after" | "before" | "immediate";
@@ -281,6 +311,8 @@ export function useAutomationEngine({
   customers,
   estimates,
   referrals = [],
+  employees = [],
+  goals = [],
   settings,
   setSettings,
   toast,
@@ -304,6 +336,8 @@ export function useAutomationEngine({
   const customersRef = useRef(customers);
   const estimatesRef = useRef(estimates);
   const referralsRef = useRef(referrals);
+  const employeesRef = useRef(employees);
+  const goalsRef = useRef(goals);
   const settingsRef = useRef(settings);
   const toastRef = useRef(toast);
   const setAutomationsRef = useRef(setAutomations);
@@ -313,6 +347,8 @@ export function useAutomationEngine({
   customersRef.current = customers;
   estimatesRef.current = estimates;
   referralsRef.current = referrals;
+  employeesRef.current = employees;
+  goalsRef.current = goals;
   settingsRef.current = settings;
   toastRef.current = toast;
   setAutomationsRef.current = setAutomations;
@@ -326,6 +362,38 @@ export function useAutomationEngine({
   const reviewLink = (c: Customer, settings: AppSettings) =>
     `${window.location.origin}${window.location.pathname}#/rate?c=${encodeURIComponent(c.id)}&n=${encodeURIComponent(c.firstName)}&g=${encodeURIComponent((settings as any).googlePlaceId ?? "")}&rl=${encodeURIComponent((settings as any).googleReviewLink ?? "")}&co=${encodeURIComponent((settings as any).companyName ?? "Crew Boss")}`;
   const paymentLink = (estId: string) => `${window.location.origin}${window.location.pathname}#/estimate/${estId}`;
+  // Same link format ReferralsPage.tsx/ClientAuthPortal.tsx/ReferralLanding.tsx
+  // already use for a customer's referral code — reused here rather than
+  // inventing a second referral-link scheme.
+  const referralLink = (c: Customer) =>
+    `${window.location.origin}${window.location.pathname}#/referral?ref=${encodeURIComponent(c.referralCode || "")}`;
+
+  // ── Owner/employee pseudo-recipients ──────────────────────────────────────
+  // sendOne/buildMessage only know how to address a Candidate's `customer`
+  // field — rather than forking a second send path for "internal" reports,
+  // these build a minimal Customer-shaped object carrying the owner's or an
+  // employee's real email/phone so the exact same send/dedup/cap machinery
+  // handles them. `id` is prefixed so it can never collide with a real
+  // customer id in dailyLog/sentLog/firedThisSession bookkeeping.
+  const ownerCandidate = (settings: AppSettings, key: string): Candidate | null => {
+    const email = (settings as any).companyEmail || (settings as any).myEmail || (settings as any).googleEmail;
+    if (!email) return null;
+    const rawName = ((settings as any).ownerName || (settings as any).companyName || "Owner").trim();
+    const [firstName, ...rest] = rawName.split(/\s+/);
+    const pseudo = {
+      id: `owner:${key}`, firstName: firstName || "Owner", lastName: rest.join(" "), email, phone: "",
+      address: "", tags: [], totalSpent: 0, createdAt: "",
+    } as unknown as Customer;
+    return { key: `owner:${key}`, customer: pseudo, anchorMs: Date.now() };
+  };
+  const employeeCandidates = (employees: Employee[], keySuffix: string): Candidate[] =>
+    employees.filter(e => e.status === "active" && e.email).map(e => {
+      const pseudo = {
+        id: `employee:${e.id}`, firstName: e.firstName, lastName: e.lastName, email: e.email, phone: e.phone || "",
+        address: "", tags: [], totalSpent: 0, createdAt: "",
+      } as unknown as Customer;
+      return { key: `employee:${e.id}:${keySuffix}`, customer: pseudo, employee: e, anchorMs: Date.now() };
+    });
 
   const buildMessage = (auto: Automation, dir: Directive, spec: CategorySpec, cand: Candidate, settings: AppSettings) => {
     const vars: Record<string, string> = {
@@ -440,6 +508,8 @@ export function useAutomationEngine({
       const customers = customersRef.current;
       const estimates = estimatesRef.current;
       const referrals = referralsRef.current;
+      const employees = employeesRef.current;
+      const goals = goalsRef.current;
       const settings = settingsRef.current;
 
       try {
@@ -551,6 +621,11 @@ export function useAutomationEngine({
         },
         payment_received: {
           direction: "after", defaultDelayMinutes: 0, defaultCooldownDays: 3650, smsTemplateKey: "payment_received",
+          // extraVars adds referral_link/referral_code (reusing the same
+          // #/referral?ref=CODE format ReferralsPage.tsx/ClientAuthPortal.tsx
+          // already use) for the "Client: Referral Request" template — every
+          // other payment_received template just ignores these vars.
+          extraVars: cand => ({ referral_link: referralLink(cand.customer), referral_code: cand.customer.referralCode || "" }),
           getCandidates: () => estimates.filter(e => e.invoiced && e.paidAt && daysSince(e.paidAt) <= 3).map(e => {
             const c = customers.find(x => x.id === e.customerId);
             return c ? { key: e.id, customer: c, estimate: e, anchorMs: new Date(e.paidAt!).getTime() } : null;
@@ -634,7 +709,103 @@ export function useAutomationEngine({
         review_good: { direction: "immediate", defaultDelayMinutes: 0, defaultCooldownDays: 3650, getCandidates: () => [] },
         review_bad: { direction: "immediate", defaultDelayMinutes: 0, defaultCooldownDays: 3650, getCandidates: () => [] },
         manual: { direction: "immediate", defaultDelayMinutes: 0, defaultCooldownDays: 3650, getCandidates: () => [] },
-        weekly_scheduled: { direction: "immediate", defaultDelayMinutes: 0, defaultCooldownDays: 3650, getCandidates: () => [] },
+        // FEATURE — owner weekly progress report (goals/KPI summary). Fires
+        // Monday mornings 8-9am. weekly_scheduled previously classified
+        // correctly but always returned zero candidates ("not wired yet") —
+        // reused here rather than adding a parallel "weekly" category.
+        weekly_scheduled: {
+          direction: "immediate", defaultDelayMinutes: 0, defaultCooldownDays: 5,
+          extraVars: () => ({
+            goals_summary: goals.length
+              ? goals.map(g => `${g.label}: ${g.current}/${g.target}${g.unit ? " " + g.unit : ""}`).join("; ")
+              : "No goals set yet — add some in Accountability → Goals.",
+          }),
+          getCandidates: () => (now.getDay() === 1 && hour === 8) ? [ownerCandidate(settings, "weekly-progress")].filter(Boolean) as Candidate[] : [],
+        },
+        // FEATURE — owner end-of-day summary. Fires once in the 6-7pm
+        // window; mirrors the metrics the manual "Send Daily Briefing Now"
+        // button already computes (App.tsx sendDailyBriefingNow) so both
+        // surfaces report the same numbers.
+        owner_daily_summary: {
+          direction: "immediate", defaultDelayMinutes: 0, defaultCooldownDays: 1,
+          extraVars: () => {
+            const todaysJobs = jobs.filter(j => j.scheduledDate === todayStr);
+            const completed = todaysJobs.filter(j => j.status === "completed");
+            const revenue = completed.reduce((s, j) => s + (Number(j.amount) || 0), 0);
+            const newLeads = customers.filter(c => (c.createdAt || "").slice(0, 10) === todayStr).length;
+            return {
+              jobs_completed: String(completed.length),
+              jobs_total: String(todaysJobs.length),
+              revenue: `$${revenue.toFixed(2)}`,
+              new_leads: String(newLeads),
+            };
+          },
+          getCandidates: () => (hour === 18) ? [ownerCandidate(settings, "eod")].filter(Boolean) as Candidate[] : [],
+        },
+        // FEATURE — owner quarterly/yearly business summary. The engine has
+        // no arbitrary cron scheduler (see classifyTrigger's comment block
+        // above this file's trigger classification section) — this reuses
+        // the same "match a specific calendar date + hour window on every
+        // 15-min tick" mechanism the existing seasonal/birthday/anniversary
+        // categories already rely on, firing on the 1st of each calendar
+        // quarter (Jan/Apr/Jul/Oct) — the closest supported cadence to
+        // "quarterly", and a strict superset that also covers "yearly"
+        // (Jan 1st is both a quarter-start and a year-start).
+        owner_periodic_summary: {
+          direction: "immediate", defaultDelayMinutes: 0, defaultCooldownDays: 80,
+          extraVars: () => {
+            const qStartMonth = Math.floor(now.getMonth() / 3) * 3;
+            const qStart = new Date(now.getFullYear(), qStartMonth, 1).toISOString().slice(0, 10);
+            const qJobs = jobs.filter(j => j.status === "completed" && j.scheduledDate >= qStart && j.scheduledDate <= todayStr);
+            const revenue = qJobs.reduce((s, j) => s + (Number(j.amount) || 0), 0);
+            const newCustomers = customers.filter(c => (c.createdAt || "").slice(0, 10) >= qStart).length;
+            return {
+              period_jobs: String(qJobs.length),
+              period_revenue: `$${revenue.toFixed(2)}`,
+              period_new_customers: String(newCustomers),
+            };
+          },
+          getCandidates: () => ([0, 3, 6, 9].includes(now.getMonth()) && now.getDate() === 1 && hour === 8)
+            ? [ownerCandidate(settings, "periodic")].filter(Boolean) as Candidate[] : [],
+        },
+        // FEATURE — employee end-of-shift summary. lastShiftDate/
+        // lastShiftHours are written once, at the moment an employee taps
+        // "End My Day" in EmployeePortal.tsx, so `lastShiftDate === todayStr`
+        // (with dayClockInAt already cleared) is the real "shift just ended
+        // today" signal, not a guess.
+        employee_shift_summary: {
+          direction: "immediate", defaultDelayMinutes: 0, defaultCooldownDays: 1,
+          extraVars: cand => {
+            const emp = cand.employee!;
+            const empJobsToday = jobs.filter(j => (j.crew || []).includes(emp.id) && j.scheduledDate === todayStr);
+            return {
+              hours_worked: Number(emp.lastShiftHours || 0).toFixed(1),
+              jobs_completed: String(empJobsToday.filter(j => j.status === "completed").length),
+              jobs_total: String(empJobsToday.length),
+            };
+          },
+          getCandidates: () => employeeCandidates(
+            employees.filter(e => e.lastShiftDate === todayStr && !e.dayClockInAt),
+            todayStr,
+          ),
+        },
+        // FEATURE — employee performance report (weekly, Monday mornings).
+        // Reports the trailing 7 days of that employee's completed jobs plus
+        // their existing ratingScore field (EmployeesPage.tsx) rather than
+        // fabricating a metric this app doesn't actually track.
+        employee_performance_report: {
+          direction: "immediate", defaultDelayMinutes: 0, defaultCooldownDays: 5,
+          extraVars: cand => {
+            const emp = cand.employee!;
+            const weekAgo = new Date(Date.now() - 7 * 86400000).toISOString().slice(0, 10);
+            const recentJobs = jobs.filter(j => (j.crew || []).includes(emp.id) && j.status === "completed" && j.scheduledDate >= weekAgo);
+            return {
+              jobs_completed: String(recentJobs.length),
+              rating: emp.ratingScore ? emp.ratingScore.toFixed(1) : "N/A",
+            };
+          },
+          getCandidates: () => (now.getDay() === 1 && hour === 9) ? employeeCandidates(employees, "perf-" + todayStr) : [],
+        },
       };
 
       // ── Gather phase — no sends happen here. Every candidate that clears

@@ -17,6 +17,7 @@ import { GInput } from "../ui/GInput";
 import { GSel } from "../ui/GSel";
 import { Badge } from "../ui/Badge";
 import { Stat } from "../ui/Stat";
+import { useIsMobile } from "../../hooks/useIsMobile";
 
 export function TrashCanPage({ jobs = [], customers = [], settings = {} as AppSettings, setSettings, setJobs, toast, ownerId }: { jobs?: Job[]; customers?: Customer[]; settings?: AppSettings; setSettings?: any; setJobs?: any; toast?: any; ownerId?: string }) {
   const trashJobs = jobs.filter((j: any) => j.serviceCategory === "trash_can");
@@ -54,6 +55,12 @@ export function TrashCanPage({ jobs = [], customers = [], settings = {} as AppSe
   const planningDays = Array.from({ length: 14 }, (_, i) => daysFromNow(i));
   const [draggedId, setDraggedId] = useState<string | null>(null);
   const [staged, setStaged] = useState<Record<string, string>>({}); // jobId -> date
+  // BUG FIX (mobile trash-can planning) — same pattern as the mobile
+  // pipeline fix in PipelinePage.tsx: native HTML5 drag-and-drop never fires
+  // on touch (iOS Safari/Android Chrome), so below the 768px breakpoint the
+  // draggable cards + drop-target columns are replaced with an explicit
+  // "Move to…" GSel dropdown per card. Desktop drag-and-drop is untouched.
+  const isMobile = useIsMobile();
   const [confirming, setConfirming] = useState(false);
   const dayOf = (j: Job) => staged[j.id] || j.scheduledDate || "";
 
@@ -165,7 +172,7 @@ export function TrashCanPage({ jobs = [], customers = [], settings = {} as AppSe
           <div className="font-semibold text-sm flex items-center gap-2"><Calendar size={14} className="text-yellow-400" />Planning — Assign Customers to Days</div>
           {stagedCount > 0 && <GBtn onClick={confirmDayAssignments} disabled={confirming} className="!text-xs !py-1.5"><Send size={11} className="inline mr-1" />{confirming ? "Saving…" : `Confirm ${stagedCount} Assignment${stagedCount !== 1 ? "s" : ""}`}</GBtn>}
         </div>
-        <div className="text-[10px] text-white/40">Drag a customer card onto a day to assign their trash-can service day. Nothing is saved until you hit Confirm — which then offers to text everyone their scheduled day.</div>
+        <div className="text-[10px] text-white/40">{isMobile ? "Use \"Move to…\" on a customer card to assign their trash-can service day." : "Drag a customer card onto a day to assign their trash-can service day."} Nothing is saved until you hit Confirm — which then offers to text everyone their scheduled day.</div>
         {unassigned.length === 0 ? (
           <div className="text-center py-6 text-white/40 text-xs">No unassigned trash-can customers — new signups will appear here.</div>
         ) : (
@@ -173,15 +180,26 @@ export function TrashCanPage({ jobs = [], customers = [], settings = {} as AppSe
             <div className="flex-shrink-0 w-48">
               <div className="text-[10px] uppercase tracking-wider text-white/40 mb-1.5">Unassigned ({unassigned.filter(j => !staged[j.id]).length})</div>
               <div className="space-y-1.5 min-h-[60px] p-1.5 rounded-xl bg-black/30 border border-dashed border-white/10"
-                onDragOver={(e) => e.preventDefault()}
-                onDrop={() => { if (draggedId) setStaged(prev => { const n = { ...prev }; delete n[draggedId]; return n; }); setDraggedId(null); }}>
+                {...(isMobile ? {} : { onDragOver: (e: any) => e.preventDefault(), onDrop: () => { if (draggedId) setStaged(prev => { const n = { ...prev }; delete n[draggedId]; return n; }); setDraggedId(null); } })}>
                 {unassigned.filter(j => !staged[j.id]).map(j => {
                   const c = cf(j.customerId);
                   return (
-                    <div key={j.id} draggable onDragStart={() => setDraggedId(j.id)} onDragEnd={() => setDraggedId(null)}
-                      className="p-2 rounded-lg bg-black/60 border border-white/10 text-[11px] cursor-grab active:cursor-grabbing flex items-center gap-1.5">
+                    <div key={j.id} {...(isMobile ? {} : { draggable: true, onDragStart: () => setDraggedId(j.id), onDragEnd: () => setDraggedId(null) })}
+                      className={"p-2 rounded-lg bg-black/60 border border-white/10 text-[11px] flex items-center gap-1.5" + (isMobile ? "" : " cursor-grab active:cursor-grabbing")}>
                       <GripVertical size={10} className="text-white/30 flex-shrink-0" />
-                      <span className="truncate">{c ? `${c.firstName} ${c.lastName}` : "Customer"} · {(j as any).cansCount || 1} cans</span>
+                      <span className={"truncate" + (isMobile ? " flex-1" : "")}>{c ? `${c.firstName} ${c.lastName}` : "Customer"} · {(j as any).cansCount || 1} cans</span>
+                      {isMobile && (
+                        <GSel
+                          value=""
+                          onChange={(e: any) => { const dest = e.target.value; if (dest) setStaged(prev => ({ ...prev, [j.id]: dest })); }}
+                          className="!py-1 !text-[10px] !w-auto flex-shrink-0"
+                        >
+                          <option value="" className="bg-black">Move to…</option>
+                          {planningDays.map(d => (
+                            <option key={d} value={d} className="bg-black">{d}</option>
+                          ))}
+                        </GSel>
+                      )}
                     </div>
                   );
                 })}
@@ -193,15 +211,32 @@ export function TrashCanPage({ jobs = [], customers = [], settings = {} as AppSe
                 <div key={d} className="flex-shrink-0 w-40">
                   <div className="text-[10px] uppercase tracking-wider text-white/40 mb-1.5">{d} ({dayJobs.length})</div>
                   <div className="space-y-1.5 min-h-[60px] p-1.5 rounded-xl bg-black/30 border border-dashed border-white/10"
-                    onDragOver={(e) => e.preventDefault()}
-                    onDrop={() => { if (draggedId) setStaged(prev => ({ ...prev, [draggedId]: d })); setDraggedId(null); }}>
+                    {...(isMobile ? {} : { onDragOver: (e: any) => e.preventDefault(), onDrop: () => { if (draggedId) setStaged(prev => ({ ...prev, [draggedId]: d })); setDraggedId(null); } })}>
                     {dayJobs.map(j => {
                       const c = cf(j.customerId);
                       return (
-                        <div key={j.id} draggable onDragStart={() => setDraggedId(j.id)} onDragEnd={() => setDraggedId(null)}
-                          className="p-2 rounded-lg bg-yellow-950/30 border border-yellow-700/30 text-[11px] cursor-grab active:cursor-grabbing flex items-center gap-1.5">
+                        <div key={j.id} {...(isMobile ? {} : { draggable: true, onDragStart: () => setDraggedId(j.id), onDragEnd: () => setDraggedId(null) })}
+                          className={"p-2 rounded-lg bg-yellow-950/30 border border-yellow-700/30 text-[11px] flex items-center gap-1.5" + (isMobile ? "" : " cursor-grab active:cursor-grabbing")}>
                           <GripVertical size={10} className="text-yellow-500/50 flex-shrink-0" />
-                          <span className="truncate">{c ? `${c.firstName} ${c.lastName}` : "Customer"}</span>
+                          <span className={"truncate" + (isMobile ? " flex-1" : "")}>{c ? `${c.firstName} ${c.lastName}` : "Customer"}</span>
+                          {isMobile && (
+                            <GSel
+                              value=""
+                              onChange={(e: any) => {
+                                const dest = e.target.value;
+                                if (!dest) return;
+                                if (dest === "__unassign__") setStaged(prev => { const n = { ...prev }; delete n[j.id]; return n; });
+                                else setStaged(prev => ({ ...prev, [j.id]: dest }));
+                              }}
+                              className="!py-1 !text-[10px] !w-auto flex-shrink-0"
+                            >
+                              <option value="" className="bg-black">Move to…</option>
+                              <option value="__unassign__" className="bg-black">Unassigned</option>
+                              {planningDays.filter(pd => pd !== d).map(pd => (
+                                <option key={pd} value={pd} className="bg-black">{pd}</option>
+                              ))}
+                            </GSel>
+                          )}
                         </div>
                       );
                     })}

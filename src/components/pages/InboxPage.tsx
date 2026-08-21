@@ -1027,7 +1027,18 @@ export function InboxPage({ threads = [], setThreads, customers = [], setCustome
         <div className="flex-1 flex flex-col min-w-0">
           {/* Header */}
           <div className="flex items-center gap-3 p-3 border-b border-red-900/30 bg-black/40">
-            <button onClick={() => setActive(null)} className="md:hidden p-1.5 rounded-lg hover:bg-white/5 text-white/60"><ChevronLeft size={16} /></button>
+            {/* BUG (mobile) — this button sits near enough to the left edge that
+                its touches could fall inside App.tsx's sidebar edge-swipe zone
+                (see EDGE_ZONE_PX there); stopPropagation on touchstart/touchmove
+                is a belt-and-suspenders guard so a tap/drag here can never be
+                misread as a sidebar-open swipe, on top of the zone itself now
+                being narrowed to a true screen-edge width. */}
+            <button
+              onClick={() => setActive(null)}
+              onTouchStart={e => e.stopPropagation()}
+              onTouchMove={e => e.stopPropagation()}
+              className="md:hidden p-1.5 rounded-lg hover:bg-white/5 text-white/60"
+            ><ChevronLeft size={16} /></button>
             <div className="w-8 h-8 rounded-full bg-gradient-to-br from-red-700 to-red-950 flex items-center justify-center text-xs font-bold flex-shrink-0">{displayName(activeThread)[0]}</div>
             <div className="flex-1 min-w-0">
               <div className="font-semibold text-sm flex items-center gap-1.5 flex-wrap">

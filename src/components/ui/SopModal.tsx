@@ -76,26 +76,26 @@ export function SopModal({ open, onClose, editable = false }: { open: boolean; o
   if (!open) return null;
 
   return (
-    <div className="fixed inset-0 z-[200] bg-black/80 backdrop-blur flex items-center justify-center p-4" onClick={onClose}>
-      <div className="w-full max-w-2xl max-h-[85vh] bg-neutral-950 border border-white/10 rounded-2xl shadow-2xl flex flex-col overflow-hidden" onClick={(e) => e.stopPropagation()}>
-        <div className="flex items-center justify-between px-4 py-3 border-b border-white/10 bg-gradient-to-r from-red-600 to-red-800">
+    <div className="fixed inset-0 z-[200] bg-black/80 backdrop-blur flex items-center justify-center sm:p-4" onClick={onClose}>
+      <div className="w-full h-full sm:h-auto sm:max-w-2xl sm:max-h-[85vh] bg-neutral-950 border border-white/10 sm:rounded-2xl shadow-2xl flex flex-col overflow-hidden" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between px-4 py-3 border-b border-white/10 bg-gradient-to-r from-red-600 to-red-800 flex-shrink-0">
           <div className="font-bold text-white flex items-center gap-2"><BookOpen size={16} />SOPs & Instructions</div>
           <div className="flex items-center gap-2">
-            {editable && <button onClick={() => setEditing({ id: uid(), title: "", kind: "markdown", content: "" })} className="p-1.5 rounded-lg bg-white/15 hover:bg-white/25 text-white transition" title="New SOP"><Plus size={16} /></button>}
-            <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-white/15 text-white transition"><X size={16} /></button>
+            {editable && <button onClick={() => setEditing({ id: uid(), title: "", kind: "markdown", content: "" })} className="p-2 rounded-lg bg-white/15 hover:bg-white/25 text-white transition" title="New SOP"><Plus size={18} /></button>}
+            <button onClick={onClose} className="p-2 rounded-lg hover:bg-white/15 text-white transition"><X size={18} /></button>
           </div>
         </div>
 
         {editing ? (
-          <div className="flex-1 overflow-y-auto p-4 space-y-3">
+          <div className="flex-1 overflow-y-auto p-4 space-y-3 min-h-0">
             <input value={editing.title} onChange={e => setEditing({ ...editing, title: e.target.value })} placeholder={"Title (e.g. \"Post-Job Cleanup Checklist\")"}
               className="w-full bg-white/5 border border-white/15 rounded-xl px-3 py-2.5 text-sm text-white placeholder-white/25 focus:outline-none focus:border-red-500/50" />
             <div className="flex gap-2">
-              <button onClick={() => setEditing({ ...editing, kind: "markdown" })} className={"flex-1 py-2 rounded-xl border text-xs font-semibold transition " + (editing.kind === "markdown" ? "border-red-500/60 bg-red-950/30 text-red-300" : "border-white/10 bg-white/5 text-white/50")}>Text / Markdown</button>
-              <button onClick={() => setEditing({ ...editing, kind: "pdf" })} className={"flex-1 py-2 rounded-xl border text-xs font-semibold transition " + (editing.kind === "pdf" ? "border-red-500/60 bg-red-950/30 text-red-300" : "border-white/10 bg-white/5 text-white/50")}>PDF</button>
+              <button onClick={() => setEditing({ ...editing, kind: "markdown" })} className={"flex-1 py-2.5 rounded-xl border text-xs font-semibold transition " + (editing.kind === "markdown" ? "border-red-500/60 bg-red-950/30 text-red-300" : "border-white/10 bg-white/5 text-white/50")}>Text / Markdown</button>
+              <button onClick={() => setEditing({ ...editing, kind: "pdf" })} className={"flex-1 py-2.5 rounded-xl border text-xs font-semibold transition " + (editing.kind === "pdf" ? "border-red-500/60 bg-red-950/30 text-red-300" : "border-white/10 bg-white/5 text-white/50")}>PDF</button>
             </div>
             {editing.kind === "markdown" ? (
-              <textarea value={editing.content || ""} onChange={e => setEditing({ ...editing, content: e.target.value })} rows={12} placeholder="Write the instructions here — plain text or Markdown (## headers, - lists, **bold**)."
+              <textarea value={editing.content || ""} onChange={e => setEditing({ ...editing, content: e.target.value })} rows={10} placeholder="Write the instructions here — plain text or Markdown (## headers, - lists, **bold**)."
                 className="w-full bg-white/5 border border-white/15 rounded-xl px-3 py-2.5 text-sm text-white placeholder-white/25 resize-none focus:outline-none focus:border-red-500/50 font-mono" />
             ) : (
               <div className="space-y-2">
@@ -106,34 +106,34 @@ export function SopModal({ open, onClose, editable = false }: { open: boolean; o
                 {editing.file_url && <div className="text-xs text-green-400 flex items-center gap-1.5"><FileText size={12} />PDF attached ✓</div>}
               </div>
             )}
-            <div className="flex gap-2 justify-end pt-2">
-              <button onClick={() => setEditing(null)} className="px-4 py-2 rounded-xl text-sm text-white/60 hover:text-white transition">Cancel</button>
-              <button onClick={save} disabled={!editing.title.trim()} className="px-4 py-2 rounded-xl text-sm font-semibold bg-gradient-to-r from-red-600 to-red-800 text-white disabled:opacity-50">Save</button>
+            <div className="flex gap-2 justify-end pt-2 pb-1">
+              <button onClick={() => setEditing(null)} className="px-4 py-2.5 rounded-xl text-sm text-white/60 hover:text-white transition">Cancel</button>
+              <button onClick={save} disabled={!editing.title.trim()} className="px-4 py-2.5 rounded-xl text-sm font-semibold bg-gradient-to-r from-red-600 to-red-800 text-white disabled:opacity-50">Save</button>
             </div>
           </div>
         ) : (
-          <div className="flex-1 flex min-h-0">
-            <div className="w-40 flex-shrink-0 border-r border-white/10 overflow-y-auto">
+          <div className="flex-1 flex flex-col sm:flex-row min-h-0 overflow-hidden">
+            <div className="w-full sm:w-40 flex-shrink-0 max-h-40 sm:max-h-none border-b sm:border-b-0 sm:border-r border-white/10 overflow-y-auto overflow-x-hidden">
               {loading && <div className="p-3 text-xs text-white/40">Loading…</div>}
               {!loading && docs.length === 0 && <div className="p-3 text-xs text-white/40">No SOPs yet{editable ? " — hit + to add one" : ""}.</div>}
               {docs.map(d => (
-                <button key={d.id} onClick={() => setActiveId(d.id)} className={"w-full text-left px-3 py-2.5 text-xs border-b border-white/5 transition " + (activeId === d.id ? "bg-red-950/30 text-white" : "text-white/50 hover:text-white hover:bg-white/5")}>
+                <button key={d.id} onClick={() => setActiveId(d.id)} className={"w-full text-left px-3 py-3 sm:py-2.5 text-xs border-b border-white/5 transition " + (activeId === d.id ? "bg-red-950/30 text-white" : "text-white/50 hover:text-white hover:bg-white/5")}>
                   {d.title}
                 </button>
               ))}
             </div>
-            <div className="flex-1 overflow-y-auto p-4">
+            <div className="flex-1 min-h-0 overflow-y-auto p-4">
               {!active ? (
                 <div className="text-center text-white/30 text-sm py-12">Select a document</div>
               ) : active.kind === "pdf" && active.file_url ? (
                 <iframe src={active.file_url} title={active.title} className="w-full h-full min-h-[400px] rounded-xl border border-white/10" />
               ) : (
-                <div className="text-sm text-white/80 whitespace-pre-wrap leading-relaxed">{active.content || "(empty)"}</div>
+                <div className="text-sm text-white/80 whitespace-pre-wrap leading-relaxed break-words">{active.content || "(empty)"}</div>
               )}
               {editable && active && (
                 <div className="flex gap-2 justify-end pt-3 mt-3 border-t border-white/10">
-                  <button onClick={() => setEditing(active)} className="px-3 py-1.5 rounded-lg text-xs text-white/60 hover:text-white transition flex items-center gap-1"><Edit size={11} />Edit</button>
-                  <button onClick={() => remove(active.id)} className="px-3 py-1.5 rounded-lg text-xs text-red-400 hover:text-red-300 transition flex items-center gap-1"><Trash2 size={11} />Delete</button>
+                  <button onClick={() => setEditing(active)} className="px-3 py-2 rounded-lg text-xs text-white/60 hover:text-white transition flex items-center gap-1"><Edit size={11} />Edit</button>
+                  <button onClick={() => remove(active.id)} className="px-3 py-2 rounded-lg text-xs text-red-400 hover:text-red-300 transition flex items-center gap-1"><Trash2 size={11} />Delete</button>
                 </div>
               )}
             </div>

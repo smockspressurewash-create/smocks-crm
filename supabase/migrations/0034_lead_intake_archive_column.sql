@@ -1,0 +1,14 @@
+-- Lead Intake page (LeadIntakePage.tsx) "Archive" action.
+--
+-- A lead is just a `customers` row with pipelineStage = 'lead' (see
+-- LeadFormPage.tsx, which inserts new leads directly into this table).
+-- "Archive" hides a lead from the active Lead Intake list without deleting
+-- the record — distinct from "Convert to Customer" (advances pipelineStage
+-- off "lead") and "Delete" (removes the row entirely).
+--
+-- LeadIntakePage.tsx has a "safe column" retry fallback (same pattern as
+-- CustomersPage.tsx's `folder` column) so archiving still works locally and
+-- degrades gracefully (with a "needs a pending migration" toast) even before
+-- this migration is applied — but the archived state won't persist/sync
+-- cross-device until this column exists.
+ALTER TABLE customers ADD COLUMN IF NOT EXISTS "leadArchived" boolean DEFAULT false;

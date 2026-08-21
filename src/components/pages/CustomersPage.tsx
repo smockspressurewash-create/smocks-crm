@@ -454,45 +454,49 @@ export function CustomersPage({ customers = [], setCustomers, estimates = [], jo
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-col sm:flex-row gap-3 sm:items-center sm:justify-between">
-        <div className="flex gap-2 items-center">
+      <div className="flex flex-col gap-3">
+        <div className="flex gap-2 items-center flex-wrap">
           {["list", "analytics", "duplicates"].map(t => <button key={t} onClick={() => { setPageTab(t); if (t === "duplicates" && dupPairs === null) scanDuplicates(); }} className={"px-3 py-1.5 rounded-lg text-xs font-medium capitalize border transition " + (pageTab === t ? "bg-red-900/40 border-red-500/50 text-white" : "bg-black/40 border-red-900/30 text-white/60 hover:text-white")}>{t === "analytics" ? "📊 LTV Analytics" : t === "duplicates" ? "🔍 Find Duplicates" + (dupPairs?.length > 0 ? " (" + dupPairs.length + ")" : "") : "👥 Customers"}</button>)}
-          {pageTab === "list" && <div className="relative">
-            <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-white/40" />
-            <GInput placeholder="Search..." value={search} onChange={e => setSearch(e.target.value)} className="!pl-9 !py-1.5 !text-xs" />
-          </div>}
-          {pageTab === "list" && (
-            <GSel value={sortBy} onChange={e => setSortBy(e.target.value as any)} className="!py-1.5 !text-xs !w-auto">
-              <option value="name">Sort: Name</option>
-              <option value="dateAdded">Sort: Date Added</option>
-              <option value="lastJob">Sort: Last Job</option>
-              <option value="totalSpent">Sort: Total Spent</option>
-            </GSel>
-          )}
-          {pageTab === "list" && allCustomerTags.length > 0 && (
-            <GSel value={tagFilter} onChange={e => setTagFilter(e.target.value)} className="!py-1.5 !text-xs !w-auto">
-              <option value="">All Tags</option>
-              {allCustomerTags.map((t: string) => <option key={t} value={t}>{t}</option>)}
-            </GSel>
-          )}
-          {pageTab === "list" && (
-            <GSel value={folderFilter} onChange={e => setFolderFilter(e.target.value)} className="!py-1.5 !text-xs !w-auto">
-              <option value="">📁 All Folders</option>
-              <option value="__unfiled__">Unfiled</option>
-              {allFolderPaths.map((f: string) => <option key={f} value={f}>{"—".repeat(folderDepth(f))} 📁 {folderLabel(f)}</option>)}
-            </GSel>
-          )}
-          {pageTab === "list" && (
-            <GBtn variant="ghost" onClick={() => setFolderManagerOpen(true)} className="!py-1.5 !text-xs"><Filter size={12} className="inline mr-1.5" />Manage Folders</GBtn>
-          )}
         </div>
-        <div className="flex gap-2 flex-wrap">
-          <input ref={fileRef} type="file" accept=".csv" onChange={importCSV} className="hidden" />
-          <GBtn variant="ghost" onClick={() => fileRef.current?.click()}><Download size={14} className="inline mr-1.5 rotate-180" />Import</GBtn>
-          <GBtn variant="ghost" onClick={exportCSV}><Download size={14} className="inline mr-1.5" />Export</GBtn>
-          <GBtn variant={mergeMode ? "danger" : "ghost"} onClick={() => { setMergeMode(!mergeMode); setMergePair([]); }}><UserCheck size={14} className="inline mr-1.5" />{mergeMode ? "Cancel Merge" : "Merge"}</GBtn>
-          <GBtn variant={bulkMode ? "danger" : "ghost"} onClick={() => { setBulkMode(!bulkMode); setBulkSelected([]); }}><CheckSquare size={14} className="inline mr-1.5" />{bulkMode ? "Cancel Select" : "Select"}</GBtn>
-          <GBtn onClick={() => setModal({ open: true, data: null })}><Plus size={14} className="inline mr-1.5" />Add</GBtn>
+        <div className="flex flex-col sm:flex-row gap-3 sm:items-center sm:justify-between">
+          <div className="flex gap-2 items-center flex-wrap">
+            {pageTab === "list" && <div className="relative w-full sm:w-auto">
+              <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-white/40" />
+              <GInput placeholder="Search..." value={search} onChange={e => setSearch(e.target.value)} className="!pl-9 !py-1.5 !text-xs w-full sm:w-auto" />
+            </div>}
+            {pageTab === "list" && (
+              <GSel value={sortBy} onChange={e => setSortBy(e.target.value as any)} className="!py-1.5 !text-xs !w-auto">
+                <option value="name">Sort: Name</option>
+                <option value="dateAdded">Sort: Date Added</option>
+                <option value="lastJob">Sort: Last Job</option>
+                <option value="totalSpent">Sort: Total Spent</option>
+              </GSel>
+            )}
+            {pageTab === "list" && allCustomerTags.length > 0 && (
+              <GSel value={tagFilter} onChange={e => setTagFilter(e.target.value)} className="!py-1.5 !text-xs !w-auto">
+                <option value="">All Tags</option>
+                {allCustomerTags.map((t: string) => <option key={t} value={t}>{t}</option>)}
+              </GSel>
+            )}
+            {pageTab === "list" && (
+              <GSel value={folderFilter} onChange={e => setFolderFilter(e.target.value)} className="!py-1.5 !text-xs !w-auto">
+                <option value="">📁 All Folders</option>
+                <option value="__unfiled__">Unfiled</option>
+                {allFolderPaths.map((f: string) => <option key={f} value={f}>{"—".repeat(folderDepth(f))} 📁 {folderLabel(f)}</option>)}
+              </GSel>
+            )}
+            {pageTab === "list" && (
+              <GBtn variant="ghost" onClick={() => setFolderManagerOpen(true)} className="!py-1.5 !text-xs"><Filter size={12} className="inline mr-1.5" />Manage Folders</GBtn>
+            )}
+          </div>
+          <div className="flex gap-2 flex-wrap">
+            <input ref={fileRef} type="file" accept=".csv" onChange={importCSV} className="hidden" />
+            <GBtn variant="ghost" onClick={() => fileRef.current?.click()}><Download size={14} className="inline mr-1.5 rotate-180" />Import</GBtn>
+            <GBtn variant="ghost" onClick={exportCSV}><Download size={14} className="inline mr-1.5" />Export</GBtn>
+            <GBtn variant={mergeMode ? "danger" : "ghost"} onClick={() => { setMergeMode(!mergeMode); setMergePair([]); }}><UserCheck size={14} className="inline mr-1.5" />{mergeMode ? "Cancel Merge" : "Merge"}</GBtn>
+            <GBtn variant={bulkMode ? "danger" : "ghost"} onClick={() => { setBulkMode(!bulkMode); setBulkSelected([]); }}><CheckSquare size={14} className="inline mr-1.5" />{bulkMode ? "Cancel Select" : "Select"}</GBtn>
+            <GBtn onClick={() => setModal({ open: true, data: null })}><Plus size={14} className="inline mr-1.5" />Add</GBtn>
+          </div>
         </div>
       </div>
 
