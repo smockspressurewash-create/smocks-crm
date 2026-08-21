@@ -318,6 +318,30 @@ export function AutomationsPage({ automations = [], setAutomations, jobs = [], c
         )}
       </Glass>
 
+      {/* FEATURE — owner-configurable frequency/time for the "Owner:
+          End-of-Day Summary" report automation (useAutomationEngine.ts
+          owner_daily_summary spec). Read fresh off settings every 15-min
+          engine tick, so a change here takes effect on the next poll without
+          a reload — no separate "save" step needed. */}
+      <Glass className="p-4 !bg-purple-950/10 !border-purple-700/20">
+        <div className="text-sm font-semibold flex items-center gap-1.5">📊 Owner Stats Email</div>
+        <div className="text-xs text-white/50 mt-0.5 max-w-xl">Controls the "Owner: End-of-Day Summary" automation (Templates → Owner) — a real email with today's jobs completed, revenue, and new leads, computed the same way the Dashboard's "Send Daily Briefing Now" button does.</div>
+        <div className="grid md:grid-cols-2 gap-3 mt-3 pt-3 border-t border-purple-700/20">
+          <div>
+            <label className="text-xs text-white/60 mb-1 block">Frequency</label>
+            <GSel value={settings?.ownerSummaryFreq || "daily"} onChange={(e: any) => setSettings((s: any) => ({ ...s, ownerSummaryFreq: e.target.value }))} className="!text-xs">
+              <option value="daily">Daily</option>
+              <option value="weekly">Weekly (Mondays)</option>
+              <option value="off">Off</option>
+            </GSel>
+          </div>
+          <div>
+            <label className="text-xs text-white/60 mb-1 block">Send hour (24h, local time)</label>
+            <GInput type="number" min="0" max="23" value={settings?.ownerSummaryHour ?? 18} onChange={(e: any) => setSettings((s: any) => ({ ...s, ownerSummaryHour: Math.max(0, Math.min(23, Number(e.target.value) || 0)) }))} className="!text-xs" />
+          </div>
+        </div>
+      </Glass>
+
       {/* Stats row */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
         {[

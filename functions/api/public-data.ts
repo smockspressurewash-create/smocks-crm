@@ -148,15 +148,29 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
     // reviews_insert_public RLS policy still requires owner_id non-null as
     // defense in depth, but this is now the actual write path).
     if (action === "submit_review") {
-      const { customerId, jobId, rating, comment } = body;
+      const { customerId, rating, comment } = body;
       if (!customerId || !rating) return json({ error: "Missing customerId/rating" }, 400);
-      const custRow = await sb(serviceRoleKey, `customers?id=eq.${encodeURIComponent(customerId)}&select=owner_id`);
-      const ownerId = Array.isArray(custRow.data) ? custRow.data[0]?.owner_id : null;
+      const custRow = await sb(serviceRoleKey, `customers?id=eq.${encodeURIComponent(customerId)}&select=owner_id,firstName,lastName`);
+      const cust = Array.isArray(custRow.data) ? custRow.data[0] : null;
+      const ownerId = cust?.owner_id;
       if (!ownerId) return json({ error: "Customer not found" }, 404);
+      // BUG FIX — this used to insert customer_id/job_id/comment, none of
+      // which exist as columns on `reviews` (see migration
+      // 0030_reviews_table.sql: id/"customerId"/"customerName"/rating/text/
+      // "createdAt"/source/status — no job column at all). PostgREST rejects
+      // an insert containing any unrecognized column (same whole-write
+      // failure mode CLAUDE.md documents for updates), so this 500'd on
+      // every single public review submission — the actual root cause of
+      // "reviews aren't showing" (nothing was ever making it into the table).
       const insert = await sb(serviceRoleKey, `reviews`, {
         method: "POST",
         headers: { Prefer: "return=representation" },
-        body: JSON.stringify({ customer_id: customerId, job_id: jobId || null, rating, comment: comment || null, owner_id: ownerId, status: "pending" }),
+        body: JSON.stringify({
+          id: crypto.randomUUID(),
+          customerId, customerName: cust ? `${cust.firstName || ""} ${cust.lastName || ""}`.trim() : undefined,
+          rating, text: comment || null, createdAt: new Date().toISOString(),
+          source: "customer-submitted", owner_id: ownerId, status: "pending",
+        }),
       });
       if (!insert.ok) return json({ error: "Failed to submit review" }, 500);
       return json({ success: true, review: Array.isArray(insert.data) ? insert.data[0] : insert.data });

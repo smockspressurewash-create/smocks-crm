@@ -72,6 +72,7 @@ import {
   seedEmailTemplates, seedSmsTemplates, seedRewardTiers, seedReferrals,
   seedMaintenance, seedSocialPosts, seedTimeline, seedGoals, seedReminders,
   seedAccountabilityEntries, seedMileage, campaignTemplates,
+  AUTOMATION_TEMPLATES, automationFromTemplate,
 } from "./lib/seed";
 import { seedWeather } from "./lib/weather";
 import { fetchRealWeather } from "./lib/weather";
@@ -917,6 +918,43 @@ export function App() {
   // changes.
   const settingsRef = useRef(settings);
   useEffect(() => { settingsRef.current = settings; }, [settings]);
+  // AUDIT FIX ("I'm not seeing any [automations] for owners") — root cause:
+  // the owner/employee/client report templates (seed.ts AUTOMATION_TEMPLATES
+  // tpl_owner_*/tpl_employee_*/tpl_client_*) were only ever reachable through
+  // Automations → Templates → pick one → Save in the workflow builder — a
+  // manual 3-click path with zero indication anything new existed. Worse,
+  // `smocks.automations` is a usePersistent/localStorage value (see the
+  // `automations` init above) whose seed default (seedAutomations) only ever
+  // applies the very first time that key has never been written — an
+  // existing owner's browser already had an automations array saved from
+  // before these templates were added, so they could never pick the new
+  // seed entries up automatically, no matter how many templates got added to
+  // the gallery. This one-time backfill (gated by
+  // settings.automationsReportBackfillV1 so it never re-adds something the
+  // owner deliberately deleted) adds any of the report/client templates an
+  // existing owner doesn't already have as real, already-active Automation
+  // rows — so "Owner: End-of-Day Summary" etc. show up in the Automations
+  // list immediately instead of staying hidden in the template gallery.
+  const reportBackfillRanRef = useRef(false);
+  useEffect(() => {
+    if (reportBackfillRanRef.current) return;
+    reportBackfillRanRef.current = true;
+    if ((settings as any).automationsReportBackfillV1) return;
+    const REPORT_TEMPLATE_IDS = [
+      "tpl_owner_eod_summary", "tpl_owner_periodic_summary", "tpl_owner_progress_report",
+      "tpl_employee_shift_summary", "tpl_employee_performance_report",
+      "tpl_client_post_service_followup", "tpl_client_referral_request",
+      "tpl_client_appointment_reminder_2h", "tpl_client_reservice_45day", "tpl_client_early_winback_4mo",
+    ];
+    setAutomations(prev => {
+      const existingIds = new Set(prev.map((a: any) => a.id));
+      const toAdd = (AUTOMATION_TEMPLATES as any[])
+        .filter(t => REPORT_TEMPLATE_IDS.includes(t.id) && !existingIds.has(t.id))
+        .map(automationFromTemplate);
+      return toAdd.length ? [...prev, ...toAdd] : prev;
+    });
+    setSettings((s: any) => ({ ...s, automationsReportBackfillV1: true }));
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
   // ISSUE 14 (round 11) — ROOT CAUSE of "all Alfred check-in messages look
   // the same": the check-in effect further down is deliberately keyed only
   // on [crmUserId] (see its own comment) so its hourly setInterval survives
@@ -1127,9 +1165,15 @@ export function App() {
           const { payload, dropped } = shrinkSettingsPayload(settings);
           if (dropped.length === 0) {
             // Nothing to shrink — a second identical attempt wouldn't help.
-            const hint = /relation .* does not exist/i.test(firstErr?.message || "") || /on conflict/i.test(firstErr?.message || "")
+            // ITEM 6 (mobile audit) — a plain "timed out"/network-ish error
+            // used to read like an app bug with no next step. A repeated
+            // timeout on a simple upsert is the same signature the
+            // supabaseDegraded banner above is built to detect (paused
+            // project / usage quota) — point the owner at the same place.
+            const isSchemaErr = /relation .* does not exist/i.test(firstErr?.message || "") || /on conflict/i.test(firstErr?.message || "");
+            const hint = isSchemaErr
               ? " — run supabase/migrations/0011_owner_settings_and_alfred_schema_fixes.sql in the Supabase SQL editor"
-              : "";
+              : " — if this keeps happening, check your Supabase project isn't paused or over its usage quota (Supabase dashboard → Usage)";
             console.warn("[Settings Sync] error:", firstErr?.message + hint);
             toast("Settings saved to this device but not to the server — " + (firstErr?.message || "check connection") + hint, "red");
             return;
@@ -1148,7 +1192,7 @@ export function App() {
             throw new Error(r2.error.message);
           } catch (secondErr: any) {
             console.warn("[Settings Sync] error (both attempts failed):", secondErr?.message);
-            toast("Settings saved to this device but not to the server — " + (secondErr?.message || "check connection"), "red");
+            toast("Settings saved to this device but not to the server — " + (secondErr?.message || "check connection") + " — if this keeps happening, check your Supabase project isn't paused or over its usage quota (Supabase dashboard → Usage)", "red");
           }
         }
       })();
@@ -1891,13 +1935,21 @@ export function App() {
   const refetchData = async () => {
     setIsSyncing(true);
     try {
-      const [{ data: sbJobs, error: jobsErr }, { data: sbCustomers, error: customersErr }, { data: sbEstimates, error: estimatesErr }, { data: sbPromotions }, { data: sbReviews }] = await Promise.all([
+      const [{ data: sbJobs, error: jobsErr }, { data: sbCustomers, error: customersErr }, { data: sbEstimates, error: estimatesErr }, { data: sbPromotions }, { data: sbReviews, error: reviewsErr }] = await Promise.all([
         (supabase as any).from("jobs").select("*").eq("owner_id", crmUserId),
         (supabase as any).from("customers").select("*").eq("owner_id", crmUserId),
         (supabase as any).from("estimates").select("*").eq("owner_id", crmUserId),
         (supabase as any).from("promotions").select("*").eq("owner_id", crmUserId).then((r: any) => r).catch(() => ({ data: null })),
-        (supabase as any).from("reviews").select("*").eq("owner_id", crmUserId).then((r: any) => r).catch(() => ({ data: null })),
+        (supabase as any).from("reviews").select("*").eq("owner_id", crmUserId).then((r: any) => r).catch((e: any) => ({ data: null, error: e })),
       ]);
+      // ITEM 5 (mobile audit) — reviews previously failed silently here (no
+      // logging at all on this fetch), which made "reviews aren't showing"
+      // undiagnosable from the console. The actual root cause turned out to
+      // be a column-name bug in functions/api/public-data.ts's submit_review
+      // insert (fixed separately) so nothing ever reached this table — but
+      // keep this log so a *future* reviews regression (RLS, missing table,
+      // etc.) shows up immediately instead of silently returning 0 rows.
+      if (reviewsErr) console.error("[Reviews] fetch failed:", reviewsErr.message || reviewsErr);
       // EGRESS/QUOTA — supabase-js resolves with {data: null, error} rather
       // than throwing, so this Promise.all never hits the catch block below
       // on a real per-table failure (RLS, paused project, quota
@@ -3520,7 +3572,6 @@ export function App() {
                 {page === "referrals"      && <ReferralsPage customers={customers} setCustomers={setCustomers} jobs={jobs} toast={toast} settings={settings} setSettings={setSettings} />}
                 {page === "promotions"     && <PromotionsPage promotions={promotions} setPromotions={setPromotions} customers={customers} services={services} settings={settings} toast={toast} />}
                 {page === "trashcans"      && <TrashCanPage jobs={jobs} setJobs={setJobs} customers={customers} settings={settings} setSettings={setSettings} toast={toast} ownerId={crmUserId} />}
-                {page === "sops"           && <SopModal open={true} onClose={() => setPage("dashboard")} editable />}
                 {page === "crew"           && <CrewView jobs={jobs} setJobs={setJobs} customers={customers} employees={employees} toast={toast} settings={settings} setSettings={setSettings} estimates={estimates} setEstimates={setEstimates} refetchEmployees={refetchEmployees} ownerId={crmUserId} />}
               </SafePage>
             </PageFade>
@@ -3541,7 +3592,13 @@ export function App() {
             return (
               <button
                 key={item.id}
-                onClick={() => setPage(item.id)}
+                onClick={() => {
+                  // Jobs/Customers/Estimates should pop their "New" modal
+                  // right away on tap, not just land on the list page —
+                  // same autoOpenNew mechanism the FAB already uses above.
+                  setPage(item.id);
+                  if (item.id === "jobs" || item.id === "customers" || item.id === "estimates") setFabAutoOpenNew(item.id);
+                }}
                 className={"flex-1 min-h-[56px] flex flex-col items-center justify-center gap-0.5 text-[10px] font-medium transition " + (active ? "text-red-400" : "text-white/40 hover:text-white/70")}
               >
                 <Icon size={20} />
@@ -3782,6 +3839,17 @@ export function App() {
       {/* ITEM 18 — FAB "New Customer" popup, rendered at the top level so it
           overlays whatever page the owner is currently on. */}
       <CustomerModal open={fabQuickCustomerOpen} onClose={() => setFabQuickCustomerOpen(false)} data={null} onSave={saveFabQuickCustomer} mapsKey={(settings as any).googleMapsKey || (settings as any).mapsKey || ""} customers={customers} />
+
+      {/* AUDIT FIX (mobile) — SopModal is `fixed inset-0`, meant to cover the
+          real viewport, but rendering it inside the "sops" page slot puts it
+          inside <PageFade>, whose wrapper div sets `transform: translateY(...)`
+          — even at rest that's a non-"none" transform, which per spec makes
+          that div a containing block for `position: fixed` descendants. So the
+          "full screen" modal was actually being boxed into <main>'s small
+          content area instead of the viewport, leaving nothing usable visible
+          on mobile. Rendered here, as a sibling at the top level like every
+          other modal, it escapes that trap and truly covers the viewport. */}
+      <SopModal open={page === "sops"} onClose={() => setPage("dashboard")} editable />
 
       {/* Company first-run setup modal */}
       {companySetupOpen && (

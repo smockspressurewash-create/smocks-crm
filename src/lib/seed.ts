@@ -605,18 +605,31 @@ export const AUTOMATION_TEMPLATES = [
     id: "tpl_payment_overdue_3", name: "Overdue Invoice — Friendly (3-Day)",
     trigger: "Invoice overdue 3 days", action: "Send friendly payment reminder SMS",
     description: "A soft first nudge, 3 days after an invoice goes past due.",
+    // BUG FIX — a [trigger, action]-only step list (no explicit "condition"
+    // step carrying a numeric `delay`) makes extractDirectives() in
+    // useAutomationEngine.ts fall back to the payment_overdue category's
+    // hardcoded 7-day spec.defaultDelayMinutes, silently ignoring the "3
+    // days" in this template's own name/trigger — deriveDaysFromLabel only
+    // ever runs for LEGACY automations (steps.length === 0), which a
+    // template-created automation never is. Without this explicit condition
+    // step, this template and the 14-day one below both actually fired at
+    // the same 7-day mark once saved from the template gallery.
     steps: [
-      { id: uid(), type: "trigger", label: "Invoice overdue 3 days", icon: "💳" },
-      { id: uid(), type: "action",  label: "Send friendly reminder SMS", channel: "sms", template: "payment_overdue_3" },
+      { id: uid(), type: "trigger",   label: "Invoice overdue 3 days", icon: "💳" },
+      { id: uid(), type: "condition", label: "Wait 3 days", delay: 3 * 1440 },
+      { id: uid(), type: "action",    label: "Send friendly reminder SMS", channel: "sms", template: "payment_overdue_3" },
     ],
   },
   {
     id: "tpl_payment_overdue_14", name: "Overdue Invoice — Firm (14-Day)",
     trigger: "Invoice overdue 14 days", action: "Send firm payment reminder SMS",
     description: "A firmer follow-up once an invoice is two-plus weeks overdue.",
+    // BUG FIX — see tpl_payment_overdue_3's comment above; same missing
+    // explicit delay step, same silent fallback to the 7-day default.
     steps: [
-      { id: uid(), type: "trigger", label: "Invoice overdue 14 days", icon: "🚨" },
-      { id: uid(), type: "action",  label: "Send firm reminder SMS", channel: "sms", template: "payment_overdue_14" },
+      { id: uid(), type: "trigger",   label: "Invoice overdue 14 days", icon: "🚨" },
+      { id: uid(), type: "condition", label: "Wait 14 days", delay: 14 * 1440 },
+      { id: uid(), type: "action",    label: "Send firm reminder SMS", channel: "sms", template: "payment_overdue_14" },
     ],
   },
   {
@@ -748,7 +761,91 @@ export const AUTOMATION_TEMPLATES = [
         messageBody: "Hi {{first_name}}, thanks for your payment! Know anyone who could use our services? Share your referral link and you'll both earn rewards: {{referral_link}} — Crew Boss" },
     ],
   },
+  // AUDIT FIX ("more automations for CLIENT experience generally") — each of
+  // these rides an already-implemented, already-firing engine category
+  // (job_reminder / maintenance / reengage in useAutomationEngine.ts) with a
+  // genuinely different real cadence than the templates already above,
+  // rather than duplicating one of them with different words. Every trigger
+  // label is exact-matched against classifyTrigger's regexes. Each one also
+  // carries its own explicit "condition" step with a numeric `delay` — see
+  // tpl_payment_overdue_3's comment above: extractDirectives() only reads
+  // custom timing off a real condition step; a [trigger, action]-only
+  // template silently falls back to the category's hardcoded default delay
+  // no matter what the label says.
+  {
+    id: "tpl_client_appointment_reminder_2h", name: "Client: Last-Minute Appointment Reminder (2h)",
+    trigger: "2 hours before scheduled job", action: "Send last-minute reminder SMS",
+    description: "A second, closer-in reminder 2 hours before the job — useful for same-day bookings or customers who need a tighter heads-up than the 24h reminder gives.",
+    steps: [
+      { id: uid(), type: "trigger",   label: "2 hours before scheduled job", icon: "⏰" },
+      { id: uid(), type: "condition", label: "2 hours before", delay: 2 * 60 },
+      { id: uid(), type: "action",    label: "Send 2-hour reminder SMS", channel: "sms",
+        messageBody: "Hi {{first_name}}, quick heads up — your Crew Boss crew is scheduled to arrive in about 2 hours. See you soon!" },
+    ],
+  },
+  {
+    id: "tpl_client_reservice_45day", name: "Client: 45-Day Re-Service Check-In",
+    trigger: "45 days since service", action: "Send re-service check-in SMS",
+    description: "A faster re-service nudge (45 days, not the standard 90) for high-frequency accounts like storefronts or HOAs that need more regular service.",
+    steps: [
+      { id: uid(), type: "trigger",   label: "45 days since service", icon: "🔁" },
+      { id: uid(), type: "condition", label: "Wait 45 days", delay: 45 * 1440 },
+      { id: uid(), type: "action",    label: "Send 45-day check-in SMS", channel: "sms",
+        messageBody: "Hi {{first_name}}, it's been 45 days since your last Crew Boss service — ready for another round? Reply BOOK or call {{company_phone}}." },
+    ],
+  },
+  {
+    id: "tpl_client_early_winback_4mo", name: "Client: Early Win-Back (4 Months)",
+    trigger: "120 days no service", action: "Send early win-back SMS",
+    // Matches the "reengage" category via "no service" (not "since service",
+    // which would collide with the maintenance category above — see
+    // classifyTrigger's comments).
+    description: "An earlier win-back touch (about 4 months, not the standard 6) for owners who'd rather catch a lapsing customer sooner.",
+    steps: [
+      { id: uid(), type: "trigger",   label: "120 days no service", icon: "🔄" },
+      { id: uid(), type: "condition", label: "Wait 120 days", delay: 120 * 1440 },
+      { id: uid(), type: "action",    label: "Send early win-back SMS", channel: "sms",
+        messageBody: "Hi {{first_name}}, it's been a few months since your last Crew Boss service — want us to get you back on the schedule? Reply BOOK for 10% off." },
+    ],
+  },
 ];
+
+// AUDIT FIX ("I'm not seeing any for owners") — root cause: the owner/
+// employee/client report templates above were only ever reachable through
+// Automations → Templates → pick one → Save in the workflow builder (see
+// AutomationsPage.tsx's templatesOpen modal), a manual 3-click path with no
+// indication anything changed. Worse, `smocks.automations` is a
+// usePersistent/localStorage value (App.tsx) — its seed default
+// (seedAutomations below) only ever applies the very first time that key has
+// never been written, so an existing owner's browser had a stored automations
+// array from before these templates existed and would NEVER pick up new seed
+// entries automatically. automationFromTemplate() converts a template
+// straight into a live, already-active Automation (same shape
+// AutomationsPage's VisualWorkflowBuilder onSave produces), for a one-time
+// backfill in App.tsx that adds any of the report/client templates an
+// existing owner doesn't already have — see the automationsReportBackfillV1
+// effect in App.tsx.
+export const automationFromTemplate = (tpl: any): Automation => {
+  const steps = (tpl.steps || []).map((s: any) => ({ ...s, id: uid() }));
+  const firstTrigger = steps.find((s: any) => s.type === "trigger");
+  const firstAction = steps.find((s: any) => s.type === "action");
+  return {
+    id: tpl.id,
+    name: tpl.name,
+    trigger: firstTrigger?.label || tpl.trigger || "Manual",
+    action: firstAction?.label || tpl.action || "",
+    steps,
+    isWorkflow: true,
+    category: tpl.category || "other",
+    icon: tpl.icon || "⚡",
+    description: tpl.description || "",
+    count: 0,
+    lastTriggered: null,
+    active: true,
+    sentLog: {},
+    runLog: [],
+  } as unknown as Automation;
+};
 
 // ─── Seed revenue chart data ───────────────────────────────────────────────────
 

@@ -722,10 +722,16 @@ export function useAutomationEngine({
           }),
           getCandidates: () => (now.getDay() === 1 && hour === 8) ? [ownerCandidate(settings, "weekly-progress")].filter(Boolean) as Candidate[] : [],
         },
-        // FEATURE — owner end-of-day summary. Fires once in the 6-7pm
-        // window; mirrors the metrics the manual "Send Daily Briefing Now"
-        // button already computes (App.tsx sendDailyBriefingNow) so both
-        // surfaces report the same numbers.
+        // FEATURE — owner end-of-day summary. Fires once in the configured
+        // hour window (defaults to 6-7pm, matching the metrics the manual
+        // "Send Daily Briefing Now" button already computes — App.tsx
+        // sendDailyBriefingNow — so both surfaces report the same numbers).
+        // AUDIT — "daily (or admin-configurable frequency)": the owner can
+        // change the hour it fires (settings.ownerSummaryHour, Automations
+        // page) and switch cadence to weekly-only (settings.ownerSummaryFreq
+        // === "weekly", Monday only) instead of every day — read fresh off
+        // settings every tick so a change takes effect on the next 15-min
+        // poll without needing a reload.
         owner_daily_summary: {
           direction: "immediate", defaultDelayMinutes: 0, defaultCooldownDays: 1,
           extraVars: () => {
@@ -740,7 +746,15 @@ export function useAutomationEngine({
               new_leads: String(newLeads),
             };
           },
-          getCandidates: () => (hour === 18) ? [ownerCandidate(settings, "eod")].filter(Boolean) as Candidate[] : [],
+          getCandidates: () => {
+            const cfgHour = Number((settings as any).ownerSummaryHour);
+            const targetHour = Number.isFinite(cfgHour) && cfgHour >= 0 && cfgHour <= 23 ? cfgHour : 18;
+            const freq = (settings as any).ownerSummaryFreq || "daily";
+            if (hour !== targetHour) return [];
+            if (freq === "weekly" && now.getDay() !== 1) return [];
+            if (freq === "off") return [];
+            return [ownerCandidate(settings, "eod")].filter(Boolean) as Candidate[];
+          },
         },
         // FEATURE — owner quarterly/yearly business summary. The engine has
         // no arbitrary cron scheduler (see classifyTrigger's comment block

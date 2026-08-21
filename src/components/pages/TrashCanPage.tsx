@@ -335,7 +335,12 @@ export function TrashCanPage({ jobs = [], customers = [], settings = {} as AppSe
   };
 
   return (
-    <div className="space-y-4">
+    // Extra bottom padding (beyond <main>'s own pb-16) so the last row of
+    // "Upcoming Trash Can Jobs" — this page's longest, most-variable-length
+    // list — isn't left sitting behind the mobile bottom nav (its min-height
+    // 56px + safe-area-inset-bottom on notch phones can exceed main's 64px
+    // reservation) with no more scroll room to reveal it.
+    <div className="space-y-4 pb-10 md:pb-0">
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <Stat icon={Trash2} label="Active Routes" value={String(upcoming.length)} />
         <Stat icon={DollarSign} label="Cost / Can" value={fmt(costPerCan)} />

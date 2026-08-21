@@ -575,6 +575,15 @@ export function SettingsModal({ open, onClose, settings, setSettings, jobs = [],
               <div className="text-[10px] text-white/30 mt-1">Defaults to York, PA if left blank.</div>
             </div>
             <div><label className="text-xs text-white/60 mb-1 block flex items-center gap-1"><Phone size={10} />Your Mobile # <span className="text-white/30 font-normal">(for Alfred SMS summaries)</span></label><GInput type="tel" value={f.myPhone || ""} onChange={e => setF({ ...f, myPhone: e.target.value })} placeholder="+17175550100" className="!text-xs" /></div>
+            <label className={"flex items-start gap-2.5 p-3 rounded-xl border cursor-pointer transition " + (f.alfredSmsEnabled ? "border-red-500/40 bg-red-950/20" : "border-white/10 bg-white/5")}>
+              <input type="checkbox" checked={!!f.alfredSmsEnabled} onChange={e => setF({ ...f, alfredSmsEnabled: e.target.checked })} className="mt-0.5 accent-red-600" />
+              <div>
+                <div className="text-xs font-semibold text-white flex items-center gap-1.5"><Bot size={12} />Text Alfred from my phone</div>
+                <div className="text-[10px] text-white/40 mt-0.5">
+                  Text your CRM Twilio number ({f.twilioFrom || "your Twilio From #"}) from the mobile number above and Alfred replies right there — "reschedule Tuesday's job to Thursday", "who's on job 2 right now", "text the Smiths we're running late". Requires an Anthropic (Claude) API key in AI Models below and your mobile # filled in above.
+                </div>
+              </div>
+            </label>
             <div>
               {/* FIX 13 — the review landing page (#/rate) falls back to a
                   hardcoded "smocks-pressure-washing" Google review link when

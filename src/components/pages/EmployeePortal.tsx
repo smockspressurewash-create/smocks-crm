@@ -2609,7 +2609,13 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     const miles = Number(mileageForm.miles) || 0;
     if (miles <= 0) { toast("Enter a mileage amount greater than 0", "red"); return; }
     setMileageSubmitting(true);
-    const row = { id: uid(), employee_id: empId, date: mileageForm.date || today(), from: mileageForm.from, to: mileageForm.to, miles, purpose: mileageForm.purpose, status: "pending" };
+    // AUDIT FIX — mileage used to default to "pending" and Expenses>Mileage
+    // (owner CRM) only ever queried status="approved", so submissions sat
+    // invisible until the owner found and approved them in EmployeesPage.
+    // Owner asked for mileage to sync automatically with no approval gate —
+    // auto-approve on submit; the owner can still flag/deny a bad entry
+    // after the fact from EmployeesPage, which will pull it back out of Expenses.
+    const row = { id: uid(), employee_id: empId, date: mileageForm.date || today(), from: mileageForm.from, to: mileageForm.to, miles, purpose: mileageForm.purpose, status: "approved" };
     try {
       const { error } = await (supabase as any).from("mileage_logs").insert(row);
       if (error) {

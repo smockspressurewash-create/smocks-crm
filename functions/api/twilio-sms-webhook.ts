@@ -23,6 +23,8 @@
 // unverified — worst case of a forged request without it is one customer's
 // opt-in flag flipping at the business whose Twilio number was guessed.
 
+import { runAlfredSmsAgent } from "./_lib/alfredSmsAgent";
+
 const SUPABASE_URL = "https://boaqaihymgmrhnjtiqrs.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_8aEa3wsYJ7ghVPcGbtHymw_ugj0aEfm";
 
@@ -69,7 +71,31 @@ const twiml = (message?: string) => new Response(
 // deployment that hasn't set up the new env var (or hasn't applied migration
 // 0033 yet, so RLS is still permissive) keeps working unmodified — same
 // fallback style stripe-action.ts uses for STRIPE_SECRET_KEY.
-const fetchAppSettings = async (env: Record<string, string>, toNumber: string): Promise<{ companyName: string; keyword: string; ownerId: string | null }> => {
+interface ResolvedOwnerSettings {
+  companyName: string;
+  keyword: string;
+  ownerId: string | null;
+  myPhone: string;
+  alfredSmsEnabled: boolean;
+  twilioSid: string;
+  twilioToken: string;
+  twilioFrom: string;
+  anthropicKey: string;
+}
+
+const shapeSettings = (row: any, data: any): ResolvedOwnerSettings => ({
+  companyName: data?.companyName || "Crew Boss",
+  keyword: (data?.smsOptInKeyword || DEFAULT_OPT_IN_KEYWORD).toUpperCase(),
+  ownerId: row?.owner_id || null,
+  myPhone: data?.myPhone || "",
+  alfredSmsEnabled: !!data?.alfredSmsEnabled,
+  twilioSid: data?.twilioSid || "",
+  twilioToken: data?.twilioToken || "",
+  twilioFrom: data?.twilioFrom || "",
+  anthropicKey: data?.modelKeys?.claude || data?.anthropicKey || "",
+});
+
+const fetchAppSettings = async (env: Record<string, string>, toNumber: string): Promise<ResolvedOwnerSettings> => {
   const serviceRoleKey = env.SUPABASE_SERVICE_ROLE_KEY;
   const toDigits = normalizePhoneDigits(toNumber);
   try {
@@ -81,46 +107,30 @@ const fetchAppSettings = async (env: Record<string, string>, toNumber: string): 
       // stored in a different format than Twilio's E.164 `To` (e.g.
       // "(717) 555-0100" vs "+17175550100").
       if (toNumber) {
-        const exactRes = await fetch(`${SUPABASE_URL}/rest/v1/app_settings?select=owner_id,data-%3E%3EcompanyName,data-%3E%3EsmsOptInKeyword&data-%3E%3EtwilioFrom=eq.${encodeURIComponent(toNumber)}&limit=1`, { headers });
+        const exactRes = await fetch(`${SUPABASE_URL}/rest/v1/app_settings?select=owner_id,data&data-%3E%3EtwilioFrom=eq.${encodeURIComponent(toNumber)}&limit=1`, { headers });
         const exactRows = await exactRes.json().catch(() => []);
         const exactRow = Array.isArray(exactRows) ? exactRows[0] : null;
-        if (exactRow) {
-          return {
-            companyName: exactRow?.companyName || "Crew Boss",
-            keyword: (exactRow?.smsOptInKeyword || DEFAULT_OPT_IN_KEYWORD).toUpperCase(),
-            ownerId: exactRow?.owner_id || null,
-          };
-        }
+        if (exactRow) return shapeSettings(exactRow, exactRow?.data);
       }
       const allRes = await fetch(`${SUPABASE_URL}/rest/v1/app_settings?select=owner_id,data`, { headers });
       const allRows = await allRes.json().catch(() => []);
       const match = Array.isArray(allRows)
         ? allRows.find((r: any) => toDigits && normalizePhoneDigits(r?.data?.twilioFrom || "") === toDigits)
         : null;
-      if (match) {
-        return {
-          companyName: match?.data?.companyName || "Crew Boss",
-          keyword: (match?.data?.smsOptInKeyword || DEFAULT_OPT_IN_KEYWORD).toUpperCase(),
-          ownerId: match?.owner_id || null,
-        };
-      }
+      if (match) return shapeSettings(match, match?.data);
       console.warn("[TwilioSmsWebhook] no app_settings row's twilioFrom matched inbound To:", toNumber);
-      return { companyName: "Crew Boss", keyword: DEFAULT_OPT_IN_KEYWORD, ownerId: null };
+      return shapeSettings(null, null);
     }
 
     // Fallback — no service role key configured, old single-tenant behavior.
-    const res = await fetch(`${SUPABASE_URL}/rest/v1/app_settings?select=owner_id,data-%3E%3EcompanyName,data-%3E%3EsmsOptInKeyword&limit=1`, {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/app_settings?select=owner_id,data&limit=1`, {
       headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}` },
     });
     const rows = await res.json().catch(() => []);
     const row = Array.isArray(rows) ? rows[0] : null;
-    return {
-      companyName: row?.companyName || "Crew Boss",
-      keyword: (row?.smsOptInKeyword || DEFAULT_OPT_IN_KEYWORD).toUpperCase(),
-      ownerId: row?.owner_id || null,
-    };
+    return shapeSettings(row, row?.data);
   } catch {
-    return { companyName: "Crew Boss", keyword: DEFAULT_OPT_IN_KEYWORD, ownerId: null };
+    return shapeSettings(null, null);
   }
 };
 
@@ -154,7 +164,8 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
 
     const isStop = STOP_WORDS.includes(body);
     const isStart = START_WORDS.includes(body);
-    const { companyName, keyword, ownerId } = await fetchAppSettings(context.env, params.To || "");
+    const resolved = await fetchAppSettings(context.env, params.To || "");
+    const { companyName, keyword, ownerId, myPhone, alfredSmsEnabled, twilioSid, twilioToken, twilioFrom, anthropicKey } = resolved;
     const isOptInKeyword = body === keyword;
     const isConfirm = CONFIRM_WORDS.includes(body);
 
@@ -168,14 +179,44 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
     const authHeaders = serviceRoleKey
       ? { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}` }
       : { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}` };
-    const ownerFilter = ownerId ? `&owner_id=eq.${encodeURIComponent(ownerId)}` : "";
+    let ownerFilter = ownerId ? `&owner_id=eq.${encodeURIComponent(ownerId)}` : "";
 
     const fromDigits = normalizePhoneDigits(from);
+
+    // FEATURE — text-Alfred bridge. If the owner opted in (Settings →
+    // AI Models/Twilio → "Text Alfred from my phone") and this inbound
+    // message is FROM the owner's own personal number (settings.myPhone),
+    // hand the whole thing to the AI agent instead of any of the
+    // customer-facing opt-in/STOP/ordinary-message logic below — a text
+    // from the owner is never a customer opt-out/opt-in action. Checked
+    // before everything else so STOP/keyword words the owner might
+    // legitimately type ("stop the job", "cancel that") never get
+    // misinterpreted as an SMS compliance action.
+    if (alfredSmsEnabled && myPhone && fromDigits === normalizePhoneDigits(myPhone)) {
+      const ctx = { authHeaders, ownerId, companyName, twilioSid, twilioToken, twilioFrom };
+      const reply = await runAlfredSmsAgent(ctx, anthropicKey, from, bodyRaw).catch((e: any) => {
+        console.error("[TwilioSmsWebhook] Alfred SMS agent failed:", e?.message);
+        return "Sorry, something went wrong on my end — try again in a moment.";
+      });
+      return twiml(reply);
+    }
     // No normalized phone column to filter on server-side (formats vary:
     // "(717) 555-0100" vs "+17175550100") — fetch and match in JS.
-    const listRes = await fetch(`${SUPABASE_URL}/rest/v1/customers?select=id,phone,firstName,lastName,smsOptInPending${ownerFilter}`, {
+    let listRes = await fetch(`${SUPABASE_URL}/rest/v1/customers?select=id,phone,firstName,lastName,smsOptInPending${ownerFilter}`, {
       headers: authHeaders,
     });
+    // FIX — verified live: app_settings.owner_id is already populated on
+    // this deployment, but customers/inbox_threads don't have an owner_id
+    // column yet (migration 0033 not applied), so `&owner_id=eq.X` 400s the
+    // whole query and this used to silently resolve to "no customers at
+    // all" — every STOP/opt-in match and the Inbox sync below would fail
+    // with zero trace. If the scoped query fails, drop the filter and retry
+    // once for the rest of this request (both here and for inbox_threads).
+    if (!listRes.ok && ownerFilter) {
+      console.warn("[TwilioSmsWebhook] scoped customers query failed (" + listRes.status + ") — retrying unscoped; migration 0033 likely not applied yet");
+      ownerFilter = "";
+      listRes = await fetch(`${SUPABASE_URL}/rest/v1/customers?select=id,phone,firstName,lastName,smsOptInPending`, { headers: authHeaders });
+    }
     const list = await listRes.json().catch(() => []);
     const match = Array.isArray(list) ? list.find((c: any) => normalizePhoneDigits(c.phone) === fromDigits) : null;
 
@@ -241,7 +282,7 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
         const postRes = await fetch(`${SUPABASE_URL}/rest/v1/inbox_threads`, {
           method: "POST",
           headers: { ...authHeaders, "Content-Type": "application/json", Prefer: "return=minimal" },
-          body: JSON.stringify({ id: crypto.randomUUID(), channel: "sms", contact_name: contactName, contact_phone: from, customer_id: match?.id || null, unread: true, messages: [newMsg], last_message_at: newMsg.ts, updated_at: new Date().toISOString(), owner_id: ownerId || null }),
+          body: JSON.stringify({ id: crypto.randomUUID(), channel: "sms", contact_name: contactName, contact_phone: from, customer_id: match?.id || null, unread: true, messages: [newMsg], last_message_at: newMsg.ts, updated_at: new Date().toISOString(), ...(ownerFilter ? { owner_id: ownerId || null } : {}) }),
         });
         if (!postRes.ok) console.error("[TwilioSmsWebhook] inbox_threads POST failed (" + postRes.status + "):", await postRes.text().catch(() => ""));
       }

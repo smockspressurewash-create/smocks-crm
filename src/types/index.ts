@@ -741,6 +741,7 @@ export interface AppSettings {
   ownerRole?: string;
   myPhone?: string;
   myEmail?: string;
+  alfredSmsEnabled?: boolean;
 
   // Crew policy
   maxLunchMinutes?: number;

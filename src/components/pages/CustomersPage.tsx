@@ -674,7 +674,43 @@ export function CustomersPage({ customers = [], setCustomers, estimates = [], jo
         </div>
       </Glass>}
 
-      <Glass className="overflow-hidden">
+      {/* Mobile: stacked cards (no horizontal scroll needed to reach actions) */}
+      <div className="sm:hidden space-y-2">
+        {filtered.map(c => {
+          const sel = mergePair.includes(c.id);
+          return (
+            <Glass key={c.id} className={"p-3 " + (sel ? "!bg-yellow-950/20" : "") + (draggedCustomerId === c.id ? " opacity-40" : "")}>
+              <div className="flex items-start justify-between gap-2">
+                <div className="flex items-start gap-2 min-w-0">
+                  {mergeMode && <input type="checkbox" checked={sel} onChange={() => toggleMerge(c.id)} className="w-4 h-4 mt-1 accent-red-600 shrink-0" />}
+                  {bulkMode && <input type="checkbox" checked={bulkSelected.includes(c.id)} onChange={() => toggleBulk(c.id)} className="w-4 h-4 mt-1 rounded accent-red-600 shrink-0" />}
+                  <div className="min-w-0 cursor-pointer" onClick={() => !mergeMode && !bulkMode && setDetail(c)}>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <div className="font-medium truncate">{c.firstName} {c.lastName}</div>
+                      {c.hasDog && <span title={"Dog: " + c.dogName} className="text-[10px]">🐕</span>}
+                      {c.gateCode && <span title={"Gate: " + c.gateCode} className="text-[10px]">🔒</span>}
+                      {c.folder && <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-blue-950/40 border border-blue-700/40 text-blue-300">📁 {c.folder}</span>}
+                    </div>
+                    <div className="text-xs text-white/50 truncate">{c.email}</div>
+                    {c.phone && <div className="text-xs text-white/50 truncate">{c.phone}</div>}
+                  </div>
+                </div>
+                <div className="font-semibold text-red-400 text-right shrink-0 cursor-pointer" onClick={() => !mergeMode && !bulkMode && setDetail(c)}>{fmt(c.totalSpent)}</div>
+              </div>
+              <div className="flex items-center justify-end gap-1 mt-2 pt-2 border-t border-white/10">
+                <button onClick={() => quickAction("call", c)} className="p-1.5 rounded-lg hover:bg-green-900/30 text-white/60 hover:text-green-400 transition"><Phone size={14} /></button>
+                <button onClick={() => quickAction("text", c)} className="p-1.5 rounded-lg hover:bg-blue-900/30 text-white/60 hover:text-blue-400 transition"><MessageSquare size={14} /></button>
+                <button onClick={() => window.open("https://maps.google.com/?q=" + encodeURIComponent(c.address || ""), "_blank")} className="p-1.5 rounded-lg hover:bg-white/10 text-white/60 hover:text-white transition" title="Directions"><MapPin size={14} /></button>
+                <button onClick={() => { const lastJob = jobs.filter(j => j.customerId === c.id && j.status === "completed").slice(-1)[0]; if (lastJob) { toast("Review request queued for " + c.firstName); } else { toast("No completed jobs for " + c.firstName, "error"); }}} className="p-1.5 rounded-lg hover:bg-yellow-900/30 text-white/60 hover:text-yellow-400 transition" title="Send review request"><Star size={14} /></button>
+                <button onClick={() => setModal({ open: true, data: c })} className="p-1.5 rounded-lg hover:bg-white/10 text-white/60 hover:text-white transition"><Edit size={14} /></button>
+              </div>
+            </Glass>
+          );
+        })}
+      </div>
+
+      {/* Desktop/tablet: table */}
+      <Glass className="overflow-hidden hidden sm:block">
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>

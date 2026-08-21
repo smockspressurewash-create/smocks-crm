@@ -845,7 +845,58 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setJobs
             </GSel>
           </div>
         </div>
-        <Glass className="overflow-hidden">
+        {/* Mobile: stacked cards — the 8-column table below requires
+            horizontal scrolling to see Rate/Est. Pay/paid status on a narrow
+            screen, so mobile gets a wrapped/stacked layout instead. */}
+        <div className="sm:hidden space-y-2">
+          {employees.filter(e => e.status !== "inactive" && (!hoursEmpFilter || e.id === hoursEmpFilter)).map(e => {
+            const empJobs = jobs.filter(j => crewIncludesEmployee(j.crew, e.id, (e as any).user_id) && j.status === "completed" && j.scheduledDate >= hoursRangeStart && j.scheduledDate <= hoursRangeEnd);
+            const hrs = getEmployeeHours(e.id, hoursRangeStart, hoursRangeEnd);
+            const cost = getEmployeePay(e, hoursRangeStart, hoursRangeEnd);
+            const todayStr = shiftDayStr();
+            const weekStart = (() => { const d = new Date(); d.setDate(d.getDate() - d.getDay()); return d.toISOString().slice(0, 10); })();
+            const allCompleted = jobs.filter((j: any) => crewIncludesEmployee(j.crew, e.id, (e as any).user_id) && j.status === "completed");
+            const hoursToday = allCompleted.filter((j: any) => j.scheduledDate === todayStr).reduce((s: number, j: any) => s + Number(j.loggedHours || j.duration || 0), 0);
+            const hoursWeek = allCompleted.filter((j: any) => j.scheduledDate >= weekStart).reduce((s: number, j: any) => s + Number(j.loggedHours || j.duration || 0), 0);
+            const expanded = expandedHoursEmpId === e.id;
+            return (
+              <Glass key={e.id} className="p-3">
+                <div className="flex items-center gap-2">
+                  <div className="w-7 h-7 rounded-full bg-gradient-to-br from-red-600 to-red-900 flex items-center justify-center text-xs font-bold shrink-0">{e.firstName?.[0]}</div>
+                  <div className="flex-1 min-w-0 font-medium truncate flex items-center gap-1.5">{e.firstName} {e.lastName}{(e as any).dayClockInAt && <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" title="On the clock now" />}</div>
+                  <div className="text-right shrink-0">
+                    <div className="font-bold text-red-400">{fmt(cost)}</div>
+                    <div className="text-[10px] text-white/40">{fmt(e.hourlyRate)}/hr</div>
+                  </div>
+                </div>
+                <div className="grid grid-cols-4 gap-2 mt-2 pt-2 border-t border-white/10 text-center">
+                  <div><div className="text-[9px] uppercase tracking-wider text-white/40">Today</div><div className="text-xs text-white/70">{hoursToday.toFixed(1)}h</div></div>
+                  <div><div className="text-[9px] uppercase tracking-wider text-white/40">Week</div><div className="text-xs text-white/70">{hoursWeek.toFixed(1)}h</div></div>
+                  <div><div className="text-[9px] uppercase tracking-wider text-white/40">Jobs</div><div className="text-xs text-white/60">{empJobs.length}</div></div>
+                  <div><div className="text-[9px] uppercase tracking-wider text-white/40">Range</div><div className="text-xs text-white/80">{hrs.toFixed(1)}h</div></div>
+                </div>
+                {empJobs.length > 0 && (
+                  <button onClick={() => setExpandedHoursEmpId(expanded ? null : e.id)} className="w-full mt-2 pt-2 border-t border-white/10 flex items-center justify-center gap-1 text-[11px] text-white/50 hover:text-white transition">
+                    {expanded ? "Hide" : "Show"} paid/unpaid per shift <ChevronRight size={12} className={"transition-transform " + (expanded ? "rotate-90" : "")} />
+                  </button>
+                )}
+                {expanded && (
+                  <div className="space-y-1 mt-2">
+                    {empJobs.map(j => renderJobBreakdownRow(e, j))}
+                  </div>
+                )}
+              </Glass>
+            );
+          })}
+          <Glass className="p-3 !bg-red-950/20 !border-red-900/30 flex items-center justify-between">
+            <div className="text-xs font-bold">Total{hoursEmpFilter ? "" : " Payroll"} Est.<div className="text-[10px] font-normal text-white/40">{isHoursAllTime ? "all time" : hoursRangeStart + " – " + hoursRangeEnd}</div></div>
+            <div className="text-red-400 font-bold text-base">
+              {fmt(employees.filter(e => e.status !== "inactive" && (!hoursEmpFilter || e.id === hoursEmpFilter)).reduce((s, e) => s + getEmployeePay(e, hoursRangeStart, hoursRangeEnd), 0))}
+            </div>
+          </Glass>
+        </div>
+
+        <Glass className="overflow-hidden hidden sm:block">
           <table className="w-full text-sm">
             <thead><tr className="border-b border-red-900/30 bg-black/40">
               <th className="text-left px-4 py-3 text-xs uppercase tracking-wider text-white/60">Employee</th>
@@ -1029,10 +1080,10 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setJobs
         const IRS_MILEAGE_RATE = 0.67;
         return (
           <div className="space-y-4">
-            <div className="text-xs text-white/40">Manual entries submitted by employees from their own portal (Pay tab → Log Mileage). Approve to count toward tax/reimbursement records.</div>
+            <div className="text-xs text-white/40">Entries submitted by employees from their own portal (Pay tab → Log Mileage) sync to Expenses → Mileage automatically — no approval needed. Deny an entry here to pull it back out if it looks wrong.</div>
             <Glass className="overflow-hidden">
-              <div className="px-4 py-3 border-b border-red-900/30 bg-black/40 text-xs uppercase tracking-wider text-white/60">Pending Approval ({pending.length})</div>
-              {pending.length === 0 && <div className="p-6 text-center text-white/30 text-sm">Nothing pending</div>}
+              <div className="px-4 py-3 border-b border-red-900/30 bg-black/40 text-xs uppercase tracking-wider text-white/60">Needs a second look ({pending.length})</div>
+              {pending.length === 0 && <div className="p-6 text-center text-white/30 text-sm">Nothing flagged</div>}
               {pending.map((m: any) => (
                 <div key={m.id} className="flex items-center gap-3 px-4 py-3 border-b border-red-900/10 text-sm">
                   <div className="flex-1 min-w-0">
@@ -1057,6 +1108,9 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setJobs
                   <div key={m.id} className="flex items-center gap-3 px-4 py-2.5 border-b border-red-900/10 text-xs">
                     <div className="flex-1 min-w-0 text-white/60 truncate">{empName(m.employee_id)} · {m.date} · {m.from || "—"} → {m.to || "—"} · {m.miles}mi</div>
                     <Badge tone={m.status === "approved" ? "green" : "gray"}>{m.status}</Badge>
+                    {m.status === "approved" && (
+                      <button onClick={() => reviewMileageLog(m.id, "denied")} className="text-[10px] font-semibold px-2 py-1 rounded-full bg-red-950/40 border border-red-700/40 text-red-300 hover:bg-red-900/40 transition flex-shrink-0">Remove</button>
+                    )}
                   </div>
                 ))}
               </Glass>
