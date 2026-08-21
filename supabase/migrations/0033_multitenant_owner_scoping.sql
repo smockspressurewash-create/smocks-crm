@@ -133,6 +133,7 @@ drop policy if exists "Users can manage their org's customers" on customers;
 drop policy if exists "customers_all" on customers;
 drop policy if exists "customers_all_read" on customers;
 drop policy if exists "customers_org_isolation" on customers;
+drop policy if exists "customers_owner_scoped" on customers;
 create policy "customers_owner_scoped" on customers for all
   using (owner_id = current_owner_id()) with check (owner_id = current_owner_id());
 
@@ -147,18 +148,21 @@ drop policy if exists "org_employees" on employees;
 drop policy if exists "see_by_email" on employees;
 -- "see_own_record" (user_id = auth.uid()) kept as-is — safe, restrictive,
 -- and still needed as the self-lookup path once user_id IS linked.
+drop policy if exists "employees_owner_scoped" on employees;
 create policy "employees_owner_scoped" on employees for all
   using (owner_id = current_owner_id()) with check (owner_id = current_owner_id());
 
 -- estimates
 drop policy if exists "Users can manage their org's estimates" on estimates;
 drop policy if exists "estimates_all" on estimates;
+drop policy if exists "estimates_owner_scoped" on estimates;
 create policy "estimates_owner_scoped" on estimates for all
   using (owner_id = current_owner_id()) with check (owner_id = current_owner_id());
 
 -- expenses (already had a real org_id-scoped policy; replaced with the
 -- owner_id equivalent)
 drop policy if exists "Users can manage their org's expenses" on expenses;
+drop policy if exists "expenses_owner_scoped" on expenses;
 create policy "expenses_owner_scoped" on expenses for all
   using (owner_id = current_owner_id()) with check (owner_id = current_owner_id());
 
@@ -166,29 +170,35 @@ create policy "expenses_owner_scoped" on expenses for all
 drop policy if exists "jobs_all" on jobs;
 drop policy if exists "jobs_insert_update" on jobs;
 drop policy if exists "jobs_org_isolation" on jobs;
+drop policy if exists "jobs_owner_scoped" on jobs;
 create policy "jobs_owner_scoped" on jobs for all
   using (owner_id = current_owner_id()) with check (owner_id = current_owner_id());
 
 -- app_settings, alfred_conversations, alfred_memory, mileage_logs — already
 -- keyed by owner_id, just wide open; tighten in place.
 drop policy if exists "app_settings_all" on app_settings;
+drop policy if exists "app_settings_owner_scoped" on app_settings;
 create policy "app_settings_owner_scoped" on app_settings for all
   using (owner_id = current_owner_id()) with check (owner_id = current_owner_id());
 
 drop policy if exists "alfred_conversations_all" on alfred_conversations;
+drop policy if exists "alfred_conversations_owner_scoped" on alfred_conversations;
 create policy "alfred_conversations_owner_scoped" on alfred_conversations for all
   using (owner_id = current_owner_id()) with check (owner_id = current_owner_id());
 
 drop policy if exists "alfred_memory_all" on alfred_memory;
+drop policy if exists "alfred_memory_owner_scoped" on alfred_memory;
 create policy "alfred_memory_owner_scoped" on alfred_memory for all
   using (owner_id = current_owner_id()) with check (owner_id = current_owner_id());
 
 drop policy if exists "mileage_logs_all" on mileage_logs;
+drop policy if exists "mileage_logs_owner_scoped" on mileage_logs;
 create policy "mileage_logs_owner_scoped" on mileage_logs for all
   using (owner_id = current_owner_id()) with check (owner_id = current_owner_id());
 
 -- inbox_threads
 drop policy if exists "inbox_threads_all" on inbox_threads;
+drop policy if exists "inbox_threads_owner_scoped" on inbox_threads;
 create policy "inbox_threads_owner_scoped" on inbox_threads for all
   using (owner_id = current_owner_id()) with check (owner_id = current_owner_id());
 
@@ -197,11 +207,13 @@ drop policy if exists "job_requests_all" on job_requests;
 drop policy if exists "requests_insert" on job_requests;
 drop policy if exists "requests_select" on job_requests;
 drop policy if exists "requests_update" on job_requests;
+drop policy if exists "job_requests_owner_scoped" on job_requests;
 create policy "job_requests_owner_scoped" on job_requests for all
   using (owner_id = current_owner_id()) with check (owner_id = current_owner_id());
 
 -- promotions
 drop policy if exists "promotions_all" on promotions;
+drop policy if exists "promotions_owner_scoped" on promotions;
 create policy "promotions_owner_scoped" on promotions for all
   using (owner_id = current_owner_id()) with check (owner_id = current_owner_id());
 
@@ -211,6 +223,7 @@ create policy "promotions_owner_scoped" on promotions for all
 -- require it to be non-null instead of trusting an authenticated session.
 drop policy if exists "reviews_all" on reviews;
 drop policy if exists "reviews_insert_public" on reviews;
+drop policy if exists "reviews_owner_scoped" on reviews;
 create policy "reviews_owner_scoped" on reviews for all
   using (owner_id = current_owner_id()) with check (owner_id = current_owner_id());
 create policy "reviews_insert_public" on reviews for insert to public
@@ -218,6 +231,7 @@ create policy "reviews_insert_public" on reviews for insert to public
 
 -- services
 drop policy if exists "services_all" on services;
+drop policy if exists "services_owner_scoped" on services;
 create policy "services_owner_scoped" on services for all
   using (owner_id = current_owner_id()) with check (owner_id = current_owner_id());
 
@@ -230,6 +244,9 @@ create policy "services_owner_scoped" on services for all
 drop policy if exists "invites_select" on invites;
 drop policy if exists "invites_insert" on invites;
 drop policy if exists "invites_update" on invites;
+drop policy if exists "invites_owner_scoped_select" on invites;
+drop policy if exists "invites_owner_scoped_insert" on invites;
+drop policy if exists "invites_owner_scoped_update" on invites;
 create policy "invites_owner_scoped_select" on invites for select
   using (owner_id = current_owner_id());
 create policy "invites_owner_scoped_insert" on invites for insert to authenticated
@@ -238,6 +255,7 @@ create policy "invites_owner_scoped_update" on invites for update
   using (owner_id = current_owner_id());
 
 -- campaigns (had RLS enabled with zero policies — was already deny-all)
+drop policy if exists "campaigns_owner_scoped" on campaigns;
 create policy "campaigns_owner_scoped" on campaigns for all
   using (owner_id = current_owner_id()) with check (owner_id = current_owner_id());
 
