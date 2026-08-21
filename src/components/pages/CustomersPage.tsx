@@ -727,7 +727,7 @@ export function CustomersPage({ customers = [], setCustomers, estimates = [], jo
       </Glass>
 
       <CustomerModal open={modal.open} onClose={() => setModal({ open: false, data: null })} data={modal.data} onSave={save} mapsKey={settings.googleMapsKey || (settings as any).mapsKey || ""} customers={customers} />
-      <CustomerDetail customer={detail} onClose={() => setDetail(null)} onDelete={deleteCustomer} onEdit={(cust: any) => { setDetail(null); setModal({ open: true, data: cust }); }} estimates={estimates} jobs={jobs} employees={employees} timeline={timeline} setTimeline={setTimeline} settings={settings} />
+      <CustomerDetail customer={detail} onClose={() => setDetail(null)} onDelete={deleteCustomer} onEdit={(cust: any) => { setDetail(null); setModal({ open: true, data: cust }); }} estimates={estimates} jobs={jobs} employees={employees} timeline={timeline} setTimeline={setTimeline} settings={settings} toast={toast} setCustomers={setCustomers} />
       </>}
     </div>
   );

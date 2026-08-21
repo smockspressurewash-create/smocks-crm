@@ -43,8 +43,12 @@ import { PageFade } from "./PageFade";
 import { TimeframeSelector } from "./TimeframeSelector";
 import { DocumentVault } from "./DocumentVault";
 import { crewIncludesEmployee } from "../pages/EmployeePortal";
+import { supabase } from "../../lib/supabase";
+import { listCustomerPaymentMethods, detachPaymentMethod, StripeSavedCard } from "../../lib/stripe";
+import { SaveCardModal } from "./SaveCardModal";
+import { useIsMobile } from "../../hooks/useIsMobile";
 
-export function CustomerDetail({ customer: c, onClose, onDelete, onEdit, estimates = [], jobs = [], employees = [], timeline = {}, setTimeline = (..._args: any[]) => {}, settings = {} as any, toast = (..._args: any[]) => {} }) {
+export function CustomerDetail({ customer: c, onClose, onDelete, onEdit, estimates = [], jobs = [], employees = [], timeline = {}, setTimeline = (..._args: any[]) => {}, settings = {} as any, toast = (..._args: any[]) => {}, setCustomers = (..._args: any[]) => {} }) {
   const [tab, setTab] = useState("info");
   const [note, setNote] = useState("");
   const [noteType, setNoteType] = useState("note");
@@ -53,8 +57,62 @@ export function CustomerDetail({ customer: c, onClose, onDelete, onEdit, estimat
   // which employee worked it were only ever visible from the Jobs page
   // itself. Click-to-expand shows all of that inline instead.
   const [expandedJobId, setExpandedJobId] = useState<string | null>(null);
+  const isMobile = useIsMobile();
 
-  useEffect(() => { if (c) { setTab("info"); setNote(""); } }, [c]);
+  // FEATURE — owner-side view of a customer's saved cards (Payment Methods).
+  // Customers can already save their OWN card via SaveCardModal from the
+  // client portal / field portal; there was previously no owner-facing way
+  // to see, add, or remove what's on file for a given customer.
+  const [paymentMethods, setPaymentMethods] = useState<StripeSavedCard[]>([]);
+  const [pmLoading, setPmLoading] = useState(false);
+  const [pmDeletingId, setPmDeletingId] = useState<string | null>(null);
+  const [addCardOpen, setAddCardOpen] = useState(false);
+
+  const loadPaymentMethods = async () => {
+    if (!c?.stripeCustomerId) { setPaymentMethods([]); return; }
+    setPmLoading(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const token = session?.access_token;
+      if (!token) throw new Error("Not signed in");
+      const cards = await listCustomerPaymentMethods(token, c.stripeCustomerId);
+      setPaymentMethods(cards);
+    } catch (e: any) {
+      console.error("[PaymentMethods] list failed:", e?.message);
+      toast?.("Failed to load saved cards: " + (e?.message || "unknown error"), "red");
+    } finally {
+      setPmLoading(false);
+    }
+  };
+
+  const removePaymentMethod = async (pm: StripeSavedCard) => {
+    if (!window.confirm(`Remove ${pm.brand || "card"} •••• ${pm.last4 || "----"} from file?`)) return;
+    setPmDeletingId(pm.id);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const token = session?.access_token;
+      if (!token) throw new Error("Not signed in");
+      await detachPaymentMethod(token, pm.id);
+      toast?.("Card removed", "green");
+      // If the removed card was the one saved for quick-charge on the
+      // customer record (savedPaymentMethodId), clear that reference too so
+      // Trash Can / job-payment "charge saved card" flows don't try to hit a
+      // now-detached payment method.
+      if (c.savedPaymentMethodId === pm.id) {
+        setCustomers((prev: any[]) => prev.map((cust: any) => cust.id === c.id ? { ...cust, savedPaymentMethodId: undefined, savedPaymentMethodLabel: undefined } : cust));
+        (supabase as any).from("customers").update({ savedPaymentMethodId: null, savedPaymentMethodLabel: null }).eq("id", c.id)
+          .catch((e: any) => console.warn("[PaymentMethods] clear savedPaymentMethodId sync failed:", e?.message));
+      }
+      await loadPaymentMethods();
+    } catch (e: any) {
+      console.error("[PaymentMethods] detach failed:", e?.message);
+      toast?.("Failed to remove card: " + (e?.message || "unknown error"), "red");
+    } finally {
+      setPmDeletingId(null);
+    }
+  };
+
+  useEffect(() => { if (c) { setTab("info"); setNote(""); loadPaymentMethods(); } }, [c?.id]);
 
   if (!c) return null;
   const ce = estimates.filter(e => e.customerId === c.id);
@@ -299,6 +357,45 @@ export function CustomerDetail({ customer: c, onClose, onDelete, onEdit, estimat
                 {!c.sqFootage && !c.gateCode && !c.hasDog && !c.sensitivePlants && <div className="col-span-2 text-white/40 text-xs">No property notes — edit customer to add</div>}
               </div>
             </Glass>
+            {/* Payment Methods — owner-side view of the customer's saved
+                cards (Stripe). See SECURITY AUDIT note in lib/stripe.ts:
+                this owner-only view goes through list_payment_methods /
+                detach_payment_method, gated by the owner's own Supabase
+                session token, never a raw Stripe key in the browser. */}
+            <Glass className="p-4 !bg-black/40">
+              <div className={"flex items-center justify-between mb-3 gap-2 " + (isMobile ? "flex-col items-stretch" : "flex-row")}>
+                <div className="text-[10px] text-white/50 uppercase tracking-wider flex items-center gap-1"><CreditCard size={9} />Payment Methods</div>
+                <GBtn onClick={() => setAddCardOpen(true)} className={"!py-1.5 !px-3 !text-xs " + (isMobile ? "!w-full !justify-center" : "")}>
+                  <Plus size={12} />Add Card
+                </GBtn>
+              </div>
+              {!c.stripeCustomerId ? (
+                <div className="text-xs text-white/40 py-2 text-center">No card on file</div>
+              ) : pmLoading ? (
+                <div className="text-xs text-white/40 py-2 text-center">Loading…</div>
+              ) : paymentMethods.length === 0 ? (
+                <div className="text-xs text-white/40 py-2 text-center">No card on file</div>
+              ) : (
+                <div className="space-y-2">
+                  {paymentMethods.map(pm => (
+                    <div key={pm.id} className={"flex items-center gap-3 p-3 bg-white/5 border border-white/10 rounded-xl " + (isMobile ? "flex-col items-stretch text-center" : "flex-row justify-between")}>
+                      <div className="flex items-center gap-2 text-sm">
+                        <CreditCard size={14} className="text-white/50 flex-shrink-0" />
+                        <span className="capitalize">{pm.brand || "Card"} •••• {pm.last4 || "----"}</span>
+                        {pm.expMonth && pm.expYear && <span className="text-white/40 text-xs">exp {String(pm.expMonth).padStart(2, "0")}/{String(pm.expYear).slice(-2)}</span>}
+                      </div>
+                      <button
+                        onClick={() => removePaymentMethod(pm)}
+                        disabled={pmDeletingId === pm.id}
+                        className={"flex items-center gap-1.5 text-xs text-red-400 hover:text-red-300 disabled:opacity-40 px-2 py-1.5 rounded-lg hover:bg-red-950/30 transition " + (isMobile ? "justify-center" : "")}
+                      >
+                        <Trash2 size={12} />{pmDeletingId === pm.id ? "Removing…" : "Remove"}
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </Glass>
             {/* Quick stats */}
             <div className="grid grid-cols-3 gap-3">
               {[
@@ -472,6 +569,25 @@ export function CustomerDetail({ customer: c, onClose, onDelete, onEdit, estimat
           </div>}
         </div>
       </div>
+
+      <SaveCardModal
+        open={addCardOpen}
+        onClose={() => setAddCardOpen(false)}
+        publishableKey={settings?.stripePublishableKey || ""}
+        email={c.email || ""}
+        name={`${c.firstName} ${c.lastName}`}
+        existingStripeCustomerId={c.stripeCustomerId}
+        companyName={settings?.companyName || "the company"}
+        enteredByEmployee
+        onSaved={(stripeCustomerId, paymentMethodId, label) => {
+          setCustomers((prev: any[]) => prev.map((cust: any) => cust.id === c.id ? { ...cust, stripeCustomerId, savedPaymentMethodId: paymentMethodId, savedPaymentMethodLabel: label } : cust));
+          (supabase as any).from("customers").update({ stripeCustomerId, savedPaymentMethodId: paymentMethodId, savedPaymentMethodLabel: label }).eq("id", c.id)
+            .catch((e: any) => console.warn("[PaymentMethods] add-card Supabase sync failed:", e?.message));
+          toast?.("Card saved on file ✓", "green");
+          setAddCardOpen(false);
+          loadPaymentMethods();
+        }}
+      />
     </Modal>
   );
 }

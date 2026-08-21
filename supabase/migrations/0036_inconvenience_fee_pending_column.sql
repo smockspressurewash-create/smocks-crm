@@ -1,0 +1,12 @@
+-- Trash Can Cleaning — inconvenience fee collection follow-up
+-- (TrashCanPage.tsx / EmployeePortal.tsx cans-not-out flow, round 15).
+--
+-- The cans-not-out action now tries to auto-charge the customer's saved
+-- card first (see EmployeePortal.tsx). When there's no card on file, or the
+-- charge fails, the job is flagged with this column instead of silently
+-- doing nothing, so the owner can "Charge Now" (once a card exists) or
+-- "Add to Next Invoice" from TrashCanPage.tsx. EmployeePortal.tsx's
+-- CORE_JOB_COLUMNS whitelist already tolerates this column not existing yet
+-- (falls back to just not persisting the flag), so this migration is safe
+-- to apply at any time without breaking the existing write path.
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS "inconvenienceFeePendingConfirmation" boolean DEFAULT false;

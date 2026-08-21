@@ -603,6 +603,25 @@ export function App() {
     }
   };
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // Stripe Connect OAuth redirect landing — functions/api/stripe-connect-oauth.ts
+  // sends the browser back to `${origin}/#/settings?stripe_connected=1` (or
+  // `?stripe_connect_error=...`) after the owner authorizes on Stripe's own
+  // site. Since Settings is a modal (settingsOpen state), not a real route,
+  // pick that query param up once on mount, pop the modal open, toast, and
+  // strip the param so a refresh doesn't re-fire it.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const connected = params.get("stripe_connected");
+    const err = params.get("stripe_connect_error");
+    if (!connected && !err) return;
+    setSettingsOpen(true);
+    if (connected) toast("✓ Stripe connected", "green");
+    else toast("Stripe Connect failed: " + err, "red");
+    const url = new URL(window.location.href);
+    url.searchParams.delete("stripe_connected");
+    url.searchParams.delete("stripe_connect_error");
+    window.history.replaceState({}, "", url.toString());
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
   // FIX 8 — "Add Manager" in Settings jumps to Employees with the invite
   // modal pre-opened (role defaulted to Manager) instead of duplicating the
   // whole invite form inside Settings.
@@ -1406,6 +1425,40 @@ export function App() {
       setNotifications((prev: AppNotification[]) => [...events.map(ev => ({ ...ev, read: false, category: (ev.text.startsWith("🚨") ? "issue" : "crew") as "issue" | "crew", page: "employees" })), ...prev].slice(0, NOTIFICATIONS_CAP));
     }
   }, [employees, jobs, hasCrmSession]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Owner notifications — trash-can inconvenience fee needs collecting ───────
+  // (round 15) EmployeePortal.tsx's cans-not-out action now auto-charges the
+  // customer's saved card when one's on file, and flags
+  // inconvenienceFeePendingConfirmation instead of silently doing nothing when
+  // there's no card / the charge fails. Same diff-the-poll pattern as the
+  // crew-activity effect above — fires once when the flag flips true, so the
+  // owner sees a bell/toast pointing them at TrashCanPage.tsx's "Charge Now" /
+  // "Add to Next Invoice" banner instead of that fee just getting lost.
+  const trashFeePendingRef = useRef<Record<string, boolean>>({});
+  const trashFeePendingSeededRef = useRef(false);
+  useEffect(() => {
+    if (!hasCrmSession) return;
+    const snap: Record<string, boolean> = {};
+    const events: { id: string; text: string; at: number }[] = [];
+    for (const j of jobs as any[]) {
+      if (j.serviceCategory !== "trash_can") continue;
+      const cur = !!j.inconvenienceFeePendingConfirmation;
+      snap[j.id] = cur;
+      if (!trashFeePendingSeededRef.current) continue;
+      const prev = trashFeePendingRef.current[j.id] ?? false;
+      if (cur && !prev) {
+        const cust = customers.find(x => x.id === j.customerId);
+        const who = cust ? `${cust.firstName} ${cust.lastName}` : j.address;
+        events.push({ id: j.id + ":trashfee:" + Date.now(), text: `🗑 Inconvenience fee needs collecting — ${who}`, at: Date.now() });
+      }
+    }
+    trashFeePendingRef.current = snap;
+    if (!trashFeePendingSeededRef.current) { trashFeePendingSeededRef.current = true; return; }
+    if (events.length) {
+      events.forEach(ev => toast(ev.text, "yellow"));
+      setNotifications((prev: AppNotification[]) => [...events.map(ev => ({ ...ev, read: false, category: "trash_can" as const, page: "trashcans" })), ...prev].slice(0, NOTIFICATIONS_CAP));
+    }
+  }, [jobs, hasCrmSession]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // FEATURE — photo/video auto-deletion (owner opt-in, Settings → Data;
   // settings.mediaRetentionDays is 0/undefined by default, meaning this is a

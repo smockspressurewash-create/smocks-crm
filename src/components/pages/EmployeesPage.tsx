@@ -1271,6 +1271,14 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setJobs
           <div><label className="text-xs text-white/60 mb-1 block">Emergency Contact</label><GInput value={f.emergencyContact} onChange={e => setF({ ...f, emergencyContact: e.target.value })} placeholder="Name — (717) 555-0000" /></div>
           <div><label className="text-xs text-white/60 mb-1 block">Notes</label><GTxt rows={2} value={f.notes} onChange={e => setF({ ...f, notes: e.target.value })} /></div>
 
+          {/* FEATURE — photo/video release opt-out, employee side. Mirrors
+              CustomerModal.tsx's client-side toggle; see LegalPages.tsx
+              TermsPage's "Photos & Video" clause. Data flag only for now. */}
+          <label className="flex items-center gap-1.5 text-[10px] text-white/60 cursor-pointer">
+            <input type="checkbox" checked={!!(f as any).mediaOptOut} onChange={e => setF({ ...f, mediaOptOut: e.target.checked })} className="accent-red-600" />
+            📵 Opt out of photo/video use for marketing
+          </label>
+
           {/* Shift status — mirrors the employee's own "Start My Day" timer
               so the owner can see it's running (and how long the last
               completed shift was) without opening the employee portal. */}

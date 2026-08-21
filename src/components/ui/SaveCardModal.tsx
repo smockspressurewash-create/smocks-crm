@@ -11,17 +11,27 @@ import { GBtn } from "./GBtn";
 export function SaveCardModal({
   open, onClose, publishableKey, email, name, existingStripeCustomerId,
   onSaved, companyName = "the company", enteredByEmployee = false,
+  isRecurringClient = false,
 }: {
   open: boolean; onClose: () => void;
   publishableKey: string;
   email: string; name: string; existingStripeCustomerId?: string;
-  onSaved: (stripeCustomerId: string, paymentMethodId: string, label: string) => void;
+  // consentAt — ISO timestamp the consent checkbox was accepted, passed back
+  // so callers can log it onto the customer record (Customer.cardConsentAt,
+  // same convention as smsOptInAt) without this modal needing its own
+  // Supabase write.
+  onSaved: (stripeCustomerId: string, paymentMethodId: string, label: string, consentAt?: string) => void;
   companyName?: string;
   // FEATURE (round 13, item 10) — true when an EMPLOYEE is keying this card
   // in on the customer's behalf (in-person, field portal), not the customer
   // typing their own card into their own portal — the consent wording below
   // reads correctly for both cases.
   enteredByEmployee?: boolean;
+  // FEATURE — recurring-service clients must keep a card on file (it can't
+  // be removed while their recurring service is active — see the owner-side
+  // card management UI in CustomerDetail.tsx), so the consent copy reads
+  // differently for them: "required," not "you may ask us to remove it."
+  isRecurringClient?: boolean;
 }) {
   const [status, setStatus] = useState<"loading" | "ready" | "processing" | "success" | "error">("loading");
   const [error, setError] = useState("");
@@ -75,7 +85,7 @@ export function SaveCardModal({
     });
     if (confirmError) { setError(confirmError.message || "Failed to save card"); setStatus("ready"); return; }
     setStatus("success");
-    onSaved(customerIdRef.current, setupIntent?.payment_method || "", "Card on file");
+    onSaved(customerIdRef.current, setupIntent?.payment_method || "", "Card on file", new Date().toISOString());
   };
 
   return (
@@ -94,21 +104,41 @@ export function SaveCardModal({
           </div>
         ) : (
           <>
-            <div ref={mountRef} className={status === "loading" || status === "error" ? "hidden" : ""} />
             {(status === "ready" || status === "processing") && (
-              <>
-                <label className="flex items-start gap-2.5 p-3 rounded-xl bg-white/5 border border-white/10 cursor-pointer">
-                  <input type="checkbox" checked={agreed} onChange={e => setAgreed(e.target.checked)} className="mt-0.5 flex-shrink-0" />
-                  <span className="text-[12px] text-white/70 leading-relaxed">
-                    {enteredByEmployee
-                      ? `I confirm the customer has authorized ${companyName} to keep this card on file and charge it for future services.`
-                      : `I authorize ${companyName} to keep this card on file and charge it for future services I approve.`}
-                  </span>
-                </label>
-                <GBtn onClick={confirm} disabled={status === "processing" || !agreed} className="w-full !justify-center !py-3">
-                  <CreditCard size={16} />{status === "processing" ? "Saving…" : "Save Card"}
-                </GBtn>
-              </>
+              /* FEATURE — legal consent block, shown ABOVE the card form and
+                 required before it (and the Save button) becomes usable.
+                 Recurring-service clients get "required, cannot be removed"
+                 wording instead of the normal "you can ask us to remove it"
+                 — matches the owner-side delete-card UI (CustomerDetail.tsx)
+                 which withholds the plain delete option for these customers. */
+              <label className="flex items-start gap-2.5 p-3 rounded-xl bg-white/5 border border-white/10 cursor-pointer">
+                <input type="checkbox" checked={agreed} onChange={e => setAgreed(e.target.checked)} className="mt-0.5 flex-shrink-0" />
+                <span className="text-[12px] text-white/70 leading-relaxed">
+                  {isRecurringClient
+                    ? `Recurring service requires a card on file — this cannot be removed while your recurring service is active. By adding a card, you agree ${companyName} may keep it on file and charge it for future services, invoices, tips, and any applicable fees.`
+                    : enteredByEmployee
+                      ? `I confirm the customer has authorized ${companyName} to keep this card on file. By adding a card, we may keep it on file for future charges (including invoices, tips, and any applicable fees) unless the customer asks us to remove it.`
+                      : `By adding a card, you agree ${companyName} may keep it on file for future charges (including invoices, tips, and any applicable fees) unless you ask us to remove it.`}
+                </span>
+              </label>
+            )}
+            {/* Card form stays mounted (Stripe Elements needs its DOM node
+                present) but is visually locked and non-interactive until the
+                consent checkbox above is checked. */}
+            <div
+              ref={mountRef}
+              className={
+                (status === "loading" || status === "error" ? "hidden " : "") +
+                (!agreed ? "opacity-30 pointer-events-none select-none transition-opacity" : "transition-opacity")
+              }
+            />
+            {!agreed && (status === "ready" || status === "processing") && (
+              <div className="text-[10px] text-white/40 text-center -mt-2">Agree to the terms above to enter your card</div>
+            )}
+            {(status === "ready" || status === "processing") && (
+              <GBtn onClick={confirm} disabled={status === "processing" || !agreed} className="w-full !justify-center !py-3">
+                <CreditCard size={16} />{status === "processing" ? "Saving…" : "Save Card"}
+              </GBtn>
             )}
           </>
         )}

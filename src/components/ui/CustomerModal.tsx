@@ -106,6 +106,12 @@ export function CustomerModal({ open, onClose, data, onSave, mapsKey = "", custo
               <input type="checkbox" checked={!!(f as any).isTestClient} onChange={e => setF({ ...(f as any), isTestClient: e.target.checked } as any)} className="accent-yellow-500" />
               🧪 Test Client — blocked from real sends when Testing Mode is on
             </label>
+            {/* FEATURE — photo/video release opt-out, see LegalPages.tsx
+                TermsPage's "Photos & Video" clause. Data flag only for now. */}
+            <label className="flex items-center gap-1.5 mt-2 text-[10px] text-white/60 cursor-pointer">
+              <input type="checkbox" checked={!!(f as any).mediaOptOut} onChange={e => setF({ ...(f as any), mediaOptOut: e.target.checked } as any)} className="accent-red-600" />
+              📵 Opt out of photo/video use for marketing
+            </label>
           </div>
           <div>
             <label className="text-xs text-white/60 mb-1 block">Folder</label>

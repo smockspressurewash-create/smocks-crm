@@ -46,19 +46,29 @@ const SUPABASE_ANON_KEY = "sb_publishable_8aEa3wsYJ7ghVPcGbtHymw_ugj0aEfm";
 //   3. If no owner-specific key is on file, fall back to the platform-wide
 //      STRIPE_SECRET_KEY env var, so deployments that haven't set up
 //      per-owner keys yet keep working unmodified.
+// STRIPE CONNECT — an owner who completed the OAuth "Connect with Stripe"
+// flow (functions/api/stripe-connect-oauth.ts) has a `stripe_account_id`
+// (acct_...) instead of their own raw secret key. Connect-mode calls use
+// THIS PLATFORM's own secret key (STRIPE_SECRET_KEY) plus a
+// `Stripe-Account: acct_...` header, which is Stripe's documented way for a
+// platform to act on a connected account's behalf — the connected account
+// never hands over a raw secret key at all. Legacy manual-key owners (who
+// pasted their own sk_.../whsec_... in Settings before Connect existed)
+// keep working exactly as before — stripe_account_id is simply null for
+// them, and the resolver below falls through to their own secretKey.
 const getOwnerStripeAccount = async (
   ownerId: string,
   serviceRoleKey: string
-): Promise<{ secretKey?: string; publishableKey?: string; webhookSecret?: string; mode?: string } | null> => {
+): Promise<{ secretKey?: string; publishableKey?: string; webhookSecret?: string; mode?: string; stripeAccountId?: string } | null> => {
   if (!ownerId || !serviceRoleKey) return null;
   const res = await fetch(
-    `${SUPABASE_URL}/rest/v1/owner_stripe_accounts?owner_id=eq.${encodeURIComponent(ownerId)}&select=stripe_secret_key,stripe_publishable_key,stripe_webhook_secret,stripe_mode`,
+    `${SUPABASE_URL}/rest/v1/owner_stripe_accounts?owner_id=eq.${encodeURIComponent(ownerId)}&select=stripe_secret_key,stripe_publishable_key,stripe_webhook_secret,stripe_mode,stripe_account_id`,
     { headers: { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}` } }
   );
   const rows = await res.json().catch(() => []);
   const row = Array.isArray(rows) ? rows[0] : null;
   if (!row) return null;
-  return { secretKey: row.stripe_secret_key || undefined, publishableKey: row.stripe_publishable_key || undefined, webhookSecret: row.stripe_webhook_secret || undefined, mode: row.stripe_mode };
+  return { secretKey: row.stripe_secret_key || undefined, publishableKey: row.stripe_publishable_key || undefined, webhookSecret: row.stripe_webhook_secret || undefined, mode: row.stripe_mode, stripeAccountId: row.stripe_account_id || undefined };
 };
 
 const getEstimateOwnerId = async (invoiceId: string): Promise<string | null> => {
@@ -91,11 +101,12 @@ const resolveCallerOwnerId = async (accessToken: string): Promise<string | null>
   return Array.isArray(empRows) && empRows[0]?.owner_id ? empRows[0].owner_id : uid;
 };
 
-const stripeFetch = async (secretKey: string, method: string, path: string, params?: Record<string, string>) => {
+const stripeFetch = async (secretKey: string, method: string, path: string, params?: Record<string, string>, stripeAccount?: string) => {
   const res = await fetch(`https://api.stripe.com/v1/${path}`, {
     method,
     headers: {
       Authorization: `Basic ${btoa(secretKey + ":")}`,
+      ...(stripeAccount ? { "Stripe-Account": stripeAccount } : {}),
       ...(method === "POST" ? { "Content-Type": "application/x-www-form-urlencoded" } : {}),
     },
     body: method === "POST" && params ? new URLSearchParams(params).toString() : undefined,
@@ -145,6 +156,8 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
       if (action === "get_owner_keys_status") {
         const acct = await getOwnerStripeAccount(callerOwnerId, serviceRoleKey);
         return json({
+          connected: !!acct?.stripeAccountId,
+          stripeAccountId: acct?.stripeAccountId ? acct.stripeAccountId.replace(/^(acct_.{4}).*/, "$1…") : "",
           hasSecretKey: !!acct?.secretKey,
           hasWebhookSecret: !!acct?.webhookSecret,
           publishableKey: acct?.publishableKey || "",
@@ -154,7 +167,10 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
       }
 
       // save_owner_keys — caller can only ever write their OWN owner_id row,
-      // resolved server-side above, never a client-supplied one.
+      // resolved server-side above, never a client-supplied one. Manual-key
+      // fields stay supported as a fallback for owners not using Connect —
+      // functions/api/stripe-connect-oauth.ts writes stripe_account_id
+      // separately once an owner completes the OAuth flow.
       const { publishableKey, secretKey: newSecretKey, webhookSecret, mode } = body;
       const patch: Record<string, any> = { owner_id: callerOwnerId, updated_at: new Date().toISOString() };
       if (publishableKey !== undefined) patch.stripe_publishable_key = publishableKey || null;
@@ -173,11 +189,74 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
       return json({ success: true });
     }
 
+    // list_payment_methods / detach_payment_method — owner-CRM-only actions
+    // exposing/manipulating a customer's stored cards. Same auth-token
+    // requirement as save_owner_keys above (never a client-claimed
+    // ownerId) since these touch payment method data directly.
+    if (action === "list_payment_methods" || action === "detach_payment_method") {
+      const serviceRoleKey = context.env.SUPABASE_SERVICE_ROLE_KEY;
+      const accessToken = (context.request.headers.get("authorization") || "").replace(/^Bearer\s+/i, "");
+      const callerOwnerId = serviceRoleKey ? await resolveCallerOwnerId(accessToken) : null;
+      if (serviceRoleKey && !callerOwnerId) {
+        return new Response(JSON.stringify({ error: "Not signed in." }), { status: 401, headers: { "Content-Type": "application/json" } });
+      }
+      const acct = callerOwnerId && serviceRoleKey ? await getOwnerStripeAccount(callerOwnerId, serviceRoleKey) : null;
+      const secretKey = acct?.secretKey || platformSecretKey;
+      const stripeAccount = acct?.stripeAccountId;
+      if (!secretKey) return new Response(JSON.stringify({ error: "Stripe isn't configured for this business yet." }), { status: 500, headers: { "Content-Type": "application/json" } });
+
+      if (action === "list_payment_methods") {
+        if (!body.customerId) throw new Error("Missing customerId");
+        const pmRes = await stripeFetch(secretKey, "GET", `payment_methods?customer=${encodeURIComponent(body.customerId)}&type=card`, undefined, stripeAccount);
+        const methods = (pmRes.data || []).map((pm: any) => ({ id: pm.id, brand: pm.card?.brand, last4: pm.card?.last4, expMonth: pm.card?.exp_month, expYear: pm.card?.exp_year }));
+        return json({ paymentMethods: methods });
+      }
+      // detach_payment_method
+      if (!body.paymentMethodId) throw new Error("Missing paymentMethodId");
+      await stripeFetch(secretKey, "POST", `payment_methods/${encodeURIComponent(body.paymentMethodId)}/detach`, {}, stripeAccount);
+      return json({ success: true });
+    }
+
+    // get_my_saved_card — the CUSTOMER-safe counterpart to list_payment_methods
+    // above. A customer's Supabase session is a separate auth realm from
+    // owner/employee sessions (see ClientAuthPortal.tsx) and is never a row
+    // in `employees`, so it can't use resolveCallerOwnerId/list_payment_methods
+    // without loosening that owner-only check. Instead: verify the caller's
+    // own email against the `customers` table (service role — a customer's
+    // own anon-key session can't read `customers` directly under the
+    // owner-scoped RLS in migration 0033) and return ONLY that one
+    // customer's own card — never any other customer's, never a list.
+    if (action === "get_my_saved_card") {
+      const serviceRoleKey = context.env.SUPABASE_SERVICE_ROLE_KEY;
+      if (!serviceRoleKey) return json({ card: null });
+      const accessToken = (context.request.headers.get("authorization") || "").replace(/^Bearer\s+/i, "");
+      const userRes = await fetch(`${SUPABASE_URL}/auth/v1/user`, { headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${accessToken}` } });
+      const user = userRes.ok ? await userRes.json().catch(() => null) as any : null;
+      const email = user?.email;
+      if (!email) return new Response(JSON.stringify({ error: "Not signed in." }), { status: 401, headers: { "Content-Type": "application/json" } });
+
+      const custRes = await fetch(`${SUPABASE_URL}/rest/v1/customers?email=eq.${encodeURIComponent(email)}&select=stripeCustomerId,owner_id&limit=1`, {
+        headers: { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}` },
+      });
+      const custRows = await custRes.json().catch(() => []);
+      const cust = Array.isArray(custRows) ? custRows[0] : null;
+      if (!cust?.stripeCustomerId) return json({ card: null });
+
+      const acct = cust.owner_id ? await getOwnerStripeAccount(cust.owner_id, serviceRoleKey) : null;
+      const secretKey = acct?.secretKey || platformSecretKey;
+      if (!secretKey) return json({ card: null });
+      const pmRes = await stripeFetch(secretKey, "GET", `payment_methods?customer=${encodeURIComponent(cust.stripeCustomerId)}&type=card&limit=1`, undefined, acct?.stripeAccountId);
+      const pm = (pmRes.data || [])[0];
+      if (!pm) return json({ card: null });
+      return json({ card: { brand: pm.card?.brand, last4: pm.card?.last4, expMonth: pm.card?.exp_month, expYear: pm.card?.exp_year } });
+    }
+
     // Every remaining action calls api.stripe.com and needs a secret key —
-    // resolve the calling owner's own key first, falling back to the
-    // platform-wide env var (requirement: existing/legacy deployments keep
-    // working unmodified).
+    // resolve the calling owner's own key/Connect account first, falling
+    // back to the platform-wide env var (requirement: existing/legacy
+    // deployments keep working unmodified).
     let secretKey = platformSecretKey;
+    let stripeAccount: string | undefined;
     const serviceRoleKey = context.env.SUPABASE_SERVICE_ROLE_KEY;
     if (serviceRoleKey) {
       let resolvedOwnerId: string | null = null;
@@ -185,7 +264,8 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
       if (!resolvedOwnerId && body.ownerId) resolvedOwnerId = body.ownerId;
       if (resolvedOwnerId) {
         const acct = await getOwnerStripeAccount(resolvedOwnerId, serviceRoleKey);
-        if (acct?.secretKey) secretKey = acct.secretKey;
+        if (acct?.stripeAccountId) { stripeAccount = acct.stripeAccountId; }
+        else if (acct?.secretKey) { secretKey = acct.secretKey; }
       }
     }
     if (!secretKey) {
@@ -205,12 +285,12 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
           "automatic_payment_methods[enabled]": "true",
         };
         if (body.invoiceId) params["metadata[invoiceId]"] = body.invoiceId;
-        const intent = await stripeFetch(secretKey, "POST", "payment_intents", params);
+        const intent = await stripeFetch(secretKey, "POST", "payment_intents", params, stripeAccount);
         return json({ id: intent.id, client_secret: intent.client_secret, status: intent.status });
       }
       case "retrieve_payment_intent": {
         if (!body.id) throw new Error("Missing id");
-        const intent = await stripeFetch(secretKey, "GET", `payment_intents/${encodeURIComponent(body.id)}`);
+        const intent = await stripeFetch(secretKey, "GET", `payment_intents/${encodeURIComponent(body.id)}`, undefined, stripeAccount);
         return json(intent);
       }
       case "create_checkout_session": {
@@ -227,22 +307,22 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
         };
         if (body.customerEmail) params.customer_email = body.customerEmail;
         if (body.invoiceId) { params.client_reference_id = body.invoiceId; params["metadata[invoiceId]"] = body.invoiceId; }
-        const session = await stripeFetch(secretKey, "POST", "checkout/sessions", params);
+        const session = await stripeFetch(secretKey, "POST", "checkout/sessions", params, stripeAccount);
         return json({ id: session.id, url: session.url, payment_status: session.payment_status, payment_intent: session.payment_intent });
       }
       case "retrieve_checkout_session": {
         if (!body.sessionId) throw new Error("Missing sessionId");
-        const session = await stripeFetch(secretKey, "GET", `checkout/sessions/${encodeURIComponent(body.sessionId)}`);
+        const session = await stripeFetch(secretKey, "GET", `checkout/sessions/${encodeURIComponent(body.sessionId)}`, undefined, stripeAccount);
         return json(session);
       }
       case "create_customer": {
         if (!body.email) throw new Error("Missing email");
-        const customer = await stripeFetch(secretKey, "POST", "customers", { email: body.email, name: body.name || "" });
+        const customer = await stripeFetch(secretKey, "POST", "customers", { email: body.email, name: body.name || "" }, stripeAccount);
         return json({ id: customer.id, email: customer.email, name: customer.name });
       }
       case "create_setup_intent": {
         if (!body.customerId) throw new Error("Missing customerId");
-        const intent = await stripeFetch(secretKey, "POST", "setup_intents", { customer: body.customerId, "payment_method_types[0]": "card" });
+        const intent = await stripeFetch(secretKey, "POST", "setup_intents", { customer: body.customerId, "payment_method_types[0]": "card" }, stripeAccount);
         return json({ id: intent.id, client_secret: intent.client_secret, status: intent.status });
       }
       case "charge_saved_payment_method": {
@@ -262,14 +342,14 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
           confirm: "true",
         };
         if (body.invoiceId) params["metadata[invoiceId]"] = body.invoiceId;
-        const intent = await stripeFetch(secretKey, "POST", "payment_intents", params);
+        const intent = await stripeFetch(secretKey, "POST", "payment_intents", params, stripeAccount);
         return json({ id: intent.id, client_secret: intent.client_secret, status: intent.status });
       }
       case "refund": {
         // OWNER-ONLY — only ever called from InvoicesPage/JobDetailModal
         // (authenticated CRM), never exposed to the customer-facing portal.
         if (!body.paymentIntentId) throw new Error("Missing paymentIntentId");
-        await stripeFetch(secretKey, "POST", "refunds", { payment_intent: body.paymentIntentId });
+        await stripeFetch(secretKey, "POST", "refunds", { payment_intent: body.paymentIntentId }, stripeAccount);
         return json({ success: true });
       }
       default:

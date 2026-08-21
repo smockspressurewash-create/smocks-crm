@@ -39,6 +39,7 @@ import { GSel } from "./GSel";
 import { GTxt } from "./GTxt";
 import { Modal } from "./Modal";
 import { InvoicePreviewModal } from "./InvoicePreviewModal";
+import { StripePaymentModal } from "./StripePaymentModal";
 import { Badge } from "./Badge";
 import { Stat } from "./Stat";
 import { PBar } from "./PBar";
@@ -195,6 +196,12 @@ const withTimeout = <T,>(p: Promise<T>, ms: number, label: string): Promise<T> =
 export function JobDetailModal({ jobId, job, onClose, customers = [], employees = [], updateJob, toast, gToken = "", settings = {} as any, setSettings, estimates = [], setEstimates = (() => {}) as any, onPortal = (_id: string) => {}, ownerId = "" }: { jobId: any; job: any; onClose: any; customers?: any[]; employees?: any[]; updateJob: any; toast: any; gToken?: string; settings?: any; setSettings?: any; estimates?: any[]; setEstimates?: any; onPortal?: (id: string) => void; ownerId?: string }) {
   const [commNote, setCommNote] = useState("");
   const [sendingInvoice, setSendingInvoice] = useState(false);
+  // FEATURE — owner in-person checkout: manual card entry via Stripe
+  // Elements (StripePaymentModal), scoped to this job's amount/linked
+  // invoice, for when the owner personally works a self-assigned job. Mirrors
+  // InvoicesPage.tsx's stripePayInvoice pattern (same StripePaymentModal
+  // component/props) rather than building a second charge UI.
+  const [chargeCardOpen, setChargeCardOpen] = useState(false);
   const [sendingReview, setSendingReview] = useState(false);
   const [showInvoicePreview, setShowInvoicePreview] = useState(false);
   const [commType, setCommType] = useState("note");
@@ -523,6 +530,24 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
     } finally {
       setSendingInvoice(false);
     }
+  };
+
+  // Owner in-person "Charge Card" checkout — manual card entry (Stripe
+  // Elements Payment Element), no card-on-file required. Scoped to this
+  // job's own linked invoice if one already exists (an Estimate row with
+  // jobId === job.id and invoiced: true), otherwise just charges the job's
+  // amount directly and marks the job paid. Mirrors markPaidViaStripe in
+  // InvoicesPage.tsx.
+  const linkedInvoice = (estimates || []).find((e: any) => e.jobId === jobId && e.invoiced);
+  const chargeCardSuccess = async (paymentIntentId: string) => {
+    updateJob(jobId, { paymentStatus: "Paid", paymentType: "Card" as any, amountCollected: Number(job.amount) || 0, stripePaymentIntentId: paymentIntentId, stripePaymentStatus: "paid" } as any);
+    if (linkedInvoice) {
+      setEstimates((prev: any[]) => prev.map(e => e.id === linkedInvoice.id ? { ...e, paidAt: today(), status: "approved", stripePaymentIntentId: paymentIntentId, stripePaymentStatus: "paid" as const } : e));
+      (supabase as any).from("estimates").update({ paidAt: today(), status: "approved", stripePaymentIntentId: paymentIntentId, stripePaymentStatus: "paid" }).eq("id", linkedInvoice.id)
+        .catch((e: any) => console.warn("[ChargeCard] invoice sync failed:", e?.message));
+    }
+    setChargeCardOpen(false);
+    toast("Payment received ✓", "green");
   };
 
   // BUG 16 — send a review request for a completed job. Links to the #/rate
@@ -1188,7 +1213,17 @@ ${job.notes ? `<div class="section"><h2>Job Notes</h2><p>${job.notes}</p></div>`
               {job.amountCollected ? `${job.amountCollected} collected` : "Email the customer an invoice with a payment link — full, deposit, or remaining balance."}
             </div>
             {job.paymentStatus !== "Paid" && (
-              <div className="flex items-center gap-1.5 flex-shrink-0">
+              <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-1.5 flex-shrink-0">
+                {/* FEATURE — owner in-person checkout for self-assigned jobs.
+                    No permission gate (the owner isn't subject to
+                    can_process_payments — that's for employees). Manual card
+                    entry via Stripe Elements, same StripePaymentModal
+                    component InvoicesPage.tsx uses for "Pay Now (in-app)". */}
+                {!!settings?.stripePublishableKey && c && (
+                  <GBtn onClick={() => setChargeCardOpen(true)} className="!text-xs !py-1.5 !bg-gradient-to-r !from-[#635BFF] !to-[#4F46E5] !border-[#635BFF]/50">
+                    <CreditCard size={11} className="inline mr-1" />Charge Card
+                  </GBtn>
+                )}
                 <GSel value="" onChange={e => { if (e.target.value) updateJob(jobId, { paymentStatus: "Paid", paymentType: e.target.value as any, amountCollected: Number(job.amount) || 0 }); }} className="!text-xs !py-1.5 !w-28">
                   <option value="" className="bg-black">Mark Paid…</option>
                   {["Cash", "Check", "Card", "Zelle", "Venmo"].map(m => <option key={m} value={m} className="bg-black">{m}</option>)}
@@ -1890,6 +1925,15 @@ ${job.notes ? `<div class="section"><h2>Job Notes</h2><p>${job.notes}</p></div>`
           if (!c) return null;
           return { customerName: c.firstName, address: job.address || "", amount: Number(job.amount) || 0, companyName: settings.companyName || "Crew Boss", payLink: "" };
         })()}
+      />
+      <StripePaymentModal
+        open={chargeCardOpen}
+        onClose={() => setChargeCardOpen(false)}
+        publishableKey={settings?.stripePublishableKey || ""}
+        amount={Number(job.amount) || 0}
+        description={linkedInvoice ? `Invoice #${linkedInvoice.id.slice(-8).toUpperCase()}` : `Job payment — ${job.address || ""}`}
+        invoiceId={linkedInvoice?.id}
+        onSuccess={chargeCardSuccess}
       />
     </Modal>
   );

@@ -1468,6 +1468,8 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
               <div className="text-[11px] text-white/40 text-center py-1">No card on file — add one above to enable the inconvenience fee.</div>
             ) : (job as any).inconvenienceFeeCharged ? (
               <div className="text-[11px] text-yellow-300 text-center py-1">⚠ Inconvenience fee already charged this visit (${(job as any).inconvenienceFeeCharged.toFixed(2)})</div>
+            ) : (job as any).inconvenienceFeePendingConfirmation ? (
+              <div className="text-[11px] text-yellow-300 text-center py-1">⚠ Inconvenience fee needs collecting — flagged for the owner.</div>
             ) : (
               <button
                 disabled={chargingFee}
@@ -1476,16 +1478,32 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
                   const feeAmount = Number((settings as any)?.trashCanInconvenienceFeeAmount) || 15;
                   if (!confirm(`Charge ${customer.firstName} ${fmt(feeAmount)} for "${feeName}" (cans not out)?`)) return;
                   setChargingFee(true);
-                  try {
-                    await chargeSavedPaymentMethod(customer.stripeCustomerId!, customer.savedPaymentMethodId!, Math.round(feeAmount * 100), "usd", feeName);
-                    onUpdateJob({ inconvenienceFeeCharged: feeAmount, inconvenienceFeeChargedAt: new Date().toISOString(), commLog: [...(job.commLog || []), { id: uid(), type: "note" as const, date: today(), note: `🗑 Cans not out — charged ${feeName} (${fmt(feeAmount)})` }] } as any);
-                    if (customer.phone) twilioSend(settings as any, customer.phone, `Hi ${customer.firstName}, we stopped by for your trash can cleaning but your cans weren't out, so a ${fmt(feeAmount)} ${feeName.toLowerCase()} was charged to your card on file. — ${(settings as any)?.companyName || "Crew Boss"}`).catch(() => {});
-                    toast(`Charged ${fmt(feeAmount)} ✓`, "green");
-                  } catch (e: any) {
-                    toast(`Charge failed — ${e?.message || "unknown error"}`, "red");
-                  } finally {
-                    setChargingFee(false);
+                  // FEATURE (round 15) — this used to just SET the "charged"
+                  // fields and log a note without ever moving any money. Now:
+                  // auto-charge the saved card if one's on file (same
+                  // customer?.savedPaymentMethodId && customer?.stripeCustomerId
+                  // gate used above for Add Card on File / job payment), and if
+                  // there's no card (or the charge throws), fall through to
+                  // flagging it for the owner via inconvenienceFeePendingConfirmation
+                  // instead of silently doing nothing.
+                  const canChargeSavedCard = !!(customer?.savedPaymentMethodId && customer?.stripeCustomerId);
+                  let charged = false;
+                  if (canChargeSavedCard) {
+                    try {
+                      await chargeSavedPaymentMethod(customer.stripeCustomerId!, customer.savedPaymentMethodId!, Math.round(feeAmount * 100), "usd", feeName, undefined, (job as any).owner_id);
+                      onUpdateJob({ inconvenienceFeeCharged: feeAmount, inconvenienceFeeChargedAt: new Date().toISOString(), inconvenienceFeePendingConfirmation: false, commLog: [...(job.commLog || []), { id: uid(), type: "note" as const, date: today(), note: `🗑 Cans not out — charged ${feeName} (${fmt(feeAmount)})` }] } as any);
+                      if (customer.phone) twilioSend(settings as any, customer.phone, `Hi ${customer.firstName}, we stopped by for your trash can cleaning but your cans weren't out, so a ${fmt(feeAmount)} ${feeName.toLowerCase()} was charged to your card on file. — ${(settings as any)?.companyName || "Crew Boss"}`).catch(() => {});
+                      toast(`Charged ${fmt(feeAmount)} ✓`, "green");
+                      charged = true;
+                    } catch (e: any) {
+                      toast(`Charge failed — ${e?.message || "unknown error"} — flagging for the owner to collect`, "red");
+                    }
                   }
+                  if (!charged) {
+                    onUpdateJob({ inconvenienceFeePendingConfirmation: true, commLog: [...(job.commLog || []), { id: uid(), type: "note" as const, date: today(), note: `🗑 Cans not out — ${canChargeSavedCard ? "charge failed, " : "no card on file, "}flagged ${feeName} (${fmt(feeAmount)}) for the owner to collect` }] } as any);
+                    if (!canChargeSavedCard) toast(`No card on file — ${feeName} flagged for the owner to collect`, "yellow");
+                  }
+                  setChargingFee(false);
                 }}
                 className="w-full flex items-center justify-center gap-1.5 py-1.5 text-xs text-red-300 hover:text-red-200 transition disabled:opacity-40"
               >
@@ -1519,14 +1537,20 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
             existingStripeCustomerId={customer.stripeCustomerId}
             companyName={companyName}
             enteredByEmployee
-            onSaved={(stripeCustomerId, paymentMethodId, label) => {
-              setCustomers((prev: Customer[]) => prev.map(c => c.id === customer.id ? { ...c, stripeCustomerId, savedPaymentMethodId: paymentMethodId, savedPaymentMethodLabel: label } : c));
+            // No full jobs[] list is passed into this view — only the job
+            // currently being worked — so "recurring client" is derived from
+            // that job (plus the customer's own recurring-payment flag if
+            // set), per the fallback rule when there's no direct
+            // customer-level recurring indicator.
+            isRecurringClient={!!customer.recurringPayment?.enabled || !!job.isRecurring}
+            onSaved={(stripeCustomerId, paymentMethodId, label, consentAt) => {
+              setCustomers((prev: Customer[]) => prev.map(c => c.id === customer.id ? { ...c, stripeCustomerId, savedPaymentMethodId: paymentMethodId, savedPaymentMethodLabel: label, cardConsentAt: consentAt || c.cardConsentAt } : c));
               // Explicit Supabase write — an employee's own device otherwise
               // has no path back to the owner's CRM; every other customer
               // edit in the app writes through a page-level save handler
               // (CustomersPage.tsx), which this portal has never needed
               // before now.
-              (supabase as any).from("customers").update({ stripeCustomerId, savedPaymentMethodId: paymentMethodId, savedPaymentMethodLabel: label }).eq("id", customer.id)
+              (supabase as any).from("customers").update({ stripeCustomerId, savedPaymentMethodId: paymentMethodId, savedPaymentMethodLabel: label, cardConsentAt: consentAt }).eq("id", customer.id)
                 .catch((e: any) => console.warn("[AddCardOnFile] Supabase sync failed:", e?.message));
               toast?.("Card saved on file ✓", "green");
               setAddCardOpen(false);
@@ -3111,6 +3135,12 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     // and Dashboard's OWNER_CORE_JOB_COLUMNS) — see the comment there.
     "crew", "crewAssignedAt", "clockInAt", "lunchStartAt", "pipelineStage", "photos", "videos", "preChecklist", "duringChecklist",
     "postChecklist", "signOff", "scheduledTime", "commLog", "equipmentChecked", "notes",
+    // ROUND 15 — inconvenienceFeePendingConfirmation (migration not yet
+    // guaranteed run on every deployment) — see CLAUDE.md's "safe column"
+    // retry pattern note: without this in the whitelist, an owner who
+    // hasn't added this column would silently lose the whole patch
+    // (including status/commLog) on a cans-not-out event.
+    "inconvenienceFeeCharged", "inconvenienceFeeChargedAt", "inconvenienceFeePendingConfirmation",
   ] as const;
   const updateJob = (jobId: string, patch: Partial<Job>): Promise<any> => {
     setJobs(prev => prev.map(j => j.id === jobId ? { ...j, ...patch } : j));

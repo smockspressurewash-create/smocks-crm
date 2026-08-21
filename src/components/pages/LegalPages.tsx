@@ -82,6 +82,8 @@ export function TermsPage() {
       <p>Estimates are based on the information and property access provided at the time of request and may be adjusted after an on-site assessment. Scheduling is subject to availability and weather conditions.</p>
       <h2 className="text-white font-semibold pt-2">Payment</h2>
       <p>Payment terms (deposits, balances due, and accepted payment methods) are specified on your estimate or invoice. Charges are processed securely through our payment provider.</p>
+      <h2 className="text-white font-semibold pt-2">Photos & Video</h2>
+      <p>If the owner desires, employees may record photos and videos on the job for content and commercial/marketing purposes, and {companyName} may use them, unless the employee or client explicitly requests otherwise.</p>
       <h2 className="text-white font-semibold pt-2">Contact</h2>
       <p>Questions about these terms? Reach out to {companyName} directly using the contact information provided in your estimate or invoice.</p>
     </LegalPageShell>

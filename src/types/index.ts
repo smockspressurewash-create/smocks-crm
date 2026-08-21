@@ -83,6 +83,16 @@ export interface Customer {
   stripeCustomerId?: string;
   savedPaymentMethodId?: string;
   savedPaymentMethodLabel?: string;
+  // FEATURE — card-on-file consent, same durable-timestamp convention as
+  // smsOptInAt above: set whenever SaveCardModal.tsx successfully saves a
+  // card, so there's a record of when the customer (or the employee entering
+  // it on their behalf) agreed to keep it on file for future charges.
+  cardConsentAt?: string;
+  // FEATURE — photo/video release opt-out (client-side). Paired with
+  // Employee.mediaOptOut below. Data flag only — nothing currently filters
+  // marketing use by this flag, it's just recorded and shown in the terms
+  // clause (see LegalPages.tsx TermsPage).
+  mediaOptOut?: boolean;
 }
 
 // ─── Estimate ─────────────────────────────────────────────────────────────────
@@ -354,6 +364,13 @@ export interface Job {
   cansCount?: number;
   inconvenienceFeeCharged?: number;
   inconvenienceFeeChargedAt?: string;
+  // FEATURE (round 15) — set when a cans-not-out inconvenience fee couldn't
+  // be auto-charged (no card on file, or the charge failed) so it still
+  // needs collecting some way. Surfaced to the owner via the notifications
+  // diff (App.tsx) and a "Charge Now"/"Add to Next Invoice" banner on
+  // TrashCanPage.tsx. Cleared once the fee is charged or added to an
+  // invoice.
+  inconvenienceFeePendingConfirmation?: boolean;
   // FEATURE (round 13, item 7) — customer-initiated reschedule request from
   // the client portal (ClientAuthPortal.tsx). Doesn't move the job itself —
   // the owner still confirms and reschedules manually from Jobs/Calendar,
@@ -425,6 +442,9 @@ export interface Employee {
   recurringDaysOff?: number[];
   maxDaysOffPerWeek?: number;
   maxDaysOffPerMonth?: number;
+  // FEATURE — photo/video release opt-out (employee-side). Mirrors
+  // Customer.mediaOptOut. Data flag only for now — see that field's comment.
+  mediaOptOut?: boolean;
 }
 
 // ─── Vehicle / Fleet ──────────────────────────────────────────────────────────
@@ -613,7 +633,7 @@ export interface AppNotification {
   text: string;
   at: number;
   read?: boolean;
-  category?: "invoice" | "crew" | "issue" | "system";
+  category?: "invoice" | "crew" | "issue" | "system" | "trash_can";
   page?: string;
   detail?: string;
 }

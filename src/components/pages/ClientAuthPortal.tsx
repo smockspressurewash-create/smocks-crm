@@ -10,6 +10,7 @@ import { Badge } from "../ui/Badge";
 import { Stat } from "../ui/Stat";
 import { StripePaymentModal } from "../ui/StripePaymentModal";
 import { SaveCardModal } from "../ui/SaveCardModal";
+import { getMySavedCard } from "../../lib/stripe";
 
 // Public, unauthenticated-by-default route (#/client) — a customer-facing
 // portal with its own Supabase email/password auth, intentionally separate
@@ -49,6 +50,7 @@ export function ClientAuthPortal({
   const [payDisclaimerInv, setPayDisclaimerInv] = useState<Estimate | null>(null);
   const [agreedInvoiceTerms, setAgreedInvoiceTerms] = useState(false);
   const [showSaveCard, setShowSaveCard] = useState(false);
+  const [mySavedCard, setMySavedCard] = useState<{ brand?: string; last4?: string; expMonth?: number; expYear?: number } | null>(null);
 
   // MULTI-TENANT (Phase D) — was `customers.find(...)` against the App.tsx
   // global `customers`/`estimates`/`jobs` props (owner_id-scoped once RLS
@@ -104,6 +106,14 @@ export function ClientAuthPortal({
   }, [session?.user?.id]);
 
   const cust = portalData?.customer || null;
+
+  // Real brand/last4 for the saved-card display below (closes the TODO left
+  // where the display previously only had the generic literal "Card on
+  // file" label to show) — see lib/stripe.ts's getMySavedCard.
+  useEffect(() => {
+    if (!cust?.savedPaymentMethodId || !session?.access_token) { setMySavedCard(null); return; }
+    getMySavedCard(session.access_token).then(setMySavedCard).catch(() => setMySavedCard(null));
+  }, [cust?.savedPaymentMethodId, session?.access_token]);
 
   // FIX 17 — "View & Pay Invoice" / "Review & Sign" links emailed/texted to
   // customers all point at #/client?invoice=ID (this portal), NOT the old
@@ -528,7 +538,12 @@ export function ClientAuthPortal({
               <div className="text-sm font-medium mb-1">Saved Payment Method</div>
               {cust.savedPaymentMethodLabel ? (
                 <div className="flex items-center justify-between">
-                  <div className="text-xs text-white/60 flex items-center gap-2"><CreditCard size={14} />{cust.savedPaymentMethodLabel}</div>
+                  <div className="text-xs text-white/60 flex items-center gap-2">
+                    <CreditCard size={14} />
+                    {mySavedCard?.last4
+                      ? `${(mySavedCard.brand || "Card").replace(/^./, c => c.toUpperCase())} •••• ${mySavedCard.last4}${mySavedCard.expMonth ? ` · exp ${String(mySavedCard.expMonth).padStart(2, "0")}/${String(mySavedCard.expYear).slice(-2)}` : ""}`
+                      : cust.savedPaymentMethodLabel}
+                  </div>
                   <button onClick={() => setShowSaveCard(true)} className="text-xs text-purple-400 hover:text-purple-300">Replace</button>
                 </div>
               ) : (
@@ -590,9 +605,10 @@ export function ClientAuthPortal({
         email={cust.email}
         name={`${cust.firstName} ${cust.lastName}`}
         existingStripeCustomerId={cust.stripeCustomerId}
-        onSaved={(stripeCustomerId, paymentMethodId, label) => {
-          setCustomers((prev: Customer[]) => prev.map(c => c.id === cust.id ? { ...c, stripeCustomerId, savedPaymentMethodId: paymentMethodId, savedPaymentMethodLabel: label } : c));
-          patchCust({ stripeCustomerId, savedPaymentMethodId: paymentMethodId, savedPaymentMethodLabel: label } as any);
+        isRecurringClient={!!cust.recurringPayment?.enabled || jobs.some(j => j.customerId === cust.id && j.isRecurring)}
+        onSaved={(stripeCustomerId, paymentMethodId, label, consentAt) => {
+          setCustomers((prev: Customer[]) => prev.map(c => c.id === cust.id ? { ...c, stripeCustomerId, savedPaymentMethodId: paymentMethodId, savedPaymentMethodLabel: label, cardConsentAt: consentAt || c.cardConsentAt } : c));
+          patchCust({ stripeCustomerId, savedPaymentMethodId: paymentMethodId, savedPaymentMethodLabel: label, cardConsentAt: consentAt } as any);
           toast?.("Card saved ✓", "green");
           setShowSaveCard(false);
         }}
