@@ -263,9 +263,15 @@ const findJob = async (ctx: Ctx, { jobId, customerName, dateHint }: { jobId?: st
   return candidates[0] || null;
 };
 
-export const sendAlfredSms = async (ctx: Ctx, toPhone: string, body: string): Promise<{ ok: boolean; error?: string }> => sendSms(ctx, toPhone, body);
+// `isOwnerReply` — true only for the reply Alfred sends back to the OWNER
+// (text_me / the main SMS bridge reply), never for text_customer/reschedule
+// notify/send_invoice/send_estimate (those go to a real customer and should
+// keep showing that customer's own name, not "Alfred"). Every Alfred-sent
+// message still carries `via: "alfred"` regardless, so the Inbox can badge
+// it as "from Alfred" in ANY thread, customer or owner.
+export const sendAlfredSms = async (ctx: Ctx, toPhone: string, body: string): Promise<{ ok: boolean; error?: string }> => sendSms(ctx, toPhone, body, true);
 
-const sendSms = async (ctx: Ctx, toPhone: string, body: string): Promise<{ ok: boolean; error?: string }> => {
+const sendSms = async (ctx: Ctx, toPhone: string, body: string, isOwnerReply = false): Promise<{ ok: boolean; error?: string }> => {
   if (!ctx.twilioSid || !ctx.twilioToken || !ctx.twilioFrom) return { ok: false, error: "Twilio isn't configured for this account." };
   const auth = `Basic ${btoa(`${ctx.twilioSid}:${ctx.twilioToken}`)}`;
   const params = new URLSearchParams({ To: toPhone, From: ctx.twilioFrom, Body: body });
@@ -281,14 +287,19 @@ const sendSms = async (ctx: Ctx, toPhone: string, body: string): Promise<{ ok: b
     const threads = await sbGet(ctx, `inbox_threads?channel=eq.sms&select=id,contact_phone,messages${ownerScope(ctx)}`);
     const digits = normalizePhoneDigits(toPhone);
     const existing = threads.find((t: any) => normalizePhoneDigits(t.contact_phone) === digits);
-    const msg = { id: crypto.randomUUID(), dir: "out", body, ts: Date.now() };
+    // BUG FIX — was always `dir: "out"` with no marker at all, so a reply
+    // Alfred sent to the OWNER looked in the Inbox exactly like a normal
+    // outgoing message the owner sent themselves, with no way to tell them
+    // apart. `via: "alfred"` lets the UI badge it "Alfred" regardless of
+    // which thread it lands in.
+    const msg = { id: crypto.randomUUID(), dir: "out", body, ts: Date.now(), via: "alfred" };
     if (existing) {
       await fetch(`${SUPABASE_URL}/rest/v1/inbox_threads?id=eq.${encodeURIComponent(existing.id)}`, {
         method: "PATCH", headers: { ...ctx.authHeaders, "Content-Type": "application/json", Prefer: "return=minimal" },
         body: JSON.stringify({ messages: [...(existing.messages || []), msg], last_message_at: msg.ts, updated_at: new Date().toISOString() }),
       });
     } else {
-      await sbWrite(ctx, "inbox_threads", "POST", { id: crypto.randomUUID(), channel: "sms", contact_name: toPhone, contact_phone: toPhone, unread: false, messages: [msg], last_message_at: msg.ts, updated_at: new Date().toISOString() });
+      await sbWrite(ctx, "inbox_threads", "POST", { id: crypto.randomUUID(), channel: "sms", contact_name: isOwnerReply ? "Alfred" : toPhone, contact_phone: toPhone, unread: false, messages: [msg], last_message_at: msg.ts, updated_at: new Date().toISOString() });
     }
   } catch (e: any) { console.warn("[AlfredSms] inbox log failed:", e?.message); }
   return { ok: true };

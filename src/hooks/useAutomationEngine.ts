@@ -798,10 +798,20 @@ export function useAutomationEngine({
               jobs_total: String(empJobsToday.length),
             };
           },
-          getCandidates: () => employeeCandidates(
-            employees.filter(e => e.lastShiftDate === todayStr && !e.dayClockInAt),
-            todayStr,
-          ),
+          // BUG FIX — this duplicated a send that already happens
+          // unconditionally: EmployeePortal.tsx's sendEndOfDaySummary fires
+          // the moment "End My Day" is tapped, no automation/approval gate
+          // involved, emailing BOTH the employee and the owner directly with
+          // a fuller breakdown (hours, pay, checklist rate) than this
+          // template's single line. An owner who'd added the "Employee:
+          // Shift Summary" automation template (still selectable from the
+          // library — kept for anyone who wants to customize it themselves)
+          // saw the SAME shift they already got emailed about show up again
+          // minutes later in the "review before sending" popup, reading as
+          // "this already sent, why is it asking again." Always return no
+          // candidates so this built-in trigger can never re-queue what the
+          // direct send already covered.
+          getCandidates: () => [],
         },
         // FEATURE — employee performance report (weekly, Monday mornings).
         // Reports the trailing 7 days of that employee's completed jobs plus

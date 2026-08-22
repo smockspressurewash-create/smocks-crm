@@ -333,6 +333,37 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
     const authorizedPhones = [myPhone, ...alfredExtraPhones].filter(Boolean).map(normalizePhoneDigits);
     if (alfredSmsEnabled && authorizedPhones.includes(fromDigits)) {
       const ctx = { authHeaders, ownerId, companyName, twilioSid, twilioToken, twilioFrom, origin: new URL(context.request.url).origin, fromPhone: from, googleProviderToken, googleRefreshToken, googleTokenExpiresAt };
+      // BUG FIX — this branch never logged the OWNER's own inbound text to
+      // inbox_threads at all (only to alfred_sms_threads, which the Inbox
+      // UI never reads) — sendAlfredSms below only logs Alfred's OUTGOING
+      // reply. So the Inbox showed a one-sided thread of nothing but
+      // Alfred's replies with no visible question ever asked, which read as
+      // "messages going out from Alfred as if they're incoming" — there was
+      // no incoming side to contrast them against at all. Log it the same
+      // way the ordinary-message path below does, dir:"in", so the owner
+      // sees their own side of the conversation too.
+      context.waitUntil((async () => {
+        try {
+          const threadsRes = await fetch(`${SUPABASE_URL}/rest/v1/inbox_threads?channel=eq.sms&select=id,contact_phone,messages${ownerFilter}`, { headers: authHeaders });
+          const existingThreads = await threadsRes.json().catch(() => []);
+          const existingThread = Array.isArray(existingThreads) ? existingThreads.find((t: any) => normalizePhoneDigits(t.contact_phone) === fromDigits) : null;
+          const msgId = params.MessageSid || crypto.randomUUID();
+          const alreadyHave = existingThread && (Array.isArray(existingThread.messages) ? existingThread.messages : []).some((m: any) => m?.id === msgId);
+          if (alreadyHave) return;
+          const newMsg = { id: msgId, sid: params.MessageSid || null, dir: "in", body: bodyRaw, ts: Date.now() };
+          if (existingThread) {
+            await fetch(`${SUPABASE_URL}/rest/v1/inbox_threads?id=eq.${encodeURIComponent(existingThread.id)}`, {
+              method: "PATCH", headers: { ...authHeaders, "Content-Type": "application/json", Prefer: "return=minimal" },
+              body: JSON.stringify({ messages: [...(existingThread.messages || []), newMsg], unread: true, last_message_at: newMsg.ts, updated_at: new Date().toISOString() }),
+            });
+          } else {
+            await fetch(`${SUPABASE_URL}/rest/v1/inbox_threads`, {
+              method: "POST", headers: { ...authHeaders, "Content-Type": "application/json", Prefer: "return=minimal" },
+              body: JSON.stringify({ id: crypto.randomUUID(), channel: "sms", contact_name: "Alfred", contact_phone: from, unread: true, messages: [newMsg], last_message_at: newMsg.ts, updated_at: new Date().toISOString(), ...(ownerFilter ? { owner_id: ownerId || null } : {}) }),
+            });
+          }
+        } catch (e: any) { console.error("[TwilioSmsWebhook] failed to log inbound Alfred text:", e?.message); }
+      })());
       // FIX — Twilio abandons an unanswered webhook after ~15s with nothing
       // shown to the owner. A multi-step request (e.g. "reschedule this job
       // AND text the customer") can easily need multiple Anthropic

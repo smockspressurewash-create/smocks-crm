@@ -709,16 +709,14 @@ export const AUTOMATION_TEMPLATES = [
         messageBody: "Hi {{first_name}}, here's your weekly goals progress: {{goals_summary}} — Crew Boss Automations" },
     ],
   },
-  {
-    id: "tpl_employee_shift_summary", name: "Employee: Shift Summary",
-    trigger: "Shift ended", action: "Email that employee's shift summary",
-    description: "Emails an employee their own shift recap (hours worked, jobs completed) right after they tap \"End My Day.\"",
-    steps: [
-      { id: uid(), type: "trigger", label: "Shift ended", icon: "⏱" },
-      { id: uid(), type: "action",  label: "Email shift summary", channel: "email",
-        messageBody: "Hi {{first_name}}, shift summary for today: {{hours_worked}} hours worked, {{jobs_completed}} of {{jobs_total}} jobs completed. Nice work!" },
-    ],
-  },
+  // "Employee: Shift Summary" template removed — EmployeePortal.tsx already
+  // sends this exact recap unconditionally, direct, the moment "End My Day"
+  // is tapped (both employee and owner, with a fuller breakdown than this
+  // template's single line). Adding this template just re-queued the same
+  // thing a second time through the approval popup, reading as "this
+  // already sent, why is it asking again" — see useAutomationEngine.ts's
+  // employee_shift_summary spec, which now always returns no candidates for
+  // the same reason.
   {
     id: "tpl_employee_performance_report", name: "Employee: Performance Report",
     trigger: "Weekly performance report", action: "Email that employee's performance report",

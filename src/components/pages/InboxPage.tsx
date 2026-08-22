@@ -995,7 +995,7 @@ export function InboxPage({ threads = [], setThreads, customers = [], setCustome
                       ))}
                     </div>
                   )}
-                  <div className={"text-[10px] truncate mt-0.5 " + (t.unread ? "text-white/80" : "text-white/40")}>{last?.dir === "out" ? "You: " : ""}{last?.body || "…"}</div>
+                  <div className={"text-[10px] truncate mt-0.5 " + (t.unread ? "text-white/80" : "text-white/40")}>{last?.dir === "out" ? (last?.via === "alfred" ? "Alfred: " : "You: ") : ""}{last?.body || "…"}</div>
                 </div>
                 {t.unread && <div className="w-2 h-2 rounded-full bg-red-500 flex-shrink-0 mt-1.5" />}
               </button>
@@ -1104,6 +1104,14 @@ export function InboxPage({ threads = [], setThreads, customers = [], setCustome
                 )}
                 <div className={"max-w-[80%]"}>
                   {m.subject && <div className="text-[10px] text-white/50 mb-1 font-medium">Subject: {m.subject}</div>}
+                  {/* Alfred sent this on the owner's behalf — badge it so it's
+                      never confused with something the owner typed
+                      themselves, in ANY thread (a customer thread included). */}
+                  {isOut && m.via === "alfred" && (
+                    <div className="text-[9px] font-bold text-purple-300 mb-1 text-right flex items-center justify-end gap-1">
+                      <Bot size={10} />from Alfred
+                    </div>
+                  )}
                   <div className={"px-4 py-2.5 rounded-2xl text-sm whitespace-pre-wrap select-text " + (isOut ? "bg-gradient-to-br from-red-600 to-red-800 text-white rounded-br-sm" : "bg-black/50 border border-red-900/30 text-white/90 rounded-bl-sm")}>
                     {m.body}
                   </div>

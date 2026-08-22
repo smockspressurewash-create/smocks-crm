@@ -5565,7 +5565,32 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                 }
                 const ownerEmail = settings?.myEmail || settings?.companyEmail;
                 if (ownerEmail) {
-                  sendOwnerGmailOnly(settings as any, ownerEmail, `Day summary — ${empName} — ${todayStr}`, emailShell(settings, `Day Summary — ${empName}`, `${summaryRows}<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #eee"><span>Revenue today (this employee)</span><strong>${fmt(revenueToday)}</strong></div>`))
+                  // FEATURE — the owner's copy used to be the SAME 4-line
+                  // summary as the employee's own, plus one revenue line.
+                  // The owner is the one who actually needs to act on
+                  // problems (a job left incomplete, an unpaid job, low
+                  // checklist completion) — give them the real per-job
+                  // breakdown instead of just totals.
+                  const notCompletedToday = todaysJobs.filter(j => j.status !== "completed" && j.status !== "cancelled");
+                  const jobRows = todaysJobs.map(j => {
+                    const cust = customers.find((c: any) => c.id === j.customerId);
+                    const custName = cust ? `${cust.firstName || ""} ${cust.lastName || ""}`.trim() : (j.address || "Unknown");
+                    const statusColor = j.status === "completed" ? "#16a34a" : j.status === "cancelled" ? "#9ca3af" : "#d97706";
+                    const paymentLabel = j.status === "completed" ? paymentStatusLabel(j) : "—";
+                    return `<div style="display:flex;justify-content:space-between;gap:8px;padding:6px 0;border-bottom:1px solid #eee;font-size:13px">
+                      <span>${custName}${j.address ? ` <span style="color:#888">· ${j.address}</span>` : ""}</span>
+                      <span style="white-space:nowrap"><span style="color:${statusColor};font-weight:600">${(j.status || "").replace("_", " ")}</span>${j.status === "completed" ? ` · ${fmt(j.amount)} · ${paymentLabel}` : ""}</span>
+                    </div>`;
+                  }).join("") || `<div style="color:#888;font-size:13px;padding:6px 0">No jobs scheduled today.</div>`;
+                  const alertsHtml = notCompletedToday.length > 0
+                    ? `<div style="margin-top:12px;padding:10px 12px;background:#fff7ed;border:1px solid #fdba74;border-radius:8px;color:#9a3412;font-size:13px"><strong>⚠️ ${notCompletedToday.length} job${notCompletedToday.length !== 1 ? "s" : ""} not marked completed:</strong> ${notCompletedToday.map(j => { const c = customers.find((x: any) => x.id === j.customerId); return c ? `${c.firstName} ${c.lastName}` : j.address; }).join(", ")}</div>`
+                    : "";
+                  const milesToday = dayTrackedMiles > 0.1 ? `<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #eee"><span>Miles tracked (GPS)</span><strong>${dayTrackedMiles.toFixed(1)} mi</strong></div>` : "";
+                  const ownerBody = `${summaryRows}${milesToday}<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #eee"><span>Revenue today (this employee)</span><strong>${fmt(revenueToday)}</strong></div>
+                    <h3 style="margin:18px 0 6px;font-size:14px;color:#333">Today's jobs (${todaysJobs.length})</h3>
+                    ${jobRows}
+                    ${alertsHtml}`;
+                  sendOwnerGmailOnly(settings as any, ownerEmail, `Day summary — ${empName} — ${todayStr}${notCompletedToday.length > 0 ? " ⚠️" : ""}`, emailShell(settings, `Day Summary — ${empName}`, ownerBody))
                     .catch((e: any) => console.error("[EndOfDaySummary] owner copy failed to send:", e?.message));
                 } else {
                   console.warn("[EndOfDaySummary] no owner email on file (settings.myEmail/companyEmail both empty) — owner copy not sent");
