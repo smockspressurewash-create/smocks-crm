@@ -112,6 +112,16 @@ export function CustomerModal({ open, onClose, data, onSave, mapsKey = "", custo
               <input type="checkbox" checked={!!(f as any).mediaOptOut} onChange={e => setF({ ...(f as any), mediaOptOut: e.target.checked } as any)} className="accent-red-600" />
               📵 Opt out of photo/video use for marketing
             </label>
+            {/* FEATURE — per-customer Alfred auto-response, off by default.
+                Only meaningful once text-Alfred is set up at all (Settings →
+                AI Models); the label spells out exactly what it allows so
+                it's never an accidental blanket "let AI text my customers"
+                toggle — routine Q&A only, reschedule requests still come to
+                the owner for a yes/no. */}
+            <label className="flex items-center gap-1.5 mt-2 text-[10px] text-purple-300/80 cursor-pointer">
+              <input type="checkbox" checked={!!(f as any).alfredAutoRespond} onChange={e => setF({ ...(f as any), alfredAutoRespond: e.target.checked } as any)} className="accent-purple-500" />
+              🤖 Let Alfred answer this customer's texts (pricing/appointment questions directly; reschedule requests still ask you first)
+            </label>
           </div>
           <div>
             <label className="text-xs text-white/60 mb-1 block">Folder</label>

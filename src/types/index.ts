@@ -100,6 +100,14 @@ export interface Customer {
   // marketing use by this flag, it's just recorded and shown in the terms
   // clause (see LegalPages.tsx TermsPage).
   mediaOptOut?: boolean;
+  // FEATURE — per-customer Alfred auto-response (opt-in, off by default).
+  // When true, a text FROM this customer's phone is handed to a separate,
+  // deliberately narrow customer-facing Alfred agent instead of just being
+  // logged for the owner to answer manually — see
+  // functions/api/_lib/alfredCustomerAgent.ts for its guardrails. Anything
+  // beyond routine Q&A (reschedule, cancel, money) still requires the
+  // owner's explicit yes/no before Alfred acts or promises anything.
+  alfredAutoRespond?: boolean;
 }
 
 // ─── Estimate ─────────────────────────────────────────────────────────────────

@@ -567,6 +567,28 @@ const TOOLS = [
       required: ["requestId", "approve"],
     },
   },
+  // FEATURE — customer-facing Alfred auto-response (opt-in per customer,
+  // see CustomerDetail.tsx / alfredCustomerAgent.ts) creates a row here
+  // whenever a customer asks for something that needs the owner's sign-off
+  // (currently: reschedule requests). These three tools are how the owner
+  // resolves them from a normal text — "yes reschedule him" naturally
+  // triggers approve_customer_request via the model, no rigid keyword
+  // parsing needed.
+  {
+    name: "list_pending_customer_requests",
+    description: "List customer requests awaiting your yes/no (e.g. reschedule proposals Alfred set up after a customer texted in). Use this whenever the owner replies something like 'yes', 'sure', 'that works', or asks 'what's pending' shortly after a proposal — to find out what they're actually confirming.",
+    input_schema: { type: "object", properties: {} },
+  },
+  {
+    name: "approve_customer_request",
+    description: "Approve a pending customer request — actually performs the action (e.g. moves the job) and texts the customer to confirm. Use list_pending_customer_requests first if you don't already have the requestId.",
+    input_schema: { type: "object", properties: { requestId: { type: "string" } }, required: ["requestId"] },
+  },
+  {
+    name: "decline_customer_request",
+    description: "Decline a pending customer request and text the customer that it doesn't work, optionally with a reason.",
+    input_schema: { type: "object", properties: { requestId: { type: "string" }, reason: { type: "string" } }, required: ["requestId"] },
+  },
 ];
 
 const executeTool = async (ctx: Ctx, name: string, input: Record<string, any>): Promise<any> => {
@@ -958,6 +980,55 @@ const executeTool = async (ctx: Ctx, name: string, input: Record<string, any>): 
         }
         return { success: true, status: input.approve ? "approved" : "denied" };
       }
+      case "list_pending_customer_requests": {
+        const rows = await sbGet(ctx, `alfred_pending_actions?status=eq.pending&select=id,customer_id,job_id,kind,proposed,created_at${ownerScope(ctx)}&order=created_at.desc&limit=25`);
+        if (rows.length === 0) return { success: true, requests: [], summary: "Nothing pending." };
+        const customerIds = rows.map((r: any) => r.customer_id);
+        const customers = await sbGet(ctx, `customers?id=in.(${customerIds.map(encodeURIComponent).join(",")})&select=id,firstName,lastName`);
+        return {
+          success: true,
+          requests: rows.map((r: any) => {
+            const c = customers.find((x: any) => x.id === r.customer_id);
+            return { requestId: r.id, customer: c ? `${c.firstName} ${c.lastName}`.trim() : "Unknown", kind: r.kind, proposed: r.proposed, createdAt: r.created_at };
+          }),
+        };
+      }
+      case "approve_customer_request": {
+        if (!input.requestId) return { error: "requestId required" };
+        const row = (await sbGet(ctx, `alfred_pending_actions?id=eq.${encodeURIComponent(input.requestId)}&select=id,customer_id,job_id,kind,proposed,customer_phone,status`))[0];
+        if (!row) return { error: "Request not found." };
+        if (row.status !== "pending") return { error: `That request was already ${row.status}.` };
+        if (row.kind === "reschedule") {
+          const patch: Record<string, unknown> = { scheduledDate: row.proposed.toDate };
+          if (row.proposed.toTime) patch.scheduledTime = row.proposed.toTime;
+          const res = await fetch(`${SUPABASE_URL}/rest/v1/jobs?id=eq.${encodeURIComponent(row.job_id)}`, {
+            method: "PATCH", headers: { ...ctx.authHeaders, "Content-Type": "application/json", Prefer: "return=minimal" }, body: JSON.stringify(patch),
+          });
+          if (!res.ok) return { error: "Couldn't move the job — " + (await res.text().catch(() => "")).slice(0, 200) };
+        }
+        await fetch(`${SUPABASE_URL}/rest/v1/alfred_pending_actions?id=eq.${encodeURIComponent(row.id)}`, {
+          method: "PATCH", headers: { ...ctx.authHeaders, "Content-Type": "application/json", Prefer: "return=minimal" },
+          body: JSON.stringify({ status: "approved", resolved_at: new Date().toISOString() }),
+        });
+        const custRow = (await sbGet(ctx, `customers?id=eq.${encodeURIComponent(row.customer_id)}&select=firstName`))[0];
+        const confirmMsg = `Hi ${custRow?.firstName || ""}, you're all set — we've moved your appointment to ${row.proposed.toDate}${row.proposed.toTime ? " at " + row.proposed.toTime : ""}. See you then!`;
+        const smsRes = await sendSms(ctx, row.customer_phone, confirmMsg);
+        return { success: true, ...(smsRes.ok ? {} : { notifyWarning: smsRes.error }) };
+      }
+      case "decline_customer_request": {
+        if (!input.requestId) return { error: "requestId required" };
+        const row = (await sbGet(ctx, `alfred_pending_actions?id=eq.${encodeURIComponent(input.requestId)}&select=id,customer_id,customer_phone,status`))[0];
+        if (!row) return { error: "Request not found." };
+        if (row.status !== "pending") return { error: `That request was already ${row.status}.` };
+        await fetch(`${SUPABASE_URL}/rest/v1/alfred_pending_actions?id=eq.${encodeURIComponent(row.id)}`, {
+          method: "PATCH", headers: { ...ctx.authHeaders, "Content-Type": "application/json", Prefer: "return=minimal" },
+          body: JSON.stringify({ status: "declined", resolved_at: new Date().toISOString() }),
+        });
+        const custRow = (await sbGet(ctx, `customers?id=eq.${encodeURIComponent(row.customer_id)}&select=firstName`))[0];
+        const declineMsg = `Hi ${custRow?.firstName || ""}, unfortunately that time doesn't work${input.reason ? ` (${input.reason})` : ""} — give us a call/text and we'll find something that does.`;
+        const smsRes = await sendSms(ctx, row.customer_phone, declineMsg);
+        return { success: true, ...(smsRes.ok ? {} : { notifyWarning: smsRes.error }) };
+      }
       default:
         return { error: `Unknown tool "${name}".` };
     }
@@ -1021,7 +1092,9 @@ CLARIFYING QUESTIONS: if a request is missing something a tool needs (which cust
 
 FOLLOWING UP LATER: you are not limited to replying only in this exact moment. If a task naturally needs a check-in later (e.g. "did the crew actually show up", "nudge me if Mike hasn't replied by 3", "nudge me if [job] isn't marked done by tonight"), use set_reminder to text yourself — meaning the owner — back at that time, resolving any relative time ("in 20 min", "by 3pm", "tonight") into an exact ISO datetime using the current date/time above. This is a real scheduled text, not just a note — use it whenever the owner asks to be followed up with, checked on, or reminded about something, even mid-conversation.
 
-You can: text the owner back on request (text_me), remember arbitrary facts/notes for later (remember/recall — use this whenever they say "remember", "keep track of", or "note that"), schedule future text reminders/follow-ups (set_reminder; list_reminders/cancel_reminder manage existing ones), summarize the schedule (get_calendar_summary), add a non-job event to the owner's real Google Calendar (create_calendar_event — use schedule_job instead for an actual pressure-washing job tied to a customer), and review/approve or deny employee job requests (list_job_requests, respond_to_job_request). Core CRM actions: create/reschedule/cancel jobs, reprioritize a job, look up full job or customer detail (get_job_details, get_customer_details), add a checklist item, assign employees, create customers, check who's clocked in and what they're working on, and create/send quotes and invoices (create_estimate then send_estimate — two steps, creating one does NOT notify the customer). Use whichever tool actually matches what's being asked, and don't hesitate to chain several tool calls in one exchange if the request needs it (e.g. reschedule a job AND text the customer AND remember a preference). You can also receive and understand voice memos sent as a text — they're transcribed automatically before you ever see them, so just respond to the transcribed content normally.`;
+CUSTOMER REQUESTS AWAITING YOU: some customers have Alfred auto-response turned on for texting directly with them — when one of them asks to reschedule, that Alfred (a separate, more restricted agent) proposes it to YOU here rather than committing to anything itself, and texts you the details. If the owner replies "yes"/"sure"/"that works" (or similar) without more context, and there's a recent proposal in this conversation, that's almost always what they're confirming — call list_pending_customer_requests to find it (don't assume which one from memory alone, always look it up) then approve_customer_request or decline_customer_request. These are the ONLY customer-initiated actions that need the owner's yes/no this way — everything else that customer-facing agent handles (pricing questions, appointment status) it answers on its own without involving you.
+
+You can: text the owner back on request (text_me), remember arbitrary facts/notes for later (remember/recall — use this whenever they say "remember", "keep track of", or "note that"), schedule future text reminders/follow-ups (set_reminder; list_reminders/cancel_reminder manage existing ones), summarize the schedule (get_calendar_summary), add a non-job event to the owner's real Google Calendar (create_calendar_event — use schedule_job instead for an actual pressure-washing job tied to a customer), review/approve or deny employee job requests (list_job_requests, respond_to_job_request), and resolve customer requests awaiting approval (list_pending_customer_requests, approve_customer_request, decline_customer_request — see above). Core CRM actions: create/reschedule/cancel jobs, reprioritize a job, look up full job or customer detail (get_job_details, get_customer_details), add a checklist item, assign employees, create customers, check who's clocked in and what they're working on, and create/send quotes and invoices (create_estimate then send_estimate — two steps, creating one does NOT notify the customer). Use whichever tool actually matches what's being asked, and don't hesitate to chain several tool calls in one exchange if the request needs it (e.g. reschedule a job AND text the customer AND remember a preference). You can also receive and understand voice memos sent as a text — they're transcribed automatically before you ever see them, so just respond to the transcribed content normally.`;
 
   let finalText = "";
   let succeeded = false;

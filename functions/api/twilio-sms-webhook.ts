@@ -24,9 +24,39 @@
 // opt-in flag flipping at the business whose Twilio number was guessed.
 
 import { runAlfredSmsAgent, sendAlfredSms } from "./_lib/alfredSmsAgent";
+import { runAlfredCustomerAgent } from "./_lib/alfredCustomerAgent";
 
 const SUPABASE_URL = "https://boaqaihymgmrhnjtiqrs.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_8aEa3wsYJ7ghVPcGbtHymw_ugj0aEfm";
+
+// Sends the customer-facing agent's reply to the CUSTOMER (not the owner)
+// and logs it in THEIR thread, marked via:"alfred" so it's badged in the
+// Inbox the same way an owner-directed Alfred reply is.
+const sendCustomerAgentReply = async (ctx: { authHeaders: Record<string, string>; ownerId: string | null; twilioSid?: string; twilioToken?: string; twilioFrom?: string }, toPhone: string, body: string): Promise<void> => {
+  if (!ctx.twilioSid || !ctx.twilioToken || !ctx.twilioFrom) return;
+  const auth = `Basic ${btoa(`${ctx.twilioSid}:${ctx.twilioToken}`)}`;
+  const params = new URLSearchParams({ To: toPhone, From: ctx.twilioFrom, Body: body });
+  const res = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${ctx.twilioSid}/Messages.json`, {
+    method: "POST", headers: { Authorization: auth, "Content-Type": "application/x-www-form-urlencoded" }, body: params.toString(),
+  });
+  if (!res.ok) { console.error("[TwilioSmsWebhook] customer agent reply send failed:", await res.text().catch(() => "")); return; }
+  try {
+    const digits = normalizePhoneDigits(toPhone);
+    const ownerFilter = ctx.ownerId ? `&owner_id=eq.${encodeURIComponent(ctx.ownerId)}` : "";
+    const threadsRes = await fetch(`${SUPABASE_URL}/rest/v1/inbox_threads?channel=eq.sms&select=id,contact_phone,messages${ownerFilter}`, { headers: ctx.authHeaders });
+    const threads = await threadsRes.json().catch(() => []);
+    const existing = Array.isArray(threads) ? threads.find((t: any) => normalizePhoneDigits(t.contact_phone) === digits) : null;
+    const msg = { id: crypto.randomUUID(), dir: "out", body, ts: Date.now(), via: "alfred" };
+    if (existing) {
+      await fetch(`${SUPABASE_URL}/rest/v1/inbox_threads?id=eq.${encodeURIComponent(existing.id)}`, {
+        method: "PATCH", headers: { ...ctx.authHeaders, "Content-Type": "application/json", Prefer: "return=minimal" },
+        body: JSON.stringify({ messages: [...(existing.messages || []), msg], last_message_at: msg.ts, updated_at: new Date().toISOString() }),
+      });
+    }
+    // No else-create branch — the inbound message handler above already
+    // created/updated this thread for the customer's own text moments ago.
+  } catch (e: any) { console.error("[TwilioSmsWebhook] failed to log customer agent reply:", e?.message); }
+};
 
 const STOP_WORDS = ["STOP", "STOPALL", "UNSUBSCRIBE", "CANCEL", "END", "QUIT"];
 const START_WORDS = ["START", "UNSTOP", "YES"];
@@ -387,7 +417,7 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
     }
     // No normalized phone column to filter on server-side (formats vary:
     // "(717) 555-0100" vs "+17175550100") — fetch and match in JS.
-    let listRes = await fetch(`${SUPABASE_URL}/rest/v1/customers?select=id,phone,firstName,lastName,smsOptInPending${ownerFilter}`, {
+    let listRes = await fetch(`${SUPABASE_URL}/rest/v1/customers?select=id,phone,firstName,lastName,smsOptInPending,alfredAutoRespond${ownerFilter}`, {
       headers: authHeaders,
     });
     // FIX — verified live: app_settings.owner_id is already populated on
@@ -400,7 +430,7 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
     if (!listRes.ok && ownerFilter) {
       console.warn("[TwilioSmsWebhook] scoped customers query failed (" + listRes.status + ") — retrying unscoped; migration 0033 likely not applied yet");
       ownerFilter = "";
-      listRes = await fetch(`${SUPABASE_URL}/rest/v1/customers?select=id,phone,firstName,lastName,smsOptInPending`, { headers: authHeaders });
+      listRes = await fetch(`${SUPABASE_URL}/rest/v1/customers?select=id,phone,firstName,lastName,smsOptInPending,alfredAutoRespond`, { headers: authHeaders });
     }
     const list = await listRes.json().catch(() => []);
     const match = Array.isArray(list) ? list.find((c: any) => normalizePhoneDigits(c.phone) === fromDigits) : null;
@@ -474,6 +504,25 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
     } catch (e: any) {
       console.error("[TwilioSmsWebhook] failed to persist inbound message to inbox_threads:", e?.message);
       // Non-fatal — the client-side poll is still a fallback for this.
+    }
+
+    // FEATURE — customer-facing Alfred auto-response (opt-in per customer,
+    // off by default — see CustomerDetail.tsx's toggle). Only for a matched,
+    // opted-in customer's ORDINARY message — never for STOP/START/keyword
+    // compliance actions (those still go through the exact flow below,
+    // unmodified). Runs in the background the same way the owner bridge
+    // does; if no model is configured this just returns null and nothing
+    // changes from today's behavior (message stays logged for the owner to
+    // answer manually).
+    if (!isStop && !isStart && !isOptInKeyword && !isConfirm && match?.alfredAutoRespond) {
+      const custCtx = { authHeaders, ownerId, companyName, twilioSid, twilioToken, twilioFrom, ownerPhone: myPhone };
+      context.waitUntil(
+        resolveIncomingText(params, bodyRaw, twilioSid, twilioToken, openaiKey, (context.env as any).AI)
+          .then((text) => runAlfredCustomerAgent(custCtx, match, modelKeys, modelPriority, text))
+          .then((reply) => { if (reply) return sendCustomerAgentReply(custCtx, from, reply); })
+          .catch((e: any) => console.error("[TwilioSmsWebhook] customer Alfred agent failed:", e?.message))
+      );
+      return twiml();
     }
 
     if (!isStop && !isStart && !isOptInKeyword && !isConfirm) return twiml(); // ordinary message — already persisted above
