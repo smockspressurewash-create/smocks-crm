@@ -8,6 +8,12 @@ export interface LiveMapPin {
   lat: number;
   lng: number;
   updatedAt: number;
+  // FEATURE — job-location pins (the property address, from the job's own
+  // geocoded lat/lng) are plotted alongside employee GPS pins so "where is
+  // this job" is visible even when the employee hasn't turned on live
+  // location sharing. Blue distinguishes a job pin from the default red
+  // employee-location pin at a glance.
+  kind?: "employee" | "job";
 }
 
 const DARK_STYLE = [
@@ -76,6 +82,7 @@ export function LiveMap({ apiKey, pins }: { apiKey: string; pins: LiveMapPin[] }
       map: mapObjRef.current,
       label: { text: p.label[0]?.toUpperCase() || "?", color: "#fff" },
       title: `${p.label} — updated ${new Date(p.updatedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`,
+      icon: p.kind === "job" ? { url: "https://maps.google.com/mapfiles/ms/icons/blue-dot.png" } : undefined,
     }));
     if (pins.length > 1) {
       const bounds = new g.maps.LatLngBounds();

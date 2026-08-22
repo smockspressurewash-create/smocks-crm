@@ -1,0 +1,15 @@
+-- The employee portal's "I've Arrived" button (EmployeePortal.tsx's arriveCard)
+-- and the calendar's arrival-shortcut (App.tsx calCtxMenu) have always written
+-- `arrivedAt: Date.now()` onto the job row, but the jobs table never actually
+-- had an "arrivedAt" column — PostgREST silently drops unknown columns from
+-- an update payload (or rejects the whole write, depending on which other
+-- columns are in the same patch), so this has likely NEVER persisted
+-- server-side. The employee's own screen showed it optimistically (local
+-- React state), but a reload, a different device, or the OWNER's dashboard/
+-- Crew View reading the same job row would always see it as never-arrived —
+-- this is the root cause of "I press I've Arrived and it doesn't show up
+-- anywhere for the owner."
+--
+-- bigint (not text/timestamptz) to match Date.now()'s raw epoch-ms number,
+-- same convention as employees."dayClockInAt".
+alter table public.jobs add column if not exists "arrivedAt" bigint;

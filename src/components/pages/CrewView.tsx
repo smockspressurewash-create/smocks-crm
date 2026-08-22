@@ -240,23 +240,37 @@ export function CrewView({ jobs = [], setJobs, customers = [], employees = [], t
           {liveEmps.length > 0 && <Badge tone="green">{liveEmps.length} on shift</Badge>}
         </div>
 
-        {/* Live employee locations — only employees who opted in (locationSharing)
-            and have a fix from the last 10 minutes show up as pins. */}
+        {/* Live employee locations (red pins) — only employees who opted in
+            (locationSharing) and have a fix from the last 10 minutes.
+            PLUS job-location pins (blue) — the property address itself, for
+            any job someone has arrived at and not finished, straight from
+            the job's own geocoded lat/lng (set when the address was entered
+            via AddressAutocomplete). This shows up regardless of whether
+            that employee has location sharing on, since "where is this job"
+            shouldn't depend on a separate opt-in the employee may not have
+            granted — it's the address they were already assigned to. */}
         {(() => {
-          const pins = activeEmps
+          const empPins = activeEmps
             .filter((e: any) => e.locationSharing && e.lastLocation && Date.now() - (e.lastLocation.updatedAt || 0) < 10 * 60000)
-            .map((e: any) => ({ id: e.id, label: e.firstName, lat: e.lastLocation.lat, lng: e.lastLocation.lng, updatedAt: e.lastLocation.updatedAt }));
+            .map((e: any) => ({ id: e.id, label: e.firstName, lat: e.lastLocation.lat, lng: e.lastLocation.lng, updatedAt: e.lastLocation.updatedAt, kind: "employee" as const }));
+          const jobPins = jobs
+            .filter((j: any) => j.arrivedAt && j.status !== "completed" && j.status !== "cancelled" && typeof j.lat === "number" && typeof j.lng === "number")
+            .map((j: any) => ({ id: "job-" + j.id, label: j.customerName || j.address || "Job", lat: j.lat, lng: j.lng, updatedAt: j.arrivedAt, kind: "job" as const }));
+          const pins = [...empPins, ...jobPins];
           if (pins.length === 0) {
             return (
               <div className="mb-3 h-20 rounded-xl bg-black/20 border border-white/10 flex items-center justify-center text-xs text-white/30">
-                No employees sharing location
+                No employees sharing location, and no jobs currently arrived-at with a known address location
               </div>
             );
           }
           return (
             <div className="mb-3 space-y-1.5">
               <LiveMap apiKey={settings?.mapsKey || settings?.googleMapsKey || ""} pins={pins} />
-              <div className="text-[10px] text-white/40">{pins.length} employee{pins.length !== 1 ? "s" : ""} sharing location</div>
+              <div className="text-[10px] text-white/40 flex items-center gap-3">
+                {empPins.length > 0 && <span>🔴 {empPins.length} employee{empPins.length !== 1 ? "s" : ""} sharing location</span>}
+                {jobPins.length > 0 && <span>🔵 {jobPins.length} job{jobPins.length !== 1 ? "s" : ""} on site</span>}
+              </div>
             </div>
           );
         })()}

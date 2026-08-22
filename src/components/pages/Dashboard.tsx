@@ -1023,7 +1023,7 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
                 const jobIndex = rows[0].jobIndex;
                 return (
                   <div key={"crew-" + j.id} className="flex items-center gap-3 p-3 rounded-xl border bg-black/30 border-white/10">
-                    <MiniStreetViewThumb address={j.address} mapsKey={mapsKey} />
+                    <div onClick={() => onViewJob(j.id)} className="cursor-pointer"><MiniStreetViewThumb address={j.address} mapsKey={mapsKey} /></div>
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2 flex-wrap">
                         <span className={"text-[9px] px-1.5 py-0.5 rounded-full font-bold uppercase tracking-wide flex-shrink-0 " +
@@ -1043,7 +1043,7 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
                             <span className="w-4 h-4 rounded-full bg-green-950/40 border border-green-700/30 flex items-center justify-center text-green-400 font-bold text-[8px] flex-shrink-0">
                               {(re.firstName?.[0] || "?")}{(re.lastName?.[0] || "")}
                             </span>
-                            {re.firstName} {re.lastName}
+                            <span onClick={() => onViewJob(j.id)} className="cursor-pointer hover:underline">{re.firstName} {re.lastName}</span>
                             {re.locationSharing && re.lastLocation?.updatedAt && (
                               <span className="flex items-center gap-1 text-blue-400" title={"Location updated " + new Date(re.lastLocation.updatedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}>
                                 <span className="relative flex h-1.5 w-1.5"><span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" /><span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-blue-400" /></span>
@@ -1066,6 +1066,18 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
                         {photoCount > 0 && <span className="flex items-center gap-1"><ImageIcon size={10} />{photoCount} photo{photoCount !== 1 ? "s" : ""}</span>}
                         {videoCount > 0 && <span className="flex items-center gap-1"><Video size={10} />{videoCount} video{videoCount !== 1 ? "s" : ""}</span>}
                       </div>
+                      {totalJobsToday > 0 && (() => {
+                        const dailyPct = Math.round((completedTodayCount / totalJobsToday) * 100);
+                        const hue = Math.round((dailyPct / 100) * 120);
+                        return (
+                          <div className="mt-1.5 flex items-center gap-1.5">
+                            <div className="flex-1 h-1.5 rounded-full bg-white/10 overflow-hidden max-w-[160px]">
+                              <div className="h-full rounded-full transition-all" style={{ width: dailyPct + "%", background: `hsl(${hue}, 70%, 45%)` }} />
+                            </div>
+                            <span className="text-[10px] text-white/40 flex-shrink-0">{completedTodayCount}/{totalJobsToday} jobs today · {dailyPct}%</span>
+                          </div>
+                        );
+                      })()}
                       {prog && (
                         <div className="mt-1.5">
                           <button onClick={() => setExpandedChecklistJobId(id => id === j.id ? null : j.id)} className="w-full flex items-center gap-1.5">
@@ -1112,14 +1124,19 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
               const reportedIssue = j ? [...(j.commLog || [])].reverse().find((c: any) => typeof c.note === "string" && c.note.startsWith("🚨 ISSUE REPORTED") && c.date === todayStrLive) : null;
               return (
                 <div key={e.id} className={"flex items-center gap-3 p-3 rounded-xl border " + (onLunch ? "bg-yellow-950/20 border-yellow-700/40" : "bg-black/30 border-white/10")}>
-                  {j ? <MiniStreetViewThumb address={j.address} mapsKey={mapsKey} /> : (
-                    <div className="w-14 h-14 rounded-lg bg-green-950/30 border border-green-700/30 flex items-center justify-center flex-shrink-0 text-green-400 font-bold text-sm">
-                      {(e.firstName?.[0] || "?")}{(e.lastName?.[0] || "")}
-                    </div>
-                  )}
+                  {/* FEATURE — name/photo now open the full job, same as the
+                      "View Details" button, so there's no need to hunt for a
+                      tiny button to see what a crew member is working on. */}
+                  <div onClick={() => j && onViewJob(j.id)} className={j ? "cursor-pointer" : ""}>
+                    {j ? <MiniStreetViewThumb address={j.address} mapsKey={mapsKey} /> : (
+                      <div className="w-14 h-14 rounded-lg bg-green-950/30 border border-green-700/30 flex items-center justify-center flex-shrink-0 text-green-400 font-bold text-sm">
+                        {(e.firstName?.[0] || "?")}{(e.lastName?.[0] || "")}
+                      </div>
+                    )}
+                  </div>
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 flex-wrap">
-                      <div className="text-sm font-medium truncate">{e.firstName} {e.lastName}</div>
+                      <div onClick={() => j && onViewJob(j.id)} className={"text-sm font-medium truncate " + (j ? "cursor-pointer hover:underline" : "")}>{e.firstName} {e.lastName}</div>
                       {j && (
                         <span className={"text-[9px] px-1.5 py-0.5 rounded-full font-bold uppercase tracking-wide flex-shrink-0 " +
                           (status.tone === "red" ? "bg-red-900/40 text-red-300" : status.tone === "blue" ? "bg-blue-900/40 text-blue-300" : "bg-green-900/40 text-green-300")}>
@@ -1161,6 +1178,24 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
                         </span>
                       )}
                     </div>
+                    {/* FEATURE — daily job-completion progress, distinct from
+                        the per-job checklist bar below: how many of TODAY's
+                        assigned jobs this crew member has finished (1 of 3
+                        done = 33%), not how far along the current job's
+                        checklist is. Color runs red (just started) to green
+                        (all done today) along the way, per explicit request. */}
+                    {totalJobsToday > 0 && (() => {
+                      const dailyPct = Math.round((completedTodayCount / totalJobsToday) * 100);
+                      const hue = Math.round((dailyPct / 100) * 120); // 0=red, 120=green
+                      return (
+                        <div className="mt-1.5 flex items-center gap-1.5">
+                          <div className="flex-1 h-1.5 rounded-full bg-white/10 overflow-hidden max-w-[160px]">
+                            <div className="h-full rounded-full transition-all" style={{ width: dailyPct + "%", background: `hsl(${hue}, 70%, 45%)` }} />
+                          </div>
+                          <span className="text-[10px] text-white/40 flex-shrink-0">{completedTodayCount}/{totalJobsToday} jobs today · {dailyPct}%</span>
+                        </div>
+                      );
+                    })()}
                     {prog && (
                       <div className="mt-1.5">
                         <button onClick={() => setExpandedChecklistJobId(id => id === j.id ? null : j.id)} className="w-full flex items-center gap-1.5">

@@ -5165,18 +5165,23 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
           <button onClick={() => setSopOpen(true)} className="p-2 rounded-xl hover:bg-white/10 text-white/40 hover:text-white transition flex-shrink-0" title="SOPs & Instructions">
             <BookOpen size={16} />
           </button>
-          {/* PWA — the login screen's InstallAppButton (above) only ever
-              renders BEFORE sign-in; an already-logged-in employee never saw
-              it anywhere, so "no download button in the portal" was a real
-              gap, not a repeat of the earlier hidden-on-mobile CSS bug.
-              Icon-only here (header is tight) — renders nothing until
-              Chrome/iOS actually offers an install. */}
-          <InstallAppButton className="!p-2 !bg-transparent !border-0 !text-white/40 hover:!text-white !rounded-xl" label="" />
           <button onClick={doSignOut} className="p-2 rounded-xl hover:bg-white/10 text-white/40 hover:text-white transition flex-shrink-0" title="Sign out">
             <LogOut size={16} />
           </button>
         </div>
       </header>
+
+      {/* PWA — the login screen's InstallAppButton only ever rendered BEFORE
+          sign-in, so an already-logged-in employee never saw it anywhere.
+          A small icon in the crowded header (first attempt) was too easy to
+          miss — this is a full-width, impossible-to-miss banner right under
+          the header instead, at the very top of the scrollable content.
+          Renders nothing at all until Chrome/iOS actually offers an install
+          (see InstallAppButton.tsx), so it never sits there as a dead strip. */}
+      <InstallAppButton
+        className="!w-full !rounded-none !justify-center !py-3 !text-sm !gap-2 !bg-gradient-to-r !from-red-600 !to-red-800 !border-0 !border-b !border-red-950 !text-white !font-bold flex-shrink-0"
+        label="Install CrewBoss on This Phone"
+      />
       <SopModal open={sopOpen} onClose={() => setSopOpen(false)} />
 
       {/* Persistent shift timer bar — visible on all tabs while clocked in */}
@@ -5461,11 +5466,15 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                 // the owner's own connected Gmail (sendOwnerGmailOnly), never
                 // silently fall back to Resend.
                 if (myEmployee?.email) {
-                  sendOwnerGmailOnly(settings as any, myEmployee.email, `Your day summary — ${todayStr}`, emailShell(settings, "End of Day Summary", `<p>Nice work today, ${myEmployee.firstName}!</p>${summaryRows}`)).catch(() => {});
+                  sendOwnerGmailOnly(settings as any, myEmployee.email, `Your day summary — ${todayStr}`, emailShell(settings, "End of Day Summary", `<p>Nice work today, ${myEmployee.firstName}!</p>${summaryRows}`))
+                    .catch((e: any) => console.error("[EndOfDaySummary] employee copy failed to send:", e?.message));
                 }
                 const ownerEmail = settings?.myEmail || settings?.companyEmail;
                 if (ownerEmail) {
-                  sendOwnerGmailOnly(settings as any, ownerEmail, `Day summary — ${empName} — ${todayStr}`, emailShell(settings, `Day Summary — ${empName}`, `${summaryRows}<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #eee"><span>Revenue today (this employee)</span><strong>${fmt(revenueToday)}</strong></div>`)).catch(() => {});
+                  sendOwnerGmailOnly(settings as any, ownerEmail, `Day summary — ${empName} — ${todayStr}`, emailShell(settings, `Day Summary — ${empName}`, `${summaryRows}<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #eee"><span>Revenue today (this employee)</span><strong>${fmt(revenueToday)}</strong></div>`))
+                    .catch((e: any) => console.error("[EndOfDaySummary] owner copy failed to send:", e?.message));
+                } else {
+                  console.warn("[EndOfDaySummary] no owner email on file (settings.myEmail/companyEmail both empty) — owner copy not sent");
                 }
               };
               const toggleDay = async () => {
