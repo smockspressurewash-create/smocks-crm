@@ -33,6 +33,7 @@ type Ctx = {
   twilioSid?: string;
   twilioToken?: string;
   twilioFrom?: string;
+  origin: string;
 };
 
 // ─── Supabase helpers (service-role REST, same pattern as the webhook) ────
@@ -225,6 +226,14 @@ const TOOLS = [
     description: "List invoices (estimates marked invoiced) that are unpaid, with customer name and amount.",
     input_schema: { type: "object", properties: {} },
   },
+  {
+    name: "send_invoice",
+    description: "Text a payment link for an existing unpaid invoice to the customer. Use list_overdue_invoices or list_jobs first if you need to figure out which invoice — this does not create a new invoice, only sends one that already exists.",
+    input_schema: {
+      type: "object",
+      properties: { invoiceId: { type: "string" }, customerName: { type: "string", description: "Alternative to invoiceId — sends that customer's most recent unpaid invoice" } },
+    },
+  },
 ];
 
 const executeTool = async (ctx: Ctx, name: string, input: Record<string, any>): Promise<any> => {
@@ -344,6 +353,29 @@ const executeTool = async (ctx: Ctx, name: string, input: Record<string, any>): 
         if (overdue.length === 0) return { success: true, summary: "No overdue invoices." };
         const custName = (id: string) => { const c = customers.find((c: any) => c.id === id); return c ? `${c.firstName || ""} ${c.lastName || ""}`.trim() : "Unknown"; };
         return { success: true, invoices: overdue.slice(0, 15).map((e: any) => ({ id: e.id, customer: custName(e.customerId), amount: e.total, invoicedAt: e.invoicedAt })) };
+      }
+      case "send_invoice": {
+        let inv: any = null;
+        if (input.invoiceId) {
+          inv = (await sbGet(ctx, `estimates?id=eq.${encodeURIComponent(input.invoiceId)}&select=id,customerId,total,paidAt`))[0];
+        } else if (input.customerName) {
+          const cust = await findCustomerByName(ctx, input.customerName);
+          if (!cust) return { error: `No customer found matching "${input.customerName}".` };
+          const rows = await sbGet(ctx, `estimates?customerId=eq.${encodeURIComponent(cust.id)}&invoiced=eq.true&select=id,customerId,total,paidAt,invoicedAt${ownerScope(ctx)}`);
+          const unpaid = rows.filter((e: any) => !e.paidAt).sort((a: any, b: any) => (b.invoicedAt || "").localeCompare(a.invoicedAt || ""));
+          inv = unpaid[0];
+          if (!inv) return { error: `${input.customerName} has no unpaid invoice on file.` };
+        } else {
+          return { error: "Need either invoiceId or customerName." };
+        }
+        if (!inv) return { error: "Invoice not found." };
+        if (inv.paidAt) return { error: "That invoice is already paid." };
+        const cust = (await sbGet(ctx, `customers?id=eq.${encodeURIComponent(inv.customerId)}&select=phone,firstName,lastName`))[0];
+        if (!cust?.phone) return { error: "That customer has no phone number on file." };
+        const link = `${ctx.origin}/#/estimate/${inv.id}`;
+        const res = await sendSms(ctx, cust.phone, `Hi ${cust.firstName || ""}, here's your invoice from ${ctx.companyName} for $${Number(inv.total || 0).toFixed(2)}: ${link}`);
+        if (!res.ok) return { error: res.error };
+        return { success: true, sentTo: `${cust.firstName} ${cust.lastName}`, amount: inv.total };
       }
       default:
         return { error: `Unknown tool "${name}".` };

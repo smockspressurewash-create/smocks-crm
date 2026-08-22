@@ -742,6 +742,8 @@ export interface AppSettings {
   myPhone?: string;
   myEmail?: string;
   alfredSmsEnabled?: boolean;
+  clientPortalCancelReschedule?: boolean;
+  weeklyDigestAutoSend?: boolean;
 
   // Crew policy
   maxLunchMinutes?: number;

@@ -890,3 +890,51 @@ export const buildDailyBriefingEmailHtml = (brand: string | Parameters<typeof em
     </table>`;
   return emailShell(brand, "Daily Briefing", body);
 };
+
+// GUARANTEED weekly owner digest (see App.tsx's checkAndSendWeeklyDigest) —
+// goal progress + overdue invoices + upcoming jobs in one email, not routed
+// through the user-editable Automations list (an owner could delete/disable
+// that automation and lose this without realizing; this fires on its own
+// timer regardless, same opt-out-not-opt-in pattern as the daily briefing).
+export const buildWeeklyOwnerDigestEmailHtml = (
+  brand: string | Parameters<typeof emailShell>[0],
+  data: {
+    goals: Array<{ label: string; progress: number; target: number }>;
+    overdueInvoices: Array<{ customerName?: string; total: number; daysOverdue: number }>;
+    upcomingJobs: Array<{ customerName?: string; scheduledDate?: string; address?: string }>;
+    revenueThisWeek: number;
+    jobsCompletedThisWeek: number;
+  }
+): string => {
+  const goalsHtml = data.goals.length
+    ? data.goals.map(g => {
+        const pct = g.target > 0 ? Math.min(100, Math.round((g.progress / g.target) * 100)) : 0;
+        return `<div style="margin-bottom:10px">
+          <div style="display:flex;justify-content:space-between;font-size:12px;color:rgba(255,255,255,0.6);margin-bottom:4px"><span>${g.label}</span><span>${pct}%</span></div>
+          <div style="height:6px;background:rgba(255,255,255,0.1);border-radius:3px;overflow:hidden"><div style="height:100%;width:${pct}%;background:#dc2626"></div></div>
+        </div>`;
+      }).join("")
+    : `<p style="font-size:12px;color:rgba(255,255,255,0.4)">No active goals set.</p>`;
+
+  const overdueHtml = data.overdueInvoices.length
+    ? data.overdueInvoices.slice(0, 8).map(i => `<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid rgba(255,255,255,0.08);font-size:13px"><span>${i.customerName || "Customer"}</span><span style="color:#fb923c">$${i.total.toLocaleString()} · ${i.daysOverdue}d</span></div>`).join("")
+    : `<p style="font-size:12px;color:rgba(255,255,255,0.4)">Nothing overdue — nice work.</p>`;
+
+  const upcomingHtml = data.upcomingJobs.length
+    ? data.upcomingJobs.slice(0, 8).map(j => `<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid rgba(255,255,255,0.08);font-size:13px"><span>${j.customerName || "Job"}</span><span style="color:rgba(255,255,255,0.5)">${j.scheduledDate || ""}</span></div>`).join("")
+    : `<p style="font-size:12px;color:rgba(255,255,255,0.4)">Nothing scheduled yet.</p>`;
+
+  const body = `
+    <p style="font-size:14px;color:rgba(255,255,255,0.8)">Your week at a glance:</p>
+    <table style="width:100%;border-collapse:collapse;margin:10px 0 20px">
+      <tr><td style="padding:6px 0;color:rgba(255,255,255,0.5);font-size:13px">Revenue this week</td><td style="text-align:right;font-weight:700;font-size:13px;color:#4ade80">$${data.revenueThisWeek.toLocaleString()}</td></tr>
+      <tr><td style="padding:6px 0;color:rgba(255,255,255,0.5);font-size:13px">Jobs completed</td><td style="text-align:right;font-weight:700;font-size:13px">${data.jobsCompletedThisWeek}</td></tr>
+    </table>
+    <div style="font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;color:rgba(255,255,255,0.4);margin-bottom:8px">Goal Progress</div>
+    ${goalsHtml}
+    <div style="font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;color:rgba(255,255,255,0.4);margin:20px 0 8px">Overdue Invoices${data.overdueInvoices.length ? ` (${data.overdueInvoices.length})` : ""}</div>
+    ${overdueHtml}
+    <div style="font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;color:rgba(255,255,255,0.4);margin:20px 0 8px">Upcoming Jobs</div>
+    ${upcomingHtml}`;
+  return emailShell(brand, "Your Weekly Rundown", body);
+};

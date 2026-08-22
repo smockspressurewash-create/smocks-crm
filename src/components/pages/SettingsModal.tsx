@@ -13,7 +13,8 @@ import {
   Globe, Share2, Trophy, ExternalLink, Workflow, ToggleLeft, ToggleRight,
   Navigation, TrendingDown, PieChart as PieIcon, Package, Wrench,
   CheckSquare, Route, Users2, Layers, ArrowRight, BarChart2, Filter,
-  Paperclip, ImageIcon, FileImage, MoreVertical, Mic, Upload, Link, Lock, User
+  Paperclip, ImageIcon, FileImage, MoreVertical, Mic, Upload, Link, Lock, User,
+  CalendarClock
 } from "lucide-react";
 import {
   BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid,
@@ -581,6 +582,15 @@ export function SettingsModal({ open, onClose, settings, setSettings, jobs = [],
                 <div className="text-xs font-semibold text-white flex items-center gap-1.5"><Bot size={12} />Text Alfred from my phone</div>
                 <div className="text-[10px] text-white/40 mt-0.5">
                   Text your CRM Twilio number ({f.twilioFrom || "your Twilio From #"}) from the mobile number above and Alfred replies right there — "reschedule Tuesday's job to Thursday", "who's on job 2 right now", "text the Smiths we're running late". Requires an Anthropic (Claude) API key in AI Models below and your mobile # filled in above.
+                </div>
+              </div>
+            </label>
+            <label className={"flex items-start gap-2.5 p-3 rounded-xl border cursor-pointer transition " + (f.clientPortalCancelReschedule ? "border-red-500/40 bg-red-950/20" : "border-white/10 bg-white/5")}>
+              <input type="checkbox" checked={!!f.clientPortalCancelReschedule} onChange={e => setF({ ...f, clientPortalCancelReschedule: e.target.checked })} className="mt-0.5 accent-red-600" />
+              <div>
+                <div className="text-xs font-semibold text-white flex items-center gap-1.5"><CalendarClock size={12} />Allow clients to cancel/reschedule in the portal</div>
+                <div className="text-[10px] text-white/40 mt-0.5">
+                  Off by default. When on, a client can cancel or move their own upcoming job right from the Client Portal — they must type a reason either way, and you get notified immediately. When off, they can only send a reschedule request for you to confirm.
                 </div>
               </div>
             </label>

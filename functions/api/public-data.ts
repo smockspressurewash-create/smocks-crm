@@ -197,6 +197,72 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
       return json({ customer, jobs: jobsRow.data || [], estimates: estRow.data || [] });
     }
 
+    // ── ClientAuthPortal.tsx — self-serve cancel/reschedule. Owner-gated:
+    // OFF by default (settings.clientPortalCancelReschedule must be
+    // explicitly true) and a reason is mandatory either way — a bare
+    // "cancel"/"reschedule" click with nothing typed is rejected server-side,
+    // not just discouraged in the UI, since a client could otherwise script
+    // around a client-only validation. The permission check happens HERE
+    // (server side, keyed off the job's own owner_id) rather than trusting
+    // whatever the client's local `settings` prop currently says — a stale
+    // or tampered client value must never grant an action the owner turned
+    // off. Job ownership is verified against the caller's OWN verified
+    // customer record, never a client-claimed customerId.
+    if (action === "client_cancel_job" || action === "client_reschedule_job") {
+      const { jobId, reason, newDate, newTime } = body;
+      const reasonTrimmed = (reason || "").trim();
+      if (!jobId) return json({ error: "Missing jobId" }, 400);
+      if (!reasonTrimmed) return json({ error: "A reason is required." }, 400);
+      if (action === "client_reschedule_job" && !newDate) return json({ error: "Missing newDate" }, 400);
+
+      const accessToken = (context.request.headers.get("authorization") || "").replace(/^Bearer\s+/i, "");
+      const email = await resolveCallerEmail(accessToken, anonKey);
+      if (!email) return json({ error: "Not signed in" }, 401);
+      const custRow = await sb(serviceRoleKey, `customers?email=ilike.${encodeURIComponent(email)}&select=id`);
+      const customer = Array.isArray(custRow.data) ? custRow.data[0] : null;
+      if (!customer) return json({ error: "No customer record found for this account." }, 404);
+
+      const jobRow = await sb(serviceRoleKey, `jobs?id=eq.${encodeURIComponent(jobId)}&select=id,customerId,owner_id,scheduledDate,scheduledTime,address,commLog,status`);
+      const job = Array.isArray(jobRow.data) ? jobRow.data[0] : null;
+      if (!job) return json({ error: "Job not found" }, 404);
+      if (job.customerId !== customer.id) return json({ error: "That job doesn't belong to this account." }, 403);
+      if (job.status === "cancelled" || job.status === "completed") return json({ error: `This job is already ${job.status} — contact us directly.` }, 400);
+
+      const settingsRow = job.owner_id
+        ? await sb(serviceRoleKey, `app_settings?owner_id=eq.${encodeURIComponent(job.owner_id)}&select=data`)
+        : null;
+      const ownerSettings = settingsRow && Array.isArray(settingsRow.data) ? settingsRow.data[0]?.data : null;
+      if (!ownerSettings?.clientPortalCancelReschedule) {
+        return json({ error: "Self-serve cancel/reschedule isn't enabled — please contact us directly to change this appointment." }, 403);
+      }
+
+      const commEntry = { ts: Date.now(), source: "client_portal", type: action === "client_cancel_job" ? "cancel" : "reschedule", reason: reasonTrimmed, ...(action === "client_reschedule_job" ? { from: job.scheduledDate, to: newDate } : {}) };
+      const commLog = [...(Array.isArray(job.commLog) ? job.commLog : []), commEntry];
+
+      const patch: Record<string, any> = { commLog };
+      let notifyText: string;
+      if (action === "client_cancel_job") {
+        patch.status = "cancelled";
+        patch.cancelReason = reasonTrimmed;
+        notifyText = `❌ CLIENT CANCELLED\n\nA client cancelled their ${job.scheduledDate || "upcoming"} job at ${job.address || "their property"} via the portal.\n\nReason: "${reasonTrimmed}"`;
+      } else {
+        patch.scheduledDate = newDate;
+        if (newTime) patch.scheduledTime = newTime;
+        notifyText = `📅 CLIENT RESCHEDULED\n\nA client moved their job at ${job.address || "their property"} from ${job.scheduledDate || "an earlier date"} to ${newDate}${newTime ? " at " + newTime : ""} via the portal.\n\nReason: "${reasonTrimmed}"`;
+      }
+
+      const upd = await sb(serviceRoleKey, `jobs?id=eq.${encodeURIComponent(jobId)}`, { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify(patch) });
+      if (!upd.ok) return json({ error: "Failed to update the job." }, 500);
+
+      const origin = new URL(context.request.url).origin;
+      fetch(`${origin}/api/alfred-notify`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: "Alfred Notifications", message: notifyText, jobId, customerId: customer.id }),
+      }).catch(() => {});
+
+      return json({ success: true, status: patch.status || job.status, scheduledDate: patch.scheduledDate || job.scheduledDate });
+    }
+
     return json({ error: "Unknown action: " + action }, 400);
   } catch (e: any) {
     return json({ error: e?.message || "public-data error" }, 400);

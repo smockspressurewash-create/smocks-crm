@@ -193,7 +193,7 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
     // legitimately type ("stop the job", "cancel that") never get
     // misinterpreted as an SMS compliance action.
     if (alfredSmsEnabled && myPhone && fromDigits === normalizePhoneDigits(myPhone)) {
-      const ctx = { authHeaders, ownerId, companyName, twilioSid, twilioToken, twilioFrom };
+      const ctx = { authHeaders, ownerId, companyName, twilioSid, twilioToken, twilioFrom, origin: new URL(context.request.url).origin };
       const reply = await runAlfredSmsAgent(ctx, anthropicKey, from, bodyRaw).catch((e: any) => {
         console.error("[TwilioSmsWebhook] Alfred SMS agent failed:", e?.message);
         return "Sorry, something went wrong on my end — try again in a moment.";

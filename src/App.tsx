@@ -77,7 +77,7 @@ import {
 import { seedWeather } from "./lib/weather";
 import { fetchRealWeather } from "./lib/weather";
 import { fmt, uid, today, daysSince, daysFromNow, consumeOAuthIntent, getLastOwnerSessionFlag, setLastOwnerSessionFlag, getLastOwnerId, setLastOwnerId, buildChecklistFromServices, withTimeout, normalizeJobRow, totalJobPhotoCount, notifyDesktop, stripLegacyJobFields, getPollIntervalMs, purgeOldJobMedia } from "./lib/utils";
-import { sendEmail, sendOwnerGmailOnly, emailShell, buildTomorrowJobsEmailHtml, buildDailyBriefingEmailHtml, setOptedOutPhones, setTestModeContacts } from "./lib/messaging";
+import { sendEmail, sendOwnerGmailOnly, emailShell, buildTomorrowJobsEmailHtml, buildDailyBriefingEmailHtml, buildWeeklyOwnerDigestEmailHtml, setOptedOutPhones, setTestModeContacts } from "./lib/messaging";
 import { exchangeSocialOAuthCode, type SocialPlatform } from "./lib/socialOAuth";
 import type {
   Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense,
@@ -930,7 +930,7 @@ export function App() {
   // before these templates were added, so they could never pick the new
   // seed entries up automatically, no matter how many templates got added to
   // the gallery. This one-time backfill (gated by
-  // settings.automationsReportBackfillV1 so it never re-adds something the
+  // settings.automationsReportBackfillV2 so it never re-adds something the
   // owner deliberately deleted) adds any of the report/client templates an
   // existing owner doesn't already have as real, already-active Automation
   // rows — so "Owner: End-of-Day Summary" etc. show up in the Automations
@@ -939,12 +939,18 @@ export function App() {
   useEffect(() => {
     if (reportBackfillRanRef.current) return;
     reportBackfillRanRef.current = true;
-    if ((settings as any).automationsReportBackfillV1) return;
+    if ((settings as any).automationsReportBackfillV2) return;
     const REPORT_TEMPLATE_IDS = [
       "tpl_owner_eod_summary", "tpl_owner_periodic_summary", "tpl_owner_progress_report",
       "tpl_employee_shift_summary", "tpl_employee_performance_report",
       "tpl_client_post_service_followup", "tpl_client_referral_request",
       "tpl_client_appointment_reminder_2h", "tpl_client_reservice_45day", "tpl_client_early_winback_4mo",
+      // Seasonal pre-booking nudges — real templates/engine categories
+      // already existed (seasonal_spring/seasonal_fall in
+      // useAutomationEngine.ts) but were never in this backfill list, so
+      // they had the exact same "invisible unless manually clicked in the
+      // template gallery" problem as the report templates above.
+      "tpl_seasonal_spring", "tpl_seasonal_fall",
     ];
     setAutomations(prev => {
       const existingIds = new Set(prev.map((a: any) => a.id));
@@ -953,7 +959,7 @@ export function App() {
         .map(automationFromTemplate);
       return toAdd.length ? [...prev, ...toAdd] : prev;
     });
-    setSettings((s: any) => ({ ...s, automationsReportBackfillV1: true }));
+    setSettings((s: any) => ({ ...s, automationsReportBackfillV2: true }));
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
   // ISSUE 14 (round 11) — ROOT CAUSE of "all Alfred check-in messages look
   // the same": the check-in effect further down is deliberately keyed only
@@ -1729,6 +1735,53 @@ export function App() {
     const interval = setInterval(checkAndSendDailySummary, 60 * 60 * 1000);
     return () => clearInterval(interval);
   }, [jobs, settings]);
+
+  // FEATURE — guaranteed weekly owner digest (goal progress + overdue
+  // invoices + upcoming jobs). Deliberately NOT built as an entry in the
+  // user-editable `automations` list — the owner asked for this as a
+  // first-class "just happens" feature, not something that could be
+  // accidentally deleted/disabled along with everything else in Automations.
+  // Same opt-out-not-opt-in + once-per-week/localStorage-dedup pattern as
+  // the daily summary effect above; fires every Monday once the app has
+  // been open past 8am that day (mirrors the daily summary's "after 6pm"
+  // gate) so it reads as "start of week," not an arbitrary weekday.
+  useEffect(() => {
+    const checkAndSendWeeklyDigest = async () => {
+      if ((settings as any).weeklyDigestAutoSend === false) return;
+      const now = new Date();
+      if (now.getDay() !== 1 || now.getHours() < 8) return; // Monday, after 8am
+      // Gated to Monday-only above, so that day's own date string is already
+      // a unique-per-week dedup key — no need for real ISO week-number math.
+      const dedupeKey = "smocks.weeklyDigestSent." + now.toISOString().slice(0, 10);
+      if (localStorage.getItem(dedupeKey)) return;
+      const toEmail = (settings as any).companyEmail || (settings as any).myEmail;
+      if (!toEmail) { localStorage.setItem(dedupeKey, "1"); return; }
+      localStorage.setItem(dedupeKey, "1");
+      try {
+        const weekAgo = new Date(Date.now() - 7 * 86400000).toISOString().slice(0, 10);
+        const tKey = today();
+        const completedThisWeek = jobs.filter(j => j.status === "completed" && (j.completedAt || "").slice(0, 10) >= weekAgo);
+        const revenueThisWeek = completedThisWeek.reduce((s, j) => s + (Number(j.amount) || 0), 0);
+        const overdueInvoices = estimates
+          .filter(e => e.invoiced && !e.paidAt && e.invoicedAt && daysSince(e.invoicedAt) > 7)
+          .map(e => ({ customerName: (e as any).customerName || customers.find(c => c.id === e.customerId)?.firstName, total: e.total || 0, daysOverdue: daysSince(e.invoicedAt!) }));
+        const upcomingJobs = jobs
+          .filter(j => j.status !== "completed" && j.status !== "cancelled" && (j.scheduledDate || "") >= tKey)
+          .sort((a, b) => (a.scheduledDate || "").localeCompare(b.scheduledDate || ""))
+          .slice(0, 8)
+          .map(j => ({ customerName: (j as any).customerName || customers.find(c => c.id === j.customerId)?.firstName, scheduledDate: j.scheduledDate, address: j.address }));
+        const goals = (goalsList || []).filter((g: any) => !g.completed && !g.achieved).map((g: any) => ({ label: g.label, progress: g.current || 0, target: g.target || 1 }));
+        const html = buildWeeklyOwnerDigestEmailHtml(settings as any, { goals, overdueInvoices, upcomingJobs, revenueThisWeek, jobsCompletedThisWeek: completedThisWeek.length });
+        await sendEmail(settings as any, toEmail, "Your Weekly Rundown", html);
+        console.log("[WeeklyDigest] auto-sent for", dedupeKey);
+      } catch (e: any) {
+        console.warn("[WeeklyDigest] auto-send failed:", e?.message);
+      }
+    };
+    checkAndSendWeeklyDigest();
+    const interval2 = setInterval(checkAndSendWeeklyDigest, 60 * 60 * 1000);
+    return () => clearInterval(interval2);
+  }, [jobs, estimates, customers, goalsList, settings]);
 
   // Portal
   const [portalEstId, setPortalEstId] = useState<string | null>(null);
