@@ -23,7 +23,7 @@
 // unverified — worst case of a forged request without it is one customer's
 // opt-in flag flipping at the business whose Twilio number was guessed.
 
-import { runAlfredSmsAgent } from "./_lib/alfredSmsAgent";
+import { runAlfredSmsAgent, sendAlfredSms } from "./_lib/alfredSmsAgent";
 
 const SUPABASE_URL = "https://boaqaihymgmrhnjtiqrs.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_8aEa3wsYJ7ghVPcGbtHymw_ugj0aEfm";
@@ -134,7 +134,7 @@ const fetchAppSettings = async (env: Record<string, string>, toNumber: string): 
   }
 };
 
-export const onRequestPost = async (context: { request: Request; env: Record<string, string> }) => {
+export const onRequestPost = async (context: { request: Request; env: Record<string, string>; waitUntil: (p: Promise<any>) => void }) => {
   try {
     const raw = await context.request.text();
     const params = Object.fromEntries(new URLSearchParams(raw));
@@ -194,11 +194,25 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
     // misinterpreted as an SMS compliance action.
     if (alfredSmsEnabled && myPhone && fromDigits === normalizePhoneDigits(myPhone)) {
       const ctx = { authHeaders, ownerId, companyName, twilioSid, twilioToken, twilioFrom, origin: new URL(context.request.url).origin };
-      const reply = await runAlfredSmsAgent(ctx, anthropicKey, from, bodyRaw).catch((e: any) => {
-        console.error("[TwilioSmsWebhook] Alfred SMS agent failed:", e?.message);
-        return "Sorry, something went wrong on my end — try again in a moment.";
-      });
-      return twiml(reply);
+      // FIX — Twilio abandons an unanswered webhook after ~15s with nothing
+      // shown to the owner. A multi-step request (e.g. "reschedule this job
+      // AND text the customer") can easily need multiple Anthropic
+      // round-trips + several Supabase writes, well past that window. Ack
+      // Twilio immediately with an empty response (so the request always
+      // "succeeds" from Twilio's side), then keep running the actual agent
+      // in the background via waitUntil and deliver the real answer as its
+      // own follow-up text a few seconds later via the Messages API —
+      // exactly like sendSms elsewhere in this agent already does, so it
+      // also gets logged to the Inbox like every other outbound text.
+      context.waitUntil(
+        runAlfredSmsAgent(ctx, anthropicKey, from, bodyRaw)
+          .catch((e: any) => {
+            console.error("[TwilioSmsWebhook] Alfred SMS agent failed:", e?.message);
+            return "Sorry, something went wrong on my end — try again in a moment.";
+          })
+          .then((reply) => sendAlfredSms(ctx, from, reply))
+      );
+      return twiml();
     }
     // No normalized phone column to filter on server-side (formats vary:
     // "(717) 555-0100" vs "+17175550100") — fetch and match in JS.

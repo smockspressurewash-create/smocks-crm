@@ -118,6 +118,8 @@ const findJob = async (ctx: Ctx, { jobId, customerName, dateHint }: { jobId?: st
   return candidates[0] || null;
 };
 
+export const sendAlfredSms = async (ctx: Ctx, toPhone: string, body: string): Promise<{ ok: boolean; error?: string }> => sendSms(ctx, toPhone, body);
+
 const sendSms = async (ctx: Ctx, toPhone: string, body: string): Promise<{ ok: boolean; error?: string }> => {
   if (!ctx.twilioSid || !ctx.twilioToken || !ctx.twilioFrom) return { ok: false, error: "Twilio isn't configured for this account." };
   const auth = `Basic ${btoa(`${ctx.twilioSid}:${ctx.twilioToken}`)}`;
@@ -429,11 +431,28 @@ export const runAlfredSmsAgent = async (
   while (rounds < 4) {
     rounds++;
     const body: Record<string, unknown> = { model: ANTHROPIC_MODEL, max_tokens: 500, system: systemPrompt, messages: convMessages, tools: TOOLS };
-    const res = await fetch(ANTHROPIC_ENDPOINT, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "x-api-key": anthropicKey, "anthropic-version": "2023-06-01" },
-      body: JSON.stringify(body),
-    });
+    // Twilio abandons an unanswered webhook after ~15s and shows the
+    // customer/owner nothing — a hung Anthropic call (no error, no
+    // response) would otherwise burn that whole window silently across
+    // up to 4 tool-loop rounds. Hard-cap each individual call so a stuck
+    // round fails fast into the catch below (in twilio-sms-webhook.ts)
+    // instead of the SMS just never arriving with no clue why.
+    const controller = new AbortController();
+    const abortTimer = setTimeout(() => controller.abort(), 12000);
+    let res: Response;
+    try {
+      res = await fetch(ANTHROPIC_ENDPOINT, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-api-key": anthropicKey, "anthropic-version": "2023-06-01" },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+    } catch (e: any) {
+      console.error("[AlfredSms] Anthropic call failed/timed out:", e?.message);
+      return "Sorry, that took too long to process — try a shorter request, or try again in a bit.";
+    } finally {
+      clearTimeout(abortTimer);
+    }
     if (!res.ok) {
       const errText = await res.text().catch(() => "");
       console.error("[AlfredSms] Anthropic call failed:", res.status, errText.slice(0, 300));

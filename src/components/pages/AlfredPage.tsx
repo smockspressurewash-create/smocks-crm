@@ -2148,14 +2148,25 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           while (rounds < 5) {
             rounds++;
             const toolsForModel = MODELS_MAP[mid]?.supportsTools ? toolDefinitions : undefined;
-            const result = await (callModel as any)({
+            // BUG FIX — callModel had NO timeout at all. If a provider's API
+            // just hangs (no response, no error — happens for real on flaky
+            // connections or an overloaded endpoint that never actually
+            // 503s), the whole request sat frozen forever with no failover
+            // to the next model in the chain and no error shown — this is
+            // almost certainly what "most of the time it says the request
+            // timed out" actually was: not Alfred reporting a clean timeout,
+            // but the UI eventually giving up after a very long hang.
+            // Wrapping it in withTimeout means a hung provider now correctly
+            // fails over to the next model within 25s, same as every other
+            // async action in this app already does per CLAUDE.md.
+            const result: any = await withTimeout<any>((callModel as any)({
               modelId: mid,
               apiKey: (settings.modelKeys || {})[mid],
               systemPrompt,
               messages: localConv,
               tools: toolsForModel,
               maxTokens: 1500
-            });
+            }), 25000, MODELS_MAP[mid]?.name || mid);
             console.log("[AlfredModel] round", rounds, "model:", mid, "stopReason:", result.stopReason, "toolUses:", (result.toolUses || []).map((tu: any) => tu.name), "textPreview:", (result.text || "").slice(0, 120));
             if (result.text) localFinal = result.text;
             if (result.toolUses.length > 0 && result.stopReason === "tool_use" && toolsForModel) {
