@@ -188,6 +188,12 @@ type Ctx = {
   // customers from a live blast triggered by text while the owner is
   // mid-test.
   testModeEnabled?: boolean;
+  // Every phone number allowed to text Alfred as the owner (myPhone PLUS
+  // alfredExtraPhones) — used only to consolidate the owner's Inbox thread:
+  // without this, texting Alfred from a second registered phone created a
+  // totally separate thread also named "Alfred", which read as duplicate/
+  // missing conversations even though nothing was actually lost.
+  ownerAuthorizedPhones?: string[];
   // Cloudflare env, threaded through so tools that need service-role access
   // to OTHER records (e.g. an employee's own Google token — see
   // syncEmployeeJobToCalendar) can get it without a second HTTP round-trip.
@@ -306,7 +312,12 @@ const sendSms = async (ctx: Ctx, toPhone: string, body: string, isOwnerReply = f
   try {
     const threads = await sbGet(ctx, `inbox_threads?channel=eq.sms&select=id,contact_phone,contact_name,customer_id,messages${ownerScope(ctx)}`);
     const digits = normalizePhoneDigits(toPhone);
-    const existing = threads.find((t: any) => normalizePhoneDigits(t.contact_phone) === digits);
+    // Owner replies consolidate into ONE thread regardless of WHICH of the
+    // owner's authorized phones this particular message involves — see
+    // ownerAuthorizedPhones on Ctx.
+    const existing = isOwnerReply && ctx.ownerAuthorizedPhones?.length
+      ? threads.find((t: any) => ctx.ownerAuthorizedPhones!.includes(normalizePhoneDigits(t.contact_phone)))
+      : threads.find((t: any) => normalizePhoneDigits(t.contact_phone) === digits);
     // BUG FIX — was always `dir: "out"` with no marker at all, so a reply
     // Alfred sent to the OWNER looked in the Inbox exactly like a normal
     // outgoing message the owner sent themselves, with no way to tell them

@@ -344,6 +344,35 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
       : { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}` };
     let ownerFilter = ownerId ? `&owner_id=eq.${encodeURIComponent(ownerId)}` : "";
 
+    // BUG FIX — Twilio redelivering the same inbound webhook (slow response,
+    // network retry) used to run the whole agent a second time and send a
+    // real second SMS reply — verified live: two near-identical "Will
+    // what?" replies logged ~1s apart in the owner's Inbox for one inbound
+    // text. The inbound message log below was already deduped by
+    // MessageSid, but nothing stopped the agent/send from running twice.
+    // Atomic insert into a dedicated table: the first delivery of a given
+    // MessageSid proceeds normally; any redelivery hits the primary key
+    // conflict and is dropped here, before any branch below ever runs.
+    const msgSid = params.MessageSid || "";
+    if (msgSid) {
+      try {
+        const dedupeRes = await fetch(`${SUPABASE_URL}/rest/v1/sms_dedupe`, {
+          method: "POST",
+          headers: { ...authHeaders, "Content-Type": "application/json", Prefer: "resolution=ignore-duplicates,return=representation" },
+          body: JSON.stringify({ sid: msgSid }),
+        });
+        const dedupeRows = await dedupeRes.json().catch(() => null);
+        if (dedupeRes.ok && Array.isArray(dedupeRows) && dedupeRows.length === 0) {
+          console.warn("[TwilioSmsWebhook] duplicate delivery detected for", msgSid, "— skipping, already processed");
+          return twiml();
+        }
+      } catch (e: any) {
+        // Dedupe table missing/unreachable must never block real messages —
+        // fail open (process normally) rather than silently dropping texts.
+        console.warn("[TwilioSmsWebhook] dedupe check failed, processing anyway:", e?.message);
+      }
+    }
+
     const fromDigits = normalizePhoneDigits(from);
 
     // FEATURE — text-Alfred bridge. If the owner opted in (Settings →
@@ -364,7 +393,7 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
     // Alfred, not a customer."
     const authorizedPhones = [myPhone, ...alfredExtraPhones].filter(Boolean).map(normalizePhoneDigits);
     if (alfredSmsEnabled && authorizedPhones.includes(fromDigits)) {
-      const ctx = { authHeaders, ownerId, companyName, twilioSid, twilioToken, twilioFrom, origin: new URL(context.request.url).origin, fromPhone: from, googleProviderToken, googleRefreshToken, googleTokenExpiresAt, testModeEnabled, env: context.env as Record<string, string> };
+      const ctx = { authHeaders, ownerId, companyName, twilioSid, twilioToken, twilioFrom, origin: new URL(context.request.url).origin, fromPhone: from, googleProviderToken, googleRefreshToken, googleTokenExpiresAt, testModeEnabled, ownerAuthorizedPhones: authorizedPhones, env: context.env as Record<string, string> };
       // BUG FIX — this branch never logged the OWNER's own inbound text to
       // inbox_threads at all (only to alfred_sms_threads, which the Inbox
       // UI never reads) — sendAlfredSms below only logs Alfred's OUTGOING
@@ -378,7 +407,13 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
         try {
           const threadsRes = await fetch(`${SUPABASE_URL}/rest/v1/inbox_threads?channel=eq.sms&select=id,contact_phone,messages${ownerFilter}`, { headers: authHeaders });
           const existingThreads = await threadsRes.json().catch(() => []);
-          const existingThread = Array.isArray(existingThreads) ? existingThreads.find((t: any) => normalizePhoneDigits(t.contact_phone) === fromDigits) : null;
+          // Consolidate into ONE "Alfred" thread regardless of WHICH of the
+          // owner's authorized phones this text came from — texting from a
+          // second registered number used to open a separate thread also
+          // named "Alfred", which read as duplicate/missing conversations.
+          const existingThread = Array.isArray(existingThreads)
+            ? existingThreads.find((t: any) => authorizedPhones.includes(normalizePhoneDigits(t.contact_phone)))
+            : null;
           const msgId = params.MessageSid || crypto.randomUUID();
           const alreadyHave = existingThread && (Array.isArray(existingThread.messages) ? existingThread.messages : []).some((m: any) => m?.id === msgId);
           if (alreadyHave) return;
