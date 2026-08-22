@@ -143,10 +143,30 @@ const fetchAppSettings = async (env: Record<string, string>, toNumber: string): 
       // stored in a different format than Twilio's E.164 `To` (e.g.
       // "(717) 555-0100" vs "+17175550100").
       if (toNumber) {
-        const exactRes = await fetch(`${SUPABASE_URL}/rest/v1/app_settings?select=owner_id,data&data-%3E%3EtwilioFrom=eq.${encodeURIComponent(toNumber)}&limit=1`, { headers });
+        // BUG FIX (root cause of "text-Alfred just never responds, with no
+        // error anywhere") — this used to fetch with `limit=1` and no
+        // ORDER BY. Confirmed live: two app_settings rows existed with the
+        // IDENTICAL twilioFrom (an orphaned duplicate owner_id with zero
+        // real business data anywhere — no employees/jobs/customers — but
+        // alfredSmsEnabled left at its default null/false). Which row
+        // Postgres happened to return first was arbitrary per-request, so
+        // some inbound texts silently resolved to the dead account's
+        // settings — Alfred correctly appeared "disabled" for those
+        // requests with nothing to indicate why, and any message that
+        // landed there got logged to THAT owner's Inbox instead, not the
+        // real one. Fetch every match (still narrow — a handful of rows at
+        // most) and deterministically prefer one with alfredSmsEnabled on,
+        // logging loudly if this ever happens again so it's diagnosable
+        // instead of silently misrouting.
+        const exactRes = await fetch(`${SUPABASE_URL}/rest/v1/app_settings?select=owner_id,data&data-%3E%3EtwilioFrom=eq.${encodeURIComponent(toNumber)}&limit=5`, { headers });
         const exactRows = await exactRes.json().catch(() => []);
-        const exactRow = Array.isArray(exactRows) ? exactRows[0] : null;
-        if (exactRow) return shapeSettings(exactRow, exactRow?.data);
+        if (Array.isArray(exactRows) && exactRows.length > 0) {
+          if (exactRows.length > 1) {
+            console.error("[TwilioSmsWebhook] MULTIPLE app_settings rows share twilioFrom", toNumber, "— owner_ids:", exactRows.map((r: any) => r.owner_id).join(", "), "— this is a data problem (duplicate/orphaned owner account), not just a routing quirk; clean up the extra row(s) in Supabase.");
+          }
+          const exactRow = exactRows.find((r: any) => r?.data?.alfredSmsEnabled) || exactRows[0];
+          return shapeSettings(exactRow, exactRow?.data);
+        }
       }
       const allRes = await fetch(`${SUPABASE_URL}/rest/v1/app_settings?select=owner_id,data`, { headers });
       const allRows = await allRes.json().catch(() => []);
