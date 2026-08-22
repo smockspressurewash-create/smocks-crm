@@ -1887,6 +1887,19 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
             total_employees: employees.length
           };
         }
+        case "switch_ai_model": {
+          const wanted = String(inputs.provider || "").toLowerCase().trim();
+          const entry = Object.values(MODELS).find((m: any) =>
+            m.id === wanted || m.name.toLowerCase() === wanted || m.name.toLowerCase().includes(wanted) || wanted.includes(m.name.toLowerCase())
+          ) as any;
+          if (!entry) return { error: `Don't recognize "${inputs.provider}" — available providers: ${Object.values(MODELS).map((m: any) => m.name).join(", ")}.` };
+          if (entry.needsKey && !(settings.modelKeys || {})[entry.id]) return { error: `${entry.name} isn't set up yet — no API key saved for it. Add one in Settings → AI Models first.` };
+          const currentPriority: string[] = Array.isArray((settings as any).modelPriority) ? (settings as any).modelPriority : Object.keys(MODELS);
+          const nextPriority = [entry.id, ...currentPriority.filter((k: string) => k !== entry.id)];
+          setSettings((prev: any) => ({ ...prev, activeModel: entry.id, modelPriority: nextPriority }));
+          toast("🔀 Switched to " + entry.name);
+          return { success: true, switchedTo: entry.name };
+        }
         case "navigate_to": {
           if (!inputs.page) return { error: "page required" };
           onNav(inputs.page);
@@ -2203,6 +2216,11 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
       name: "navigate_to",
       description: "Navigate the user's screen to a CRM page. Valid pages: dashboard, customers, estimates, invoices, jobs, pipeline, calendar, campaigns, referrals, reviews, automations, social, accountability, employees, fleet, expenses, chemicals, reports.",
       input_schema: { type: "object", properties: { page: { type: "string" } }, required: ["page"] }
+    },
+    {
+      name: "switch_ai_model",
+      description: "Switch which AI provider Alfred uses (here and over text), e.g. 'switch to Claude' / 'use Gemini instead'. Only works for a provider that already has an API key saved in Settings → AI Models.",
+      input_schema: { type: "object", properties: { provider: { type: "string", description: "e.g. 'claude', 'gpt-4o', 'gemini', 'groq', 'mistral', 'kimi'" } }, required: ["provider"] }
     },
     {
       name: "create_automation",

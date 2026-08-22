@@ -24,6 +24,8 @@
 // decline_customer_request — this file only ever creates them, never
 // resolves them itself.
 
+import { stripMarkdownForSms } from "./textFormat";
+
 const SUPABASE_URL = "https://boaqaihymgmrhnjtiqrs.supabase.co";
 const SMS_MODELS: Record<string, { provider: string; modelId: string; endpoint: string; maxTokens: number }> = {
   claude: { provider: "anthropic", modelId: "claude-sonnet-4-20250514", endpoint: "https://api.anthropic.com/v1/messages", maxTokens: 350 },
@@ -53,8 +55,11 @@ const sbGet = async (ctx: Ctx, path: string): Promise<any[]> => {
 
 const ownerScope = (ctx: Ctx) => (ctx.ownerId ? `&owner_id=eq.${encodeURIComponent(ctx.ownerId)}` : "");
 
-const sendSms = async (ctx: Ctx, toPhone: string, body: string): Promise<boolean> => {
+const sendSms = async (ctx: Ctx, toPhone: string, bodyRaw: string): Promise<boolean> => {
   if (!ctx.twilioSid || !ctx.twilioToken || !ctx.twilioFrom) return false;
+  // Same markdown-stripping fix as alfredSmsAgent.ts's sendSms — a customer
+  // getting literal **asterisks** reads worse than an owner would tolerate.
+  const body = stripMarkdownForSms(bodyRaw);
   const auth = `Basic ${btoa(`${ctx.twilioSid}:${ctx.twilioToken}`)}`;
   const params = new URLSearchParams({ To: toPhone, From: ctx.twilioFrom, Body: body });
   const res = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${ctx.twilioSid}/Messages.json`, {

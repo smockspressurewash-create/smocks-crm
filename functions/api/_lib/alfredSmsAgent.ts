@@ -32,6 +32,7 @@
 // route files (twilio-sms-webhook.ts) to import from.
 
 import { syncEmployeeJobToCalendar } from "./employeeCalendarSync";
+import { stripMarkdownForSms } from "./textFormat";
 
 const SUPABASE_URL = "https://boaqaihymgmrhnjtiqrs.supabase.co";
 
@@ -194,6 +195,10 @@ type Ctx = {
   // totally separate thread also named "Alfred", which read as duplicate/
   // missing conversations even though nothing was actually lost.
   ownerAuthorizedPhones?: string[];
+  // Set by runAlfredSmsAgent itself right before the tool loop starts — lets
+  // switch_ai_model check which providers actually have a key configured
+  // without threading a new param through executeTool's signature.
+  modelKeys?: Record<string, string>;
   // Cloudflare env, threaded through so tools that need service-role access
   // to OTHER records (e.g. an employee's own Google token — see
   // syncEmployeeJobToCalendar) can get it without a second HTTP round-trip.
@@ -297,8 +302,15 @@ export const sendAlfredSms = async (ctx: Ctx, toPhone: string, body: string): Pr
 // rendered as an unlabeled number in the Inbox instead of "Franco
 // Serenelli" etc. — unlike every OTHER outbound-SMS path in the app
 // (logOutboundSmsToInbox in lib/messaging.ts), which always had this.
-const sendSms = async (ctx: Ctx, toPhone: string, body: string, isOwnerReply = false, contact?: { name?: string; customerId?: string }): Promise<{ ok: boolean; error?: string }> => {
+const sendSms = async (ctx: Ctx, toPhone: string, bodyRaw: string, isOwnerReply = false, contact?: { name?: string; customerId?: string }): Promise<{ ok: boolean; error?: string }> => {
   if (!ctx.twilioSid || !ctx.twilioToken || !ctx.twilioFrom) return { ok: false, error: "Twilio isn't configured for this account." };
+  // BUG FIX — the model (Gemini especially) sometimes ignores the system
+  // prompt's "no markdown" instruction and sends **bold**/`code`/bullet
+  // asterisks straight through, which an SMS just shows as literal
+  // punctuation. Strip it here, once, so every send (Alfred's own reply,
+  // text_customer, notify_all_customers, etc.) is clean regardless of
+  // whether the model behaved.
+  const body = stripMarkdownForSms(bodyRaw);
   const auth = `Basic ${btoa(`${ctx.twilioSid}:${ctx.twilioToken}`)}`;
   const params = new URLSearchParams({ To: toPhone, From: ctx.twilioFrom, Body: body });
   const res = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${ctx.twilioSid}/Messages.json`, {
@@ -546,6 +558,15 @@ const TOOLS = [
     input_schema: {
       type: "object",
       properties: { estimateId: { type: "string" }, customerName: { type: "string", description: "Alternative to estimateId — sends that customer's most recent estimate" } },
+    },
+  },
+  {
+    name: "switch_ai_model",
+    description: "Switch which AI provider Alfred uses going forward (both texting and in-app), e.g. 'switch to Claude' / 'use Gemini instead' / 'stop using Groq'. Only works for a provider that already has an API key saved in Settings → AI Models — tell the owner to add one there first if not. Takes effect starting with the NEXT message, not this reply.",
+    input_schema: {
+      type: "object",
+      properties: { provider: { type: "string", description: "e.g. 'claude', 'gpt-4o', 'gemini', 'groq', 'mistral', 'kimi'" } },
+      required: ["provider"],
     },
   },
   {
@@ -1047,6 +1068,26 @@ const executeTool = async (ctx: Ctx, name: string, input: Record<string, any>): 
         if (!res.ok) return { error: res.error };
         return { success: true };
       }
+      case "switch_ai_model": {
+        const wanted = String(input.provider || "").toLowerCase().trim();
+        const match = Object.entries(SMS_MODELS).find(([key, def]) =>
+          key === wanted || key.replace(/^nvidia_/, "") === wanted || def.name.toLowerCase() === wanted || def.name.toLowerCase().includes(wanted) || wanted.includes(def.name.toLowerCase())
+        );
+        if (!match) return { error: `Don't recognize "${input.provider}" — available providers: ${Object.values(SMS_MODELS).map(d => d.name).join(", ")}.` };
+        const [key, def] = match;
+        if (!ctx.modelKeys?.[key]) return { error: `${def.name} isn't set up yet — no API key saved for it. Add one in Settings → AI Models first, then try again.` };
+        const rows = await sbGet(ctx, `app_settings?select=owner_id,data${ownerScope(ctx)}&limit=1`);
+        const row = rows[0];
+        if (!row?.owner_id) return { error: "Couldn't find your settings to update." };
+        const currentPriority: string[] = Array.isArray(row.data?.modelPriority) ? row.data.modelPriority : DEFAULT_MODEL_PRIORITY;
+        const nextPriority = [key, ...currentPriority.filter((k: string) => k !== key)];
+        const patchRes = await fetch(`${SUPABASE_URL}/rest/v1/app_settings?owner_id=eq.${encodeURIComponent(row.owner_id)}`, {
+          method: "PATCH", headers: { ...ctx.authHeaders, "Content-Type": "application/json", Prefer: "return=minimal" },
+          body: JSON.stringify({ data: { ...row.data, activeModel: key, modelPriority: nextPriority } }),
+        });
+        if (!patchRes.ok) return { error: "Couldn't save the switch — " + (await patchRes.text().catch(() => "")).slice(0, 200) };
+        return { success: true, switchedTo: def.name, note: "Takes effect starting with the next message." };
+      }
       case "remember": {
         if (!input.fact) return { error: "fact required" };
         const row = { id: crypto.randomUUID(), text: input.fact, category: input.category || "general" };
@@ -1317,6 +1358,7 @@ export const runAlfredSmsAgent = async (
   fromPhone: string,
   incomingText: string
 ): Promise<string> => {
+  ctx.modelKeys = modelKeys;
   // Same ordering rule as the in-app Alfred (AlfredPage.tsx FIX 20):
   // modelPriority is the real order, activeModel is only consulted as a
   // fallback when no priority list is saved — activeModel does not jump
