@@ -81,6 +81,12 @@ export function FleetPage({ vehicles = [], setVehicles, maintenance = [], setMai
   const [modal, setModal] = useState({ open: false, data: null });
   const [maintId, setMaintId] = useState(null);
   const [logMiles, setLogMiles] = useState(null); // vehicle id for quick mileage log
+  // FEATURE — editing already worked for every vehicle regardless of status
+  // (the Edit button below was never gated), but a retired/past vehicle had
+  // no way to be found other than scrolling a mixed list, which read as "I
+  // can't get back to old vehicles to edit them." A status filter makes
+  // past vehicles a one-click destination instead of a scroll hunt.
+  const [statusFilter, setStatusFilter] = useState("all");
 
   const save = d => {
     if (d.id) setVehicles(vehicles.map(v => v.id === d.id ? d : v));
@@ -143,8 +149,16 @@ export function FleetPage({ vehicles = [], setVehicles, maintenance = [], setMai
         </div>
       </div>
 
+      <div className="flex gap-2 flex-wrap">
+        {[["all", "All"], ["active", "Active"], ["maintenance", "In Maintenance"], ["retired", "Retired / Past"]].map(([k, l]) => (
+          <button key={k} onClick={() => setStatusFilter(k)} className={"px-3 py-1.5 rounded-xl text-xs font-medium transition border " + (statusFilter === k ? "bg-red-900/40 border-red-500/50 text-white" : "bg-black/40 border-red-900/30 text-white/60 hover:text-white")}>
+            {l} ({k === "all" ? vehicles.length : vehicles.filter(v => v.status === k).length})
+          </button>
+        ))}
+      </div>
+
       <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
-        {vehicles.map(v => {
+        {vehicles.filter(v => statusFilter === "all" || v.status === statusFilter).map(v => {
           const vMaint = maintenance.filter(m => m.vehicleId === v.id).sort((a,b) => b.date?.localeCompare(a.date));
           const lastService = vMaint[0];
           const isDue = maintDue.find(x => x.id === v.id);

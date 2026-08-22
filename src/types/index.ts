@@ -510,14 +510,30 @@ export interface Expense {
 
 // ─── Chemical ─────────────────────────────────────────────────────────────────
 
+// FEATURE — "Chemicals & Equipment": itemType distinguishes a consumable
+// (chemical, tracked in gallons/oz) from durable equipment (nozzles, wands,
+// surface cleaners — tracked as countable units). suppliers is a real list
+// (name + phone, so the owner can keep every supplier on file and call one
+// straight from an item), replacing the old single free-text `supplier`
+// string — kept as a deprecated fallback so existing data still displays.
+export interface ChemicalSupplier {
+  id: string;
+  name: string;
+  phone?: string;
+  notes?: string;
+}
+
 export interface Chemical {
   id: string;
   name: string;
+  itemType?: "chemical" | "equipment";
   stock: number;
   unit: string;
   unitCost: number;
   reorderLevel: number;
+  /** @deprecated use suppliers[] — kept so existing single-string data still shows */
   supplier?: string;
+  suppliers?: ChemicalSupplier[];
   notes?: string;
   lastOrdered?: string;
 }

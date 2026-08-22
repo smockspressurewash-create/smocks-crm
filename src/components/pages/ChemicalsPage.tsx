@@ -79,8 +79,15 @@ import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 
 export function ChemicalsPage({ chemicals = [], setChemicals, toast = () => {}, settings = {} as AppSettings }: { chemicals?: any[]; setChemicals?: any; toast?: any; settings?: AppSettings }) {
   const [modal, setModal] = useState({ open: false, data: null });
-  const low = chemicals.filter(c => c.stock <= c.reorderLevel);
+  // FEATURE — "Chemicals & Equipment": itemType filter so nozzles/wands/
+  // surface cleaners aren't mixed into the chemical reorder math (a nozzle
+  // has no meaningful "gallons remaining" concept) while still living in
+  // one shared inventory list.
+  const [typeFilter, setTypeFilter] = useState<"all" | "chemical" | "equipment">("all");
+  const visible = chemicals.filter(c => typeFilter === "all" || (c.itemType || "chemical") === typeFilter);
+  const low = visible.filter(c => (c.itemType || "chemical") === "chemical" && c.stock <= c.reorderLevel);
   const totVal = chemicals.reduce((s, c) => s + c.stock * c.unitCost, 0);
+  const equipmentCount = chemicals.filter(c => c.itemType === "equipment").length;
   const save = d => {
     if (d.id) setChemicals(chemicals.map(c => c.id === d.id ? d : c));
     else setChemicals([...chemicals, { ...d, id: uid() }]);
@@ -123,10 +130,18 @@ export function ChemicalsPage({ chemicals = [], setChemicals, toast = () => {}, 
 
   return (
     <div className="space-y-4">
-      <div className="grid grid-cols-3 gap-3">
+      <div className="grid grid-cols-4 gap-3">
         <Stat icon={FlaskConical} label="SKUs" value={chemicals.length} />
+        <Stat icon={Wrench} label="Equipment" value={equipmentCount} />
         <Stat icon={AlertTriangle} label="Low Stock" value={low.length} />
         <Stat icon={DollarSign} label="Inventory $" value={fmt(totVal)} />
+      </div>
+      <div className="flex gap-2">
+        {[["all", "All"], ["chemical", "🧪 Chemicals"], ["equipment", "🔧 Equipment"]].map(([k, l]) => (
+          <button key={k} onClick={() => setTypeFilter(k as any)} className={"px-3 py-1.5 rounded-xl text-xs font-medium transition border " + (typeFilter === k ? "bg-red-900/40 border-red-500/50 text-white" : "bg-black/40 border-red-900/30 text-white/60 hover:text-white")}>
+            {l} ({k === "all" ? chemicals.length : chemicals.filter(c => (c.itemType || "chemical") === k).length})
+          </button>
+        ))}
       </div>
       {low.length > 0 && <Glass className="p-4 !bg-red-950/30 !border-red-600/50">
         <div className="flex items-center justify-between mb-3">
@@ -158,20 +173,32 @@ export function ChemicalsPage({ chemicals = [], setChemicals, toast = () => {}, 
           <thead><tr className="border-b border-red-900/30 bg-black/40">
             <th className="text-left px-5 py-3 text-xs uppercase tracking-wider text-white/60">Name</th>
             <th className="text-left px-5 py-3 text-xs uppercase tracking-wider text-white/60 hidden md:table-cell">Brand</th>
-            <th className="text-right px-5 py-3 text-xs uppercase tracking-wider text-white/60">Gallons Remaining</th>
-            <th className="text-right px-5 py-3 text-xs uppercase tracking-wider text-white/60">Cost/Gal</th>
+            <th className="text-left px-5 py-3 text-xs uppercase tracking-wider text-white/60 hidden lg:table-cell">Supplier</th>
+            <th className="text-right px-5 py-3 text-xs uppercase tracking-wider text-white/60">On Hand</th>
+            <th className="text-right px-5 py-3 text-xs uppercase tracking-wider text-white/60">Cost/Unit</th>
             <th className="text-right px-5 py-3 text-xs uppercase tracking-wider text-white/60">Actions</th>
           </tr></thead>
           <tbody>
-            {chemicals.map(c => {
-              const lo = c.stock <= c.reorderLevel;
+            {visible.map(c => {
+              const isEq = (c.itemType || "chemical") === "equipment";
+              const lo = !isEq && c.stock <= c.reorderLevel;
+              const suppliers: any[] = (c.suppliers && c.suppliers.length) ? c.suppliers : (c.supplier ? [{ id: "legacy", name: c.supplier, phone: "" }] : []);
               return <tr key={c.id} className={"border-b border-red-900/10 " + (lo ? "bg-red-950/20" : "hover:bg-white/5")}>
-                <td className="px-5 py-4"><div className="flex items-center gap-2">{lo && <AlertTriangle size={14} className="text-red-400" />}<div><div className="font-medium">{c.name}</div><div className="text-xs text-white/50 md:hidden">{c.brand}</div></div></div></td>
+                <td className="px-5 py-4"><div className="flex items-center gap-2">{lo && <AlertTriangle size={14} className="text-red-400" />}<div><div className="font-medium">{isEq ? "🔧 " : ""}{c.name}</div><div className="text-xs text-white/50 md:hidden">{c.brand}</div></div></div></td>
                 <td className="px-5 py-4 text-white/70 hidden md:table-cell">{c.brand}</td>
+                <td className="px-5 py-4 text-white/70 hidden lg:table-cell">
+                  {suppliers.length === 0 && <span className="text-white/30">—</span>}
+                  {suppliers.map(s => (
+                    <div key={s.id} className="text-xs">
+                      {s.name}
+                      {s.phone && <a href={"tel:" + s.phone.replace(/[^\d+]/g, "")} className="ml-1.5 text-red-400 hover:text-red-300 inline-flex items-center gap-0.5"><Phone size={9} />{s.phone}</a>}
+                    </div>
+                  ))}
+                </td>
                 <td className={"px-5 py-4 text-right font-bold " + (lo ? "text-red-400" : "")}>
                   <div className="flex items-center gap-1 justify-end">
                     <button onClick={() => bump(c.id, -1)} className="w-6 h-6 rounded bg-white/5 hover:bg-white/10 text-white/60">−</button>
-                    <span className="w-10 text-center">{c.stock}</span>
+                    <span className="w-14 text-center">{c.stock} {c.unit || "gal"}</span>
                     <button onClick={() => bump(c.id, 1)} className="w-6 h-6 rounded bg-white/5 hover:bg-white/10 text-white/60">+</button>
                   </div>
                 </td>

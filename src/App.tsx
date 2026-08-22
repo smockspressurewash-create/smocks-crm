@@ -166,7 +166,7 @@ const navGroups = [
     items: [
       { id: "employees", label: "Employees", icon: Users2      },
       { id: "fleet",     label: "Fleet",     icon: Truck       },
-      { id: "chemicals", label: "Chemicals", icon: FlaskConical},
+      { id: "chemicals", label: "Chemicals & Equipment", icon: FlaskConical},
     ],
   },
   {
