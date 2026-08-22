@@ -576,7 +576,7 @@ const TOOLS = [
   },
   {
     name: "get_calendar_summary",
-    description: "What's on the schedule over a date range — use for 'what's on my calendar', 'what do I have this week', etc.",
+    description: "What's on the schedule over a date range — use for 'what's on my calendar/agenda', 'what's my availability this week', etc. Cross-checks CRM jobs against the REAL connected Google Calendar and reports discrepancies both ways (a job that never synced to Google, or a Google event with no matching CRM job) — always mention discrepancies if there are any, don't just report a job count.",
     input_schema: {
       type: "object",
       properties: {
@@ -587,7 +587,7 @@ const TOOLS = [
   },
   {
     name: "create_calendar_event",
-    description: "Add an event to the owner's actual Google Calendar (not just a CRM job — use schedule_job for an actual pressure-washing job with a customer). Use this for things like 'put a dentist appointment on my calendar Thursday at 2pm'.",
+    description: "Add an event to the owner's actual Google Calendar (not just a CRM job — use schedule_job for an actual pressure-washing job with a customer). Use this for things like 'put a dentist appointment on my calendar Thursday at 2pm' / 'add this to the calendar'.",
     input_schema: {
       type: "object",
       properties: {
@@ -598,6 +598,29 @@ const TOOLS = [
         notes: { type: "string" },
       },
       required: ["title", "date", "time"],
+    },
+  },
+  {
+    name: "delete_calendar_event",
+    description: "Delete an event from the owner's Google Calendar — use for 'delete/remove this from my calendar'. Identify by eventId (from get_calendar_summary) or by title (+ optional date) and this looks it up.",
+    input_schema: {
+      type: "object",
+      properties: { eventId: { type: "string" }, title: { type: "string" }, date: { type: "string", description: "YYYY-MM-DD, narrows the title search" } },
+    },
+  },
+  {
+    name: "update_calendar_event",
+    description: "Move or edit an existing Google Calendar event — use for 'move this to Friday' / 'change the time on X'. Identify by eventId or title, pass only the fields that changed.",
+    input_schema: {
+      type: "object",
+      properties: {
+        eventId: { type: "string" },
+        title: { type: "string", description: "used to find the event if no eventId, or the new title if eventId is given" },
+        date: { type: "string", description: "YYYY-MM-DD, new date if moving it" },
+        time: { type: "string", description: "HH:MM 24h, new time" },
+        durationMinutes: { type: "number" },
+        notes: { type: "string" },
+      },
     },
   },
   {
@@ -641,6 +664,37 @@ const TOOLS = [
     input_schema: { type: "object", properties: { requestId: { type: "string" }, reason: { type: "string" } }, required: ["requestId"] },
   },
 ];
+
+// Shared by every Calendar tool below (create/update/delete/list) — was
+// previously duplicated inline just inside create_calendar_event.
+const getGoogleAccessToken = async (ctx: Ctx): Promise<string | null> => {
+  if (!ctx.googleRefreshToken && !ctx.googleProviderToken) return null;
+  let accessToken = ctx.googleProviderToken || "";
+  if (ctx.googleRefreshToken && (!ctx.googleTokenExpiresAt || Date.now() > ctx.googleTokenExpiresAt - 60000)) {
+    try {
+      const refreshRes = await fetch(`${ctx.origin}/api/google-refresh`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ refresh_token: ctx.googleRefreshToken }),
+      });
+      const refreshData = await refreshRes.json().catch(() => null) as any;
+      if (refreshRes.ok && refreshData?.access_token) accessToken = refreshData.access_token;
+    } catch { /* fall through with whatever token we have; the Calendar call below will fail clearly if it's stale */ }
+  }
+  return accessToken || null;
+};
+
+// Google's events.list, mapped down to just what the discrepancy check and
+// title-lookup (delete/update by name) need.
+const fetchGoogleEventsInRange = async (accessToken: string, startIso: string, endIso: string): Promise<Array<{ id: string; title: string; start: string; end: string; location: string }>> => {
+  const url = `https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=${encodeURIComponent(startIso)}&timeMax=${encodeURIComponent(endIso)}&singleEvents=true&orderBy=startTime&maxResults=100`;
+  const res = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
+  if (!res.ok) return [];
+  const data = await res.json().catch(() => null) as any;
+  return (data?.items || []).map((ev: any) => ({
+    id: ev.id, title: ev.summary || "(No title)",
+    start: ev.start?.dateTime || ev.start?.date || "", end: ev.end?.dateTime || ev.end?.date || "",
+    location: ev.location || "",
+  }));
+};
 
 const executeTool = async (ctx: Ctx, name: string, input: Record<string, any>): Promise<any> => {
   try {
@@ -1010,24 +1064,35 @@ const executeTool = async (ctx: Ctx, name: string, input: Record<string, any>): 
         const end = new Date(start + "T00:00:00");
         end.setDate(end.getDate() + days);
         const endStr = end.toISOString().slice(0, 10);
-        const rows = await sbGet(ctx, `jobs?select=id,customerName,status,scheduledDate,scheduledTime,address${ownerScope(ctx)}&scheduledDate=gte.${start}&scheduledDate=lt.${endStr}&limit=200`);
+        const rows = await sbGet(ctx, `jobs?select=id,customerName,status,scheduledDate,scheduledTime,address,googleEventId${ownerScope(ctx)}&scheduledDate=gte.${start}&scheduledDate=lt.${endStr}&limit=200`);
         const active = rows.filter((j: any) => j.status !== "cancelled").sort((a: any, b: any) => (a.scheduledDate + (a.scheduledTime || "")).localeCompare(b.scheduledDate + (b.scheduledTime || "")));
-        if (active.length === 0) return { success: true, summary: `Nothing scheduled from ${start} to ${endStr}.` };
-        return { success: true, jobs: active.map((j: any) => ({ date: j.scheduledDate, time: j.scheduledTime, customer: j.customerName, address: j.address, status: j.status })) };
+        const crmJobs = active.map((j: any) => ({ date: j.scheduledDate, time: j.scheduledTime, customer: j.customerName, address: j.address, status: j.status, googleEventId: j.googleEventId || null }));
+
+        // Cross-check against the REAL Google Calendar, same discrepancy
+        // logic as the in-app Alfred's version of this tool.
+        const accessToken = await getGoogleAccessToken(ctx);
+        if (!accessToken) {
+          if (active.length === 0) return { success: true, summary: `Nothing scheduled from ${start} to ${endStr}. Google Calendar isn't connected, so this is CRM jobs only.` };
+          return { success: true, jobs: crmJobs, googleCalendarConnected: false, note: "Google Calendar isn't connected, so this is CRM jobs only — mention that if asked about their real calendar." };
+        }
+        const googleEvents = await fetchGoogleEventsInRange(accessToken, new Date(start + "T00:00:00").toISOString(), end.toISOString());
+        const jobEventIds = new Set(crmJobs.map((j: any) => j.googleEventId).filter(Boolean));
+        const fetchedIds = new Set(googleEvents.map(ev => ev.id));
+        const jobsNotOnGoogleCalendar = crmJobs.filter((j: any) => !j.googleEventId || !fetchedIds.has(j.googleEventId)).map((j: any) => ({ date: j.date, time: j.time, customer: j.customer }));
+        const googleOnlyEvents = googleEvents.filter(ev => !jobEventIds.has(ev.id)).map(ev => ({ title: ev.title, start: ev.start, end: ev.end, location: ev.location }));
+        if (active.length === 0 && googleOnlyEvents.length === 0) return { success: true, summary: `Nothing scheduled from ${start} to ${endStr}.` };
+        return {
+          success: true, googleCalendarConnected: true,
+          crmJobs, googleOnlyEvents,
+          jobsNotOnGoogleCalendar,
+          note: (googleOnlyEvents.length || jobsNotOnGoogleCalendar.length)
+            ? "There are discrepancies between the CRM and Google Calendar — report both lists by name/date, don't just give a job count."
+            : "CRM jobs and Google Calendar agree for this range.",
+        };
       }
       case "create_calendar_event": {
-        if (!ctx.googleRefreshToken && !ctx.googleProviderToken) return { error: "Google Calendar isn't connected — connect it in Settings → Integrations first." };
-        let accessToken = ctx.googleProviderToken || "";
-        if (ctx.googleRefreshToken && (!ctx.googleTokenExpiresAt || Date.now() > ctx.googleTokenExpiresAt - 60000)) {
-          try {
-            const refreshRes = await fetch(`${ctx.origin}/api/google-refresh`, {
-              method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ refresh_token: ctx.googleRefreshToken }),
-            });
-            const refreshData = await refreshRes.json().catch(() => null) as any;
-            if (refreshRes.ok && refreshData?.access_token) accessToken = refreshData.access_token;
-          } catch { /* fall through with whatever token we have; the Calendar call below will fail clearly if it's stale */ }
-        }
-        if (!accessToken) return { error: "Couldn't get a valid Google token — try reconnecting Google in Settings." };
+        const accessToken = await getGoogleAccessToken(ctx);
+        if (!accessToken) return { error: "Google Calendar isn't connected — connect it in Settings → Integrations first." };
         const durationMin = Number(input.durationMinutes) || 60;
         const startIso = `${input.date}T${input.time}:00`;
         const startDate = new Date(startIso);
@@ -1044,7 +1109,57 @@ const executeTool = async (ctx: Ctx, name: string, input: Record<string, any>): 
           }),
         });
         if (!evRes.ok) return { error: "Google Calendar error: " + (await evRes.text().catch(() => "")).slice(0, 200) };
-        return { success: true, title: input.title, date: input.date, time: input.time };
+        const evData = await evRes.json().catch(() => null) as any;
+        return { success: true, eventId: evData?.id, title: input.title, date: input.date, time: input.time };
+      }
+      case "delete_calendar_event": {
+        const accessToken = await getGoogleAccessToken(ctx);
+        if (!accessToken) return { error: "Google Calendar isn't connected — connect it in Settings → Integrations first." };
+        let eventId = input.eventId;
+        if (!eventId && input.title) {
+          const now = new Date();
+          const farOut = new Date(now.getTime() + 90 * 24 * 3600000);
+          const events = await fetchGoogleEventsInRange(accessToken, now.toISOString(), farOut.toISOString());
+          const q = String(input.title).toLowerCase();
+          const match = events.find(ev => ev.title.toLowerCase().includes(q) && (!input.date || ev.start.slice(0, 10) === input.date));
+          if (!match) return { error: `No Google Calendar event found matching "${input.title}"${input.date ? " on " + input.date : ""} — call get_calendar_summary first to see what's actually there.` };
+          eventId = match.id;
+        }
+        if (!eventId) return { error: "Need either eventId or a title to find it by." };
+        const delRes = await fetch(`https://www.googleapis.com/calendar/v3/calendars/primary/events/${encodeURIComponent(eventId)}`, {
+          method: "DELETE", headers: { Authorization: `Bearer ${accessToken}` },
+        });
+        if (!delRes.ok && delRes.status !== 410) return { error: "Google Calendar error: " + (await delRes.text().catch(() => "")).slice(0, 200) };
+        return { success: true, deleted: true };
+      }
+      case "update_calendar_event": {
+        const accessToken = await getGoogleAccessToken(ctx);
+        if (!accessToken) return { error: "Google Calendar isn't connected — connect it in Settings → Integrations first." };
+        let eventId = input.eventId;
+        if (!eventId && input.title) {
+          const now = new Date();
+          const farOut = new Date(now.getTime() + 90 * 24 * 3600000);
+          const events = await fetchGoogleEventsInRange(accessToken, now.toISOString(), farOut.toISOString());
+          const q = String(input.title).toLowerCase();
+          const match = events.find(ev => ev.title.toLowerCase().includes(q));
+          if (!match) return { error: `No Google Calendar event found matching "${input.title}" — call get_calendar_summary first to see what's actually there.` };
+          eventId = match.id;
+        }
+        if (!eventId) return { error: "Need either eventId or a title to find it by." };
+        const patch: Record<string, unknown> = {};
+        if (input.title) patch.summary = input.title;
+        if (input.notes !== undefined) patch.description = input.notes;
+        if (input.date) {
+          const startDate = new Date(`${input.date}T${input.time || "09:00"}:00`);
+          if (isNaN(startDate.getTime())) return { error: "Couldn't parse that date/time." };
+          patch.start = { dateTime: startDate.toISOString() };
+          patch.end = { dateTime: new Date(startDate.getTime() + (Number(input.durationMinutes) || 60) * 60000).toISOString() };
+        }
+        const patchRes = await fetch(`https://www.googleapis.com/calendar/v3/calendars/primary/events/${encodeURIComponent(eventId)}`, {
+          method: "PATCH", headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" }, body: JSON.stringify(patch),
+        });
+        if (!patchRes.ok) return { error: "Google Calendar error: " + (await patchRes.text().catch(() => "")).slice(0, 200) };
+        return { success: true, eventId };
       }
       case "list_job_requests": {
         const rows = await sbGet(ctx, `job_requests?select=id,employee_id,job_id,message,status${ownerScope(ctx)}&status=eq.pending&limit=50`);

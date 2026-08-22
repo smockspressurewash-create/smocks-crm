@@ -22,7 +22,8 @@ import {
 } from "recharts";
 import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, withTimeout, withTimeoutRetry, reconcileCrewAfterAssign, getPollIntervalMs } from "../../lib/utils";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
-import { twilioSend, sendEmail, emailShell, emailButton, logOutboundSmsToInbox } from "../../lib/messaging";
+import { twilioSend, sendEmail, emailShell, emailButton, logOutboundSmsToInbox, getFreshOwnerGoogleToken } from "../../lib/messaging";
+import { fetchCalendarEvents, createGCalEvent, updateGCalEvent, deleteGCalEvent } from "../../lib/googleApi";
 import { seedWeather } from "../../lib/weather";
 import { seedCustomers, seedEstimates, seedJobs, seedEmployees, seedVehicles, seedExpenses, seedChemicals, seedServices, seedAutomations, seedEmailTemplates, seedSmsTemplates, seedRewardTiers, seedReferrals, seedMaintenance, campaignTemplates, seedSocialPosts, seedTimeline, seedGoals, seedReminders, seedAccountabilityEntries, seedMileage, seedLeadSrc, STEP_TYPES, AUTOMATION_TEMPLATES } from "../../lib/seed";
 import { callModel, MODELS, parseRateLimitError } from "../../lib/api";
@@ -1621,11 +1622,80 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
         case "get_calendar_summary": {
           const from = inputs.from || today();
           const to = inputs.to || daysFromNow(7);
-          const inRange = jobs.filter(j => j.scheduledDate >= from && j.scheduledDate <= to && j.status !== "cancelled").map(j => {
+          const crmJobs = jobs.filter(j => j.scheduledDate >= from && j.scheduledDate <= to && j.status !== "cancelled").map(j => {
             const c = customers.find(x => x.id === j.customerId);
-            return { date: j.scheduledDate, time: j.scheduledTime, customer: c ? c.firstName + " " + c.lastName : "Unknown", address: j.address, status: j.status, amount: j.amount };
+            return { jobId: j.id, date: j.scheduledDate, time: j.scheduledTime, customer: c ? c.firstName + " " + c.lastName : "Unknown", address: j.address, status: j.status, amount: j.amount, googleEventId: (j as any).googleEventId || null };
           }).sort((a, b) => (a.date + (a.time || "")).localeCompare(b.date + (b.time || "")));
-          return { from, to, count: inRange.length, jobs: inRange };
+
+          // FEATURE — "what's my availability/agenda this week" needs BOTH
+          // sources cross-checked, not just CRM jobs: a job the owner never
+          // synced to Google (or that sync silently failing, as it did for
+          // months — see getFreshOwnerGoogleToken fix) shouldn't be invisible
+          // to "what's on my calendar", and a personal/non-job Google event
+          // (dentist, another business's meeting) should still show up as a
+          // real time commitment even though it has no CRM job behind it.
+          let googleEvents: any[] = [];
+          let googleConnected = false;
+          try {
+            const token = await getFreshOwnerGoogleToken(settings as any);
+            if (token) {
+              googleConnected = true;
+              const events = await fetchCalendarEvents(token);
+              googleEvents = events.filter(ev => {
+                const d = (ev.start || "").slice(0, 10);
+                return d >= from && d <= to;
+              });
+            }
+          } catch (e: any) { console.warn("[AlfredTool get_calendar_summary] Google Calendar fetch failed:", e?.message); }
+
+          const jobEventIds = new Set(crmJobs.map(j => j.googleEventId).filter(Boolean));
+          // A CRM job that never made it to Google (no googleEventId, or the
+          // id it has doesn't actually exist in the fetched range anymore —
+          // e.g. deleted directly in Google).
+          const fetchedIds = new Set(googleEvents.map(ev => ev.id));
+          const jobsMissingFromGoogle = crmJobs.filter(j => !j.googleEventId || !fetchedIds.has(j.googleEventId));
+          // A Google event with no CRM job behind it at all — could be a real
+          // personal commitment, or a job whose Calendar event was created
+          // but the CRM side never got the id (e.g. the same historical sync
+          // bug from the other direction).
+          const googleOnlyEvents = googleEvents.filter(ev => !jobEventIds.has(ev.id)).map(ev => ({ title: ev.title, start: ev.start, end: ev.end, location: ev.location }));
+
+          return {
+            from, to, googleCalendarConnected: googleConnected,
+            crmJobs, crmJobCount: crmJobs.length,
+            googleOnlyEvents, googleOnlyEventCount: googleOnlyEvents.length,
+            jobsNotOnGoogleCalendar: jobsMissingFromGoogle.map(j => ({ date: j.date, time: j.time, customer: j.customer })),
+            note: googleConnected
+              ? (googleOnlyEvents.length || jobsMissingFromGoogle.length
+                  ? "There are discrepancies between the CRM and Google Calendar — report both lists to the owner by name/date, don't just give a job count."
+                  : "CRM jobs and Google Calendar agree for this range.")
+              : "Google Calendar isn't connected, so this is CRM jobs only — mention that if the owner asked about their real calendar.",
+          };
+        }
+        case "delete_calendar_event": {
+          const token = await getFreshOwnerGoogleToken(settings as any);
+          if (!token) return { error: "Google Calendar isn't connected — connect it in Settings → Integrations first." };
+          let eventId = inputs.eventId;
+          // Let the owner refer to it by title/date instead of an id they'd
+          // never know — look it up in the same window get_calendar_summary
+          // already searches.
+          if (!eventId && inputs.title) {
+            const events = await fetchCalendarEvents(token);
+            const q = String(inputs.title).toLowerCase();
+            const match = events.find(ev => (ev.title || "").toLowerCase().includes(q) && (!inputs.date || (ev.start || "").slice(0, 10) === inputs.date));
+            if (!match) return { error: `No Google Calendar event found matching "${inputs.title}"${inputs.date ? " on " + inputs.date : ""} — call get_calendar_summary first to see what's actually there.` };
+            eventId = match.id;
+          }
+          if (!eventId) return { error: "Need either eventId or a title to find it by." };
+          try {
+            await deleteGCalEvent(token, eventId);
+          } catch (e: any) {
+            return { error: "Google Calendar error: " + (e?.message || "delete failed") };
+          }
+          // If a CRM job was pointing at this event, clear the stale link.
+          const linkedJob = jobs.find(j => (j as any).googleEventId === eventId);
+          if (linkedJob) setJobs((prev: any[]) => prev.map(j => j.id === linkedJob.id ? { ...j, googleEventId: null } : j));
+          return { success: true, deleted: true };
         }
         case "get_employee_status": {
           // FIX — this only recognized a job as "active" via the OWNER's own
@@ -1876,26 +1946,59 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           }
         }
         case "create_calendar_event": {
-          if (!settings.googleConnected || !(settings.googleScopes || {}).calendar) return { error: "Calendar not connected. Ask user to go to Settings → Integrations → Google and enable Calendar." };
           if (!inputs.title || !inputs.date) return { error: "title and date required" };
-          const url = settings.googleBackendUrl;
-          // AUDIT G — was settings.googleToken (never populated); see the
-          // create_calendar_event case above for why.
-          const token = settings.googleProviderToken;
+          // BUG FIX — this required settings.googleBackendUrl, a field this
+          // app has never had (no separate backend server — see CLAUDE.md),
+          // so it always fell into the "queued" no-op branch and never
+          // created a real event, identical to the Gmail-send bug fixed
+          // earlier. Route through the same direct-fetch Calendar API
+          // (googleApi.ts) every other real Calendar call in this app uses.
+          const token = await getFreshOwnerGoogleToken(settings as any);
+          if (!token) return { error: "Google Calendar isn't connected — connect it in Settings → Integrations first." };
           const startDt = inputs.date + "T" + (inputs.time || "09:00") + ":00";
           const endMin = (inputs.duration_minutes || 60);
-          const endDt = new Date(new Date(startDt).getTime() + endMin * 60000).toISOString().slice(0, 19);
-          if (url && token) {
-            try {
-              const calResult = await (createCalendarEvent as any)(url, token, { title: inputs.title, start: startDt, end: endDt, description: inputs.notes || "", location: inputs.location || "", attendees: inputs.attendees || [] });
-              toast("Event created in Google Calendar: " + inputs.title);
-              return { success: true, eventId: (calResult as any)?.id || uid(), title: inputs.title, start: startDt, end: endDt };
-            } catch (e) {
-              return { error: "Calendar event failed: " + e.message };
-            }
-          } else {
-            toast("Event queued: " + inputs.title + " on " + inputs.date + " (add backend URL in Settings to sync to Google Calendar)");
-            return { success: true, queued: true, title: inputs.title, date: inputs.date, note: "Backend URL not configured. Token + URL needed to create real Calendar events." };
+          const endIso = new Date(new Date(startDt).getTime() + endMin * 60000).toISOString();
+          try {
+            const eventId = await createGCalEvent(token, {
+              title: inputs.title,
+              start: new Date(startDt).toISOString(),
+              end: endIso,
+              description: inputs.notes || "",
+              location: inputs.location || "",
+            });
+            toast("📅 Event created in Google Calendar: " + inputs.title);
+            return { success: true, eventId, title: inputs.title, start: startDt, end: endIso };
+          } catch (e: any) {
+            return { error: "Calendar event failed: " + (e?.message || "unknown error") };
+          }
+        }
+        case "update_calendar_event": {
+          const token = await getFreshOwnerGoogleToken(settings as any);
+          if (!token) return { error: "Google Calendar isn't connected — connect it in Settings → Integrations first." };
+          let eventId = inputs.eventId;
+          if (!eventId && inputs.title) {
+            const events = await fetchCalendarEvents(token);
+            const q = String(inputs.title).toLowerCase();
+            const match = events.find(ev => (ev.title || "").toLowerCase().includes(q));
+            if (!match) return { error: `No Google Calendar event found matching "${inputs.title}" — call get_calendar_summary first to see what's actually there.` };
+            eventId = match.id;
+          }
+          if (!eventId) return { error: "Need either eventId or a title to find it by." };
+          const patch: any = {};
+          if (inputs.title) patch.title = inputs.title;
+          if (inputs.location !== undefined) patch.location = inputs.location;
+          if (inputs.notes !== undefined) patch.description = inputs.notes;
+          if (inputs.date) {
+            const startDt = inputs.date + "T" + (inputs.time || "09:00") + ":00";
+            patch.start = new Date(startDt).toISOString();
+            patch.end = new Date(new Date(startDt).getTime() + (inputs.duration_minutes || 60) * 60000).toISOString();
+          }
+          try {
+            await updateGCalEvent(token, eventId, patch);
+            toast("📅 Google Calendar event updated");
+            return { success: true, eventId };
+          } catch (e: any) {
+            return { error: "Calendar event failed: " + (e?.message || "unknown error") };
           }
         }
         case "upload_to_drive": {
@@ -2021,8 +2124,18 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
     },
     {
       name: "get_calendar_summary",
-      description: "Get what's scheduled for a date range — use for 'what's on the calendar today/this week' questions.",
+      description: "Get what's scheduled for a date range — use for 'what's on the calendar/my agenda/my availability today/this week' questions. Cross-checks the CRM's own job list against the REAL connected Google Calendar and reports discrepancies both directions (a job never synced to Google, or a Google event — personal or otherwise — with no matching CRM job) — always mention discrepancies if there are any, don't just report the CRM job count.",
       input_schema: { type: "object", properties: { from: { type: "string", description: "YYYY-MM-DD, defaults to today" }, to: { type: "string", description: "YYYY-MM-DD, defaults to 7 days from 'from'" } } }
+    },
+    {
+      name: "delete_calendar_event",
+      description: "Delete an event from the user's Google Calendar — use for 'delete/remove this from my calendar'. Identify it by eventId (from get_calendar_summary) or by title (+ optionally date) and this will look it up.",
+      input_schema: { type: "object", properties: { eventId: { type: "string" }, title: { type: "string" }, date: { type: "string", description: "YYYY-MM-DD, narrows the title search" } } }
+    },
+    {
+      name: "update_calendar_event",
+      description: "Move or edit an existing Google Calendar event — use for 'move this to Friday' / 'change the time on X'. Identify it by eventId or by title, then pass only the fields that changed.",
+      input_schema: { type: "object", properties: { eventId: { type: "string" }, title: { type: "string", description: "used to find the event if no eventId, or the new title if eventId is given" }, date: { type: "string", description: "YYYY-MM-DD, new date if moving it" }, time: { type: "string", description: "HH:MM 24h, new time" }, duration_minutes: { type: "number" }, location: { type: "string" }, notes: { type: "string" } } }
     },
     {
       name: "get_employee_status",

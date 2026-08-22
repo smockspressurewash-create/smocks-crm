@@ -562,6 +562,40 @@ export const refreshGoogleAccessToken = async (
   }
 };
 
+// GoogleConnect — reusable owner-token resolver for anything that isn't
+// Gmail (Calendar create/update/delete, cross-checking the owner's real
+// Google Calendar). JobsPage.tsx's job→Calendar sync and AlfredPage.tsx's
+// create_calendar_event tool were BOTH silently dead this whole time because
+// they read `settings.googleToken` — a field NOTHING in this app ever
+// writes (see InboxPage.tsx's own version of this same bug, fixed earlier).
+// The one real field is `googleProviderToken` (in React state) or
+// localStorage via getStoredGoogleConnection() (the more current source —
+// see sendOwnerGmailOnly above). This mirrors that same localStorage-first,
+// proactive-refresh chain, just returning a plain access token string
+// instead of sending an email, so any Calendar caller can share it.
+export const getFreshOwnerGoogleToken = async (
+  settings: { googleProviderToken?: string; googleRefreshToken?: string; googleTokenExpiresAt?: number; googleBackendUrl?: string },
+  onTokenRefreshed?: (token: string, expiresAt: number) => void
+): Promise<string | null> => {
+  const stored = getStoredGoogleConnection();
+  let token = stored?.token || settings.googleProviderToken || "";
+  let refreshToken = stored?.refreshToken || settings.googleRefreshToken;
+  let expiresAt = stored?.expiresAt || settings.googleTokenExpiresAt;
+
+  if (!token && !refreshToken) {
+    const cloud = await fetchOwnerGoogleToken();
+    if (cloud?.token) { token = cloud.token; refreshToken = cloud.refreshToken; expiresAt = cloud.expiresAt; }
+  }
+  if (refreshToken && (!expiresAt || Date.now() > expiresAt - 2 * 60 * 1000)) {
+    const refreshed = await refreshGoogleAccessToken(refreshToken, settings.googleBackendUrl);
+    if (refreshed?.token) {
+      token = refreshed.token;
+      onTokenRefreshed?.(refreshed.token, refreshed.expiresAt);
+    }
+  }
+  return token || null;
+};
+
 // FIX 1 (Gmail infinite-retry loop) — every Gmail 401 used to re-run the full
 // refresh chain (Cloudflare token exchange, then a supabase.auth.refreshSession()
 // fallback) with no memory of past failures. When the Cloudflare Function is

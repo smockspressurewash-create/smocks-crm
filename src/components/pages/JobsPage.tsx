@@ -23,7 +23,7 @@ import {
 import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, weekdayLabels, computeNextRecurringDate, describeRecurringSchedule, isEmployeeUnavailable, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, withTimeout, getEffectiveRate, totalJobPhotoCount, stripLegacyJobFields, insertClientIdRowWithRetry, insertJobRequestSafely } from "../../lib/utils";
 const weatherRisk = (_dateStr: string): {icon: string; level: string; reason: string} | null => null;
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
-import { twilioSend, sendEmail, emailShell, emailButton } from "../../lib/messaging";
+import { twilioSend, sendEmail, emailShell, emailButton, getFreshOwnerGoogleToken } from "../../lib/messaging";
 import { supabase } from "../../lib/supabase";
 import { seedWeather } from "../../lib/weather";
 import { seedCustomers, seedEstimates, seedJobs, seedEmployees, seedVehicles, seedExpenses, seedChemicals, seedServices, seedAutomations, seedEmailTemplates, seedSmsTemplates, seedRewardTiers, seedReferrals, seedMaintenance, campaignTemplates, seedSocialPosts, seedTimeline, seedGoals, seedReminders, seedAccountabilityEntries, seedMileage, seedLeadSrc, STEP_TYPES, AUTOMATION_TEMPLATES } from "../../lib/seed";
@@ -359,8 +359,13 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
         })
         .catch((e: any) => console.warn("[Reschedule] request update failed:", e?.message));
     }
-    // Sync Google Calendar when date or time changes
-    if (oldJob?.googleEventId && (settings as any)?.googleConnected && (settings as any)?.googleToken) {
+    // Sync Google Calendar when date or time changes. BUG FIX — this read
+    // (settings as any).googleToken, a field nothing in this app ever
+    // writes (the real field is googleProviderToken/localStorage — see
+    // getFreshOwnerGoogleToken in lib/messaging.ts) so this sync has been
+    // silently dead since it was written; every job reschedule quietly
+    // failed to move the matching Google Calendar event.
+    if (oldJob?.googleEventId && (settings as any)?.googleConnected) {
       if (patch.scheduledDate !== undefined || patch.scheduledTime !== undefined) {
         const newDate = patch.scheduledDate ?? oldJob.scheduledDate;
         const newTime = patch.scheduledTime ?? oldJob.scheduledTime ?? "09:00";
@@ -368,10 +373,13 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
           const startDt = new Date(newDate + "T" + (newTime || "09:00") + ":00");
           const hrs = Number(patch.duration ?? oldJob.duration) || 2;
           const endDt = new Date(startDt.getTime() + hrs * 3600000);
-          updateGCalEvent((settings as any).googleToken, oldJob.googleEventId, {
-            start: startDt.toISOString(),
-            end: endDt.toISOString(),
-          }, (settings as any).googleCalendarId || "primary").catch(() => {});
+          getFreshOwnerGoogleToken(settings as any).then(token => {
+            if (!token) return;
+            updateGCalEvent(token, oldJob.googleEventId, {
+              start: startDt.toISOString(),
+              end: endDt.toISOString(),
+            }, (settings as any).googleCalendarId || "primary").catch(() => {});
+          }).catch(() => {});
         }
       }
     }
@@ -382,8 +390,10 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
     setCancelModal(null);
     toast("Job cancelled");
     // Delete Google Calendar event if connected
-    if (j?.googleEventId && settings?.googleConnected && (settings as any)?.googleToken) {
-      deleteGCalEventDirect((settings as any).googleToken, j.googleEventId).catch(() => {});
+    if (j?.googleEventId && settings?.googleConnected) {
+      getFreshOwnerGoogleToken(settings as any).then(token => {
+        if (token) deleteGCalEventDirect(token, j.googleEventId).catch(() => {});
+      }).catch(() => {});
     }
   };
   const clockIn = jid => { updateJob(jid, { clockInAt: Date.now() }); toast("Clocked in"); };
@@ -913,18 +923,26 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
               // Create Google Calendar event if Google is connected
               // FIX 9 — only auto-create the calendar event when auto-sync is on
               // (defaults to on for backward compatibility).
-              if (((settings as any)?.autoSyncCalendar ?? true) && settings?.googleConnected && (settings as any)?.googleToken && job.scheduledDate) {
+              // BUG FIX — (settings as any).googleToken is never populated by
+              // anything in this app (see getFreshOwnerGoogleToken in
+              // lib/messaging.ts) so this create silently never fired; every
+              // job created here should already have shown up on the owner's
+              // Google Calendar and never did.
+              if (((settings as any)?.autoSyncCalendar ?? true) && settings?.googleConnected && job.scheduledDate) {
                 const c = customers.find(x => x.id === job.customerId);
                 const startDt = new Date(job.scheduledDate + "T" + (job.scheduledTime || "09:00") + ":00");
                 const endDt = new Date(startDt.getTime() + 2 * 60 * 60 * 1000);
-                createGCalEvent((settings as any).googleToken, {
-                  title: (c ? c.firstName + " " + c.lastName + " — " : "") + "Pressure Washing",
-                  start: startDt.toISOString(),
-                  end: endDt.toISOString(),
-                  location: job.address || "",
-                  description: job.notes || "",
+                getFreshOwnerGoogleToken(settings as any).then(token => {
+                  if (!token) return null;
+                  return createGCalEvent(token, {
+                    title: (c ? c.firstName + " " + c.lastName + " — " : "") + "Pressure Washing",
+                    start: startDt.toISOString(),
+                    end: endDt.toISOString(),
+                    location: job.address || "",
+                    description: job.notes || "",
+                  });
                 }).then(eventId => {
-                  setJobs(prev => prev.map(j => j.id === job.id ? { ...j, googleEventId: eventId } : j));
+                  if (eventId) setJobs(prev => prev.map(j => j.id === job.id ? { ...j, googleEventId: eventId } : j));
                 }).catch(() => {});
               }
               // Notify each selected crew member — assigned (no response needed) or requested (accept/decline).
