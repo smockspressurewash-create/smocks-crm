@@ -34,6 +34,12 @@ type Ctx = {
   twilioToken?: string;
   twilioFrom?: string;
   origin: string;
+  // Whichever authorized number is actually texting Alfred right now — used
+  // by the text_me tool as "send it back to whoever's asking," so it works
+  // correctly whether the owner is texting from myPhone or one of
+  // alfredExtraPhones, without needing a separate "which is the real owner
+  // number" lookup.
+  fromPhone?: string;
 };
 
 // ─── Supabase helpers (service-role REST, same pattern as the webhook) ────
@@ -236,6 +242,58 @@ const TOOLS = [
       properties: { invoiceId: { type: "string" }, customerName: { type: "string", description: "Alternative to invoiceId — sends that customer's most recent unpaid invoice" } },
     },
   },
+  {
+    name: "text_me",
+    description: "Text the OWNER (the person you're already texting with) a message right now — use this whenever they ask you to text/message THEM something (not a customer), e.g. 'text me the schedule for tomorrow' or 'send that to my phone'.",
+    input_schema: {
+      type: "object",
+      properties: { message: { type: "string" } },
+      required: ["message"],
+    },
+  },
+  {
+    name: "remember",
+    description: "Save a fact/note for later recall — use whenever the owner says 'remember that...', 'keep track of...', 'note that...', or similar. Not a scheduled reminder (use set_reminder for a future text) — this is just durable memory you can look up later with recall.",
+    input_schema: {
+      type: "object",
+      properties: { fact: { type: "string" }, category: { type: "string", description: "optional grouping, e.g. 'gate codes', 'customer preferences'" } },
+      required: ["fact"],
+    },
+  },
+  {
+    name: "recall",
+    description: "Look up previously remembered facts/notes, optionally filtered by a search term. Use this when the owner asks 'what did I tell you about X' or 'what do you have saved'.",
+    input_schema: {
+      type: "object",
+      properties: { search: { type: "string", description: "optional keyword to filter by" } },
+    },
+  },
+  {
+    name: "set_reminder",
+    description: "Schedule a text reminder to be sent back to the owner at a specific future time — use for 'remind me to X at/in/on Y'. Resolve the due time to an exact ISO 8601 datetime yourself (you're told today's date and time in the system prompt) before calling this — never pass a vague phrase.",
+    input_schema: {
+      type: "object",
+      properties: {
+        message: { type: "string", description: "what to remind the owner about" },
+        dueAtIso: { type: "string", description: "exact ISO 8601 datetime to send the reminder, e.g. 2026-08-23T14:00:00" },
+      },
+      required: ["message", "dueAtIso"],
+    },
+  },
+  {
+    name: "list_reminders",
+    description: "List the owner's upcoming (not-yet-sent) reminders.",
+    input_schema: { type: "object", properties: {} },
+  },
+  {
+    name: "cancel_reminder",
+    description: "Cancel a pending reminder. Use list_reminders first to find its id if the owner doesn't give you one directly.",
+    input_schema: {
+      type: "object",
+      properties: { reminderId: { type: "string" } },
+      required: ["reminderId"],
+    },
+  },
 ];
 
 const executeTool = async (ctx: Ctx, name: string, input: Record<string, any>): Promise<any> => {
@@ -379,6 +437,49 @@ const executeTool = async (ctx: Ctx, name: string, input: Record<string, any>): 
         if (!res.ok) return { error: res.error };
         return { success: true, sentTo: `${cust.firstName} ${cust.lastName}`, amount: inv.total };
       }
+      case "text_me": {
+        if (!ctx.fromPhone) return { error: "Don't know which number to text back." };
+        const res = await sendSms(ctx, ctx.fromPhone, input.message);
+        if (!res.ok) return { error: res.error };
+        return { success: true };
+      }
+      case "remember": {
+        if (!input.fact) return { error: "fact required" };
+        const row = { id: crypto.randomUUID(), text: input.fact, category: input.category || "general" };
+        const res = await sbWrite(ctx, "alfred_memory", "POST", row);
+        if (!res.ok) return { error: res.error };
+        return { success: true, remembered: input.fact };
+      }
+      case "recall": {
+        const rows = await sbGet(ctx, `alfred_memory?select=text,category,created_at${ownerScope(ctx)}&order=created_at.desc&limit=100`);
+        const q = (input.search || "").toLowerCase().trim();
+        const filtered = q ? rows.filter((r: any) => (r.text || "").toLowerCase().includes(q) || (r.category || "").toLowerCase().includes(q)) : rows;
+        if (filtered.length === 0) return { success: true, memories: [], summary: q ? `Nothing saved matching "${input.search}".` : "Nothing saved yet." };
+        return { success: true, memories: filtered.slice(0, 20).map((r: any) => r.text) };
+      }
+      case "set_reminder": {
+        if (!input.message || !input.dueAtIso) return { error: "message and dueAtIso required" };
+        const dueAt = new Date(input.dueAtIso);
+        if (isNaN(dueAt.getTime())) return { error: "dueAtIso isn't a valid date/time." };
+        if (!ctx.fromPhone) return { error: "Don't know which number to remind." };
+        const row = { id: crypto.randomUUID(), phone: ctx.fromPhone, message: input.message, due_at: dueAt.toISOString(), sent: false };
+        const res = await sbWrite(ctx, "alfred_reminders", "POST", row);
+        if (!res.ok) return { error: res.error };
+        return { success: true, reminderId: row.id, dueAt: dueAt.toISOString() };
+      }
+      case "list_reminders": {
+        const rows = await sbGet(ctx, `alfred_reminders?select=id,message,due_at${ownerScope(ctx)}&sent=eq.false&order=due_at.asc&limit=25`);
+        if (rows.length === 0) return { success: true, reminders: [], summary: "No pending reminders." };
+        return { success: true, reminders: rows.map((r: any) => ({ id: r.id, message: r.message, dueAt: r.due_at })) };
+      }
+      case "cancel_reminder": {
+        if (!input.reminderId) return { error: "reminderId required" };
+        const res = await fetch(`${SUPABASE_URL}/rest/v1/alfred_reminders?id=eq.${encodeURIComponent(input.reminderId)}`, {
+          method: "DELETE", headers: ctx.authHeaders,
+        });
+        if (!res.ok) return { error: "Couldn't cancel — " + (await res.text().catch(() => "")).slice(0, 200) };
+        return { success: true };
+      }
       default:
         return { error: `Unknown tool "${name}".` };
     }
@@ -422,7 +523,10 @@ export const runAlfredSmsAgent = async (
   const history = await loadThread(ctx, fromPhone);
   const messages = [...history, { role: "user", content: incomingText }];
 
-  const systemPrompt = `You are Alfred, the AI assistant for ${ctx.companyName}, a pressure-washing business — texting back and forth with the OWNER over SMS while they're away from the CRM. Use tools aggressively to actually read and modify the CRM — never just describe what you'd do. Keep replies SHORT (this is a text message, 1-3 sentences, no markdown). If a tool result has an "error" field, tell the owner exactly what went wrong — do not claim success. If a request is missing something a tool needs (which customer, which date), ask one short clarifying question instead of guessing. When you finish an action, confirm plainly what happened.`;
+  const nowLocal = new Date().toISOString();
+  const systemPrompt = `You are Alfred, the AI assistant for ${ctx.companyName}, a pressure-washing business — texting back and forth with the OWNER over SMS while they're away from the CRM. The current date/time is ${nowLocal} (UTC). Use tools aggressively to actually read and modify the CRM — never just describe what you'd do. Keep replies SHORT (this is a text message, 1-3 sentences, no markdown). If a tool result has an "error" field, tell the owner exactly what went wrong — do not claim success. If a request is missing something a tool needs (which customer, which date), ask one short clarifying question instead of guessing. When you finish an action, confirm plainly what happened.
+
+You can: text the owner back on request (text_me), remember arbitrary facts/notes for later (remember/recall — use this whenever they say "remember", "keep track of", or "note that"), and schedule future text reminders (set_reminder — resolve any relative time like "tomorrow at 9am" into an exact ISO datetime yourself using the current date/time above before calling it; list_reminders/cancel_reminder manage existing ones). These are in addition to the CRM actions (jobs, customers, invoices, employees) — use whichever tool actually matches what's being asked, and don't hesitate to chain several tool calls in one exchange if the request needs it (e.g. reschedule a job AND text the customer AND remember a preference).`;
 
   let rounds = 0;
   let finalText = "";
