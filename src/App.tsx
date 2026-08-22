@@ -2525,6 +2525,20 @@ export function App() {
               setPage("portal");
               setOauthProcessing(false);
               persistEmployeeGoogleToken(session);
+              // BUG FIX — this branch returned without ever setting crmUserId,
+              // the tenant id refetchEmployees()/refetchData() and the
+              // realtime subscription (both further down, both filtered by
+              // `owner_id=eq.${crmUserId}`) actually query by. It was only
+              // ever set on the owner/manager branch below, so an employee
+              // session ran with whatever crmUserId happened to be cached
+              // from getLastOwnerId() at mount — empty on a device that's
+              // never had an owner log in, or stale/wrong otherwise. Either
+              // way, the employees-table realtime subscription silently
+              // matched zero rows and refetchEmployees() queried the wrong
+              // owner, which is exactly what "clocked in on one device,
+              // other device still shows not clocked in" looks like — no
+              // error, just permanently stale employee data.
+              if (resolvedOwnerId) { setCrmUserId(resolvedOwnerId); setLastOwnerId(resolvedOwnerId); }
               return;
             }
 
@@ -2579,6 +2593,10 @@ export function App() {
           setPage("portal");
           setOauthProcessing(false);
           persistEmployeeGoogleToken(initial);
+          // Same fix as the onAuthStateChange employee branch above — this
+          // is the initial-page-load path (runs once on first mount) and
+          // had the identical gap.
+          if (initOwnerId) { setCrmUserId(initOwnerId); setLastOwnerId(initOwnerId); }
         } else {
           if (initial) { setHasCrmSession(true); setLastOwnerSessionFlag(true); }
           else { setHasCrmSession(false); setLastOwnerSessionFlag(false); }

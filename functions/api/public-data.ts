@@ -117,11 +117,40 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
       if (!upd.ok) return json({ error: "Failed to update estimate" }, 500);
 
       if (job) {
-        await sb(serviceRoleKey, `jobs`, {
+        const jobIns = await sb(serviceRoleKey, `jobs`, {
           method: "POST", headers: { Prefer: "return=minimal" },
           body: JSON.stringify({ ...job, owner_id: est.owner_id }),
         });
+        if (!jobIns.ok) console.error("[public-data approve_estimate] job insert failed for estimate", id, "— owner never got a job row for this approval");
       }
+
+      // FEATURE — notify the owner immediately by SMS. This used to be
+      // attempted client-side in ClientPortal.tsx using `settings` passed
+      // down as a prop, but that prop is the narrow PUBLIC settings payload
+      // (never includes twilioSid/token — those are secrets, same reasoning
+      // as every other public route in this file) — so `settings?.twilioSid`
+      // was always undefined for an actual anonymous visitor and the
+      // notification silently never fired. Send it here instead, server-side,
+      // using the owner's real saved credentials via the service role.
+      try {
+        const settingsRes = await sb(serviceRoleKey, `app_settings?owner_id=eq.${encodeURIComponent(est.owner_id)}&select=data`);
+        const s = Array.isArray(settingsRes.data) ? settingsRes.data[0]?.data || {} : {};
+        if (s.twilioSid && s.twilioToken && s.twilioFrom && s.myPhone) {
+          const custRes = await sb(serviceRoleKey, `customers?id=eq.${encodeURIComponent(est.customerId)}&select=firstName,lastName`);
+          const cust = Array.isArray(custRes.data) ? custRes.data[0] : null;
+          const custName = cust ? `${cust.firstName || ""} ${cust.lastName || ""}`.trim() : "A customer";
+          const amount = job?.amount != null ? `$${Number(job.amount).toFixed(2)}` : "";
+          const msg = `✍️ QUOTE ACCEPTED: ${custName} approved ${amount || "their estimate"}${paid ? " and paid" : " — will pay later"}. New job added to Unscheduled — needs a date.`;
+          const auth = `Basic ${btoa(`${s.twilioSid}:${s.twilioToken}`)}`;
+          const params = new URLSearchParams({ To: s.myPhone, From: s.twilioFrom, Body: msg });
+          await fetch(`https://api.twilio.com/2010-04-01/Accounts/${s.twilioSid}/Messages.json`, {
+            method: "POST", headers: { Authorization: auth, "Content-Type": "application/x-www-form-urlencoded" }, body: params.toString(),
+          });
+        }
+      } catch (e: any) {
+        console.error("[public-data approve_estimate] owner notification failed:", e?.message);
+      }
+
       return json({ success: true });
     }
 
