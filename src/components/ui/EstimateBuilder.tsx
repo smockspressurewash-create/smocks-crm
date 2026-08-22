@@ -137,6 +137,14 @@ export function EstimateBuilder({ open, onClose, customers = [], services = [], 
     if (intNotes && !internalNote.includes(intNotes)) {
       setInternalNote(prev => prev ? prev + "\n" + intNotes : intNotes);
     }
+    // Auto-apply this service's default deposit the first time a service
+    // carrying one is added — only when the owner hasn't already set a
+    // deposit by hand, so it never silently overwrites a manual choice.
+    if ((s as any).depositRequired && !depositRequired) {
+      setDepositRequired(Number((s as any).depositRequired));
+      setDepositType((s as any).depositType || "amount");
+      setDepositMandatory(!!(s as any).depositMandatory);
+    }
   };
 
   const loadTemplate = tpl => {

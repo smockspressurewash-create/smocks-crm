@@ -124,6 +124,19 @@ export const getMySavedCard = async (accessToken: string): Promise<StripeSavedCa
   return data.card || null;
 };
 
+// FEATURE — multi-card support: a customer can save more than one card and
+// pick a default. get_my_saved_cards returns every card on file (not just
+// the most recent); detach_my_payment_method removes one, server-verified
+// to actually belong to the caller's own Stripe customer first.
+export const getMySavedCards = async (accessToken: string): Promise<StripeSavedCard[]> => {
+  const data = await stripeAction("get_my_saved_cards", {}, accessToken);
+  return data.cards || [];
+};
+
+export const detachMyPaymentMethod = async (accessToken: string, paymentMethodId: string): Promise<void> => {
+  await stripeAction("detach_my_payment_method", { paymentMethodId }, accessToken);
+};
+
 // ─── Payment Intents ───────────────────────────────────────────────────────────
 
 export interface StripePaymentIntent {
@@ -213,3 +226,19 @@ export const chargeSavedPaymentMethod = async (
 export const refundPaymentIntent = async (paymentIntentId: string): Promise<void> => {
   await stripeAction("refund", { paymentIntentId });
 };
+
+// FEATURE — automatic payment confirmation receipt, sent server-side (see
+// stripe-action.ts's send_payment_receipt) right after ANY successful
+// charge, regardless of who processed it (customer self-pay, employee
+// in-person, owner). Runs server-side because it needs the owner's Twilio/
+// Gmail credentials, which must never reach a customer's browser. Texts if
+// a phone is on file, else emails; throws on genuine failure so callers can
+// toast a warning — the charge itself has already succeeded either way, so
+// this should never block/undo it, only surface if the receipt itself
+// didn't go out.
+export const sendPaymentReceipt = async (opts: {
+  customerPhone?: string; customerEmail?: string; customerFirstName?: string; customerId?: string;
+  amountCents: number; description?: string;
+  invoiceId?: string; ownerId?: string; accessToken?: string;
+}): Promise<{ channel: "sms" | "email" }> =>
+  stripeAction("send_payment_receipt", opts, opts.accessToken);

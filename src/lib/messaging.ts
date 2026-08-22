@@ -354,6 +354,41 @@ export const logOutboundSmsToInbox = async (
   }
 };
 
+// FEATURE — automatic payment confirmation receipt, sent right after ANY
+// successful charge (online invoice pay, in-person card-on-file, employee
+// checkout) regardless of who processed it. Text if the customer has a
+// phone on file (logged to inbox_threads like every other outbound SMS,
+// per CLAUDE.md's "Critical rules"), otherwise email via the owner's Gmail
+// (sendOwnerGmailOnly — never Resend, same rule). Throws only if the
+// customer has neither on file; callers should treat that as non-fatal
+// (the charge itself already succeeded) and just toast a warning.
+export const sendPaymentReceipt = async (
+  settings: TwilioSettings & EmailSettings & { googleConnected?: boolean; googleProviderToken?: string; googleEmail?: string; googleRefreshToken?: string; googleTokenExpiresAt?: number; googleBackendUrl?: string },
+  customer: { firstName?: string; phone?: string; email?: string; id?: string },
+  amountCents: number,
+  description: string,
+  companyName: string
+): Promise<void> => {
+  const amount = (amountCents / 100).toFixed(2);
+  const name = customer.firstName || "there";
+  if (customer.phone) {
+    const body = `Hi ${name}, this confirms your payment of $${amount} to ${companyName}${description ? " for " + description : ""}. Thank you!`;
+    await twilioSend(settings, customer.phone, body);
+    await logOutboundSmsToInbox({ contactName: name, contactPhone: customer.phone, customerId: customer.id, body });
+    return;
+  }
+  if (customer.email) {
+    const html = emailShell(companyName, "Payment Receipt", `
+      <p>Hi ${name},</p>
+      <p>This confirms your payment of <strong>$${amount}</strong> to ${companyName}${description ? " for " + description : ""}.</p>
+      <p>Thank you for your business!</p>
+    `);
+    await sendOwnerGmailOnly(settings, customer.email, `Payment Receipt — ${companyName}`, html);
+    return;
+  }
+  throw new Error("No phone or email on file — receipt not sent.");
+};
+
 // ─── Twilio incoming poll ─────────────────────────────────────────────────────
 
 export interface TwilioMessage {

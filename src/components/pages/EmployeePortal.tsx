@@ -20,7 +20,7 @@ import { PropertyMapEmbed } from "../ui/PropertyMapEmbed";
 import { SaveCardModal } from "../ui/SaveCardModal";
 import { InstallAppButton } from "../ui/InstallAppButton";
 import { SopModal } from "../ui/SopModal";
-import { chargeSavedPaymentMethod } from "../../lib/stripe";
+import { chargeSavedPaymentMethod, sendPaymentReceipt } from "../../lib/stripe";
 import { BarChart, Bar, LineChart, Line, XAxis, YAxis, ResponsiveContainer, Tooltip, CartesianGrid } from "recharts";
 import { fmt, uid, today, localDateStr, localDateKey, shiftDayStr, daysFromNow, computeJobRatingScore, setOAuthIntent, compressImageFile, getEffectiveRate, computeNextRecurringDate, weekdayLabels, normalizeJobRow, totalJobPhotoCount, mediaSrc, dataUrlToBlob, uploadJobMedia, checkVideoLimits, stripLegacyJobFields, reconcileCrewAfterAssign, getPollIntervalMs, getPayPeriodBounds, haversineMiles } from "../../lib/utils";
 import { usePollGate } from "../../hooks/usePollGate";
@@ -371,11 +371,18 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
   const [signOffReturnToComplete, setSignOffReturnToComplete] = useState(false);
   const [signerName, setSignerName] = useState("");
   // "Complete Job" flow: review (checklist/sign-off status) → payment → summary
-  const [completeStep, setCompleteStep] = useState<"" | "review" | "payment" | "method" | "invoice" | "invoice-preview" | "summary">("");
+  const [completeStep, setCompleteStep] = useState<"" | "review" | "payment" | "method" | "tip" | "invoice" | "invoice-preview" | "summary">("");
   const [paidChoice, setPaidChoice] = useState<"yes" | "no" | "">("");
   const [paymentMethod, setPaymentMethod] = useState("");
   const [sendingCompleteInvoice, setSendingCompleteInvoice] = useState(false);
   const [completeSummary, setCompleteSummary] = useState<{ hours: number; amount: number; paymentStatus: string } | null>(null);
+  // Tip prompt shown right after a successful in-person card-on-file charge,
+  // before handing the phone back to the customer/employee — a separate
+  // Stripe charge for the tip amount (the base job charge already went
+  // through), same pattern JobDetailModal's owner-side checkout doesn't need
+  // since owners aren't the ones physically handing the phone over.
+  const [tipChargingNow, setTipChargingNow] = useState(false);
+  const [customTipInput, setCustomTipInput] = useState("");
   const [invoiceEditSubject, setInvoiceEditSubject] = useState("");
   const [invoiceEditNote, setInvoiceEditNote] = useState("");
   const [invoiceChannel, setInvoiceChannel] = useState<"email" | "sms">("email");
@@ -1157,7 +1164,7 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
                     try {
                       await chargeSavedPaymentMethod(customer.stripeCustomerId!, customer.savedPaymentMethodId!, Math.round((Number(job.amount) || 0) * 100), "usd", `Job payment — ${job.address || ""}`);
                       toast(`Charged ${fmt(job.amount)} to card on file ✓`, "green");
-                      await finalizeCompletion("Paid", "Card (charged on file)");
+                      setCompleteStep("tip");
                     } catch (e: any) {
                       toast("Charge failed: " + (e?.message || "unknown error"), "red");
                     } finally {
@@ -1178,6 +1185,84 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
               <GBtn onClick={() => finalizeCompletion("Paid", paymentMethod || "Cash")} disabled={!paymentMethod} className="w-full !justify-center !py-3">
                 <CheckCircle size={16} className="inline mr-1.5" />Mark Complete
               </GBtn>
+            </>
+          )}
+
+          {completeStep === "tip" && (
+            <>
+              <div className="text-lg font-bold">Add a tip?</div>
+              <div className="text-sm text-white/50">Hand the phone to the customer, or ask them directly.</div>
+              <div className="grid grid-cols-4 gap-2">
+                {[15, 18, 20, 25].map(pct => {
+                  const tipAmt = Math.round((Number(job.amount) || 0) * (pct / 100) * 100) / 100;
+                  return (
+                    <button
+                      key={pct}
+                      disabled={tipChargingNow}
+                      onClick={async () => {
+                        setTipChargingNow(true);
+                        try {
+                          await chargeSavedPaymentMethod(customer!.stripeCustomerId!, customer!.savedPaymentMethodId!, Math.round(tipAmt * 100), "usd", `Tip — ${job.address || ""}`, undefined, (job as any).owner_id);
+                          toast(`Tip of ${fmt(tipAmt)} charged ✓`, "green");
+                          sendPaymentReceipt({
+                            customerPhone: customer?.phone, customerEmail: customer?.email, customerFirstName: customer?.firstName, customerId: customer?.id,
+                            amountCents: Math.round(((Number(job.amount) || 0) + tipAmt) * 100), description: `Job at ${job.address || ""} (incl. ${fmt(tipAmt)} tip)`, ownerId: (job as any).owner_id,
+                          }).catch((e: any) => console.warn("[PaymentReceipt] failed:", e?.message));
+                        } catch (e: any) {
+                          toast("Tip charge failed: " + (e?.message || "unknown error"), "red");
+                        } finally {
+                          setTipChargingNow(false);
+                          await finalizeCompletion("Paid", "Card (charged on file)");
+                        }
+                      }}
+                      className="py-3 rounded-xl border-2 border-white/10 bg-black/40 text-white/70 hover:border-emerald-500/50 hover:text-emerald-300 transition text-center disabled:opacity-50"
+                    >
+                      <div className="font-bold text-sm">{pct}%</div>
+                      <div className="text-[10px] text-white/40">{fmt(tipAmt)}</div>
+                    </button>
+                  );
+                })}
+              </div>
+              <div className="flex gap-2">
+                <GInput type="number" step="1" placeholder="Custom $ amount" value={customTipInput} onChange={e => setCustomTipInput(e.target.value)} className="!text-sm flex-1" />
+                <GBtn
+                  disabled={tipChargingNow || !customTipInput || Number(customTipInput) <= 0}
+                  onClick={async () => {
+                    const amt = Number(customTipInput);
+                    setTipChargingNow(true);
+                    try {
+                      await chargeSavedPaymentMethod(customer!.stripeCustomerId!, customer!.savedPaymentMethodId!, Math.round(amt * 100), "usd", `Tip — ${job.address || ""}`, undefined, (job as any).owner_id);
+                      toast(`Tip of ${fmt(amt)} charged ✓`, "green");
+                      sendPaymentReceipt({
+                        customerPhone: customer?.phone, customerEmail: customer?.email, customerFirstName: customer?.firstName, customerId: customer?.id,
+                        amountCents: Math.round(((Number(job.amount) || 0) + amt) * 100), description: `Job at ${job.address || ""} (incl. ${fmt(amt)} tip)`, ownerId: (job as any).owner_id,
+                      }).catch((e: any) => console.warn("[PaymentReceipt] failed:", e?.message));
+                    } catch (e: any) {
+                      toast("Tip charge failed: " + (e?.message || "unknown error"), "red");
+                    } finally {
+                      setTipChargingNow(false);
+                      setCustomTipInput("");
+                      await finalizeCompletion("Paid", "Card (charged on file)");
+                    }
+                  }}
+                  className="!text-xs !px-4"
+                >
+                  Charge
+                </GBtn>
+              </div>
+              <button
+                disabled={tipChargingNow}
+                onClick={() => {
+                  sendPaymentReceipt({
+                    customerPhone: customer?.phone, customerEmail: customer?.email, customerFirstName: customer?.firstName, customerId: customer?.id,
+                    amountCents: Math.round((Number(job.amount) || 0) * 100), description: `Job at ${job.address || ""}`, ownerId: (job as any).owner_id,
+                  }).catch((e: any) => console.warn("[PaymentReceipt] failed:", e?.message));
+                  finalizeCompletion("Paid", "Card (charged on file)");
+                }}
+                className="w-full py-3 rounded-xl border border-white/10 bg-white/5 text-white/50 hover:text-white/80 hover:border-white/30 transition text-sm font-medium disabled:opacity-50"
+              >
+                No tip — finish up
+              </button>
             </>
           )}
 

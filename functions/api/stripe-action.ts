@@ -267,6 +267,148 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
       return json({ card: { brand: pm.card?.brand, last4: pm.card?.last4, expMonth: pm.card?.exp_month, expYear: pm.card?.exp_year } });
     }
 
+    // get_my_saved_cards / detach_my_payment_method — the CUSTOMER-safe,
+    // MULTI-card counterparts to get_my_saved_card/detach_payment_method
+    // above. Same email-verified-against-`customers` pattern as
+    // get_my_saved_card (a customer session can't use resolveCallerOwnerId,
+    // never a row in `employees`) — lets a customer see and manage every
+    // card they've saved, not just the most recent one.
+    if (action === "get_my_saved_cards" || action === "detach_my_payment_method") {
+      const isList = action === "get_my_saved_cards";
+      const serviceRoleKey = context.env.SUPABASE_SERVICE_ROLE_KEY;
+      if (!serviceRoleKey) return isList ? json({ cards: [] }) : new Response(JSON.stringify({ error: "Not configured." }), { status: 500, headers: { "Content-Type": "application/json" } });
+      const accessToken = (context.request.headers.get("authorization") || "").replace(/^Bearer\s+/i, "");
+      const userRes = await fetch(`${SUPABASE_URL}/auth/v1/user`, { headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${accessToken}` } });
+      const user = userRes.ok ? await userRes.json().catch(() => null) as any : null;
+      const email = user?.email;
+      if (!email) return new Response(JSON.stringify({ error: "Not signed in." }), { status: 401, headers: { "Content-Type": "application/json" } });
+
+      const custRes = await fetch(`${SUPABASE_URL}/rest/v1/customers?email=eq.${encodeURIComponent(email)}&select=stripeCustomerId,owner_id&limit=1`, {
+        headers: { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}` },
+      });
+      const custRows = await custRes.json().catch(() => []);
+      const cust = Array.isArray(custRows) ? custRows[0] : null;
+      if (!cust?.stripeCustomerId) return isList ? json({ cards: [] }) : new Response(JSON.stringify({ error: "No card on file." }), { status: 404, headers: { "Content-Type": "application/json" } });
+
+      const acct = cust.owner_id ? await getOwnerStripeAccount(cust.owner_id, serviceRoleKey) : null;
+      const secretKey = acct?.secretKey || platformSecretKey;
+      if (!secretKey) return isList ? json({ cards: [] }) : new Response(JSON.stringify({ error: "Stripe isn't configured for this business yet." }), { status: 500, headers: { "Content-Type": "application/json" } });
+
+      if (action === "get_my_saved_cards") {
+        const pmRes = await stripeFetch(secretKey, "GET", `payment_methods?customer=${encodeURIComponent(cust.stripeCustomerId)}&type=card`, undefined, acct?.stripeAccountId);
+        const cards = (pmRes.data || []).map((pm: any) => ({ id: pm.id, brand: pm.card?.brand, last4: pm.card?.last4, expMonth: pm.card?.exp_month, expYear: pm.card?.exp_year }));
+        return json({ cards });
+      }
+      // detach_my_payment_method — NEVER trust the client-claimed
+      // paymentMethodId alone: fetch it from Stripe first and confirm it
+      // actually belongs to THIS customer before detaching, so one
+      // customer's session can't detach another customer's card by
+      // guessing/passing an arbitrary payment_method id.
+      if (!body.paymentMethodId) return new Response(JSON.stringify({ error: "Missing paymentMethodId" }), { status: 400, headers: { "Content-Type": "application/json" } });
+      const pmCheck = await stripeFetch(secretKey, "GET", `payment_methods/${encodeURIComponent(body.paymentMethodId)}`, undefined, acct?.stripeAccountId);
+      if (pmCheck?.customer !== cust.stripeCustomerId) {
+        return new Response(JSON.stringify({ error: "That card doesn't belong to your account." }), { status: 403, headers: { "Content-Type": "application/json" } });
+      }
+      await stripeFetch(secretKey, "POST", `payment_methods/${encodeURIComponent(body.paymentMethodId)}/detach`, {}, acct?.stripeAccountId);
+      return json({ success: true });
+    }
+
+    // send_payment_receipt — fires after ANY successful charge (customer
+    // self-pay, employee in-person card-on-file, owner-processed) regardless
+    // of who's holding the phone/browser. Runs server-side because it needs
+    // the owner's Twilio/Gmail credentials, which must never reach a
+    // customer's (or, for that matter, a compromised employee's) browser —
+    // same reasoning as the Stripe secret key fix this whole file is built
+    // around. Texts if the customer has a phone on file, else emails via the
+    // owner's connected Gmail; never both, never neither silently — the
+    // caller gets a clear success/error either way so a failed receipt can
+    // be surfaced as a toast without ever blocking/rolling back the charge
+    // itself (the charge already succeeded by the time this runs).
+    if (action === "send_payment_receipt") {
+      const serviceRoleKey = context.env.SUPABASE_SERVICE_ROLE_KEY;
+      if (!serviceRoleKey) return new Response(JSON.stringify({ error: "Receipts require SUPABASE_SERVICE_ROLE_KEY to be configured." }), { status: 500, headers: { "Content-Type": "application/json" } });
+
+      let resolvedOwnerId: string | null = null;
+      if (body.invoiceId) resolvedOwnerId = await getEstimateOwnerId(body.invoiceId);
+      if (!resolvedOwnerId) {
+        const accessToken = (context.request.headers.get("authorization") || "").replace(/^Bearer\s+/i, "");
+        if (accessToken) resolvedOwnerId = await resolveCallerOwnerId(accessToken);
+      }
+      if (!resolvedOwnerId && body.ownerId) resolvedOwnerId = body.ownerId;
+      if (!resolvedOwnerId) return new Response(JSON.stringify({ error: "Couldn't determine which business this payment belongs to." }), { status: 400, headers: { "Content-Type": "application/json" } });
+
+      const settingsRes = await fetch(`${SUPABASE_URL}/rest/v1/app_settings?owner_id=eq.${encodeURIComponent(resolvedOwnerId)}&select=data&limit=1`, {
+        headers: { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}` },
+      });
+      const settingsRows = await settingsRes.json().catch(() => []);
+      const s = Array.isArray(settingsRows) ? settingsRows[0]?.data || {} : {};
+      const companyName = s.companyName || "Crew Boss";
+      const amount = (Number(body.amountCents) / 100 || 0).toFixed(2);
+      const description = body.description || "";
+      const custName = body.customerFirstName || "there";
+
+      if (body.customerPhone && s.twilioSid && s.twilioToken && s.twilioFrom) {
+        const smsBody = `Hi ${custName}, this confirms your payment of $${amount} to ${companyName}${description ? " for " + description : ""}. Thank you!`;
+        const auth = `Basic ${btoa(`${s.twilioSid}:${s.twilioToken}`)}`;
+        const params = new URLSearchParams({ To: body.customerPhone, From: s.twilioFrom, Body: smsBody });
+        const smsRes = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${s.twilioSid}/Messages.json`, {
+          method: "POST", headers: { Authorization: auth, "Content-Type": "application/x-www-form-urlencoded" }, body: params.toString(),
+        });
+        if (!smsRes.ok) return new Response(JSON.stringify({ error: "Twilio send failed: " + (await smsRes.text().catch(() => "")).slice(0, 200) }), { status: 502, headers: { "Content-Type": "application/json" } });
+        // Log to inbox_threads, same as every other outbound SMS.
+        try {
+          const normDigits = (p: string) => (p || "").replace(/\D/g, "");
+          const threadsRes = await fetch(`${SUPABASE_URL}/rest/v1/inbox_threads?channel=eq.sms&select=id,contact_phone,messages&owner_id=eq.${encodeURIComponent(resolvedOwnerId)}`, {
+            headers: { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}` },
+          });
+          const threads = await threadsRes.json().catch(() => []);
+          const existing = Array.isArray(threads) ? threads.find((t: any) => normDigits(t.contact_phone) === normDigits(body.customerPhone)) : null;
+          const msg = { id: crypto.randomUUID(), dir: "out", body: smsBody, ts: Date.now() };
+          if (existing) {
+            await fetch(`${SUPABASE_URL}/rest/v1/inbox_threads?id=eq.${encodeURIComponent(existing.id)}`, {
+              method: "PATCH", headers: { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}`, "Content-Type": "application/json", Prefer: "return=minimal" },
+              body: JSON.stringify({ messages: [...(existing.messages || []), msg], last_message_at: msg.ts, updated_at: new Date().toISOString() }),
+            });
+          } else {
+            await fetch(`${SUPABASE_URL}/rest/v1/inbox_threads`, {
+              method: "POST", headers: { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}`, "Content-Type": "application/json", Prefer: "return=minimal" },
+              body: JSON.stringify({ id: crypto.randomUUID(), channel: "sms", contact_name: custName, contact_phone: body.customerPhone, customer_id: body.customerId || null, unread: false, messages: [msg], last_message_at: msg.ts, updated_at: new Date().toISOString(), owner_id: resolvedOwnerId }),
+            });
+          }
+        } catch { /* non-fatal — receipt itself already sent */ }
+        return json({ success: true, channel: "sms" });
+      }
+
+      if (body.customerEmail && s.googleProviderToken) {
+        let accessTok = s.googleProviderToken;
+        // Access token likely stale by the time this fires (owner may not
+        // have opened the app in a while) — refresh via the same Cloudflare
+        // Function the client uses, rather than duplicating Google's OAuth
+        // token-exchange logic here.
+        if (s.googleRefreshToken && (!s.googleTokenExpiresAt || Date.now() > Number(s.googleTokenExpiresAt) - 60000)) {
+          try {
+            const origin = new URL(context.request.url).origin;
+            const refreshRes = await fetch(`${origin}/api/google-refresh`, {
+              method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ refresh_token: s.googleRefreshToken }),
+            });
+            const refreshData = await refreshRes.json().catch(() => null) as any;
+            if (refreshRes.ok && refreshData?.access_token) accessTok = refreshData.access_token;
+          } catch { /* fall through with the possibly-stale token; Gmail send below will just fail clearly */ }
+        }
+        const subject = `Payment Receipt — ${companyName}`;
+        const html = `<p>Hi ${custName},</p><p>This confirms your payment of <strong>$${amount}</strong> to ${companyName}${description ? " for " + description : ""}.</p><p>Thank you for your business!</p>`;
+        const mime = [`To: ${body.customerEmail}`, `Subject: ${subject}`, `MIME-Version: 1.0`, `Content-Type: text/html; charset=utf-8`, ``, html].join("\r\n");
+        const raw = btoa(unescape(encodeURIComponent(mime))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+        const gmailRes = await fetch("https://www.googleapis.com/gmail/v1/users/me/messages/send", {
+          method: "POST", headers: { Authorization: `Bearer ${accessTok}`, "Content-Type": "application/json" }, body: JSON.stringify({ raw }),
+        });
+        if (!gmailRes.ok) return new Response(JSON.stringify({ error: "Gmail send failed: " + (await gmailRes.text().catch(() => "")).slice(0, 200) }), { status: 502, headers: { "Content-Type": "application/json" } });
+        return json({ success: true, channel: "email" });
+      }
+
+      return new Response(JSON.stringify({ error: "No phone or email on file for this customer — receipt not sent." }), { status: 400, headers: { "Content-Type": "application/json" } });
+    }
+
     // Every remaining action calls api.stripe.com and needs a secret key —
     // resolve the calling owner's own key/Connect account first, falling
     // back to the platform-wide env var (requirement: existing/legacy

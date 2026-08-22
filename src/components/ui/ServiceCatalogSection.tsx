@@ -42,7 +42,7 @@ import { PBar } from "./PBar";
 import { PageFade } from "./PageFade";
 import { TimeframeSelector } from "./TimeframeSelector";
 
-const EMPTY_SERVICE_FORM = { name: "", description: "", customerDescription: "", internalNotes: "", price: "", minPrice: "", maxPrice: "", unit: "flat", category: "Washing", taxable: true, checklistTemplate: [] as { id: string; label: string; required?: boolean; photoRequired?: boolean }[] };
+const EMPTY_SERVICE_FORM = { name: "", description: "", customerDescription: "", internalNotes: "", price: "", minPrice: "", maxPrice: "", unit: "flat", category: "Washing", taxable: true, checklistTemplate: [] as { id: string; label: string; required?: boolean; photoRequired?: boolean }[], depositRequired: "", depositType: "amount" as "amount" | "percent", depositMandatory: false };
 
 export function ServiceCatalogSection({ services = [], setServices, toast }) {
   const [f, setF] = useState(EMPTY_SERVICE_FORM);
@@ -59,11 +59,12 @@ export function ServiceCatalogSection({ services = [], setServices, toast }) {
 
   const save = () => {
     if (!f.name.trim() || !f.price) return;
+    const depositFields = { depositRequired: f.depositRequired ? Number(f.depositRequired) : undefined, depositType: f.depositType, depositMandatory: f.depositMandatory };
     if (editId) {
-      setServices(prev => prev.map(s => s.id === editId ? { ...s, ...f, price: Number(f.price), basePrice: Number(f.price), minPrice: f.minPrice ? Number(f.minPrice) : undefined, maxPrice: f.maxPrice ? Number(f.maxPrice) : undefined } : s));
+      setServices(prev => prev.map(s => s.id === editId ? { ...s, ...f, ...depositFields, price: Number(f.price), basePrice: Number(f.price), minPrice: f.minPrice ? Number(f.minPrice) : undefined, maxPrice: f.maxPrice ? Number(f.maxPrice) : undefined } : s));
       toast("Service updated");
     } else {
-      setServices(prev => [...prev, { id: uid(), ...f, price: Number(f.price), basePrice: Number(f.price), minPrice: f.minPrice ? Number(f.minPrice) : undefined, maxPrice: f.maxPrice ? Number(f.maxPrice) : undefined }]);
+      setServices(prev => [...prev, { id: uid(), ...f, ...depositFields, price: Number(f.price), basePrice: Number(f.price), minPrice: f.minPrice ? Number(f.minPrice) : undefined, maxPrice: f.maxPrice ? Number(f.maxPrice) : undefined }]);
       toast("Service added");
     }
     setF(EMPTY_SERVICE_FORM);
@@ -71,7 +72,7 @@ export function ServiceCatalogSection({ services = [], setServices, toast }) {
     setShowForm(false);
   };
 
-  const startEdit = s => { setF({ name: s.name, description: s.description || "", customerDescription: s.customerDescription || "", internalNotes: s.internalNotes || "", price: String(s.basePrice || s.price || ""), minPrice: String(s.minPrice || ""), maxPrice: String(s.maxPrice || ""), unit: s.unit || "flat", category: s.category || "Washing", taxable: s.taxable !== false, checklistTemplate: s.checklistTemplate || [] }); setEditId(s.id); setShowForm(true); };
+  const startEdit = s => { setF({ name: s.name, description: s.description || "", customerDescription: s.customerDescription || "", internalNotes: s.internalNotes || "", price: String(s.basePrice || s.price || ""), minPrice: String(s.minPrice || ""), maxPrice: String(s.maxPrice || ""), unit: s.unit || "flat", category: s.category || "Washing", taxable: s.taxable !== false, checklistTemplate: s.checklistTemplate || [], depositRequired: s.depositRequired ? String(s.depositRequired) : "", depositType: s.depositType || "amount", depositMandatory: !!s.depositMandatory }); setEditId(s.id); setShowForm(true); };
   const del = id => { if (confirm("Remove service?")) setServices(prev => prev.filter(s => s.id !== id)); };
 
   // FEATURE 4 — checklist template item helpers, scoped to the form's draft
@@ -127,6 +128,23 @@ export function ServiceCatalogSection({ services = [], setServices, toast }) {
             <option value="hour" className="bg-black">Per hour</option>
           </GSel></div>
           <label className="flex items-center gap-2 text-xs cursor-pointer"><input type="checkbox" checked={f.taxable} onChange={e => setF({ ...f, taxable: e.target.checked })} className="w-3.5 h-3.5" />Taxable service</label>
+
+          {/* Per-service deposit — applied automatically to a new estimate's
+              deposit fields the first time this service is added
+              (EstimateBuilder.tsx's addSvc), so the owner doesn't have to
+              remember to set it manually every time, e.g. "always require a
+              deposit on Sealing jobs." */}
+          <div className="pt-2 border-t border-white/10">
+            <div className="text-[10px] text-white/50 mb-1.5 flex items-center gap-1"><DollarSign size={9} />Default deposit for this service <span className="text-white/30">(optional — auto-fills the estimate)</span></div>
+            <div className="grid grid-cols-2 gap-2 mb-1.5">
+              <GInput type="number" step="5" value={f.depositRequired} onChange={e => setF({ ...f, depositRequired: e.target.value })} placeholder="e.g. 25" className="!text-xs" />
+              <GSel value={f.depositType} onChange={e => setF({ ...f, depositType: e.target.value as any })} className="!text-xs">
+                <option value="amount" className="bg-black">$ flat</option>
+                <option value="percent" className="bg-black">% of total</option>
+              </GSel>
+            </div>
+            <label className="flex items-center gap-2 text-xs cursor-pointer"><input type="checkbox" checked={f.depositMandatory} onChange={e => setF({ ...f, depositMandatory: e.target.checked })} className="w-3.5 h-3.5" />Mandatory (customer must pay it to book)</label>
+          </div>
 
           {/* FEATURE 4 — checklist template. Drag the grip handle to reorder;
               each item can be flagged required and/or photo-required. Copied

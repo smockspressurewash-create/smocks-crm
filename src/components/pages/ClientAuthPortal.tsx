@@ -10,7 +10,7 @@ import { Badge } from "../ui/Badge";
 import { Stat } from "../ui/Stat";
 import { StripePaymentModal } from "../ui/StripePaymentModal";
 import { SaveCardModal } from "../ui/SaveCardModal";
-import { getMySavedCard } from "../../lib/stripe";
+import { getMySavedCard, getMySavedCards, detachMyPaymentMethod, sendPaymentReceipt, type StripeSavedCard } from "../../lib/stripe";
 import { seedRewardTiers } from "../../lib/seed";
 
 // Public, unauthenticated-by-default route (#/client) — a customer-facing
@@ -91,6 +91,15 @@ export function ClientAuthPortal({
   const [agreedInvoiceTerms, setAgreedInvoiceTerms] = useState(false);
   const [showSaveCard, setShowSaveCard] = useState(false);
   const [mySavedCard, setMySavedCard] = useState<{ brand?: string; last4?: string; expMonth?: number; expYear?: number } | null>(null);
+  // FEATURE — multi-card support: every card the customer has saved, not
+  // just the default one. Loaded from Stripe directly (source of truth for
+  // brand/last4) whenever the default changes or after a save/remove.
+  const [myCards, setMyCards] = useState<StripeSavedCard[]>([]);
+  const [cardsBusyId, setCardsBusyId] = useState<string | null>(null);
+  const refreshMyCards = () => {
+    if (!session?.access_token) { setMyCards([]); return; }
+    getMySavedCards(session.access_token).then(setMyCards).catch(() => setMyCards([]));
+  };
 
   // MULTI-TENANT (Phase D) — was `customers.find(...)` against the App.tsx
   // global `customers`/`estimates`/`jobs` props (owner_id-scoped once RLS
@@ -158,6 +167,11 @@ export function ClientAuthPortal({
     if (!cust?.savedPaymentMethodId || !session?.access_token) { setMySavedCard(null); return; }
     getMySavedCard(session.access_token).then(setMySavedCard).catch(() => setMySavedCard(null));
   }, [cust?.savedPaymentMethodId, session?.access_token]);
+
+  useEffect(() => {
+    refreshMyCards();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cust?.stripeCustomerId, session?.access_token]);
 
   // FIX 17 — "View & Pay Invoice" / "Review & Sign" links emailed/texted to
   // customers all point at #/client?invoice=ID (this portal), NOT the old
@@ -645,20 +659,67 @@ export function ClientAuthPortal({
         {tab === "payment" && (
           <div className="space-y-3">
             <Glass className="p-4">
-              <div className="text-sm font-medium mb-1">Saved Payment Method</div>
-              {cust.savedPaymentMethodLabel ? (
-                <div className="flex items-center justify-between">
-                  <div className="text-xs text-white/60 flex items-center gap-2">
-                    <CreditCard size={14} />
-                    {mySavedCard?.last4
-                      ? `${(mySavedCard.brand || "Card").replace(/^./, c => c.toUpperCase())} •••• ${mySavedCard.last4}${mySavedCard.expMonth ? ` · exp ${String(mySavedCard.expMonth).padStart(2, "0")}/${String(mySavedCard.expYear).slice(-2)}` : ""}`
-                      : cust.savedPaymentMethodLabel}
-                  </div>
-                  <button onClick={() => setShowSaveCard(true)} className="text-xs text-purple-400 hover:text-purple-300">Replace</button>
+              <div className="text-sm font-medium mb-2">Saved Payment Methods</div>
+              {myCards.length > 0 ? (
+                <div className="space-y-2 mb-2">
+                  {myCards.map(card => {
+                    const isDefault = card.id === cust.savedPaymentMethodId;
+                    const canRemove = !isDefault || myCards.length > 1 || !(cust.recurringPayment?.enabled || jobs.some(j => j.customerId === cust.id && j.isRecurring));
+                    return (
+                      <div key={card.id} className={"flex items-center justify-between p-2.5 rounded-xl border " + (isDefault ? "border-emerald-600/40 bg-emerald-950/10" : "border-white/10 bg-white/5")}>
+                        <div className="text-xs text-white/70 flex items-center gap-2">
+                          <CreditCard size={14} className={isDefault ? "text-emerald-400" : "text-white/40"} />
+                          {(card.brand || "Card").replace(/^./, c => c.toUpperCase())} •••• {card.last4}
+                          {card.expMonth ? <span className="text-white/30">· exp {String(card.expMonth).padStart(2, "0")}/{String(card.expYear).slice(-2)}</span> : null}
+                          {isDefault && <Badge tone="green">Default</Badge>}
+                        </div>
+                        <div className="flex items-center gap-2">
+                          {!isDefault && (
+                            <button
+                              disabled={cardsBusyId === card.id}
+                              onClick={() => {
+                                const label = `${(card.brand || "Card").replace(/^./, c => c.toUpperCase())} •••• ${card.last4}`;
+                                setCustomers((prev: Customer[]) => prev.map(c => c.id === cust.id ? { ...c, savedPaymentMethodId: card.id, savedPaymentMethodLabel: label } : c));
+                                patchCust({ savedPaymentMethodId: card.id, savedPaymentMethodLabel: label } as any);
+                                toast?.("Default card updated ✓", "green");
+                              }}
+                              className="text-[11px] text-purple-400 hover:text-purple-300"
+                            >Make Default</button>
+                          )}
+                          {canRemove && (
+                            <button
+                              disabled={cardsBusyId === card.id}
+                              onClick={async () => {
+                                setCardsBusyId(card.id);
+                                try {
+                                  await detachMyPaymentMethod(session!.access_token!, card.id);
+                                  const remaining = myCards.filter(c => c.id !== card.id);
+                                  if (isDefault) {
+                                    const next = remaining[0];
+                                    const label = next ? `${(next.brand || "Card").replace(/^./, c => c.toUpperCase())} •••• ${next.last4}` : "";
+                                    setCustomers((prev: Customer[]) => prev.map(c => c.id === cust.id ? { ...c, savedPaymentMethodId: next?.id || "", savedPaymentMethodLabel: label } : c));
+                                    patchCust({ savedPaymentMethodId: next?.id || "", savedPaymentMethodLabel: label } as any);
+                                  }
+                                  setMyCards(remaining);
+                                  toast?.("Card removed", "green");
+                                } catch (e: any) {
+                                  toast?.("Couldn't remove card: " + (e?.message || "unknown error"), "red");
+                                } finally {
+                                  setCardsBusyId(null);
+                                }
+                              }}
+                              className="text-[11px] text-red-400 hover:text-red-300"
+                            >Remove</button>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
               ) : (
-                <button onClick={() => setShowSaveCard(true)} disabled={!portalData?.settings?.stripePublishableKey} className="w-full py-2.5 rounded-xl bg-white/10 hover:bg-white/15 text-sm flex items-center justify-center gap-2 disabled:opacity-40"><CreditCard size={14} />Save a Card</button>
+                <div className="text-xs text-white/40 mb-2">No cards saved yet.</div>
               )}
+              <button onClick={() => setShowSaveCard(true)} disabled={!portalData?.settings?.stripePublishableKey} className="w-full py-2.5 rounded-xl bg-white/10 hover:bg-white/15 text-sm flex items-center justify-center gap-2 disabled:opacity-40"><CreditCard size={14} />{myCards.length > 0 ? "Add Another Card" : "Save a Card"}</button>
               {!portalData?.settings?.stripePublishableKey && <div className="text-[10px] text-white/30 mt-2">{companyName} hasn't connected online payments yet.</div>}
             </Glass>
 
@@ -704,6 +765,10 @@ export function ClientAuthPortal({
           if (invId) {
             (supabase as any).from("estimates").update({ paidAt: today(), stripePaymentIntentId: paymentIntentId, stripePaymentStatus: "paid" }).eq("id", invId).then(() => {}).catch(() => {});
           }
+          sendPaymentReceipt({
+            customerPhone: cust.phone, customerEmail: cust.email, customerFirstName: cust.firstName, customerId: cust.id,
+            amountCents: Math.round((payingInv?.total || 0) * 100), description: `Invoice #${invId || ""}`, invoiceId: invId,
+          }).catch((e: any) => console.warn("[PaymentReceipt] failed:", e?.message));
           toast?.("Payment received ✓", "green");
           setPayingInv(null);
         }}
@@ -720,10 +785,18 @@ export function ClientAuthPortal({
         existingStripeCustomerId={cust.stripeCustomerId}
         isRecurringClient={!!cust.recurringPayment?.enabled || jobs.some(j => j.customerId === cust.id && j.isRecurring)}
         onSaved={(stripeCustomerId, paymentMethodId, label, consentAt) => {
-          setCustomers((prev: Customer[]) => prev.map(c => c.id === cust.id ? { ...c, stripeCustomerId, savedPaymentMethodId: paymentMethodId, savedPaymentMethodLabel: label, cardConsentAt: consentAt || c.cardConsentAt } : c));
-          patchCust({ stripeCustomerId, savedPaymentMethodId: paymentMethodId, savedPaymentMethodLabel: label, cardConsentAt: consentAt } as any);
+          // First card ever saved becomes the default automatically; a
+          // second/third card just joins the list (myCards) without
+          // disturbing whichever one is already the default — the customer
+          // picks explicitly via "Make Default" above.
+          const isFirstCard = myCards.length === 0;
+          const patch: any = { stripeCustomerId, cardConsentAt: consentAt || cust.cardConsentAt };
+          if (isFirstCard) { patch.savedPaymentMethodId = paymentMethodId; patch.savedPaymentMethodLabel = label; }
+          setCustomers((prev: Customer[]) => prev.map(c => c.id === cust.id ? { ...c, ...patch } : c));
+          patchCust(patch);
           toast?.("Card saved ✓", "green");
           setShowSaveCard(false);
+          refreshMyCards();
         }}
       />
     </div>

@@ -81,8 +81,15 @@ export interface Customer {
   isCommercial?: boolean;
   recurringPayment?: { enabled: boolean; frequency: "monthly" | "quarterly"; amount?: number; nextDate?: string };
   stripeCustomerId?: string;
+  // savedPaymentMethodId/Label are the DEFAULT card — every existing charge
+  // path (in-person checkout, invoice auto-charge, recurring billing) reads
+  // only these two and keeps working unmodified. savedPaymentMethods below
+  // is the full list a customer can build up; adding a card appends here
+  // and, if it's the first one or the customer marks it default, also
+  // updates the two fields above.
   savedPaymentMethodId?: string;
   savedPaymentMethodLabel?: string;
+  savedPaymentMethods?: Array<{ id: string; label: string; addedAt: string }>;
   // FEATURE — card-on-file consent, same durable-timestamp convention as
   // smsOptInAt above: set whenever SaveCardModal.tsx successfully saves a
   // card, so there's a record of when the customer (or the employee entering
@@ -519,6 +526,15 @@ export interface Service {
   // automatically (via buildChecklistFromServices) when a job/estimate has
   // multiple services selected.
   checklistTemplate?: ServiceChecklistItem[];
+  // FEATURE — per-service default deposit requirement (e.g. always require
+  // a 25% deposit on Sealing jobs, but never on a quick gutter clean).
+  // EstimateBuilder.tsx's addSvc() applies this to the estimate's deposit
+  // fields the first time a service carrying one is added, same shape as
+  // Estimate.depositRequired/depositType/depositMandatory so it flows
+  // through computeDepositAmount unchanged.
+  depositRequired?: number;
+  depositType?: "amount" | "percent";
+  depositMandatory?: boolean;
 }
 
 // ─── Campaign ─────────────────────────────────────────────────────────────────
