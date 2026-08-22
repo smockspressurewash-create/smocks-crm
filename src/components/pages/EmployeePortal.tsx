@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from "react";
+﻿import React, { useState, useEffect, useRef } from "react";
 import {
   Clock, Briefcase, Calendar, ChevronLeft, CheckSquare, Camera,
   LogOut, MapPin, Phone, User, Play, Pause, Square, Plus, X, Eye, EyeOff, DollarSign, BookOpen,
@@ -974,14 +974,14 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
   // ── Customer sign-off overlay ─────────────────────────────────────────────
   if (showSignOff) {
     return (
-      <div className="min-h-screen bg-black text-white flex flex-col">
+      <div className="h-dvh h-screen overflow-hidden bg-black text-white flex flex-col">
         <div className="sticky top-0 z-20 bg-black/95 border-b border-red-900/30 px-4 py-3 flex items-center gap-3">
           <button onClick={() => { setShowSignOff(false); if (signOffReturnToComplete) { setSignOffReturnToComplete(false); setCompleteStep("review"); } }} className="p-2 rounded-xl hover:bg-white/10 text-white/60 -ml-2">
             <ChevronLeft size={20} />
           </button>
           <div className="font-semibold">Customer Sign-Off</div>
         </div>
-        <div className="flex-1 overflow-y-auto p-4 max-w-lg mx-auto space-y-4">
+        <div className="flex-1 min-h-0 overflow-y-auto p-4 max-w-lg mx-auto space-y-4">
           {/* Services summary */}
           <Glass className="p-4 !bg-black/40">
             <div className="text-xs text-white/50 uppercase tracking-wider mb-2 font-semibold">Services Completed</div>
@@ -1080,7 +1080,7 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
   // ── "Complete Job" flow — review → payment → summary ─────────────────────
   if (completeStep) {
     return (
-      <div className="min-h-screen bg-black text-white flex flex-col">
+      <div className="h-dvh h-screen overflow-hidden bg-black text-white flex flex-col">
         <div className="sticky top-0 z-20 bg-black/95 border-b border-red-900/30 px-4 py-3 flex items-center gap-3">
           {completeStep !== "summary" && (
             <button onClick={() => setCompleteStep("")} className="p-2 rounded-xl hover:bg-white/10 text-white/60 -ml-2">
@@ -1089,7 +1089,7 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
           )}
           <div className="font-semibold">Complete Job</div>
         </div>
-        <div className="flex-1 overflow-y-auto p-4 max-w-lg mx-auto w-full space-y-4">
+        <div className="flex-1 min-h-0 overflow-y-auto p-4 max-w-lg mx-auto w-full space-y-4">
           {completeStep === "review" && (
             <>
               <Glass className="p-4 !bg-black/40 space-y-2.5">
@@ -1348,7 +1348,7 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
   }
 
   return (
-    <div className="min-h-screen bg-black text-white pb-24">
+    <div className="h-dvh h-screen overflow-y-auto bg-black text-white pb-24">
       {/* Header */}
       <div className="sticky top-0 z-20 bg-black/95 border-b border-red-900/30 px-4 py-3 flex items-center gap-3">
         <button onClick={onBack} className="p-2 rounded-xl hover:bg-white/10 text-white/60 hover:text-white -ml-2">
@@ -2027,7 +2027,7 @@ function OwnerTeamPortal({ jobs, employees, customers, onClose, googleMapsKey, t
   }
 
   return (
-    <div className="min-h-screen bg-black text-white flex flex-col">
+    <div className="h-dvh h-screen overflow-hidden bg-black text-white flex flex-col">
       <header className="sticky top-0 z-20 bg-black/95 border-b border-red-900/30 px-4 py-3 flex items-center gap-3">
         <button onClick={onClose} className="p-2 rounded-xl hover:bg-white/10 text-white/60 hover:text-white -ml-2">
           <ChevronLeft size={20} />
@@ -2054,7 +2054,7 @@ function OwnerTeamPortal({ jobs, employees, customers, onClose, googleMapsKey, t
         </button>
       </header>
 
-      <main className="flex-1 overflow-y-auto p-4 max-w-lg mx-auto space-y-4">
+      <main className="flex-1 min-h-0 overflow-y-auto p-4 max-w-lg mx-auto space-y-4">
         {/* Employee cards */}
         {selectedEmpId === "all" && (
           <div className="grid grid-cols-2 gap-3">
@@ -4559,11 +4559,11 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     const reqJob = jobs.find(j => j.id === requestData.job_id);
     const reqCustomer = reqJob ? customers.find(c => c.id === reqJob.customerId) : null;
     return (
-      <div className="min-h-screen bg-black text-white flex flex-col">
+      <div className="h-dvh h-screen overflow-hidden bg-black text-white flex flex-col">
         <header className="sticky top-0 z-20 bg-black/95 border-b border-red-900/30 px-4 py-3">
           <div className="font-semibold text-center">Job Request</div>
         </header>
-        <div className="flex-1 overflow-y-auto p-4 max-w-lg mx-auto space-y-4">
+        <div className="flex-1 min-h-0 overflow-y-auto p-4 max-w-lg mx-auto space-y-4">
           <Glass className="p-5 !bg-blue-950/20 !border-blue-700/30">
             <div className="text-xs text-blue-300 uppercase tracking-wider font-semibold mb-3">
               You've been requested for a job
@@ -5022,7 +5022,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
 
 
   return (
-    <div className="min-h-screen bg-black text-white flex flex-col">
+    <div className="h-dvh h-screen overflow-hidden bg-black text-white flex flex-col">
       {/* Header */}
       <header className="sticky top-0 z-20 bg-black/95 border-b border-red-900/30 px-4 py-3 flex items-center gap-3 flex-shrink-0">
         {/* CrewBoss brand */}
@@ -5164,7 +5164,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
       })()}
 
       {/* Content */}
-      <main className="flex-1 overflow-y-auto pb-24">
+      <main className="flex-1 min-h-0 overflow-y-auto pb-24">
         {completionNotif && (() => {
           const nextJob = completionNotif.nextJobId ? jobs.find(j => j.id === completionNotif.nextJobId) : null;
           const cust = nextJob ? customers.find(c => c.id === nextJob.customerId) : null;

@@ -3587,7 +3587,7 @@ export function App() {
             <Globe size={13} />Portal
           </button>
           {/* PWA — install prompt, renders nothing until Chrome offers it. */}
-          <InstallAppButton className="hidden sm:flex" label="Install App" />
+          <InstallAppButton className="!flex" label="Install App" />
           {/* Notifications */}
           <div className="relative">
           <button onClick={() => setNotifOpen(!notifOpen)} className="relative p-2 text-white/60 hover:text-white">

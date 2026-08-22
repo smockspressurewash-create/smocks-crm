@@ -1318,39 +1318,14 @@ export function SettingsModal({ open, onClose, settings, setSettings, jobs = [],
                   {stripeStatus?.connected ? "Connected" : stripeStatus?.hasSecretKey ? "Connected (manual keys)" : f.stripePublishableKey?.trim() ? "Publishable Key Set" : "Not Connected"}
                 </Badge>
               </div>
-              <div className="text-xs text-white/60 mb-3">Accept deposits, payments, and tips on estimates and invoices — using YOUR OWN Stripe account.</div>
+              <div className="text-xs text-white/60 mb-3">Accept deposits, payments, and tips on estimates and invoices — using YOUR OWN Stripe account. Paste in your keys below — nothing to set up outside this app.</div>
 
-              {stripeStatus?.connected ? (
+              {stripeStatus?.connected && (
                 <div className="p-3 bg-green-950/20 border border-green-700/40 rounded-xl text-xs text-green-300 flex items-center gap-2 mb-3">
                   <CreditCard size={14} className="flex-shrink-0" />Connected to Stripe ({stripeStatus.stripeAccountId})
                 </div>
-              ) : (
-                <GBtn
-                  onClick={async () => {
-                    setStripeConnecting(true);
-                    try {
-                      const { data: { session } } = await supabase.auth.getSession();
-                      const token = session?.access_token;
-                      if (!token) throw new Error("Not signed in");
-                      const url = await getStripeConnectAuthorizeUrl(token);
-                      window.location.href = url;
-                    } catch (e: any) {
-                      toast?.("Couldn't start Stripe Connect: " + (e?.message || "unknown error"), "red");
-                      setStripeConnecting(false);
-                    }
-                  }}
-                  disabled={stripeConnecting}
-                  className="!text-xs w-full mb-3 !bg-gradient-to-r !from-purple-600 !to-indigo-600"
-                >
-                  {stripeConnecting ? "Redirecting to Stripe…" : "Connect with Stripe"}
-                </GBtn>
               )}
 
-              <button type="button" onClick={() => setShowManualStripeKeys(v => !v)} className="text-[10px] text-white/40 hover:text-white/70 underline mb-2">
-                {showManualStripeKeys ? "Hide" : (stripeStatus?.hasSecretKey && !stripeStatus?.connected) ? "Manage manual API keys" : "Advanced: use your own API keys instead"}
-              </button>
-
-              {showManualStripeKeys && (
               <div className="space-y-2.5">
                 <div>
                   <label className="text-[10px] text-white/50 mb-1 block uppercase tracking-wider">Publishable Key</label>
@@ -1405,8 +1380,28 @@ export function SettingsModal({ open, onClose, settings, setSettings, jobs = [],
                     </GBtn>
                   </div>
                 )}
+
+                <button
+                  type="button"
+                  onClick={async () => {
+                    setStripeConnecting(true);
+                    try {
+                      const { data: { session } } = await supabase.auth.getSession();
+                      const token = session?.access_token;
+                      if (!token) throw new Error("Not signed in");
+                      const url = await getStripeConnectAuthorizeUrl(token);
+                      window.location.href = url;
+                    } catch (e: any) {
+                      toast?.("Couldn't start Stripe Connect: " + (e?.message || "unknown error"), "red");
+                      setStripeConnecting(false);
+                    }
+                  }}
+                  disabled={stripeConnecting}
+                  className="text-[10px] text-white/40 hover:text-white/70 underline"
+                >
+                  {stripeConnecting ? "Redirecting to Stripe…" : "Prefer OAuth instead of pasting keys? Connect with Stripe"}
+                </button>
               </div>
-              )}
             </Glass>
 
             {/* Twilio */}
