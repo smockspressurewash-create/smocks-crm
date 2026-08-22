@@ -520,6 +520,24 @@ export function App() {
     return valid.includes(hash) ? hash : "dashboard";
   });
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  // BUG FIX — the marketing pages (#/welcome, #/features, #/pricing,
+  // #/about) were coded as PUBLIC-ONLY: their render condition itself
+  // requires `!hasCrmSession`, not just the redirect guard further down.
+  // So a logged-in owner could never see them AT ALL, in any tab — opening
+  // one in a new tab didn't help either, since Supabase's session is
+  // shared across tabs via localStorage, so hasCrmSession resolves true
+  // there too and the same gate blocks it. This flag is an explicit,
+  // intentional "let me preview the marketing site while still logged in"
+  // override, set only by the logo/nav-preview click (never by a page
+  // load or hash resolution) — so a plain reload or a fresh tab, which
+  // both start this at false, still auto-redirects a logged-in owner
+  // straight to the dashboard exactly as before. Reset the moment they
+  // land on any real CRM page again (effect below), so it can't leak into
+  // a later involuntary visit to "welcome" (e.g. browser back button).
+  const [marketingPreview, setMarketingPreview] = useState(false);
+  useEffect(() => {
+    if (!["welcome", "features", "pricing", "about", "login"].includes(page)) setMarketingPreview(false);
+  }, [page]);
   // FIX 3 (mobile round 4) — round 3's 50px edge zone / 50px threshold still
   // felt too hard to trigger reliably on a real phone. Widened the edge zone
   // further (a thumb rarely starts a swipe from the literal first 50px) and
@@ -2973,19 +2991,30 @@ export function App() {
     setPage(p);
   };
 
-  if (page === "welcome" && !empSession && !hasCrmSession) {
-    return <LandingPage onGetStarted={() => navigateMarketing("login")} onNavigate={navigateMarketing} />;
+  // `marketingPreview` lets an already-logged-in owner explicitly view
+  // these pages (see the flag's own comment above) — everyone else still
+  // needs the normal !empSession && !hasCrmSession public-page gate.
+  // The little "Back to Dashboard" bar is rendered here, wrapping the page,
+  // rather than threaded as a prop into all four marketing page files.
+  const previewBar = marketingPreview && hasCrmSession && (
+    <div className="fixed top-0 inset-x-0 z-[400] bg-red-700 text-white text-xs font-medium py-2 px-4 flex items-center justify-center gap-3">
+      Previewing the marketing site while logged in
+      <button onClick={() => { setMarketingPreview(false); window.location.hash = "/dashboard"; setPage("dashboard"); }} className="underline hover:no-underline font-semibold">Back to Dashboard</button>
+    </div>
+  );
+  if (page === "welcome" && (marketingPreview || (!empSession && !hasCrmSession))) {
+    return <>{previewBar}<LandingPage onGetStarted={() => navigateMarketing("login")} onNavigate={navigateMarketing} /></>;
   }
   // ── Dedicated marketing pages — same public, no-session-required pattern
   // as "welcome" above. See MarketingShared.tsx for the shared nav/footer.
-  if (page === "features" && !empSession && !hasCrmSession) {
-    return <FeaturesPage onGetStarted={() => navigateMarketing("login")} onNavigate={navigateMarketing} />;
+  if (page === "features" && (marketingPreview || (!empSession && !hasCrmSession))) {
+    return <>{previewBar}<FeaturesPage onGetStarted={() => navigateMarketing("login")} onNavigate={navigateMarketing} /></>;
   }
-  if (page === "pricing" && !empSession && !hasCrmSession) {
-    return <PricingPage onGetStarted={() => navigateMarketing("login")} onNavigate={navigateMarketing} />;
+  if (page === "pricing" && (marketingPreview || (!empSession && !hasCrmSession))) {
+    return <>{previewBar}<PricingPage onGetStarted={() => navigateMarketing("login")} onNavigate={navigateMarketing} /></>;
   }
-  if (page === "about" && !empSession && !hasCrmSession) {
-    return <AboutPage onGetStarted={() => navigateMarketing("login")} onNavigate={navigateMarketing} />;
+  if (page === "about" && (marketingPreview || (!empSession && !hasCrmSession))) {
+    return <>{previewBar}<AboutPage onGetStarted={() => navigateMarketing("login")} onNavigate={navigateMarketing} /></>;
   }
 
   // No top-level loading gate — render immediately with whatever's already
@@ -3053,7 +3082,14 @@ export function App() {
   // above and the login-gate return below all require !hasCrmSession) — send
   // them on to the real dashboard instead of rendering nothing (none of
   // these are a case in the page switch further down).
-  if (hasCrmSession && (page === "welcome" || page === "login" || page === "features" || page === "pricing" || page === "about")) {
+  if (hasCrmSession && page === "login") {
+    // "login" is never previewable — there's no legitimate reason for an
+    // already-authenticated owner to see the login form itself, even in
+    // marketingPreview mode (e.g. if they tap the nav's "Log In" button
+    // while previewing the marketing site).
+    setMarketingPreview(false);
+    setTimeout(() => setPage("dashboard"), 0);
+  } else if (hasCrmSession && !marketingPreview && (page === "welcome" || page === "features" || page === "pricing" || page === "about")) {
     setTimeout(() => setPage("dashboard"), 0);
   }
 
@@ -3401,17 +3437,16 @@ export function App() {
             : {}),
         }}
       >
-        {/* Logo — opens the marketing landing page in a NEW tab, not
-            in-place navigation. In-place would immediately bounce right
-            back to the dashboard via the "already-signed-in owner off the
-            marketing/login pages" redirect guard a few hundred lines down
-            (by design, so a stray #/welcome bookmark/link never strands a
-            logged-in owner on marketing copy) — opening in a new tab lets
-            the owner glance at their own landing page without that guard
-            fighting them or losing their place in the CRM. */}
+        {/* Logo — navigates in-place to the marketing landing page via
+            marketingPreview (see that flag's own comment above), which
+            explicitly suppresses the "already-signed-in owner off the
+            marketing pages" redirect guard just for this intentional visit.
+            A plain reload or a fresh tab both start marketingPreview at
+            false, so those still redirect a logged-in owner straight to
+            the dashboard as expected — only this explicit click bypasses it. */}
         <div className="p-4 border-b border-red-900/30 flex items-center justify-between">
           <button
-            onClick={() => window.open(window.location.origin + window.location.pathname + "#/welcome", "_blank", "noopener,noreferrer")}
+            onClick={() => { setMarketingPreview(true); window.location.hash = "/welcome"; setPage("welcome"); }}
             className="flex items-center gap-2.5 text-left hover:opacity-80 transition"
             title="View landing page"
           >
