@@ -2318,7 +2318,17 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
 }) {
   // EGRESS FIX — skip the jobs poll below while the tab is hidden or the
   // employee has been idle 5+ minutes (e.g. mid-shift with the phone locked).
-  const shouldPollJobs = usePollGate();
+  //
+  // SYNC FIX — this used to call usePollGate() with no onVisible callback,
+  // unlike App.tsx's own usage (which force-refetches immediately on
+  // returning to the tab). That meant switching between two open sessions of
+  // the SAME account — e.g. Chrome tab and the installed PWA "app" — showed
+  // stale clock-in/job state in whichever one had been in the background,
+  // for up to a full poll interval (60-120s, see getPollIntervalMs) after
+  // switching to it. refetchJobsRef isn't populated until the jobs-poll
+  // effect below runs, but that's fine here — this callback only fires on a
+  // later visibilitychange event, well after mount.
+  const shouldPollJobs = usePollGate(() => { refetchJobsRef.current?.().catch(() => {}); refetchEmployees?.(); });
   const TAB_TO_SLUG: Record<string, string> = { today: "", calendar: "calendar", jobs: "jobs", pay: "pay", google: "google", onboarding: "onboarding" };
   const SLUG_TO_TAB: Record<string, "today" | "calendar" | "jobs" | "pay" | "google" | "onboarding"> = { "": "today", calendar: "calendar", jobs: "jobs", pay: "pay", google: "google", onboarding: "onboarding" };
   const tabFromHash = (): "today" | "calendar" | "jobs" | "pay" | "google" | "onboarding" => {
