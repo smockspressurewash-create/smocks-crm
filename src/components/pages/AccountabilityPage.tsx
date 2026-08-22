@@ -29,6 +29,7 @@ import { callModel, MODELS } from "../../lib/api";
 import { createCalendarEvent, updateCalendarEvent, deleteCalendarEvent, fetchDriveFiles, MOCK_GOOGLE_DATA, fmtSize, fmtDate, fileIcon } from "../../lib/google";
 import { usePersistent } from "../../hooks/usePersistent";
 import { usePersistentRaw } from "../../hooks/usePersistentRaw";
+import { supabase } from "../../lib/supabase";
 import { Glass } from "../ui/Glass";
 import { GBtn } from "../ui/GBtn";
 import { GInput } from "../ui/GInput";
@@ -77,8 +78,63 @@ import { ChemicalModal } from "../ui/ChemicalModal";
 import { WeeklyBusinessReview } from "../ui/WeeklyBusinessReview";
 import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 
-export function AccountabilityPage({ entries = [], setEntries, goals = [], setGoals, wins = [], setWins, toast, settings = {} as AppSettings }: { entries?: any[]; setEntries?: any; goals?: any[]; setGoals?: any; wins?: any[]; setWins?: any; toast?: any; settings?: AppSettings }) {
+export function AccountabilityPage({ entries = [], setEntries, goals = [], setGoals, wins = [], setWins, toast, settings = {} as AppSettings, ownerId = "" }: { entries?: any[]; setEntries?: any; goals?: any[]; setGoals?: any; wins?: any[]; setWins?: any; toast?: any; settings?: AppSettings; ownerId?: string }) {
   const [tab, setTab] = useState("today");
+  // FEATURE — office-hours clock, separate from per-job clocking
+  // (JobDetailModal/EmployeePortal): tracks admin/office time (invoicing,
+  // calls, planning) that never happens "on" a job. Local-only, same
+  // pattern as the rest of this page's usePersistent state.
+  const [officeLog, setOfficeLog] = usePersistent<any[]>("smocks.officeHoursLog", []);
+  const [officeClockInAt, setOfficeClockInAt] = usePersistent<number | null>("smocks.officeClockInAt", null);
+  const clockInOffice = () => { setOfficeClockInAt(Date.now()); toast?.("🏢 Office hours started"); };
+  const clockOutOffice = () => {
+    if (!officeClockInAt) return;
+    const minutes = Math.round((Date.now() - officeClockInAt) / 60000);
+    setOfficeLog(prev => [...prev, { id: uid(), date: today(), minutes, startedAt: officeClockInAt, endedAt: Date.now() }]);
+    setOfficeClockInAt(null);
+    toast?.(`🏢 Logged ${minutes}m of office hours`);
+  };
+  const todayOfficeMinutes = officeLog.filter((l: any) => l.date === today()).reduce((s: number, l: any) => s + (Number(l.minutes) || 0), 0)
+    + (officeClockInAt ? Math.round((Date.now() - officeClockInAt) / 60000) : 0);
+
+  // FEATURE — "Alfred-focused" reminders: instead of a purely local
+  // checklist the owner has to remember to check, this creates a REAL
+  // scheduled text via the same alfred_reminders mechanism text-Alfred's
+  // set_reminder tool uses (functions/api/check-reminders.ts) — Alfred
+  // actually texts the owner at the chosen (or randomized) time. Requires
+  // the same one-time external cron pinger set_reminder already needs
+  // (Settings -> AI Models explains it).
+  const [alfredReminderText, setAlfredReminderText] = useState("");
+  const [alfredReminderTime, setAlfredReminderTime] = useState("09:00");
+  const [alfredReminderMode, setAlfredReminderMode] = useState<"fixed" | "random">("fixed");
+  const [alfredReminderFreq, setAlfredReminderFreq] = useState<"once" | "daily">("daily");
+  const createAlfredReminder = async () => {
+    const text = alfredReminderText.trim();
+    if (!text) return;
+    const phone = (settings as any)?.myPhone;
+    if (!phone) { toast?.("Set your mobile number in Settings → Company first", "red"); return; }
+    let [hh, mm] = alfredReminderTime.split(":").map(Number);
+    if (alfredReminderMode === "random") {
+      // Random time somewhere in the owner's business hours (8am-6pm) so a
+      // "surprise me" reminder doesn't land at 2am.
+      hh = 8 + Math.floor(Math.random() * 10);
+      mm = Math.floor(Math.random() * 60);
+    }
+    const due = new Date();
+    due.setHours(hh, mm, 0, 0);
+    if (due.getTime() <= Date.now()) due.setDate(due.getDate() + 1);
+    try {
+      const { error } = await (supabase as any).from("alfred_reminders").insert({
+        id: uid(), owner_id: ownerId, phone, message: text, due_at: due.toISOString(), sent: false,
+        recurring: alfredReminderFreq === "daily" ? "daily" : null,
+      });
+      if (error) throw error;
+      toast?.(`📲 Alfred will text you${alfredReminderFreq === "daily" ? " every day" : ""} ${alfredReminderMode === "random" ? "at a random time" : "at " + alfredReminderTime}${alfredReminderMode === "random" ? "" : ""} ✓`);
+      setAlfredReminderText("");
+    } catch (e: any) {
+      toast?.("Couldn't schedule — " + (e?.message || "unknown error"), "red");
+    }
+  };
   const [f, setF] = useState<{ sleep: any; water: any; gymMinutes: any; meditationMinutes: any; steps: any; mood: any; notes: string; personalNotes?: string }>({ sleep: 7, water: 0, gymMinutes: 0, meditationMinutes: 0, steps: 0, mood: 3, notes: "" });
   const [gText, setGText] = useState("");
   const [wText, setWText] = useState("");
@@ -195,9 +251,58 @@ export function AccountabilityPage({ entries = [], setEntries, goals = [], setGo
         <Stat icon={Heart} label="Mood Avg" value={entries.length ? (entries.reduce((s, e) => s + e.mood, 0) / entries.length).toFixed(1) : "—"} />
       </div>
 
-      <div className="flex gap-2 flex-wrap">{["today", "history", "goals", "wins", "reminders", "reflect"].map(t => <button key={t} onClick={() => setTab(t)} className={"px-4 py-2 rounded-xl text-sm font-medium transition border capitalize " + (tab === t ? "bg-gradient-to-r from-red-600 to-red-800 border-red-500/50 text-white" : "bg-black/40 border-red-900/30 text-white/60 hover:text-white")}>{t === "reflect" ? "✨ Reflect" : t}</button>)}</div>
+      <div className="flex gap-2 flex-wrap">{["today", "history", "goals", "wins", "office", "reminders", "reflect"].map(t => <button key={t} onClick={() => setTab(t)} className={"px-4 py-2 rounded-xl text-sm font-medium transition border capitalize " + (tab === t ? "bg-gradient-to-r from-red-600 to-red-800 border-red-500/50 text-white" : "bg-black/40 border-red-900/30 text-white/60 hover:text-white")}>{t === "reflect" ? "✨ Reflect" : t === "office" ? "🏢 Office" : t}</button>)}</div>
+
+      {tab === "office" && <div className="space-y-3">
+        <Glass className={"p-5 " + (officeClockInAt ? "!bg-green-950/20 !border-green-600/40" : "!bg-black/40")}>
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className={"p-2.5 rounded-xl " + (officeClockInAt ? "bg-green-900/40 animate-pulse" : "bg-white/5")}><Clock size={18} className={officeClockInAt ? "text-green-400" : "text-white/60"} /></div>
+              <div>
+                <div className="text-xs text-white/60 uppercase tracking-wider">Office Hours</div>
+                <div className="text-sm">{officeClockInAt ? <span className="font-mono text-green-400 text-lg font-bold">Clocked in</span> : <span className="text-white/50">Not clocked in</span>}</div>
+                <div className="text-[10px] text-white/40 mt-0.5">{todayOfficeMinutes}m logged today</div>
+              </div>
+            </div>
+            {officeClockInAt ? <GBtn variant="danger" onClick={clockOutOffice}>Clock Out</GBtn> : <GBtn onClick={clockInOffice}><Play size={12} className="inline mr-1" />Clock In</GBtn>}
+          </div>
+          <div className="text-xs text-white/40 mt-3">For admin/office work — invoicing, planning, calls — separate from time logged on a job.</div>
+        </Glass>
+        {officeLog.length > 0 && <Glass className="p-4">
+          <div className="text-xs text-white/60 uppercase tracking-wider mb-2">Recent sessions</div>
+          <div className="space-y-1.5">
+            {[...officeLog].reverse().slice(0, 15).map((l: any) => (
+              <div key={l.id} className="flex items-center justify-between text-xs p-2 bg-white/5 rounded-lg">
+                <span className="text-white/70">{l.date}</span>
+                <span className="font-semibold">{l.minutes}m</span>
+              </div>
+            ))}
+          </div>
+        </Glass>}
+      </div>}
 
       {tab === "reminders" && <div className="space-y-3">
+        <Glass className="p-4 !bg-gradient-to-br !from-purple-950/20 !to-black/60 !border-purple-700/30">
+          <div className="font-semibold text-sm flex items-center gap-2 mb-1">🤖 Ask Alfred to Remind You</div>
+          <div className="text-xs text-white/60 mb-3">A real text from Alfred, not just a checklist item — needs your mobile number set (Settings → Company) and, for it to actually arrive on time, a one-time external cron pinger (see Settings → AI Models).</div>
+          <div className="space-y-2">
+            <GInput placeholder="What should Alfred remind you about?" value={alfredReminderText} onChange={e => setAlfredReminderText(e.target.value)} />
+            <div className="grid grid-cols-3 gap-2">
+              <GSel value={alfredReminderFreq} onChange={e => setAlfredReminderFreq(e.target.value as any)}>
+                <option value="daily" className="bg-black">Every day</option>
+                <option value="once" className="bg-black">One time</option>
+              </GSel>
+              <GSel value={alfredReminderMode} onChange={e => setAlfredReminderMode(e.target.value as any)}>
+                <option value="fixed" className="bg-black">At a set time</option>
+                <option value="random" className="bg-black">🎲 Random time (8am-6pm)</option>
+              </GSel>
+              {alfredReminderMode === "fixed"
+                ? <input type="time" value={alfredReminderTime} onChange={e => setAlfredReminderTime(e.target.value)} className="bg-white/5 border border-white/15 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-red-500/50" />
+                : <div className="flex items-center text-xs text-white/40 italic px-2">Alfred picks the time</div>}
+            </div>
+            <GBtn onClick={createAlfredReminder} className="w-full"><Bot size={14} className="inline mr-1.5" />Schedule with Alfred</GBtn>
+          </div>
+        </Glass>
         <Glass className="p-4 !bg-gradient-to-br !from-purple-950/20 !to-black/60 !border-purple-700/30">
           <div className="font-semibold text-sm flex items-center gap-2 mb-1">📋 Personal Reminders</div>
           <div className="text-xs text-white/60">Things you want to remember to do — not business tasks.</div>
