@@ -103,6 +103,13 @@ const PERMISSION_DEFS_EMP = [
   { key: "can_create_invoices",    label: "Create invoices",       desc: "Generate a new invoice from a job" },
   { key: "can_send_invoices",      label: "Send invoices",         desc: "Email/text an invoice to the customer" },
   { key: "can_process_payments",   label: "Process payments",      desc: "Add cards on file, charge fees on-site" },
+  // FEATURE — lets a specific employee text the company's Alfred number and
+  // get a real (narrow, self-scoped-only) AI assistant back: clock in/out,
+  // check their own hours, see their own jobs, manage their own connected
+  // Google Calendar. Off by default — this is a new capability, not an
+  // existing portal permission being surfaced, so it shouldn't silently
+  // turn on for anyone until the owner opts them in.
+  { key: "can_text_alfred",        label: "Text Alfred",           desc: "Clock in/out, check hours, and manage their calendar by texting Alfred" },
 ] as const;
 
 const DEFAULT_PERMS: Record<string, boolean> = {
@@ -110,6 +117,7 @@ const DEFAULT_PERMS: Record<string, boolean> = {
   can_complete_checklist: true, can_get_signoff: true,
   can_view_pay: true, can_view_calendar: true, can_add_notes: true,
   can_create_invoices: false, can_send_invoices: false, can_process_payments: false,
+  can_text_alfred: false,
 };
 
 // FIX 8 — CRM-side permissions for a "Manager" role employee (distinct from

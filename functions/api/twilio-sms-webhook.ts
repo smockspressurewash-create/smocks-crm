@@ -432,6 +432,40 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
       );
       return twiml();
     }
+
+    // FEATURE — employees the owner has explicitly opted in
+    // (employees.permissions.can_text_alfred, off by default — toggled in
+    // Settings/Employees, same pattern as customers.alfredAutoRespond) can
+    // text a THIRD, narrower Alfred agent scoped to only their own record:
+    // clock in/out, check their own hours, see their own jobs, manage their
+    // own connected Google Calendar. Checked after the owner-phone branch
+    // (an owner number always wins) and before the customer STOP/opt-in
+    // logic below, matching that same "resolve who this is once" shape.
+    {
+      const empRes = await fetch(`${SUPABASE_URL}/rest/v1/employees?select=id,firstName,lastName,phone,permissions,dayClockInAt,dayPausedMinutes,lastShiftHours,lastShiftDate,google_token,google_refresh_token,google_token_expires_at${ownerFilter}`, { headers: authHeaders });
+      const empRows = await empRes.json().catch(() => []);
+      const employee = Array.isArray(empRows)
+        ? empRows.find((e: any) => e.phone && normalizePhoneDigits(e.phone) === fromDigits && e.permissions?.can_text_alfred === true)
+        : null;
+      if (employee) {
+        const empCtx = { authHeaders, ownerId, companyName, twilioSid, twilioToken, twilioFrom, origin: new URL(context.request.url).origin, env: context.env as Record<string, string> };
+        context.waitUntil((async () => {
+          try {
+            const { runAlfredEmployeeAgent } = await import("./_lib/alfredEmployeeAgent");
+            const text = await resolveIncomingText(params, bodyRaw, twilioSid, twilioToken, openaiKey, (context.env as any).AI);
+            const reply = await runAlfredEmployeeAgent(empCtx, employee, modelKeys, modelPriority, text).catch((e: any) => {
+              console.error("[TwilioSmsWebhook] Alfred employee agent failed:", e?.message);
+              return "Sorry, something went wrong on my end — try texting again.";
+            });
+            await sendAlfredSms(empCtx as any, from, reply);
+          } catch (e: any) {
+            console.error("[TwilioSmsWebhook] employee Alfred branch failed:", e?.message);
+          }
+        })());
+        return twiml();
+      }
+    }
+
     // No normalized phone column to filter on server-side (formats vary:
     // "(717) 555-0100" vs "+17175550100") — fetch and match in JS.
     let listRes = await fetch(`${SUPABASE_URL}/rest/v1/customers?select=id,phone,firstName,lastName,smsOptInPending,alfredAutoRespond${ownerFilter}`, {
