@@ -58,6 +58,8 @@ export interface PlaceResult {
   city: string;
   state: string;
   zip: string;
+  lat?: number;
+  lng?: number;
 }
 
 // Local fallback — string-match against addresses already in the CRM.
@@ -97,7 +99,7 @@ function matchKnownAddresses(q: string, knownAddresses: string[]): string[] {
 export function AddressAutocomplete({
   value = "",
   onChange,
-  onPlaceSelect: _onPlaceSelect,
+  onPlaceSelect,
   placeholder = "Start typing an address...",
   mapsKey = "",
   className = "",
@@ -124,6 +126,11 @@ export function AddressAutocomplete({
   const [placesError, setPlacesError] = useState<"blocked" | "other" | null>(null);
   const placesLibRef = useRef<any>(null);
   const debounceRef = useRef<any>(null);
+  // Raw Places predictions (kept alongside the plain-text placePreds array)
+  // so a selection can resolve real lat/lng via .toPlace().fetchFields() —
+  // see FIX below. Not put in React state since nothing needs to re-render
+  // off it, only read at selection time.
+  const predictionsRef = useRef<any[]>([]);
   useEffect(() => {
     if (!mapsKey) {
       setPlacePreds([]);
@@ -146,12 +153,12 @@ export function AddressAutocomplete({
         const { suggestions } = await AutocompleteSuggestion.fetchAutocompleteSuggestions({
           input: value, includedRegionCodes: ["us"], includedPrimaryTypes: ["street_address", "route", "premise"],
         });
-        const texts = (suggestions || [])
-          .map((s: any) => s.placePrediction?.text?.toString())
-          .filter(Boolean)
+        const preds = (suggestions || [])
+          .filter((s: any) => s.placePrediction?.text)
           .slice(0, 6);
-        console.log("[Autocomplete] Google Places returned", texts.length, "suggestions");
-        setPlacePreds(texts);
+        console.log("[Autocomplete] Google Places returned", preds.length, "suggestions");
+        predictionsRef.current = preds;
+        setPlacePreds(preds.map((s: any) => s.placePrediction.text.toString()));
         setPlacesError(null);
       } catch (e: any) {
         const msg = String(e?.message || e || "");
@@ -180,9 +187,42 @@ export function AddressAutocomplete({
     setOpen(true);
   };
 
+  // FIX — onPlaceSelect was accepted as a prop but never actually called
+  // (destructured as `_onPlaceSelect` and dropped), so every job/customer
+  // address ever saved through this component carried no coordinates.
+  // That silently made lat/lng-dependent features (route optimization,
+  // GPS arrival prompts) permanently inert — they'd fall back to
+  // placeholder/random coordinates or just never fire, with no visible
+  // error anywhere, since a missing optional field doesn't throw. Now
+  // resolves real coordinates via the same Places library already loaded
+  // for suggestions (`.toPlace().fetchFields()`) when the selection came
+  // from Google (skipped for a local-CRM-match pick, which has no
+  // corresponding Places prediction to resolve).
   const handleSelect = (s: string) => {
     onChange(s);
     setOpen(false);
+    if (!onPlaceSelect) return;
+    const pred = predictionsRef.current.find((p: any) => p.placePrediction?.text?.toString() === s);
+    if (!pred?.placePrediction?.toPlace) return;
+    (async () => {
+      try {
+        const place = pred.placePrediction.toPlace();
+        await place.fetchFields({ fields: ["location", "addressComponents", "formattedAddress"] });
+        const loc = place.location;
+        const lat = typeof loc?.lat === "function" ? loc.lat() : loc?.lat;
+        const lng = typeof loc?.lng === "function" ? loc.lng() : loc?.lng;
+        const comp = (type: string) => place.addressComponents?.find((c: any) => c.types?.includes(type))?.longText || place.addressComponents?.find((c: any) => c.types?.includes(type))?.shortText || "";
+        onPlaceSelect({
+          street: [comp("street_number"), comp("route")].filter(Boolean).join(" "),
+          city: comp("locality") || comp("sublocality"),
+          state: comp("administrative_area_level_1"),
+          zip: comp("postal_code"),
+          ...(typeof lat === "number" && typeof lng === "number" ? { lat, lng } : {}),
+        });
+      } catch (e: any) {
+        console.warn("[Autocomplete] fetchFields for coordinates failed:", e?.message);
+      }
+    })();
   };
 
   const verifyOnMaps = () => {

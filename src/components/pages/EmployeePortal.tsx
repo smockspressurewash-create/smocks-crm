@@ -21,7 +21,7 @@ import { SaveCardModal } from "../ui/SaveCardModal";
 import { SopModal } from "../ui/SopModal";
 import { chargeSavedPaymentMethod } from "../../lib/stripe";
 import { BarChart, Bar, LineChart, Line, XAxis, YAxis, ResponsiveContainer, Tooltip, CartesianGrid } from "recharts";
-import { fmt, uid, today, localDateStr, localDateKey, shiftDayStr, daysFromNow, computeJobRatingScore, setOAuthIntent, compressImageFile, getEffectiveRate, computeNextRecurringDate, weekdayLabels, normalizeJobRow, totalJobPhotoCount, mediaSrc, dataUrlToBlob, uploadJobMedia, checkVideoLimits, stripLegacyJobFields, reconcileCrewAfterAssign, getPollIntervalMs, getPayPeriodBounds } from "../../lib/utils";
+import { fmt, uid, today, localDateStr, localDateKey, shiftDayStr, daysFromNow, computeJobRatingScore, setOAuthIntent, compressImageFile, getEffectiveRate, computeNextRecurringDate, weekdayLabels, normalizeJobRow, totalJobPhotoCount, mediaSrc, dataUrlToBlob, uploadJobMedia, checkVideoLimits, stripLegacyJobFields, reconcileCrewAfterAssign, getPollIntervalMs, getPayPeriodBounds, haversineMiles } from "../../lib/utils";
 import { usePollGate } from "../../hooks/usePollGate";
 import { usePersistent } from "../../hooks/usePersistent";
 import type { Job, Employee, Customer, AppSettings, JobChecklistItem } from "../../types";
@@ -309,6 +309,19 @@ function PortalChecklistSection({ jobId, title, emoji, items, onUpdate, allowPho
 
 const DEFAULT_SIGNOFF_DISCLAIMER = "I confirm that all services have been completed to my satisfaction. I accept the work as described and acknowledge that {{company}} is not liable for pre-existing conditions documented in the pre-job checklist. I understand that this serves as a legally binding acceptance of completed work.";
 
+// FEATURE — proximity arrival prompt: "You're near the job site — notify the
+// owner you've arrived?" shown once a watched GPS fix lands within this
+// radius of the job's geocoded lat/lng. 150m is a reasonable "at the
+// property" default for consumer GPS accuracy (which itself can be 10-50m+),
+// wide enough to trigger from the driveway/curb without requiring the phone
+// be inside the house. NOTE: as of this feature, nothing in the app actually
+// geocodes a job's address into lat/lng on save (AddressAutocomplete only
+// returns address text, never place.geometry.location) — so this only fires
+// for jobs that happen to have lat/lng already populated some other way
+// (e.g. manually, or a future geocode step). See JobDetailView's arrival-
+// watch effect below.
+const ARRIVAL_PROMPT_RADIUS_METERS = 150;
+
 // FIX 13 — exported so the owner's Dashboard can reuse the exact same
 // streamlined, mobile-optimized job view a field employee sees (sign-off,
 // checklist with photo upload, clock in/out — no admin fields) instead of
@@ -399,6 +412,80 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
       setPaymentMethod("");
     }
   }, []); // run once on mount // eslint-disable-line react-hooks/exhaustive-deps
+
+  // FEATURE — proximity arrival prompt. While this job is open (not yet
+  // arrived, not completed/cancelled, and the job has a geocoded lat/lng —
+  // see ARRIVAL_PROMPT_RADIUS_METERS above), watch GPS and offer to mark
+  // arrival once the employee's live position lands within the radius.
+  // Guarded so it: never starts without lat/lng on the job, never re-prompts
+  // once shown/handled for this job (arrivalHandledRef, local state — reset
+  // only on remount, e.g. leaving and reopening this job), and stops
+  // watching (clearWatch) the moment it fires or on unmount/nav-away, so it
+  // never runs longer than this view is actually on screen.
+  const [showArrivalPrompt, setShowArrivalPrompt] = useState(false);
+  const arrivalWatchIdRef = useRef<number | null>(null);
+  const arrivalHandledRef = useRef(false);
+  useEffect(() => {
+    arrivalHandledRef.current = false;
+    setShowArrivalPrompt(false);
+    if (job.arrivedAt || job.status === "completed" || job.status === "cancelled") return;
+    if (typeof job.lat !== "number" || typeof job.lng !== "number") return;
+    if (!navigator.geolocation) return;
+    try {
+      const watchId = navigator.geolocation.watchPosition(
+        (pos) => {
+          if (arrivalHandledRef.current) return;
+          const { latitude, longitude, accuracy } = pos.coords;
+          // Ignore low-accuracy fixes near/above the radius itself — a noisy
+          // 300m-accuracy fix "matching" a 150m radius would be a false
+          // positive, not a real arrival.
+          if (accuracy != null && accuracy > ARRIVAL_PROMPT_RADIUS_METERS) return;
+          const meters = haversineMiles(job.lat as number, job.lng as number, latitude, longitude) * 1609.34;
+          if (meters <= ARRIVAL_PROMPT_RADIUS_METERS) {
+            arrivalHandledRef.current = true;
+            setShowArrivalPrompt(true);
+            if (arrivalWatchIdRef.current != null) {
+              navigator.geolocation.clearWatch(arrivalWatchIdRef.current);
+              arrivalWatchIdRef.current = null;
+            }
+          }
+        },
+        (err) => {
+          console.warn("[Arrival Prompt] GPS watch error:", err.code, err.message);
+          // Permission denied (or any other terminal error) — stop watching
+          // for the rest of this mount instead of leaving a dead watch
+          // running or re-prompting for permission.
+          arrivalHandledRef.current = true;
+          if (arrivalWatchIdRef.current != null) {
+            navigator.geolocation.clearWatch(arrivalWatchIdRef.current);
+            arrivalWatchIdRef.current = null;
+          }
+        },
+        { enableHighAccuracy: true, maximumAge: 20000, timeout: 20000 }
+      );
+      arrivalWatchIdRef.current = watchId;
+    } catch (e: any) {
+      console.warn("[Arrival Prompt] couldn't start GPS watch:", e?.message);
+    }
+    return () => {
+      if (arrivalWatchIdRef.current != null) {
+        navigator.geolocation.clearWatch(arrivalWatchIdRef.current);
+        arrivalWatchIdRef.current = null;
+      }
+    };
+    // job.id (not just lat/lng) so switching jobs resets arrivalHandledRef;
+    // job.arrivedAt/status so arriving (via this prompt, the manual button,
+    // or elsewhere) immediately stops the watch.
+  }, [job.id, job.arrivedAt, job.status, job.lat, job.lng]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Same action the manual "I'm Here" button below performs — the arrival
+  // prompt's "Yes" reuses this exact function rather than a second,
+  // parallel notify path.
+  const markArrived = () => {
+    onUpdateJob({ arrivedAt: Date.now(), status: job.status === "scheduled" ? "in_progress" : job.status });
+    toast("Marked as arrived ✓ — owner notified");
+    onArrived?.();
+  };
 
   const hasRequiredGear = (job.equipment || []).length > 0 || (job.requiredChemicals || []).length > 0;
   const sendRunningLate = async (minutes: number) => {
@@ -1278,6 +1365,37 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
         </div>
       </div>
 
+      {/* FEATURE — proximity arrival prompt, shown once GPS lands within
+          ARRIVAL_PROMPT_RADIUS_METERS of the job's lat/lng. Lightweight,
+          dismissible overlay — "Yes" reuses markArrived (same action as the
+          manual "I'm Here" button below), "Dismiss" just closes it and it
+          will not reopen for this job this mount. */}
+      {showArrivalPrompt && (
+        <div className="fixed top-16 left-3 right-3 z-30 max-w-lg mx-auto">
+          <Glass className="p-3 !bg-blue-950/95 !border-blue-600/50 shadow-2xl flex items-start gap-3">
+            <MapPin size={16} className="text-blue-300 flex-shrink-0 mt-0.5" />
+            <div className="flex-1 min-w-0">
+              <div className="text-xs font-semibold text-white">You're near the job site</div>
+              <div className="text-[11px] text-white/60 mt-0.5">Notify the owner you've arrived?</div>
+              <div className="flex gap-2 mt-2">
+                <button
+                  onClick={() => { setShowArrivalPrompt(false); markArrived(); }}
+                  className="flex-1 py-1.5 rounded-lg bg-gradient-to-r from-blue-600 to-blue-800 border border-blue-500/60 text-white text-xs font-bold transition"
+                >
+                  Yes, I'm here
+                </button>
+                <button
+                  onClick={() => setShowArrivalPrompt(false)}
+                  className="px-3 py-1.5 rounded-lg text-[11px] text-white/50 hover:text-white/80 transition"
+                >
+                  Dismiss
+                </button>
+              </div>
+            </div>
+          </Glass>
+        </div>
+      )}
+
       <div className="p-4 space-y-4 max-w-lg mx-auto">
         {/* Payment status — only meaningful once the job is done */}
         {job.status === "completed" && (
@@ -1656,11 +1774,7 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
                 )}
               </div>
               {!job.arrivedAt && (
-                <GBtn onClick={() => {
-                  onUpdateJob({ arrivedAt: Date.now(), status: job.status === "scheduled" ? "in_progress" : job.status });
-                  toast("Marked as arrived ✓ — owner notified");
-                  onArrived?.();
-                }} className="!gap-2">
+                <GBtn onClick={markArrived} className="!gap-2">
                   <MapPin size={14} />I'm Here
                 </GBtn>
               )}

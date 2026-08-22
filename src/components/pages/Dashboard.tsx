@@ -501,6 +501,40 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
     const completedTodayCount = empJobs.filter((j: any) => j.status === "completed").length;
     return { emp: e, job: currentJob, jobIndex, totalJobsToday: empJobs.length, completedTodayCount };
   });
+  // GROUPING (additive presentation layer over `liveTeam`) — when two or more
+  // on-shift employees are paired with the SAME current job (job.crew has
+  // multiple people, e.g. two techs on one house wash), `liveTeam` above still
+  // produces one row per employee, which rendered as duplicate cards both
+  // pointing at the same job/checklist/address. This groups same-job rows
+  // into a single "crew" entry (job + all member rows) purely for rendering;
+  // an employee whose current job nobody else shares stays a "single" entry,
+  // rendered identically to before. Does not touch on-shift detection,
+  // crewStatusLabel, checklistProgress, or the 3s poll above.
+  type LiveTeamRow = (typeof liveTeam)[number];
+  const liveTeamGrouped: Array<
+    { kind: "single"; row: LiveTeamRow } | { kind: "crew"; job: any; rows: LiveTeamRow[] }
+  > = (() => {
+    const byJobId = new Map<string, LiveTeamRow[]>();
+    for (const row of liveTeam) {
+      if (!row.job) continue;
+      const arr = byJobId.get(row.job.id) || [];
+      arr.push(row);
+      byJobId.set(row.job.id, arr);
+    }
+    const seenGroupedJobIds = new Set<string>();
+    const out: Array<{ kind: "single"; row: LiveTeamRow } | { kind: "crew"; job: any; rows: LiveTeamRow[] }> = [];
+    for (const row of liveTeam) {
+      const sharedRows = row.job ? byJobId.get(row.job.id) : undefined;
+      if (row.job && sharedRows && sharedRows.length > 1) {
+        if (seenGroupedJobIds.has(row.job.id)) continue;
+        seenGroupedJobIds.add(row.job.id);
+        out.push({ kind: "crew", job: row.job, rows: sharedRows });
+      } else {
+        out.push({ kind: "single", row });
+      }
+    }
+    return out;
+  })();
   // FIX 3 — an employee who clocked out today disappears from Live Team View
   // entirely (dayClockInAt goes null on end-of-day), which reads as "nobody
   // worked today" even though they did a full shift. toggleDay's clock-out
@@ -968,7 +1002,96 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
           </div>
         ) : (
           <div className="space-y-2">
-            {liveTeam.map(({ emp: e, job: j, jobIndex, totalJobsToday, completedTodayCount }) => {
+            {liveTeamGrouped.map((item) => {
+              if (item.kind === "crew") {
+                // GROUPED CREW CARD — multiple on-shift employees sharing the
+                // same current job. Job data (address, status, checklist,
+                // photos/videos) is shared since it belongs to the job, not
+                // any one employee; each member's name and their own live
+                // location badge are listed individually below.
+                const j = item.job;
+                const rows = item.rows;
+                const c = customers.find(x => x.id === j.customerId) || null;
+                const prog = checklistProgress(j);
+                const photoCount = totalJobPhotoCount(j);
+                const videoCount = (j.videos || []).length;
+                const mapsKey = settings.googleMapsKey || settings.mapsKey;
+                const status = crewStatusLabel(j, prog);
+                const reportedIssue = [...(j.commLog || [])].reverse().find((c: any) => typeof c.note === "string" && c.note.startsWith("🚨 ISSUE REPORTED") && c.date === todayStrLive);
+                const totalJobsToday = rows[0].totalJobsToday;
+                const completedTodayCount = rows[0].completedTodayCount;
+                const jobIndex = rows[0].jobIndex;
+                return (
+                  <div key={"crew-" + j.id} className="flex items-center gap-3 p-3 rounded-xl border bg-black/30 border-white/10">
+                    <MiniStreetViewThumb address={j.address} mapsKey={mapsKey} />
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className={"text-[9px] px-1.5 py-0.5 rounded-full font-bold uppercase tracking-wide flex-shrink-0 " +
+                          (status.tone === "red" ? "bg-red-900/40 text-red-300" : status.tone === "blue" ? "bg-blue-900/40 text-blue-300" : "bg-green-900/40 text-green-300")}>
+                          {status.label}
+                        </span>
+                        {reportedIssue && (
+                          <span className="text-[9px] px-1.5 py-0.5 rounded-full font-bold uppercase tracking-wide flex-shrink-0 bg-red-600/40 text-red-200 border border-red-500/50 animate-pulse">
+                            ⚠️ Issue Reported
+                          </span>
+                        )}
+                      </div>
+                      {/* Crew member chips — name + individual live-location dot per member */}
+                      <div className="flex flex-wrap items-center gap-1.5 mt-1">
+                        {rows.map(({ emp: re }) => (
+                          <span key={re.id} className="flex items-center gap-1 text-[11px] font-medium bg-white/5 border border-white/10 rounded-full pl-0.5 pr-2 py-0.5">
+                            <span className="w-4 h-4 rounded-full bg-green-950/40 border border-green-700/30 flex items-center justify-center text-green-400 font-bold text-[8px] flex-shrink-0">
+                              {(re.firstName?.[0] || "?")}{(re.lastName?.[0] || "")}
+                            </span>
+                            {re.firstName} {re.lastName}
+                            {re.locationSharing && re.lastLocation?.updatedAt && (
+                              <span className="flex items-center gap-1 text-blue-400" title={"Location updated " + new Date(re.lastLocation.updatedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}>
+                                <span className="relative flex h-1.5 w-1.5"><span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" /><span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-blue-400" /></span>
+                              </span>
+                            )}
+                          </span>
+                        ))}
+                      </div>
+                      <div className="text-xs text-white/50 truncate mt-1 flex items-center gap-1">
+                        <MapPin size={10} className="flex-shrink-0" />{c ? `${c.firstName} ${c.lastName} — ${j.address}` : j.address}
+                      </div>
+                      {reportedIssue && (
+                        <div className="text-[11px] text-red-300 bg-red-950/30 border border-red-700/40 rounded-lg px-2 py-1 mt-1">
+                          {reportedIssue.note.replace("🚨 ISSUE REPORTED", "🚨").trim()}
+                        </div>
+                      )}
+                      <div className="text-xs text-white/40 flex items-center gap-2 flex-wrap mt-1">
+                        {j.arrivedAt && <span className="text-green-400">✓ on site</span>}
+                        {totalJobsToday > 0 && <span className="text-white/40">Job {jobIndex} of {totalJobsToday}</span>}
+                        {photoCount > 0 && <span className="flex items-center gap-1"><ImageIcon size={10} />{photoCount} photo{photoCount !== 1 ? "s" : ""}</span>}
+                        {videoCount > 0 && <span className="flex items-center gap-1"><Video size={10} />{videoCount} video{videoCount !== 1 ? "s" : ""}</span>}
+                      </div>
+                      {prog && (
+                        <div className="mt-1.5">
+                          <button onClick={() => setExpandedChecklistJobId(id => id === j.id ? null : j.id)} className="w-full flex items-center gap-1.5">
+                            <div className="flex-1 h-1.5 rounded-full bg-white/10 overflow-hidden max-w-[160px]">
+                              <div className="h-full bg-green-500 rounded-full transition-all" style={{ width: prog.pct + "%" }} />
+                            </div>
+                            <span className="text-[10px] text-white/40 flex items-center gap-1 flex-shrink-0 hover:text-white/70"><CheckSquare size={10} />{prog.done}/{prog.total}</span>
+                          </button>
+                          {expandedChecklistJobId === j.id && (
+                            <div className="mt-1.5 space-y-1 max-h-40 overflow-y-auto pr-1">
+                              {getAllChecklistItems(j).map((ck: any, i: number) => (
+                                <div key={i} className={"text-[10px] flex items-center gap-1.5 " + (ck.done ? "text-white/40 line-through" : "text-white/70")}>
+                                  {ck.done ? <CheckSquare size={10} className="text-green-500 flex-shrink-0" /> : <Square size={10} className="text-white/30 flex-shrink-0" />}
+                                  {ck.label}
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                    <button onClick={() => onViewJob(j.id)} className="px-2.5 py-1.5 bg-white/5 border border-white/10 rounded-lg text-xs text-white/60 hover:text-white flex-shrink-0">View Details</button>
+                  </div>
+                );
+              }
+              const { emp: e, job: j, jobIndex, totalJobsToday, completedTodayCount } = item.row;
               const c = j ? customers.find(x => x.id === j.customerId) : null;
               const pausedMs = (Number(e.dayPausedMinutes) || 0) * 60000;
               const onLunch = !!e.dayLunchStartAt;

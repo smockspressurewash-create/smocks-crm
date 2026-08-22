@@ -151,7 +151,7 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
   // FIX 5 — crewEmpId (singular) only ever let the owner pick ONE crew member
   // when scheduling a job; crewEmpIds (array) lets multiple be selected at
   // once, all saved to the job's crew array together.
-  const emptyNewJobForm = () => ({ customerId: "", address: "", amount: "", scheduledDate: today(), scheduledTime: "", priority: "normal", notes: "", duration: "", crewEmpIds: [] as string[], jobType: "residential", isRecurring: false, recurringMode: "preset" as "preset" | "days" | "weeks" | "months" | "weekdays", recurringFreq: "monthly", recurringInterval: 1, recurringWeekdays: [] as number[] });
+  const emptyNewJobForm = () => ({ customerId: "", address: "", lat: undefined as number | undefined, lng: undefined as number | undefined, amount: "", scheduledDate: today(), scheduledTime: "", priority: "normal", notes: "", duration: "", crewEmpIds: [] as string[], jobType: "residential", isRecurring: false, recurringMode: "preset" as "preset" | "days" | "weeks" | "months" | "weekdays", recurringFreq: "monthly", recurringInterval: 1, recurringWeekdays: [] as number[] });
   const [newJobForm, setNewJobForm] = useState(emptyNewJobForm());
   // BLOCKER — this used to be ONE shared mode applied to every selected
   // employee at once, so there was no way to assign one crew member directly
@@ -548,7 +548,7 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
                       ))}
                     </GSel>
                     {selectedId === "__custom__" && (
-                      <AddressAutocomplete value={newJobForm.address} onChange={v => setNewJobForm(f => ({ ...f, address: v }))} mapsKey={settings.googleMapsKey || settings.mapsKey || ""} placeholder="123 Main St, York PA" knownAddresses={customers.map((c: any) => c.address).filter(Boolean)} />
+                      <AddressAutocomplete value={newJobForm.address} onChange={v => setNewJobForm(f => ({ ...f, address: v }))} onPlaceSelect={p => setNewJobForm(f => ({ ...f, lat: p.lat, lng: p.lng }))} mapsKey={settings.googleMapsKey || settings.mapsKey || ""} placeholder="123 Main St, York PA" knownAddresses={customers.map((c: any) => c.address).filter(Boolean)} />
                     )}
                   </div>
                 );
@@ -802,6 +802,7 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
               const job = {
                 id: uid(), customerId: newJobForm.customerId,
                 address: newJobForm.address || customers.find(c => c.id === newJobForm.customerId)?.address || "",
+                ...(typeof newJobForm.lat === "number" && typeof newJobForm.lng === "number" ? { lat: newJobForm.lat, lng: newJobForm.lng } : {}),
                 amount: parseFloat(newJobForm.amount) || 0,
                 status: "scheduled" as const,
                 scheduledDate: newJobForm.scheduledDate,
@@ -836,7 +837,7 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
               // (Google Calendar, crew email/request) should be able to block
               // the UI if a network call hangs.
               setNewJobOpen(false);
-              setNewJobForm(f => ({ ...f, crewEmpIds: [] }));
+              setNewJobForm(f => ({ ...f, crewEmpIds: [], lat: undefined, lng: undefined }));
               setCrewModeById({});
               toast("Job scheduled for " + newJobForm.scheduledDate);
               // A brand-new job previously only reached Supabase via the
