@@ -5,6 +5,31 @@
 :root {
   --brand: #dc2626;
   --brand-accent: #991b1b;
+
+  /* THEME FOUNDATION — dark is the default/existing look (matches the
+     app's current hardcoded black/white classes everywhere), light is new.
+     App.tsx sets data-theme="light" on <html> when settings.theme==="light".
+     Only components using the surface/ink/edge Tailwind tokens above react
+     to this — most of the app's existing hardcoded bg-black/text-white
+     classes do not, since converting every page is a large follow-on
+     effort, not something done in one pass. See CLAUDE.md-adjacent note in
+     the commit for exactly what's converted so far (shared UI primitives:
+     Glass/GBtn/GInput/Modal/Badge, plus the app shell/body). */
+  --surface-rgb: 0 0 0;         /* card/glass background */
+  --surface-2-rgb: 255 255 255; /* secondary surface (e.g. white/5 equivalents) */
+  --ink-rgb: 255 255 255;       /* primary text */
+  --ink-soft-rgb: 255 255 255;  /* secondary text (used with lower alpha) */
+  --edge-rgb: 153 27 27;        /* border (red-900 equivalent) */
+  --app-bg: #050505;
+}
+
+:root[data-theme="light"] {
+  --surface-rgb: 255 255 255;
+  --surface-2-rgb: 0 0 0;
+  --ink-rgb: 17 17 17;
+  --ink-soft-rgb: 17 17 17;
+  --edge-rgb: 0 0 0;
+  --app-bg: #f7f7f8;
 }
 
 * {
@@ -34,11 +59,12 @@ html, body, #root {
 body {
   margin: 0;
   padding: 0;
-  background: #050505;
-  color: white;
+  background: var(--app-bg);
+  color: rgb(var(--ink-rgb));
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   -webkit-tap-highlight-color: transparent;
   overscroll-behavior: none;
+  transition: background-color 0.2s ease, color 0.2s ease;
 }
 
 /* Custom scrollbar */

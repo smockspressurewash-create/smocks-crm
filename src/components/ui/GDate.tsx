@@ -1,7 +1,7 @@
 // GDate.tsx — auto-extracted from monolith
 import React, { useState, useRef, useEffect, useCallback } from "react";
 
-export const GDate = ({ className = "", ...r }) => <input type="date" className={"w-full bg-black/40 backdrop-blur-md border border-red-900/30 rounded-xl px-4 py-2.5 text-white focus:outline-none focus:border-red-500/60 transition-all duration-200 [color-scheme:dark] " + className} {...r} />;
+export const GDate = ({ className = "", ...r }) => <input type="date" className={"w-full bg-surface/40 backdrop-blur-md border border-edge/30 rounded-xl px-4 py-2.5 text-ink focus:outline-none focus:border-red-500/60 transition-all duration-200 [color-scheme:dark] " + className} {...r} />;
 const GSel = ({ className = "", children, ...r }) => <select className={"w-full bg-black/40 backdrop-blur-md border border-red-900/30 rounded-xl px-4 py-2.5 text-white focus:outline-none focus:border-red-500/60 transition-all duration-200 " + className} {...r}>{children}</select>;
 const GTxt = ({ className = "", ...r }) => <textarea className={"w-full bg-black/40 backdrop-blur-md border border-red-900/30 rounded-xl px-4 py-2.5 text-white placeholder-white/40 focus:outline-none focus:border-red-500/60 transition-all duration-200 resize-none " + className} {...r} />;
 

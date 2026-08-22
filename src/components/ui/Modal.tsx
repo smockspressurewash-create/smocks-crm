@@ -74,16 +74,16 @@ export const Modal = ({ open, onClose, title, children, maxW = "max-w-lg", noBod
       <div style={scrollWrapStyle} onClick={onClose}>
         <div style={{ display: "flex", minHeight: "100%", alignItems: fullScreenMode ? "stretch" : "center", justifyContent: "center" }}>
           <div
-            className={maxW + " w-full bg-gradient-to-br from-neutral-950 to-black border border-red-900/40 shadow-2xl flex flex-col overflow-hidden" + (fullScreenMode ? "" : " rounded-2xl")}
+            className={maxW + " w-full bg-surface border border-edge/40 shadow-2xl flex flex-col overflow-hidden" + (fullScreenMode ? "" : " rounded-2xl")}
             style={cardStyle}
             onClick={e => e.stopPropagation()}
           >
             {title !== "" && (
-              <div className="flex items-center justify-between px-5 py-4 border-b border-red-900/30 flex-shrink-0">
-                <h3 className="text-lg font-semibold text-white">{title}</h3>
+              <div className="flex items-center justify-between px-5 py-4 border-b border-edge/30 flex-shrink-0">
+                <h3 className="text-lg font-semibold text-ink">{title}</h3>
                 <button
                   onClick={onClose}
-                  className="text-white/60 hover:text-white transition-all duration-200 hover:rotate-90 w-8 h-8 flex items-center justify-center rounded-lg hover:bg-white/5"
+                  className="text-ink-soft/60 hover:text-ink transition-all duration-200 hover:rotate-90 w-8 h-8 flex items-center justify-center rounded-lg hover:bg-surface-2/5"
                 >
                   <X size={18} />
                 </button>

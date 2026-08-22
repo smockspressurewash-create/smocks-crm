@@ -4,7 +4,7 @@ import {
   Calendar, MessageSquare, Megaphone, Star, Zap, Share2, UserPlus,
   Bot, Database, Users2, Truck, DollarSign, FlaskConical, BarChart3,
   TrendingUp, PiggyBank, Wallet, Heart, Gift, Monitor, Tag,
-  Bell, Settings, X, Lock, Globe, ChevronLeft, ChevronRight, Plus, Undo2, Redo2, CheckCircle, Eye, EyeOff, Menu, AlertTriangle, Trash2, BookOpen
+  Bell, Settings, X, Lock, Globe, ChevronLeft, ChevronRight, Plus, Undo2, Redo2, CheckCircle, Eye, EyeOff, Menu, AlertTriangle, Trash2, BookOpen, Sun, Moon
 } from "lucide-react";
 
 import { useGlobalStyles } from "./hooks/useGlobalStyles";
@@ -59,6 +59,7 @@ import { ReferralLanding } from "./components/pages/ReferralLanding";
 import { CustomerReviewPage } from "./components/pages/CustomerReviewPage";
 import { LeadFormPage } from "./components/pages/LeadFormPage";
 import { TermsPage, PrivacyPolicyPage } from "./components/pages/LegalPages";
+import { LandingPage } from "./components/pages/LandingPage";
 import { EmployeePortal } from "./components/pages/EmployeePortal";
 import { saveEmpGoogleToken, refreshEmpGoogleToken } from "./lib/googleApi";
 import { ResetPassword } from "./components/pages/ResetPassword";
@@ -495,7 +496,17 @@ export function App() {
     // is exactly why the reset page sometimes never even loaded. Prefix-match
     // it like "portal/" and "estimate/" above.
     if (hash === "reset-password" || hash.startsWith("reset-password&") || hash.startsWith("reset-password?")) return "reset-password";
-    const valid = ["dashboard","alfred","inbox","notifications","customers","estimates","invoices","pipeline","intake","jobs","calendar","crew","campaigns","reviews","automations","social","referrals","promotions","trashcans","sops","expenses","reports","analytics","budget","personal","accountability","employees","fleet","chemicals","google","portal","reset-password","client","referral","rate"];
+    // FEATURE — public marketing/landing page for the product itself
+    // (CrewBoss), shown at the bare root ("#" or "#/", i.e. no hash at all)
+    // or "#/welcome"/"#/home". Previously an empty hash fell through to the
+    // "dashboard" default below, which — for a visitor with no session —
+    // just meant the login screen (see the "welcome" gate right before the
+    // login-page render further down in this file). "#/login" is the new
+    // explicit route to that same login screen, used by the landing page's
+    // CTA buttons.
+    if (hash === "" || hash === "welcome" || hash === "home") return "welcome";
+    if (hash === "login") return "login";
+    const valid = ["dashboard","alfred","inbox","notifications","customers","estimates","invoices","pipeline","intake","jobs","calendar","crew","campaigns","reviews","automations","social","referrals","promotions","trashcans","sops","expenses","reports","analytics","budget","personal","accountability","employees","fleet","chemicals","google","portal","reset-password","client","referral","rate","welcome","login"];
     return valid.includes(hash) ? hash : "dashboard";
   });
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -912,6 +923,13 @@ export function App() {
     notifyWeather: true,
     reviewShowcaseMinRating: 5,
   });
+  // THEME FOUNDATION — applies data-theme to <html> so the CSS custom
+  // properties in index.css (and the surface/ink/edge Tailwind tokens
+  // built on them) switch. See the theme toggle button near the header's
+  // Notifications bell for where this gets flipped.
+  useEffect(() => {
+    document.documentElement.setAttribute("data-theme", settings.theme === "light" ? "light" : "dark");
+  }, [settings.theme]);
   // FIX 14 — lets effects (e.g. the Alfred check-in interval below) read the
   // latest settings at fire-time without depending on `settings` directly,
   // which would otherwise reset their setInterval every time any setting
@@ -2935,6 +2953,17 @@ export function App() {
     return <PrivacyPolicyPage />;
   }
 
+  // ── Public marketing/landing page — fully public, no auth/PIN gate ────────
+  // Shown at the bare root ("#/", "#/welcome", "#/home") to any visitor with
+  // no active session. A returning visitor who still has a session (owner or
+  // employee) but somehow lands back on "welcome" (e.g. a stale bookmark,
+  // or the hash-sync effect writing "#/welcome" back after login) falls
+  // through here and gets redirected to the dashboard/portal by the
+  // fallback redirect further down instead of seeing marketing copy.
+  if (page === "welcome" && !empSession && !hasCrmSession) {
+    return <LandingPage onGetStarted={() => { window.location.hash = "/login"; setPage("login"); }} />;
+  }
+
   // No top-level loading gate — render immediately with whatever's already
   // in localStorage (jobs/customers/settings load synchronously via
   // usePersistent) rather than blocking on session resolution. The login
@@ -2992,6 +3021,16 @@ export function App() {
     // Use a side-effect-free guard: set page on next tick so React doesn't warn
     // about state updates during render
     setTimeout(() => setPage("portal"), 0);
+  }
+
+  // ── Redirect an already-signed-in owner off the marketing/login pages ────
+  // Reaching this point with page "welcome" or "login" means hasCrmSession is
+  // already true (the landing-page return above and the login-gate return
+  // below both require !hasCrmSession) — send them on to the real dashboard
+  // instead of rendering nothing (neither "welcome" nor "login" is a case in
+  // the page switch further down).
+  if (hasCrmSession && (page === "welcome" || page === "login")) {
+    setTimeout(() => setPage("dashboard"), 0);
   }
 
   // ── Employee portal — takes over when an employee is authenticated ────────
@@ -3468,6 +3507,20 @@ export function App() {
             className="hidden md:flex items-center gap-1.5 px-3 py-1.5 bg-black/40 border border-red-900/30 rounded-xl text-xs text-white/50 hover:text-white hover:border-red-600/50 transition"
           >
             <Globe size={13} />Portal
+          </button>
+          {/* THEME FOUNDATION — toggles data-theme on <html>, persisted via
+              settings.theme. Only components using the surface/ink/edge
+              Tailwind tokens (Glass/GBtn/GInput/GSel/Modal/Badge + this app
+              shell) actually change appearance yet — most page content is
+              still hardcoded dark and won't visibly shift. This is real
+              working infrastructure and a genuine start, not a full
+              conversion of every screen. */}
+          <button
+            onClick={() => setSettings((s: any) => ({ ...s, theme: s.theme === "light" ? "dark" : "light" }))}
+            title={settings.theme === "light" ? "Switch to dark theme" : "Switch to light theme"}
+            className="p-2 text-white/60 hover:text-white transition"
+          >
+            {settings.theme === "light" ? <Moon size={16} /> : <Sun size={16} />}
           </button>
           {/* Notifications */}
           <div className="relative">

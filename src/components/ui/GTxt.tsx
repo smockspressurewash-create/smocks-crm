@@ -1,7 +1,7 @@
 // GTxt.tsx — auto-extracted from monolith
 import React, { useState, useRef, useEffect, useCallback } from "react";
 
-export const GTxt = ({ className = "", ...r }) => <textarea className={"w-full bg-black/40 backdrop-blur-md border border-red-900/30 rounded-xl px-4 py-2.5 text-white placeholder-white/40 focus:outline-none focus:border-red-500/60 transition-all duration-200 resize-none " + className} {...r} />;
+export const GTxt = ({ className = "", ...r }) => <textarea className={"w-full bg-surface/40 backdrop-blur-md border border-edge/30 rounded-xl px-4 py-2.5 text-ink placeholder-ink-soft/40 focus:outline-none focus:border-red-500/60 transition-all duration-200 resize-none " + className} {...r} />;
 
 // Inject CSS into document.head — works in artifact sandbox unlike <style> tags in JSX
 const useGlobalStyles = () => {

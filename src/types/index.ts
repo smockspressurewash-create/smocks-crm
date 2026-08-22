@@ -749,6 +749,7 @@ export interface AppSettings {
   alfredExtraPhones?: string[];
   clientPortalCancelReschedule?: boolean;
   weeklyDigestAutoSend?: boolean;
+  theme?: "dark" | "light";
 
   // Crew policy
   maxLunchMinutes?: number;
@@ -965,7 +966,43 @@ export interface AppSettings {
   customEquipmentList?: string[];
   customChemicalsList?: string[];
 
+  // FEATURE — new-hire onboarding packet TEMPLATE, owner-editable (see
+  // EmployeesPage "Onboarding" tab / SettingsModal). Same pattern as
+  // estimateTemplates/emailTemplates: a reusable list the owner defines once.
+  // Assigning a new employee an onboarding packet copies this list into a
+  // real employee_onboarding row (see EmployeeOnboarding below) rather than
+  // referencing it live, so a later template edit never retroactively
+  // changes an already-assigned employee's checklist.
+  onboardingTemplateItems?: OnboardingTemplateItem[];
+
   [key: string]: any;
+}
+
+// ─── Employee onboarding packets ───────────────────────────────────────────────
+// See supabase/migrations/0039_employee_onboarding.sql. The reusable template
+// lives on AppSettings.onboardingTemplateItems (synced via app_settings.data,
+// same as every other owner-editable template in this app); each assigned
+// employee gets their own `employee_onboarding` row/copy so their completion
+// state is independent of later template edits.
+
+export interface OnboardingTemplateItem {
+  id: string;
+  title: string;
+  description?: string;
+}
+
+export interface OnboardingItem extends OnboardingTemplateItem {
+  done: boolean;
+  completedAt?: string | null;
+}
+
+export interface EmployeeOnboarding {
+  id: string;
+  owner_id?: string;
+  employee_id: string;
+  items: OnboardingItem[];
+  created_at?: string;
+  updated_at?: string;
 }
 
 // ─── Referral ─────────────────────────────────────────────────────────────────

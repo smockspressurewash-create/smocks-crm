@@ -361,6 +361,46 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setJobs
   const [showEditPerms, setShowEditPerms] = useState(false);
   const [inviteCreated, setInviteCreated] = useState<InviteRecord | null>(null);
   const portalUrl = window.location.origin + window.location.pathname + "#/portal";
+  // FEATURE — new-hire onboarding packet. Template lives on
+  // settings.onboardingTemplateItems (owner-editable in Settings → Templates
+  // → Onboarding Packet); checking this box at invite time copies a snapshot
+  // of that template into a real employee_onboarding row (migration 0039)
+  // tied to this employee, independent of later template edits.
+  const onboardingTemplateItems: { id: string; title: string; description?: string }[] = (settings as any)?.onboardingTemplateItems || [];
+  const [sendOnboardingPacket, setSendOnboardingPacket] = useState(true);
+  // employee_id -> employee_onboarding row, used to show completion progress
+  // on the Team list below.
+  const [onboardingByEmployee, setOnboardingByEmployee] = useState<Record<string, any>>({});
+  useEffect(() => {
+    (async () => {
+      try {
+        const { data, error } = await (supabase as any).from("employee_onboarding").select("*");
+        if (!error && Array.isArray(data)) {
+          const byId: Record<string, any> = {};
+          data.forEach((row: any) => { byId[row.employee_id] = row; });
+          setOnboardingByEmployee(byId);
+        }
+      } catch { /* table may not exist yet — run supabase/migrations/0039_employee_onboarding.sql */ }
+    })();
+  }, [view]);
+  const assignOnboardingPacket = async (employeeId: string, firstName: string) => {
+    if (onboardingTemplateItems.length === 0) return;
+    const items = onboardingTemplateItems.map(t => ({ id: t.id, title: t.title, description: t.description, done: false, completedAt: null }));
+    const row = { id: uid(), owner_id: ownerId, employee_id: employeeId, items };
+    try {
+      const { error } = await (supabase as any).from("employee_onboarding").upsert(row, { onConflict: "employee_id" });
+      if (error) {
+        console.error("[Onboarding] assign failed:", error.message);
+        toast?.(`Invite created, but couldn't assign the onboarding packet — ${error.message}`, "red");
+        return;
+      }
+      setOnboardingByEmployee(prev => ({ ...prev, [employeeId]: row }));
+      toast?.(`Onboarding packet sent to ${firstName} ✓`, "green");
+    } catch (e: any) {
+      console.error("[Onboarding] assign threw:", e?.message);
+      toast?.(`Invite created, but couldn't assign the onboarding packet — ${e?.message || "unknown error"}`, "red");
+    }
+  };
 
   const generateInvite = async () => {
     if (!inviteF.firstName.trim() || !inviteF.email.trim()) return;
@@ -387,9 +427,11 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setJobs
     // with the server rows, so a local-only placeholder here would silently
     // vanish from the roster within seconds of being created.
     const alreadyExists = employees.some(e => e.email.toLowerCase() === inviteF.email.toLowerCase());
+    let newEmployeeId: string | null = null;
     if (!alreadyExists) {
+      newEmployeeId = uid();
       const preCreated = {
-        id: uid(), firstName: inv.firstName, lastName: inv.lastName, email: inv.email,
+        id: newEmployeeId, firstName: inv.firstName, lastName: inv.lastName, email: inv.email,
         role: inv.role, hourlyRate: inv.hourlyRate, status: "active", phone: "",
         startDate: today(), emergencyContact: "", notes: "Invited — account pending",
         permissions: invitePerms,
@@ -400,6 +442,11 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setJobs
       (supabase as any).from("employees").insert(preCreated)
         .then((r: any) => { if (r?.error) console.warn("[Invite] pre-create employee row failed:", r.error.message); })
         .catch((e: any) => console.warn("[Invite] pre-create employee row threw:", e?.message));
+    } else {
+      newEmployeeId = employees.find(e => e.email.toLowerCase() === inviteF.email.toLowerCase())?.id || null;
+    }
+    if (sendOnboardingPacket && newEmployeeId) {
+      assignOnboardingPacket(newEmployeeId, inv.firstName);
     }
     setInviteCreated(inv);
     // Send invite email via the owner's connected Gmail account
@@ -441,6 +488,7 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setJobs
     setInvitePerms({ ...DEFAULT_PERMS });
     setInviteManagerPerms({ ...DEFAULT_MANAGER_PERMS });
     setShowInvitePerms(false);
+    setSendOnboardingPacket(true);
     onAutoOpenManagerInviteConsumed?.();
   }, [autoOpenManagerInvite]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -740,7 +788,7 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setJobs
           <button onClick={() => setShowPortalInfo(!showPortalInfo)} className="text-xs px-3 py-1.5 bg-black/40 border border-blue-700/40 text-blue-300 hover:bg-blue-950/30 rounded-xl transition flex items-center gap-1.5">
             <Globe size={12} />Team Portal
           </button>
-          <button onClick={() => { setInviteOpen(true); setInviteCreated(null); setInviteF({ firstName: "", lastName: "", email: "", role: "Technician", hourlyRate: 18 }); setInvitePerms({ ...DEFAULT_PERMS }); setInviteManagerPerms({ ...DEFAULT_MANAGER_PERMS }); setShowInvitePerms(false); }} className="text-xs px-3 py-1.5 bg-black/40 border border-green-700/40 text-green-300 hover:bg-green-950/30 rounded-xl transition flex items-center gap-1.5">
+          <button onClick={() => { setInviteOpen(true); setInviteCreated(null); setInviteF({ firstName: "", lastName: "", email: "", role: "Technician", hourlyRate: 18 }); setInvitePerms({ ...DEFAULT_PERMS }); setInviteManagerPerms({ ...DEFAULT_MANAGER_PERMS }); setShowInvitePerms(false); setSendOnboardingPacket(true); }} className="text-xs px-3 py-1.5 bg-black/40 border border-green-700/40 text-green-300 hover:bg-green-950/30 rounded-xl transition flex items-center gap-1.5">
             <UserCheck size={12} />Invite Member
           </button>
           <GBtn onClick={() => setModal({ open: true, data: null })}><Plus size={14} className="inline mr-1.5" />Add Employee</GBtn>
@@ -782,6 +830,22 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setJobs
                   {e.startDate && <div className="flex items-center gap-1"><Calendar size={10} />Started {e.startDate}</div>}
                 </div>
                 {e.notes && <div className="text-[10px] text-white/40 mt-1 italic">{e.notes}</div>}
+                {onboardingByEmployee[e.id] && (() => {
+                  const items = onboardingByEmployee[e.id].items || [];
+                  const doneCount = items.filter((it: any) => it.done).length;
+                  const complete = items.length > 0 && doneCount === items.length;
+                  return (
+                    <div className="mt-1.5 flex items-center gap-1.5">
+                      <CheckSquare size={10} className={complete ? "text-green-400" : "text-white/30"} />
+                      <span className={"text-[10px] " + (complete ? "text-green-400" : "text-white/40")}>
+                        Onboarding {doneCount}/{items.length}{complete ? " complete" : ""}
+                      </span>
+                      <div className="flex-1 max-w-[80px] h-1 bg-white/10 rounded-full overflow-hidden">
+                        <div className={"h-full rounded-full " + (complete ? "bg-green-500" : "bg-blue-500")} style={{ width: (items.length ? (doneCount / items.length) * 100 : 0) + "%" }} />
+                      </div>
+                    </div>
+                  );
+                })()}
               </div>
               <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition flex-shrink-0">
                 <button onClick={() => setModal({ open: true, data: e })} className="p-1.5 rounded-lg hover:bg-white/10 text-white/50"><Edit size={12} /></button>
@@ -1162,6 +1226,19 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setJobs
               </div>
               <div><label className="text-xs text-white/60 mb-1 block">Hourly Rate ($)</label><GInput type="number" step="0.5" value={inviteF.hourlyRate} onChange={e => setInviteF(p => ({ ...p, hourlyRate: Number(e.target.value) }))} /></div>
             </div>
+            {/* FEATURE — new-hire onboarding packet. Only shown when the owner
+                has actually built a template (Settings → Templates →
+                Onboarding Packet); nothing to send otherwise. */}
+            {onboardingTemplateItems.length > 0 && (
+              <label className="flex items-center gap-2 cursor-pointer py-1.5 px-3 border border-green-700/30 rounded-xl bg-green-950/10">
+                <input type="checkbox" checked={sendOnboardingPacket} onChange={e => setSendOnboardingPacket(e.target.checked)}
+                  className="w-3.5 h-3.5 accent-green-600 flex-shrink-0" />
+                <div>
+                  <div className="text-xs text-white/80">Send onboarding packet</div>
+                  <div className="text-[10px] text-white/40">Assigns this employee the {onboardingTemplateItems.length}-item onboarding checklist — they'll see it in their portal.</div>
+                </div>
+              </label>
+            )}
             {/* Manager CRM permissions — only relevant when inviting a Manager.
                 Full CRM access by default EXCLUDES these areas; the owner
                 opts a manager INTO them here rather than out of them. */}

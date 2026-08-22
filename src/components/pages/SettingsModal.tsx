@@ -259,7 +259,35 @@ export function SettingsModal({ open, onClose, settings, setSettings, jobs = [],
       .catch((e: any) => { if (!cancelled) { console.warn("[GoogleConnect] tokeninfo check failed:", e?.message); setGoogleTokenValid(null); } });
     return () => { cancelled = true; };
   }, [open, storedGoogle?.token, f.googleProviderToken]); // eslint-disable-line react-hooks/exhaustive-deps
-  const [tplTab, setTplTab] = useState<"messaging" | "estimates">("messaging");
+  const [tplTab, setTplTab] = useState<"messaging" | "estimates" | "onboarding">("messaging");
+  // FEATURE — new-hire onboarding packet template (owner-editable list of
+  // items assigned to every new employee; see EmployeesPage's invite modal
+  // and EmployeePortal's Onboarding tab). Same drag-reorder pattern as
+  // ServiceCatalogSection's checklistTemplate editor.
+  const [newOnboardingTitle, setNewOnboardingTitle] = useState("");
+  const [newOnboardingDesc, setNewOnboardingDesc] = useState("");
+  const [obDragIdx, setObDragIdx] = useState<number | null>(null);
+  const addOnboardingItem = () => {
+    if (!newOnboardingTitle.trim()) return;
+    setF((prev: any) => ({ ...prev, onboardingTemplateItems: [...(prev.onboardingTemplateItems || []), { id: uid(), title: newOnboardingTitle.trim(), description: newOnboardingDesc.trim() || undefined }] }));
+    setNewOnboardingTitle(""); setNewOnboardingDesc("");
+  };
+  const updateOnboardingItem = (id: string, patch: any) => {
+    setF((prev: any) => ({ ...prev, onboardingTemplateItems: (prev.onboardingTemplateItems || []).map((it: any) => it.id === id ? { ...it, ...patch } : it) }));
+  };
+  const deleteOnboardingItem = (id: string) => {
+    setF((prev: any) => ({ ...prev, onboardingTemplateItems: (prev.onboardingTemplateItems || []).filter((it: any) => it.id !== id) }));
+  };
+  const reorderOnboardingItem = (targetIdx: number) => {
+    if (obDragIdx === null || obDragIdx === targetIdx) return;
+    setF((prev: any) => {
+      const items = [...(prev.onboardingTemplateItems || [])];
+      const [moved] = items.splice(obDragIdx, 1);
+      items.splice(targetIdx, 0, moved);
+      return { ...prev, onboardingTemplateItems: items };
+    });
+    setObDragIdx(targetIdx);
+  };
   const [bufferChannels, setBufferChannels] = useState<BufferChannel[]>([]);
   const [bufferConnecting, setBufferConnecting] = useState(false);
   const [campaignChecking, setCampaignChecking] = useState(false);
@@ -765,7 +793,7 @@ export function SettingsModal({ open, onClose, settings, setSettings, jobs = [],
           {sec === "templates" && <div className="space-y-4">
             {/* Sub-tabs */}
             <div className="flex gap-1 p-1 bg-black/40 rounded-xl border border-red-900/20">
-              {([["messaging", "Email & SMS"], ["estimates", "Estimate Templates"]] as const).map(([key, label]) => (
+              {([["messaging", "Email & SMS"], ["estimates", "Estimate Templates"], ["onboarding", "Onboarding Packet"]] as const).map(([key, label]) => (
                 <button key={key} onClick={() => { setTplTab(key); setEditingTpl(null); }} className={"flex-1 py-1.5 rounded-lg text-xs font-medium transition " + (tplTab === key ? "bg-red-700/40 text-white border border-red-700/50" : "text-white/50 hover:text-white")}>{label}</button>
               ))}
             </div>
@@ -992,6 +1020,55 @@ export function SettingsModal({ open, onClose, settings, setSettings, jobs = [],
                 </div>
               )}
             </>}
+
+            {tplTab === "onboarding" && <div className="space-y-3">
+              <div>
+                <div className="text-sm font-semibold">New-Hire Onboarding Packet</div>
+                <div className="text-[10px] text-white/40 mt-0.5">Build the checklist every new employee gets assigned — e.g. "Sign tax forms," "Review safety policy," "Complete ladder certification." When you invite a new team member (Team → Invite Member) you can send them a copy of this list to check off in their portal. Editing this list later doesn't change what's already been assigned to existing employees.</div>
+              </div>
+              <div className="space-y-1.5">
+                {(f.onboardingTemplateItems || []).map((item: any, idx: number) => (
+                  <div
+                    key={item.id}
+                    draggable
+                    onDragStart={() => setObDragIdx(idx)}
+                    onDragOver={e => { e.preventDefault(); reorderOnboardingItem(idx); }}
+                    onDragEnd={() => setObDragIdx(null)}
+                    className="flex items-start gap-2 p-2.5 bg-black/30 border border-white/10 rounded-lg"
+                  >
+                    <GripVertical size={12} className="text-white/30 cursor-grab flex-shrink-0 mt-2" />
+                    <div className="flex-1 min-w-0 space-y-1.5">
+                      <GInput value={item.title} onChange={(e: any) => updateOnboardingItem(item.id, { title: e.target.value })} placeholder="Item title" className="!text-xs" />
+                      <GInput value={item.description || ""} onChange={(e: any) => updateOnboardingItem(item.id, { description: e.target.value })} placeholder="Description or link (optional)" className="!text-xs" />
+                    </div>
+                    <button onClick={() => deleteOnboardingItem(item.id)} className="p-1 text-white/30 hover:text-red-400 flex-shrink-0 mt-1"><Trash2 size={12} /></button>
+                  </div>
+                ))}
+                {(f.onboardingTemplateItems || []).length === 0 && (
+                  <div className="flex flex-col items-center justify-center py-8 text-center border border-dashed border-red-900/30 rounded-xl">
+                    <CheckSquare size={24} className="text-white/10 mb-2" />
+                    <div className="text-xs text-white/30">No onboarding items yet</div>
+                  </div>
+                )}
+              </div>
+              <div className="flex flex-col md:flex-row gap-2 pt-1">
+                <GInput
+                  value={newOnboardingTitle}
+                  onChange={(e: any) => setNewOnboardingTitle(e.target.value)}
+                  onKeyDown={(e: any) => { if (e.key === "Enter") { e.preventDefault(); addOnboardingItem(); } }}
+                  placeholder="e.g. Sign tax forms (W-4/I-9)"
+                  className="!text-xs flex-1"
+                />
+                <GInput
+                  value={newOnboardingDesc}
+                  onChange={(e: any) => setNewOnboardingDesc(e.target.value)}
+                  onKeyDown={(e: any) => { if (e.key === "Enter") { e.preventDefault(); addOnboardingItem(); } }}
+                  placeholder="Description or link (optional)"
+                  className="!text-xs flex-1"
+                />
+                <GBtn onClick={addOnboardingItem} disabled={!newOnboardingTitle.trim()} className="!text-xs !py-1.5 flex-shrink-0"><Plus size={12} className="inline mr-1" />Add Item</GBtn>
+              </div>
+            </div>}
           </div>}
 
           {sec === "integrations" && <div className="space-y-4">

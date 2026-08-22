@@ -183,11 +183,11 @@ export const GSel = ({ className = "", children, value, onChange, disabled, ...r
         disabled={disabled}
         onClick={() => (open ? closeDropdown() : openDropdown())}
         onKeyDown={onTriggerKeyDown}
-        className={"w-full bg-black/40 backdrop-blur-md border border-red-900/30 rounded-xl px-4 py-2.5 text-white focus:outline-none focus:border-red-500/60 transition-all duration-200 flex items-center justify-between gap-2 text-left disabled:opacity-50 disabled:cursor-not-allowed " + className}
+        className={"w-full bg-surface/40 backdrop-blur-md border border-edge/30 rounded-xl px-4 py-2.5 text-ink focus:outline-none focus:border-red-500/60 transition-all duration-200 flex items-center justify-between gap-2 text-left disabled:opacity-50 disabled:cursor-not-allowed " + className}
         {...r}
       >
-        <span className={"truncate " + (selected ? "" : "text-white/40")}>{selected ? selected.label : (options[0]?.label ?? "")}</span>
-        <ChevronDown size={14} className={"flex-shrink-0 text-white/40 transition-transform " + (open ? "rotate-180" : "")} />
+        <span className={"truncate " + (selected ? "" : "text-ink-soft/40")}>{selected ? selected.label : (options[0]?.label ?? "")}</span>
+        <ChevronDown size={14} className={"flex-shrink-0 text-ink-soft/40 transition-transform " + (open ? "rotate-180" : "")} />
       </button>
       {open && coords && createPortal(
         <div

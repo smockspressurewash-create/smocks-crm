@@ -8,7 +8,7 @@ export const Badge = ({ children, tone = "red" }) => {
     green: "bg-green-900/40 text-green-300 border-green-800/50",
     yellow: "bg-yellow-900/40 text-yellow-300 border-yellow-800/50",
     blue: "bg-blue-900/40 text-blue-300 border-blue-800/50",
-    gray: "bg-white/5 text-white/60 border-white/10",
+    gray: "bg-surface-2/5 text-ink-soft/60 border-surface-2/10",
     purple: "bg-purple-900/40 text-purple-300 border-purple-800/50",
     orange: "bg-orange-900/40 text-orange-300 border-orange-800/50"
   };

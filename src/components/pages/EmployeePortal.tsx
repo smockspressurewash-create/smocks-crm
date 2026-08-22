@@ -24,7 +24,7 @@ import { BarChart, Bar, LineChart, Line, XAxis, YAxis, ResponsiveContainer, Tool
 import { fmt, uid, today, localDateStr, localDateKey, shiftDayStr, daysFromNow, computeJobRatingScore, setOAuthIntent, compressImageFile, getEffectiveRate, computeNextRecurringDate, weekdayLabels, normalizeJobRow, totalJobPhotoCount, mediaSrc, dataUrlToBlob, uploadJobMedia, checkVideoLimits, stripLegacyJobFields, reconcileCrewAfterAssign, getPollIntervalMs, getPayPeriodBounds, haversineMiles } from "../../lib/utils";
 import { usePollGate } from "../../hooks/usePollGate";
 import { usePersistent } from "../../hooks/usePersistent";
-import type { Job, Employee, Customer, AppSettings, JobChecklistItem } from "../../types";
+import type { Job, Employee, Customer, AppSettings, JobChecklistItem, EmployeeOnboarding } from "../../types";
 
 const PRE_DEFAULTS: JobChecklistItem[] = [
   { id: "pre1", label: "Take photos of existing damage", done: false },
@@ -2231,17 +2231,18 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   // EGRESS FIX — skip the jobs poll below while the tab is hidden or the
   // employee has been idle 5+ minutes (e.g. mid-shift with the phone locked).
   const shouldPollJobs = usePollGate();
-  const TAB_TO_SLUG: Record<string, string> = { today: "", calendar: "calendar", jobs: "jobs", pay: "pay", google: "google" };
-  const SLUG_TO_TAB: Record<string, "today" | "calendar" | "jobs" | "pay" | "google"> = { "": "today", calendar: "calendar", jobs: "jobs", pay: "pay", google: "google" };
-  const tabFromHash = (): "today" | "calendar" | "jobs" | "pay" | "google" => {
+  const TAB_TO_SLUG: Record<string, string> = { today: "", calendar: "calendar", jobs: "jobs", pay: "pay", google: "google", onboarding: "onboarding" };
+  const SLUG_TO_TAB: Record<string, "today" | "calendar" | "jobs" | "pay" | "google" | "onboarding"> = { "": "today", calendar: "calendar", jobs: "jobs", pay: "pay", google: "google", onboarding: "onboarding" };
+  const tabFromHash = (): "today" | "calendar" | "jobs" | "pay" | "google" | "onboarding" => {
     const slug = window.location.hash.replace(/^#\/?/, "").split("?")[0].replace(/^portal\/?/, "");
     return SLUG_TO_TAB[slug] || "today";
   };
-  const [tab, setTabState] = useState<"today" | "calendar" | "jobs" | "pay" | "google">(tabFromHash);
+  const [tab, setTabState] = useState<"today" | "calendar" | "jobs" | "pay" | "google" | "onboarding">(tabFromHash);
   // Keeps the URL in sync with the active tab (#/portal, #/portal/calendar, #/portal/jobs,
-  // #/portal/pay, #/portal/google) without going through App.tsx's page-level routing —
-  // page stays "portal" the whole time, so App's hash-sync effect never overwrites this.
-  const setTab = (next: "today" | "calendar" | "jobs" | "pay" | "google") => {
+  // #/portal/pay, #/portal/google, #/portal/onboarding) without going through App.tsx's
+  // page-level routing — page stays "portal" the whole time, so App's hash-sync effect
+  // never overwrites this.
+  const setTab = (next: "today" | "calendar" | "jobs" | "pay" | "google" | "onboarding") => {
     setTabState(next);
     const slug = TAB_TO_SLUG[next];
     window.location.hash = slug ? "/portal/" + slug : "/portal";
@@ -2581,6 +2582,58 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
        localEmployee ||
        null)
     : null;
+
+  // FEATURE — new-hire onboarding packet (migration 0039). Owner assigns
+  // this from EmployeesPage's invite modal by copying settings.
+  // onboardingTemplateItems into a real employee_onboarding row; this loads
+  // that row (if any) so it can be checked off here in the portal.
+  const [onboarding, setOnboarding] = useState<EmployeeOnboarding | null>(null);
+  const [onboardingLoading, setOnboardingLoading] = useState(false);
+  const [onboardingSavingId, setOnboardingSavingId] = useState<string | null>(null);
+  useEffect(() => {
+    if (!myEmployee?.id) { setOnboarding(null); return; }
+    let cancelled = false;
+    (async () => {
+      setOnboardingLoading(true);
+      try {
+        const { data, error }: any = await withTimeout<any>(
+          (supabase as any).from("employee_onboarding").select("*").eq("employee_id", myEmployee.id).maybeSingle(),
+          10000, "Onboarding load"
+        );
+        if (!cancelled && !error) setOnboarding(data || null);
+      } catch (e: any) {
+        // table may not exist yet, or the request timed out — not fatal, the
+        // tab just won't show (see the nav `show` condition below).
+        console.warn("[Onboarding] load failed:", e?.message);
+      } finally {
+        if (!cancelled) setOnboardingLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [myEmployee?.id]);
+
+  const toggleOnboardingItem = async (itemId: string, done: boolean) => {
+    if (!onboarding) return;
+    const prevOnboarding = onboarding;
+    const nextItems = (onboarding.items || []).map((it: any) =>
+      it.id === itemId ? { ...it, done, completedAt: done ? new Date().toISOString() : null } : it
+    );
+    setOnboarding({ ...onboarding, items: nextItems });
+    setOnboardingSavingId(itemId);
+    try {
+      const { error }: any = await withTimeout<any>(
+        (supabase as any).from("employee_onboarding").update({ items: nextItems, updated_at: new Date().toISOString() }).eq("id", onboarding.id),
+        10000, "Onboarding save"
+      );
+      if (error) throw new Error(error.message);
+      toast(done ? "Marked complete ✓" : "Marked incomplete", "green");
+    } catch (e: any) {
+      setOnboarding(prevOnboarding);
+      toast("Couldn't save — " + (e?.message || "unknown error"), "red");
+    } finally {
+      setOnboardingSavingId(null);
+    }
+  };
 
   // ISSUE 16 (round 4) — GPS auto-mileage tracking. Runs entirely in the
   // browser (watchPosition), so it only accumulates while this tab is open
@@ -7037,6 +7090,54 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
               </>
             );
           })()}
+          {/* Onboarding tab */}
+          {tab === "onboarding" && (() => {
+            const items = onboarding?.items || [];
+            const doneCount = items.filter((it: any) => it.done).length;
+            const pct = items.length ? Math.round((doneCount / items.length) * 100) : 0;
+            return (
+              <div className="space-y-3">
+                <Glass className="p-4">
+                  <div className="flex items-center justify-between mb-1">
+                    <div className="font-semibold text-sm flex items-center gap-1.5"><CheckSquare size={14} />Onboarding Checklist</div>
+                    <span className="text-xs text-white/50">{doneCount}/{items.length} complete</span>
+                  </div>
+                  <div className="h-2 bg-white/10 rounded-full overflow-hidden mt-2">
+                    <div className={"h-full rounded-full transition-all " + (pct === 100 ? "bg-green-500" : "bg-blue-500")} style={{ width: pct + "%" }} />
+                  </div>
+                  {pct === 100 && items.length > 0 && (
+                    <div className="mt-2 text-xs text-green-400 flex items-center gap-1.5"><CheckCircle size={13} />All set — you've completed onboarding!</div>
+                  )}
+                </Glass>
+                {onboardingLoading && <div className="text-center text-xs text-white/30 py-6">Loading…</div>}
+                {!onboardingLoading && items.length === 0 && (
+                  <div className="text-center text-xs text-white/30 py-10">No onboarding items assigned.</div>
+                )}
+                <div className="space-y-2">
+                  {items.map((it: any) => (
+                    <Glass key={it.id} className={"p-3 " + (it.done ? "!bg-green-950/10 !border-green-700/20" : "")}>
+                      <label className="flex items-start gap-3 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={!!it.done}
+                          disabled={onboardingSavingId === it.id}
+                          onChange={e => toggleOnboardingItem(it.id, e.target.checked)}
+                          className="w-4 h-4 mt-0.5 accent-green-600 flex-shrink-0 disabled:opacity-50"
+                        />
+                        <div className="flex-1 min-w-0">
+                          <div className={"text-sm " + (it.done ? "text-green-300 line-through decoration-green-700/60" : "text-white/85")}>{it.title}</div>
+                          {it.description && <div className="text-xs text-white/40 mt-0.5">{it.description}</div>}
+                          {it.done && it.completedAt && <div className="text-[10px] text-green-400/60 mt-1">Completed {new Date(it.completedAt).toLocaleDateString()}</div>}
+                        </div>
+                        {onboardingSavingId === it.id && <div className="w-3.5 h-3.5 border border-white/30 border-t-transparent rounded-full animate-spin flex-shrink-0 mt-0.5" />}
+                      </label>
+                    </Glass>
+                  ))}
+                </div>
+              </div>
+            );
+          })()}
+
           {/* Google tab */}
           {tab === "google" && (() => {
             const empUserId = empSession?.user?.id;
@@ -7286,6 +7387,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
           { id: "calendar", label: "Calendar", icon: Calendar,   show: perms.can_view_calendar },
           { id: "jobs",     label: "All Jobs", icon: List,       show: perms.can_view_jobs },
           { id: "pay",      label: "My Pay",   icon: DollarSign, show: perms.can_view_pay },
+          { id: "onboarding", label: "Onboarding", icon: CheckSquare, show: !!onboarding },
           { id: "google",   label: "Google",   icon: Database,   show: true },
         ] as const).filter(t => t.show).map(({ id, label, icon: Icon }) => (
           <button key={id} onClick={() => setTab(id as typeof tab)}
