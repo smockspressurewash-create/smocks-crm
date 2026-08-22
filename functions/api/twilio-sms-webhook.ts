@@ -76,6 +76,7 @@ interface ResolvedOwnerSettings {
   keyword: string;
   ownerId: string | null;
   myPhone: string;
+  alfredExtraPhones: string[];
   alfredSmsEnabled: boolean;
   twilioSid: string;
   twilioToken: string;
@@ -88,6 +89,7 @@ const shapeSettings = (row: any, data: any): ResolvedOwnerSettings => ({
   keyword: (data?.smsOptInKeyword || DEFAULT_OPT_IN_KEYWORD).toUpperCase(),
   ownerId: row?.owner_id || null,
   myPhone: data?.myPhone || "",
+  alfredExtraPhones: Array.isArray(data?.alfredExtraPhones) ? data.alfredExtraPhones.filter((p: any) => typeof p === "string" && p.trim()) : [],
   alfredSmsEnabled: !!data?.alfredSmsEnabled,
   twilioSid: data?.twilioSid || "",
   twilioToken: data?.twilioToken || "",
@@ -165,7 +167,7 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
     const isStop = STOP_WORDS.includes(body);
     const isStart = START_WORDS.includes(body);
     const resolved = await fetchAppSettings(context.env, params.To || "");
-    const { companyName, keyword, ownerId, myPhone, alfredSmsEnabled, twilioSid, twilioToken, twilioFrom, anthropicKey } = resolved;
+    const { companyName, keyword, ownerId, myPhone, alfredExtraPhones, alfredSmsEnabled, twilioSid, twilioToken, twilioFrom, anthropicKey } = resolved;
     const isOptInKeyword = body === keyword;
     const isConfirm = CONFIRM_WORDS.includes(body);
 
@@ -192,7 +194,15 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
     // before everything else so STOP/keyword words the owner might
     // legitimately type ("stop the job", "cancel that") never get
     // misinterpreted as an SMS compliance action.
-    if (alfredSmsEnabled && myPhone && fromDigits === normalizePhoneDigits(myPhone)) {
+    //
+    // FEATURE — also checks alfredExtraPhones (Settings → AI Models →
+    // "Numbers allowed to text Alfred"), so an owner testing the CUSTOMER
+    // side of texting from their own main number (myPhone) can register a
+    // SECOND number for Alfred conversations without losing access to
+    // either — either number reaching this webhook is treated as "this is
+    // Alfred, not a customer."
+    const authorizedPhones = [myPhone, ...alfredExtraPhones].filter(Boolean).map(normalizePhoneDigits);
+    if (alfredSmsEnabled && authorizedPhones.includes(fromDigits)) {
       const ctx = { authHeaders, ownerId, companyName, twilioSid, twilioToken, twilioFrom, origin: new URL(context.request.url).origin };
       // FIX — Twilio abandons an unanswered webhook after ~15s with nothing
       // shown to the owner. A multi-step request (e.g. "reschedule this job

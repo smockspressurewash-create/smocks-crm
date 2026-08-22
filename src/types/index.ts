@@ -742,6 +742,11 @@ export interface AppSettings {
   myPhone?: string;
   myEmail?: string;
   alfredSmsEnabled?: boolean;
+  // Additional numbers (besides myPhone) allowed to text Alfred — e.g. a
+  // second phone the owner is using to simultaneously test the CUSTOMER
+  // side of texting without losing access to the Alfred conversation on
+  // their main number.
+  alfredExtraPhones?: string[];
   clientPortalCancelReschedule?: boolean;
   weeklyDigestAutoSend?: boolean;
 

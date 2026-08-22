@@ -45,6 +45,7 @@ import { TimeframeSelector } from "./TimeframeSelector";
 export function AIModelsSection({ f, setF, modelStatus, setModelStatus, toast }) {
   const [, forceTick] = useState(0);
   const [showKey, setShowKey] = useState({});
+  const [newAlfredPhone, setNewAlfredPhone] = useState("");
   const ms: Record<string, any> = modelStatus || {};
 
   // Tick every second so countdown timers update live
@@ -126,6 +127,38 @@ export function AIModelsSection({ f, setF, modelStatus, setModelStatus, toast })
             <div className="text-[11px] text-white/60 mt-0.5">Text your CRM's Twilio number from your own mobile number (set under Company → Your Mobile #) and Alfred replies right there — schedule/reschedule jobs, assign crew, text customers, business stats. Needs a Claude API key below and your mobile number set.</div>
             {!modelKeys.claude && <div className="text-[11px] text-yellow-400 mt-1.5">⚠️ Add a Claude API key below first — text-Alfred only runs on Claude.</div>}
             {!f.myPhone && <div className="text-[11px] text-yellow-400 mt-1.5">⚠️ Set "Your Mobile #" under Settings → Company first.</div>}
+            {f.alfredSmsEnabled && (
+              <div className="mt-3 pt-3 border-t border-white/10">
+                <div className="text-[11px] font-semibold text-white/70 mb-1">Other numbers allowed to text Alfred</div>
+                <div className="text-[10px] text-white/40 mb-2">Useful if you're testing the CUSTOMER side of texting from your main number and want a second number just for Alfred, or if a manager should also be able to text Alfred.</div>
+                {(f.alfredExtraPhones || []).map((p: string, i: number) => (
+                  <div key={i} className="flex items-center gap-2 mb-1.5">
+                    <div className="flex-1 text-xs bg-white/5 border border-white/10 rounded-lg px-2.5 py-1.5 text-white/70">{p}</div>
+                    <button onClick={() => setF({ ...f, alfredExtraPhones: (f.alfredExtraPhones || []).filter((_: string, xi: number) => xi !== i) })} className="p-1.5 rounded-lg text-white/30 hover:text-red-400 hover:bg-red-950/30 transition"><X size={12} /></button>
+                  </div>
+                ))}
+                <div className="flex items-center gap-2">
+                  <input
+                    type="tel"
+                    value={newAlfredPhone}
+                    onChange={e => setNewAlfredPhone(e.target.value)}
+                    placeholder="+17175550100"
+                    className="flex-1 bg-white/5 border border-white/15 rounded-lg px-2.5 py-1.5 text-xs text-white placeholder-white/25 focus:outline-none focus:border-red-500/50"
+                  />
+                  <button
+                    onClick={() => {
+                      const v = newAlfredPhone.trim();
+                      if (!v) return;
+                      setF({ ...f, alfredExtraPhones: [...(f.alfredExtraPhones || []), v] });
+                      setNewAlfredPhone("");
+                    }}
+                    className="px-3 py-1.5 rounded-lg bg-red-900/40 border border-red-700/40 text-red-300 hover:bg-red-900/60 text-xs font-semibold transition"
+                  >
+                    Add
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       </Glass>
