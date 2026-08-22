@@ -703,6 +703,22 @@ const TOOLS = [
   },
 ];
 
+// BUG FIX — a request that ran out of the whole 75s round budget on what
+// should have been one quick tool call turned out to have no per-call
+// timeout at all on these two Google fetches (unlike every LLM call, which
+// already has a 12s AbortController) — a hung/slow Google response could
+// silently eat the entire budget by itself. 8s is generous for a normal
+// Calendar API round-trip and fails fast otherwise.
+const fetchWithTimeout = async (url: string, init: RequestInit, ms = 8000): Promise<Response> => {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), ms);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+};
+
 // Shared by every Calendar tool below (create/update/delete/list) — was
 // previously duplicated inline just inside create_calendar_event.
 const getGoogleAccessToken = async (ctx: Ctx): Promise<string | null> => {
@@ -710,7 +726,7 @@ const getGoogleAccessToken = async (ctx: Ctx): Promise<string | null> => {
   let accessToken = ctx.googleProviderToken || "";
   if (ctx.googleRefreshToken && (!ctx.googleTokenExpiresAt || Date.now() > ctx.googleTokenExpiresAt - 60000)) {
     try {
-      const refreshRes = await fetch(`${ctx.origin}/api/google-refresh`, {
+      const refreshRes = await fetchWithTimeout(`${ctx.origin}/api/google-refresh`, {
         method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ refresh_token: ctx.googleRefreshToken }),
       });
       const refreshData = await refreshRes.json().catch(() => null) as any;
@@ -724,7 +740,12 @@ const getGoogleAccessToken = async (ctx: Ctx): Promise<string | null> => {
 // title-lookup (delete/update by name) need.
 const fetchGoogleEventsInRange = async (accessToken: string, startIso: string, endIso: string): Promise<Array<{ id: string; title: string; start: string; end: string; location: string }>> => {
   const url = `https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=${encodeURIComponent(startIso)}&timeMax=${encodeURIComponent(endIso)}&singleEvents=true&orderBy=startTime&maxResults=100`;
-  const res = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
+  let res: Response;
+  try {
+    res = await fetchWithTimeout(url, { headers: { Authorization: `Bearer ${accessToken}` } });
+  } catch {
+    return [];
+  }
   if (!res.ok) return [];
   const data = await res.json().catch(() => null) as any;
   return (data?.items || []).map((ev: any) => ({
@@ -1348,6 +1369,30 @@ const saveThread = async (ctx: Ctx, phone: string, messages: Array<{ role: strin
   }
 };
 
+// BUG FIX — the timeout/round-cap fallback used to log raw tool names
+// verbatim ("get_calendar_summary: done"), which read as garbled/one-word
+// nonsense to the owner and, worse, threw away real data the tool call had
+// already successfully returned (e.g. get_calendar_summary's job list) —
+// exactly what happened on a voice-memo "what's on my calendar this week"
+// request that ran out of time on the very next round. Humanize the tool
+// name AND prefer whatever real content the tool already gave back
+// (summary/note text, or a short digest of a jobs/crmJobs list) over a bare
+// "done", so a timeout still relays the actual answer whenever one exists.
+const humanizeToolName = (name: string): string => name.replace(/_/g, " ");
+const summarizeToolResult = (name: string, out: any): string => {
+  const label = humanizeToolName(name);
+  if (out?.error) return `${label} — failed: ${out.error}`;
+  const jobList: any[] | undefined = Array.isArray(out?.jobs) ? out.jobs : Array.isArray(out?.crmJobs) ? out.crmJobs : undefined;
+  if (jobList) {
+    if (jobList.length === 0) return `${label} — nothing found.`;
+    const digest = jobList.slice(0, 5).map(j => `${j.date || ""}${j.time ? " " + j.time : ""} ${j.customer || j.address || ""}`.trim()).join("; ");
+    return `${label} — ${digest}${jobList.length > 5 ? ` (+${jobList.length - 5} more)` : ""}`;
+  }
+  if (typeof out?.summary === "string" && out.summary) return `${label} — ${out.summary}`;
+  if (typeof out?.note === "string" && out.note) return `${label} — ${out.note}`;
+  return `${label} — done`;
+};
+
 // ─── Main entry point ──────────────────────────────────────────────────────
 
 export const runAlfredSmsAgent = async (
@@ -1459,7 +1504,7 @@ BE CONCISE — this is a text message, and every extra sentence costs real API t
           convMessages.push({ role: "assistant", content: result.raw });
           const results = await Promise.all(result.toolUses.map(async (tu) => {
             const out: any = await executeTool(ctx, tu.name, tu.input || {});
-            stepLog.push(out?.error ? `${tu.name}: failed — ${out.error}` : `${tu.name}: done`);
+            stepLog.push(summarizeToolResult(tu.name, out));
             return { type: "tool_result", tool_use_id: tu.id, content: JSON.stringify(out) };
           }));
           convMessages.push({ role: "user", content: results });

@@ -120,6 +120,11 @@ interface ResolvedOwnerSettings {
   ownerId: string | null;
   myPhone: string;
   alfredExtraPhones: string[];
+  // Owner can assign a specific "extra" phone directly to one employee
+  // (Settings → AI Models → "Other numbers allowed to text Alfred" — each
+  // entry has an "Assign to" dropdown) instead of it defaulting to full
+  // owner-level access. Keyed by normalized phone digits -> employee id.
+  alfredExtraPhoneRoles: Record<string, string>;
   alfredSmsEnabled: boolean;
   twilioSid: string;
   twilioToken: string;
@@ -140,6 +145,7 @@ const shapeSettings = (row: any, data: any): ResolvedOwnerSettings => ({
   ownerId: row?.owner_id || null,
   myPhone: data?.myPhone || "",
   alfredExtraPhones: Array.isArray(data?.alfredExtraPhones) ? data.alfredExtraPhones.filter((p: any) => typeof p === "string" && p.trim()) : [],
+  alfredExtraPhoneRoles: data?.alfredExtraPhoneRoles && typeof data.alfredExtraPhoneRoles === "object" ? data.alfredExtraPhoneRoles : {},
   alfredSmsEnabled: !!data?.alfredSmsEnabled,
   twilioSid: data?.twilioSid || "",
   twilioToken: data?.twilioToken || "",
@@ -341,7 +347,7 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
     const isStop = STOP_WORDS.includes(body);
     const isStart = START_WORDS.includes(body);
     const resolved = await fetchAppSettings(context.env, params.To || "");
-    const { companyName, keyword, ownerId, myPhone, alfredExtraPhones, alfredSmsEnabled, twilioSid, twilioToken, twilioFrom, modelKeys, modelPriority, activeModel, openaiKey, googleProviderToken, googleRefreshToken, googleTokenExpiresAt, testModeEnabled } = resolved;
+    const { companyName, keyword, ownerId, myPhone, alfredExtraPhones, alfredExtraPhoneRoles, alfredSmsEnabled, twilioSid, twilioToken, twilioFrom, modelKeys, modelPriority, activeModel, openaiKey, googleProviderToken, googleRefreshToken, googleTokenExpiresAt, testModeEnabled } = resolved;
     const isOptInKeyword = body === keyword;
     const isConfirm = CONFIRM_WORDS.includes(body);
 
@@ -405,7 +411,13 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
     // either — either number reaching this webhook is treated as "this is
     // Alfred, not a customer."
     const authorizedPhones = [myPhone, ...alfredExtraPhones].filter(Boolean).map(normalizePhoneDigits);
-    if (alfredSmsEnabled && authorizedPhones.includes(fromDigits)) {
+    // Owner can explicitly assign one of the "extra" numbers to a specific
+    // employee (Settings → AI Models → "Assign to" dropdown) instead of it
+    // defaulting to owner-level access. When that's set, it wins even
+    // though the number is technically still in authorizedPhones — the
+    // owner's explicit assignment is the real intent, not "extra owner".
+    const assignedEmployeeId = alfredExtraPhoneRoles[fromDigits] || "";
+    if (alfredSmsEnabled && authorizedPhones.includes(fromDigits) && !assignedEmployeeId) {
       const ctx = { authHeaders, ownerId, companyName, twilioSid, twilioToken, twilioFrom, origin: new URL(context.request.url).origin, fromPhone: from, googleProviderToken, googleRefreshToken, googleTokenExpiresAt, testModeEnabled, ownerAuthorizedPhones: authorizedPhones, env: context.env as Record<string, string> };
       // BUG FIX — this branch never logged the OWNER's own inbound text to
       // inbox_threads at all (only to alfred_sms_threads, which the Inbox
@@ -492,8 +504,13 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
     {
       const empRes = await fetch(`${SUPABASE_URL}/rest/v1/employees?select=id,firstName,lastName,phone,permissions,dayClockInAt,dayPausedMinutes,lastShiftHours,lastShiftDate,google_token,google_refresh_token,google_token_expires_at${ownerFilter}`, { headers: authHeaders });
       const empRows = await empRes.json().catch(() => []);
+      // An explicit "assign this number to this employee" (Settings → AI
+      // Models) is its own authorization — no need for their own phone on
+      // file to match or can_text_alfred to be separately toggled. Falls
+      // back to the original phone-match + permission lookup otherwise.
       const employee = Array.isArray(empRows)
-        ? empRows.find((e: any) => e.phone && normalizePhoneDigits(e.phone) === fromDigits && e.permissions?.can_text_alfred === true)
+        ? (assignedEmployeeId ? empRows.find((e: any) => e.id === assignedEmployeeId) : null)
+          || empRows.find((e: any) => e.phone && normalizePhoneDigits(e.phone) === fromDigits && e.permissions?.can_text_alfred === true)
         : null;
       if (employee) {
         const empCtx = { authHeaders, ownerId, companyName, twilioSid, twilioToken, twilioFrom, origin: new URL(context.request.url).origin, env: context.env as Record<string, string> };

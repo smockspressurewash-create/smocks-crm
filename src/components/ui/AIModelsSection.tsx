@@ -42,7 +42,7 @@ import { PBar } from "./PBar";
 import { PageFade } from "./PageFade";
 import { TimeframeSelector } from "./TimeframeSelector";
 
-export function AIModelsSection({ f, setF, modelStatus, setModelStatus, toast }) {
+export function AIModelsSection({ f, setF, modelStatus, setModelStatus, employees = [], toast }) {
   const [, forceTick] = useState(0);
   const [showKey, setShowKey] = useState({});
   const [newAlfredPhone, setNewAlfredPhone] = useState("");
@@ -135,13 +135,40 @@ export function AIModelsSection({ f, setF, modelStatus, setModelStatus, toast })
             {f.alfredSmsEnabled && (
               <div className="mt-3 pt-3 border-t border-white/10">
                 <div className="text-[11px] font-semibold text-white/70 mb-1">Other numbers allowed to text Alfred</div>
-                <div className="text-[10px] text-white/40 mb-2">Useful if you're testing the CUSTOMER side of texting from your main number and want a second number just for Alfred, or if a manager should also be able to text Alfred.</div>
-                {(f.alfredExtraPhones || []).map((p: string, i: number) => (
-                  <div key={i} className="flex items-center gap-2 mb-1.5">
-                    <div className="flex-1 text-xs bg-white/5 border border-white/10 rounded-lg px-2.5 py-1.5 text-white/70">{p}</div>
-                    <button onClick={() => setF({ ...f, alfredExtraPhones: (f.alfredExtraPhones || []).filter((_: string, xi: number) => xi !== i) })} className="p-1.5 rounded-lg text-white/30 hover:text-red-400 hover:bg-red-950/30 transition"><X size={12} /></button>
-                  </div>
-                ))}
+                <div className="text-[10px] text-white/40 mb-2">
+                  By default a number added here gets full OWNER-level access — same as your main number (schedule jobs, assign crew, text customers, business stats). Useful for testing, or if a manager needs the same access.
+                  {" "}<b className="text-white/60">To give an EMPLOYEE a narrower Alfred</b> (their own clock in/out, their own jobs, their own calendar only — nothing else) — assign the number to them below instead of leaving it "Owner," or set it directly on that employee's profile: Employees → edit → Portal Permissions → Text Alfred.
+                </div>
+                {(f.alfredExtraPhones || []).map((p: string, i: number) => {
+                  const digits = (p || "").replace(/\D/g, "");
+                  const roles: Record<string, string> = f.alfredExtraPhoneRoles || {};
+                  const assignedEmpId = roles[digits] || "";
+                  return (
+                    <div key={i} className="flex items-center gap-2 mb-1.5">
+                      <div className="flex-1 text-xs bg-white/5 border border-white/10 rounded-lg px-2.5 py-1.5 text-white/70">{p}</div>
+                      <select
+                        value={assignedEmpId}
+                        onChange={e => {
+                          const empId = e.target.value;
+                          const nextRoles = { ...roles };
+                          if (empId) nextRoles[digits] = empId; else delete nextRoles[digits];
+                          setF({ ...f, alfredExtraPhoneRoles: nextRoles });
+                        }}
+                        className="text-xs bg-white/5 border border-white/10 rounded-lg px-2 py-1.5 text-white/70 focus:outline-none focus:border-red-500/50"
+                      >
+                        <option value="" className="bg-black">Owner access</option>
+                        {employees.filter((emp: any) => emp.role !== "owner").map((emp: any) => (
+                          <option key={emp.id} value={emp.id} className="bg-black">{emp.firstName} {emp.lastName}</option>
+                        ))}
+                      </select>
+                      <button onClick={() => {
+                        const nextRoles = { ...(f.alfredExtraPhoneRoles || {}) };
+                        delete nextRoles[digits];
+                        setF({ ...f, alfredExtraPhones: (f.alfredExtraPhones || []).filter((_: string, xi: number) => xi !== i), alfredExtraPhoneRoles: nextRoles });
+                      }} className="p-1.5 rounded-lg text-white/30 hover:text-red-400 hover:bg-red-950/30 transition"><X size={12} /></button>
+                    </div>
+                  );
+                })}
                 <div className="flex items-center gap-2">
                   <input
                     type="tel"

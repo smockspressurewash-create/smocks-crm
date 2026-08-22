@@ -3704,6 +3704,7 @@ export function App() {
         setEstimateTemplates={setEstimateTemplates}
         modelStatus={modelStatus}
         setModelStatus={setModelStatus}
+        employees={employees}
         toast={toast}
         onSignOut={handleSignOut}
         restrictToProfile={crmRole === "manager"}

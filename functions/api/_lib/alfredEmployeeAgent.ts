@@ -12,6 +12,8 @@
 // employeeName the model could substitute to act as someone else, and
 // nothing here touches other employees, customers, money, or CRM-wide data.
 
+import { stripMarkdownForSms } from "./textFormat";
+
 const SUPABASE_URL = "https://boaqaihymgmrhnjtiqrs.supabase.co";
 const SMS_MODELS: Record<string, { provider: string; modelId: string; endpoint: string; maxTokens: number }> = {
   claude: { provider: "anthropic", modelId: "claude-sonnet-4-20250514", endpoint: "https://api.anthropic.com/v1/messages", maxTokens: 400 },
@@ -29,6 +31,9 @@ export type Ctx = {
   companyName: string;
   origin: string;
   env: Record<string, string>;
+  twilioSid?: string;
+  twilioToken?: string;
+  twilioFrom?: string;
 };
 
 const sbGet = async (ctx: Ctx, path: string): Promise<any[]> => {
@@ -38,6 +43,39 @@ const sbGet = async (ctx: Ctx, path: string): Promise<any[]> => {
 };
 const ownerScope = (ctx: Ctx) => (ctx.ownerId ? `&owner_id=eq.${encodeURIComponent(ctx.ownerId)}` : "");
 const shiftDayStr = () => new Date().toISOString().slice(0, 10);
+
+// Texts a CUSTOMER on the employee's behalf (running-late notices only —
+// see notify_upcoming_customers_running_late). Logged to inbox_threads like
+// every other outbound SMS in this app (CLAUDE.md "Critical rules").
+const sendCustomerSms = async (ctx: Ctx, toPhone: string, bodyRaw: string, contact: { name: string; customerId: string }): Promise<{ ok: boolean; error?: string }> => {
+  if (!ctx.twilioSid || !ctx.twilioToken || !ctx.twilioFrom) return { ok: false, error: "Twilio isn't configured for this account." };
+  const body = stripMarkdownForSms(bodyRaw);
+  const auth = `Basic ${btoa(`${ctx.twilioSid}:${ctx.twilioToken}`)}`;
+  const params = new URLSearchParams({ To: toPhone, From: ctx.twilioFrom, Body: body });
+  const res = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${ctx.twilioSid}/Messages.json`, {
+    method: "POST", headers: { Authorization: auth, "Content-Type": "application/x-www-form-urlencoded" }, body: params.toString(),
+  });
+  if (!res.ok) return { ok: false, error: (await res.text().catch(() => "")).slice(0, 200) };
+  try {
+    const threads = await sbGet(ctx, `inbox_threads?channel=eq.sms&select=id,contact_phone,messages${ownerScope(ctx)}`);
+    const digits = (toPhone || "").replace(/\D/g, "");
+    const norm = (p: string) => { const d = (p || "").replace(/\D/g, ""); return d.length === 11 && d.startsWith("1") ? d.slice(1) : d; };
+    const existing = threads.find((t: any) => norm(t.contact_phone) === norm(digits));
+    const msg = { id: crypto.randomUUID(), dir: "out", body, ts: Date.now(), via: "alfred" };
+    if (existing) {
+      await fetch(`${SUPABASE_URL}/rest/v1/inbox_threads?id=eq.${encodeURIComponent(existing.id)}`, {
+        method: "PATCH", headers: { ...ctx.authHeaders, "Content-Type": "application/json", Prefer: "return=minimal" },
+        body: JSON.stringify({ messages: [...(existing.messages || []), msg], last_message_at: msg.ts, updated_at: new Date().toISOString() }),
+      });
+    } else {
+      await fetch(`${SUPABASE_URL}/rest/v1/inbox_threads`, {
+        method: "POST", headers: { ...ctx.authHeaders, "Content-Type": "application/json", Prefer: "return=minimal" },
+        body: JSON.stringify({ id: crypto.randomUUID(), channel: "sms", contact_name: contact.name, contact_phone: toPhone, customer_id: contact.customerId, unread: false, messages: [msg], last_message_at: msg.ts, updated_at: new Date().toISOString(), ...(ctx.ownerId ? { owner_id: ctx.ownerId } : {}) }),
+      });
+    }
+  } catch { /* non-fatal */ }
+  return { ok: true };
+};
 
 const TOOLS = [
   {
@@ -73,6 +111,18 @@ const TOOLS = [
     name: "delete_my_calendar_event",
     description: "Delete an event from this employee's own Google Calendar, found by title.",
     input_schema: { type: "object", properties: { title: { type: "string" }, date: { type: "string", description: "YYYY-MM-DD, narrows the search" } }, required: ["title"] },
+  },
+  {
+    name: "notify_upcoming_customers_running_late",
+    description: "Text the next customer(s) on THIS employee's own schedule TODAY to say the crew is running behind. Use for 'text my next few clients I'm running late' — never touches any other employee's jobs.",
+    input_schema: {
+      type: "object",
+      properties: {
+        count: { type: "number", description: "how many upcoming customers to text, default 3" },
+        minutesLate: { type: "number", description: "how many minutes behind, default 30" },
+        message: { type: "string", description: "optional custom wording — otherwise a standard running-late message is used" },
+      },
+    },
   },
 ];
 
@@ -137,6 +187,32 @@ const executeTool = async (ctx: Ctx, employee: any, name: string, input: Record<
         const mine = rows.filter((j: any) => Array.isArray(j.crew) ? j.crew.includes(employee.id) : false).filter((j: any) => j.status !== "cancelled" && j.status !== "completed");
         if (mine.length === 0) return { success: true, jobs: [], summary: "Nothing on your schedule in that window." };
         return { success: true, jobs: mine.sort((a: any, b: any) => (a.scheduledDate + (a.scheduledTime || "")).localeCompare(b.scheduledDate + (b.scheduledTime || ""))).map((j: any) => ({ date: j.scheduledDate, time: j.scheduledTime, customer: j.customerName, address: j.address })) };
+      }
+      case "notify_upcoming_customers_running_late": {
+        const count = Math.max(1, Math.min(10, Number(input.count) || 3));
+        const minutesLate = Number(input.minutesLate) || 30;
+        const todayStr = shiftDayStr();
+        const rows = await sbGet(ctx, `jobs?select=id,customerId,customerName,status,scheduledDate,scheduledTime${ownerScope(ctx)}&scheduledDate=eq.${todayStr}&limit=200`);
+        const mine = rows
+          .filter((j: any) => Array.isArray(j.crew) ? j.crew.includes(employee.id) : false)
+          .filter((j: any) => j.status !== "cancelled" && j.status !== "completed" && j.customerId)
+          .sort((a: any, b: any) => (a.scheduledTime || "").localeCompare(b.scheduledTime || ""));
+        if (mine.length === 0) return { error: "No more jobs on your schedule today to notify." };
+        const targets = mine.slice(0, count);
+        const custIds = targets.map((j: any) => j.customerId);
+        const custs = await sbGet(ctx, `customers?id=in.(${custIds.map(encodeURIComponent).join(",")})&select=id,firstName,lastName,phone`);
+        const results: any[] = [];
+        for (const j of targets) {
+          const c = custs.find((x: any) => x.id === j.customerId);
+          if (!c?.phone) { results.push({ customer: j.customerName, error: "no phone on file" }); continue; }
+          const body = input.message
+            ? String(input.message)
+            : `Hi ${c.firstName || ""}, this is ${ctx.companyName} — we're running about ${minutesLate} minutes behind schedule today. Thanks for your patience!`;
+          const res = await sendCustomerSms(ctx, c.phone, body, { name: `${c.firstName || ""} ${c.lastName || ""}`.trim(), customerId: c.id });
+          results.push({ customer: j.customerName, ...(res.ok ? { sent: true } : { error: res.error }) });
+        }
+        const sentCount = results.filter(r => r.sent).length;
+        return { success: true, sentCount, totalTargeted: targets.length, results };
       }
       case "add_my_calendar_event": {
         const token = await getEmployeeGoogleToken(ctx, employee);
@@ -223,7 +299,7 @@ export const runAlfredEmployeeAgent = async (
 
   const systemPrompt = `You are Alfred, texting with ${employee.firstName || "an employee"}, a member of the ${ctx.companyName} crew. Keep replies short (this is a text, 1-3 sentences, no markdown).
 
-You can ONLY act on THIS employee's own record — never mention or look up other employees, customers, financials, or business-wide data, you don't have tools for any of that here. You can: clock them in/out (clock_in/clock_out), check their hours (get_my_hours), list their own upcoming jobs (list_my_upcoming_jobs), and add/delete events on their own connected Google Calendar (add_my_calendar_event/delete_my_calendar_event — tell them to connect it from their portal's Google tab if not connected). If a tool result has an "error", tell them exactly what went wrong — never claim something succeeded unless the tool actually said so.`;
+You can ONLY act on THIS employee's own record and THEIR OWN assigned jobs' customers — never mention or look up other employees, other business data, or any customer not on one of their own jobs today, you don't have tools for any of that here. You can: clock them in/out (clock_in/clock_out), check their hours (get_my_hours), list their own upcoming jobs (list_my_upcoming_jobs), add/delete events on their own connected Google Calendar (add_my_calendar_event/delete_my_calendar_event — tell them to connect it from their portal's Google tab if not connected), and text the next customer(s) on THEIR OWN schedule today that the crew is running behind (notify_upcoming_customers_running_late — e.g. "text my next 3 clients I'm running late"). If a tool result has an "error", tell them exactly what went wrong — never claim something succeeded unless the tool actually said so.`;
 
   let finalText = "";
   for (const modelKey of chain) {

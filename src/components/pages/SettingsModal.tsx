@@ -91,7 +91,7 @@ const isValidHttpsUrl = (value: string): boolean => {
   }
 };
 
-export function SettingsModal({ open, onClose, settings, setSettings, jobs = [], setJobs = (() => {}) as any, services, setServices, emailTemplates, setEmailTemplates, smsTemplates, setSmsTemplates, estimateTemplates = [], setEstimateTemplates = (() => {}) as any, modelStatus = {}, setModelStatus = (() => {}) as any, toast, onSignOut, restrictToProfile = false, onAddManager }: { open?: any; onClose?: any; settings?: any; setSettings?: any; jobs?: any[]; setJobs?: any; services?: any; setServices?: any; emailTemplates?: any; setEmailTemplates?: any; smsTemplates?: any; setSmsTemplates?: any; estimateTemplates?: any[]; setEstimateTemplates?: any; modelStatus?: any; setModelStatus?: any; toast?: any; onSignOut?: () => void; restrictToProfile?: boolean; onAddManager?: () => void }) {
+export function SettingsModal({ open, onClose, settings, setSettings, jobs = [], setJobs = (() => {}) as any, services, setServices, emailTemplates, setEmailTemplates, smsTemplates, setSmsTemplates, estimateTemplates = [], setEstimateTemplates = (() => {}) as any, modelStatus = {}, setModelStatus = (() => {}) as any, employees = [], toast, onSignOut, restrictToProfile = false, onAddManager }: { open?: any; onClose?: any; settings?: any; setSettings?: any; jobs?: any[]; setJobs?: any; services?: any; setServices?: any; emailTemplates?: any; setEmailTemplates?: any; smsTemplates?: any; setSmsTemplates?: any; estimateTemplates?: any[]; setEstimateTemplates?: any; modelStatus?: any; setModelStatus?: any; employees?: any[]; toast?: any; onSignOut?: () => void; restrictToProfile?: boolean; onAddManager?: () => void }) {
   const [f, setF] = useState(settings);
   const [sec, setSec] = useState(restrictToProfile ? "profile" : "api");
   // Per-owner Stripe keys (Phase F, multi-tenant) — deliberately NOT part of
@@ -582,7 +582,7 @@ export function SettingsModal({ open, onClose, settings, setSettings, jobs = [],
             <div className="text-[10px] text-white/30 text-center">Showing last 7 events · Full audit log export coming in v2</div>
           </div>}
 
-          {sec === "models" && <AIModelsSection f={f} setF={setF} modelStatus={modelStatus} setModelStatus={setModelStatus} toast={toast} />}
+          {sec === "models" && <AIModelsSection f={f} setF={setF} modelStatus={modelStatus} setModelStatus={setModelStatus} employees={employees} toast={toast} />}
 
           {sec === "services" && <ServiceCatalogSection services={services} setServices={setServices} toast={toast} />}
 
