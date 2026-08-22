@@ -375,6 +375,21 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
       if (adding) patch.crewAssignedAt = { ...(job.crewAssignedAt || {}), [eid]: Date.now() };
       console.log("[EditCrewAssign] calling updateJob with patch:", patch);
       updateJob(jobId, patch);
+      // FEATURE — push this assignment onto (or off of) the employee's OWN
+      // Google Calendar, if they've connected one. Server-side because the
+      // owner's browser has no access to any employee's Google token — see
+      // functions/api/employee-calendar-sync.ts. Fire-and-forget: a sync
+      // failure (not connected, token expired) must never block the actual
+      // crew assignment, which already succeeded above.
+      fetch("/api/employee-calendar-sync", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          employeeId: eid, ownerId, jobId, action: adding ? "upsert" : "delete",
+          title: (customers.find(x => x.id === job.customerId)?.firstName ? customers.find(x => x.id === job.customerId).firstName + " " + customers.find(x => x.id === job.customerId).lastName + " — " : "") + "Pressure Washing",
+          date: job.scheduledDate, time: job.scheduledTime, durationMinutes: (Number(job.duration) || 2) * 60,
+          location: job.address, notes: job.notes,
+        }),
+      }).catch(() => {});
       if (adding) {
         // reconcileCrewAfterAssign — `newCrew` was computed from this
         // modal's own possibly-stale `job.crew` prop. If an employee accepted

@@ -364,7 +364,7 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
     // Alfred, not a customer."
     const authorizedPhones = [myPhone, ...alfredExtraPhones].filter(Boolean).map(normalizePhoneDigits);
     if (alfredSmsEnabled && authorizedPhones.includes(fromDigits)) {
-      const ctx = { authHeaders, ownerId, companyName, twilioSid, twilioToken, twilioFrom, origin: new URL(context.request.url).origin, fromPhone: from, googleProviderToken, googleRefreshToken, googleTokenExpiresAt, testModeEnabled };
+      const ctx = { authHeaders, ownerId, companyName, twilioSid, twilioToken, twilioFrom, origin: new URL(context.request.url).origin, fromPhone: from, googleProviderToken, googleRefreshToken, googleTokenExpiresAt, testModeEnabled, env: context.env as Record<string, string> };
       // BUG FIX — this branch never logged the OWNER's own inbound text to
       // inbox_threads at all (only to alfred_sms_threads, which the Inbox
       // UI never reads) — sendAlfredSms below only logs Alfred's OUTGOING

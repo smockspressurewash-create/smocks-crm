@@ -31,6 +31,8 @@
 // convention this is NOT routable, purely a shared module for the actual
 // route files (twilio-sms-webhook.ts) to import from.
 
+import { syncEmployeeJobToCalendar } from "./employeeCalendarSync";
+
 const SUPABASE_URL = "https://boaqaihymgmrhnjtiqrs.supabase.co";
 
 // Mirrors the provider/endpoint/modelId table in src/lib/api.ts's MODELS —
@@ -186,6 +188,10 @@ type Ctx = {
   // customers from a live blast triggered by text while the owner is
   // mid-test.
   testModeEnabled?: boolean;
+  // Cloudflare env, threaded through so tools that need service-role access
+  // to OTHER records (e.g. an employee's own Google token — see
+  // syncEmployeeJobToCalendar) can get it without a second HTTP round-trip.
+  env: Record<string, string>;
 };
 
 // ─── Supabase helpers (service-role REST, same pattern as the webhook) ────
@@ -799,6 +805,15 @@ const executeTool = async (ctx: Ctx, name: string, input: Record<string, any>): 
           body: JSON.stringify({ crew }),
         });
         if (!res.ok) return { error: (await res.text().catch(() => "")).slice(0, 200) };
+        // Push onto the employee's own Google Calendar if connected — see
+        // _lib/employeeCalendarSync.ts. Fire-and-forget, never blocks the
+        // assignment that already succeeded above.
+        syncEmployeeJobToCalendar(ctx.env, {
+          employeeId: emp.id, ownerId: ctx.ownerId, jobId: job.id, action: "upsert",
+          title: (job.customerName ? job.customerName + " — " : "") + "Pressure Washing",
+          date: job.scheduledDate, time: job.scheduledTime, location: job.address,
+          origin: ctx.origin,
+        }).catch(() => {});
         return { success: true, jobId: job.id, employee: `${emp.firstName} ${emp.lastName}` };
       }
       case "create_customer": {

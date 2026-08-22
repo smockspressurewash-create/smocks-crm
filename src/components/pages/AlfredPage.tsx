@@ -1759,6 +1759,17 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           ).catch(() => {});
           // Local echo so the owner UI reflects it before the next poll.
           setJobs(prev => prev.map(x => x.id === j.id ? { ...x, crew: newCrew, crewAssignedAt } : x));
+          // Push onto the employee's own Google Calendar if connected — see
+          // functions/api/employee-calendar-sync.ts. Fire-and-forget.
+          fetch("/api/employee-calendar-sync", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              employeeId: emp.id, ownerId, jobId: j.id, action: "upsert",
+              title: (() => { const c = customers.find(x => x.id === j.customerId); return (c ? c.firstName + " " + c.lastName + " — " : "") + "Pressure Washing"; })(),
+              date: j.scheduledDate, time: j.scheduledTime, durationMinutes: (Number(j.duration) || 2) * 60,
+              location: j.address, notes: j.notes,
+            }),
+          }).catch(() => {});
           if (emp.email) {
             const c = customers.find(x => x.id === j.customerId);
             const portalLink = `${window.location.origin}${window.location.pathname}#/portal`;
