@@ -624,9 +624,14 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
   const todayLateCount = todayLiveWithStatus.filter((t: any) => t.status.label === "Running Late").length;
   // Jobs due today — every non-cancelled job scheduled today (broader than
   // the `todayJobs` alert above, which only counts status==="scheduled", so
-  // an in-progress or already-completed job still shows here).
+  // an in-progress or already-completed job still shows here) — PLUS any
+  // job actively in_progress regardless of its scheduledDate. A job an
+  // employee is genuinely working on right now (arrived, clocked in) but
+  // that was scheduled for an earlier date must still show up here — same
+  // "overdue but actively being worked" gap already fixed on the Live Team
+  // View pairing filter above.
   const todayJobsList = jobs
-    .filter((j: any) => j.scheduledDate === todayStr && j.status !== "cancelled")
+    .filter((j: any) => j.status !== "cancelled" && (j.scheduledDate === todayStr || j.status === "in_progress"))
     .sort((a: any, b: any) => (a.scheduledTime || "").localeCompare(b.scheduledTime || ""));
   // Overdue invoices — reuses `overdueInv` computed above for the smart
   // alerts row (estimates.invoiced && !paidAt && daysSince(invoicedAt) > 14),

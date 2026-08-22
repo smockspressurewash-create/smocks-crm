@@ -498,13 +498,24 @@ const executeTool = async (ctx: Ctx, name: string, input: Record<string, any>): 
         const emps = await sbGet(ctx, `employees?select=id,firstName,lastName,status,dayClockInAt${ownerScope(ctx)}&limit=200`);
         const onShift = emps.filter((e: any) => e.status === "active" && e.dayClockInAt);
         if (onShift.length === 0) return { success: true, summary: "No one is currently clocked in." };
-        const jobs = await sbGet(ctx, `jobs?select=id,customerName,status,crew,checklist,scheduledDate${ownerScope(ctx)}&status=eq.in_progress&limit=200`);
+        // FIX — this used to select a "checklist" column that doesn't exist
+        // (the real columns are preChecklist/duringChecklist/postChecklist —
+        // see CLAUDE.md), so PostgREST 400'd the WHOLE query on every call
+        // and sbGet silently swallowed that into an empty array — every
+        // on-shift employee always reported as "not currently on a job" no
+        // matter what, which is exactly the bug reported: an employee who
+        // had genuinely arrived at a job still came back as not on one.
+        // Also broadened the match itself: a field employee's job goes
+        // "in_progress" OR just carries an arrivedAt timestamp (the "I'm
+        // Here" button) — status=eq.in_progress alone missed that case too,
+        // same fix already applied to Dashboard.tsx's Live Team View.
+        const jobs = await sbGet(ctx, `jobs?select=id,customerName,status,crew,preChecklist,duringChecklist,postChecklist,scheduledDate,arrivedAt${ownerScope(ctx)}&status=neq.completed&status=neq.cancelled&limit=200`);
         const report = onShift.map((e: any) => {
           const name = `${e.firstName || ""} ${e.lastName || ""}`.trim();
-          const job = jobs.find((j: any) => Array.isArray(j.crew) && j.crew.includes(e.id));
+          const job = jobs.find((j: any) => Array.isArray(j.crew) && j.crew.includes(e.id) && (j.status === "in_progress" || !!j.arrivedAt));
           if (!job) return `${name}: clocked in, not currently on a job`;
-          const checklist = Array.isArray(job.checklist) ? job.checklist : [];
-          const done = checklist.filter((c: any) => c.done).length;
+          const checklist = [...(job.preChecklist || []), ...(job.duringChecklist || []), ...(job.postChecklist || [])];
+          const done = checklist.filter((c: any) => c?.done).length;
           const pct = checklist.length ? Math.round((done / checklist.length) * 100) : null;
           return `${name}: on ${job.customerName}'s job${pct !== null ? ` (${pct}% checklist complete)` : ""}`;
         });

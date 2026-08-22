@@ -4154,7 +4154,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   // knows to escalate instead of retrying forever.
   const [empGoogleConfigMissing, setEmpGoogleConfigMissing] = useState(false);
   const [showCanceledJobs, setShowCanceledJobs] = useState(false);
-  const [jobsStatusFilter, setJobsStatusFilter] = useState<"all" | "scheduled" | "completed">("all");
+  const [jobsStatusFilter, setJobsStatusFilter] = useState<"all" | "scheduled" | "today" | "completed">("all");
   const [jobsSearchText, setJobsSearchText] = useState("");
   const [pastCollapsed, setPastCollapsedState] = useState(() => {
     try { const v = localStorage.getItem("smocks.portal.pastCollapsed"); return v === null ? true : v === "1"; } catch { return true; }
@@ -6641,7 +6641,14 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                             </a>
                             {!ctxJob.arrivedAt && ctxJob.status !== "completed" && (
                               <button onClick={() => {
-                                updateJob(calCtxMenu.jobId, { arrivedAt: Date.now() });
+                                // FIX — this used to only set arrivedAt, never
+                                // flipping status to "in_progress" like every
+                                // other "arrive" path in this file does (see
+                                // the main job card / "I'm Here" button). A
+                                // job marked arrived here stayed "scheduled"
+                                // forever, so it never showed as in-progress
+                                // on the owner's Dashboard/Live Team View.
+                                updateJob(calCtxMenu.jobId, { arrivedAt: Date.now(), status: ctxJob.status === "scheduled" ? "in_progress" : ctxJob.status });
                                 toast("Marked as arrived ✓");
                                 setCalCtxMenu(null);
                               }} className="w-full text-left px-3 py-2 text-xs text-white/70 hover:bg-white/10 hover:text-white transition flex items-center gap-2">
@@ -6675,6 +6682,11 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
               // — a genuinely overdue-but-still-scheduled job now only shows
               // under "All" (grouped correctly under Past/Completed there).
               if (jobsStatusFilter === "scheduled") return (j.status === "scheduled" || j.status === ("active" as any)) && j.scheduledDate >= todayStr;
+              // "Today" — every job scheduled today, whatever its status
+              // (scheduled/in_progress/completed), plus anything actively
+              // in_progress right now even if it was scheduled a different
+              // day (matches the owner Dashboard's own "Today" card fix).
+              if (jobsStatusFilter === "today") return j.scheduledDate === todayStr || j.status === "in_progress";
               if (jobsStatusFilter === "completed") return j.status === "completed";
               return true;
             });
@@ -6715,7 +6727,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                 {/* Filter + search row */}
                 <div className="space-y-2">
                   <div className="flex items-center gap-1.5">
-                    {([["all", "All"], ["scheduled", "Upcoming"], ["completed", "Completed"]] as const).map(([k, l]) => (
+                    {([["all", "All"], ["scheduled", "Upcoming"], ["today", "Today"], ["completed", "Completed"]] as const).map(([k, l]) => (
                       <button key={k} onClick={() => setJobsStatusFilter(k)}
                         className={"px-3 py-1.5 rounded-lg text-xs font-medium transition flex-1 " + (jobsStatusFilter === k ? "bg-red-700/60 text-white" : "bg-black/40 border border-white/10 text-white/50 hover:text-white")}>
                         {l}
@@ -6915,7 +6927,15 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                   {autoMileageEnabled && dayTrackedMiles > 0 && (
                     <div className="flex items-center justify-between gap-2 mb-2 px-2.5 py-1.5 rounded-lg bg-green-950/20 border border-green-800/30">
                       <span className="text-[10px] text-green-300">📍 {dayTrackedMiles.toFixed(1)} mi tracked automatically today</span>
-                      <button onClick={() => setMileageForm(f => ({ ...f, miles: dayTrackedMiles.toFixed(1) }))} className="text-[9px] font-semibold px-2 py-0.5 rounded bg-green-800/50 hover:bg-green-700/60 text-white flex-shrink-0">Use this</button>
+                      {/* FIX — this only silently filled the Miles field below
+                          with no toast/confirmation at all (every user-facing
+                          action needs one — see CLAUDE.md). On a phone, where
+                          the Miles input can be a screen-height away or the
+                          keyboard/viewport is already scrolled, tapping this
+                          gave no visible sign anything happened, which reads
+                          as "the button doesn't work" even though the state
+                          update itself was landing fine. */}
+                      <button onClick={() => { setMileageForm(f => ({ ...f, miles: dayTrackedMiles.toFixed(1) })); toast("Filled in " + dayTrackedMiles.toFixed(1) + " mi below — tap Log Mileage to save it", "green"); }} className="text-[9px] font-semibold px-3 py-1.5 rounded bg-green-800/50 hover:bg-green-700/60 text-white flex-shrink-0">Use this</button>
                     </div>
                   )}
                   <div className="grid grid-cols-2 gap-2 mb-2">

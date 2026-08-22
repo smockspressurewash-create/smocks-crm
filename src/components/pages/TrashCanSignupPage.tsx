@@ -33,6 +33,11 @@ export function TrashCanSignupPage() {
   const [minutesPerCan, setMinutesPerCan] = useState(Number(hashParam("min")) || 5);
   const [defaultFreq, setDefaultFreq] = useState((hashParam("freq") || "weekly") as "weekly" | "monthly" | "quarterly");
   const [publishableKey, setPublishableKey] = useState(hashParam("pk"));
+  // Inconvenience fee (Settings → Trash Cans → "Cans Not Out Fee") — no link
+  // query-param fallback for this one since it's new; always comes from the
+  // live /api/public-data fetch below, same source as everything else here.
+  const [feeName, setFeeName] = useState("");
+  const [feeAmount, setFeeAmount] = useState(0);
   // Stripe Connect owner's account id — required for the client-side
   // Stripe.js instance to confirm this signup form's card against the
   // right connected account. See loadStripeJs's stripeAccount param.
@@ -62,6 +67,8 @@ export function TrashCanSignupPage() {
         if (data.ph) setCompanyPhone(data.ph);
         if (data.pk) setPublishableKey(data.pk);
         if (data.stripeAccountId) setStripeAccountId(data.stripeAccountId);
+        if (data.feeName) setFeeName(data.feeName);
+        if (data.feeAmount != null) setFeeAmount(Number(data.feeAmount) || 0);
       } catch (e: any) {
         console.warn("[TrashCanSignup] live settings refresh failed, using link params:", e?.message);
       }
@@ -216,7 +223,7 @@ export function TrashCanSignupPage() {
 
         <label className="flex items-start gap-2.5 p-3 rounded-xl bg-white/5 border border-white/10 cursor-pointer">
           <input type="checkbox" checked={agreed} onChange={e => setAgreed(e.target.checked)} className="mt-0.5 flex-shrink-0" />
-          <span className="text-[12px] text-white/70 leading-relaxed">I authorize {companyName} to keep a card on file and charge ${price.toFixed(2)} per cleaning{frequency !== "onetime" ? ` on a ${frequency} recurring basis` : ""}. I can cancel or reschedule any time.</span>
+          <span className="text-[12px] text-white/70 leading-relaxed">I authorize {companyName} to keep a card on file and charge ${price.toFixed(2)} per cleaning{frequency !== "onetime" ? ` on a ${frequency} recurring basis` : ""}. I can cancel or reschedule any time.{feeAmount > 0 && ` If cans aren't left out/accessible on the scheduled day, a $${feeAmount.toFixed(2)} ${feeName || "inconvenience fee"} may apply.`}</span>
         </label>
         <label className="flex items-start gap-2.5 p-3 rounded-xl bg-white/5 border border-white/10 cursor-pointer">
           <input type="checkbox" checked={smsOptIn} onChange={e => setSmsOptIn(e.target.checked)} className="mt-0.5 flex-shrink-0" />

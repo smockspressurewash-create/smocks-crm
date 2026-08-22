@@ -154,6 +154,12 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
       return json({
         cost: data.trashCanCostPerCan, minutes: data.trashCanMinutesPerCan, freq: data.trashCanDefaultFrequency,
         co: data.companyName, ph: data.companyPhone,
+        // FIX — the inconvenience fee (Settings → Trash Cans → "Cans Not Out
+        // Fee") was never sent to this public page at all, so a signup that
+        // happened before/after the owner changed it never showed the real
+        // fee terms — the one field on this whole page that WASN'T already
+        // live-synced from Settings.
+        feeName: data.trashCanInconvenienceFeeName, feeAmount: data.trashCanInconvenienceFeeAmount,
         pk: data.stripePublishableKey || stripeAcct?.stripe_publishable_key || (stripeAcct?.stripe_account_id ? (context.env.STRIPE_PUBLISHABLE_KEY || "") : ""),
         stripeAccountId: stripeAcct?.stripe_account_id || "",
       });

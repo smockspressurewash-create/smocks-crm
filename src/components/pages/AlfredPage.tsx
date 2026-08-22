@@ -1606,12 +1606,24 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           return { from, to, count: inRange.length, jobs: inRange };
         }
         case "get_employee_status": {
+          // FIX — this only recognized a job as "active" via the OWNER's own
+          // per-job clock (job.clockInAt), which a field employee never sets
+          // — they use "I'm Here" (arrivedAt) or the job simply flips to
+          // status "in_progress". So a technician who had arrived and was
+          // actively on a job still reported as "not on a job" here, exactly
+          // like the Live Team View bug fixed earlier in Dashboard.tsx —
+          // same broadened match applied here for consistency.
           const list = employees.filter((e: any) => e.status === "active").map((e: any) => {
-            const activeJob = jobs.find((j: any) => !!j.clockInAt && (j.crew || []).includes(e.id) && j.status !== "completed" && j.status !== "cancelled");
+            const activeJob = jobs.find((j: any) =>
+              (j.crew || []).includes(e.id) &&
+              j.status !== "completed" && j.status !== "cancelled" &&
+              (j.status === "in_progress" || !!j.clockInAt || !!j.arrivedAt)
+            );
+            const sinceMs = activeJob ? (activeJob.clockInAt || activeJob.arrivedAt) : null;
             return {
               name: e.firstName + " " + e.lastName,
               clockedInForDay: !!e.dayClockInAt,
-              onJob: activeJob ? { address: activeJob.address, elapsedMinutes: Math.round((Date.now() - activeJob.clockInAt) / 60000) } : null,
+              onJob: activeJob ? { address: activeJob.address, elapsedMinutes: sinceMs ? Math.round((Date.now() - sinceMs) / 60000) : null } : null,
             };
           });
           return { count: list.length, employees: list };
