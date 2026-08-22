@@ -882,9 +882,14 @@ export function InboxPage({ threads = [], setThreads, customers = [], setCustome
   const relTime = ts => { const s = Math.floor((Date.now() - ts) / 1000); if (s < 60) return "now"; if (s < 3600) return Math.floor(s/60)+"m"; if (s < 86400) return Math.floor(s/3600)+"h"; return Math.floor(s/86400)+"d"; };
 
   return (
-    <div className="flex -mx-4 md:-mx-6 -my-4 bg-black overflow-hidden rounded-xl border border-red-900/30" style={{ height: "calc(100vh - 57px)" }}>
+    // FIX (mobile) — was a fixed `height: calc(100vh - 57px)` guess plus a
+    // negative-margin bleed against the old padded page wrapper. App.tsx now
+    // gives the Inbox page the same no-padding flex-column treatment as
+    // Alfred (see the FIX 19 comment there), so this just needs to fill that
+    // real flex-1 space — no vh math, no bleed margins to fight it.
+    <div className="flex flex-1 min-h-0 bg-black overflow-hidden rounded-xl border border-red-900/30">
       {/* Thread list */}
-      <div className="w-full md:w-80 border-r border-red-900/30 flex flex-col flex-shrink-0" style={{ display: activeThread && window.innerWidth < 768 ? "none" : "flex" }}>
+      <div className="w-full md:w-80 border-r border-red-900/30 flex flex-col min-h-0 flex-shrink-0" style={{ display: activeThread && window.innerWidth < 768 ? "none" : "flex" }}>
         <div className="p-3 border-b border-red-900/30 space-y-2">
           <div className="flex items-center justify-between">
             <div className="font-semibold flex items-center gap-2"><MessageSquare size={14} className="text-red-400" />Inbox <span className="text-[10px] text-white/50">{allThreads.filter(t => t.unread).length > 0 ? allThreads.filter(t => t.unread).length + " unread" : "all read"}</span></div>
@@ -1024,7 +1029,7 @@ export function InboxPage({ threads = [], setThreads, customers = [], setCustome
 
       {/* Conversation panel */}
       {activeThread ? (
-        <div className="flex-1 flex flex-col min-w-0">
+        <div className="flex-1 flex flex-col min-w-0 min-h-0">
           {/* Header */}
           <div className="flex items-center gap-3 p-3 border-b border-red-900/30 bg-black/40">
             {/* BUG (mobile) — this button sits near enough to the left edge that

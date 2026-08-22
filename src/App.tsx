@@ -3569,9 +3569,20 @@ export function App() {
             (see AlfredPage.tsx) fills exactly the remaining space next to
             the (still fully visible, unaffected — it's a sibling <aside>,
             not replaced) main sidebar, with no double scroll. */}
-        <main className={"flex-1 min-h-0 pb-16 md:pb-0 " + (page === "alfred" ? "flex flex-col overflow-hidden" : "overflow-y-auto")}>
-          <div className={page === "alfred" ? "flex-1 flex flex-col min-h-0 p-2 md:p-3" : "px-3 py-4 md:p-6 max-w-[1600px] mx-auto"}>
-            <PageFade key={page} className={page === "alfred" ? "flex-1 min-h-0 flex flex-col" : ""}>
+        {/* BUG (mobile) — InboxPage used to size its own root with a raw
+            `height: calc(100vh - 57px)` guess, the exact anti-pattern FIX 19
+            below already documents for Alfred: on mobile that guess can run
+            taller than the space actually left inside `main` (real header
+            height, the degraded-Supabase banner, etc. don't reliably add up
+            to 57px), forcing `main` itself to scroll to show the rest —
+            which reads as "the top bar disappeared" even though it never
+            actually moved, because the visible viewport had already
+            scrolled past it. Giving Inbox the same flex-column/no-padding
+            treatment as Alfred (own flex-1 fills exactly what's left, no
+            vh guess) fixes it the same way. */}
+        <main className={"flex-1 min-h-0 pb-16 md:pb-0 " + (page === "alfred" || page === "inbox" ? "flex flex-col overflow-hidden" : "overflow-y-auto")}>
+          <div className={page === "alfred" || page === "inbox" ? "flex-1 flex flex-col min-h-0 p-2 md:p-3" : "px-3 py-4 md:p-6 max-w-[1600px] mx-auto"}>
+            <PageFade key={page} className={page === "alfred" || page === "inbox" ? "flex-1 min-h-0 flex flex-col" : ""}>
               <SafePage>
                 {page === "dashboard"      && <Dashboard jobs={jobs} setJobs={setJobs} customers={customers} estimates={estimates} setEstimates={setEstimates} automations={automations} stats={{ totalRev, activeJobs, pendingEst, closeRate, doneMonth }} goals={{ revenue: settings.monthlyRevenueGoal ?? 8000, jobCount: settings.monthlyJobsGoal ?? 20 }} vehicles={vehicles} maintenance={maintenance} chemicals={chemicals} settings={settings} setSettings={setSettings} onNav={setPage} toast={toast} weatherData={weatherData} weatherFetchError={weatherFetchError} inboxThreads={inboxThreads} employees={employees} crewFetchError={crewFetchError} reviews={reviews} onSendDailyBriefing={sendDailyBriefingNow} onViewJob={id => { setOpenJobId(id); setPage("jobs"); }} ownerId={crmUserId} />}
                 {page === "customers"      && <CustomersPage customers={customers} setCustomers={setCustomers} estimates={estimates} jobs={jobs} employees={employees} toast={toast} timeline={timeline} setTimeline={setTimeline} settings={settings} setSettings={setSettings} autoOpenNew={fabAutoOpenNew === "customers"} onAutoOpenNewConsumed={() => setFabAutoOpenNew(null)} />}
