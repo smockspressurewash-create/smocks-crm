@@ -217,6 +217,15 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
   const [signerName, setSignerName] = useState("");
   const [gSyncing, setGSyncing] = useState(false);
   const [notifying, setNotifying] = useState(false);
+  // FEATURE — field parity for the owner working a job themselves. The
+  // employee portal has always had On My Way / I'm Here / Running Late for
+  // a technician on-site; the owner's own JobDetailModal had Time Tracking
+  // and checklists/photos but nothing for the customer-facing "I'm en
+  // route" / "running behind" moments — an owner self-assigned to a job
+  // had a strictly worse in-the-field experience than an employee on the
+  // exact same job. Same message templates/send paths as EmployeePortal.tsx.
+  const [sendingOtw, setSendingOtw] = useState(false);
+  const [sendingRunningLate, setSendingRunningLate] = useState(false);
   // ITEM (edit-mode parity) — was a single showRequestForm boolean driving one
   // shared dropdown-based request form, so requesting a SPECIFIC employee
   // meant opening a global form and picking them from a <select> — not a true
@@ -853,6 +862,75 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
     toast("+" + rounded + "h logged");
     if (ownerOnCrew) (supabase as any).from("employees").update({ dayClockInAt: null }).eq("id", ownerEmpId).catch(() => {});
   };
+  // Same message/send pattern as EmployeePortal.tsx's sendOtw — SMS if the
+  // customer has a phone (Twilio), otherwise Gmail (never Resend — CLAUDE.md
+  // "Critical rules": field-portal-style customer notifications must use
+  // sendOwnerGmailOnly).
+  const sendOnMyWay = async () => {
+    const cust = customers.find(x => x.id === job.customerId);
+    setSendingOtw(true);
+    const msg = `Hi ${cust?.firstName || "there"}, your ${settings?.companyName || "Crew Boss"} technician is on the way!`;
+    try {
+      if (cust?.phone) {
+        await withTimeout(twilioSend(settings as any, cust.phone, msg), 15000, "OTW SMS");
+        logOutboundSmsToInbox({ contactName: `${cust.firstName} ${cust.lastName}`, contactPhone: cust.phone, customerId: cust.id, body: msg }).catch(() => {});
+      } else if (cust?.email) {
+        const html = emailShell(settings, "On My Way", `<p>${msg}</p>`);
+        await withTimeout(sendOwnerGmailOnly(settings as any, cust.email, "Your technician is on the way", html), 15000, "OTW email");
+      } else {
+        throw new Error("No phone or email on file for this customer.");
+      }
+      updateJob(jobId, { commLog: [...(job.commLog || []), { id: uid(), type: "note" as const, date: today(), note: `📍 On my way message sent to ${cust?.firstName || "customer"}` }] });
+      toast(`✅ Message sent to ${cust?.firstName || "customer"}`, "green");
+    } catch (e: any) {
+      toast(`❌ Failed to send — ${e?.message || "reason unknown"}`, "red");
+    } finally {
+      setSendingOtw(false);
+    }
+  };
+  // "I'm Here" — internal arrival marker only (no customer message), same
+  // as EmployeePortal.tsx's version: flips a scheduled job to in_progress
+  // and feeds the Live Crew View's arrival-based status labels.
+  const markArrived = () => {
+    updateJob(jobId, { arrivedAt: Date.now(), status: job.status === "scheduled" ? "in_progress" : job.status });
+    toast("📍 Marked arrived");
+  };
+  const sendRunningLateSingle = async () => {
+    const minutesStr = window.prompt("How many minutes behind?", "15");
+    if (!minutesStr) return;
+    const minutes = Math.max(1, Math.round(Number(minutesStr) || 0));
+    if (!minutes) return;
+    const cust = customers.find(x => x.id === job.customerId);
+    setSendingRunningLate(true);
+    const newEta = new Date(Date.now() + minutes * 60000).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    const msg = `Your ${settings?.companyName || "Crew Boss"} technician is running approximately ${minutes} minutes behind. New ETA: ${newEta}. We apologize for the delay.`;
+    try {
+      if (cust?.phone) {
+        await withTimeout(twilioSend(settings as any, cust.phone, `Hi ${cust.firstName || ""}, ${msg}`), 15000, "Running late SMS");
+        logOutboundSmsToInbox({ contactName: `${cust.firstName} ${cust.lastName}`, contactPhone: cust.phone, customerId: cust.id, body: `Hi ${cust.firstName || ""}, ${msg}` }).catch(() => {});
+      } else if (cust?.email) {
+        const html = emailShell(settings, "Running Late", `<p>Hi ${cust.firstName || ""},</p><p>${msg}</p>`);
+        await withTimeout(sendOwnerGmailOnly(settings as any, cust.email, "Your technician is running late", html), 15000, "Running late email");
+      } else {
+        throw new Error("No phone or email on file for this customer.");
+      }
+      const newScheduledTime = (() => {
+        if (!job.scheduledTime) return undefined;
+        const [h, m] = job.scheduledTime.split(":").map(Number);
+        const d = new Date(); d.setHours(h, m + minutes, 0, 0);
+        return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+      })();
+      updateJob(jobId, {
+        commLog: [...(job.commLog || []), { id: uid(), type: "note" as const, date: today(), note: `⏱ Running late +${minutes}min — notified customer` }],
+        ...(newScheduledTime ? { scheduledTime: newScheduledTime } : {}),
+      });
+      toast(`✅ Notified ${cust?.firstName || "customer"} — running ${minutes}min late`, "green");
+    } catch (e: any) {
+      toast(`❌ Failed to send — ${e?.message || "reason unknown"}`, "red");
+    } finally {
+      setSendingRunningLate(false);
+    }
+  };
   const handleGoogleSync = async () => {
     if (!gToken || !job.scheduledDate) { toast("Add a scheduled date first"); return; }
     setGSyncing(true);
@@ -1217,6 +1295,22 @@ ${job.notes ? `<div class="section"><h2>Job Notes</h2><p>${job.notes}</p></div>`
             {job.clockInAt ? <GBtn variant="danger" onClick={clockOut} className="!text-xs">Clock Out</GBtn> : <GBtn onClick={clockIn} className="!text-xs"><Play size={10} className="inline mr-1" />Clock In</GBtn>}
           </div>
         </Glass>
+
+        {/* Field Actions — On My Way / I'm Here / Running Late, same as the
+            employee portal, for when the owner is working this job themselves. */}
+        {job.status !== "completed" && job.status !== "cancelled" && (
+          <div className="grid grid-cols-3 gap-2">
+            <button onClick={sendOnMyWay} disabled={sendingOtw} className="flex flex-col items-center justify-center gap-1 py-2 rounded-xl bg-blue-950/20 border border-blue-800/30 text-blue-300 hover:bg-blue-900/30 transition text-[11px] disabled:opacity-50">
+              <Navigation size={14} />{sendingOtw ? "Sending…" : "On My Way"}
+            </button>
+            <button onClick={markArrived} className="flex flex-col items-center justify-center gap-1 py-2 rounded-xl bg-green-950/20 border border-green-800/30 text-green-300 hover:bg-green-900/30 transition text-[11px]">
+              <MapPin size={14} />{job.arrivedAt ? "Arrived ✓" : "I'm Here"}
+            </button>
+            <button onClick={sendRunningLateSingle} disabled={sendingRunningLate} className="flex flex-col items-center justify-center gap-1 py-2 rounded-xl bg-yellow-950/20 border border-yellow-800/30 text-yellow-300 hover:bg-yellow-900/30 transition text-[11px] disabled:opacity-50">
+              <Clock size={14} />{sendingRunningLate ? "Sending…" : "Running Late"}
+            </button>
+          </div>
+        )}
 
         {/* Payment status + Send Invoice — only once the job is actually done */}
         {job.status === "completed" && (

@@ -1220,9 +1220,25 @@ export function App() {
   // Fall back to deriving a name from the email instead of requiring one.
   const ownerEmpRowEnsuredRef = useRef(false);
   useEffect(() => {
-    const ownerEmail = settings.googleEmail || crmUserEmail;
+    // BUG FIX — this preferred settings.googleEmail over crmUserEmail, but
+    // googleEmail is "whichever Google account is currently connected for
+    // Calendar/Gmail" (Settings → Integrations), which can be reconnected
+    // to a DIFFERENT account independently of login identity at any time —
+    // it is NOT a stable owner identity. Reconnecting Google under a
+    // different email regenerated a brand-new owner_<email> id and created
+    // a second "William Knight" row in Employees, verified live: two owner
+    // rows under the same real owner_id, one from original login
+    // (smockspressurewash@...), one from a later Google reconnect
+    // (drummerforger@...). crmUserEmail (the actual Supabase Auth session
+    // that logged into the CRM) is what's stable — check it first.
+    const ownerEmail = crmUserEmail || settings.googleEmail;
     if (!crmUserId || !ownerEmail || ownerEmpRowEnsuredRef.current) return;
     ownerEmpRowEnsuredRef.current = true;
+    // Belt-and-suspenders — even with a stable email preferred above, guard
+    // on "does ANY owner row already exist for this tenant" (not just an
+    // exact id match) so this can never create a second one for any other
+    // reason either.
+    if (employees.some(e => e.role === "owner" && (e as any).owner_id === crmUserId)) return;
     const ownerId = `owner_${ownerEmail}`;
     if (employees.some(e => e.id === ownerId)) return;
     const rawName = settings.ownerName?.trim() || ownerEmail.split("@")[0].replace(/[._-]+/g, " ").replace(/\b\w/g, (c: string) => c.toUpperCase());

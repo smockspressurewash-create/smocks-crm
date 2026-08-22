@@ -536,15 +536,28 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setJobs
         "permissions", "managerPermissions", "can_create_invoices", "can_send_invoices", "can_process_payments",
         "jobTypeRates", "maxDaysOffPerWeek", "maxDaysOffPerMonth", "recurringDaysOff", "availability",
       ];
-      (supabase as any).from("employees").update(record).eq("id", id)
+      // BUG FIX — "permissions don't always save": this never checked
+      // whether the UPDATE actually matched a row. `.update(...)` with no
+      // matching row under RLS returns success with an EMPTY data array, no
+      // error at all — the classic silent-RLS-block pattern (CLAUDE.md: "if
+      // a Supabase read returns 0 rows unexpectedly, suspect RLS"). That
+      // read exactly like "I edited permissions, hit save, nothing
+      // happened" with zero indication anything was wrong. `.select("id")`
+      // lets a 0-row response be treated as the real failure it is instead
+      // of silently doing nothing. Also: this path had NO success toast at
+      // all, violating CLAUDE.md's "every action needs a success toast"
+      // rule — an owner had no way to confirm a save that DID work either.
+      (supabase as any).from("employees").update(record).eq("id", id).select("id")
         .then(async (r: any) => {
-          if (!r?.error) return;
-          console.warn("[EmployeesPage] full save failed:", r.error.message, "— retrying with core columns only");
+          if (!r?.error && Array.isArray(r?.data) && r.data.length > 0) { toast?.("Employee saved ✓", "green"); return; }
+          if (r?.error) console.warn("[EmployeesPage] full save failed:", r.error.message, "— retrying with core columns only");
+          else console.warn("[EmployeesPage] full save matched 0 rows (RLS?) — retrying with core columns only");
           const core: Record<string, unknown> = {};
           EMPLOYEE_CORE_COLUMNS.forEach(k => { if ((record as any)[k] !== undefined) core[k] = (record as any)[k]; });
-          const retry = await (supabase as any).from("employees").update(core).eq("id", id);
-          if (retry?.error) toast?.("Saved locally, but failed to sync — " + retry.error.message, "red");
-          else toast?.("Saved (one field on this row has a schema mismatch and was skipped — everything else, including permissions, synced)", "yellow");
+          const retry = await (supabase as any).from("employees").update(core).eq("id", id).select("id");
+          if (retry?.error) { toast?.("Saved locally, but failed to sync — " + retry.error.message, "red"); return; }
+          if (!Array.isArray(retry?.data) || retry.data.length === 0) { toast?.("Saved locally, but the server didn't confirm the update — try again or refresh to check", "red"); return; }
+          toast?.(r?.error ? "Saved (one field on this row has a schema mismatch and was skipped — everything else, including permissions, synced)" : "Employee saved ✓", r?.error ? "yellow" : "green");
         })
         .catch((e: any) => toast?.("Saved locally, but failed to sync — " + (e?.message || ""), "red"));
     }
