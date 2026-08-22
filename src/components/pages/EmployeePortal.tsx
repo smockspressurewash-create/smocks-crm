@@ -5165,6 +5165,13 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
           <button onClick={() => setSopOpen(true)} className="p-2 rounded-xl hover:bg-white/10 text-white/40 hover:text-white transition flex-shrink-0" title="SOPs & Instructions">
             <BookOpen size={16} />
           </button>
+          {/* PWA — the login screen's InstallAppButton (above) only ever
+              renders BEFORE sign-in; an already-logged-in employee never saw
+              it anywhere, so "no download button in the portal" was a real
+              gap, not a repeat of the earlier hidden-on-mobile CSS bug.
+              Icon-only here (header is tight) — renders nothing until
+              Chrome/iOS actually offers an install. */}
+          <InstallAppButton className="!p-2 !bg-transparent !border-0 !text-white/40 hover:!text-white !rounded-xl" label="" />
           <button onClick={doSignOut} className="p-2 rounded-xl hover:bg-white/10 text-white/40 hover:text-white transition flex-shrink-0" title="Sign out">
             <LogOut size={16} />
           </button>
