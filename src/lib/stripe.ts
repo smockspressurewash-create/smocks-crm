@@ -2,7 +2,17 @@
 
 let stripeJsPromise: Promise<any> | null = null;
 
-export const loadStripeJs = (publishableKey: string): Promise<any> => {
+// BUG FIX — a Stripe CONNECT owner (no manual publishable key of their own —
+// see get_owner_keys_status's platform-key fallback in stripe-action.ts) has
+// their PaymentIntents created against the PLATFORM's own account with a
+// Stripe-Account header, server-side. The client-side Stripe.js instance
+// used to confirm that same PaymentIntent (and to mount the Payment
+// Element / Payment Request Button) must ALSO be told which connected
+// account it's operating against — `Stripe(platformPublishableKey, {
+// stripeAccount: acct_... })` — or confirmation fails outright for every
+// Connect-mode owner. `stripeAccount` is optional and a no-op for a legacy
+// manual-key owner (stripeAccount undefined).
+export const loadStripeJs = (publishableKey: string, stripeAccount?: string): Promise<any> => {
   if (!stripeJsPromise) {
     stripeJsPromise = new Promise((resolve, reject) => {
       if ((window as any).Stripe) { resolve((window as any).Stripe); return; }
@@ -13,7 +23,7 @@ export const loadStripeJs = (publishableKey: string): Promise<any> => {
       document.head.appendChild(script);
     });
   }
-  return stripeJsPromise.then(Stripe => Stripe(publishableKey));
+  return stripeJsPromise.then(Stripe => Stripe(publishableKey, stripeAccount ? { stripeAccount } : undefined));
 };
 
 // SECURITY AUDIT (round 12) — every function below used to take a `secretKey`
@@ -49,6 +59,11 @@ const stripeAction = async (action: string, params: Record<string, any> = {}, ac
 export interface OwnerStripeStatus {
   connected: boolean;
   stripeAccountId: string;
+  // Unmasked version of stripeAccountId above (that one's truncated for
+  // display in Settings) — safe to expose client-side, a Connect account id
+  // isn't secret, and it's required to actually initialize Stripe.js against
+  // the right connected account (see loadStripeJs's stripeAccount param).
+  stripeAccountIdFull: string;
   hasSecretKey: boolean;
   hasWebhookSecret: boolean;
   publishableKey: string;
@@ -154,13 +169,27 @@ export const retrieveCheckoutSession = async (sessionId: string): Promise<Stripe
 
 export interface StripeCustomerObj { id: string; email?: string; name?: string }
 
-export const createStripeCustomer = async (email: string, name: string): Promise<StripeCustomerObj> =>
-  stripeAction("create_customer", { email, name });
+// BUG FIX — ownerId was never passed here at all. stripe-action.ts resolves
+// which business's Stripe account to use from body.invoiceId OR body.ownerId
+// — neither was ever present on this call, so it ALWAYS silently fell back
+// to the platform-wide key/account for every owner, Connect or manual-key.
+// A card saved through SaveCardModal.tsx was being created in the wrong
+// Stripe account entirely for any owner who wasn't relying on the platform
+// fallback. Same fix for createSetupIntent below.
+// `accessToken`, when the caller has one (owner/employee session — a
+// customer session intentionally never passes one here, see
+// SaveCardModal.tsx), lets the server resolve the REAL caller identity via
+// resolveCallerOwnerId — preferred over the client-claimed `ownerId` below,
+// which stays as the fallback for the one legitimate no-session case (the
+// customer portal, which resolves its own ownerId server-side from the
+// customer row itself before ever reaching this function).
+export const createStripeCustomer = async (email: string, name: string, ownerId?: string, accessToken?: string): Promise<StripeCustomerObj> =>
+  stripeAction("create_customer", { email, name, ownerId }, accessToken);
 
 export interface StripeSetupIntent { id: string; client_secret: string; status: string }
 
-export const createSetupIntent = async (customerId: string): Promise<StripeSetupIntent> =>
-  stripeAction("create_setup_intent", { customerId });
+export const createSetupIntent = async (customerId: string, ownerId?: string, accessToken?: string): Promise<StripeSetupIntent> =>
+  stripeAction("create_setup_intent", { customerId, ownerId }, accessToken);
 
 export const chargeSavedPaymentMethod = async (
   customerId: string,

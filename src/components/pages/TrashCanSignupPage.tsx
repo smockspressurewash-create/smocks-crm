@@ -33,6 +33,10 @@ export function TrashCanSignupPage() {
   const [minutesPerCan, setMinutesPerCan] = useState(Number(hashParam("min")) || 5);
   const [defaultFreq, setDefaultFreq] = useState((hashParam("freq") || "weekly") as "weekly" | "monthly" | "quarterly");
   const [publishableKey, setPublishableKey] = useState(hashParam("pk"));
+  // Stripe Connect owner's account id — required for the client-side
+  // Stripe.js instance to confirm this signup form's card against the
+  // right connected account. See loadStripeJs's stripeAccount param.
+  const [stripeAccountId, setStripeAccountId] = useState("");
 
   useEffect(() => {
     if (!ownerId) return;
@@ -57,6 +61,7 @@ export function TrashCanSignupPage() {
         if (data.co) setCompanyName(data.co);
         if (data.ph) setCompanyPhone(data.ph);
         if (data.pk) setPublishableKey(data.pk);
+        if (data.stripeAccountId) setStripeAccountId(data.stripeAccountId);
       } catch (e: any) {
         console.warn("[TrashCanSignup] live settings refresh failed, using link params:", e?.message);
       }
@@ -87,10 +92,10 @@ export function TrashCanSignupPage() {
     setCardStatus("loading");
     setCardError("");
     try {
-      const cust = await createStripeCustomer(f.email.trim(), `${f.firstName} ${f.lastName}`.trim());
+      const cust = await createStripeCustomer(f.email.trim(), `${f.firstName} ${f.lastName}`.trim(), ownerId);
       stripeCustomerIdRef.current = cust.id;
-      const intent = await createSetupIntent(cust.id);
-      const stripe = await loadStripeJs(publishableKey);
+      const intent = await createSetupIntent(cust.id, ownerId);
+      const stripe = await loadStripeJs(publishableKey, stripeAccountId || undefined);
       stripeRef.current = stripe;
       const elements = stripe.elements({ clientSecret: intent.client_secret });
       elementsRef.current = elements;

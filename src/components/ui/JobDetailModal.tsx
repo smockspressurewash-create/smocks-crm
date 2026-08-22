@@ -1930,6 +1930,7 @@ ${job.notes ? `<div class="section"><h2>Job Notes</h2><p>${job.notes}</p></div>`
         open={chargeCardOpen}
         onClose={() => setChargeCardOpen(false)}
         publishableKey={settings?.stripePublishableKey || ""}
+        stripeAccountId={(settings as any)?.stripeConnectAccountId}
         amount={Number(job.amount) || 0}
         description={linkedInvoice ? `Invoice #${linkedInvoice.id.slice(-8).toUpperCase()}` : `Job payment — ${job.address || ""}`}
         invoiceId={linkedInvoice?.id}

@@ -782,6 +782,11 @@ export interface AppSettings {
   stripeKey?: string;
   stripeConnected?: boolean;
   stripePublishableKey?: string;
+  // Full Stripe Connect account id (acct_...) — safe to expose client-side
+  // (not secret), required so Stripe.js on the payment page knows which
+  // connected account it's confirming a payment against. Empty for a
+  // legacy manual-key owner (no Connect account).
+  stripeConnectAccountId?: string;
   // Secret key is obfuscated (see lib/crypto.ts) before being persisted — not real
   // encryption, but keeps it from sitting in localStorage as plain text.
   stripeSecretKeyEnc?: string;

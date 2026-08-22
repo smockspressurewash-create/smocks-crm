@@ -119,7 +119,21 @@ export function SettingsModal({ open, onClose, settings, setSettings, jobs = [],
         const status = await getOwnerStripeStatus(token);
         setStripeStatus(status);
         setStripeMode(status.mode);
-        if (status.publishableKey && !f.stripePublishableKey) setF((prev: any) => ({ ...prev, stripePublishableKey: status.publishableKey }));
+        // BUG FIX — a Connect owner's publishableKey used to always be
+        // empty (see stripe-action.ts's platform-key fallback comment),
+        // so this never fired and every customer-facing payment silently
+        // had no key to work with. Also persists stripeAccountIdFull so
+        // the client-side Stripe.js instance can be told which connected
+        // account it's confirming payments against (loadStripeJs's
+        // stripeAccount param) — required for Connect, harmless no-op
+        // otherwise.
+        if ((status.publishableKey && !f.stripePublishableKey) || (status.stripeAccountIdFull && f.stripeConnectAccountId !== status.stripeAccountIdFull)) {
+          setF((prev: any) => ({
+            ...prev,
+            stripePublishableKey: prev.stripePublishableKey || status.publishableKey,
+            stripeConnectAccountId: status.stripeAccountIdFull || prev.stripeConnectAccountId,
+          }));
+        }
       } catch (e: any) {
         console.error("[Stripe] get_owner_keys_status failed:", e?.message);
       } finally {

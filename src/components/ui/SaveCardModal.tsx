@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { CreditCard, AlertCircle, CheckCircle } from "lucide-react";
 import { loadStripeJs, createStripeCustomer, createSetupIntent } from "../../lib/stripe";
+import { supabase } from "../../lib/supabase";
 import { Modal } from "./Modal";
 import { GBtn } from "./GBtn";
 
@@ -9,12 +10,28 @@ import { GBtn } from "./GBtn";
 // See lib/stripe.ts's round-12 security comment — the secret key lives
 // server-side only now, in functions/api/stripe-action.ts.
 export function SaveCardModal({
-  open, onClose, publishableKey, email, name, existingStripeCustomerId,
+  open, onClose, publishableKey, stripeAccountId, ownerId, useCallerSession = false, email, name, existingStripeCustomerId,
   onSaved, companyName = "the company", enteredByEmployee = false,
   isRecurringClient = false,
 }: {
   open: boolean; onClose: () => void;
   publishableKey: string;
+  // Both required for a Stripe Connect owner — see StripePaymentModal.tsx's
+  // identical stripeAccountId comment, and lib/stripe.ts's createStripeCustomer/
+  // createSetupIntent (ownerId lets the server resolve the right connected
+  // account instead of silently falling back to the platform's).
+  stripeAccountId?: string;
+  ownerId?: string;
+  // When true, fetches the CALLER's own Supabase session token and sends it
+  // along so the server resolves the real owner identity itself (see
+  // stripe-action.ts's resolveCallerOwnerId fallback) rather than trusting
+  // `ownerId` above — set this for owner/employee-side callers (e.g.
+  // CustomerDetail.tsx, the field portal's in-person card entry). Leave
+  // false for the customer's OWN portal session (ClientAuthPortal.tsx),
+  // which is a different Supabase Auth realm — its own session token would
+  // resolve to nothing useful server-side, so it relies on the already-
+  // resolved `ownerId` prop instead.
+  useCallerSession?: boolean;
   email: string; name: string; existingStripeCustomerId?: string;
   // consentAt — ISO timestamp the consent checkbox was accepted, passed back
   // so callers can log it onto the customer record (Customer.cardConsentAt,
@@ -55,12 +72,13 @@ export function SaveCardModal({
     (async () => {
       try {
         if (!publishableKey) throw new Error("Stripe is not fully configured.");
-        const customerId = existingStripeCustomerId || (await createStripeCustomer(email, name)).id;
+        const accessToken = useCallerSession ? (await supabase.auth.getSession()).data.session?.access_token : undefined;
+        const customerId = existingStripeCustomerId || (await createStripeCustomer(email, name, ownerId, accessToken)).id;
         if (cancelled) return;
         customerIdRef.current = customerId;
-        const intent = await createSetupIntent(customerId);
+        const intent = await createSetupIntent(customerId, ownerId, accessToken);
         if (cancelled) return;
-        const stripe = await loadStripeJs(publishableKey);
+        const stripe = await loadStripeJs(publishableKey, stripeAccountId);
         if (cancelled) return;
         stripeRef.current = stripe;
         const elements = stripe.elements({ clientSecret: intent.client_secret });
@@ -73,7 +91,7 @@ export function SaveCardModal({
       }
     })();
     return () => { cancelled = true; };
-  }, [open, publishableKey, email, name, existingStripeCustomerId]);
+  }, [open, publishableKey, stripeAccountId, ownerId, email, name, existingStripeCustomerId]);
 
   const confirm = async () => {
     if (!stripeRef.current || !elementsRef.current || !agreed) return;

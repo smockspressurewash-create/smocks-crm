@@ -10,11 +10,14 @@ import { GBtn } from "./GBtn";
 // for the round-12 security fix), mounts the Payment Element against its
 // client_secret, and confirms payment in-place without leaving the page.
 export function StripePaymentModal({
-  open, onClose, publishableKey, amount, currency = "usd", description = "",
+  open, onClose, publishableKey, stripeAccountId, amount, currency = "usd", description = "",
   onSuccess, invoiceId,
 }: {
   open: boolean; onClose: () => void;
   publishableKey: string;
+  // Required for a Stripe Connect owner — see lib/stripe.ts's loadStripeJs
+  // comment. Undefined/omitted is a safe no-op for a legacy manual-key owner.
+  stripeAccountId?: string;
   amount: number; currency?: string; description?: string;
   onSuccess: (paymentIntentId: string) => void; invoiceId?: string;
 }) {
@@ -58,7 +61,7 @@ export function StripePaymentModal({
         if (cancelled) return;
         intentIdRef.current = intent.id;
         clientSecretRef.current = intent.client_secret;
-        const stripe = await loadStripeJs(publishableKey);
+        const stripe = await loadStripeJs(publishableKey, stripeAccountId);
         if (cancelled) return;
         stripeRef.current = stripe;
         const elements = stripe.elements({ clientSecret: intent.client_secret });
@@ -107,7 +110,7 @@ export function StripePaymentModal({
       }
     })();
     return () => { cancelled = true; };
-  }, [open, publishableKey, amount, currency, description, invoiceId]);
+  }, [open, publishableKey, stripeAccountId, amount, currency, description, invoiceId]);
 
   const confirmPayment = async () => {
     if (!stripeRef.current || !elementsRef.current) return;

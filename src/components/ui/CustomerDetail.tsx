@@ -574,6 +574,8 @@ export function CustomerDetail({ customer: c, onClose, onDelete, onEdit, estimat
         open={addCardOpen}
         onClose={() => setAddCardOpen(false)}
         publishableKey={settings?.stripePublishableKey || ""}
+        stripeAccountId={(settings as any)?.stripeConnectAccountId}
+        useCallerSession
         email={c.email || ""}
         name={`${c.firstName} ${c.lastName}`}
         existingStripeCustomerId={c.stripeCustomerId}

@@ -833,6 +833,7 @@ export function InvoicesPage({ estimates = [], setEstimates, customers = [], set
         open={!!stripePayInvoice}
         onClose={() => setStripePayInvoice(null)}
         publishableKey={settings?.stripePublishableKey || ""}
+        stripeAccountId={(settings as any)?.stripeConnectAccountId}
         amount={stripePayInvoice?.total || 0}
         description={`Invoice #${stripePayInvoice?.id?.slice(-8).toUpperCase() || ""}`}
         onSuccess={(paymentIntentId) => stripePayInvoice && markPaidViaStripe(stripePayInvoice.id, paymentIntentId)}

@@ -67,7 +67,29 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
         ? await sb(serviceRoleKey, `app_settings?owner_id=eq.${encodeURIComponent(estimate.owner_id)}&select=data`)
         : null;
       const fullSettings = settingsRow && Array.isArray(settingsRow.data) ? settingsRow.data[0]?.data : null;
-      const settings = fullSettings ? publicSettingsSubset(fullSettings) : null;
+      let settings = fullSettings ? publicSettingsSubset(fullSettings) : null;
+
+      // BUG FIX — a Stripe Connect owner's stripe_account_id lives in
+      // owner_stripe_accounts, a completely separate table from
+      // app_settings, and was never included here at all. Without it, the
+      // customer's payment page (ClientPortal.tsx's StripePaymentModal)
+      // had no way to tell Stripe.js which connected account it was
+      // confirming a payment against, and this same-table lookup also
+      // covers the Connect owner's publishable-key fallback (see
+      // stripe-action.ts's identical platform-key fallback comment) for
+      // the case where fullSettings.stripePublishableKey was never set
+      // because the owner used Connect instead of pasting a manual key.
+      if (estimate.owner_id) {
+        const stripeAcctRow = await sb(serviceRoleKey, `owner_stripe_accounts?owner_id=eq.${encodeURIComponent(estimate.owner_id)}&select=stripe_account_id,stripe_publishable_key`);
+        const stripeAcct = Array.isArray(stripeAcctRow.data) ? stripeAcctRow.data[0] : null;
+        if (stripeAcct?.stripe_account_id || stripeAcct?.stripe_publishable_key) {
+          settings = {
+            ...(settings || {}),
+            stripeAccountId: stripeAcct.stripe_account_id || "",
+            stripePublishableKey: (settings as any)?.stripePublishableKey || stripeAcct.stripe_publishable_key || (stripeAcct.stripe_account_id ? (context.env.STRIPE_PUBLISHABLE_KEY || "") : ""),
+          } as any;
+        }
+      }
 
       return json({ estimate, customer, settings });
     }
@@ -123,9 +145,17 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
       const row = await sb(serviceRoleKey, `app_settings?owner_id=eq.${encodeURIComponent(ownerId)}&select=data`);
       const data = Array.isArray(row.data) ? row.data[0]?.data : null;
       if (!data) return json({ error: "Not found" }, 404);
+      // BUG FIX — same Connect publishable-key gap as get_estimate/
+      // get_customer_portal_data above: a Connect owner has no manual
+      // stripePublishableKey in app_settings.data at all, so this signup
+      // page's card form had no key to work with for any Connect owner.
+      const stripeAcctRow = await sb(serviceRoleKey, `owner_stripe_accounts?owner_id=eq.${encodeURIComponent(ownerId)}&select=stripe_account_id,stripe_publishable_key`);
+      const stripeAcct = Array.isArray(stripeAcctRow.data) ? stripeAcctRow.data[0] : null;
       return json({
         cost: data.trashCanCostPerCan, minutes: data.trashCanMinutesPerCan, freq: data.trashCanDefaultFrequency,
-        co: data.companyName, ph: data.companyPhone, pk: data.stripePublishableKey,
+        co: data.companyName, ph: data.companyPhone,
+        pk: data.stripePublishableKey || stripeAcct?.stripe_publishable_key || (stripeAcct?.stripe_account_id ? (context.env.STRIPE_PUBLISHABLE_KEY || "") : ""),
+        stripeAccountId: stripeAcct?.stripe_account_id || "",
       });
     }
 
@@ -194,7 +224,32 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
         sb(serviceRoleKey, `jobs?customerId=eq.${encodeURIComponent(customer.id)}&select=*`),
         sb(serviceRoleKey, `estimates?customerId=eq.${encodeURIComponent(customer.id)}&select=*`),
       ]);
-      return json({ customer, jobs: jobsRow.data || [], estimates: estRow.data || [] });
+
+      // BUG FIX — ClientAuthPortal.tsx (#/client) used to render off
+      // App.tsx's GLOBAL `settings` prop for its Stripe calls, which is
+      // populated from that DEVICE's own localStorage/owner_id-scoped RLS
+      // fetch — empty by default on a real customer's own phone, since
+      // they're not the owner and have no session that resolves
+      // current_owner_id(). This resolves and returns the real owning
+      // business's public branding + Stripe publishable key/Connect
+      // account id, the same way get_estimate already does for the
+      // separate #/estimate/:id link flow.
+      let settings: any = null;
+      if (customer.owner_id) {
+        const [settingsRow, stripeAcctRow] = await Promise.all([
+          sb(serviceRoleKey, `app_settings?owner_id=eq.${encodeURIComponent(customer.owner_id)}&select=data`),
+          sb(serviceRoleKey, `owner_stripe_accounts?owner_id=eq.${encodeURIComponent(customer.owner_id)}&select=stripe_account_id,stripe_publishable_key`),
+        ]);
+        const fullSettings = Array.isArray(settingsRow.data) ? settingsRow.data[0]?.data : null;
+        const stripeAcct = Array.isArray(stripeAcctRow.data) ? stripeAcctRow.data[0] : null;
+        settings = {
+          ...(fullSettings ? publicSettingsSubset(fullSettings) : {}),
+          stripeAccountId: stripeAcct?.stripe_account_id || "",
+          stripePublishableKey: fullSettings?.stripePublishableKey || stripeAcct?.stripe_publishable_key || (stripeAcct?.stripe_account_id ? (context.env.STRIPE_PUBLISHABLE_KEY || "") : ""),
+        };
+      }
+
+      return json({ customer, jobs: jobsRow.data || [], estimates: estRow.data || [], settings });
     }
 
     // ── ClientAuthPortal.tsx — self-serve cancel/reschedule. Owner-gated:

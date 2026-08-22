@@ -134,6 +134,18 @@ const getInvoiceAmountCents = async (invoiceId: string): Promise<number> => {
 
 export const onRequestPost = async (context: { request: Request; env: Record<string, string> }) => {
   const platformSecretKey = context.env.STRIPE_SECRET_KEY;
+  // BUG FIX — a Connect-mode owner (no manual keys of their own) had NO
+  // publishable key returned to them at all: get_owner_keys_status only
+  // ever read owner_stripe_accounts.stripe_publishable_key, which is only
+  // populated by the manual "Advanced: use your own API keys" path, never
+  // by the Connect OAuth flow. That silently broke every customer-facing
+  // payment for a Connect owner (StripePaymentModal/SaveCardModal never
+  // even got a key to call loadStripeJs with) — the "easier" path was
+  // actually the one that didn't work. A PLATFORM publishable key (safe to
+  // expose — that's what publishable keys are for) is the correct
+  // client-side key for a Direct charge against a connected account, paired
+  // with that account's id via Stripe.js's `stripeAccount` option.
+  const platformPublishableKey = context.env.STRIPE_PUBLISHABLE_KEY;
   try {
     const body = await context.request.json() as Record<string, any>;
     const action = body?.action;
@@ -158,9 +170,13 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
         return json({
           connected: !!acct?.stripeAccountId,
           stripeAccountId: acct?.stripeAccountId ? acct.stripeAccountId.replace(/^(acct_.{4}).*/, "$1…") : "",
+          stripeAccountIdFull: acct?.stripeAccountId || "",
           hasSecretKey: !!acct?.secretKey,
           hasWebhookSecret: !!acct?.webhookSecret,
-          publishableKey: acct?.publishableKey || "",
+          // Connect owner with no manual publishable key of their own falls
+          // back to the platform's — see the comment on platformPublishableKey
+          // above for why this is the correct key for this case, not a bug.
+          publishableKey: acct?.publishableKey || (acct?.stripeAccountId ? (platformPublishableKey || "") : ""),
           mode: acct?.mode || "test",
           webhookUrl: `${new URL(context.request.url).origin}/api/stripe-webhook?oid=${encodeURIComponent(callerOwnerId)}`,
         });
@@ -261,6 +277,22 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
     if (serviceRoleKey) {
       let resolvedOwnerId: string | null = null;
       if (body.invoiceId) resolvedOwnerId = await getEstimateOwnerId(body.invoiceId);
+      // BUG FIX — an owner-authenticated call (e.g. the owner adding a
+      // customer's card from CustomerDetail.tsx) had no invoiceId and no
+      // client-supplied ownerId either, so it silently fell through to the
+      // platform-wide key/account for EVERY owner — a card added this way
+      // was being created in the wrong Stripe account entirely. A verified
+      // session token (when present) resolves the real caller identity the
+      // same trustworthy way save_owner_keys/get_owner_keys_status already
+      // do above — preferred over a client-claimed body.ownerId, which is
+      // now the last-resort fallback (still needed for the one legitimate
+      // case where there's no session at all: the trash-can inconvenience
+      // fee charge, run from an employee session whose own id isn't the
+      // business owner's).
+      if (!resolvedOwnerId) {
+        const accessToken = (context.request.headers.get("authorization") || "").replace(/^Bearer\s+/i, "");
+        if (accessToken) resolvedOwnerId = await resolveCallerOwnerId(accessToken);
+      }
       if (!resolvedOwnerId && body.ownerId) resolvedOwnerId = body.ownerId;
       if (resolvedOwnerId) {
         const acct = await getOwnerStripeAccount(resolvedOwnerId, serviceRoleKey);

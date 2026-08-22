@@ -1697,6 +1697,8 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
             open={addCardOpen}
             onClose={() => setAddCardOpen(false)}
             publishableKey={settings?.stripePublishableKey || ""}
+            stripeAccountId={(settings as any)?.stripeConnectAccountId}
+            useCallerSession
             email={customer.email || ""}
             name={`${customer.firstName} ${customer.lastName}`}
             existingStripeCustomerId={customer.stripeCustomerId}

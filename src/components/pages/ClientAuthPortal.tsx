@@ -103,7 +103,11 @@ export function ClientAuthPortal({
   // `estimates`/`jobs` props are still accepted (harmless, and referral-list
   // lookups below still use the `customers` prop) but no longer the source
   // of truth for the logged-in customer's own record/invoices/jobs.
-  const [portalData, setPortalData] = useState<{ customer: Customer | null; jobs: Job[]; estimates: Estimate[] } | null>(null);
+  // BUG FIX — `settings` was carrying the resolved owning business's public
+  // Stripe/branding info (never the global App.tsx `settings` prop, which
+  // is empty on a real customer's own device — see the server-side comment
+  // on get_customer_portal_data in public-data.ts).
+  const [portalData, setPortalData] = useState<{ customer: Customer | null; jobs: Job[]; estimates: Estimate[]; settings: { stripePublishableKey?: string; stripeAccountId?: string; companyName?: string } | null } | null>(null);
   const [portalDataLoading, setPortalDataLoading] = useState(false);
 
   const fetchPortalData = async () => {
@@ -111,17 +115,17 @@ export function ClientAuthPortal({
     try {
       const { data: sessData } = await supabase.auth.getSession();
       const token = sessData.session?.access_token;
-      if (!token) { setPortalData({ customer: null, jobs: [], estimates: [] }); return; }
+      if (!token) { setPortalData({ customer: null, jobs: [], estimates: [], settings: null }); return; }
       const res = await fetch("/api/public-data", {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
         body: JSON.stringify({ action: "get_customer_portal_data" }),
       });
       const data = await res.json().catch(() => null);
-      if (!res.ok || data?.error) { setPortalData({ customer: null, jobs: [], estimates: [] }); return; }
-      setPortalData({ customer: data.customer || null, jobs: data.jobs || [], estimates: data.estimates || [] });
+      if (!res.ok || data?.error) { setPortalData({ customer: null, jobs: [], estimates: [], settings: null }); return; }
+      setPortalData({ customer: data.customer || null, jobs: data.jobs || [], estimates: data.estimates || [], settings: data.settings || null });
     } catch {
-      setPortalData({ customer: null, jobs: [], estimates: [] });
+      setPortalData({ customer: null, jobs: [], estimates: [], settings: null });
     } finally {
       setPortalDataLoading(false);
     }
@@ -653,9 +657,9 @@ export function ClientAuthPortal({
                   <button onClick={() => setShowSaveCard(true)} className="text-xs text-purple-400 hover:text-purple-300">Replace</button>
                 </div>
               ) : (
-                <button onClick={() => setShowSaveCard(true)} disabled={!settings?.stripePublishableKey} className="w-full py-2.5 rounded-xl bg-white/10 hover:bg-white/15 text-sm flex items-center justify-center gap-2 disabled:opacity-40"><CreditCard size={14} />Save a Card</button>
+                <button onClick={() => setShowSaveCard(true)} disabled={!portalData?.settings?.stripePublishableKey} className="w-full py-2.5 rounded-xl bg-white/10 hover:bg-white/15 text-sm flex items-center justify-center gap-2 disabled:opacity-40"><CreditCard size={14} />Save a Card</button>
               )}
-              {!settings?.stripePublishableKey && <div className="text-[10px] text-white/30 mt-2">{companyName} hasn't connected online payments yet.</div>}
+              {!portalData?.settings?.stripePublishableKey && <div className="text-[10px] text-white/30 mt-2">{companyName} hasn't connected online payments yet.</div>}
             </Glass>
 
             {isCommercial && (
@@ -682,7 +686,8 @@ export function ClientAuthPortal({
       <StripePaymentModal
         open={!!payingInv}
         onClose={() => setPayingInv(null)}
-        publishableKey={settings?.stripePublishableKey || ""}
+        publishableKey={portalData?.settings?.stripePublishableKey || ""}
+        stripeAccountId={portalData?.settings?.stripeAccountId}
         amount={payingInv?.total || 0}
         description={`${companyName} — Invoice #${payingInv?.id || ""}`}
         invoiceId={payingInv?.id}
@@ -707,7 +712,9 @@ export function ClientAuthPortal({
       <SaveCardModal
         open={showSaveCard}
         onClose={() => setShowSaveCard(false)}
-        publishableKey={settings?.stripePublishableKey || ""}
+        publishableKey={portalData?.settings?.stripePublishableKey || ""}
+        stripeAccountId={portalData?.settings?.stripeAccountId}
+        ownerId={(cust as any).owner_id}
         email={cust.email}
         name={`${cust.firstName} ${cust.lastName}`}
         existingStripeCustomerId={cust.stripeCustomerId}

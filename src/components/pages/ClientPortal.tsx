@@ -784,6 +784,7 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
                 open={showStripeModal}
                 onClose={() => setShowStripeModal(false)}
                 publishableKey={settings?.stripePublishableKey || ""}
+                stripeAccountId={(settings as any)?.stripeAccountId}
                 amount={totalWithTip}
                 description={`${companyName} — ${e?.lineItems?.[0]?.description || "Estimate"} #${e?.id || ""}`}
                 onSuccess={(paymentIntentId) => { setShowStripeModal(false); handleApprove(paymentIntentId); }}
