@@ -1643,9 +1643,12 @@ export function SettingsModal({ open, onClose, settings, setSettings, jobs = [],
             {/* Direct platform OAuth — fallback for accounts not on Buffer */}
             <Glass className="p-4 !bg-black/40">
               <div className="flex items-center gap-2 mb-1"><Link size={16} className="text-purple-400" /><div className="font-semibold text-sm">Direct Platform Connections</div></div>
-              <div className="text-xs text-white/60 mb-3">Fallback for platforms not connected through Buffer. Connecting redirects to the platform to authorize, then exchanges the code for a token through your backend (same proxy used for Google) — set it below first.</div>
+              <div className="text-xs text-white/60 mb-3">Fallback for platforms not connected through Buffer. Facebook and LinkedIn post for real once connected (plain text). TikTok can't — its API requires hosted video, so it stays on the share-sheet/paste flow below either way.</div>
+              <div className="text-xs text-white/60 mb-3 p-2.5 bg-black/40 border border-white/10 rounded-xl">
+                <b>One-time setup</b>: paste your app's Client ID below, then add its matching secret as a Cloudflare Pages environment variable (dashboard → this project → Settings → Environment variables) — <code className="text-white/50">FACEBOOK_APP_SECRET</code> / <code className="text-white/50">LINKEDIN_CLIENT_SECRET</code> (same pattern as GOOGLE_CLIENT_SECRET). The secret never touches this app's settings — only the Client ID does.
+              </div>
               <div className="mb-3">
-                <label className="text-[10px] text-white/50 uppercase tracking-wider">Backend URL (token exchange proxy)</label>
+                <label className="text-[10px] text-white/50 uppercase tracking-wider">Custom backend URL (optional — only if you're running your own token-exchange proxy instead of this app's built-in one)</label>
                 <GInput value={f.socialBackendUrl || ""} onChange={e => setF({ ...f, socialBackendUrl: e.target.value })} placeholder="https://your-backend.railway.app" className="!text-xs mt-1" />
               </div>
               <div className="space-y-3">

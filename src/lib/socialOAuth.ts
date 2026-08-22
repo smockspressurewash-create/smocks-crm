@@ -58,26 +58,42 @@ export interface SocialOAuthToken {
   extra?: Record<string, unknown>;
 }
 
-// Exchanges the authorization `code` for an access token via a self-hosted
-// backend proxy (same convention as googleBackendUrl) — required because the
-// client secret can't be exposed in the browser.
+// Exchanges the authorization `code` for an access token — required because
+// the client secret can't be exposed in the browser. Defaults to this app's
+// own token-exchange proxy (functions/api/social-oauth-exchange.ts, same
+// pattern as /api/google-refresh — needs FACEBOOK_APP_SECRET/
+// LINKEDIN_CLIENT_SECRET set as Cloudflare env vars). A custom backendUrl
+// (Settings -> Integrations -> Social) overrides that default for anyone
+// who'd rather run their own proxy instead.
+//
+// BUG FIX — this used to hard-require backendUrl and return null instantly
+// otherwise, so "Connect Facebook/LinkedIn" could never actually finish
+// without a self-hosted backend this app has never had (see CLAUDE.md — no
+// separate backend server). That's exactly why account connections never
+// worked. Now also surfaces the real failure reason (missing env vars, a
+// bad code, etc.) instead of a bare null, so the "could not connect" toast
+// can say something actionable.
 export const exchangeSocialOAuthCode = async (
   backendUrl: string,
   platform: SocialPlatform,
   code: string
-): Promise<SocialOAuthToken | null> => {
-  if (!backendUrl) return null;
+): Promise<SocialOAuthToken | { error: string } | null> => {
   try {
-    const res = await fetch(`${backendUrl}/oauth/${platform}/token`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ code, redirectUri: socialOAuthRedirectUri() }),
-    });
-    if (!res.ok) return null;
-    const data = await res.json() as { access_token?: string; expires_in?: number; [k: string]: unknown };
-    if (!data?.access_token) return null;
+    const res = backendUrl
+      ? await fetch(`${backendUrl}/oauth/${platform}/token`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ code, redirectUri: socialOAuthRedirectUri() }),
+        })
+      : await fetch("/api/social-oauth-exchange", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ platform, code }),
+        });
+    const data = await res.json().catch(() => ({} as any)) as { access_token?: string; expires_in?: number; error?: string; [k: string]: unknown };
+    if (!res.ok || !data?.access_token) return { error: data?.error || `HTTP ${res.status}` };
     return { accessToken: data.access_token, expiresAt: data.expires_in ? Date.now() + Number(data.expires_in) * 1000 : undefined, extra: data };
-  } catch { return null; }
+  } catch (e: any) { return { error: e?.message || "Network error" }; }
 };
 
 // ─── Real posting (only for platforms whose APIs accept plain text) ────────

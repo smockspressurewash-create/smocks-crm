@@ -755,12 +755,12 @@ export function App() {
     if (!code || !platform || state !== expectedState) { setPage("social"); return; }
     (async () => {
       const tok = await exchangeSocialOAuthCode(settings.socialBackendUrl || "", platform, code);
-      if (tok) {
+      if (tok && "accessToken" in tok) {
         const tokenField = platform === "facebook" ? "metaAccessToken" : platform === "linkedin" ? "linkedinAccessToken" : "tiktokAccessToken";
         setSettings(s => ({ ...s, [tokenField]: tok.accessToken }));
         toast(`${platform} connected ✓`, "green");
       } else {
-        toast(`Could not connect ${platform} — check the backend URL in Settings`, "red");
+        toast(`Could not connect ${platform} — ${(tok as any)?.error || "unknown error"}`, "red");
       }
       setPage("social");
     })();
