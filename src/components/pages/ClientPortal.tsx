@@ -79,6 +79,16 @@ import { ChemicalModal } from "../ui/ChemicalModal";
 import { WeeklyBusinessReview } from "../ui/WeeklyBusinessReview";
 import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 
+// Preset options shown to the customer when they decline a quote, so the
+// owner gets a quick, structured signal (Dashboard/Estimates badge) instead
+// of having to read free text on every decline to find a pattern.
+const DECLINE_REASONS = [
+  { value: "price", label: "Too expensive" },
+  { value: "went_elsewhere", label: "Went with someone else" },
+  { value: "changed_mind", label: "Changed my mind / no longer needed" },
+  { value: "other", label: "Other" },
+];
+
 export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [], settings = {} as AppSettings, estimateTemplates = [], promotions = [], customers = [], setCustomers, onClose, onApprove, onDecline, onView = (_id: string) => {} }: { estimate?: any; customer?: any; jobs?: any[]; invoices?: any[]; settings?: AppSettings; estimateTemplates?: any[]; promotions?: any[]; customers?: any[]; setCustomers?: any; onClose?: any; onApprove?: any; onDecline?: any; onView?: (id: string) => void }) {
   const tpl = estimateTemplates.find((t: any) => t.id === e?.templateId);
   const headerColor = tpl?.colorHeader || "";
@@ -91,6 +101,7 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
   const [step, setStep] = useState("view"); // view | sign | payment | done | declined
   const [declining, setDeclining] = useState(false);
   const [declineReason, setDeclineReason] = useState("");
+  const [declineCategory, setDeclineCategory] = useState<string>("");
   const [sigData, setSigData] = useState(null);
   const [tip, setTip] = useState(0);
   const [customTip, setCustomTip] = useState("");
@@ -312,10 +323,11 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
   const handleDecline = async () => {
     setDeclining(true);
     try {
-      if (onDecline) await onDecline(e.id, { reason: declineReason.trim() || undefined });
+      if (onDecline) await onDecline(e.id, { reason: declineReason.trim() || undefined, category: declineCategory || undefined });
       setStep("declined");
       if (settings?.twilioSid && settings?.myPhone) {
-        twilioSend(settings, settings.myPhone, "❌ ESTIMATE DECLINED: " + c.firstName + " " + c.lastName + " declined " + fmt(effectiveTotal) + (declineReason.trim() ? " — \"" + declineReason.trim() + "\"" : "")).catch(() => {});
+        const categoryLabel = DECLINE_REASONS.find(r => r.value === declineCategory)?.label;
+        twilioSend(settings, settings.myPhone, "❌ ESTIMATE DECLINED: " + c.firstName + " " + c.lastName + " declined " + fmt(effectiveTotal) + (categoryLabel ? " — " + categoryLabel : "") + (declineReason.trim() ? " (\"" + declineReason.trim() + "\")" : "")).catch(() => {});
       }
     } finally {
       setDeclining(false);
@@ -569,18 +581,30 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
                 declining ? (
                   <Glass className="p-4 !bg-black/40 space-y-3">
                     <div className="text-sm font-medium">Decline this estimate?</div>
+                    <div className="text-xs text-white/50">Mind telling us why? It helps us follow up correctly.</div>
+                    <div className="grid grid-cols-2 gap-2">
+                      {DECLINE_REASONS.map(r => (
+                        <button
+                          key={r.value}
+                          onClick={() => setDeclineCategory(r.value)}
+                          className={"py-2 px-2 rounded-xl border text-xs font-medium transition " + (declineCategory === r.value ? "border-red-500/60 bg-red-950/40 text-red-300" : "border-white/10 bg-white/5 text-white/60 hover:text-white")}
+                        >
+                          {r.label}
+                        </button>
+                      ))}
+                    </div>
                     <textarea
                       value={declineReason}
                       onChange={(ev: any) => setDeclineReason(ev.target.value)}
                       rows={2}
-                      placeholder="Let us know why (optional) — helps us follow up correctly."
+                      placeholder="Anything else you'd like to add? (optional)"
                       className="w-full bg-white/5 border border-white/15 rounded-xl px-3 py-2 text-sm text-white placeholder-white/30 resize-none focus:outline-none focus:border-red-500/50"
                     />
                     <div className="grid grid-cols-2 gap-3">
                       <button onClick={handleDecline} className="py-2.5 rounded-xl border border-red-700/40 bg-red-950/30 text-red-300 font-semibold hover:bg-red-900/40 transition">
                         Confirm Decline
                       </button>
-                      <button onClick={() => { setDeclining(false); setDeclineReason(""); }} className="py-2.5 rounded-xl border border-white/10 text-white/60 hover:text-white transition">
+                      <button onClick={() => { setDeclining(false); setDeclineReason(""); setDeclineCategory(""); }} className="py-2.5 rounded-xl border border-white/10 text-white/60 hover:text-white transition">
                         Never mind
                       </button>
                     </div>

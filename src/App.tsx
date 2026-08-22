@@ -2862,13 +2862,13 @@ export function App() {
           }).catch(() => {});
           toast(paid ? "✓ Paid — " + fmt(data.totalPaid) : "✓ Signed — you'll pay later");
         }}
-        onDecline={async (id: string, data: { reason?: string }) => {
+        onDecline={async (id: string, data: { reason?: string; category?: string }) => {
           const declinedAt = new Date().toISOString();
-          setEstimates(prev => prev.map(e => e.id === id ? { ...e, status: "rejected", declinedAt, declineReason: data.reason || "" } as any : e));
+          setEstimates(prev => prev.map(e => e.id === id ? { ...e, status: "rejected", declinedAt, declineReason: data.reason || "", declineReasonCategory: data.category || "" } as any : e));
           try {
             await fetch("/api/public-data", {
               method: "POST", headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ action: "decline_estimate", id, reason: data.reason || "" }),
+              body: JSON.stringify({ action: "decline_estimate", id, reason: data.reason || "", category: data.category || "" }),
             });
           } catch { /* ignore */ }
         }}
@@ -3782,14 +3782,14 @@ export function App() {
             toast(paid ? "✓ Paid — " + fmt(data.totalPaid) : "✓ Signed — customer will pay later");
             setPortalEstId(null);
           }}
-          onDecline={async (id: string, data: { reason?: string }) => {
+          onDecline={async (id: string, data: { reason?: string; category?: string }) => {
             const declinedAt = new Date().toISOString();
-            setEstimates(prev => prev.map(est => est.id === id ? { ...est, status: "rejected", declinedAt, declineReason: data.reason || "" } as any : est));
+            setEstimates(prev => prev.map(est => est.id === id ? { ...est, status: "rejected", declinedAt, declineReason: data.reason || "", declineReasonCategory: data.category || "" } as any : est));
             // Write immediately rather than waiting on the 30s bulk autosave —
             // the owner's invoiceActivity diff (above) only fires once this
             // lands in Supabase and the owner's own poll picks it up.
             try {
-              const { error } = await (supabase as any).from("estimates").update({ status: "rejected", declinedAt, declineReason: data.reason || "" }).eq("id", id);
+              const { error } = await (supabase as any).from("estimates").update({ status: "rejected", declinedAt, declineReason: data.reason || "", declineReasonCategory: data.category || "" }).eq("id", id);
               if (error) console.warn("Decline failed to save server-side:", error.message);
             } catch (e: any) {
               console.warn("Decline failed to save server-side:", e?.message);

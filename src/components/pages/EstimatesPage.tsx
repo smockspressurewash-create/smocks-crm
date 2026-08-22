@@ -78,6 +78,15 @@ import { ChemicalModal } from "../ui/ChemicalModal";
 import { WeeklyBusinessReview } from "../ui/WeeklyBusinessReview";
 import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 
+// Matches DECLINE_REASONS in ClientPortal.tsx — the labels shown to the
+// customer when they pick why they're declining.
+const DECLINE_REASON_LABELS: Record<string, string> = {
+  price: "Declined — too expensive",
+  went_elsewhere: "Declined — went with someone else",
+  changed_mind: "Declined — changed their mind",
+  other: "Declined",
+};
+
 export function EstimatesPage({ estimates = [], setEstimates, customers = [], services = [], settings = {} as AppSettings, toast, onPortal = () => {}, estimateTemplates = [], setEstimateTemplates = () => {}, setJobs = () => {}, onNav = () => {}, autoOpenNew = false, onAutoOpenNewConsumed, presetCustomerId = "" }: { estimates?: any[]; setEstimates?: any; customers?: any[]; services?: any[]; settings?: AppSettings; toast?: any; onPortal?: any; estimateTemplates?: any[]; setEstimateTemplates?: any; setJobs?: any; onNav?: any; autoOpenNew?: boolean; onAutoOpenNewConsumed?: () => void; presetCustomerId?: string }) {
   const [builderOpen, setBuilderOpen] = useState(false);
   // ISSUE 21 — FAB's "New Quote" now opens the builder immediately.
@@ -409,6 +418,24 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
         </div>
       </div>
 
+      {(() => {
+        const declined = estimates.filter(e => e.status === "rejected" && (e as any).declineReasonCategory);
+        if (declined.length === 0) return null;
+        const counts: Record<string, number> = {};
+        for (const e of declined) counts[(e as any).declineReasonCategory] = (counts[(e as any).declineReasonCategory] || 0) + 1;
+        const order = ["price", "went_elsewhere", "changed_mind", "other"];
+        return (
+          <Glass className="p-3 !bg-red-950/10 !border-red-900/20 flex flex-wrap items-center gap-3 text-xs">
+            <span className="text-white/50 font-medium">Why customers are declining:</span>
+            {order.filter(k => counts[k]).map(k => (
+              <span key={k} className="px-2 py-1 rounded-lg bg-black/30 border border-red-900/20 text-white/70">
+                {DECLINE_REASON_LABELS[k].replace("Declined — ", "")} <span className="text-red-400 font-semibold">{counts[k]}</span>
+              </span>
+            ))}
+          </Glass>
+        );
+      })()}
+
       <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
         {filtered.map(e => {
           const expiry = getExpiryStatus(e);
@@ -442,6 +469,12 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
                 <div>{e.lineItems.length} items · {e.createdAt}</div>
                 {e.discount > 0 && <div className="text-green-400">Discount: {fmt(e.discount)}</div>}
                 {e.depositRequired > 0 && <div className="text-yellow-400">Deposit: {fmt(e.depositRequired)}</div>}
+                {e.status === "rejected" && ((e as any).declineReasonCategory || (e as any).declineReason) && (
+                  <div className="mt-1.5 p-2 rounded-lg bg-red-950/20 border border-red-900/30 text-red-300/90">
+                    <div className="font-medium">{DECLINE_REASON_LABELS[(e as any).declineReasonCategory] || "Declined"}</div>
+                    {(e as any).declineReason && <div className="text-white/50 italic mt-0.5">"{(e as any).declineReason}"</div>}
+                  </div>
+                )}
               </div>
               <div className="flex gap-1 pt-3 mt-3 border-t border-red-900/20">
                 <button onClick={() => openPreview(e)} className="flex-1 p-1.5 rounded-lg hover:bg-white/10 text-white/60 hover:text-white text-[11px] transition flex items-center justify-center gap-1"><Eye size={11} />View</button>

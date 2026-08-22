@@ -193,6 +193,12 @@ export interface Estimate {
   viewedAt?: string;
   invoiced?: boolean;
   invoicedAt?: string;
+  declinedAt?: string;
+  // Preset reason the customer picked when declining from their quote link
+  // (price/too_expensive/other), shown to the owner as a quick badge instead
+  // of having to open every declined estimate to read free text.
+  declineReasonCategory?: "price" | "went_elsewhere" | "changed_mind" | "other";
+  declineReason?: string;
   paidDeposit?: number;
   depositPaidAt?: string;
   paidFull?: number;

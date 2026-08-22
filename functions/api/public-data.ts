@@ -155,11 +155,11 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
     }
 
     if (action === "decline_estimate") {
-      const { id, reason } = body;
+      const { id, reason, category } = body;
       if (!id) return json({ error: "Missing id" }, 400);
       const upd = await sb(serviceRoleKey, `estimates?id=eq.${encodeURIComponent(id)}`, {
         method: "PATCH", headers: { Prefer: "return=minimal" },
-        body: JSON.stringify({ status: "rejected", declinedAt: new Date().toISOString(), declineReason: reason || "" }),
+        body: JSON.stringify({ status: "rejected", declinedAt: new Date().toISOString(), declineReason: reason || "", declineReasonCategory: category || "" }),
       });
       if (!upd.ok) return json({ error: "Failed to update estimate" }, 500);
       return json({ success: true });
