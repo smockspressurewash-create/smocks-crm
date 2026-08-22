@@ -131,6 +131,7 @@ interface ResolvedOwnerSettings {
   googleProviderToken: string;
   googleRefreshToken: string;
   googleTokenExpiresAt: number;
+  testModeEnabled: boolean;
 }
 
 const shapeSettings = (row: any, data: any): ResolvedOwnerSettings => ({
@@ -159,6 +160,7 @@ const shapeSettings = (row: any, data: any): ResolvedOwnerSettings => ({
   googleProviderToken: data?.googleProviderToken || "",
   googleRefreshToken: data?.googleRefreshToken || "",
   googleTokenExpiresAt: Number(data?.googleTokenExpiresAt) || 0,
+  testModeEnabled: !!data?.testModeEnabled,
 });
 
 const fetchAppSettings = async (env: Record<string, string>, toNumber: string): Promise<ResolvedOwnerSettings> => {
@@ -326,7 +328,7 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
     const isStop = STOP_WORDS.includes(body);
     const isStart = START_WORDS.includes(body);
     const resolved = await fetchAppSettings(context.env, params.To || "");
-    const { companyName, keyword, ownerId, myPhone, alfredExtraPhones, alfredSmsEnabled, twilioSid, twilioToken, twilioFrom, modelKeys, modelPriority, activeModel, openaiKey, googleProviderToken, googleRefreshToken, googleTokenExpiresAt } = resolved;
+    const { companyName, keyword, ownerId, myPhone, alfredExtraPhones, alfredSmsEnabled, twilioSid, twilioToken, twilioFrom, modelKeys, modelPriority, activeModel, openaiKey, googleProviderToken, googleRefreshToken, googleTokenExpiresAt, testModeEnabled } = resolved;
     const isOptInKeyword = body === keyword;
     const isConfirm = CONFIRM_WORDS.includes(body);
 
@@ -362,7 +364,7 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
     // Alfred, not a customer."
     const authorizedPhones = [myPhone, ...alfredExtraPhones].filter(Boolean).map(normalizePhoneDigits);
     if (alfredSmsEnabled && authorizedPhones.includes(fromDigits)) {
-      const ctx = { authHeaders, ownerId, companyName, twilioSid, twilioToken, twilioFrom, origin: new URL(context.request.url).origin, fromPhone: from, googleProviderToken, googleRefreshToken, googleTokenExpiresAt };
+      const ctx = { authHeaders, ownerId, companyName, twilioSid, twilioToken, twilioFrom, origin: new URL(context.request.url).origin, fromPhone: from, googleProviderToken, googleRefreshToken, googleTokenExpiresAt, testModeEnabled };
       // BUG FIX — this branch never logged the OWNER's own inbound text to
       // inbox_threads at all (only to alfred_sms_threads, which the Inbox
       // UI never reads) — sendAlfredSms below only logs Alfred's OUTGOING

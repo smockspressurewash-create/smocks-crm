@@ -179,6 +179,13 @@ type Ctx = {
   googleProviderToken?: string;
   googleRefreshToken?: string;
   googleTokenExpiresAt?: number;
+  // Same Testing Mode gate lib/messaging.ts's twilioSend already enforces
+  // client-side (settings.testModeEnabled) — this file sends via raw fetch
+  // (it runs server-side, not through that wrapper), so bulk sends need
+  // their own check or Testing Mode would do nothing to protect real
+  // customers from a live blast triggered by text while the owner is
+  // mid-test.
+  testModeEnabled?: boolean;
 };
 
 // ─── Supabase helpers (service-role REST, same pattern as the webhook) ────
@@ -377,6 +384,38 @@ const TOOLS = [
       type: "object",
       properties: { customerName: { type: "string" }, message: { type: "string" } },
       required: ["customerName", "message"],
+    },
+  },
+  // ROUND — mass-messaging capability: "notify all my customers I'm
+  // running late", "send this to everyone tagged VIP", "blast a promo out
+  // to my whole list." Real sends via the owner's own Twilio account, same
+  // opt-out/testing-mode/logging guarantees as the CRM's own Bulk SMS
+  // feature (CustomersPage.tsx) — just triggerable from a text instead of
+  // needing to open the app.
+  {
+    name: "notify_all_customers",
+    description: "Text a message to many customers at once — everyone, or narrowed by tag. Automatically skips anyone who's opted out of texts, and respects Testing Mode if it's on (only test clients get messaged). Use for broadcast announcements ('running late today', a schedule change, a weather closure) and for sending a promotion/campaign message to your list. Supports {{first_name}} in the message. This sends for real — only call it once you have the exact message the owner wants sent.",
+    input_schema: {
+      type: "object",
+      properties: {
+        message: { type: "string", description: "Use {{first_name}} to personalize" },
+        tag: { type: "string", description: "Only customers with this exact tag — omit to mean everyone" },
+      },
+      required: ["message"],
+    },
+  },
+  {
+    name: "create_promotion",
+    description: "Create a tracked promotion/discount code (for 'create a promotion' requests). Does NOT send anything by itself — follow with notify_all_customers (mention the code in the message) to actually send it out, in the same reply if the owner asked for both.",
+    input_schema: {
+      type: "object",
+      properties: {
+        name: { type: "string" },
+        discountType: { type: "string", enum: ["percent", "fixed"] },
+        discountValue: { type: "number" },
+        expiresInDays: { type: "number", description: "Defaults to 30" },
+      },
+      required: ["name", "discountType", "discountValue"],
     },
   },
   {
@@ -709,6 +748,49 @@ const executeTool = async (ctx: Ctx, name: string, input: Record<string, any>): 
         const res = await sendSms(ctx, cust.phone, input.message);
         if (!res.ok) return { error: res.error };
         return { success: true, sentTo: `${cust.firstName} ${cust.lastName}` };
+      }
+      case "notify_all_customers": {
+        if (!input.message) return { error: "message required" };
+        const rows = await sbGet(ctx, `customers?select=id,firstName,lastName,phone,tags,smsOptOut,isTestClient${ownerScope(ctx)}&limit=2000`);
+        let eligible = rows.filter((c: any) => c.phone && !c.smsOptOut);
+        if (input.tag) eligible = eligible.filter((c: any) => Array.isArray(c.tags) && c.tags.includes(input.tag));
+        // Same Testing Mode contract as lib/messaging.ts's twilioSend
+        // (isTestModeBlockedPhone): a customer flagged "Test Client" is
+        // someone the owner specifically wants protected from real sends
+        // while Testing Mode is on — it's a do-not-disturb flag for that
+        // switch, not "only message these." Everyone else still gets a
+        // real text either way; only test-flagged contacts get skipped,
+        // and only while the switch is on.
+        if (ctx.testModeEnabled) eligible = eligible.filter((c: any) => !c.isTestClient);
+        if (eligible.length === 0) return { error: "No eligible customers matched (check they have a phone on file, haven't opted out, and — if Testing Mode is on — aren't all flagged Test Client)." };
+        // SAFETY — a hard ceiling per single command, independent of
+        // whatever daily automation cap Settings has. Not a normal owner
+        // scenario to hit; exists purely so a weird/misfired request can't
+        // blast an unbounded number of texts in one shot.
+        const capped = eligible.slice(0, 500);
+        let sent = 0, failed = 0;
+        for (const c of capped) {
+          const personalized = input.message.replace(/{{first_name}}/g, c.firstName || "there");
+          const res = await sendSms(ctx, c.phone, personalized);
+          if (res.ok) sent++; else failed++;
+          await new Promise(r => setTimeout(r, 100)); // avoid hammering Twilio's rate limit
+        }
+        return { success: true, sent, failed, skippedOptedOutOrIneligible: rows.length - eligible.length, ...(eligible.length > capped.length ? { note: `Capped at 500 — ${eligible.length - capped.length} more eligible customers were not messaged this round.` } : {}) };
+      }
+      case "create_promotion": {
+        if (!input.name || !input.discountType || input.discountValue == null) return { error: "name, discountType, and discountValue required" };
+        const code = (input.name as string).toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 10) || "SAVE" + Math.floor(Math.random() * 1000);
+        const validFrom = today();
+        const validUntil = new Date(Date.now() + (Number(input.expiresInDays) || 30) * 86400000).toISOString().slice(0, 10);
+        const row = {
+          id: crypto.randomUUID(), owner_id: ctx.ownerId, name: input.name, code,
+          discount_type: input.discountType, discount_value: input.discountValue,
+          valid_from: validFrom, valid_until: validUntil, usage_count: 0, audience: "all",
+          created_at: new Date().toISOString(),
+        };
+        const res = await sbWrite(ctx, "promotions", "POST", row);
+        if (!res.ok) return { error: res.error };
+        return { success: true, promotionId: row.id, code, name: input.name, discount: `${input.discountValue}${input.discountType === "percent" ? "%" : "$"} off`, validUntil };
       }
       case "list_overdue_invoices": {
         const [rows, customers] = await Promise.all([
@@ -1094,7 +1176,9 @@ FOLLOWING UP LATER: you are not limited to replying only in this exact moment. I
 
 CUSTOMER REQUESTS AWAITING YOU: some customers have Alfred auto-response turned on for texting directly with them — when one of them asks to reschedule, that Alfred (a separate, more restricted agent) proposes it to YOU here rather than committing to anything itself, and texts you the details. If the owner replies "yes"/"sure"/"that works" (or similar) without more context, and there's a recent proposal in this conversation, that's almost always what they're confirming — call list_pending_customer_requests to find it (don't assume which one from memory alone, always look it up) then approve_customer_request or decline_customer_request. These are the ONLY customer-initiated actions that need the owner's yes/no this way — everything else that customer-facing agent handles (pricing questions, appointment status) it answers on its own without involving you.
 
-You can: text the owner back on request (text_me), remember arbitrary facts/notes for later (remember/recall — use this whenever they say "remember", "keep track of", or "note that"), schedule future text reminders/follow-ups (set_reminder; list_reminders/cancel_reminder manage existing ones), summarize the schedule (get_calendar_summary), add a non-job event to the owner's real Google Calendar (create_calendar_event — use schedule_job instead for an actual pressure-washing job tied to a customer), review/approve or deny employee job requests (list_job_requests, respond_to_job_request), and resolve customer requests awaiting approval (list_pending_customer_requests, approve_customer_request, decline_customer_request — see above). Core CRM actions: create/reschedule/cancel jobs, reprioritize a job, look up full job or customer detail (get_job_details, get_customer_details), add a checklist item, assign employees, create customers, check who's clocked in and what they're working on, and create/send quotes and invoices (create_estimate then send_estimate — two steps, creating one does NOT notify the customer). Use whichever tool actually matches what's being asked, and don't hesitate to chain several tool calls in one exchange if the request needs it (e.g. reschedule a job AND text the customer AND remember a preference). You can also receive and understand voice memos sent as a text — they're transcribed automatically before you ever see them, so just respond to the transcribed content normally.`;
+MASS MESSAGING — real power, use it carefully: notify_all_customers texts EVERY eligible customer at once (optionally narrowed by tag) — this is a real, immediate send to real people, not a draft. Use it for broadcast requests like "let everyone know I'm running late today", "tell my customers about the weather closure", or "send a promo to my whole list". Always confirm you have the FULL exact wording before calling it if the owner was vague ("send something to everyone" — ask what it should say, don't invent business content on their behalf). create_promotion sets up a tracked discount code but does NOT send anything by itself — for "create a promo and send it out", call create_promotion first, then notify_all_customers with a message that includes the returned code, in the same reply.
+
+You can: text the owner back on request (text_me), remember arbitrary facts/notes for later (remember/recall — use this whenever they say "remember", "keep track of", or "note that"), schedule future text reminders/follow-ups (set_reminder; list_reminders/cancel_reminder manage existing ones), summarize the schedule (get_calendar_summary), add a non-job event to the owner's real Google Calendar (create_calendar_event — use schedule_job instead for an actual pressure-washing job tied to a customer), review/approve or deny employee job requests (list_job_requests, respond_to_job_request), resolve customer requests awaiting approval (list_pending_customer_requests, approve_customer_request, decline_customer_request — see above), and message many customers at once or run a promotion (notify_all_customers, create_promotion — see above). Core CRM actions: create/reschedule/cancel jobs, reprioritize a job, look up full job or customer detail (get_job_details, get_customer_details), add a checklist item, assign employees, create customers, check who's clocked in and what they're working on, and create/send quotes and invoices (create_estimate then send_estimate — two steps, creating one does NOT notify the customer). Use whichever tool actually matches what's being asked, and don't hesitate to chain several tool calls in one exchange if the request needs it (e.g. reschedule a job AND text the customer AND remember a preference). You can also receive and understand voice memos sent as a text — they're transcribed automatically before you ever see them, so just respond to the transcribed content normally.`;
 
   let finalText = "";
   let succeeded = false;
