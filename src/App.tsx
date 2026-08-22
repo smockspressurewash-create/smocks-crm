@@ -3456,8 +3456,14 @@ export function App() {
           >
             <Globe size={13} />Portal
           </button>
-          {/* PWA — install prompt, renders nothing until Chrome offers it. */}
-          <InstallAppButton className="!flex" label="Install App" />
+          {/* PWA — always-visible install button (see InstallAppButton.tsx —
+              it explains itself instead of disappearing when there's
+              nothing to install). Icon-only below sm so it can never push
+              the notifications bell/profile avatar off-screen on a narrow
+              phone — this header has no wrap/scroll fallback, so an item
+              that's too wide here doesn't just look cramped, it can shove
+              later items past the visible edge entirely. */}
+          <InstallAppButton className="!flex flex-shrink-0 !px-2 sm:!px-3" label="Install App" labelClassName="hidden sm:inline" />
           {/* Notifications */}
           <div className="relative">
           <button onClick={() => setNotifOpen(!notifOpen)} className="relative p-2 text-white/60 hover:text-white">

@@ -48,7 +48,7 @@ const isStandaloneAlready = () => {
   return window.matchMedia?.("(display-mode: standalone)").matches || (window.navigator as any).standalone === true;
 };
 
-export function InstallAppButton({ className = "", label = "Install App" }: { className?: string; label?: string }) {
+export function InstallAppButton({ className = "", label = "Install App", labelClassName = "" }: { className?: string; label?: string; labelClassName?: string }) {
   const [, forceTick] = useState(0);
   const [installing, setInstalling] = useState(false);
   const [helpModal, setHelpModal] = useState<"ios" | "already" | "unavailable" | null>(null);
@@ -88,8 +88,8 @@ export function InstallAppButton({ className = "", label = "Install App" }: { cl
         disabled={installing}
         className={"flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-red-900/30 border border-red-700/40 text-red-300 hover:bg-red-900/50 text-xs font-semibold transition disabled:opacity-50 " + className}
       >
-        <Download size={13} />
-        {installing ? "Installing…" : label}
+        <Download size={13} className="flex-shrink-0" />
+        <span className={labelClassName}>{installing ? "Installing…" : label}</span>
       </button>
 
       {helpModal && (
