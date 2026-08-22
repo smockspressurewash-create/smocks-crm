@@ -2495,6 +2495,11 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   const [optimisticDayClockInAt, setOptimisticDayClockInAt] = useState<number | null | undefined>(undefined);
   // FIX 5 — instant "📍 Sharing" badge before the Supabase round-trip / next poll.
   const [optimisticLocationSharing, setOptimisticLocationSharing] = useState<boolean | undefined>(undefined);
+  // FEATURE — "keep updating the owner" while clocked in with sharing on
+  // (see the ref+effect right after myEmployee is declared below, and its
+  // use inside startAutoMileageTracking's watchPosition callback).
+  const locationSharingRef = useRef(false);
+  const lastLocationPushRef = useRef(0);
   const [optimisticDayLunchStartAt, setOptimisticDayLunchStartAt] = useState<number | null | undefined>(undefined);
   // BUG FIX — after "End My Day," lastShiftHours/lastShiftDate had NO
   // optimistic equivalent at all (unlike dayClockInAt/dayLunchStartAt/
@@ -2671,6 +2676,17 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
        null)
     : null;
 
+  // FEATURE — "keep updating the owner" while clocked in with sharing on,
+  // not just a one-time GPS snapshot at the moment the toggle was flipped.
+  // Piggybacks on the mileage tracker's existing watchPosition callback
+  // (startAutoMileageTracking below) rather than running a second GPS
+  // watcher. That callback is created once and doesn't re-render, so it
+  // needs a ref (not the reactive value directly) to see the CURRENT
+  // locationSharing state on every position update over the life of the watch.
+  useEffect(() => {
+    locationSharingRef.current = optimisticLocationSharing !== undefined ? optimisticLocationSharing : !!(myEmployee as any)?.locationSharing;
+  }, [optimisticLocationSharing, (myEmployee as any)?.locationSharing]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // FEATURE — new-hire onboarding packet (migration 0039). Owner assigns
   // this from EmployeesPage's invite modal by copying settings.
   // onboardingTemplateItems into a real employee_onboarding row; this loads
@@ -2748,7 +2764,14 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     return R * 2 * Math.atan2(Math.sqrt(s), Math.sqrt(1 - s));
   };
   const startAutoMileageTracking = () => {
-    if (!autoMileageEnabled || !navigator.geolocation || gpsWatchIdRef.current != null) return;
+    // FEATURE — this watcher now also drives live location sharing (see
+    // locationSharingRef above), not just mileage — so it needs to start
+    // whenever EITHER is active, not only when mileage auto-tracking is
+    // enabled. Previously "keep updating the owner while sharing" had no
+    // mechanism at all: the toggle only ever captured ONE GPS fix at the
+    // moment it was flipped on, then never updated again — which read
+    // exactly like "the pin goes stale/doesn't persist."
+    if ((!autoMileageEnabled && !locationSharingRef.current) || !navigator.geolocation || gpsWatchIdRef.current != null) return;
     lastGpsPosRef.current = null;
     try {
       gpsWatchIdRef.current = navigator.geolocation.watchPosition(
@@ -2761,7 +2784,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
           // jittering fix alone can silently rack up "miles."
           if (accuracy != null && accuracy > 100) return;
           const prev = lastGpsPosRef.current;
-          if (prev) {
+          if (prev && autoMileageEnabled) {
             const miles = haversineMiles(prev, { lat, lng });
             const hours = Math.max((now - prev.t) / 3600000, 1 / 3600);
             if (miles / hours <= 100 && miles > 0.005) {
@@ -2769,6 +2792,15 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
             }
           }
           lastGpsPosRef.current = { lat, lng, t: now };
+          // Throttled live-location push — every ~90s while sharing is on,
+          // not every single GPS fix (which can fire every few seconds and
+          // would otherwise hammer Supabase for no real benefit).
+          if (locationSharingRef.current && myEmployee?.id && now - lastLocationPushRef.current > 90000) {
+            lastLocationPushRef.current = now;
+            (supabase as any).from("employees").update({ lastLocation: { lat, lng, updatedAt: now } }).eq("id", myEmployee.id)
+              .then((r: any) => { if (r?.error) console.warn("[Share Location] periodic update failed:", r.error.message); })
+              .catch((e: any) => console.warn("[Share Location] periodic update threw:", e?.message));
+          }
         },
         (err) => console.warn("[Mileage] GPS watch error:", err.message),
         { enableHighAccuracy: true, maximumAge: 15000, timeout: 20000 }
@@ -5217,8 +5249,28 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                 // land together — a split write meant a missing/slow second
                 // update left the badge off even though coords were captured.
                 const { error } = await (supabase as any).from("employees").update({ locationSharing: true, lastLocation: { lat: pos.coords.latitude, lng: pos.coords.longitude, updatedAt: Date.now() } }).eq("id", empId);
-                if (error) console.error("[Share Location] — error saving:", error.message);
-                else refetchEmployees?.();
+                // BUG FIX — this write had no failure feedback at all (the
+                // "off" branch below already toasts on error; "on" silently
+                // logged to console only). If this update failed for any
+                // reason (RLS, a transient network blip), the badge kept
+                // showing "📍 Sharing" from the optimistic flip above with
+                // nothing ever actually persisted — looking exactly like
+                // "location sharing doesn't stick after a reload," because
+                // reloading re-reads the real (never-updated) DB value.
+                // Revert the optimistic flip and tell the owner outright
+                // instead of leaving a UI state that isn't real.
+                if (error) {
+                  console.error("[Share Location] — error saving:", error.message);
+                  setOptimisticLocationSharing(false);
+                  toast("Failed to save location sharing — " + error.message, "red");
+                } else {
+                  refetchEmployees?.();
+                  // Start the watcher so location keeps updating every ~90s
+                  // instead of this one GPS snapshot being the only fix ever
+                  // sent — a no-op if it's already running (e.g. mileage
+                  // auto-tracking already had it going).
+                  startAutoMileageTracking();
+                }
               },
               err => { if (settled) return; settled = true; clearTimeout(safety); setLocationPermissionPending(false); console.error("[Share Location] — error:", err.code, err.message); toast("Location denied — enable in settings (" + err.message + ")", "red"); },
               { enableHighAccuracy: true, timeout: 10000 }
@@ -6528,7 +6580,17 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
             // Apply status filter first, then search text
             const statusFiltered = myJobs.filter(j => {
               if (j.status === "cancelled" && !showCanceledJobs) return false;
-              if (jobsStatusFilter === "scheduled") return j.status === "scheduled" || j.status === ("active" as any);
+              // BUG FIX — this only checked status, not date, so a job whose
+              // date came and went without anyone marking it completed/no-
+              // show/cancelled (status stuck at "scheduled") still showed up
+              // under the "Upcoming" tab — worse, the grouping logic just
+              // below classifies anything with scheduledDate < today into
+              // "Past / Completed" regardless of this filter, so it visibly
+              // showed a PAST job inside a section literally being viewed
+              // via the "Upcoming" button. Require a present/future date too
+              // — a genuinely overdue-but-still-scheduled job now only shows
+              // under "All" (grouped correctly under Past/Completed there).
+              if (jobsStatusFilter === "scheduled") return (j.status === "scheduled" || j.status === ("active" as any)) && j.scheduledDate >= todayStr;
               if (jobsStatusFilter === "completed") return j.status === "completed";
               return true;
             });

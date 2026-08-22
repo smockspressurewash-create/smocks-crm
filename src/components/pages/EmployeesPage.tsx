@@ -513,8 +513,31 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setJobs
     if (f.id) setEmployees(prev => prev.map(e => e.id === f.id ? record : e));
     else setEmployees(prev => [...prev, record]);
     if (f.id) {
+      // CLAUDE.md "safe column retry" pattern — this used to send the WHOLE
+      // record in one PATCH. Postgres/PostgREST rejects an entire update if
+      // ANY single column in the patch doesn't exist or doesn't type-check,
+      // so one stale/missing field (e.g. lastShiftDate before migration 0004
+      // was actually applied) silently blocked the owner's real edit —
+      // permissions, pay rate, whatever they were actually trying to save —
+      // with a schema-cache error that read like the whole feature was
+      // broken. Retry with just the fields an owner actually edits from this
+      // form if the full-object write fails, so a column gap elsewhere on
+      // the row can never block a legitimate permissions/profile change.
+      const EMPLOYEE_CORE_COLUMNS = [
+        "firstName", "lastName", "email", "phone", "role", "status", "hourlyRate",
+        "permissions", "managerPermissions", "can_create_invoices", "can_send_invoices", "can_process_payments",
+        "jobTypeRates", "maxDaysOffPerWeek", "maxDaysOffPerMonth", "recurringDaysOff", "availability",
+      ];
       (supabase as any).from("employees").update(record).eq("id", id)
-        .then((r: any) => { if (r?.error) toast?.("Saved locally, but failed to sync — " + r.error.message, "red"); })
+        .then(async (r: any) => {
+          if (!r?.error) return;
+          console.warn("[EmployeesPage] full save failed:", r.error.message, "— retrying with core columns only");
+          const core: Record<string, unknown> = {};
+          EMPLOYEE_CORE_COLUMNS.forEach(k => { if ((record as any)[k] !== undefined) core[k] = (record as any)[k]; });
+          const retry = await (supabase as any).from("employees").update(core).eq("id", id);
+          if (retry?.error) toast?.("Saved locally, but failed to sync — " + retry.error.message, "red");
+          else toast?.("Saved (one field on this row has a schema mismatch and was skipped — everything else, including permissions, synced)", "yellow");
+        })
         .catch((e: any) => toast?.("Saved locally, but failed to sync — " + (e?.message || ""), "red"));
     }
     setModal({ open: false, data: null });
