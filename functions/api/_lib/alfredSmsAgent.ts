@@ -278,7 +278,14 @@ const findJob = async (ctx: Ctx, { jobId, customerName, dateHint }: { jobId?: st
 // it as "from Alfred" in ANY thread, customer or owner.
 export const sendAlfredSms = async (ctx: Ctx, toPhone: string, body: string): Promise<{ ok: boolean; error?: string }> => sendSms(ctx, toPhone, body, true);
 
-const sendSms = async (ctx: Ctx, toPhone: string, body: string, isOwnerReply = false): Promise<{ ok: boolean; error?: string }> => {
+// `contact` — the real customer name/id behind toPhone, when the caller
+// already looked one up (nearly every non-owner send does). Without this,
+// a brand-new Inbox thread got created with contact_name = the raw phone
+// number instead of the customer's name, and no customer_id link, so it
+// rendered as an unlabeled number in the Inbox instead of "Franco
+// Serenelli" etc. — unlike every OTHER outbound-SMS path in the app
+// (logOutboundSmsToInbox in lib/messaging.ts), which always had this.
+const sendSms = async (ctx: Ctx, toPhone: string, body: string, isOwnerReply = false, contact?: { name?: string; customerId?: string }): Promise<{ ok: boolean; error?: string }> => {
   if (!ctx.twilioSid || !ctx.twilioToken || !ctx.twilioFrom) return { ok: false, error: "Twilio isn't configured for this account." };
   const auth = `Basic ${btoa(`${ctx.twilioSid}:${ctx.twilioToken}`)}`;
   const params = new URLSearchParams({ To: toPhone, From: ctx.twilioFrom, Body: body });
@@ -291,7 +298,7 @@ const sendSms = async (ctx: Ctx, toPhone: string, body: string, isOwnerReply = f
   // Log to inbox_threads so it shows up in the owner's Inbox too, same as
   // every other outbound SMS in this app (CLAUDE.md "Critical rules").
   try {
-    const threads = await sbGet(ctx, `inbox_threads?channel=eq.sms&select=id,contact_phone,messages${ownerScope(ctx)}`);
+    const threads = await sbGet(ctx, `inbox_threads?channel=eq.sms&select=id,contact_phone,contact_name,customer_id,messages${ownerScope(ctx)}`);
     const digits = normalizePhoneDigits(toPhone);
     const existing = threads.find((t: any) => normalizePhoneDigits(t.contact_phone) === digits);
     // BUG FIX — was always `dir: "out"` with no marker at all, so a reply
@@ -301,12 +308,17 @@ const sendSms = async (ctx: Ctx, toPhone: string, body: string, isOwnerReply = f
     // which thread it lands in.
     const msg = { id: crypto.randomUUID(), dir: "out", body, ts: Date.now(), via: "alfred" };
     if (existing) {
+      const patch: Record<string, unknown> = { messages: [...(existing.messages || []), msg], last_message_at: msg.ts, updated_at: new Date().toISOString() };
+      // Backfill a real name/customer_id onto a thread that was previously
+      // created with only a bare phone number (e.g. from before this fix).
+      if (!isOwnerReply && contact?.name && (!existing.contact_name || existing.contact_name === toPhone)) patch.contact_name = contact.name;
+      if (!isOwnerReply && contact?.customerId && !existing.customer_id) patch.customer_id = contact.customerId;
       await fetch(`${SUPABASE_URL}/rest/v1/inbox_threads?id=eq.${encodeURIComponent(existing.id)}`, {
         method: "PATCH", headers: { ...ctx.authHeaders, "Content-Type": "application/json", Prefer: "return=minimal" },
-        body: JSON.stringify({ messages: [...(existing.messages || []), msg], last_message_at: msg.ts, updated_at: new Date().toISOString() }),
+        body: JSON.stringify(patch),
       });
     } else {
-      await sbWrite(ctx, "inbox_threads", "POST", { id: crypto.randomUUID(), channel: "sms", contact_name: isOwnerReply ? "Alfred" : toPhone, contact_phone: toPhone, unread: false, messages: [msg], last_message_at: msg.ts, updated_at: new Date().toISOString() });
+      await sbWrite(ctx, "inbox_threads", "POST", { id: crypto.randomUUID(), channel: "sms", contact_name: isOwnerReply ? "Alfred" : (contact?.name || toPhone), contact_phone: toPhone, customer_id: !isOwnerReply ? (contact?.customerId || null) : null, unread: false, messages: [msg], last_message_at: msg.ts, updated_at: new Date().toISOString() });
     }
   } catch (e: any) { console.warn("[AlfredSms] inbox log failed:", e?.message); }
   return { ok: true };
@@ -714,9 +726,9 @@ const executeTool = async (ctx: Ctx, name: string, input: Record<string, any>): 
         });
         if (!res.ok) return { error: (await res.text().catch(() => "")).slice(0, 200) };
         if (input.notify === "sms") {
-          const cust = (await sbGet(ctx, `customers?id=eq.${encodeURIComponent(job.customerId)}&select=phone,firstName`))[0];
+          const cust = (await sbGet(ctx, `customers?id=eq.${encodeURIComponent(job.customerId)}&select=phone,firstName,lastName`))[0];
           if (cust?.phone) {
-            const smsRes = await sendSms(ctx, cust.phone, `Hi ${cust.firstName || ""}, your ${ctx.companyName} appointment has been moved to ${input.date}${input.time ? " at " + input.time : ""}. Let us know if that doesn't work!`);
+            const smsRes = await sendSms(ctx, cust.phone, `Hi ${cust.firstName || ""}, your ${ctx.companyName} appointment has been moved to ${input.date}${input.time ? " at " + input.time : ""}. Let us know if that doesn't work!`, false, { name: `${cust.firstName || ""} ${cust.lastName || ""}`.trim(), customerId: job.customerId });
             if (!smsRes.ok) return { success: true, jobId: job.id, notifyError: smsRes.error };
           }
         }
@@ -736,6 +748,19 @@ const executeTool = async (ctx: Ctx, name: string, input: Record<string, any>): 
         return { success: true, jobId: job.id, employee: `${emp.firstName} ${emp.lastName}` };
       }
       case "create_customer": {
+        // Same dedupe as the in-app Alfred's create_customer (AlfredPage.tsx)
+        // — a re-asked/retried request used to create a second duplicate
+        // customer row for the same person every time, matched on phone
+        // first since it's the more reliable key.
+        const dupPhone = (input.phone || "").replace(/\D/g, "");
+        if (dupPhone || input.firstName) {
+          const existing = await sbGet(ctx, `customers?select=id,firstName,lastName,phone${ownerScope(ctx)}&limit=2000`);
+          const match = existing.find((c: any) =>
+            (dupPhone && (c.phone || "").replace(/\D/g, "") === dupPhone) ||
+            (!dupPhone && `${c.firstName || ""} ${c.lastName || ""}`.trim().toLowerCase() === `${input.firstName || ""} ${input.lastName || ""}`.trim().toLowerCase())
+          );
+          if (match) return { success: true, customerId: match.id, note: "This customer already existed — reused the existing record instead of creating a duplicate." };
+        }
         const row = { id: crypto.randomUUID(), firstName: input.firstName, lastName: input.lastName, phone: input.phone || "", email: input.email || "", address: input.address || "", totalSpent: 0, createdAt: new Date().toISOString() };
         const res = await sbWrite(ctx, "customers", "POST", row);
         if (!res.ok) return { error: res.error };
@@ -745,7 +770,7 @@ const executeTool = async (ctx: Ctx, name: string, input: Record<string, any>): 
         const cust = await findCustomerByName(ctx, input.customerName);
         if (!cust) return { error: `No customer found matching "${input.customerName}".` };
         if (!cust.phone) return { error: `${input.customerName} has no phone number on file.` };
-        const res = await sendSms(ctx, cust.phone, input.message);
+        const res = await sendSms(ctx, cust.phone, input.message, false, { name: `${cust.firstName || ""} ${cust.lastName || ""}`.trim(), customerId: cust.id });
         if (!res.ok) return { error: res.error };
         return { success: true, sentTo: `${cust.firstName} ${cust.lastName}` };
       }
@@ -771,7 +796,7 @@ const executeTool = async (ctx: Ctx, name: string, input: Record<string, any>): 
         let sent = 0, failed = 0;
         for (const c of capped) {
           const personalized = input.message.replace(/{{first_name}}/g, c.firstName || "there");
-          const res = await sendSms(ctx, c.phone, personalized);
+          const res = await sendSms(ctx, c.phone, personalized, false, { name: `${c.firstName || ""} ${c.lastName || ""}`.trim(), customerId: c.id });
           if (res.ok) sent++; else failed++;
           await new Promise(r => setTimeout(r, 100)); // avoid hammering Twilio's rate limit
         }
@@ -821,7 +846,7 @@ const executeTool = async (ctx: Ctx, name: string, input: Record<string, any>): 
         const cust = (await sbGet(ctx, `customers?id=eq.${encodeURIComponent(inv.customerId)}&select=phone,firstName,lastName`))[0];
         if (!cust?.phone) return { error: "That customer has no phone number on file." };
         const link = `${ctx.origin}/#/estimate/${inv.id}`;
-        const res = await sendSms(ctx, cust.phone, `Hi ${cust.firstName || ""}, here's your invoice from ${ctx.companyName} for $${Number(inv.total || 0).toFixed(2)}: ${link}`);
+        const res = await sendSms(ctx, cust.phone, `Hi ${cust.firstName || ""}, here's your invoice from ${ctx.companyName} for $${Number(inv.total || 0).toFixed(2)}: ${link}`, false, { name: `${cust.firstName || ""} ${cust.lastName || ""}`.trim(), customerId: inv.customerId });
         if (!res.ok) return { error: res.error };
         return { success: true, sentTo: `${cust.firstName} ${cust.lastName}`, amount: inv.total };
       }
@@ -836,10 +861,10 @@ const executeTool = async (ctx: Ctx, name: string, input: Record<string, any>): 
         if (!res.ok) return { error: (await res.text().catch(() => "")).slice(0, 200) };
         let notifyWarning: string | undefined;
         if (input.notify === "sms") {
-          const cust = (await sbGet(ctx, `customers?id=eq.${encodeURIComponent(job.customerId)}&select=phone,firstName`))[0];
+          const cust = (await sbGet(ctx, `customers?id=eq.${encodeURIComponent(job.customerId)}&select=phone,firstName,lastName`))[0];
           if (cust?.phone) {
             const msg = `Hi ${cust.firstName || ""}, your ${ctx.companyName} appointment${job.scheduledDate ? " on " + job.scheduledDate : ""} has been cancelled.${input.reason ? ` (${input.reason})` : ""} Reach out any time to reschedule.`;
-            const smsRes = await sendSms(ctx, cust.phone, msg);
+            const smsRes = await sendSms(ctx, cust.phone, msg, false, { name: `${cust.firstName || ""} ${cust.lastName || ""}`.trim(), customerId: job.customerId });
             if (!smsRes.ok) notifyWarning = smsRes.error;
           } else {
             notifyWarning = "customer has no phone on file";
@@ -928,11 +953,11 @@ const executeTool = async (ctx: Ctx, name: string, input: Record<string, any>): 
           return { error: "Need either estimateId or customerName." };
         }
         if (!est) return { error: "Estimate not found." };
-        const cust = (await sbGet(ctx, `customers?id=eq.${encodeURIComponent(est.customerId)}&select=phone,firstName`))[0];
+        const cust = (await sbGet(ctx, `customers?id=eq.${encodeURIComponent(est.customerId)}&select=phone,firstName,lastName`))[0];
         if (!cust?.phone) return { error: "That customer has no phone number on file." };
         const link = `${ctx.origin}/#/estimate/${est.id}`;
         const label = est.invoiced ? "invoice" : "estimate";
-        const res = await sendSms(ctx, cust.phone, `Hi ${cust.firstName || ""}, here's your ${label} from ${ctx.companyName} for $${Number(est.total || 0).toFixed(2)}: ${link}`);
+        const res = await sendSms(ctx, cust.phone, `Hi ${cust.firstName || ""}, here's your ${label} from ${ctx.companyName} for $${Number(est.total || 0).toFixed(2)}: ${link}`, false, { name: `${cust.firstName || ""} ${cust.lastName || ""}`.trim(), customerId: est.customerId });
         if (!res.ok) return { error: res.error };
         return { success: true, sentTo: cust.firstName, amount: est.total, type: label };
       }
@@ -1092,9 +1117,9 @@ const executeTool = async (ctx: Ctx, name: string, input: Record<string, any>): 
           method: "PATCH", headers: { ...ctx.authHeaders, "Content-Type": "application/json", Prefer: "return=minimal" },
           body: JSON.stringify({ status: "approved", resolved_at: new Date().toISOString() }),
         });
-        const custRow = (await sbGet(ctx, `customers?id=eq.${encodeURIComponent(row.customer_id)}&select=firstName`))[0];
+        const custRow = (await sbGet(ctx, `customers?id=eq.${encodeURIComponent(row.customer_id)}&select=firstName,lastName`))[0];
         const confirmMsg = `Hi ${custRow?.firstName || ""}, you're all set — we've moved your appointment to ${row.proposed.toDate}${row.proposed.toTime ? " at " + row.proposed.toTime : ""}. See you then!`;
-        const smsRes = await sendSms(ctx, row.customer_phone, confirmMsg);
+        const smsRes = await sendSms(ctx, row.customer_phone, confirmMsg, false, { name: `${custRow?.firstName || ""} ${custRow?.lastName || ""}`.trim(), customerId: row.customer_id });
         return { success: true, ...(smsRes.ok ? {} : { notifyWarning: smsRes.error }) };
       }
       case "decline_customer_request": {
@@ -1106,9 +1131,9 @@ const executeTool = async (ctx: Ctx, name: string, input: Record<string, any>): 
           method: "PATCH", headers: { ...ctx.authHeaders, "Content-Type": "application/json", Prefer: "return=minimal" },
           body: JSON.stringify({ status: "declined", resolved_at: new Date().toISOString() }),
         });
-        const custRow = (await sbGet(ctx, `customers?id=eq.${encodeURIComponent(row.customer_id)}&select=firstName`))[0];
+        const custRow = (await sbGet(ctx, `customers?id=eq.${encodeURIComponent(row.customer_id)}&select=firstName,lastName`))[0];
         const declineMsg = `Hi ${custRow?.firstName || ""}, unfortunately that time doesn't work${input.reason ? ` (${input.reason})` : ""} — give us a call/text and we'll find something that does.`;
-        const smsRes = await sendSms(ctx, row.customer_phone, declineMsg);
+        const smsRes = await sendSms(ctx, row.customer_phone, declineMsg, false, { name: `${custRow?.firstName || ""} ${custRow?.lastName || ""}`.trim(), customerId: row.customer_id });
         return { success: true, ...(smsRes.ok ? {} : { notifyWarning: smsRes.error }) };
       }
       default:

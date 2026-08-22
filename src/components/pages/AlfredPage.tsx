@@ -1078,6 +1078,22 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
         }
         case "create_customer": {
           if (!inputs.firstName || !inputs.lastName) return { error: "firstName and lastName required" };
+          // A retried/second "create this customer" request (e.g. the model
+          // re-asking after a truncated earlier run) used to silently create
+          // a second duplicate row for the same person every time, matched
+          // only on exact-name in every OTHER tool's lookup — so a stray
+          // duplicate would sit invisibly until it caused a wrong-record bug
+          // elsewhere. Phone number is the most reliable match; fall back to
+          // exact name if no phone was given.
+          const dupPhone = (inputs.phone || "").replace(/\D/g, "");
+          const existingCust = customers.find(x =>
+            (dupPhone && (x.phone || "").replace(/\D/g, "") === dupPhone) ||
+            (!dupPhone && (x.firstName + " " + x.lastName).trim().toLowerCase() === `${inputs.firstName} ${inputs.lastName}`.trim().toLowerCase())
+          );
+          if (existingCust) {
+            toast("Alfred found an existing customer: " + existingCust.firstName + " " + existingCust.lastName);
+            return { success: true, customer: existingCust, note: "This customer already existed — reused the existing record instead of creating a duplicate." };
+          }
           const newC = { id: uid(), firstName: inputs.firstName, lastName: inputs.lastName, email: inputs.email || "", phone: inputs.phone || "", address: inputs.address || "", totalSpent: 0, createdAt: today(), notes: inputs.notes || "", gateCode: "", hasDog: false, dogName: "", sensitivePlants: "", owner_id: ownerId };
           // Alfred must never claim a customer was created unless the Supabase
           // write actually succeeded — local setState always "succeeds" (it's
@@ -1178,8 +1194,14 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           }
           if ((channel === "sms" || channel === "both") && sc.phone) {
             try {
-              await twilioSend(settings, sc.phone, `Hi ${sc.firstName}! Your Crew Boss estimate for ${fmt(est.total)} is ready: ${link}`);
+              const smsBody = `Hi ${sc.firstName}! Your Crew Boss estimate for ${fmt(est.total)} is ready: ${link}`;
+              await twilioSend(settings, sc.phone, smsBody);
               sentSms = true;
+              // Every other outbound-SMS tool in this file (text_customer,
+              // reschedule notify, etc.) logs to inbox_threads so the owner
+              // sees it in the Inbox from any device — this one didn't, so a
+              // quote/invoice Alfred texted out never showed up anywhere.
+              logOutboundSmsToInbox({ contactName: `${sc.firstName} ${sc.lastName}`, contactPhone: sc.phone, customerId: sc.id, body: smsBody }).catch(() => {});
             } catch (e: any) { errs.push("sms: " + e.message); }
           }
           if (!sentEmail && !sentSms) return { error: "Failed to send — " + (errs.join("; ") || "no email/phone on file for this customer") };
