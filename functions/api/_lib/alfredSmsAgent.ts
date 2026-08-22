@@ -8,20 +8,145 @@
 // credentials the rest of this webhook already uses) and replying by text.
 //
 // This is a deliberately SMALLER tool set than the in-app Alfred
-// (AlfredPage.tsx, ~25 tools, 5 providers) — it only runs Anthropic Claude
-// (the one provider with no browser-CORS caveat, and the model the app
-// already recommends first), and only the handful of actions an owner is
+// (AlfredPage.tsx, ~25 tools) — only the handful of actions an owner is
 // realistically going to want to trigger from a text message while away
 // from the CRM. Everything it does is a REAL Supabase write via the service
 // role — no staged/fake actions.
+//
+// MODEL CHOICE — this used to hard-code Anthropic Claude only, with a
+// comment claiming it was "the one provider with no browser-CORS caveat."
+// That reasoning never applied here: this file runs server-side in a
+// Cloudflare Pages Function, not a browser, so CORS was never a constraint
+// for ANY provider — the in-app Alfred (AlfredPage.tsx) only avoids some
+// providers because IT runs in the browser. This file follows the exact
+// same model-selection convention as the in-app Alfred instead: whichever
+// provider is first in the owner's settings.modelPriority (falling back to
+// settings.activeModel, then any model with a key at all) that has a key
+// saved in settings.modelKeys, with automatic failover to the next
+// configured provider on error — so an owner using Gemini, Kimi (NVIDIA),
+// or any other supported provider for in-app Alfred gets the exact same
+// provider over text, no separate Anthropic key required.
 //
 // Underscore-prefixed folder (_lib) — per Cloudflare Pages Functions
 // convention this is NOT routable, purely a shared module for the actual
 // route files (twilio-sms-webhook.ts) to import from.
 
 const SUPABASE_URL = "https://boaqaihymgmrhnjtiqrs.supabase.co";
-const ANTHROPIC_ENDPOINT = "https://api.anthropic.com/v1/messages";
-const ANTHROPIC_MODEL = "claude-sonnet-4-20250514";
+
+// Mirrors the provider/endpoint/modelId table in src/lib/api.ts's MODELS —
+// duplicated here (not imported) because functions/ is a separate Cloudflare
+// Pages Functions build with no access to src/. Keep in sync if a model is
+// added/renamed there.
+const SMS_MODELS: Record<string, { provider: string; modelId: string; endpoint: string; name: string; maxTokens: number; supportsTools: boolean }> = {
+  claude: { provider: "anthropic", modelId: "claude-sonnet-4-20250514", endpoint: "https://api.anthropic.com/v1/messages", name: "Claude", maxTokens: 500, supportsTools: true },
+  openai: { provider: "openai", modelId: "gpt-4o", endpoint: "https://api.openai.com/v1/chat/completions", name: "GPT-4o", maxTokens: 500, supportsTools: true },
+  gemini: { provider: "google", modelId: "gemini-2.5-flash", endpoint: "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent", name: "Gemini", maxTokens: 500, supportsTools: true },
+  groq: { provider: "openai-compat", modelId: "llama-3.3-70b-versatile", endpoint: "https://api.groq.com/openai/v1/chat/completions", name: "Groq", maxTokens: 500, supportsTools: true },
+  mistral: { provider: "openai-compat", modelId: "mistral-large-latest", endpoint: "https://api.mistral.ai/v1/chat/completions", name: "Mistral", maxTokens: 500, supportsTools: true },
+  nvidia_kimi: { provider: "openai-compat", modelId: "moonshotai/kimi-k2.6", endpoint: "https://integrate.api.nvidia.com/v1/chat/completions", name: "Kimi K2.6", maxTokens: 500, supportsTools: true },
+  nvidia_nemotron: { provider: "openai-compat", modelId: "nvidia/llama-3.1-nemotron-70b-instruct", endpoint: "https://integrate.api.nvidia.com/v1/chat/completions", name: "Nemotron 70B", maxTokens: 500, supportsTools: true },
+  nvidia_deepseek_r1: { provider: "openai-compat", modelId: "deepseek-ai/deepseek-r1", endpoint: "https://integrate.api.nvidia.com/v1/chat/completions", name: "DeepSeek R1", maxTokens: 500, supportsTools: true },
+  nvidia_qwen: { provider: "openai-compat", modelId: "qwen/qwen2.5-7b-instruct", endpoint: "https://integrate.api.nvidia.com/v1/chat/completions", name: "Qwen 2.5 7B", maxTokens: 500, supportsTools: true },
+};
+const DEFAULT_MODEL_PRIORITY = ["claude", "openai", "gemini", "groq", "mistral"];
+
+// ─── Unified per-provider model caller (server-side — no CORS constraint) ──
+// Returns { text, toolUses, stopReason, raw } — `raw` is pushed straight
+// back as the next "assistant" turn's content on a tool-use round, same
+// pattern src/lib/api.ts's callModel uses for the in-app Alfred.
+const callSmsModel = async (
+  modelKey: string,
+  apiKey: string,
+  systemPrompt: string,
+  messages: Array<{ role: string; content: any }>,
+  tools: any[],
+): Promise<{ text: string; toolUses: Array<{ id: string; name: string; input: Record<string, unknown> }>; stopReason: string; raw: unknown }> => {
+  const def = SMS_MODELS[modelKey];
+  if (!def) throw new Error(`Unknown model "${modelKey}"`);
+
+  if (def.provider === "anthropic") {
+    const body = { model: def.modelId, max_tokens: def.maxTokens, system: systemPrompt, messages, tools };
+    const res = await fetch(def.endpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-api-key": apiKey, "anthropic-version": "2023-06-01" },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error(`${def.name} HTTP ${res.status}: ${(await res.text().catch(() => "")).slice(0, 200)}`);
+    const data = await res.json() as { content: Array<{ type: string; text?: string; id?: string; name?: string; input?: Record<string, unknown> }>; stop_reason?: string };
+    const text = data.content?.find(b => b.type === "text")?.text ?? "";
+    const toolUses = (data.content ?? []).filter(b => b.type === "tool_use").map(b => ({ id: b.id!, name: b.name!, input: b.input ?? {} }));
+    return { text, toolUses, stopReason: data.stop_reason ?? "end_turn", raw: data.content };
+  }
+
+  if (def.provider === "google") {
+    const contents = messages
+      .filter(m => m.role === "user" || m.role === "assistant")
+      .map(m => {
+        if (typeof m.content === "string") return { role: m.role === "assistant" ? "model" : "user", parts: [{ text: m.content }] };
+        if (Array.isArray(m.content) && m.content[0]?.type === "tool_result") {
+          const parts = (m.content as Array<{ tool_use_id: string; content: string }>).map(tr => ({
+            functionResponse: { name: tr.tool_use_id, response: (() => { try { return JSON.parse(tr.content); } catch { return { result: tr.content }; } })() },
+          }));
+          return { role: "user", parts };
+        }
+        if (Array.isArray(m.content)) return { role: "model", parts: m.content };
+        return { role: m.role === "assistant" ? "model" : "user", parts: [{ text: String(m.content) }] };
+      });
+    const geminiTools = tools?.length ? [{ functionDeclarations: tools.map((t: any) => ({ name: t.name, description: t.description, parameters: t.input_schema })) }] : undefined;
+    const res = await fetch(`${def.endpoint}?key=${apiKey}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contents,
+        ...(geminiTools ? { tools: geminiTools } : {}),
+        generationConfig: { maxOutputTokens: def.maxTokens, thinkingConfig: { thinkingBudget: 0 } },
+        ...(systemPrompt ? { systemInstruction: { parts: [{ text: systemPrompt }] } } : {}),
+      }),
+    });
+    if (!res.ok) throw new Error(`${def.name} HTTP ${res.status}: ${(await res.text().catch(() => "")).slice(0, 200)}`);
+    const data = await res.json() as { candidates?: Array<{ content?: { parts?: Array<Record<string, unknown>> }; finishReason?: string }> };
+    const parts = data.candidates?.[0]?.content?.parts ?? [];
+    const text = parts.filter(p => typeof p.text === "string" && p.text).map(p => p.text as string).join("");
+    const toolUses = parts.filter(p => p.functionCall).map(p => {
+      const fc = p.functionCall as { name: string; args?: Record<string, unknown> };
+      return { id: fc.name, name: fc.name, input: fc.args ?? {} };
+    });
+    const stopReason = toolUses.length > 0 ? "tool_use" : "end_turn";
+    return { text, toolUses, stopReason, raw: parts.length ? parts : [{ text }] };
+  }
+
+  // openai-compat: OpenAI, Groq, Mistral, NVIDIA NIM — all mirror OpenAI's
+  // chat completions API verbatim.
+  const openAiMessages: Array<Record<string, unknown>> = [{ role: "system", content: systemPrompt }];
+  for (const m of messages) {
+    if (m.role !== "user" && m.role !== "assistant") continue;
+    if (typeof m.content === "string") {
+      openAiMessages.push({ role: m.role, content: m.content });
+    } else if (Array.isArray(m.content) && m.content[0]?.type === "tool_result") {
+      for (const tr of m.content as Array<{ tool_use_id: string; content: string }>) {
+        openAiMessages.push({ role: "tool", tool_call_id: tr.tool_use_id, content: tr.content });
+      }
+    } else if (m.role === "assistant" && m.content && typeof m.content === "object" && !Array.isArray(m.content)) {
+      openAiMessages.push(m.content as Record<string, unknown>);
+    } else if (Array.isArray(m.content)) {
+      const text = (m.content as Array<{ type: string; text?: string }>).filter(b => b.type === "text").map(b => b.text ?? "").join("");
+      openAiMessages.push({ role: m.role, content: text });
+    }
+  }
+  const openAiTools = tools?.length ? tools.map((t: any) => ({ type: "function", function: { name: t.name, description: t.description, parameters: t.input_schema } })) : undefined;
+  const res = await fetch(def.endpoint, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
+    body: JSON.stringify({ model: def.modelId, max_tokens: def.maxTokens, messages: openAiMessages, ...(openAiTools ? { tools: openAiTools } : {}) }),
+  });
+  if (!res.ok) throw new Error(`${def.name} HTTP ${res.status}: ${(await res.text().catch(() => "")).slice(0, 200)}`);
+  const data = await res.json() as { choices?: Array<{ message?: { content?: string | null; tool_calls?: Array<{ id: string; function?: { name: string; arguments?: string } }> } }> };
+  const choice = data.choices?.[0]?.message;
+  const text = choice?.content ?? "";
+  const toolUses = (choice?.tool_calls ?? []).map(tc => ({ id: tc.id, name: tc.function?.name ?? "", input: (() => { try { return JSON.parse(tc.function?.arguments || "{}"); } catch { return {}; } })() }));
+  const stopReason = toolUses.length > 0 ? "tool_use" : "end_turn";
+  return { text, toolUses, stopReason, raw: choice ?? { role: "assistant", content: text } };
+};
 
 const normalizePhoneDigits = (p: string) => (p || "").replace(/\D/g, "");
 const today = () => new Date().toISOString().slice(0, 10);
@@ -648,11 +773,24 @@ const saveThread = async (ctx: Ctx, phone: string, messages: Array<{ role: strin
 
 export const runAlfredSmsAgent = async (
   ctx: Ctx,
-  anthropicKey: string,
+  modelKeys: Record<string, string>,
+  modelPriority: string[] | undefined,
+  activeModel: string | undefined,
   fromPhone: string,
   incomingText: string
 ): Promise<string> => {
-  if (!anthropicKey) return "Alfred over text needs an Anthropic (Claude) API key set in Settings → AI Models — add one there and text again.";
+  // Same ordering rule as the in-app Alfred (AlfredPage.tsx FIX 20):
+  // modelPriority is the real order, activeModel is only consulted as a
+  // fallback when no priority list is saved — activeModel does not jump
+  // the queue. Any other model with a key but not in the priority list
+  // still gets tried, just last.
+  const priority = (modelPriority && modelPriority.length ? modelPriority : (activeModel ? [activeModel] : DEFAULT_MODEL_PRIORITY));
+  const extra = Object.keys(SMS_MODELS).filter(mid => !priority.includes(mid) && !!modelKeys?.[mid]);
+  const chain = [...priority, ...extra].filter(mid => SMS_MODELS[mid] && !!modelKeys?.[mid]);
+
+  if (chain.length === 0) {
+    return "Alfred over text needs an AI model API key set in Settings → AI Models (any provider — Claude, GPT-4o, Gemini, Groq, Mistral, or a free NVIDIA model like Kimi) — add one there and text again.";
+  }
 
   const history = await loadThread(ctx, fromPhone);
   const messages = [...history, { role: "user", content: incomingText }];
@@ -662,58 +800,64 @@ export const runAlfredSmsAgent = async (
 
 You can: text the owner back on request (text_me), remember arbitrary facts/notes for later (remember/recall — use this whenever they say "remember", "keep track of", or "note that"), schedule future text reminders (set_reminder — resolve any relative time like "tomorrow at 9am" into an exact ISO datetime yourself using the current date/time above before calling it; list_reminders/cancel_reminder manage existing ones), summarize the schedule (get_calendar_summary), add a non-job event to the owner's real Google Calendar (create_calendar_event — use schedule_job instead for an actual pressure-washing job tied to a customer), and review/approve or deny employee job requests (list_job_requests, respond_to_job_request). These are in addition to the core CRM actions (create/reschedule jobs, assign employees, create customers, check who's clocked in and what they're working on, send/list invoices). Use whichever tool actually matches what's being asked, and don't hesitate to chain several tool calls in one exchange if the request needs it (e.g. reschedule a job AND text the customer AND remember a preference).`;
 
-  let rounds = 0;
   let finalText = "";
-  let convMessages: Array<{ role: string; content: any }> = messages;
+  let succeeded = false;
 
-  while (rounds < 4) {
-    rounds++;
-    const body: Record<string, unknown> = { model: ANTHROPIC_MODEL, max_tokens: 500, system: systemPrompt, messages: convMessages, tools: TOOLS };
-    // Twilio abandons an unanswered webhook after ~15s and shows the
-    // customer/owner nothing — a hung Anthropic call (no error, no
-    // response) would otherwise burn that whole window silently across
-    // up to 4 tool-loop rounds. Hard-cap each individual call so a stuck
-    // round fails fast into the catch below (in twilio-sms-webhook.ts)
-    // instead of the SMS just never arriving with no clue why.
-    const controller = new AbortController();
-    const abortTimer = setTimeout(() => controller.abort(), 12000);
-    let res: Response;
-    try {
-      res = await fetch(ANTHROPIC_ENDPOINT, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "x-api-key": anthropicKey, "anthropic-version": "2023-06-01" },
-        body: JSON.stringify(body),
-        signal: controller.signal,
-      });
-    } catch (e: any) {
-      console.error("[AlfredSms] Anthropic call failed/timed out:", e?.message);
-      return "Sorry, that took too long to process — try a shorter request, or try again in a bit.";
-    } finally {
-      clearTimeout(abortTimer);
-    }
-    if (!res.ok) {
-      const errText = await res.text().catch(() => "");
-      console.error("[AlfredSms] Anthropic call failed:", res.status, errText.slice(0, 300));
-      return "Sorry, I hit an error reaching my AI model — try again in a bit.";
-    }
-    const data = await res.json() as { content: Array<{ type: string; text?: string; id?: string; name?: string; input?: Record<string, unknown> }>; stop_reason?: string };
-    const text = data.content?.find(b => b.type === "text")?.text ?? "";
-    const toolUses = (data.content || []).filter(b => b.type === "tool_use");
-    if (text) finalText = text;
+  // Try each configured provider in priority order — a failure (bad key,
+  // provider outage, timeout) falls through to the next one instead of
+  // just failing the whole text, same failover behavior as in-app Alfred.
+  for (const modelKey of chain) {
+    const apiKey = modelKeys[modelKey];
+    const def = SMS_MODELS[modelKey];
+    let rounds = 0;
+    let localFinal = "";
+    let convMessages: Array<{ role: string; content: any }> = [...messages];
+    let modelFailed = false;
 
-    if (toolUses.length > 0 && data.stop_reason === "tool_use") {
-      convMessages.push({ role: "assistant", content: data.content });
-      const results = await Promise.all(toolUses.map(async (tu: any) => ({
-        type: "tool_result",
-        tool_use_id: tu.id,
-        content: JSON.stringify(await executeTool(ctx, tu.name, tu.input || {})),
-      })));
-      convMessages.push({ role: "user", content: results });
-      continue;
+    while (rounds < 4) {
+      rounds++;
+      // Twilio abandons an unanswered webhook after ~15s and shows the
+      // customer/owner nothing — a hung provider call (no error, no
+      // response) would otherwise burn that whole window silently across
+      // up to 4 tool-loop rounds. Hard-cap each individual call so a stuck
+      // round fails fast and falls over to the next model instead of the
+      // SMS just never arriving with no clue why.
+      const controller = new AbortController();
+      const abortTimer = setTimeout(() => controller.abort(), 12000);
+      try {
+        const result = await Promise.race([
+          callSmsModel(modelKey, apiKey, systemPrompt, convMessages, def.supportsTools ? TOOLS : []),
+          new Promise<never>((_, reject) => controller.signal.addEventListener("abort", () => reject(new Error("timed out")))),
+        ]);
+        clearTimeout(abortTimer);
+        if (result.text) localFinal = result.text;
+        if (result.toolUses.length > 0 && result.stopReason === "tool_use") {
+          convMessages.push({ role: "assistant", content: result.raw });
+          const results = await Promise.all(result.toolUses.map(async (tu) => ({
+            type: "tool_result",
+            tool_use_id: tu.id,
+            content: JSON.stringify(await executeTool(ctx, tu.name, tu.input || {})),
+          })));
+          convMessages.push({ role: "user", content: results });
+          continue;
+        }
+        break;
+      } catch (e: any) {
+        clearTimeout(abortTimer);
+        console.error(`[AlfredSms] ${def.name} call failed:`, e?.message);
+        modelFailed = true;
+        break;
+      }
     }
-    break;
+
+    if (!modelFailed) {
+      finalText = localFinal;
+      succeeded = true;
+      break;
+    }
   }
 
+  if (!succeeded) return "Sorry, I hit an error reaching every configured AI model — try again in a bit, or check your API keys in Settings → AI Models.";
   if (!finalText) finalText = "Done.";
   await saveThread(ctx, fromPhone, [...messages, { role: "assistant", content: finalText }]);
   return finalText;

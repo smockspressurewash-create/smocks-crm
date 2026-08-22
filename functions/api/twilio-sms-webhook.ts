@@ -81,7 +81,9 @@ interface ResolvedOwnerSettings {
   twilioSid: string;
   twilioToken: string;
   twilioFrom: string;
-  anthropicKey: string;
+  modelKeys: Record<string, string>;
+  modelPriority: string[];
+  activeModel: string;
   openaiKey: string;
   googleProviderToken: string;
   googleRefreshToken: string;
@@ -98,7 +100,13 @@ const shapeSettings = (row: any, data: any): ResolvedOwnerSettings => ({
   twilioSid: data?.twilioSid || "",
   twilioToken: data?.twilioToken || "",
   twilioFrom: data?.twilioFrom || "",
-  anthropicKey: data?.modelKeys?.claude || data?.anthropicKey || "",
+  // Text-Alfred uses the SAME provider config as the in-app Alfred — every
+  // key the owner has saved (Claude, GPT-4o, Gemini, Groq, Mistral, NVIDIA
+  // models) plus their priority order, so a business running on Gemini or a
+  // free NVIDIA model gets that same provider over text, not just Claude.
+  modelKeys: data?.modelKeys && typeof data.modelKeys === "object" ? data.modelKeys : {},
+  modelPriority: Array.isArray(data?.modelPriority) ? data.modelPriority : [],
+  activeModel: data?.activeModel || "",
   // FEATURE — voice memo support: a text-to-Alfred voice memo (MMS with an
   // audio attachment) is transcribed via OpenAI Whisper before being handed
   // to the agent, so "just talking" to Alfred works the same as typing.
@@ -255,7 +263,7 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
     const isStop = STOP_WORDS.includes(body);
     const isStart = START_WORDS.includes(body);
     const resolved = await fetchAppSettings(context.env, params.To || "");
-    const { companyName, keyword, ownerId, myPhone, alfredExtraPhones, alfredSmsEnabled, twilioSid, twilioToken, twilioFrom, anthropicKey, openaiKey, googleProviderToken, googleRefreshToken, googleTokenExpiresAt } = resolved;
+    const { companyName, keyword, ownerId, myPhone, alfredExtraPhones, alfredSmsEnabled, twilioSid, twilioToken, twilioFrom, modelKeys, modelPriority, activeModel, openaiKey, googleProviderToken, googleRefreshToken, googleTokenExpiresAt } = resolved;
     const isOptInKeyword = body === keyword;
     const isConfirm = CONFIRM_WORDS.includes(body);
 
@@ -304,7 +312,7 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
       // also gets logged to the Inbox like every other outbound text.
       context.waitUntil(
         resolveIncomingText(params, bodyRaw, twilioSid, twilioToken, openaiKey, (context.env as any).AI)
-          .then((text) => runAlfredSmsAgent(ctx, anthropicKey, from, text))
+          .then((text) => runAlfredSmsAgent(ctx, modelKeys, modelPriority, activeModel, from, text))
           .catch((e: any) => {
             console.error("[TwilioSmsWebhook] Alfred SMS agent failed:", e?.message);
             return "Sorry, something went wrong on my end — try again in a moment.";
