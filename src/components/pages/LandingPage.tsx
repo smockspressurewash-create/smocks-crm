@@ -101,7 +101,7 @@ const FEATURES: Array<{ icon: React.ElementType; title: string; desc: string }> 
 export const PLANS: Array<{ name: string; price: string; period: string; tagline: string; features: string[]; highlighted?: boolean }> = [
   {
     name: "Solo",
-    price: "$49",
+    price: "$39",
     period: "/mo",
     tagline: "For an owner-operator running the show alone.",
     features: [
@@ -114,7 +114,7 @@ export const PLANS: Array<{ name: string; price: string; period: string; tagline
   },
   {
     name: "Crew",
-    price: "$99",
+    price: "$79",
     period: "/mo",
     tagline: "For a business running an actual crew in the field.",
     features: [
@@ -129,7 +129,7 @@ export const PLANS: Array<{ name: string; price: string; period: string; tagline
   },
   {
     name: "Growth",
-    price: "$199",
+    price: "$149",
     period: "/mo",
     tagline: "For multi-crew operations that want it all automated.",
     features: [
@@ -253,6 +253,59 @@ export function LandingPage({
               <div className="text-white/50 text-xs md:text-sm mt-1">{s.label}</div>
             </div>
           ))}
+        </section>
+      </Reveal>
+
+      {/* ── How it works ─────────────────────────────────────────────────────── */}
+      <section className="px-4 md:px-6 py-16 md:py-24 max-w-5xl mx-auto">
+        <Reveal className="text-center mb-12 md:mb-16">
+          <h2 className="text-3xl md:text-5xl font-black mb-3">Up and running the same day</h2>
+          <p className="text-white/50 max-w-xl mx-auto">No onboarding calls, no waiting on a sales rep — set up your business and start sending real estimates within the hour.</p>
+        </Reveal>
+        <div className="grid md:grid-cols-3 gap-6 md:gap-8">
+          {[
+            { step: "1", title: "Set up your business", desc: "Add your company info, services, and pricing. Connect Stripe and Twilio when you're ready — everything works without them too, you can turn features on as you grow." },
+            { step: "2", title: "Send your first estimate", desc: "Build a branded estimate in minutes, text or email it to the customer, and watch it get signed and paid without a single phone call." },
+            { step: "3", title: "Your crew clocks in", desc: "Assign the job, and your crew sees it on their phone — checklists, directions, and a Clock In button. You see exactly where they are and how it's going." },
+          ].map((s, i) => (
+            <Reveal key={s.step} delay={i * 100}>
+              <div className="glass p-6 md:p-8 h-full">
+                <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-red-600 to-red-900 flex items-center justify-center font-black text-lg mb-4">{s.step}</div>
+                <h3 className="font-bold text-lg mb-2">{s.title}</h3>
+                <p className="text-white/50 text-sm leading-relaxed">{s.desc}</p>
+              </div>
+            </Reveal>
+          ))}
+        </div>
+      </section>
+
+      {/* ── Built for the field, not a desk ──────────────────────────────────── */}
+      <Reveal className="px-4 md:px-6">
+        <section className="max-w-6xl mx-auto py-16 md:py-24 grid md:grid-cols-2 gap-10 md:gap-16 items-center">
+          <div>
+            <h2 className="text-3xl md:text-5xl font-black mb-4">Built for the field, not a desk</h2>
+            <p className="text-white/50 leading-relaxed mb-6">
+              Most CRMs are built for someone sitting at a computer all day. CrewBoss assumes your crew is standing in a driveway with soaked boots and one hand full of hose — every field-facing screen is designed to be usable one-thumbed, in bright sunlight, with spotty signal.
+            </p>
+            <ul className="space-y-3">
+              {[
+                "Install it like a real app on any phone — no App Store required",
+                "Checklists, photos, and clock in/out survive a weak connection",
+                "GPS location shared only while a shift is active, never tracked after hours",
+                "Works the same whether it's one truck or five crews running at once",
+              ].map(item => (
+                <li key={item} className="flex items-start gap-2.5 text-sm text-white/70">
+                  <CheckCircle size={16} className="text-red-500 flex-shrink-0 mt-0.5" />
+                  {item}
+                </li>
+              ))}
+            </ul>
+          </div>
+          <div className="glass p-6 md:p-10 text-center">
+            <div className="text-5xl md:text-6xl font-black gradient-text mb-3">📱</div>
+            <div className="font-bold text-lg mb-2">One app, every role</div>
+            <p className="text-white/50 text-sm leading-relaxed">Owners get the full CRM. Crew get a lightweight field portal built just for the job in front of them. Customers get their own portal to sign, pay, and track their service — nobody logs into the wrong thing.</p>
+          </div>
         </section>
       </Reveal>
 

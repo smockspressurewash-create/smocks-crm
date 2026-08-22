@@ -3052,7 +3052,15 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     // Owner asked for mileage to sync automatically with no approval gate —
     // auto-approve on submit; the owner can still flag/deny a bad entry
     // after the fact from EmployeesPage, which will pull it back out of Expenses.
-    const row = { id: uid(), employee_id: empId, date: mileageForm.date || today(), from: mileageForm.from, to: mileageForm.to, miles, purpose: mileageForm.purpose, status: "approved" };
+    // BUG FIX — mileage_logs is owner_id-scoped RLS (WITH CHECK owner_id =
+    // current_owner_id()); this insert never set owner_id at all, so
+    // Postgres wrote NULL and RLS rejected every single submission outright
+    // (NULL never equals the check function's result) — root cause of
+    // "mileage isn't showing up in the owner's Mileage section": it wasn't
+    // a display bug, submissions were never reaching the table since the
+    // multi-tenant RLS rollout. myEmployee.owner_id is the same value
+    // written on this employee's own row at invite time.
+    const row = { id: uid(), employee_id: empId, date: mileageForm.date || today(), from: mileageForm.from, to: mileageForm.to, miles, purpose: mileageForm.purpose, status: "approved", owner_id: (myEmployee as any)?.owner_id || null };
     try {
       const { error } = await (supabase as any).from("mileage_logs").insert(row);
       if (error) {
@@ -5596,12 +5604,28 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                   sendEndOfDaySummary(finalHours);
                   // Persist for the rest of the day (no auto-hide) — FIX 11.
                   setShiftEndedMsg(`Shift ended · Total ${totalLabel}`);
-                  // ISSUE 16 (round 4) — stop GPS tracking; the accumulated
-                  // total is already in dayTrackedMiles (persisted), where the
-                  // Log Mileage panel picks it up as a pre-fillable suggestion
-                  // the employee reviews/edits before submitting — never
-                  // auto-submitted on their behalf.
+                  // BUG FIX — tracked miles used to ONLY pre-fill the Log
+                  // Mileage form for the employee to separately open that
+                  // tab and manually submit. In practice nobody did, so
+                  // "mileage isn't showing up in the owner's Mileage
+                  // section" was really "it was tracked but never actually
+                  // written to mileage_logs at all." Auto-submit the day's
+                  // tracked total straight to mileage_logs now (same
+                  // auto-approve shape submitMileageLog uses), so it's
+                  // guaranteed to reach the owner without a second manual
+                  // step. Still ALSO pre-fills the form below in case the
+                  // employee wants to log something in addition/instead.
                   stopAutoMileageTracking();
+                  if (dayTrackedMiles > 0.1 && empId) {
+                    const autoMiles = Math.round(dayTrackedMiles * 100) / 100;
+                    const autoRow = { id: uid(), employee_id: empId, date: today(), from: "", to: "", miles: autoMiles, purpose: "Auto-tracked shift mileage", status: "approved", owner_id: (myEmployee as any)?.owner_id || null };
+                    (supabase as any).from("mileage_logs").insert(autoRow)
+                      .then((r: any) => {
+                        if (r?.error) { console.error("[Mileage] auto-submit failed:", r.error.message); toast?.("Mileage tracked (" + autoMiles + " mi) but failed to sync — log it manually in the Mileage tab", "yellow"); }
+                        else setMileageLogs(prev => [autoRow, ...prev]);
+                      })
+                      .catch((e: any) => console.error("[Mileage] auto-submit threw:", e?.message));
+                  }
                   if (dayTrackedMiles > 0.1) {
                     setMileageForm(f => (f.miles ? f : { ...f, miles: dayTrackedMiles.toFixed(1) }));
                   }

@@ -482,8 +482,16 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
   // "on shift" — no other condition gates it, full stop.
   const liveEmps = employees.filter((e: any) => !!e.dayClockInAt);
   const liveTeam = liveEmps.map((e: any) => {
+    // BUG FIX — this required scheduledDate === today exactly, so a job the
+    // employee is ACTIVELY on right now (arrived, in_progress) but whose
+    // scheduledDate is some other day (rescheduled, ran past midnight,
+    // logged a day off from when it was originally booked) was invisible
+    // here — the owner saw the employee as "active" with a location, but no
+    // job, even though arrivedAt was correctly set. "Currently on this job"
+    // (in_progress, or arrived and not completed) is a real-time signal
+    // that should never depend on the job's scheduled date matching today.
     const empJobs = jobs
-      .filter((j: any) => crewIncludesEmployee(j.crew, e.id, e.user_id) && j.scheduledDate === todayStrLive)
+      .filter((j: any) => crewIncludesEmployee(j.crew, e.id, e.user_id) && (j.scheduledDate === todayStrLive || j.status === "in_progress" || (j.arrivedAt && j.status !== "completed" && j.status !== "cancelled")))
       .sort((a: any, b: any) => (a.scheduledTime || "").localeCompare(b.scheduledTime || ""));
     // FIX 3 (mobile round 6) — this used to fall all the way to `null` (no
     // checklist/photo card at all) for a clocked-in employee who hasn't been
