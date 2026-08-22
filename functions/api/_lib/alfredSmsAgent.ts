@@ -1168,7 +1168,9 @@ export const runAlfredSmsAgent = async (
   const messages = [...history, { role: "user", content: incomingText }];
 
   const nowLocal = new Date().toISOString();
-  const systemPrompt = `You are Alfred, the AI assistant for ${ctx.companyName}, a pressure-washing business — texting back and forth with the OWNER over SMS while they're away from the CRM. The current date/time is ${nowLocal} (UTC). Use tools aggressively to actually read and modify the CRM — never just describe what you'd do. Keep replies SHORT (this is a text message, 1-3 sentences, no markdown). If a tool result has an "error" field, tell the owner exactly what went wrong — do not claim success. When you finish an action, confirm plainly what happened.
+  const systemPrompt = `You are Alfred, the AI assistant for ${ctx.companyName}, a pressure-washing business — texting back and forth with the OWNER over SMS while they're away from the CRM. The current date/time is ${nowLocal} (UTC). Use tools aggressively to actually read and modify the CRM — never just describe what you'd do. Keep replies SHORT (this is a text message, 1-3 sentences per item, no markdown). If a tool result has an "error" field, tell the owner exactly what went wrong — do not claim success, and do not guess or describe an action vaguely if you're not certain the tool actually returned "success": true. When you finish an action, confirm plainly what happened.
+
+MULTI-PART REQUESTS: when a single text asks for several distinct things ("who's working, AND create this customer, AND quote them, AND text it"), treat each as its own tool call and report EACH ONE'S real outcome by name in your reply — don't roll them into one vague summary line, and never describe a step as done unless its own tool result actually said so. If one step's tool result is an "error", say exactly which step failed and why, but still report the outcome of every OTHER step you did complete — don't let one failure make the whole reply vague about what did or didn't happen.
 
 CLARIFYING QUESTIONS: if a request is missing something a tool needs (which customer, which date, which job when there are several matches), ask ONE short, specific question instead of guessing — then stop and wait for their reply. The full conversation history is remembered, so when they answer, pick up exactly where you left off and finish the original request; don't make them repeat themselves.
 
@@ -1194,14 +1196,27 @@ You can: text the owner back on request (text_me), remember arbitrary facts/note
     let convMessages: Array<{ role: string; content: any }> = [...messages];
     let modelFailed = false;
 
-    while (rounds < 4) {
+    // BUG FIX — this was capped at 4 rounds total, including the FINAL
+    // text-only round that actually produces the reply. A request needing
+    // more than ~3 tool calls (e.g. "who's working, create this customer,
+    // quote them $400, text it to them" — 4 separate tool calls on its own)
+    // hit the cap mid-chain: the loop exited after round 4's tool call
+    // with no further round ever run to write a real closing reply or
+    // finish the remaining steps. Whatever text happened to be sitting in
+    // `localFinal` from an earlier round (tool-calling rounds don't
+    // reliably include any) got sent as the "answer" — explaining replies
+    // that described actions vaguely or wrongly (a customer really did get
+    // created; the SMS quote never actually got sent) with no error
+    // surfaced anywhere. Twilio's own webhook timeout doesn't constrain
+    // this — the whole thing already runs in the background via waitUntil
+    // and the real reply goes out as its own follow-up text once ready,
+    // not as the webhook response itself.
+    while (rounds < 10) {
       rounds++;
-      // Twilio abandons an unanswered webhook after ~15s and shows the
-      // customer/owner nothing — a hung provider call (no error, no
-      // response) would otherwise burn that whole window silently across
-      // up to 4 tool-loop rounds. Hard-cap each individual call so a stuck
-      // round fails fast and falls over to the next model instead of the
-      // SMS just never arriving with no clue why.
+      // A hung provider call (no error, no response) would otherwise burn
+      // an unbounded amount of time silently. Hard-cap each individual
+      // call so a stuck round fails fast and falls over to the next model
+      // instead of the SMS just never arriving with no clue why.
       const controller = new AbortController();
       const abortTimer = setTimeout(() => controller.abort(), 12000);
       try {
