@@ -60,6 +60,9 @@ import { CustomerReviewPage } from "./components/pages/CustomerReviewPage";
 import { LeadFormPage } from "./components/pages/LeadFormPage";
 import { TermsPage, PrivacyPolicyPage } from "./components/pages/LegalPages";
 import { LandingPage } from "./components/pages/LandingPage";
+import { FeaturesPage } from "./components/pages/FeaturesPage";
+import { PricingPage } from "./components/pages/PricingPage";
+import { AboutPage } from "./components/pages/AboutPage";
 import { EmployeePortal } from "./components/pages/EmployeePortal";
 import { saveEmpGoogleToken, refreshEmpGoogleToken } from "./lib/googleApi";
 import { ResetPassword } from "./components/pages/ResetPassword";
@@ -506,7 +509,14 @@ export function App() {
     // CTA buttons.
     if (hash === "" || hash === "welcome" || hash === "home") return "welcome";
     if (hash === "login") return "login";
-    const valid = ["dashboard","alfred","inbox","notifications","customers","estimates","invoices","pipeline","intake","jobs","calendar","crew","campaigns","reviews","automations","social","referrals","promotions","trashcans","sops","expenses","reports","analytics","budget","personal","accountability","employees","fleet","chemicals","google","portal","reset-password","client","referral","rate","welcome","login"];
+    // FEATURE — dedicated marketing pages linked from the landing page's nav
+    // (see MarketingShared.tsx's MarketingNav/MarketingFooter, shared across
+    // #/welcome, #/features, #/pricing, #/about). Same public/no-session
+    // rendering pattern as "welcome" below.
+    if (hash === "features") return "features";
+    if (hash === "pricing") return "pricing";
+    if (hash === "about") return "about";
+    const valid = ["dashboard","alfred","inbox","notifications","customers","estimates","invoices","pipeline","intake","jobs","calendar","crew","campaigns","reviews","automations","social","referrals","promotions","trashcans","sops","expenses","reports","analytics","budget","personal","accountability","employees","fleet","chemicals","google","portal","reset-password","client","referral","rate","welcome","login","features","pricing","about"];
     return valid.includes(hash) ? hash : "dashboard";
   });
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -836,7 +846,7 @@ export function App() {
 
   // Listen for browser back/forward
   useEffect(() => {
-    const valid = ["dashboard","alfred","inbox","notifications","customers","estimates","invoices","pipeline","intake","jobs","calendar","crew","campaigns","reviews","automations","social","referrals","promotions","trashcans","sops","expenses","reports","analytics","budget","personal","accountability","employees","fleet","chemicals","google","portal","reset-password","client","referral","rate","lead-form","trash-cans","terms","privacy"];
+    const valid = ["dashboard","alfred","inbox","notifications","customers","estimates","invoices","pipeline","intake","jobs","calendar","crew","campaigns","reviews","automations","social","referrals","promotions","trashcans","sops","expenses","reports","analytics","budget","personal","accountability","employees","fleet","chemicals","google","portal","reset-password","client","referral","rate","lead-form","trash-cans","terms","privacy","welcome","login","features","pricing","about"];
     const handler = () => {
       const hash = window.location.hash.replace(/^#\/?/, "").split("?")[0];
       if (hash === "portal" || hash.startsWith("portal/")) { setPage("portal"); return; }
@@ -847,6 +857,7 @@ export function App() {
       if (hash === "privacy" || hash.startsWith("privacy?")) { setPage("privacy"); return; }
       if (hash.startsWith("estimate/")) { setPage("estimate"); return; }
       if (hash === "reset-password" || hash.startsWith("reset-password&") || hash.startsWith("reset-password?")) { setPage("reset-password"); return; }
+      if (hash === "" || hash === "home") { setPage("welcome"); return; }
       if (valid.includes(hash)) setPage(hash);
     };
     window.addEventListener("hashchange", handler);
@@ -2953,8 +2964,28 @@ export function App() {
   // or the hash-sync effect writing "#/welcome" back after login) falls
   // through here and gets redirected to the dashboard/portal by the
   // fallback redirect further down instead of seeing marketing copy.
+  // Shared hand-off for every marketing page's nav/footer/CTA — moves between
+  // #/welcome, #/features, #/pricing, #/about (and #/login) by setting both
+  // the URL hash and this component's `page` state together, same pattern as
+  // the pre-existing onGetStarted below.
+  const navigateMarketing = (p: "welcome" | "features" | "pricing" | "about" | "login") => {
+    window.location.hash = "/" + p;
+    setPage(p);
+  };
+
   if (page === "welcome" && !empSession && !hasCrmSession) {
-    return <LandingPage onGetStarted={() => { window.location.hash = "/login"; setPage("login"); }} />;
+    return <LandingPage onGetStarted={() => navigateMarketing("login")} onNavigate={navigateMarketing} />;
+  }
+  // ── Dedicated marketing pages — same public, no-session-required pattern
+  // as "welcome" above. See MarketingShared.tsx for the shared nav/footer.
+  if (page === "features" && !empSession && !hasCrmSession) {
+    return <FeaturesPage onGetStarted={() => navigateMarketing("login")} onNavigate={navigateMarketing} />;
+  }
+  if (page === "pricing" && !empSession && !hasCrmSession) {
+    return <PricingPage onGetStarted={() => navigateMarketing("login")} onNavigate={navigateMarketing} />;
+  }
+  if (page === "about" && !empSession && !hasCrmSession) {
+    return <AboutPage onGetStarted={() => navigateMarketing("login")} onNavigate={navigateMarketing} />;
   }
 
   // No top-level loading gate — render immediately with whatever's already
@@ -3017,12 +3048,12 @@ export function App() {
   }
 
   // ── Redirect an already-signed-in owner off the marketing/login pages ────
-  // Reaching this point with page "welcome" or "login" means hasCrmSession is
-  // already true (the landing-page return above and the login-gate return
-  // below both require !hasCrmSession) — send them on to the real dashboard
-  // instead of rendering nothing (neither "welcome" nor "login" is a case in
-  // the page switch further down).
-  if (hasCrmSession && (page === "welcome" || page === "login")) {
+  // Reaching this point with page "welcome"/"features"/"pricing"/"about" or
+  // "login" means hasCrmSession is already true (each marketing-page return
+  // above and the login-gate return below all require !hasCrmSession) — send
+  // them on to the real dashboard instead of rendering nothing (none of
+  // these are a case in the page switch further down).
+  if (hasCrmSession && (page === "welcome" || page === "login" || page === "features" || page === "pricing" || page === "about")) {
     setTimeout(() => setPage("dashboard"), 0);
   }
 

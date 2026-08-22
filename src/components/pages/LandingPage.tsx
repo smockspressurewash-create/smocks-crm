@@ -1,15 +1,22 @@
-import React, { useEffect, useRef, useState } from "react";
+import React from "react";
 import {
-  Calendar, Users2, FileText, Receipt, CreditCard, MessageSquare,
+  Calendar, Users2, FileText, CreditCard, MessageSquare,
   Bot, Smartphone, Trash2, Gift, Star, MapPin, Camera, CheckCircle,
-  ArrowRight, Menu, X, ChevronRight,
+  ArrowRight, ChevronRight,
 } from "lucide-react";
+import {
+  Reveal, MarketingStyles, BackgroundBlobs, MarketingNav, MarketingFooter,
+  MarketingPage,
+} from "./MarketingShared";
 
 // ─── Public marketing / landing page for CrewBoss (this product) ──────────────
 // Reached at "#/" (or "#/welcome") for any visitor with no active session —
 // see App.tsx's page-resolution useState and the "welcome" gate just above
 // the login screen. Purely presentational + a "Get Started" / "Log In" CTA
-// that hands off to the existing login screen (App.tsx sets page to "login").
+// that hands off to the existing login screen (App.tsx sets page to "login"),
+// plus real cross-page navigation (onNavigate) to the dedicated
+// #/features, #/pricing, and #/about pages — see MarketingShared.tsx for the
+// shared nav/footer/Reveal/background treatment every marketing page uses.
 // No Supabase reads/writes here at all — this must render instantly for an
 // anonymous visitor with zero network round trips.
 //
@@ -19,43 +26,8 @@ import {
 // hover motion are done with plain CSS (IntersectionObserver-driven class
 // toggle + Tailwind transitions) — no animation library added.
 
-// ─── Scroll-reveal wrapper ─────────────────────────────────────────────────
-// Adds "is-visible" once the element crosses into the viewport, which the
-// <style> block below turns into a fade+slide-up transition. Falls back to
-// already-visible if IntersectionObserver isn't available (very old
-// browsers / SSR-safety) rather than leaving content invisible.
-function Reveal({ children, className = "", delay = 0 }: { children: React.ReactNode; className?: string; delay?: number }) {
-  const ref = useRef<HTMLDivElement>(null);
-  const [visible, setVisible] = useState(false);
-
-  useEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    if (typeof IntersectionObserver === "undefined") { setVisible(true); return; }
-    const obs = new IntersectionObserver(
-      (entries) => {
-        entries.forEach((entry) => {
-          if (entry.isIntersecting) { setVisible(true); obs.disconnect(); }
-        });
-      },
-      { threshold: 0.15, rootMargin: "0px 0px -40px 0px" }
-    );
-    obs.observe(el);
-    return () => obs.disconnect();
-  }, []);
-
-  return (
-    <div
-      ref={ref}
-      className={"reveal " + (visible ? "reveal-visible " : "") + className}
-      style={{ transitionDelay: visible ? delay + "ms" : "0ms" }}
-    >
-      {children}
-    </div>
-  );
-}
-
-// ─── Feature data ───────────────────────────────────────────────────────────
+// ─── Feature data (condensed teaser grid — see FeaturesPage.tsx for the full,
+// categorized breakdown of the same real, working features) ────────────────
 // Pulled from real, working features in this codebase — not aspirational
 // copy. See CLAUDE.md "Working features" + Key files for the source of each.
 const FEATURES: Array<{ icon: React.ElementType; title: string; desc: string }> = [
@@ -126,7 +98,7 @@ const FEATURES: Array<{ icon: React.ElementType; title: string; desc: string }> 
 // concept (checked src/types/index.ts and App.tsx) — these three tiers are
 // clean, reasonable placeholder pricing for a small-business CRM, clearly
 // marked as such below, and are NOT wired to any real payment/signup flow.
-const PLANS: Array<{ name: string; price: string; period: string; tagline: string; features: string[]; highlighted?: boolean }> = [
+export const PLANS: Array<{ name: string; price: string; period: string; tagline: string; features: string[]; highlighted?: boolean }> = [
   {
     name: "Solo",
     price: "$49",
@@ -170,104 +142,18 @@ const PLANS: Array<{ name: string; price: string; period: string; tagline: strin
   },
 ];
 
-export function LandingPage({ onGetStarted }: { onGetStarted: () => void }) {
-  const [navOpen, setNavOpen] = useState(false);
-
+export function LandingPage({
+  onGetStarted,
+  onNavigate,
+}: {
+  onGetStarted: () => void;
+  onNavigate: (page: MarketingPage) => void;
+}) {
   return (
     <div className="min-h-screen bg-black text-white overflow-x-hidden">
-      {/* ── Scoped styles: scroll-reveal + gradient blob motion ────────────── */}
-      <style>{`
-        .reveal {
-          opacity: 0;
-          transform: translateY(24px);
-          transition: opacity 0.7s ease, transform 0.7s ease;
-        }
-        .reveal-visible { opacity: 1; transform: translateY(0); }
-
-        @keyframes lp-blob-float {
-          0%, 100% { transform: translate(0, 0) scale(1); }
-          33% { transform: translate(20px, -30px) scale(1.08); }
-          66% { transform: translate(-15px, 15px) scale(0.95); }
-        }
-        .lp-blob { animation: lp-blob-float 14s ease-in-out infinite; }
-        .lp-blob-slow { animation: lp-blob-float 20s ease-in-out infinite reverse; }
-
-        @keyframes lp-shimmer-text {
-          0% { background-position: 0% 50%; }
-          100% { background-position: 200% 50%; }
-        }
-        .lp-hero-gradient {
-          background: linear-gradient(90deg, #fca5a5, #dc2626, #f87171, #dc2626, #fca5a5);
-          background-size: 200% auto;
-          -webkit-background-clip: text;
-          background-clip: text;
-          -webkit-text-fill-color: transparent;
-          animation: lp-shimmer-text 6s linear infinite;
-        }
-
-        .lp-card-hover {
-          transition: transform 0.25s ease, border-color 0.25s ease, box-shadow 0.25s ease;
-        }
-        .lp-card-hover:hover {
-          transform: translateY(-4px);
-          border-color: rgba(220,38,38,0.5);
-          box-shadow: 0 12px 32px -12px rgba(220,38,38,0.35);
-        }
-      `}</style>
-
-      {/* ── Background gradient blobs ───────────────────────────────────────── */}
-      <div className="fixed inset-0 pointer-events-none overflow-hidden -z-10">
-        <div className="lp-blob absolute -top-32 -left-24 w-96 h-96 rounded-full bg-red-700/20 blur-3xl" />
-        <div className="lp-blob-slow absolute top-1/3 -right-32 w-[28rem] h-[28rem] rounded-full bg-red-900/25 blur-3xl" />
-        <div className="lp-blob absolute bottom-0 left-1/4 w-80 h-80 rounded-full bg-red-800/15 blur-3xl" />
-      </div>
-
-      {/* ── Nav ──────────────────────────────────────────────────────────────── */}
-      <header className="sticky top-0 z-40 backdrop-blur-md bg-black/60 border-b border-white/10">
-        <div className="max-w-6xl mx-auto px-4 md:px-6 h-16 flex items-center justify-between">
-          <div className="flex items-center gap-2.5">
-            <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-red-600 to-red-900 flex items-center justify-center shadow-lg shadow-red-900/40">
-              <span className="text-white font-black text-sm">CB</span>
-            </div>
-            <span className="font-bold text-lg tracking-tight">Crew<span className="text-red-500">Boss</span></span>
-          </div>
-
-          <nav className="hidden md:flex items-center gap-8 text-sm text-white/70">
-            <a href="#features" className="hover:text-white transition-colors">Features</a>
-            <a href="#pricing" className="hover:text-white transition-colors">Pricing</a>
-            <button
-              onClick={onGetStarted}
-              className="text-white/70 hover:text-white transition-colors"
-            >
-              Log In
-            </button>
-            <button
-              onClick={onGetStarted}
-              className="px-4 py-2 rounded-lg bg-gradient-to-br from-red-600 to-red-800 hover:from-red-500 hover:to-red-700 transition-all font-semibold shadow-lg shadow-red-900/30 hover:shadow-red-700/40 hover:-translate-y-0.5"
-            >
-              Start Free Trial
-            </button>
-          </nav>
-
-          <button className="md:hidden p-2 -mr-2 text-white/80" onClick={() => setNavOpen(o => !o)} aria-label="Toggle menu">
-            {navOpen ? <X size={22} /> : <Menu size={22} />}
-          </button>
-        </div>
-
-        {navOpen && (
-          <div className="md:hidden border-t border-white/10 bg-black/95 px-4 py-4 space-y-3 animate-fade-in">
-            <a href="#features" onClick={() => setNavOpen(false)} className="block py-2 text-white/70">Features</a>
-            <a href="#pricing" onClick={() => setNavOpen(false)} className="block py-2 text-white/70">Pricing</a>
-            <button onClick={onGetStarted} className="w-full text-left py-2 text-white/70">Log In</button>
-            <button
-              onClick={onGetStarted}
-              className="w-full px-4 py-2.5 rounded-lg bg-gradient-to-br from-red-600 to-red-800 font-semibold"
-            >
-              Start Free Trial
-            </button>
-          </div>
-        )}
-      </header>
+      <MarketingStyles />
+      <BackgroundBlobs />
+      <MarketingNav active="welcome" onNavigate={onNavigate} onGetStarted={onGetStarted} />
 
       {/* ── Hero ─────────────────────────────────────────────────────────────── */}
       <section className="relative px-4 md:px-6 pt-16 pb-20 md:pt-28 md:pb-32 max-w-5xl mx-auto text-center">
@@ -311,8 +197,8 @@ export function LandingPage({ onGetStarted }: { onGetStarted: () => void }) {
         </Reveal>
       </section>
 
-      {/* ── Feature grid ─────────────────────────────────────────────────────── */}
-      <section id="features" className="px-4 md:px-6 py-16 md:py-24 max-w-6xl mx-auto">
+      {/* ── Feature grid (teaser — full breakdown on #/features) ────────────── */}
+      <section className="px-4 md:px-6 py-16 md:py-24 max-w-6xl mx-auto">
         <Reveal className="text-center mb-12 md:mb-16">
           <h2 className="text-2xl md:text-4xl font-extrabold tracking-tight mb-3">
             Everything the office <span className="gradient-text">and</span> the field need
@@ -335,6 +221,16 @@ export function LandingPage({ onGetStarted }: { onGetStarted: () => void }) {
             </Reveal>
           ))}
         </div>
+
+        <Reveal className="text-center mt-10">
+          <button
+            onClick={() => onNavigate("features")}
+            className="inline-flex items-center gap-1.5 text-red-400 hover:text-red-300 font-semibold text-sm transition-colors"
+          >
+            See the full feature breakdown
+            <ChevronRight size={16} />
+          </button>
+        </Reveal>
       </section>
 
       {/* ── Social-proof style strip ─────────────────────────────────────────── */}
@@ -353,8 +249,8 @@ export function LandingPage({ onGetStarted }: { onGetStarted: () => void }) {
         </section>
       </Reveal>
 
-      {/* ── Pricing ──────────────────────────────────────────────────────────── */}
-      <section id="pricing" className="px-4 md:px-6 py-16 md:py-24 max-w-6xl mx-auto">
+      {/* ── Pricing (teaser — full comparison on #/pricing) ─────────────────── */}
+      <section className="px-4 md:px-6 py-16 md:py-24 max-w-6xl mx-auto">
         <Reveal className="text-center mb-12 md:mb-16">
           <h2 className="text-2xl md:text-4xl font-extrabold tracking-tight mb-3">
             Simple, <span className="gradient-text">honest</span> pricing
@@ -413,6 +309,16 @@ export function LandingPage({ onGetStarted }: { onGetStarted: () => void }) {
             </Reveal>
           ))}
         </div>
+
+        <Reveal className="text-center mt-10">
+          <button
+            onClick={() => onNavigate("pricing")}
+            className="inline-flex items-center gap-1.5 text-red-400 hover:text-red-300 font-semibold text-sm transition-colors"
+          >
+            See full plan comparison & FAQ
+            <ChevronRight size={16} />
+          </button>
+        </Reveal>
       </section>
 
       {/* ── Final CTA ────────────────────────────────────────────────────────── */}
@@ -434,27 +340,7 @@ export function LandingPage({ onGetStarted }: { onGetStarted: () => void }) {
         </section>
       </Reveal>
 
-      {/* ── Footer ───────────────────────────────────────────────────────────── */}
-      <footer className="border-t border-white/10 px-4 md:px-6 py-10 mt-8">
-        <div className="max-w-6xl mx-auto flex flex-col md:flex-row items-center justify-between gap-6">
-          <div className="flex items-center gap-2.5">
-            <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-red-600 to-red-900 flex items-center justify-center">
-              <span className="text-white font-black text-[10px]">CB</span>
-            </div>
-            <span className="font-bold text-sm tracking-tight text-white/70">Crew<span className="text-red-500">Boss</span></span>
-          </div>
-
-          <div className="flex items-center gap-6 text-xs text-white/40">
-            <a href="#/terms" className="hover:text-white/70 transition-colors">Terms</a>
-            <a href="#/privacy" className="hover:text-white/70 transition-colors">Privacy</a>
-            <button onClick={onGetStarted} className="hover:text-white/70 transition-colors">Log In</button>
-          </div>
-
-          <div className="text-[11px] text-white/25">
-            © {new Date().getFullYear()} CrewBoss. All rights reserved.
-          </div>
-        </div>
-      </footer>
+      <MarketingFooter onNavigate={onNavigate} onGetStarted={onGetStarted} />
     </div>
   );
 }
