@@ -240,6 +240,15 @@ export function LeadIntakePage({ customers = [], setCustomers, estimates = [], s
   };
 
   const companyName = settings?.companyName || "Crew Boss";
+  // BUG FIX — "changing colors doesn't update the preview": these three
+  // values used to only be computed inside the embedOpen IIFE below, so the
+  // "Preview Form" block (a separate section, hardcoded red/black Tailwind
+  // classes) never reflected them at all — only the raw embed HTML/iframe
+  // URL did, and that's only visible by opening it in a new tab. Lifted to
+  // component scope so the in-app preview can use the same live values.
+  const leadBg = (settings as any)?.leadFormBgColor || "#0a0a0a";
+  const leadBtn = (settings as any)?.leadFormButtonColor || "#dc2626";
+  const leadText = (settings as any)?.leadFormTextColor || "#ffffff";
 
   return (
     <div className="space-y-5">
@@ -268,9 +277,6 @@ export function LeadIntakePage({ customers = [], setCustomers, estimates = [], s
         // ITEM 1 — owner-set colors ride along as bg/btn/text query params;
         // LeadFormPage.tsx reads and applies them, same non-secret pattern as
         // co/ph above.
-        const leadBg = (settings as any)?.leadFormBgColor || "#0a0a0a";
-        const leadBtn = (settings as any)?.leadFormButtonColor || "#dc2626";
-        const leadText = (settings as any)?.leadFormTextColor || "#ffffff";
         const embedUrl = `${window.location.origin}${window.location.pathname}#/lead-form?co=${encodeURIComponent(companyName)}&ph=${encodeURIComponent(settings?.companyPhone || "")}&bg=${encodeURIComponent(leadBg)}&btn=${encodeURIComponent(leadBtn)}&text=${encodeURIComponent(leadText)}`;
         const embedHtml = `<!-- ${companyName} — Request a Quote -->\n<iframe\n  src="${embedUrl}"\n  width="100%"\n  height="720"\n  frameborder="0"\n  style="border-radius:12px;box-shadow:0 4px 20px rgba(0,0,0,0.15)"\n  title="Request a Quote"\n></iframe>`;
         return (
@@ -313,8 +319,11 @@ export function LeadIntakePage({ customers = [], setCustomers, estimates = [], s
           CustomersPage.tsx's customer table (icon-only action buttons +
           overflow-x-auto wrapper + hiding secondary columns on small
           screens), rather than inventing a new mobile layout. */}
-      {allLeads.length > 0 && (
-        <div className="space-y-2">
+      {/* BUG FIX — sort/filter/action controls used to only render once at
+          least one lead existed, so a brand-new owner with zero leads had no
+          way to see this section even worked. Always show the controls;
+          only the table-vs-empty-message part below depends on lead count. */}
+      <div className="space-y-2">
           <div className="flex items-center justify-between flex-wrap gap-2">
             <div className="text-xs text-white/50 uppercase tracking-wider font-semibold flex items-center gap-2">
               <span className="w-2 h-2 bg-green-400 rounded-full animate-pulse" />
@@ -339,7 +348,9 @@ export function LeadIntakePage({ customers = [], setCustomers, estimates = [], s
             </div>
           </div>
 
-          {visibleLeads.length === 0 ? (
+          {allLeads.length === 0 ? (
+            <Glass className="p-6 text-center text-sm text-white/40">No leads yet — preview the form below, then embed it on your website to start capturing leads automatically.</Glass>
+          ) : visibleLeads.length === 0 ? (
             <Glass className="p-6 text-center text-sm text-white/40">No leads match these filters.</Glass>
           ) : (
             <Glass className="overflow-hidden">
@@ -389,20 +400,19 @@ export function LeadIntakePage({ customers = [], setCustomers, estimates = [], s
               </div>
             </Glass>
           )}
-        </div>
-      )}
+      </div>
 
       {/* Customer-facing form preview */}
       {preview && (
         <div className="rounded-2xl overflow-hidden border border-white/10 shadow-2xl">
           {/* Form header */}
-          <div className="bg-gradient-to-r from-red-600 to-red-800 px-6 py-5">
-            <div className="font-bold text-lg text-white">{companyName}</div>
-            <div className="text-red-200 text-xs mt-0.5">Get a free estimate — we respond within 2 hours</div>
+          <div className="px-6 py-5" style={{ background: leadBtn }}>
+            <div className="font-bold text-lg" style={{ color: leadText }}>{companyName}</div>
+            <div className="text-xs mt-0.5 opacity-80" style={{ color: leadText }}>Get a free estimate — we respond within 2 hours</div>
           </div>
 
           {/* Form body */}
-          <div className="bg-neutral-950 p-6">
+          <div className="p-6" style={{ background: leadBg }}>
             {submitted ? (
               <div className="text-center py-8 space-y-3">
                 <div className="text-4xl">🎉</div>
@@ -445,25 +455,22 @@ export function LeadIntakePage({ customers = [], setCustomers, estimates = [], s
                 <button
                   onClick={handleSubmit}
                   disabled={!f.firstName || !f.phone || !f.address || submitting}
-                  className="w-full py-4 bg-gradient-to-r from-red-600 to-red-800 text-white font-bold rounded-xl hover:from-red-500 hover:to-red-700 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                  style={{ background: leadBtn, color: leadText }}
+                  className="w-full py-4 font-bold rounded-xl transition-all disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {submitting ? "Submitting…" : "Get My Free Estimate →"}
                 </button>
-                <div className="text-center text-[10px] text-white/30">🔒 We never share your info · No spam · Usually respond within 2 hours</div>
+                <div className="text-center text-[10px] opacity-50" style={{ color: leadText }}>🔒 We never share your info · No spam · Usually respond within 2 hours</div>
               </div>
             )}
           </div>
         </div>
       )}
 
-      {/* Empty state */}
       {allLeads.length === 0 && !preview && (
-        <Glass className="p-10 text-center">
-          <FileImage size={40} className="mx-auto mb-3 text-white/20 anim-float" />
-          <div className="text-white/50 font-medium">No leads yet</div>
-          <div className="text-white/30 text-sm mt-1 mb-4">Preview the form above, then embed it on your website to start capturing leads automatically.</div>
+        <div className="text-center pt-2">
           <GBtn onClick={() => setPreview(true)}>Preview Customer Form</GBtn>
-        </Glass>
+        </div>
       )}
     </div>
   );

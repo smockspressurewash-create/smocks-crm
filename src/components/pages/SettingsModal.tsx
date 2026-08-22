@@ -555,7 +555,7 @@ export function SettingsModal({ open, onClose, settings, setSettings, jobs = [],
           {sec === "audit" && <div className="space-y-3">
             <h4 className="font-semibold text-sm flex items-center gap-2"><Shield size={14} className="text-red-400" />Audit Log</h4>
             <div className="text-xs text-white/50">Recent system events and data changes.</div>
-            <div className="space-y-1.5 max-h-80 overflow-y-auto">
+            <div className="space-y-1.5">
               {[
                 { ts: new Date(Date.now() - 300000).toLocaleString(), action: "Settings saved", user: "Will", detail: "Updated company name + Twilio credentials" },
                 { ts: new Date(Date.now() - 900000).toLocaleString(), action: "Estimate created", user: "Will", detail: "Estimate #X7K2 for Jennifer Walsh — $742.00" },

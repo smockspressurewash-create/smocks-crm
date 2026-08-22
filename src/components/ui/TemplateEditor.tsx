@@ -113,7 +113,7 @@ export function TemplateEditor({ emailTemplates, setEmailTemplates, smsTemplates
         </Glass>
       )}
 
-      <div className="space-y-2 max-h-[300px] overflow-y-auto">
+      <div className="space-y-2">
         {templates.map(t => <div key={t.id} className="flex items-center gap-2 p-3 bg-white/5 border border-white/5 rounded-xl">
           <div className="flex-1 min-w-0">
             <div className="text-sm font-medium">{t.name}</div>
