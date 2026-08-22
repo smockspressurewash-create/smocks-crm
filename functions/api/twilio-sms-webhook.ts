@@ -33,7 +33,20 @@ const START_WORDS = ["START", "UNSTOP", "YES"];
 const CONFIRM_WORDS = ["Y", "YES"];
 const DEFAULT_OPT_IN_KEYWORD = "DEALS";
 
-const normalizePhoneDigits = (p: string) => (p || "").replace(/\D/g, "");
+// FIX — Twilio's `From`/`To` always arrive E.164 with the US country code
+// ("+17173411794" → digits "17173411794", 11 digits), but a number the
+// owner types into Settings (myPhone/alfredExtraPhones) is normally just
+// the 10-digit local number ("717 341 1794" → "7173411794") — plain digit
+// stripping alone left those two NEVER equal, so the "is this the owner
+// texting Alfred?" check (authorizedPhones.includes(fromDigits)) silently
+// failed every time for a US number entered without a country code. This
+// was the root cause of "I texted Alfred and it just logged to the Inbox
+// like a normal customer message, Alfred never replied." Strip a leading
+// "1" off an 11-digit result so both forms normalize to the same 10 digits.
+const normalizePhoneDigits = (p: string) => {
+  const d = (p || "").replace(/\D/g, "");
+  return d.length === 11 && d.startsWith("1") ? d.slice(1) : d;
+};
 
 // Twilio's request-signing scheme: HMAC-SHA1(authToken, url + sorted(key+value
 // pairs, concatenated with no separator)), base64-encoded, compared to the

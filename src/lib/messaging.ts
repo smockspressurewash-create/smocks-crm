@@ -134,7 +134,17 @@ export const postToBuffer = async (
 // invoice texts, campaigns, review requests — checks this same in-memory set
 // before sending, with zero changes needed at any of the ~45 call sites.
 let optedOutPhoneDigits = new Set<string>();
-const normalizePhoneDigits = (p?: string | null) => (p || "").replace(/\D/g, "");
+// FIX — a customer phone can be stored as a plain 10-digit US number
+// ("717 555 0100") while the number actually being sent to/checked against
+// is E.164 with the country code ("+17175550100", 11 digits) — plain digit
+// stripping alone left those two never equal, so an opted-out or
+// test-client customer stored without a country code could silently slip
+// past both checks. Strip a leading "1" off an 11-digit result so both
+// forms compare equal (same fix applied in the Twilio Cloudflare Functions).
+const normalizePhoneDigits = (p?: string | null) => {
+  const d = (p || "").replace(/\D/g, "");
+  return d.length === 11 && d.startsWith("1") ? d.slice(1) : d;
+};
 
 export const setOptedOutPhones = (customers: { phone?: string; smsOptOut?: boolean }[]): void => {
   optedOutPhoneDigits = new Set(

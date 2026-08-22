@@ -148,7 +148,14 @@ const callSmsModel = async (
   return { text, toolUses, stopReason, raw: choice ?? { role: "assistant", content: text } };
 };
 
-const normalizePhoneDigits = (p: string) => (p || "").replace(/\D/g, "");
+// Same US-country-code normalization fix as twilio-sms-webhook.ts — an
+// E.164 number ("+17173411794") and a plain 10-digit one ("7173411794")
+// must compare equal, or thread-matching here silently creates duplicate
+// inbox threads for what's really the same contact.
+const normalizePhoneDigits = (p: string) => {
+  const d = (p || "").replace(/\D/g, "");
+  return d.length === 11 && d.startsWith("1") ? d.slice(1) : d;
+};
 const today = () => new Date().toISOString().slice(0, 10);
 
 type Ctx = {
