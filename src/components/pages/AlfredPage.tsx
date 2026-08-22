@@ -25,7 +25,7 @@ import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Exp
 import { twilioSend, sendEmail, emailShell, emailButton, logOutboundSmsToInbox, getFreshOwnerGoogleToken } from "../../lib/messaging";
 import { fetchCalendarEvents, createGCalEvent, updateGCalEvent, deleteGCalEvent } from "../../lib/googleApi";
 import { seedWeather } from "../../lib/weather";
-import { seedCustomers, seedEstimates, seedJobs, seedEmployees, seedVehicles, seedExpenses, seedChemicals, seedServices, seedAutomations, seedEmailTemplates, seedSmsTemplates, seedRewardTiers, seedReferrals, seedMaintenance, campaignTemplates, seedSocialPosts, seedTimeline, seedGoals, seedReminders, seedAccountabilityEntries, seedMileage, seedLeadSrc, STEP_TYPES, AUTOMATION_TEMPLATES } from "../../lib/seed";
+import { seedCustomers, seedEstimates, seedJobs, seedEmployees, seedVehicles, seedExpenses, seedChemicals, seedServices, seedAutomations, seedEmailTemplates, seedSmsTemplates, seedRewardTiers, seedReferrals, seedMaintenance, campaignTemplates, seedSocialPosts, seedTimeline, seedGoals, seedReminders, seedAccountabilityEntries, seedMileage, seedLeadSrc, STEP_TYPES, AUTOMATION_TEMPLATES, automationFromTemplate } from "../../lib/seed";
 import { callModel, MODELS, parseRateLimitError } from "../../lib/api";
 import { supabase, getStoredGoogleConnection } from "../../lib/supabase";
 import { createCalendarEvent, updateCalendarEvent, deleteCalendarEvent, fetchDriveFiles, MOCK_GOOGLE_DATA, fmtSize, fmtDate, fileIcon } from "../../lib/google";
@@ -1931,6 +1931,19 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           toast("Alfred created workflow: " + newAuto.name);
           return { success: true, automationId: newAuto.id, name: newAuto.name, stepCount: steps.length };
         }
+        case "enable_review_request_automation": {
+          const existing = automations.find((a: any) => a.id === "tpl_review_request");
+          if (existing?.active) return { success: true, note: "Already on." };
+          if (existing) {
+            setAutomations(prev => prev.map((a: any) => a.id === "tpl_review_request" ? { ...a, active: true } : a));
+          } else {
+            const tpl = (AUTOMATION_TEMPLATES as any[]).find(t => t.id === "tpl_review_request");
+            if (!tpl) return { error: "Template not found." };
+            setAutomations(prev => [...prev, automationFromTemplate(tpl)]);
+          }
+          toast("📮 Turned on automatic review requests after job completion ✓");
+          return { success: true };
+        }
         case "list_automations": {
           return {
             count: automations.length,
@@ -2221,6 +2234,11 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
       name: "switch_ai_model",
       description: "Switch which AI provider Alfred uses (here and over text), e.g. 'switch to Claude' / 'use Gemini instead'. Only works for a provider that already has an API key saved in Settings → AI Models.",
       input_schema: { type: "object", properties: { provider: { type: "string", description: "e.g. 'claude', 'gpt-4o', 'gemini', 'groq', 'mistral', 'kimi'" } }, required: ["provider"] }
+    },
+    {
+      name: "enable_review_request_automation",
+      description: "Turn on automatically texting customers a review-request link a couple days after their job is marked complete — a real rule-based automation (no AI/API usage on the actual sends), not something you have to remember to do yourself. Use for 'automatically ask for reviews after jobs' / 'send review requests after we finish'.",
+      input_schema: { type: "object", properties: {} },
     },
     {
       name: "create_automation",

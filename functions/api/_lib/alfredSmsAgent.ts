@@ -347,7 +347,15 @@ const sendSms = async (ctx: Ctx, toPhone: string, bodyRaw: string, isOwnerReply 
         body: JSON.stringify(patch),
       });
     } else {
-      await sbWrite(ctx, "inbox_threads", "POST", { id: crypto.randomUUID(), channel: "sms", contact_name: isOwnerReply ? "Alfred" : (contact?.name || toPhone), contact_phone: toPhone, customer_id: !isOwnerReply ? (contact?.customerId || null) : null, unread: false, messages: [msg], last_message_at: msg.ts, updated_at: new Date().toISOString() });
+      // BUG FIX — this used to name the owner's own conversation-with-Alfred
+      // thread literally "Alfred" in the Inbox, which the owner explicitly
+      // asked to stop — a conversation is still with/about a real contact
+      // (here, the owner's own number), not a fake pseudo-contact. The
+      // per-message "from Alfred" badge (via:"alfred" on the message itself,
+      // see InboxPage.tsx) already distinguishes an Alfred-sent message from
+      // a manually-typed one — that's the right place for this signal, not
+      // the thread's contact name.
+      await sbWrite(ctx, "inbox_threads", "POST", { id: crypto.randomUUID(), channel: "sms", contact_name: contact?.name || toPhone, contact_phone: toPhone, customer_id: !isOwnerReply ? (contact?.customerId || null) : null, unread: false, messages: [msg], last_message_at: msg.ts, updated_at: new Date().toISOString() });
     }
   } catch (e: any) { console.warn("[AlfredSms] inbox log failed:", e?.message); }
   return { ok: true };
@@ -587,13 +595,32 @@ const TOOLS = [
     },
   },
   {
+    name: "enable_review_request_automation",
+    description: "Turn on automatically texting customers a review-request link a couple days after their job is marked complete — a normal rule-based automation (no AI involved in the actual sends, so no ongoing API usage), not something Alfred has to remember to do manually each time. Use for 'automatically send review requests after jobs are done' / 'ask customers for reviews after we finish'.",
+    input_schema: { type: "object", properties: {} },
+  },
+  {
+    name: "set_standing_preference",
+    description: "Save a persistent 'from now on' instruction so it's automatically remembered and honored in every future conversation, not just this one — e.g. 'from now on call me Boss', 'from now on don't ask before sending invoices', 'from now on go ahead and confirm reschedules yourself'. Set autoApproveReschedules/autoApproveInvoiceSends when the instruction is specifically about those two things (they actually change behavior, not just phrasing) — always also pass the plain-English instruction either way.",
+    input_schema: {
+      type: "object",
+      properties: {
+        instruction: { type: "string", description: "the standing instruction in the owner's own words" },
+        autoApproveReschedules: { type: "boolean", description: "true = stop asking before confirming a customer's reschedule request, just do it and tell them after; false = go back to asking first" },
+        autoApproveInvoiceSends: { type: "boolean", description: "true = don't ask for confirmation before sending an invoice when asked to; false = go back to confirming first" },
+      },
+      required: ["instruction"],
+    },
+  },
+  {
     name: "set_reminder",
-    description: "Schedule a text reminder to be sent back to the owner at a specific future time — use for 'remind me to X at/in/on Y'. Resolve the due time to an exact ISO 8601 datetime yourself (you're told today's date and time in the system prompt) before calling this — never pass a vague phrase.",
+    description: "Schedule a text reminder to be sent back to the owner at a specific future time — use for 'remind me to X at/in/on Y', or 'from now on, every day at Y, do/tell me X' (pass recurring). Resolve the due time to an exact ISO 8601 datetime yourself (you're told today's date and time in the system prompt) before calling this — never pass a vague phrase. Requires an external cron pinger to actually fire (Settings → AI Models explains the one-time setup) — mention that if the owner seems unaware.",
     input_schema: {
       type: "object",
       properties: {
         message: { type: "string", description: "what to remind the owner about" },
-        dueAtIso: { type: "string", description: "exact ISO 8601 datetime to send the reminder, e.g. 2026-08-23T14:00:00" },
+        dueAtIso: { type: "string", description: "exact ISO 8601 datetime to send the FIRST (or only) reminder, e.g. 2026-08-23T14:00:00" },
+        recurring: { type: "string", enum: ["daily", "weekly"], description: "set for 'every day'/'every week' requests — repeats indefinitely at the same time until cancelled" },
       },
       required: ["message", "dueAtIso"],
     },
@@ -1123,15 +1150,64 @@ const executeTool = async (ctx: Ctx, name: string, input: Record<string, any>): 
         if (filtered.length === 0) return { success: true, memories: [], summary: q ? `Nothing saved matching "${input.search}".` : "Nothing saved yet." };
         return { success: true, memories: filtered.slice(0, 20).map((r: any) => r.text) };
       }
+      case "enable_review_request_automation": {
+        // The actual `automations` list lives in the owner's browser
+        // localStorage, not Supabase — this server-side agent has no direct
+        // access to it. Stage a flag on app_settings that App.tsx applies
+        // the next time the owner's browser is open (adds the built-in
+        // "Post-Job Review Request" automation if not already present),
+        // same bridge pattern as alfredExtraPhoneRoles.
+        const rows = await sbGet(ctx, `app_settings?select=owner_id,data${ownerScope(ctx)}&limit=1`);
+        const row = rows[0];
+        if (!row?.owner_id) return { error: "Couldn't find your settings to update." };
+        const res = await fetch(`${SUPABASE_URL}/rest/v1/app_settings?owner_id=eq.${encodeURIComponent(row.owner_id)}`, {
+          method: "PATCH", headers: { ...ctx.authHeaders, "Content-Type": "application/json", Prefer: "return=minimal" },
+          body: JSON.stringify({ data: { ...row.data, pendingEnableReviewRequestAutomation: true } }),
+        });
+        if (!res.ok) return { error: "Couldn't save — " + (await res.text().catch(() => "")).slice(0, 200) };
+        return { success: true, note: "Will turn on the next time the CRM is opened in a browser (usually within a few seconds if it's already open)." };
+      }
+      case "set_standing_preference": {
+        if (!input.instruction) return { error: "instruction required" };
+        // Saved as a memory (category "preference") so it's auto-injected
+        // into every future conversation's system prompt (see
+        // runAlfredSmsAgent below) — the owner shouldn't have to repeat a
+        // "from now on" instruction, and Alfred shouldn't need to call
+        // recall itself to remember it.
+        const memRow = { id: crypto.randomUUID(), text: input.instruction, category: "preference" };
+        const memRes = await sbWrite(ctx, "alfred_memory", "POST", memRow);
+        if (!memRes.ok) return { error: memRes.error };
+        // autoApproveReschedules/autoApproveInvoiceSends are the two
+        // preferences that need to actually CHANGE code behavior, not just
+        // influence phrasing — reschedule auto-approval is read by the
+        // separate customer-facing agent (alfredCustomerAgent.ts) which has
+        // no access to this conversation's memory, so it has to be a real
+        // settings flag, not just a remembered fact.
+        if (input.autoApproveReschedules !== undefined || input.autoApproveInvoiceSends !== undefined) {
+          const rows = await sbGet(ctx, `app_settings?select=owner_id,data${ownerScope(ctx)}&limit=1`);
+          const row = rows[0];
+          if (row?.owner_id) {
+            const patch: Record<string, unknown> = { ...row.data };
+            if (input.autoApproveReschedules !== undefined) patch.alfredAutoApproveReschedules = !!input.autoApproveReschedules;
+            if (input.autoApproveInvoiceSends !== undefined) patch.alfredAutoApproveInvoiceSends = !!input.autoApproveInvoiceSends;
+            await fetch(`${SUPABASE_URL}/rest/v1/app_settings?owner_id=eq.${encodeURIComponent(row.owner_id)}`, {
+              method: "PATCH", headers: { ...ctx.authHeaders, "Content-Type": "application/json", Prefer: "return=minimal" },
+              body: JSON.stringify({ data: patch }),
+            });
+          }
+        }
+        return { success: true, saved: input.instruction };
+      }
       case "set_reminder": {
         if (!input.message || !input.dueAtIso) return { error: "message and dueAtIso required" };
         const dueAt = new Date(input.dueAtIso);
         if (isNaN(dueAt.getTime())) return { error: "dueAtIso isn't a valid date/time." };
         if (!ctx.fromPhone) return { error: "Don't know which number to remind." };
-        const row = { id: crypto.randomUUID(), phone: ctx.fromPhone, message: input.message, due_at: dueAt.toISOString(), sent: false };
+        const recurring = input.recurring === "daily" || input.recurring === "weekly" ? input.recurring : null;
+        const row = { id: crypto.randomUUID(), phone: ctx.fromPhone, message: input.message, due_at: dueAt.toISOString(), sent: false, recurring };
         const res = await sbWrite(ctx, "alfred_reminders", "POST", row);
         if (!res.ok) return { error: res.error };
-        return { success: true, reminderId: row.id, dueAt: dueAt.toISOString() };
+        return { success: true, reminderId: row.id, dueAt: dueAt.toISOString(), recurring: recurring || undefined };
       }
       case "list_reminders": {
         const rows = await sbGet(ctx, `alfred_reminders?select=id,message,due_at${ownerScope(ctx)}&sent=eq.false&order=due_at.asc&limit=25`);
@@ -1420,20 +1496,34 @@ export const runAlfredSmsAgent = async (
   const history = await loadThread(ctx, fromPhone);
   const messages = [...history, { role: "user", content: incomingText }];
 
+  // Auto-inject standing "from now on" preferences (set_standing_preference)
+  // into every conversation, instead of relying on the model to remember to
+  // call recall on its own — a "from now on" instruction that only applies
+  // when Alfred happens to think to look it up isn't actually persistent.
+  let preferencesBlock = "";
+  try {
+    const prefs = await sbGet(ctx, `alfred_memory?select=text${ownerScope(ctx)}&category=eq.preference&order=created_at.desc&limit=15`);
+    if (prefs.length > 0) {
+      preferencesBlock = `\n\nSTANDING PREFERENCES the owner has told you to always follow (most recent first — a later one about the same topic overrides an earlier one):\n` + prefs.map((p: any) => `- ${p.text}`).join("\n");
+    }
+  } catch { /* non-fatal — proceed without preferences rather than fail the whole reply */ }
+
   const nowLocal = new Date().toISOString();
-  const systemPrompt = `You are Alfred, the AI assistant for ${ctx.companyName}, a pressure-washing business — texting back and forth with the OWNER over SMS while they're away from the CRM. The current date/time is ${nowLocal} (UTC). Use tools aggressively to actually read and modify the CRM — never just describe what you'd do. Keep replies SHORT (this is a text message, 1-3 sentences per item, no markdown). If a tool result has an "error" field, tell the owner exactly what went wrong — do not claim success, and do not guess or describe an action vaguely if you're not certain the tool actually returned "success": true. When you finish an action, confirm plainly what happened.
+  const systemPrompt = `You are Alfred, the AI assistant for ${ctx.companyName}, a pressure-washing business — texting back and forth with the OWNER over SMS while they're away from the CRM. The current date/time is ${nowLocal} (UTC). Use tools aggressively to actually read and modify the CRM — never just describe what you'd do. Keep replies SHORT (this is a text message, 1-3 sentences per item, no markdown). If a tool result has an "error" field, tell the owner exactly what went wrong — do not claim success, and do not guess or describe an action vaguely if you're not certain the tool actually returned "success": true. When you finish an action, confirm plainly what happened.${preferencesBlock}
+
+STANDING PREFERENCES: when the owner says something like "from now on...", "always...", "don't ask me about... anymore", or "call me...", that's a persistent instruction, not just for this one reply — call set_standing_preference to save it (it'll be listed above automatically in every future conversation from then on). Don't wait to be asked twice.
 
 MULTI-PART REQUESTS: when a single text asks for several distinct things ("who's working, AND create this customer, AND quote them, AND text it"), treat each as its own tool call and report EACH ONE'S real outcome by name in your reply — don't roll them into one vague summary line, and never describe a step as done unless its own tool result actually said so. If one step's tool result is an "error", say exactly which step failed and why, but still report the outcome of every OTHER step you did complete — don't let one failure make the whole reply vague about what did or didn't happen.
 
 CLARIFYING QUESTIONS: if a request is missing something a tool needs (which customer, which date, which job when there are several matches), ask ONE short, specific question instead of guessing — then stop and wait for their reply. The full conversation history is remembered, so when they answer, pick up exactly where you left off and finish the original request; don't make them repeat themselves.
 
-FOLLOWING UP LATER: you are not limited to replying only in this exact moment. If a task naturally needs a check-in later (e.g. "did the crew actually show up", "nudge me if Mike hasn't replied by 3", "nudge me if [job] isn't marked done by tonight"), use set_reminder to text yourself — meaning the owner — back at that time, resolving any relative time ("in 20 min", "by 3pm", "tonight") into an exact ISO datetime using the current date/time above. This is a real scheduled text, not just a note — use it whenever the owner asks to be followed up with, checked on, or reminded about something, even mid-conversation.
+FOLLOWING UP LATER: you are not limited to replying only in this exact moment. If a task naturally needs a check-in later (e.g. "did the crew actually show up", "nudge me if Mike hasn't replied by 3", "nudge me if [job] isn't marked done by tonight"), use set_reminder to text yourself — meaning the owner — back at that time, resolving any relative time ("in 20 min", "by 3pm", "tonight") into an exact ISO datetime using the current date/time above. This is a real scheduled text, not just a note — use it whenever the owner asks to be followed up with, checked on, or reminded about something, even mid-conversation. For a standing "from now on, every day at X..." request, pass recurring: "daily" (or "weekly") on the same tool — it repeats indefinitely, not just once.
 
 CUSTOMER REQUESTS AWAITING YOU: some customers have Alfred auto-response turned on for texting directly with them — when one of them asks to reschedule, that Alfred (a separate, more restricted agent) proposes it to YOU here rather than committing to anything itself, and texts you the details. If the owner replies "yes"/"sure"/"that works" (or similar) without more context, and there's a recent proposal in this conversation, that's almost always what they're confirming — call list_pending_customer_requests to find it (don't assume which one from memory alone, always look it up) then approve_customer_request or decline_customer_request. These are the ONLY customer-initiated actions that need the owner's yes/no this way — everything else that customer-facing agent handles (pricing questions, appointment status) it answers on its own without involving you.
 
 MASS MESSAGING — real power, use it carefully: notify_all_customers texts EVERY eligible customer at once (optionally narrowed by tag) — this is a real, immediate send to real people, not a draft. Use it for broadcast requests like "let everyone know I'm running late today", "tell my customers about the weather closure", or "send a promo to my whole list". Always confirm you have the FULL exact wording before calling it if the owner was vague ("send something to everyone" — ask what it should say, don't invent business content on their behalf). create_promotion sets up a tracked discount code but does NOT send anything by itself — for "create a promo and send it out", call create_promotion first, then notify_all_customers with a message that includes the returned code, in the same reply.
 
-You can: text the owner back on request (text_me), remember arbitrary facts/notes for later (remember/recall — use this whenever they say "remember", "keep track of", or "note that"), schedule future text reminders/follow-ups (set_reminder; list_reminders/cancel_reminder manage existing ones), summarize the schedule (get_calendar_summary), add a non-job event to the owner's real Google Calendar (create_calendar_event — use schedule_job instead for an actual pressure-washing job tied to a customer), review/approve or deny employee job requests (list_job_requests, respond_to_job_request), resolve customer requests awaiting approval (list_pending_customer_requests, approve_customer_request, decline_customer_request — see above), and message many customers at once or run a promotion (notify_all_customers, create_promotion — see above). Core CRM actions: create/reschedule/cancel jobs, reprioritize a job, look up full job or customer detail (get_job_details, get_customer_details), add a checklist item, assign employees, create customers, check who's clocked in and what they're working on, and create/send quotes and invoices (create_estimate then send_estimate — two steps, creating one does NOT notify the customer). Use whichever tool actually matches what's being asked, and don't hesitate to chain several tool calls in one exchange if the request needs it (e.g. reschedule a job AND text the customer AND remember a preference). You can also receive and understand voice memos sent as a text — they're transcribed automatically before you ever see them, so just respond to the transcribed content normally.
+You can: text the owner back on request (text_me), remember arbitrary facts/notes for later (remember/recall — use this whenever they say "remember", "keep track of", or "note that"), save persistent "from now on" instructions that apply to every future conversation (set_standing_preference — see above), schedule future text reminders/follow-ups (set_reminder; list_reminders/cancel_reminder manage existing ones), summarize the schedule (get_calendar_summary), add a non-job event to the owner's real Google Calendar (create_calendar_event — use schedule_job instead for an actual pressure-washing job tied to a customer), review/approve or deny employee job requests (list_job_requests, respond_to_job_request), resolve customer requests awaiting approval (list_pending_customer_requests, approve_customer_request, decline_customer_request — see above), message many customers at once or run a promotion (notify_all_customers, create_promotion — see above), and turn on automatically texting a review-request link a couple days after a job's marked complete (enable_review_request_automation — a real deterministic automation, not something you have to remember to do yourself each time). Core CRM actions: create/reschedule/cancel jobs, reprioritize a job, look up full job or customer detail (get_job_details, get_customer_details), add a checklist item, assign employees, create customers, check who's clocked in and what they're working on, and create/send quotes and invoices (create_estimate then send_estimate — two steps, creating one does NOT notify the customer). Use whichever tool actually matches what's being asked, and don't hesitate to chain several tool calls in one exchange if the request needs it (e.g. reschedule a job AND text the customer AND remember a preference). You can also receive and understand voice memos sent as a text — they're transcribed automatically before you ever see them, so just respond to the transcribed content normally.
 
 BE CONCISE — this is a text message, and every extra sentence costs real API tokens. One short line per part of the request is enough ("✅ Luke's clocked in, no job. ✅ Created Franco Serenelli. ✅ Sent him a $424 quote.") — no throat-clearing, no restating the question, no closing pleasantries.`;
 

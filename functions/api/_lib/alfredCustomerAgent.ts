@@ -45,6 +45,11 @@ type Ctx = {
   twilioToken?: string;
   twilioFrom?: string;
   ownerPhone: string; // where proposals get texted for approval
+  // FEATURE — set_standing_preference (owner's own agent, alfredSmsAgent.ts)
+  // lets the owner say "from now on just confirm reschedules yourself" —
+  // when true, propose_reschedule commits the change immediately instead of
+  // creating a pending row + asking, and just sends the owner an FYI.
+  autoApproveReschedules?: boolean;
 };
 
 const sbGet = async (ctx: Ctx, path: string): Promise<any[]> => {
@@ -68,7 +73,10 @@ const sendSms = async (ctx: Ctx, toPhone: string, bodyRaw: string): Promise<bool
   if (!res.ok) return false;
   // Log to the OWNER's inbox thread with them, marked via:"alfred" — same
   // convention as alfredSmsAgent.ts — so a reschedule proposal shows up in
-  // the owner's Inbox conversation with "Alfred" too, not just as an SMS.
+  // the owner's Inbox conversation too, not just as an SMS. Named by the
+  // real phone number, not "Alfred" — the owner asked threads to never be
+  // relabeled that way; the via:"alfred" badge on the message itself is
+  // where that signal belongs.
   try {
     const threads = await sbGet(ctx, `inbox_threads?channel=eq.sms&select=id,contact_phone,messages${ownerScope(ctx)}`);
     const digits = (toPhone || "").replace(/\D/g, "");
@@ -83,7 +91,7 @@ const sendSms = async (ctx: Ctx, toPhone: string, bodyRaw: string): Promise<bool
     } else {
       await fetch(`${SUPABASE_URL}/rest/v1/inbox_threads`, {
         method: "POST", headers: { ...ctx.authHeaders, "Content-Type": "application/json", Prefer: "return=minimal" },
-        body: JSON.stringify({ id: crypto.randomUUID(), channel: "sms", contact_name: "Alfred", contact_phone: toPhone, unread: false, messages: [msg], last_message_at: msg.ts, updated_at: new Date().toISOString(), ...(ctx.ownerId ? { owner_id: ctx.ownerId } : {}) }),
+        body: JSON.stringify({ id: crypto.randomUUID(), channel: "sms", contact_name: toPhone, contact_phone: toPhone, unread: false, messages: [msg], last_message_at: msg.ts, updated_at: new Date().toISOString(), ...(ctx.ownerId ? { owner_id: ctx.ownerId } : {}) }),
       });
     }
   } catch { /* non-fatal */ }
@@ -135,6 +143,21 @@ const executeTool = async (ctx: Ctx, customer: any, name: string, input: Record<
         const jobs = await sbGet(ctx, `jobs?customerId=eq.${encodeURIComponent(customer.id)}&select=id,scheduledDate,scheduledTime,status${ownerScope(ctx)}&status=neq.completed&status=neq.cancelled&order=scheduledDate.asc&limit=10`);
         const job = jobs[0];
         if (!job) return { error: "No active appointment on file to reschedule — tell the customer to call/text the office directly." };
+        // FEATURE — owner can say "from now on just confirm reschedules
+        // yourself" (set_standing_preference on the owner's own agent).
+        // Commits the change immediately instead of creating a pending
+        // request, and sends the owner a "by the way, already handled" FYI
+        // instead of asking first.
+        if (ctx.autoApproveReschedules) {
+          const patch: Record<string, unknown> = { scheduledDate: input.requestedDate };
+          if (input.requestedTime) patch.scheduledTime = input.requestedTime;
+          await fetch(`${SUPABASE_URL}/rest/v1/jobs?id=eq.${encodeURIComponent(job.id)}`, {
+            method: "PATCH", headers: { ...ctx.authHeaders, "Content-Type": "application/json", Prefer: "return=minimal" }, body: JSON.stringify(patch),
+          });
+          const custName = `${customer.firstName || ""} ${customer.lastName || ""}`.trim();
+          sendSms(ctx, ctx.ownerPhone, `✅ FYI — ${custName} asked to move their ${job.scheduledDate}${job.scheduledTime ? " " + job.scheduledTime : ""} appointment, so I went ahead and confirmed it for ${input.requestedDate}${input.requestedTime ? " " + input.requestedTime : ""} (you said not to ask first — tell Alfred if you'd rather go back to approving these).`).catch(() => {});
+          return { success: true, autoConfirmed: true, newDate: input.requestedDate, newTime: input.requestedTime || null, instruction: "Tell the customer directly that their appointment is confirmed for the new date/time — this one is already committed, don't say you'll check and get back to them." };
+        }
         const sameDayJobs = await sbGet(ctx, `jobs?scheduledDate=eq.${encodeURIComponent(input.requestedDate)}&select=id${ownerScope(ctx)}&status=neq.cancelled`);
         const looksBusy = sameDayJobs.length >= 6; // simple heuristic, not a real capacity model
         const row = {
@@ -215,7 +238,10 @@ export const runAlfredCustomerAgent = async (
 
 STRICT GUARDRAILS — these are not suggestions:
 - You may answer general questions (pricing via get_service_pricing, their own appointment status via get_my_appointment_status) directly.
-- You may NEVER reschedule, cancel, discount, or promise a specific new appointment time yourself. If they ask to reschedule, use propose_reschedule (requires a specific requested date) — this only proposes it to the OWNER for approval. After calling it, tell the customer something like "Let me check with the team and get back to you shortly!" — never confirm a new time yourself.
+- You may NEVER cancel, discount, or promise a specific new appointment time WITHOUT going through propose_reschedule first — never just tell them a new time is set on your own say-so.
+${ctx.autoApproveReschedules
+  ? `- The owner has told you to confirm reschedules yourself, no approval needed. If they ask to reschedule, call propose_reschedule (requires a specific requested date) — it commits the change for real. Its result will tell you to confirm the new date/time directly to the customer; do that plainly ("You're all set — moved to [date]!").`
+  : `- If they ask to reschedule, use propose_reschedule (requires a specific requested date) — this only proposes it to the OWNER for approval. After calling it, tell the customer something like "Let me check with the team and get back to you shortly!" — never confirm a new time yourself.`}
 - If asked for anything you don't have a tool for (complaints, custom quotes, anything unusual), say you'll have the owner follow up personally — do not guess or improvise business decisions.
 - Never discuss any OTHER customer, never reveal internal business details (revenue, other appointments, employee info).`;
 

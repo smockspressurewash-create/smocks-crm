@@ -34,7 +34,7 @@ export const onRequest = async (context: { request: Request; env: Record<string,
   }
 
   const headers = { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}` };
-  const dueRes = await fetch(`${SUPABASE_URL}/rest/v1/alfred_reminders?sent=eq.false&due_at=lte.${encodeURIComponent(new Date().toISOString())}&select=id,owner_id,phone,message`, { headers });
+  const dueRes = await fetch(`${SUPABASE_URL}/rest/v1/alfred_reminders?sent=eq.false&due_at=lte.${encodeURIComponent(new Date().toISOString())}&select=id,owner_id,phone,message,due_at,recurring`, { headers });
   const due = await dueRes.json().catch(() => []);
   if (!Array.isArray(due) || due.length === 0) return new Response(JSON.stringify({ sent: 0 }), { headers: { "Content-Type": "application/json" } });
 
@@ -76,6 +76,19 @@ export const onRequest = async (context: { request: Request; env: Record<string,
       continue;
     }
     sentCount++;
+
+    // Recurring reminders ("from now on, every day...") reschedule
+    // themselves for the next occurrence instead of staying done forever —
+    // same row, new due_at, unclaimed again. A daily/weekly reminder is
+    // meant to repeat indefinitely until the owner cancels it.
+    if (r.recurring === "daily" || r.recurring === "weekly") {
+      const next = new Date(r.due_at);
+      next.setDate(next.getDate() + (r.recurring === "daily" ? 1 : 7));
+      await fetch(`${SUPABASE_URL}/rest/v1/alfred_reminders?id=eq.${encodeURIComponent(r.id)}`, {
+        method: "PATCH", headers: { ...headers, "Content-Type": "application/json", Prefer: "return=minimal" },
+        body: JSON.stringify({ sent: false, due_at: next.toISOString() }),
+      }).catch(() => {});
+    }
   }
 
   return new Response(JSON.stringify({ sent: sentCount, errors }), { headers: { "Content-Type": "application/json" } });

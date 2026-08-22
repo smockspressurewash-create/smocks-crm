@@ -905,6 +905,25 @@ export function App() {
     });
     setSettings((s: any) => ({ ...s, automationsReportBackfillV2: true }));
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  // FEATURE — text-Alfred's enable_review_request_automation tool has no
+  // direct access to `automations` (usePersistent/localStorage, browser-only
+  // — this server-side agent can't touch it), so it stages a flag on
+  // app_settings instead. Applied here the next time the owner's browser is
+  // open (polls settings, so within a few seconds even if already open) —
+  // same bridge pattern as the report-template backfill above, just
+  // triggered by a live flag instead of running once ever.
+  useEffect(() => {
+    if (!(settings as any).pendingEnableReviewRequestAutomation) return;
+    setAutomations(prev => {
+      if (prev.some((a: any) => a.id === "tpl_review_request" && a.active)) return prev;
+      const existing = prev.find((a: any) => a.id === "tpl_review_request");
+      if (existing) return prev.map((a: any) => a.id === "tpl_review_request" ? { ...a, active: true } : a);
+      const tpl = (AUTOMATION_TEMPLATES as any[]).find(t => t.id === "tpl_review_request");
+      return tpl ? [...prev, automationFromTemplate(tpl)] : prev;
+    });
+    setSettings((s: any) => ({ ...s, pendingEnableReviewRequestAutomation: false }));
+    toast?.("📮 Turned on automatic review requests after job completion ✓", "green");
+  }, [(settings as any).pendingEnableReviewRequestAutomation]); // eslint-disable-line react-hooks/exhaustive-deps
   // ISSUE 14 (round 11) — ROOT CAUSE of "all Alfred check-in messages look
   // the same": the check-in effect further down is deliberately keyed only
   // on [crmUserId] (see its own comment) so its hourly setInterval survives

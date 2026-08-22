@@ -137,6 +137,12 @@ interface ResolvedOwnerSettings {
   googleRefreshToken: string;
   googleTokenExpiresAt: number;
   testModeEnabled: boolean;
+  // set_standing_preference (owner's own text-Alfred) writes these when the
+  // owner says "from now on just confirm reschedules yourself" / "don't
+  // ask before sending invoices" — read here so the customer-facing agent
+  // (which has no access to the owner conversation's memory) can honor them.
+  alfredAutoApproveReschedules: boolean;
+  alfredAutoApproveInvoiceSends: boolean;
 }
 
 const shapeSettings = (row: any, data: any): ResolvedOwnerSettings => ({
@@ -167,6 +173,8 @@ const shapeSettings = (row: any, data: any): ResolvedOwnerSettings => ({
   googleRefreshToken: data?.googleRefreshToken || "",
   googleTokenExpiresAt: Number(data?.googleTokenExpiresAt) || 0,
   testModeEnabled: !!data?.testModeEnabled,
+  alfredAutoApproveReschedules: !!data?.alfredAutoApproveReschedules,
+  alfredAutoApproveInvoiceSends: !!data?.alfredAutoApproveInvoiceSends,
 });
 
 const fetchAppSettings = async (env: Record<string, string>, toNumber: string): Promise<ResolvedOwnerSettings> => {
@@ -347,7 +355,7 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
     const isStop = STOP_WORDS.includes(body);
     const isStart = START_WORDS.includes(body);
     const resolved = await fetchAppSettings(context.env, params.To || "");
-    const { companyName, keyword, ownerId, myPhone, alfredExtraPhones, alfredExtraPhoneRoles, alfredSmsEnabled, twilioSid, twilioToken, twilioFrom, modelKeys, modelPriority, activeModel, openaiKey, googleProviderToken, googleRefreshToken, googleTokenExpiresAt, testModeEnabled } = resolved;
+    const { companyName, keyword, ownerId, myPhone, alfredExtraPhones, alfredExtraPhoneRoles, alfredSmsEnabled, twilioSid, twilioToken, twilioFrom, modelKeys, modelPriority, activeModel, openaiKey, googleProviderToken, googleRefreshToken, googleTokenExpiresAt, testModeEnabled, alfredAutoApproveReschedules } = resolved;
     const isOptInKeyword = body === keyword;
     const isConfirm = CONFIRM_WORDS.includes(body);
 
@@ -451,7 +459,9 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
           } else {
             await fetch(`${SUPABASE_URL}/rest/v1/inbox_threads`, {
               method: "POST", headers: { ...authHeaders, "Content-Type": "application/json", Prefer: "return=minimal" },
-              body: JSON.stringify({ id: crypto.randomUUID(), channel: "sms", contact_name: "Alfred", contact_phone: from, unread: true, messages: [newMsg], last_message_at: newMsg.ts, updated_at: new Date().toISOString(), ...(ownerFilter ? { owner_id: ownerId || null } : {}) }),
+              // Named by the real phone number, not "Alfred" — the owner
+              // asked threads to never be relabeled that way.
+              body: JSON.stringify({ id: crypto.randomUUID(), channel: "sms", contact_name: from, contact_phone: from, unread: true, messages: [newMsg], last_message_at: newMsg.ts, updated_at: new Date().toISOString(), ...(ownerFilter ? { owner_id: ownerId || null } : {}) }),
             });
           }
         } catch (e: any) { console.error("[TwilioSmsWebhook] failed to log inbound Alfred text:", e?.message); }
@@ -636,7 +646,7 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
     // changes from today's behavior (message stays logged for the owner to
     // answer manually).
     if (!isStop && !isStart && !isOptInKeyword && !isConfirm && match?.alfredAutoRespond) {
-      const custCtx = { authHeaders, ownerId, companyName, twilioSid, twilioToken, twilioFrom, ownerPhone: myPhone };
+      const custCtx = { authHeaders, ownerId, companyName, twilioSid, twilioToken, twilioFrom, ownerPhone: myPhone, autoApproveReschedules: alfredAutoApproveReschedules };
       context.waitUntil(
         resolveIncomingText(params, bodyRaw, twilioSid, twilioToken, openaiKey, (context.env as any).AI)
           .then((text) => isTranscriptionFailureNote(text)
