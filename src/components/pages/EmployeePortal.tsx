@@ -5223,6 +5223,13 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
             <div className="text-xs font-semibold text-white/80 leading-tight">{myEmployee.firstName} {myEmployee.lastName}</div>
             <div className="text-[10px] text-white/40 capitalize leading-tight">{myEmployee.role}</div>
           </div>
+          {/* PWA install — small icon-only button just left of the avatar,
+              same treatment as the owner CRM header. Was a full-width red
+              banner under the header before; per explicit user feedback that
+              was too prominent for this portal, so it's now a quiet icon
+              here instead (still renders something in every browser state —
+              see InstallAppButton.tsx). */}
+          <InstallAppButton className="!p-2 !gap-0 !bg-transparent !border-0 !text-white/40 hover:!text-white hover:!bg-white/10 !rounded-xl flex-shrink-0" label="" />
           <div className="w-8 h-8 rounded-full bg-gradient-to-br from-red-700/60 to-red-900/60 border border-red-700/30 flex items-center justify-center text-xs font-bold flex-shrink-0">
             {myEmployee.firstName?.[0] || "?"}{myEmployee.lastName?.[0] || ""}
           </div>
@@ -5239,17 +5246,6 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
         </div>
       </header>
 
-      {/* PWA — the login screen's InstallAppButton only ever rendered BEFORE
-          sign-in, so an already-logged-in employee never saw it anywhere.
-          A small icon in the crowded header (first attempt) was too easy to
-          miss — this is a full-width, impossible-to-miss banner right under
-          the header instead, at the very top of the scrollable content.
-          Renders nothing at all until Chrome/iOS actually offers an install
-          (see InstallAppButton.tsx), so it never sits there as a dead strip. */}
-      <InstallAppButton
-        className="!w-full !rounded-none !justify-center !py-3 !text-sm !gap-2 !bg-gradient-to-r !from-red-600 !to-red-800 !border-0 !border-b !border-red-950 !text-white !font-bold flex-shrink-0"
-        label="Install CrewBoss on This Phone"
-      />
       <SopModal open={sopOpen} onClose={() => setSopOpen(false)} />
 
       {/* Persistent shift timer bar — visible on all tabs while clocked in */}
