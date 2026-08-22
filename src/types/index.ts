@@ -749,7 +749,6 @@ export interface AppSettings {
   alfredExtraPhones?: string[];
   clientPortalCancelReschedule?: boolean;
   weeklyDigestAutoSend?: boolean;
-  theme?: "dark" | "light";
 
   // Crew policy
   maxLunchMinutes?: number;

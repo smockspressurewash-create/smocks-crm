@@ -4,7 +4,7 @@ import {
   Calendar, MessageSquare, Megaphone, Star, Zap, Share2, UserPlus,
   Bot, Database, Users2, Truck, DollarSign, FlaskConical, BarChart3,
   TrendingUp, PiggyBank, Wallet, Heart, Gift, Monitor, Tag,
-  Bell, Settings, X, Lock, Globe, ChevronLeft, ChevronRight, Plus, Undo2, Redo2, CheckCircle, Eye, EyeOff, Menu, AlertTriangle, Trash2, BookOpen, Sun, Moon
+  Bell, Settings, X, Lock, Globe, ChevronLeft, ChevronRight, Plus, Undo2, Redo2, CheckCircle, Eye, EyeOff, Menu, AlertTriangle, Trash2, BookOpen
 } from "lucide-react";
 
 import { useGlobalStyles } from "./hooks/useGlobalStyles";
@@ -923,13 +923,6 @@ export function App() {
     notifyWeather: true,
     reviewShowcaseMinRating: 5,
   });
-  // THEME FOUNDATION — applies data-theme to <html> so the CSS custom
-  // properties in index.css (and the surface/ink/edge Tailwind tokens
-  // built on them) switch. See the theme toggle button near the header's
-  // Notifications bell for where this gets flipped.
-  useEffect(() => {
-    document.documentElement.setAttribute("data-theme", settings.theme === "light" ? "light" : "dark");
-  }, [settings.theme]);
   // FIX 14 — lets effects (e.g. the Alfred check-in interval below) read the
   // latest settings at fire-time without depending on `settings` directly,
   // which would otherwise reset their setInterval every time any setting
@@ -3377,9 +3370,20 @@ export function App() {
             : {}),
         }}
       >
-        {/* Logo */}
+        {/* Logo — opens the marketing landing page in a NEW tab, not
+            in-place navigation. In-place would immediately bounce right
+            back to the dashboard via the "already-signed-in owner off the
+            marketing/login pages" redirect guard a few hundred lines down
+            (by design, so a stray #/welcome bookmark/link never strands a
+            logged-in owner on marketing copy) — opening in a new tab lets
+            the owner glance at their own landing page without that guard
+            fighting them or losing their place in the CRM. */}
         <div className="p-4 border-b border-red-900/30 flex items-center justify-between">
-          <div className="flex items-center gap-2.5">
+          <button
+            onClick={() => window.open(window.location.origin + window.location.pathname + "#/welcome", "_blank", "noopener,noreferrer")}
+            className="flex items-center gap-2.5 text-left hover:opacity-80 transition"
+            title="View landing page"
+          >
             <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-red-600 to-red-900 flex items-center justify-center font-black text-xs text-white shadow-lg shadow-red-900/40">
               CB
             </div>
@@ -3387,7 +3391,7 @@ export function App() {
               <div className="font-bold text-sm leading-tight">{settings.companyName || "Crew Boss OS"}</div>
               <div className="text-[10px] text-white/40">Business CRM</div>
             </div>
-          </div>
+          </button>
           <button onClick={() => setSidebarOpen(false)} className="md:hidden text-white/40 hover:text-white p-1"><X size={16} /></button>
         </div>
 
@@ -3507,20 +3511,6 @@ export function App() {
             className="hidden md:flex items-center gap-1.5 px-3 py-1.5 bg-black/40 border border-red-900/30 rounded-xl text-xs text-white/50 hover:text-white hover:border-red-600/50 transition"
           >
             <Globe size={13} />Portal
-          </button>
-          {/* THEME FOUNDATION — toggles data-theme on <html>, persisted via
-              settings.theme. Only components using the surface/ink/edge
-              Tailwind tokens (Glass/GBtn/GInput/GSel/Modal/Badge + this app
-              shell) actually change appearance yet — most page content is
-              still hardcoded dark and won't visibly shift. This is real
-              working infrastructure and a genuine start, not a full
-              conversion of every screen. */}
-          <button
-            onClick={() => setSettings((s: any) => ({ ...s, theme: s.theme === "light" ? "dark" : "light" }))}
-            title={settings.theme === "light" ? "Switch to dark theme" : "Switch to light theme"}
-            className="p-2 text-white/60 hover:text-white transition"
-          >
-            {settings.theme === "light" ? <Moon size={16} /> : <Sun size={16} />}
           </button>
           {/* Notifications */}
           <div className="relative">
