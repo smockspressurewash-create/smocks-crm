@@ -1989,6 +1989,75 @@ function OwnerTeamPortal({ jobs, employees, customers, onClose, googleMapsKey, t
   );
 }
 
+// ShiftEndDigestModal — shown when an employee taps "End My Day" (the
+// whole-shift dayClockInAt/dayLunchStartAt/dayPausedMinutes clock, NOT the
+// per-job clock in JobDetailView) before the clock-out write actually fires.
+// Gives them a last look at their day — hours, jobs completed, and any
+// flagged issues pulled from real data already tracked on `jobs` for today
+// (unchecked checklist items, no-shows, internal notes) — rather than
+// silently ending the shift on a single tap. Top-level component per
+// CLAUDE.md/BUG 4 — never define new components inside EmployeePortal's body.
+function ShiftEndDigestModal({ hoursLabel, jobsCompleted, jobsToday, flaggedIssues, onConfirm, onCancel, confirming }: {
+  hoursLabel: string;
+  jobsCompleted: number;
+  jobsToday: number;
+  flaggedIssues: string[];
+  onConfirm: () => void;
+  onCancel: () => void;
+  confirming: boolean;
+}) {
+  return (
+    <div className="fixed inset-0 z-[200] bg-black/80 backdrop-blur flex items-center justify-center sm:p-4" onClick={() => !confirming && onCancel()}>
+      <div className="w-full h-full sm:h-auto sm:max-w-md sm:max-h-[85vh] bg-neutral-950 border border-white/10 sm:rounded-2xl shadow-2xl flex flex-col overflow-hidden" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between px-4 py-3 border-b border-white/10 bg-gradient-to-r from-red-600 to-red-800 flex-shrink-0">
+          <div className="font-bold text-white flex items-center gap-2"><Clock size={16} />End My Day</div>
+          <button onClick={onCancel} disabled={confirming} className="p-2 rounded-lg hover:bg-white/15 text-white transition disabled:opacity-40"><X size={18} /></button>
+        </div>
+        <div className="flex-1 overflow-y-auto p-4 space-y-4 min-h-0">
+          <div className="text-sm text-white/60">Here's your day before you clock out:</div>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="p-3 rounded-xl bg-white/5 border border-white/10 text-center">
+              <div className="text-2xl font-bold text-green-300">{hoursLabel}</div>
+              <div className="text-[10px] text-white/40 uppercase tracking-wide mt-0.5">Hours Worked</div>
+            </div>
+            <div className="p-3 rounded-xl bg-white/5 border border-white/10 text-center">
+              <div className="text-2xl font-bold text-blue-300">{jobsCompleted}<span className="text-sm text-white/30">/{jobsToday}</span></div>
+              <div className="text-[10px] text-white/40 uppercase tracking-wide mt-0.5">Jobs Completed</div>
+            </div>
+          </div>
+          {flaggedIssues.length > 0 ? (
+            <div className="space-y-2">
+              <div className="text-xs font-bold text-yellow-300 flex items-center gap-1.5 uppercase tracking-wide">
+                <AlertTriangle size={13} />Flagged from today
+              </div>
+              <div className="space-y-1.5">
+                {flaggedIssues.map((issue, i) => (
+                  <div key={i} className="flex items-start gap-2 p-2.5 rounded-xl bg-yellow-950/20 border border-yellow-700/30 text-xs text-yellow-100/80">
+                    <AlertCircle size={13} className="text-yellow-400 flex-shrink-0 mt-0.5" />
+                    <span>{issue}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : (
+            <div className="flex items-center gap-2 p-3 rounded-xl bg-green-950/20 border border-green-700/30 text-xs text-green-300">
+              <CheckCircle size={14} className="flex-shrink-0" />Nothing flagged — clean day!
+            </div>
+          )}
+        </div>
+        <div className="flex gap-2 p-4 border-t border-white/10 flex-shrink-0">
+          <GBtn variant="ghost" onClick={onCancel} disabled={confirming} className="flex-1 !justify-center disabled:opacity-50">
+            Cancel
+          </GBtn>
+          <GBtn onClick={onConfirm} disabled={confirming} className="flex-1 !justify-center !bg-gradient-to-r !from-green-700 !to-green-900 !border-green-600/50 disabled:opacity-50">
+            {confirming ? "Ending Day…" : "Confirm — End My Day"}
+          </GBtn>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, employees, customers, setCustomers = (() => {}) as any, settings, toast, isOwnerView = false, onClose = () => {}, refetchEmployees, estimates = [], setEstimates = (() => {}) as any, weatherData = null as any }: {
   empSession: any; setEmpSession: (s: any) => void;
   jobs: Job[]; setJobs: (fn: (prev: Job[]) => Job[]) => void;
@@ -2085,6 +2154,13 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     window.addEventListener("focus", check);
     return () => { cancelled = true; window.removeEventListener("focus", check); };
   }, []);
+  // FEATURE — shift-end digest: "End My Day" opens this confirmation modal
+  // (real today's-jobs/hours data, see ShiftEndDigestModal) instead of
+  // clocking out immediately. endDayConfirming disables the modal's buttons
+  // while the actual clock-out write is in flight so a slow network can't
+  // leave it double-tappable.
+  const [showEndDayDigest, setShowEndDayDigest] = useState(false);
+  const [endDayConfirming, setEndDayConfirming] = useState(false);
   const [routeLoading, setRouteLoading] = useState(false);
   // ISSUE 5 (round 11) — this used to let the EMPLOYEE write their own
   // paidPeriods/paidDays as a "confirm you received this pay" self-
@@ -4929,6 +5005,60 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
               )}
             </div>
 
+            {/* Next 3 Jobs — compact glance-and-go mini-itinerary so seeing
+                what's next doesn't require switching to the Jobs tab. Reuses
+                the exact same selectedJobId → JobDetailView path the full
+                Jobs list already uses (see the "Selected job detail" branch
+                above this component's Portal render) — tapping a card here
+                opens the identical job detail view, nothing duplicated. */}
+            {(() => {
+              const upNext3 = myJobs
+                .filter(j => j.status !== "completed" && j.status !== "cancelled" && j.scheduledDate >= todayStr)
+                .sort((a, b) => (a.scheduledDate + (a.scheduledTime || "23:59")).localeCompare(b.scheduledDate + (b.scheduledTime || "23:59")))
+                .slice(0, 3);
+              if (upNext3.length === 0) return null;
+              return (
+                <Glass className="p-4 !bg-black/30">
+                  <div className="flex items-center gap-2 mb-3">
+                    <List size={14} className="text-red-400" />
+                    <div className="text-sm font-bold text-white">Next {upNext3.length === 1 ? "Job" : `${upNext3.length} Jobs`}</div>
+                  </div>
+                  <div className="space-y-2">
+                    {upNext3.map(j => {
+                      const c = findCustomer(j.customerId);
+                      const isToday = j.scheduledDate === todayStr;
+                      const priorityDot =
+                        j.priority === "urgent" ? "bg-red-500" :
+                        j.priority === "high" ? "bg-orange-400" :
+                        j.priority === "low" ? "bg-white/20" : "bg-blue-400";
+                      return (
+                        <button key={j.id} onClick={() => setSelectedJobId(j.id)}
+                          className="w-full flex items-center gap-3 p-2.5 rounded-xl bg-white/5 border border-white/10 hover:bg-white/10 hover:border-red-600/30 transition text-left">
+                          <span className={"w-2 h-2 rounded-full flex-shrink-0 " + priorityDot} title={`${j.priority || "normal"} priority`} />
+                          <div className="flex-1 min-w-0">
+                            <div className="text-xs font-semibold text-white truncate">{c ? `${c.firstName} ${c.lastName}` : "Unknown Customer"}</div>
+                            <div className="text-[11px] text-white/50 truncate flex items-center gap-1 mt-0.5">
+                              <MapPin size={9} className="flex-shrink-0" />{j.address}
+                            </div>
+                          </div>
+                          <div className="flex flex-col items-end flex-shrink-0 gap-1">
+                            <div className="text-[11px] font-semibold text-white/70 whitespace-nowrap">
+                              {isToday ? (j.scheduledTime || "Today") : new Date(j.scheduledDate + "T12:00:00").toLocaleDateString("en-US", { weekday: "short", month: "numeric", day: "numeric" })}
+                            </div>
+                            <div className={"text-[9px] px-1.5 py-0.5 rounded-full font-bold uppercase " +
+                              (j.status === "in_progress" ? "bg-yellow-900/40 text-yellow-300" : "bg-blue-900/40 text-blue-300")}>
+                              {(j.status || "").replace("_", " ")}
+                            </div>
+                          </div>
+                          <ChevronRight size={14} className="text-white/20 flex-shrink-0" />
+                        </button>
+                      );
+                    })}
+                  </div>
+                </Glass>
+              );
+            })()}
+
             {/* Weather — same OpenWeather-backed data the owner's Dashboard
                 shows (App.tsx fetches it once, keyed off settings.owmKey);
                 crew scheduling outdoor pressure-washing jobs need rain/wind
@@ -5201,8 +5331,62 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                   refetchEmployees?.();
                 } catch (e: any) { toast("Failed to save — " + (e?.message || "try again"), "red"); }
               };
+              // FEATURE — shift-end digest data, computed from real data
+              // already tracked on `jobs` for today (never a new tracking
+              // field): checklist arrays, internalNotes/notes, and noShow.
+              // "End My Day" opens ShiftEndDigestModal with this instead of
+              // clocking out immediately; toggleDay() (the real write) only
+              // fires once the employee taps Confirm in the modal.
+              const todaysJobsForDigest = myJobs.filter(j => j.scheduledDate === todayStr);
+              const completedTodayForDigest = todaysJobsForDigest.filter(j => j.status === "completed");
+              const digestFlaggedIssues: string[] = [];
+              todaysJobsForDigest.forEach(j => {
+                const cust = findCustomer(j.customerId);
+                const label = cust ? `${cust.firstName} ${cust.lastName}`.trim() : (j.address || "Job");
+                if (j.noShow) digestFlaggedIssues.push(`${label} — marked as no-show`);
+                if (j.status === "cancelled" && j.cancelReason) digestFlaggedIssues.push(`${label} — cancelled: ${j.cancelReason}`);
+                if (j.status === "completed") {
+                  const allCk = [...(j.preChecklist || []), ...(j.duringChecklist || []), ...(j.postChecklist || []), ...(j.checklist || [])];
+                  const unchecked = allCk.filter((c: any) => !c.done);
+                  if (unchecked.length > 0) digestFlaggedIssues.push(`${label} — ${unchecked.length} checklist item${unchecked.length > 1 ? "s" : ""} left unchecked`);
+                }
+                if (j.internalNotes && j.internalNotes.trim()) {
+                  const note = j.internalNotes.trim();
+                  digestFlaggedIssues.push(`${label} — internal note: "${note.slice(0, 70)}${note.length > 70 ? "…" : ""}"`);
+                }
+              });
+              const digestHours = Math.round(netShiftHoursNow * 100) / 100;
+              const digestTotH = Math.floor(digestHours);
+              const digestTotM = Math.round((digestHours - digestTotH) * 60);
+              const digestHoursLabel = `${digestTotH}h ${String(digestTotM).padStart(2, "0")}m`;
+              const confirmEndDay = async () => {
+                setEndDayConfirming(true);
+                try {
+                  await withTimeout(toggleDay(), 20000, "End My Day");
+                } catch (e: any) {
+                  // toggleDay() already shows its own success/failure toast
+                  // internally; this only guards against withTimeout's own
+                  // rejection (a hung request) leaving the modal stuck open.
+                  console.error("[ShiftEndDigest] — error:", e?.message || e);
+                  toast("Still working on it — check your connection and try again if it doesn't clear", "yellow");
+                } finally {
+                  setEndDayConfirming(false);
+                  setShowEndDayDigest(false);
+                }
+              };
               return (
                 <>
+                  {showEndDayDigest && (
+                    <ShiftEndDigestModal
+                      hoursLabel={digestHoursLabel}
+                      jobsCompleted={completedTodayForDigest.length}
+                      jobsToday={todaysJobsForDigest.length}
+                      flaggedIssues={digestFlaggedIssues}
+                      onConfirm={confirmEndDay}
+                      onCancel={() => !endDayConfirming && setShowEndDayDigest(false)}
+                      confirming={endDayConfirming}
+                    />
+                  )}
                   {shiftEndedMsg && !dayClockInAt && (
                     <div className="flex items-center justify-center gap-2 py-3 px-4 rounded-2xl bg-green-950/40 border border-green-700/40 text-green-300 font-semibold text-sm">
                       <CheckCircle size={16} />{shiftEndedMsg}
@@ -5231,7 +5415,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                     </div>
                   )}
                   <div className="flex gap-2">
-                    <button onClick={toggleDay} className={"flex-1 flex items-center justify-center gap-2 py-3 rounded-2xl font-bold text-sm transition active:scale-95 " + (dayClockInAt ? "bg-green-900/40 border-2 border-green-500/60 text-green-300" : isResuming ? "bg-blue-900/40 border-2 border-blue-500/60 text-blue-300 hover:bg-blue-900/60" : "bg-red-700/40 border-2 border-red-500/60 text-white hover:bg-red-700/60")}>
+                    <button onClick={() => (dayClockInAt ? setShowEndDayDigest(true) : toggleDay())} className={"flex-1 flex items-center justify-center gap-2 py-3 rounded-2xl font-bold text-sm transition active:scale-95 " + (dayClockInAt ? "bg-green-900/40 border-2 border-green-500/60 text-green-300" : isResuming ? "bg-blue-900/40 border-2 border-blue-500/60 text-blue-300 hover:bg-blue-900/60" : "bg-red-700/40 border-2 border-red-500/60 text-white hover:bg-red-700/60")}>
                       {dayClockInAt ? <Clock size={16} /> : isResuming ? <Play size={16} /> : <Clock size={16} />}
                       {dayClockInAt ? "End My Day" : isResuming ? "Resume" : "Start My Day"}
                     </button>

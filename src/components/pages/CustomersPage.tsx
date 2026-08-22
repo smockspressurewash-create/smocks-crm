@@ -22,7 +22,7 @@ import {
 } from "recharts";
 import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE } from "../../lib/utils";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
-import { twilioSend, sendEmail } from "../../lib/messaging";
+import { twilioSend, sendEmail, logOutboundSmsToInbox } from "../../lib/messaging";
 import { supabase } from "../../lib/supabase";
 import { seedWeather } from "../../lib/weather";
 import { seedCustomers, seedEstimates, seedJobs, seedEmployees, seedVehicles, seedExpenses, seedChemicals, seedServices, seedAutomations, seedEmailTemplates, seedSmsTemplates, seedRewardTiers, seedReferrals, seedMaintenance, campaignTemplates, seedSocialPosts, seedTimeline, seedGoals, seedReminders, seedAccountabilityEntries, seedMileage, seedLeadSrc, STEP_TYPES, AUTOMATION_TEMPLATES } from "../../lib/seed";
@@ -124,6 +124,66 @@ export function CustomersPage({ customers = [], setCustomers, estimates = [], jo
   const [bulkMode, setBulkMode] = useState(false);
   const [bulkSelected, setBulkSelected] = useState<string[]>([]);
   const toggleBulk = (id: string) => setBulkSelected(s => s.includes(id) ? s.filter(x => x !== id) : [...s, id]);
+  // FEATURE — Bulk SMS to a filtered/selected segment. Reuses the existing
+  // bulk-select checkboxes (which already only offer customers from `filtered`,
+  // so "Select all" is naturally scoped to whatever search/tag/folder filter
+  // is currently applied — e.g. filter to the Trash Can tag/folder, Select,
+  // Select all, Bulk SMS). Same {{first_name}} etc. token convention as
+  // CampaignsPage's `merge()`, same sequential-with-100ms-delay send loop as
+  // CampaignsPage's `launch()` (avoids hammering the Twilio rate limit), same
+  // settings?.twilioSid && c.phone guard as InvoicesPage/JobsPage bulk sends.
+  const [bulkSmsOpen, setBulkSmsOpen] = useState(false);
+  const [bulkSmsBody, setBulkSmsBody] = useState("");
+  const [bulkSmsSending, setBulkSmsSending] = useState(false);
+  const [bulkSmsProgress, setBulkSmsProgress] = useState<{ sent: number; failed: number; total: number } | null>(null);
+
+  const bulkSmsMerge = (template: string, c: any) => template
+    .replace(/{{first_name}}/g, c.firstName || "there")
+    .replace(/{{last_name}}/g, c.lastName || "")
+    .replace(/{{address}}/g, c.address || "")
+    .replace(/{{company_name}}/g, (settings as any)?.companyName || "Crew Boss")
+    .replace(/{{company_phone}}/g, (settings as any)?.companyPhone || "(717) 555-0100");
+
+  const bulkSmsSelectedCustomers = customers.filter((c: any) => bulkSelected.includes(c.id));
+  const bulkSmsEligible = bulkSmsSelectedCustomers.filter((c: any) => c.phone && !c.smsOptOut);
+  const bulkSmsExcludedCount = bulkSmsSelectedCustomers.length - bulkSmsEligible.length;
+
+  const sendBulkSms = async () => {
+    if (!bulkSmsBody.trim() || bulkSmsEligible.length === 0) return;
+    if (!settings?.twilioSid) { toast("Connect Twilio in Settings → Integrations to send bulk SMS", "red"); return; }
+    setBulkSmsSending(true);
+    setBulkSmsProgress({ sent: 0, failed: 0, total: bulkSmsEligible.length });
+    let sent = 0, failed = 0;
+    const failureSamples: string[] = [];
+    for (const c of bulkSmsEligible) {
+      const personalized = bulkSmsMerge(bulkSmsBody, c);
+      try {
+        await twilioSend(settings, c.phone, personalized);
+        logOutboundSmsToInbox({ contactName: `${c.firstName} ${c.lastName}`, contactPhone: c.phone, customerId: c.id, body: personalized }).catch((e: any) => console.warn("[CustomersPage] bulk SMS failed to sync to inbox:", e?.message));
+        sent++;
+      } catch (e: any) {
+        failed++;
+        const reason = e?.message || "Unknown error";
+        if (failureSamples.length < 5) failureSamples.push(`${c.firstName || c.phone}: ${reason}`);
+        console.error("[CustomersPage] bulk SMS failed for", c.id, "—", reason);
+      }
+      setBulkSmsProgress({ sent, failed, total: bulkSmsEligible.length });
+      // Small delay to avoid overwhelming Twilio rate limits — same pattern
+      // as CampaignsPage's bulk send loop.
+      await new Promise(r => setTimeout(r, 100));
+    }
+    setBulkSmsSending(false);
+    setBulkSmsProgress(null);
+    setBulkSmsOpen(false);
+    setBulkSmsBody("");
+    setBulkSelected([]);
+    setBulkMode(false);
+    if (failed > 0) {
+      toast(`Bulk SMS sent — ${sent} delivered, ${failed} failed. First failure: ${failureSamples[0] || "unknown error"}`, sent > 0 ? "yellow" : "red");
+    } else {
+      toast(`Bulk SMS sent to ${sent} customer${sent !== 1 ? "s" : ""} ✓`, "green");
+    }
+  };
 
   const toggleMerge = id => setMergePair(prev => prev.includes(id) ? prev.filter(x => x !== id) : prev.length < 2 ? [...prev, id] : prev);
 
@@ -538,6 +598,7 @@ export function CustomersPage({ customers = [], setCustomers, estimates = [], jo
           </label>
           {bulkSelected.length > 0 && (
             <div className="flex gap-2">
+              <GBtn variant="ghost" onClick={() => setBulkSmsOpen(true)} className="!text-xs"><MessageSquare size={12} className="inline mr-1" />Bulk SMS ({bulkSelected.length})</GBtn>
               <GBtn variant="ghost" onClick={downloadSelectedCsv} className="!text-xs"><Download size={12} className="inline mr-1" />Download ({bulkSelected.length})</GBtn>
               <GBtn variant="danger" onClick={deleteSelectedCustomers} className="!text-xs"><Trash2 size={12} className="inline mr-1" />Delete ({bulkSelected.length})</GBtn>
             </div>
@@ -613,6 +674,49 @@ export function CustomersPage({ customers = [], setCustomers, estimates = [], jo
           </div>
         </div>
       </Modal>}
+
+      {/* FEATURE — Bulk SMS confirmation modal. Shows eligible vs excluded
+          (opted-out/no-phone) counts up front so the owner isn't surprised
+          when the send-result toast reports fewer than the selected count. */}
+      {bulkSmsOpen && (
+        <Modal open={bulkSmsOpen} onClose={() => { if (!bulkSmsSending) { setBulkSmsOpen(false); setBulkSmsBody(""); } }} title="Bulk SMS" maxW="max-w-lg">
+          <div className="space-y-3">
+            <div className={"text-xs rounded-lg p-2.5 border " + (bulkSmsExcludedCount > 0 ? "bg-yellow-950/20 border-yellow-700/30 text-yellow-200" : "bg-green-950/20 border-green-700/30 text-green-200")}>
+              {bulkSmsEligible.length} of {bulkSmsSelectedCustomers.length} will receive this
+              {bulkSmsExcludedCount > 0 && ` — ${bulkSmsExcludedCount} excluded: opted out or no phone`}
+            </div>
+            <div>
+              <textarea
+                value={bulkSmsBody}
+                onChange={e => setBulkSmsBody(e.target.value)}
+                placeholder="Hi {{first_name}}, ..."
+                rows={5}
+                disabled={bulkSmsSending}
+                className="w-full bg-black/40 border border-white/15 rounded-xl px-3 py-2 text-sm text-white placeholder-white/30 focus:outline-none focus:border-red-500/50 resize-none"
+              />
+              <div className="flex gap-1.5 flex-wrap mt-1.5">
+                {["first_name", "last_name", "address", "company_name", "company_phone"].map(v => (
+                  <button key={v} type="button" disabled={bulkSmsSending} onClick={() => setBulkSmsBody(b => b + " {{" + v + "}}")} className="text-[9px] px-2 py-0.5 rounded-full bg-white/5 border border-white/10 text-white/60 hover:text-white">{"{{" + v + "}}"}</button>
+                ))}
+              </div>
+            </div>
+            {bulkSmsProgress && (
+              <div className="space-y-1">
+                <div className="h-2 bg-black/40 rounded-full overflow-hidden">
+                  <div className="h-full bg-gradient-to-r from-red-500 to-green-500 transition-all" style={{ width: ((bulkSmsProgress.sent + bulkSmsProgress.failed) / Math.max(bulkSmsProgress.total, 1) * 100) + "%" }} />
+                </div>
+                <div className="text-[10px] text-white/40 text-right">{bulkSmsProgress.sent + bulkSmsProgress.failed} / {bulkSmsProgress.total} sent{bulkSmsProgress.failed > 0 ? " · " + bulkSmsProgress.failed + " failed" : ""}</div>
+              </div>
+            )}
+            <div className="flex gap-2 justify-end pt-2 border-t border-red-900/20">
+              <GBtn variant="ghost" disabled={bulkSmsSending} onClick={() => { setBulkSmsOpen(false); setBulkSmsBody(""); }}>Cancel</GBtn>
+              <GBtn onClick={sendBulkSms} disabled={bulkSmsSending || !bulkSmsBody.trim() || bulkSmsEligible.length === 0}>
+                <Send size={14} className="inline mr-1.5" />{bulkSmsSending ? "Sending…" : `Send to ${bulkSmsEligible.length}`}
+              </GBtn>
+            </div>
+          </div>
+        </Modal>
+      )}
 
       {/* AUDIT FIX — full folder management: create, rename, delete, and
           nested ("Parent/Child") organization. Drag-and-drop reassignment

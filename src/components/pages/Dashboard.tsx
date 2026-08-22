@@ -136,6 +136,10 @@ function MiniStreetViewThumb({ address, mapsKey }: { address: string; mapsKey?: 
 export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = [], estimates = [], setEstimates = (() => {}) as any, automations = [], stats, goals, vehicles = [], maintenance = [], chemicals = [], settings = {} as AppSettings, setSettings = () => {}, onNav, toast, weatherData = null, weatherFetchError = null, inboxThreads = [], employees = [], crewFetchError = false, reviews = [], onSendDailyBriefing, onViewJob = (id: string) => {}, ownerId = "" }: { jobs?: any[]; setJobs?: any; customers?: any[]; estimates?: any[]; setEstimates?: any; automations?: any[]; stats?: any; goals?: any; vehicles?: any[]; maintenance?: any[]; chemicals?: any[]; settings?: AppSettings; setSettings?: any; onNav?: any; toast?: any; weatherData?: any; weatherFetchError?: string | null; inboxThreads?: any[]; employees?: any[]; crewFetchError?: boolean; reviews?: any[]; onSendDailyBriefing?: () => Promise<void>; onViewJob?: (id: string) => void; ownerId?: string }) {
   const [sendingDashInvoiceId, setSendingDashInvoiceId] = useState<string | null>(null);
   const [needsInvoiceCollapsed, setNeedsInvoiceCollapsed] = useState(false);
+  // "Today" consolidated at-a-glance card (crew status + jobs due today +
+  // overdue invoices + low stock) — collapsible so it doesn't permanently
+  // eat vertical space once the owner's checked it once each morning.
+  const [todayCardCollapsed, setTodayCardCollapsed] = useState(false);
   const [previewInvoiceJob, setPreviewInvoiceJob] = useState<any>(null);
   const [desktopNotifDismissed, setDesktopNotifDismissed] = useState(false);
   // AUDIT ITEM 13 — an empty `employees` array on the very first render is
@@ -571,6 +575,26 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
     return { label: "On Time", tone: "green" };
   };
 
+  // ==== "Today" card computations ====
+  // Crew status — reuses liveTeam/crewStatusLabel/checklistProgress computed
+  // above (no re-implementation of clock-in detection or checklist math).
+  const todayLiveWithStatus = liveTeam.map((t: any) => ({ ...t, status: crewStatusLabel(t.job, t.job ? checklistProgress(t.job) : null) }));
+  const todayLateCount = todayLiveWithStatus.filter((t: any) => t.status.label === "Running Late").length;
+  // Jobs due today — every non-cancelled job scheduled today (broader than
+  // the `todayJobs` alert above, which only counts status==="scheduled", so
+  // an in-progress or already-completed job still shows here).
+  const todayJobsList = jobs
+    .filter((j: any) => j.scheduledDate === todayStr && j.status !== "cancelled")
+    .sort((a: any, b: any) => (a.scheduledTime || "").localeCompare(b.scheduledTime || ""));
+  // Overdue invoices — reuses `overdueInv` computed above for the smart
+  // alerts row (estimates.invoiced && !paidAt && daysSince(invoicedAt) > 14),
+  // matching App.tsx's `overdueCount` convention (~line 1898) rather than a
+  // new definition.
+  const overdueInvTotal = overdueInv.reduce((s: number, e: any) => s + (Number(e.total) || 0), 0);
+  // Low chemical stock — reuses `lowStock` computed above for the smart
+  // alerts row (c.stock <= c.reorderLevel), same threshold ChemicalsPage.tsx
+  // uses for its own low-stock banner.
+
   // FIX 5 — the owner's own crew-assigned jobs, shown inline on the dashboard
   // (not just a link to the Jobs page) so they get the same full checklist,
   // customer info, and signature-capture functionality a technician gets in
@@ -809,6 +833,74 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
           </div>
         </div>
       </div>
+
+      {/* "Today" — consolidated at-a-glance card: crew status, jobs due
+          today, overdue invoices, low chemical stock. Sits at the very top
+          (the owner's most-used landing page, usually opened on a phone
+          first thing in the morning) so none of these four things require
+          navigating to a separate page just to check. Mobile-first: single
+          column that stacks to a 2- then 4-col grid as the viewport grows;
+          collapsible so it doesn't permanently eat vertical space. */}
+      <Glass className="p-4">
+        <button onClick={() => setTodayCardCollapsed(v => !v)} className="w-full flex items-center gap-2 mb-1 text-left">
+          <Sun size={15} className="text-yellow-400 flex-shrink-0" />
+          <h3 className="font-semibold text-sm flex-1">Today</h3>
+          <ChevronRight size={14} className={"text-white/40 transition-transform flex-shrink-0 " + (todayCardCollapsed ? "" : "rotate-90")} />
+        </button>
+        {!todayCardCollapsed && (
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 mt-2">
+            {/* Crew status */}
+            <div className="p-3 rounded-xl bg-black/30 border border-white/10">
+              <div className="flex items-center gap-1.5 text-[11px] text-white/50 mb-1"><Users2 size={12} className="text-green-400" />Crew</div>
+              <div className="text-lg font-bold">{liveTeam.length} <span className="text-xs font-normal text-white/40">on shift</span></div>
+              {todayLateCount > 0 ? (
+                <div className="text-[11px] text-red-400 mt-0.5">{todayLateCount} running late</div>
+              ) : liveTeam.length > 0 ? (
+                <div className="text-[11px] text-green-400 mt-0.5">On time</div>
+              ) : (
+                <div className="text-[11px] text-white/30 mt-0.5">{crewDataSettled ? "No one clocked in" : "Loading…"}</div>
+              )}
+            </div>
+
+            {/* Jobs due today */}
+            <button onClick={() => onNav?.("jobs")} className="text-left p-3 rounded-xl bg-black/30 border border-white/10 hover:border-blue-600/40 transition">
+              <div className="flex items-center gap-1.5 text-[11px] text-white/50 mb-1"><Calendar size={12} className="text-blue-400" />Jobs today</div>
+              <div className="text-lg font-bold">{todayJobsList.length}</div>
+              {todayJobsList.length > 0 ? (() => {
+                const first = todayJobsList[0];
+                const c = customers.find((x: any) => x.id === first.customerId);
+                const name = c ? `${c.firstName} ${c.lastName || ""}`.trim() : "Customer";
+                return (
+                  <div className="text-[11px] text-white/50 mt-0.5 truncate">
+                    {name}{first.scheduledTime ? ` · ${first.scheduledTime}` : ""}{first.status ? ` · ${first.status.replace("_", " ")}` : ""}
+                    {todayJobsList.length > 1 && ` +${todayJobsList.length - 1} more`}
+                  </div>
+                );
+              })() : <div className="text-[11px] text-white/30 mt-0.5">Nothing scheduled</div>}
+            </button>
+
+            {/* Overdue invoices */}
+            <button onClick={() => onNav?.("invoices")} className="text-left p-3 rounded-xl bg-black/30 border border-white/10 hover:border-red-600/40 transition">
+              <div className="flex items-center gap-1.5 text-[11px] text-white/50 mb-1"><Receipt size={12} className="text-red-400" />Overdue invoices</div>
+              <div className="text-lg font-bold">{overdueInv.length}</div>
+              {overdueInv.length > 0 ? (
+                <div className="text-[11px] text-red-400 mt-0.5">{fmt(overdueInvTotal)} · past due 14+ days</div>
+              ) : <div className="text-[11px] text-white/30 mt-0.5">None overdue</div>}
+            </button>
+
+            {/* Low chemical stock */}
+            <button onClick={() => onNav?.("chemicals")} className="text-left p-3 rounded-xl bg-black/30 border border-white/10 hover:border-yellow-600/40 transition">
+              <div className="flex items-center gap-1.5 text-[11px] text-white/50 mb-1"><FlaskConical size={12} className="text-yellow-400" />Low stock</div>
+              <div className="text-lg font-bold">{lowStock.length}</div>
+              {lowStock.length > 0 ? (
+                <div className="text-[11px] text-yellow-400 mt-0.5 truncate">
+                  {lowStock.slice(0, 2).map((c: any) => c.name.split(" ")[0]).join(", ")}{lowStock.length > 2 ? ` +${lowStock.length - 2}` : ""}
+                </div>
+              ) : <div className="text-[11px] text-white/30 mt-0.5">All stocked</div>}
+            </button>
+          </div>
+        )}
+      </Glass>
 
       {/* ITEM 10 — one-time prompt to enable desktop alerts, so "Report
           Problem" (and future crew-activity events) can reach the owner even
