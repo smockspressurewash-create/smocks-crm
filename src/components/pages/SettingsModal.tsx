@@ -23,7 +23,7 @@ import {
 } from "recharts";
 import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, compressImageFile, POLL_INTERVAL_OPTIONS, DEFAULT_POLL_INTERVAL_MS, backfillJobMediaToStorage } from "../../lib/utils";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
-import { twilioSend, sendEmail, fetchBufferOrganizationId, fetchBufferChannels, checkA2pCampaignStatus, type BufferChannel } from "../../lib/messaging";
+import { twilioSend, sendEmail, fetchBufferOrganizationId, fetchBufferChannels, checkA2pCampaignStatus, checkTwilioAccountStatus, type BufferChannel } from "../../lib/messaging";
 import { buildSocialAuthorizeUrl, type SocialPlatform } from "../../lib/socialOAuth";
 import { seedWeather } from "../../lib/weather";
 import { seedCustomers, seedEstimates, seedJobs, seedEmployees, seedVehicles, seedExpenses, seedChemicals, seedServices, seedAutomations, seedEmailTemplates, seedSmsTemplates, seedRewardTiers, seedReferrals, seedMaintenance, campaignTemplates, seedSocialPosts, seedTimeline, seedGoals, seedReminders, seedAccountabilityEntries, seedMileage, seedLeadSrc, STEP_TYPES, AUTOMATION_TEMPLATES } from "../../lib/seed";
@@ -305,6 +305,8 @@ export function SettingsModal({ open, onClose, settings, setSettings, jobs = [],
   const [bufferChannels, setBufferChannels] = useState<BufferChannel[]>([]);
   const [bufferConnecting, setBufferConnecting] = useState(false);
   const [campaignChecking, setCampaignChecking] = useState(false);
+  const [twilioTestChecking, setTwilioTestChecking] = useState(false);
+  const [twilioTestResult, setTwilioTestResult] = useState<{ ok: boolean; text: string } | null>(null);
   const [editingTpl, setEditingTpl] = useState<any>(null); // null = list view, {} = new, {...} = editing existing
   const blankTpl = () => ({ id: "", name: "", description: "", lineItems: [{ id: Date.now().toString(), description: "", quantity: 1, unitPrice: 0 }], notes: "", terms: "Payment due upon completion. 3-day cancellation notice requested. Weather reschedules free of charge.", customFields: [] });
   const blankField = () => ({ id: Date.now().toString() + Math.random(), label: "", type: "text", required: false, customerVisible: true, options: "" });
@@ -421,9 +423,6 @@ export function SettingsModal({ open, onClose, settings, setSettings, jobs = [],
                 <label className="text-xs text-white/60 mb-1 block flex items-center gap-1"><MapPin size={10} />Home Base <span className="text-white/30 font-normal">(starting point for route optimization)</span></label>
                 <AddressAutocomplete value={f.homeBaseAddress || ""} onChange={v => setF({ ...f, homeBaseAddress: v })} mapsKey={f.googleMapsKey} placeholder="412 Oak Ridge Ln, York PA" />
               </div>
-            </div>
-            <div className="p-3 bg-yellow-950/20 border border-yellow-700/30 rounded-xl text-xs text-yellow-200/70">
-              <strong>Note:</strong> This app runs entirely in your browser — no passwords or accounts are needed. Your data is stored locally on this device.
             </div>
             <PinSettings toast={toast} />
             {onSignOut && (
@@ -1458,6 +1457,33 @@ export function SettingsModal({ open, onClose, settings, setSettings, jobs = [],
                   <label className="text-[10px] text-white/50 uppercase tracking-wider">WhatsApp From Number <span className="text-white/30 normal-case">(optional — for WhatsApp Business)</span></label>
                   <GInput value={f.twilioWhatsAppFrom || ""} onChange={e => setF({ ...f, twilioWhatsAppFrom: e.target.value })} placeholder="whatsapp:+15551234567" className="!text-xs mt-1" />
                   <div className="text-[10px] text-white/30 mt-1">Enable WhatsApp in your Twilio console. Format: whatsapp:+1xxxxxxxxxx</div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <GBtn
+                    variant="ghost"
+                    className="!text-[10px] !py-1.5"
+                    disabled={!f.twilioSid || !f.twilioToken || twilioTestChecking}
+                    onClick={async () => {
+                      setTwilioTestChecking(true);
+                      setTwilioTestResult(null);
+                      try {
+                        const result = await checkTwilioAccountStatus(f as any);
+                        setTwilioTestResult({ ok: true, text: `Connected — account is ${result.accountStatus}${result.balance != null ? `, balance ${result.balance} ${result.currency || ""}` : ""}` });
+                        toast?.("Twilio connected ✓", "green");
+                      } catch (e: any) {
+                        const msg = e?.message || "Connection check failed";
+                        setTwilioTestResult({ ok: false, text: msg });
+                        toast?.(msg, "red");
+                      } finally {
+                        setTwilioTestChecking(false);
+                      }
+                    }}
+                  >
+                    {twilioTestChecking ? "Testing…" : "Test Connection"}
+                  </GBtn>
+                  {twilioTestResult && (
+                    <span className={"text-[10px] " + (twilioTestResult.ok ? "text-green-400" : "text-red-400")}>{twilioTestResult.text}</span>
+                  )}
                 </div>
                 <div className="p-3 bg-black/60 rounded-xl border border-white/5 text-[10px] text-white/50 space-y-1.5">
                   <div className="font-semibold text-white/70">Incoming SMS Webhook</div>
