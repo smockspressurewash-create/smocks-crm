@@ -297,6 +297,19 @@ const resolveIncomingText = async (params: Record<string, string>, bodyRaw: stri
   }
 };
 
+// BUG FIX — every resolveIncomingText failure path above returns one of
+// these bracketed diagnostic strings instead of real transcript text. That
+// string used to get handed straight to the LLM as if it were the user's
+// actual message — the model, having no way to know it was a system note
+// about a setup problem, just paraphrased it into a generic customer-
+// service apology ("I'm sorry, I can't process voice memos yet") and threw
+// away the actually-useful part (which specific thing needs fixing:
+// missing Cloudflare "AI" binding, no OpenAI key, bad Twilio credentials,
+// etc). Detecting this and answering with it directly — no model call at
+// all — means whoever sent the voice memo gets the REAL reason, not a
+// vague brush-off.
+const isTranscriptionFailureNote = (text: string): boolean => text.startsWith("[sent a");
+
 export const onRequestPost = async (context: { request: Request; env: Record<string, string>; waitUntil: (p: Promise<any>) => void }) => {
   try {
     const raw = await context.request.text();
@@ -456,7 +469,7 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
       context.waitUntil(
         withDeadline(
           resolveIncomingText(params, bodyRaw, twilioSid, twilioToken, openaiKey, (context.env as any).AI)
-            .then((text) => runAlfredSmsAgent(ctx, modelKeys, modelPriority, activeModel, from, text))
+            .then((text) => isTranscriptionFailureNote(text) ? text : runAlfredSmsAgent(ctx, modelKeys, modelPriority, activeModel, from, text))
             .catch((e: any) => {
               console.error("[TwilioSmsWebhook] Alfred SMS agent failed:", e?.message);
               return "Sorry, something went wrong on my end — try texting again.";
@@ -486,12 +499,17 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
         const empCtx = { authHeaders, ownerId, companyName, twilioSid, twilioToken, twilioFrom, origin: new URL(context.request.url).origin, env: context.env as Record<string, string> };
         context.waitUntil((async () => {
           try {
-            const { runAlfredEmployeeAgent } = await import("./_lib/alfredEmployeeAgent");
             const text = await resolveIncomingText(params, bodyRaw, twilioSid, twilioToken, openaiKey, (context.env as any).AI);
-            const reply = await runAlfredEmployeeAgent(empCtx, employee, modelKeys, modelPriority, text).catch((e: any) => {
-              console.error("[TwilioSmsWebhook] Alfred employee agent failed:", e?.message);
-              return "Sorry, something went wrong on my end — try texting again.";
-            });
+            let reply: string;
+            if (isTranscriptionFailureNote(text)) {
+              reply = text;
+            } else {
+              const { runAlfredEmployeeAgent } = await import("./_lib/alfredEmployeeAgent");
+              reply = await runAlfredEmployeeAgent(empCtx, employee, modelKeys, modelPriority, text).catch((e: any) => {
+                console.error("[TwilioSmsWebhook] Alfred employee agent failed:", e?.message);
+                return "Sorry, something went wrong on my end — try texting again.";
+              });
+            }
             await sendAlfredSms(empCtx as any, from, reply);
           } catch (e: any) {
             console.error("[TwilioSmsWebhook] employee Alfred branch failed:", e?.message);
@@ -604,7 +622,12 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
       const custCtx = { authHeaders, ownerId, companyName, twilioSid, twilioToken, twilioFrom, ownerPhone: myPhone };
       context.waitUntil(
         resolveIncomingText(params, bodyRaw, twilioSid, twilioToken, openaiKey, (context.env as any).AI)
-          .then((text) => runAlfredCustomerAgent(custCtx, match, modelKeys, modelPriority, text))
+          .then((text) => isTranscriptionFailureNote(text)
+            // A customer should never see an internal setup detail like
+            // "add the AI binding in Cloudflare" — keep it generic, unlike
+            // the owner/employee branches which get the real diagnostic.
+            ? "Sorry, I couldn't quite make out that voice memo — mind sending it as a text instead?"
+            : runAlfredCustomerAgent(custCtx, match, modelKeys, modelPriority, text))
           .then((reply) => { if (reply) return sendCustomerAgentReply(custCtx, from, reply); })
           .catch((e: any) => console.error("[TwilioSmsWebhook] customer Alfred agent failed:", e?.message))
       );
