@@ -124,8 +124,8 @@ export function AIModelsSection({ f, setF, modelStatus, setModelStatus, toast })
           <button onClick={() => setF({ ...f, alfredSmsEnabled: !f.alfredSmsEnabled })}>{f.alfredSmsEnabled ? <ToggleRight size={28} className="text-red-400" /> : <ToggleLeft size={28} className="text-white/30" />}</button>
           <div className="flex-1 min-w-0">
             <div className="font-semibold text-sm flex items-center gap-1.5"><Bot size={13} />Text Alfred from your phone</div>
-            <div className="text-[11px] text-white/60 mt-0.5">Text your CRM's Twilio number from your own mobile number (set under Company → Your Mobile #) and Alfred replies right there — schedule/reschedule jobs, assign crew, text customers, business stats. Needs a Claude API key below and your mobile number set.</div>
-            {!modelKeys.claude && <div className="text-[11px] text-yellow-400 mt-1.5">⚠️ Add a Claude API key below first — text-Alfred only runs on Claude.</div>}
+            <div className="text-[11px] text-white/60 mt-0.5">Text your CRM's Twilio number from your own mobile number (set under Company → Your Mobile #) and Alfred replies right there — schedule/reschedule jobs, assign crew, text customers, business stats. Uses whichever AI provider(s) you've added a key for below (Claude, GPT-4o, Gemini, Groq, Mistral, or a free NVIDIA model), in your configured priority order — needs at least one key, plus your mobile number set.</div>
+            {!Object.keys(MODELS).some(mid => !!modelKeys[mid]) && <div className="text-[11px] text-yellow-400 mt-1.5">⚠️ Add at least one AI provider key below first.</div>}
             {!f.myPhone && <div className="text-[11px] text-yellow-400 mt-1.5">⚠️ Set "Your Mobile #" under Settings → Company first.</div>}
             {f.alfredSmsEnabled && (
               <div className="mt-3 pt-3 border-t border-white/10">
