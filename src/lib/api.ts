@@ -449,11 +449,21 @@ export const callModel = async (opts: {
       lastErr = undefined;
       break;
     } catch (err) {
-      // On a network/CORS error (TypeError: Failed to fetch), retry through a public CORS proxy.
+      // On a network/CORS error (TypeError: Failed to fetch), retry through
+      // this app's own same-origin proxy (functions/api/ai-proxy.ts) —
+      // used to be a public third-party proxy (corsproxy.io), which is now
+      // returning 403 Forbidden on every request (verified live) and was
+      // sending the user's API key to an unrelated service. NVIDIA's NIM
+      // API in particular sets NO CORS headers at all (verified live), so
+      // every NVIDIA call takes this path, every time — this is the actual
+      // reason NVIDIA models "don't work": there was no working fallback.
       if (err instanceof TypeError) {
         try {
-          const proxied = "https://corsproxy.io/?" + encodeURIComponent(def.endpoint);
-          data = await safeFetch(proxied, { method: "POST", headers: openAiHeaders, body: openAiBody }) as typeof data;
+          data = await safeFetch("/api/ai-proxy", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ url: def.endpoint, headers: openAiHeaders, body: openAiBody }),
+          }) as typeof data;
           lastErr = undefined;
           break;
         } catch (proxyErr) {

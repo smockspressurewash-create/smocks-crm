@@ -1436,7 +1436,34 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           setJobs(prev => prev.map(x => x.id === inputs.jobId ? { ...x, ...patch } : x));
           toast("Alfred rescheduled job to " + inputs.date + (inputs.time ? " at " + inputs.time : ""));
           setTimeout(() => onNav("jobs"), 1200);
-          return { success: true, jobId: inputs.jobId, newDate: inputs.date, newTime: inputs.time || j.scheduledTime };
+          // FEATURE — "reschedule this job and text/email the customer" used
+          // to require the model to independently chain reschedule_job then
+          // send_reminder across two rounds, which worked only if the model
+          // reliably composed that itself (never guaranteed). A built-in
+          // notify option makes this one deterministic tool call instead of
+          // relying on model judgment for a very common compound request —
+          // the job move itself still succeeds even if the notify leg fails.
+          let notifyWarning: string | undefined;
+          if (inputs.notify && inputs.notify !== "none") {
+            const c = customers.find(x => x.id === j.customerId);
+            const msg = `Hi ${c?.firstName || ""}, your ${settings?.companyName || "service"} appointment has been moved to ${inputs.date}${inputs.time ? " at " + inputs.time : ""}. Let us know if that doesn't work!`;
+            try {
+              if ((inputs.notify === "sms" || inputs.notify === "both") && c?.phone && settings?.twilioSid) {
+                await twilioSend(settings, c.phone, msg);
+                logOutboundSmsToInbox({ contactName: `${c.firstName} ${c.lastName}`, contactPhone: c.phone, customerId: c.id, body: msg }).catch(() => {});
+              } else if (inputs.notify === "sms" || inputs.notify === "both") {
+                notifyWarning = "Job rescheduled, but couldn't text the customer — no phone on file or Twilio not configured.";
+              }
+              if ((inputs.notify === "email" || inputs.notify === "both") && c?.email) {
+                await sendEmail(settings, { to: c.email, subject: "Your appointment has been rescheduled", body: emailShell(settings, "Rescheduled", `<p>${msg}</p>`) });
+              } else if (inputs.notify === "email" || inputs.notify === "both") {
+                notifyWarning = (notifyWarning ? notifyWarning + " " : "") + "Couldn't email the customer — no email on file.";
+              }
+            } catch (e: any) {
+              notifyWarning = "Job rescheduled, but notifying the customer failed: " + (e?.message || String(e));
+            }
+          }
+          return { success: true, jobId: inputs.jobId, newDate: inputs.date, newTime: inputs.time || j.scheduledTime, ...(notifyWarning ? { notifyWarning } : {}) };
         }
         case "cancel_job": {
           const j = jobs.find(x => x.id === inputs.jobId);
@@ -1454,7 +1481,27 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           setJobs(prev => prev.map(x => x.id === inputs.jobId ? { ...x, ...patch } : x));
           toast("Alfred cancelled the " + (j.scheduledDate || "") + " job");
           setTimeout(() => onNav("jobs"), 1200);
-          return { success: true, jobId: inputs.jobId, status: "cancelled" };
+          let cancelNotifyWarning: string | undefined;
+          if (inputs.notify && inputs.notify !== "none") {
+            const c = customers.find(x => x.id === j.customerId);
+            const msg = `Hi ${c?.firstName || ""}, your ${settings?.companyName || "service"} appointment on ${j.scheduledDate || "the scheduled date"} has been cancelled.${inputs.reason ? ` (${inputs.reason})` : ""} Reach out any time to reschedule.`;
+            try {
+              if ((inputs.notify === "sms" || inputs.notify === "both") && c?.phone && settings?.twilioSid) {
+                await twilioSend(settings, c.phone, msg);
+                logOutboundSmsToInbox({ contactName: `${c.firstName} ${c.lastName}`, contactPhone: c.phone, customerId: c.id, body: msg }).catch(() => {});
+              } else if (inputs.notify === "sms" || inputs.notify === "both") {
+                cancelNotifyWarning = "Job cancelled, but couldn't text the customer — no phone on file or Twilio not configured.";
+              }
+              if ((inputs.notify === "email" || inputs.notify === "both") && c?.email) {
+                await sendEmail(settings, { to: c.email, subject: "Your appointment has been cancelled", body: emailShell(settings, "Cancelled", `<p>${msg}</p>`) });
+              } else if (inputs.notify === "email" || inputs.notify === "both") {
+                cancelNotifyWarning = (cancelNotifyWarning ? cancelNotifyWarning + " " : "") + "Couldn't email the customer — no email on file.";
+              }
+            } catch (e: any) {
+              cancelNotifyWarning = "Job cancelled, but notifying the customer failed: " + (e?.message || String(e));
+            }
+          }
+          return { success: true, jobId: inputs.jobId, status: "cancelled", ...(cancelNotifyWarning ? { notifyWarning: cancelNotifyWarning } : {}) };
         }
         // NEW (Alfred functionality audit) — "Show me the details for
         // [customer]'s job" had no dedicated tool; get_customer_details only
@@ -1892,13 +1939,13 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
     },
     {
       name: "reschedule_job",
-      description: "Move an existing job to a new date and/or time.",
-      input_schema: { type: "object", properties: { jobId: { type: "string" }, date: { type: "string", description: "YYYY-MM-DD" }, time: { type: "string", description: "HH:MM, optional" } }, required: ["jobId", "date"] }
+      description: "Move an existing job to a new date and/or time. Can optionally notify the customer in the same call — use this instead of a separate send_reminder call whenever the user asks to reschedule AND notify in one request.",
+      input_schema: { type: "object", properties: { jobId: { type: "string" }, date: { type: "string", description: "YYYY-MM-DD" }, time: { type: "string", description: "HH:MM, optional" }, notify: { type: "string", enum: ["none", "sms", "email", "both"], description: "Whether to notify the customer of the new date/time. Defaults to none." } }, required: ["jobId", "date"] }
     },
     {
       name: "cancel_job",
-      description: "Cancel an existing job.",
-      input_schema: { type: "object", properties: { jobId: { type: "string" }, reason: { type: "string" } }, required: ["jobId"] }
+      description: "Cancel an existing job. Can optionally notify the customer in the same call.",
+      input_schema: { type: "object", properties: { jobId: { type: "string" }, reason: { type: "string" }, notify: { type: "string", enum: ["none", "sms", "email", "both"], description: "Whether to notify the customer of the cancellation. Defaults to none." } }, required: ["jobId"] }
     },
     {
       name: "get_job_details",
@@ -2090,7 +2137,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
         : `\n\nGoogle Workspace: NOT CONNECTED. If the user asks to send email, create calendar events, or manage tasks, tell them to go to Settings → Integrations → Google and connect.`;
       const toolHint = `\n\nYou have tools available to READ and MODIFY the CRM. USE THEM AGGRESSIVELY — don't just describe what you would do, actually do it.\n\nASK WHEN INFO IS MISSING: using tools aggressively does NOT mean guessing or silently defaulting a value the user never gave you. If a request is missing something a tool actually needs to act correctly — which customer, which date, which employee to assign — ask one short, direct clarifying question instead of calling the tool with a made-up or silently-defaulted value (e.g. schedule_job will default an unspecified date to a few days out — do not let that fire silently; ask "what date?" first if the user didn't give one). Only skip asking when the missing piece has an obviously safe default (e.g. a walkthrough with no stated time) or a tool's own fuzzy-match/suggestions can resolve it on its own (e.g. a slightly misspelled customer name).\n\nRESPONSE STYLE: Do not narrate your reasoning, your plan, or which tool you're about to call ("Let me check...", "I'll create that now...", "First I need to..."). Just call the tool(s) silently and then give the user the final result in 1-3 short sentences. No step-by-step thinking out loud.\n\nVERIFY BEFORE CONFIRMING: every action tool returns either {"success": true, ...} or {"error": "..."}. NEVER say "Done" or "All set" without checking which one came back. If you see an "error" field, tell the user exactly what went wrong (the error text) and what they could try instead — do not pretend it worked, and do not retry silently. Only confirm success when the tool result actually contains "success": true.\n\nTASK RESULT REPORTING — NO PERSONALITY FLAIR: your personality (drill sergeant / butler / quiet pro / savage) shapes how you TALK, not whether a task result is reported straight. The moment you report the outcome of an action tool (schedule_job, create_customer, create_estimate, send_estimate, assign/request crew, etc.), drop the persona voice entirely and state the plain fact: "Job scheduled successfully" / "Failed — [exact error text]" / "Estimate sent to [name] successfully" / "Failed — [exact error text]". No jokes, no military barking, no "sir", no sarcasm on the result line itself — save the personality for ordinary conversation, small talk, and check-ins, never for whether something actually saved.\n\nKEY TOOL RULES:\n- Customer queries → USE search_customers or get_customer_details FIRST\n- Stats requests → USE get_business_stats\n- "What's on the calendar" → USE get_calendar_summary\n- "Who's clocked in / who's working" → USE get_employee_status\n- "Remember/note/don't forget" → USE remember_fact\n- Create estimates, customers, jobs → USE create_estimate/create_customer/schedule_job
 - MULTI-STEP CHAINS (e.g. "create a customer, schedule them a job, and assign Mike"): call tools ONE AT A TIME across separate turns when a later step needs an id/result a real tool call hasn't returned yet (e.g. schedule_job needs the customerId create_customer just returned). Do NOT guess or fabricate an id and call multiple dependent tools in the same turn — wait for each real tool_result before issuing the next dependent call. If a step's result is an "error", STOP the chain right there, tell the user exactly which step failed and why, and do not attempt the remaining steps with made-up data.
-- "Send a quote/estimate to X" → USE create_estimate (if it doesn't exist yet) THEN send_estimate in the same turn — do not just create it and stop, and do not tell the user it was "sent" unless send_estimate actually returned success\n- "Send an invoice to X for $Y" → USE create_invoice THEN send_estimate (pass the returned invoiceId as send_estimate's estimateId) — same two-step pattern as quotes. create_invoice alone does NOT notify the customer.\n- Move or cancel a job → USE reschedule_job/cancel_job\n- "Add [item] to the checklist" → USE add_checklist_item\n- "Show me the details for X's job" → USE get_job_details\n- "Text/email X and tell them [anything]" → USE send_reminder with the exact wording as the message param — this is not just for payment reminders, use it for any custom message the user dictates\n- Navigate somewhere → USE navigate_to (the app already auto-navigates after schedule_job/create_customer/create_estimate, but call navigate_to yourself for anything else the user asks to see)\n- Preferences/facts shared → USE remember_fact automatically\n- RESOLVING "that job" / "the job we just scheduled" / references to something from an earlier message: a tool result's exact jobId/customerId is only visible to you within the SAME turn it was returned — your own past replies (in the chat history) are plain text, not structured data, so they do NOT reliably carry the real id forward. Before calling assign_employee/request_employee/reschedule_job/cancel_job/add_checklist_item on something referenced from an earlier turn, first call list_jobs or get_calendar_summary (or get_job_details with the customer's name) to look up the real current jobId — never guess, reuse an id from your own prior wording, or fabricate one.\n\nAUTOMATION TOOLS (VERY IMPORTANT):\n- When user describes ANY workflow, drip sequence, reminder, or "when X do Y" scenario → USE create_automation IMMEDIATELY. Build a proper n8n-style multi-step workflow with real step types: trigger (first), then delays, conditions, actions. NEVER just describe what you'd build — actually build it with create_automation.\n- "Send review request after job complete" → trigger: Job complete, delay: 2h, action: SMS review request\n- "Follow up on unpaid invoices" → trigger: Invoice unpaid 7 days, action: polite reminder email, delay: 4 days, condition: still unpaid, action: firm SMS\n- To check existing workflows → USE list_automations\n- To enable/disable a workflow → USE toggle_automation\n\nCurrent automations: ${automations.length} total, ${automations.filter(a => a.active).length} active\n\nNAME MATCHING: if a tool result comes back with "error": "Customer not found" or "Employee not found" and includes a "suggestions" array, ask the user "Do you mean [name], or [name]?" using those exact suggested names — never ask a generic clarifying question like "who do you mean?" when real candidate names are available.`;
+- "Send a quote/estimate to X" → USE create_estimate (if it doesn't exist yet) THEN send_estimate in the same turn — do not just create it and stop, and do not tell the user it was "sent" unless send_estimate actually returned success\n- "Send an invoice to X for $Y" → USE create_invoice THEN send_estimate (pass the returned invoiceId as send_estimate's estimateId) — same two-step pattern as quotes. create_invoice alone does NOT notify the customer.\n- Move or cancel a job → USE reschedule_job/cancel_job\n- "Reschedule X and text/email/let them know" → USE reschedule_job's own \`notify\` param (sms/email/both) in the SAME call — do not call send_reminder separately for this, reschedule_job already handles notifying the customer of their new date.\n- "Add [item] to the checklist" → USE add_checklist_item\n- "Show me the details for X's job" → USE get_job_details\n- "Text/email X and tell them [anything]" → USE send_reminder with the exact wording as the message param — this is not just for payment reminders, use it for any custom message the user dictates\n- Navigate somewhere → USE navigate_to (the app already auto-navigates after schedule_job/create_customer/create_estimate, but call navigate_to yourself for anything else the user asks to see)\n- Preferences/facts shared → USE remember_fact automatically\n- RESOLVING "that job" / "the job we just scheduled" / references to something from an earlier message: a tool result's exact jobId/customerId is only visible to you within the SAME turn it was returned — your own past replies (in the chat history) are plain text, not structured data, so they do NOT reliably carry the real id forward. Before calling assign_employee/request_employee/reschedule_job/cancel_job/add_checklist_item on something referenced from an earlier turn, first call list_jobs or get_calendar_summary (or get_job_details with the customer's name) to look up the real current jobId — never guess, reuse an id from your own prior wording, or fabricate one.\n\nAUTOMATION TOOLS (VERY IMPORTANT):\n- When user describes ANY workflow, drip sequence, reminder, or "when X do Y" scenario → USE create_automation IMMEDIATELY. Build a proper n8n-style multi-step workflow with real step types: trigger (first), then delays, conditions, actions. NEVER just describe what you'd build — actually build it with create_automation.\n- "Send review request after job complete" → trigger: Job complete, delay: 2h, action: SMS review request\n- "Follow up on unpaid invoices" → trigger: Invoice unpaid 7 days, action: polite reminder email, delay: 4 days, condition: still unpaid, action: firm SMS\n- To check existing workflows → USE list_automations\n- To enable/disable a workflow → USE toggle_automation\n\nCurrent automations: ${automations.length} total, ${automations.filter(a => a.active).length} active\n\nNAME MATCHING: if a tool result comes back with "error": "Customer not found" or "Employee not found" and includes a "suggestions" array, ask the user "Do you mean [name], or [name]?" using those exact suggested names — never ask a generic clarifying question like "who do you mean?" when real candidate names are available.`;
       const systemPrompt = getPersonality(activePersonality).systemPrompt + memoryContext + businessContext + googleStatus + toolHint;
       console.log("[Personality] systemPrompt personality clause:", getPersonality(activePersonality).systemPrompt.slice(0, 80) + "…");
 

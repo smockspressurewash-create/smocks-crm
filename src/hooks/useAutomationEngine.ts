@@ -1061,7 +1061,24 @@ export function useAutomationEngine({
     }
   }, []);
 
+  // BUG FIX — this used to only clear the in-memory `pendingBatch` state,
+  // which reset on every page reload (React state doesn't survive that) —
+  // so the exact same candidates got re-gathered on the next tick and the
+  // SAME modal popped right back up, making "Skip This Batch" look
+  // completely broken ("keeps popping up every time I reload"). Reuses the
+  // EXACT same per-customer-per-day guardrail approveBatch already writes
+  // on a real send (`settings.automationDailySendLog[customerId] = today`,
+  // checked at the top of this file's gather loop) so a skipped item is
+  // excluded from re-gathering for the rest of today, the same way an
+  // actually-sent one already was — no new mechanism invented.
   const skipBatch = useCallback(() => {
+    const batch = pendingBatchRef.current;
+    if (batch) {
+      const todayStr = today();
+      const newDailyLog = { ...(settingsRef.current.automationDailySendLog || {}) };
+      for (const item of batch.items) newDailyLog[item.customerId] = todayStr;
+      setSettingsRef.current((s: any) => ({ ...s, automationDailySendLog: newDailyLog }));
+    }
     setPendingBatch(null);
   }, []);
 

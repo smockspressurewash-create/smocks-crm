@@ -36,7 +36,12 @@ export function AutomationBatchModal({ batch, onSendAll, onSkip, onPause }: {
   };
 
   return (
-    <Modal open={true} onClose={() => {}} title="Review Before Sending" maxW="max-w-md">
+    // BUG FIX — onClose was a hardcoded no-op, so the Modal's own X/close
+    // button (and backdrop click) visibly did nothing, which read as "the
+    // X button is broken." Wired to the same skip path as "Skip This
+    // Batch" — closing this modal any way other than Send All should mean
+    // the same thing: skip it, don't just hide it and re-show it later.
+    <Modal open={true} onClose={sending ? () => {} : onSkip} title="Review Before Sending" maxW="max-w-md">
       <div className="space-y-4">
         {batch.items.length > 0 && (
           <div className="flex items-center gap-3 p-3 rounded-xl bg-yellow-950/20 border border-yellow-700/30">
