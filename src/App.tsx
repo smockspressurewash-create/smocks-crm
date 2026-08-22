@@ -1512,6 +1512,18 @@ export function App() {
   const [activeConvId, setActiveConvId]               = usePersistent<string>("smocks.alfredActiveConv", "");
   const [alfredMemory, setAlfredMemory]               = usePersistent("smocks.alfredMemory", []);
   const [personality, setPersonality]                 = usePersistent("smocks.alfredPersonality", "drillsergeant");
+  // BUG FIX — this was only ever localStorage, never part of `settings`
+  // (the one object that actually syncs to Supabase app_settings.data), so
+  // text-Alfred (server-side — no access to this browser's localStorage at
+  // all) could never know which personality the owner picked, and it never
+  // carried across devices either. Mirror it into settings on change so the
+  // synced blob always has the current value without touching every one of
+  // AlfredPage.tsx's existing references to the standalone personality prop.
+  useEffect(() => {
+    if ((settings as any).alfredPersonality !== personality) {
+      setSettings((s: any) => ({ ...s, alfredPersonality: personality }));
+    }
+  }, [personality]); // eslint-disable-line react-hooks/exhaustive-deps
   const [modelStatus, setModelStatus]                 = usePersistent<ModelStatus>("smocks.modelStatus", {});
   const [googleData, setGoogleData]                   = usePersistent("smocks.googleData", {});
 
@@ -3204,7 +3216,12 @@ export function App() {
         <div className="w-full max-w-sm flex flex-col items-center gap-6 py-8">
           <div className="text-center">
             <div className="w-20 h-20 rounded-3xl bg-gradient-to-br from-red-600 to-red-900 flex items-center justify-center mx-auto mb-5 shadow-2xl shadow-red-900/50">
-              <span className="text-3xl font-black">CB</span>
+              <svg viewBox="0 0 64 64" className="w-11 h-11" fill="none">
+                <path d="M14 44 Q30 46 40 34 Q46 27 50 16" stroke="#ffffff" strokeWidth="6" strokeLinecap="round" strokeOpacity="0.95"/>
+                <circle cx="50" cy="16" r="4.5" fill="#ffffff"/>
+                <circle cx="41" cy="32" r="3" fill="#ffffff" fillOpacity="0.85"/>
+                <circle cx="32" cy="42" r="2.2" fill="#ffffff" fillOpacity="0.65"/>
+              </svg>
             </div>
             <div className="text-2xl font-bold tracking-tight">CrewBoss</div>
             <div className="text-sm text-white/40 mt-1">{settings.companyName || "Business Management"}</div>
@@ -3402,8 +3419,13 @@ export function App() {
             className="flex items-center gap-2.5 text-left hover:opacity-80 transition"
             title="View landing page"
           >
-            <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-red-600 to-red-900 flex items-center justify-center font-black text-xs text-white shadow-lg shadow-red-900/40">
-              CB
+            <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-red-600 to-red-900 flex items-center justify-center shadow-lg shadow-red-900/40">
+              <svg viewBox="0 0 64 64" className="w-5 h-5" fill="none">
+                <path d="M14 44 Q30 46 40 34 Q46 27 50 16" stroke="#ffffff" strokeWidth="7" strokeLinecap="round" strokeOpacity="0.95"/>
+                <circle cx="50" cy="16" r="5" fill="#ffffff"/>
+                <circle cx="41" cy="32" r="3.3" fill="#ffffff" fillOpacity="0.85"/>
+                <circle cx="32" cy="42" r="2.4" fill="#ffffff" fillOpacity="0.65"/>
+              </svg>
             </div>
             <div>
               <div className="font-bold text-sm leading-tight">{settings.companyName || "Crew Boss OS"}</div>

@@ -5191,7 +5191,12 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
         {/* CrewBoss brand */}
         <div className="flex items-center gap-2 flex-1 min-w-0">
           <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-red-600 to-red-900 flex items-center justify-center flex-shrink-0 shadow-lg shadow-red-900/40">
-            <span className="text-[11px] font-black text-white tracking-tight">CB</span>
+            <svg viewBox="0 0 64 64" className="w-[18px] h-[18px]" fill="none">
+              <path d="M14 44 Q30 46 40 34 Q46 27 50 16" stroke="#ffffff" strokeWidth="7" strokeLinecap="round" strokeOpacity="0.95"/>
+              <circle cx="50" cy="16" r="5" fill="#ffffff"/>
+              <circle cx="41" cy="32" r="3.3" fill="#ffffff" fillOpacity="0.85"/>
+              <circle cx="32" cy="42" r="2.4" fill="#ffffff" fillOpacity="0.65"/>
+            </svg>
           </div>
           <span className="font-bold text-sm text-white tracking-tight">CrewBoss</span>
         </div>

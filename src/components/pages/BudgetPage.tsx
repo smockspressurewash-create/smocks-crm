@@ -29,6 +29,7 @@ import { callModel, MODELS } from "../../lib/api";
 import { createCalendarEvent, updateCalendarEvent, deleteCalendarEvent, fetchDriveFiles, MOCK_GOOGLE_DATA, fmtSize, fmtDate, fileIcon } from "../../lib/google";
 import { usePersistent } from "../../hooks/usePersistent";
 import { usePersistentRaw } from "../../hooks/usePersistentRaw";
+import { supabase } from "../../lib/supabase";
 import { Glass } from "../ui/Glass";
 import { GBtn } from "../ui/GBtn";
 import { GInput } from "../ui/GInput";
@@ -105,8 +106,35 @@ export function BudgetPage({ jobs = [], estimates = [], expenses = [], settings 
   const totalExpenses = tfExp.reduce((s, e) => s + Number(e.amount), 0);
   const deductibleExp = tfExp.filter(e => e.taxDeductible).reduce((s, e) => s + Number(e.amount), 0);
 
-  // Mileage from localStorage (same key ExpensesPage uses)
-  const allMileage: any[] = (() => { try { const r = localStorage.getItem("smocks.mileage"); return r ? JSON.parse(r) : []; } catch { return []; } })();
+  // BUG FIX — "mileage gets approved but doesn't show up in the tax
+  // section": this only ever read the owner's own local smocks.mileage
+  // entries, never the mileage_logs Supabase table employees actually
+  // submit to from the field portal and the owner approves in
+  // EmployeesPage.tsx. ExpensesPage.tsx already merges both (see its own
+  // "AUDIT FIX — mobile round 10" comment) — this page just never got the
+  // same fix, so approved employee mileage was invisible here specifically.
+  const localMileage: any[] = (() => { try { const r = localStorage.getItem("smocks.mileage"); return r ? JSON.parse(r) : []; } catch { return []; } })();
+  const [approvedEmployeeMileage, setApprovedEmployeeMileage] = useState<any[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const { data, error } = await (supabase as any).from("mileage_logs").select("*").eq("status", "approved");
+        if (!cancelled && !error && Array.isArray(data)) setApprovedEmployeeMileage(data);
+      } catch (e: any) {
+        console.warn("[Budget] mileage_logs fetch failed:", e?.message);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+  const allMileage: any[] = [
+    ...localMileage,
+    ...approvedEmployeeMileage.map((m: any) => ({
+      id: m.id, date: m.date, from: m.from, to: m.to, miles: Number(m.miles) || 0,
+      deduction: (Number(m.miles) || 0) * IRS_RATE, purpose: m.purpose || "",
+      source: "employee", employeeId: m.employee_id,
+    })),
+  ];
   const tfMileage: any[] = filterByTimeframe(allMileage, "date", timeframe);
   const totalMiles = tfMileage.reduce((s, m) => s + Number(m.miles), 0);
   const mileageDeduction = totalMiles * IRS_RATE;

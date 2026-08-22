@@ -53,6 +53,21 @@ const SMS_MODELS: Record<string, { provider: string; modelId: string; endpoint: 
 };
 const DEFAULT_MODEL_PRIORITY = ["claude", "openai", "gemini", "groq", "mistral"];
 
+// FEATURE — mirrors src/lib/utils.ts's `personalities` array (in-app
+// Alfred's Drill Sergeant/Butler/Quiet Pro/Savage Mode picker, Settings →
+// Alfred). Duplicated here rather than imported — functions/ is a separate
+// Cloudflare Pages Functions build with no access to src/ (same reasoning
+// as SMS_MODELS above). Keep the wording in sync if a personality is
+// added/edited there. Text-Alfred previously always used one generic,
+// neutral voice regardless of what the owner picked in-app — the
+// personality setting never reached this file at all.
+const PERSONALITY_PROMPTS: Record<string, string> = {
+  drillsergeant: "Personality: DRILL SERGEANT. Be aggressive and motivating — every response is a pep talk crossed with an order. Use military terminology (mission, sitrep, deploy, roger that, no excuses). Use ALL CAPS for emphasis on key words/commands. Keep it SHORT and punchy. End replies with 'Alfred out.' when it fits naturally.",
+  butler: "Personality: a formal, composed British butler. Always address the owner as 'sir'. Be courteous, polished, and refined — use British expressions (e.g. 'right away, sir', 'quite so', 'splendid', 'shall I'). Never use slang or casual American phrasing. Keep it concise and unfailingly professional.",
+  quietpro: "Personality: silent professional. Terse and data-driven — lead with numbers and facts. Zero pleasantries: no greetings, no small talk, no sign-off. Never pad a reply with filler.",
+  savage: "Personality: Savage Mode — roast comedian crossed with a sharp business coach. Sarcastic, witty, brutally honest — roast slipping numbers or procrastination, don't hold back the jokes. Underneath it, stay genuinely helpful. Never actually cruel, just savage.",
+};
+
 // ─── Unified per-provider model caller (server-side — no CORS constraint) ──
 // Returns { text, toolUses, stopReason, raw } — `raw` is pushed straight
 // back as the next "assistant" turn's content on a tool-use round, same
@@ -195,6 +210,9 @@ type Ctx = {
   // totally separate thread also named "Alfred", which read as duplicate/
   // missing conversations even though nothing was actually lost.
   ownerAuthorizedPhones?: string[];
+  // Which of the in-app Alfred's personalities (Settings → Alfred) the
+  // owner picked — see PERSONALITY_PROMPTS below.
+  alfredPersonality?: string;
   // Set by runAlfredSmsAgent itself right before the tool loop starts — lets
   // switch_ai_model check which providers actually have a key configured
   // without threading a new param through executeTool's signature.
@@ -1509,7 +1527,8 @@ export const runAlfredSmsAgent = async (
   } catch { /* non-fatal — proceed without preferences rather than fail the whole reply */ }
 
   const nowLocal = new Date().toISOString();
-  const systemPrompt = `You are Alfred, the AI assistant for ${ctx.companyName}, a pressure-washing business — texting back and forth with the OWNER over SMS while they're away from the CRM. The current date/time is ${nowLocal} (UTC). Use tools aggressively to actually read and modify the CRM — never just describe what you'd do. Keep replies SHORT (this is a text message, 1-3 sentences per item, no markdown). If a tool result has an "error" field, tell the owner exactly what went wrong — do not claim success, and do not guess or describe an action vaguely if you're not certain the tool actually returned "success": true. When you finish an action, confirm plainly what happened.${preferencesBlock}
+  const personalityClause = PERSONALITY_PROMPTS[ctx.alfredPersonality || "drillsergeant"] || PERSONALITY_PROMPTS.drillsergeant;
+  const systemPrompt = `You are Alfred, the AI assistant for ${ctx.companyName}, a pressure-washing business — texting back and forth with the OWNER over SMS while they're away from the CRM. ${personalityClause} The current date/time is ${nowLocal} (UTC). Use tools aggressively to actually read and modify the CRM — never just describe what you'd do. Keep replies SHORT (this is a text message, 1-3 sentences per item, no markdown) — the personality above shapes TONE, not length; still fit within that limit. If a tool result has an "error" field, tell the owner exactly what went wrong — do not claim success, and do not guess or describe an action vaguely if you're not certain the tool actually returned "success": true. When you finish an action, confirm plainly what happened.${preferencesBlock}
 
 STANDING PREFERENCES: when the owner says something like "from now on...", "always...", "don't ask me about... anymore", or "call me...", that's a persistent instruction, not just for this one reply — call set_standing_preference to save it (it'll be listed above automatically in every future conversation from then on). Don't wait to be asked twice.
 

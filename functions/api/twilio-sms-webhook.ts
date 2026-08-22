@@ -143,6 +143,7 @@ interface ResolvedOwnerSettings {
   // (which has no access to the owner conversation's memory) can honor them.
   alfredAutoApproveReschedules: boolean;
   alfredAutoApproveInvoiceSends: boolean;
+  alfredPersonality: string;
 }
 
 const shapeSettings = (row: any, data: any): ResolvedOwnerSettings => ({
@@ -175,6 +176,7 @@ const shapeSettings = (row: any, data: any): ResolvedOwnerSettings => ({
   testModeEnabled: !!data?.testModeEnabled,
   alfredAutoApproveReschedules: !!data?.alfredAutoApproveReschedules,
   alfredAutoApproveInvoiceSends: !!data?.alfredAutoApproveInvoiceSends,
+  alfredPersonality: data?.alfredPersonality || "drillsergeant",
 });
 
 const fetchAppSettings = async (env: Record<string, string>, toNumber: string): Promise<ResolvedOwnerSettings> => {
@@ -355,7 +357,7 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
     const isStop = STOP_WORDS.includes(body);
     const isStart = START_WORDS.includes(body);
     const resolved = await fetchAppSettings(context.env, params.To || "");
-    const { companyName, keyword, ownerId, myPhone, alfredExtraPhones, alfredExtraPhoneRoles, alfredSmsEnabled, twilioSid, twilioToken, twilioFrom, modelKeys, modelPriority, activeModel, openaiKey, googleProviderToken, googleRefreshToken, googleTokenExpiresAt, testModeEnabled, alfredAutoApproveReschedules } = resolved;
+    const { companyName, keyword, ownerId, myPhone, alfredExtraPhones, alfredExtraPhoneRoles, alfredSmsEnabled, twilioSid, twilioToken, twilioFrom, modelKeys, modelPriority, activeModel, openaiKey, googleProviderToken, googleRefreshToken, googleTokenExpiresAt, testModeEnabled, alfredAutoApproveReschedules, alfredPersonality } = resolved;
     const isOptInKeyword = body === keyword;
     const isConfirm = CONFIRM_WORDS.includes(body);
 
@@ -426,7 +428,7 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
     // owner's explicit assignment is the real intent, not "extra owner".
     const assignedEmployeeId = alfredExtraPhoneRoles[fromDigits] || "";
     if (alfredSmsEnabled && authorizedPhones.includes(fromDigits) && !assignedEmployeeId) {
-      const ctx = { authHeaders, ownerId, companyName, twilioSid, twilioToken, twilioFrom, origin: new URL(context.request.url).origin, fromPhone: from, googleProviderToken, googleRefreshToken, googleTokenExpiresAt, testModeEnabled, ownerAuthorizedPhones: authorizedPhones, env: context.env as Record<string, string> };
+      const ctx = { authHeaders, ownerId, companyName, twilioSid, twilioToken, twilioFrom, origin: new URL(context.request.url).origin, fromPhone: from, googleProviderToken, googleRefreshToken, googleTokenExpiresAt, testModeEnabled, ownerAuthorizedPhones: authorizedPhones, alfredPersonality, env: context.env as Record<string, string> };
       // BUG FIX — this branch never logged the OWNER's own inbound text to
       // inbox_threads at all (only to alfred_sms_threads, which the Inbox
       // UI never reads) — sendAlfredSms below only logs Alfred's OUTGOING
