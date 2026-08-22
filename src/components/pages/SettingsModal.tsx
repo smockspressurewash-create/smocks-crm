@@ -309,7 +309,18 @@ export function SettingsModal({ open, onClose, settings, setSettings, jobs = [],
   const blankTpl = () => ({ id: "", name: "", description: "", lineItems: [{ id: Date.now().toString(), description: "", quantity: 1, unitPrice: 0 }], notes: "", terms: "Payment due upon completion. 3-day cancellation notice requested. Weather reschedules free of charge.", customFields: [] });
   const blankField = () => ({ id: Date.now().toString() + Math.random(), label: "", type: "text", required: false, customerVisible: true, options: "" });
 
-  useEffect(() => { if (open) setF(settings); }, [open, settings]);
+  // BUG (root cause of "my settings don't save") — this used to depend on
+  // `settings` too, not just `open`. App.tsx polls app_settings from Supabase
+  // every ~2 minutes for cross-device sync (pollSettings) and ALWAYS builds
+  // a fresh `settings` object reference, even when nothing meaningfully
+  // changed. That fresh reference re-ran this effect on every poll tick
+  // WHILE THE MODAL WAS STILL OPEN, silently overwriting whatever the owner
+  // had already typed (e.g. a corrected Twilio Account SID) with the stale
+  // server copy — right before they hit Save, so Save then wrote the STALE
+  // value straight back to the server. Only `open` should ever re-trigger
+  // this sync — once when the modal actually opens, never again while it
+  // stays open and the owner is mid-edit.
+  useEffect(() => { if (open) setF(settings); }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const save = () => {
     // SECURITY AUDIT (round 12) — no longer writes a stripeSecretKeyEnc here;

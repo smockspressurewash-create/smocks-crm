@@ -83,6 +83,9 @@ interface ResolvedOwnerSettings {
   twilioFrom: string;
   anthropicKey: string;
   openaiKey: string;
+  googleProviderToken: string;
+  googleRefreshToken: string;
+  googleTokenExpiresAt: number;
 }
 
 const shapeSettings = (row: any, data: any): ResolvedOwnerSettings => ({
@@ -102,6 +105,9 @@ const shapeSettings = (row: any, data: any): ResolvedOwnerSettings => ({
   // Reuses whichever OpenAI key is already saved for the in-app Alfred
   // (Settings → AI Models) — no separate setup needed if that's configured.
   openaiKey: data?.modelKeys?.openai || "",
+  googleProviderToken: data?.googleProviderToken || "",
+  googleRefreshToken: data?.googleRefreshToken || "",
+  googleTokenExpiresAt: Number(data?.googleTokenExpiresAt) || 0,
 });
 
 const fetchAppSettings = async (env: Record<string, string>, toNumber: string): Promise<ResolvedOwnerSettings> => {
@@ -148,34 +154,68 @@ const fetchAppSettings = async (env: Record<string, string>, toNumber: string): 
 // MediaContentType0 fields on the same inbound webhook POST — no separate
 // endpoint needed). Twilio media URLs require the SAME Basic Auth as any
 // other Twilio API call to fetch (they're not public), so this can only run
-// once the real Account SID/Auth Token are configured. Falls back to the
-// plain text body whenever there's no audio, no OpenAI key configured, or
-// the transcription call itself fails — Alfred still gets SOMETHING to
-// respond to rather than the whole request silently dying.
-const resolveIncomingText = async (params: Record<string, string>, bodyRaw: string, twilioSid: string, twilioToken: string, openaiKey: string): Promise<string> => {
+// once the real Account SID/Auth Token are configured.
+//
+// TRANSCRIPTION: tries Cloudflare Workers AI FIRST (free — Cloudflare's own
+// hosted Whisper model, no OpenAI key needed at all), only falling back to
+// OpenAI's Whisper API if that's not available. Workers AI requires a
+// one-time "AI" binding added to this Pages project: Cloudflare dashboard →
+// this project → Settings → Functions → "AI" bindings → add binding named
+// "AI" (no wrangler.toml needed — this is a Pages-native binding, not the
+// separate Workers Cron Trigger feature this repo deliberately doesn't have
+// set up). Free tier: 10,000 "neurons" per day, comfortably enough for
+// normal voice-memo volume.
+const transcribeViaWorkersAI = async (ai: any, audioBuf: ArrayBuffer): Promise<string | null> => {
+  if (!ai) return null;
+  try {
+    const result: any = await ai.run("@cf/openai/whisper", { audio: Array.from(new Uint8Array(audioBuf)) });
+    const text = (result?.text || "").trim();
+    return text || null;
+  } catch (e: any) {
+    console.warn("[TwilioSmsWebhook] Workers AI transcription failed, will try OpenAI fallback if configured:", e?.message);
+    return null;
+  }
+};
+
+const transcribeViaOpenAI = async (audioBuf: ArrayBuffer, openaiKey: string): Promise<string | null> => {
+  if (!openaiKey) return null;
+  try {
+    const form = new FormData();
+    form.append("file", new Blob([audioBuf]), "voice-memo.ogg");
+    form.append("model", "whisper-1");
+    const res = await fetch("https://api.openai.com/v1/audio/transcriptions", {
+      method: "POST", headers: { Authorization: `Bearer ${openaiKey}` }, body: form,
+    });
+    if (!res.ok) throw new Error(`OpenAI Whisper failed (${res.status})`);
+    const data = await res.json() as { text?: string };
+    return (data.text || "").trim() || null;
+  } catch (e: any) {
+    console.error("[TwilioSmsWebhook] OpenAI transcription failed:", e?.message);
+    return null;
+  }
+};
+
+// Falls back to the plain text body whenever there's no audio, no working
+// transcription path, or the transcription call itself fails — Alfred still
+// gets SOMETHING to respond to rather than the whole request silently dying.
+const resolveIncomingText = async (params: Record<string, string>, bodyRaw: string, twilioSid: string, twilioToken: string, openaiKey: string, workersAi: any): Promise<string> => {
   const numMedia = Number(params.NumMedia || "0");
   if (numMedia <= 0) return bodyRaw;
   const contentType = params.MediaContentType0 || "";
   if (!contentType.startsWith("audio/")) return bodyRaw || "[sent an attachment that isn't a voice memo — no text to respond to]";
   const mediaUrl = params.MediaUrl0;
-  if (!mediaUrl || !twilioSid || !twilioToken || !openaiKey) {
-    console.warn("[TwilioSmsWebhook] voice memo received but can't transcribe — missing mediaUrl/Twilio creds/OpenAI key");
-    return bodyRaw || "[sent a voice memo, but transcription isn't set up yet — add an OpenAI key in Settings → AI Models, and make sure the Twilio Account SID is correct]";
+  if (!mediaUrl || !twilioSid || !twilioToken) {
+    console.warn("[TwilioSmsWebhook] voice memo received but Twilio media can't be fetched — check the Account SID/Auth Token");
+    return bodyRaw || "[sent a voice memo, but couldn't fetch it — check the Twilio Account SID in Settings]";
   }
   try {
     const audioRes = await fetch(mediaUrl, { headers: { Authorization: `Basic ${btoa(`${twilioSid}:${twilioToken}`)}` } });
     if (!audioRes.ok) throw new Error(`Twilio media fetch failed (${audioRes.status})`);
-    const audioBlob = await audioRes.blob();
-    const form = new FormData();
-    form.append("file", audioBlob, "voice-memo.ogg");
-    form.append("model", "whisper-1");
-    const whisperRes = await fetch("https://api.openai.com/v1/audio/transcriptions", {
-      method: "POST", headers: { Authorization: `Bearer ${openaiKey}` }, body: form,
-    });
-    if (!whisperRes.ok) throw new Error(`Whisper transcription failed (${whisperRes.status})`);
-    const data = await whisperRes.json() as { text?: string };
-    const transcript = (data.text || "").trim();
-    if (!transcript) return bodyRaw || "[voice memo transcribed to nothing — try again]";
+    const audioBuf = await audioRes.arrayBuffer();
+    const transcript = (await transcribeViaWorkersAI(workersAi, audioBuf)) || (await transcribeViaOpenAI(audioBuf, openaiKey));
+    if (!transcript) {
+      return bodyRaw || "[sent a voice memo, but transcription isn't set up — either add the free \"AI\" binding in Cloudflare Pages settings, or add an OpenAI key in Settings → AI Models]";
+    }
     console.log("[TwilioSmsWebhook] voice memo transcribed:", transcript.slice(0, 100));
     return bodyRaw ? `${transcript}\n\n(caption: ${bodyRaw})` : transcript;
   } catch (e: any) {
@@ -215,7 +255,7 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
     const isStop = STOP_WORDS.includes(body);
     const isStart = START_WORDS.includes(body);
     const resolved = await fetchAppSettings(context.env, params.To || "");
-    const { companyName, keyword, ownerId, myPhone, alfredExtraPhones, alfredSmsEnabled, twilioSid, twilioToken, twilioFrom, anthropicKey, openaiKey } = resolved;
+    const { companyName, keyword, ownerId, myPhone, alfredExtraPhones, alfredSmsEnabled, twilioSid, twilioToken, twilioFrom, anthropicKey, openaiKey, googleProviderToken, googleRefreshToken, googleTokenExpiresAt } = resolved;
     const isOptInKeyword = body === keyword;
     const isConfirm = CONFIRM_WORDS.includes(body);
 
@@ -251,7 +291,7 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
     // Alfred, not a customer."
     const authorizedPhones = [myPhone, ...alfredExtraPhones].filter(Boolean).map(normalizePhoneDigits);
     if (alfredSmsEnabled && authorizedPhones.includes(fromDigits)) {
-      const ctx = { authHeaders, ownerId, companyName, twilioSid, twilioToken, twilioFrom, origin: new URL(context.request.url).origin, fromPhone: from };
+      const ctx = { authHeaders, ownerId, companyName, twilioSid, twilioToken, twilioFrom, origin: new URL(context.request.url).origin, fromPhone: from, googleProviderToken, googleRefreshToken, googleTokenExpiresAt };
       // FIX — Twilio abandons an unanswered webhook after ~15s with nothing
       // shown to the owner. A multi-step request (e.g. "reschedule this job
       // AND text the customer") can easily need multiple Anthropic
@@ -263,7 +303,7 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
       // exactly like sendSms elsewhere in this agent already does, so it
       // also gets logged to the Inbox like every other outbound text.
       context.waitUntil(
-        resolveIncomingText(params, bodyRaw, twilioSid, twilioToken, openaiKey)
+        resolveIncomingText(params, bodyRaw, twilioSid, twilioToken, openaiKey, (context.env as any).AI)
           .then((text) => runAlfredSmsAgent(ctx, anthropicKey, from, text))
           .catch((e: any) => {
             console.error("[TwilioSmsWebhook] Alfred SMS agent failed:", e?.message);

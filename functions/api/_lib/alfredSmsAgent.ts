@@ -40,6 +40,13 @@ type Ctx = {
   // alfredExtraPhones, without needing a separate "which is the real owner
   // number" lookup.
   fromPhone?: string;
+  // Owner's Google OAuth tokens (from app_settings, same fields the in-app
+  // Gmail send already reads) — lets create_calendar_event act on the
+  // owner's REAL Google Calendar from a text, not just the CRM's own job
+  // records.
+  googleProviderToken?: string;
+  googleRefreshToken?: string;
+  googleTokenExpiresAt?: number;
 };
 
 // ─── Supabase helpers (service-role REST, same pattern as the webhook) ────
@@ -294,6 +301,50 @@ const TOOLS = [
       required: ["reminderId"],
     },
   },
+  {
+    name: "get_calendar_summary",
+    description: "What's on the schedule over a date range — use for 'what's on my calendar', 'what do I have this week', etc.",
+    input_schema: {
+      type: "object",
+      properties: {
+        startDate: { type: "string", description: "YYYY-MM-DD, defaults to today" },
+        days: { type: "number", description: "how many days forward to include, default 7" },
+      },
+    },
+  },
+  {
+    name: "create_calendar_event",
+    description: "Add an event to the owner's actual Google Calendar (not just a CRM job — use schedule_job for an actual pressure-washing job with a customer). Use this for things like 'put a dentist appointment on my calendar Thursday at 2pm'.",
+    input_schema: {
+      type: "object",
+      properties: {
+        title: { type: "string" },
+        date: { type: "string", description: "YYYY-MM-DD" },
+        time: { type: "string", description: "HH:MM 24h" },
+        durationMinutes: { type: "number", description: "default 60" },
+        notes: { type: "string" },
+      },
+      required: ["title", "date", "time"],
+    },
+  },
+  {
+    name: "list_job_requests",
+    description: "List pending job requests from employees (an employee asked to be assigned/take on a job and is waiting on approval).",
+    input_schema: { type: "object", properties: {} },
+  },
+  {
+    name: "respond_to_job_request",
+    description: "Approve or deny a pending employee job request. Use list_job_requests first to find its id.",
+    input_schema: {
+      type: "object",
+      properties: {
+        requestId: { type: "string" },
+        approve: { type: "boolean" },
+        reason: { type: "string", description: "optional, mainly useful when denying" },
+      },
+      required: ["requestId", "approve"],
+    },
+  },
 ];
 
 const executeTool = async (ctx: Ctx, name: string, input: Record<string, any>): Promise<any> => {
@@ -480,6 +531,89 @@ const executeTool = async (ctx: Ctx, name: string, input: Record<string, any>): 
         if (!res.ok) return { error: "Couldn't cancel — " + (await res.text().catch(() => "")).slice(0, 200) };
         return { success: true };
       }
+      case "get_calendar_summary": {
+        const start = input.startDate || today();
+        const days = Math.max(1, Math.min(30, Number(input.days) || 7));
+        const end = new Date(start + "T00:00:00");
+        end.setDate(end.getDate() + days);
+        const endStr = end.toISOString().slice(0, 10);
+        const rows = await sbGet(ctx, `jobs?select=id,customerName,status,scheduledDate,scheduledTime,address${ownerScope(ctx)}&scheduledDate=gte.${start}&scheduledDate=lt.${endStr}&limit=200`);
+        const active = rows.filter((j: any) => j.status !== "cancelled").sort((a: any, b: any) => (a.scheduledDate + (a.scheduledTime || "")).localeCompare(b.scheduledDate + (b.scheduledTime || "")));
+        if (active.length === 0) return { success: true, summary: `Nothing scheduled from ${start} to ${endStr}.` };
+        return { success: true, jobs: active.map((j: any) => ({ date: j.scheduledDate, time: j.scheduledTime, customer: j.customerName, address: j.address, status: j.status })) };
+      }
+      case "create_calendar_event": {
+        if (!ctx.googleRefreshToken && !ctx.googleProviderToken) return { error: "Google Calendar isn't connected — connect it in Settings → Integrations first." };
+        let accessToken = ctx.googleProviderToken || "";
+        if (ctx.googleRefreshToken && (!ctx.googleTokenExpiresAt || Date.now() > ctx.googleTokenExpiresAt - 60000)) {
+          try {
+            const refreshRes = await fetch(`${ctx.origin}/api/google-refresh`, {
+              method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ refresh_token: ctx.googleRefreshToken }),
+            });
+            const refreshData = await refreshRes.json().catch(() => null) as any;
+            if (refreshRes.ok && refreshData?.access_token) accessToken = refreshData.access_token;
+          } catch { /* fall through with whatever token we have; the Calendar call below will fail clearly if it's stale */ }
+        }
+        if (!accessToken) return { error: "Couldn't get a valid Google token — try reconnecting Google in Settings." };
+        const durationMin = Number(input.durationMinutes) || 60;
+        const startIso = `${input.date}T${input.time}:00`;
+        const startDate = new Date(startIso);
+        if (isNaN(startDate.getTime())) return { error: "Couldn't parse that date/time." };
+        const endDate = new Date(startDate.getTime() + durationMin * 60000);
+        const evRes = await fetch("https://www.googleapis.com/calendar/v3/calendars/primary/events", {
+          method: "POST",
+          headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
+          body: JSON.stringify({
+            summary: input.title,
+            description: input.notes || "",
+            start: { dateTime: startDate.toISOString() },
+            end: { dateTime: endDate.toISOString() },
+          }),
+        });
+        if (!evRes.ok) return { error: "Google Calendar error: " + (await evRes.text().catch(() => "")).slice(0, 200) };
+        return { success: true, title: input.title, date: input.date, time: input.time };
+      }
+      case "list_job_requests": {
+        const rows = await sbGet(ctx, `job_requests?select=id,employee_id,job_id,message,status${ownerScope(ctx)}&status=eq.pending&limit=50`);
+        if (rows.length === 0) return { success: true, requests: [], summary: "No pending job requests." };
+        const [emps, jbs] = await Promise.all([
+          sbGet(ctx, `employees?select=id,firstName,lastName${ownerScope(ctx)}&limit=200`),
+          sbGet(ctx, `jobs?select=id,customerName,scheduledDate${ownerScope(ctx)}&limit=500`),
+        ]);
+        return {
+          success: true,
+          requests: rows.map((r: any) => {
+            const emp = emps.find((e: any) => e.id === r.employee_id);
+            const job = jbs.find((j: any) => j.id === r.job_id);
+            return { id: r.id, employee: emp ? `${emp.firstName} ${emp.lastName}` : r.employee_id, job: job ? `${job.customerName} (${job.scheduledDate})` : r.job_id, message: r.message };
+          }),
+        };
+      }
+      case "respond_to_job_request": {
+        if (!input.requestId || input.approve === undefined) return { error: "requestId and approve required" };
+        const patch: Record<string, unknown> = { status: input.approve ? "approved" : "denied", responded_at: new Date().toISOString() };
+        if (!input.approve && input.reason) patch.denial_reason = input.reason;
+        const res = await fetch(`${SUPABASE_URL}/rest/v1/job_requests?id=eq.${encodeURIComponent(input.requestId)}`, {
+          method: "PATCH", headers: { ...ctx.authHeaders, "Content-Type": "application/json", Prefer: "return=minimal" },
+          body: JSON.stringify(patch),
+        });
+        if (!res.ok) return { error: "Couldn't update the request — " + (await res.text().catch(() => "")).slice(0, 200) };
+        // Approving assigns the employee to the job's crew, same as the CRM's own approve action.
+        if (input.approve) {
+          const reqRow = (await sbGet(ctx, `job_requests?id=eq.${encodeURIComponent(input.requestId)}&select=employee_id,job_id`))[0];
+          if (reqRow?.job_id && reqRow?.employee_id) {
+            const job = (await sbGet(ctx, `jobs?id=eq.${encodeURIComponent(reqRow.job_id)}&select=id,crew`))[0];
+            if (job) {
+              const crew = Array.from(new Set([...(Array.isArray(job.crew) ? job.crew : []), reqRow.employee_id]));
+              await fetch(`${SUPABASE_URL}/rest/v1/jobs?id=eq.${encodeURIComponent(job.id)}`, {
+                method: "PATCH", headers: { ...ctx.authHeaders, "Content-Type": "application/json", Prefer: "return=minimal" },
+                body: JSON.stringify({ crew }),
+              });
+            }
+          }
+        }
+        return { success: true, status: input.approve ? "approved" : "denied" };
+      }
       default:
         return { error: `Unknown tool "${name}".` };
     }
@@ -526,7 +660,7 @@ export const runAlfredSmsAgent = async (
   const nowLocal = new Date().toISOString();
   const systemPrompt = `You are Alfred, the AI assistant for ${ctx.companyName}, a pressure-washing business — texting back and forth with the OWNER over SMS while they're away from the CRM. The current date/time is ${nowLocal} (UTC). Use tools aggressively to actually read and modify the CRM — never just describe what you'd do. Keep replies SHORT (this is a text message, 1-3 sentences, no markdown). If a tool result has an "error" field, tell the owner exactly what went wrong — do not claim success. If a request is missing something a tool needs (which customer, which date), ask one short clarifying question instead of guessing. When you finish an action, confirm plainly what happened.
 
-You can: text the owner back on request (text_me), remember arbitrary facts/notes for later (remember/recall — use this whenever they say "remember", "keep track of", or "note that"), and schedule future text reminders (set_reminder — resolve any relative time like "tomorrow at 9am" into an exact ISO datetime yourself using the current date/time above before calling it; list_reminders/cancel_reminder manage existing ones). These are in addition to the CRM actions (jobs, customers, invoices, employees) — use whichever tool actually matches what's being asked, and don't hesitate to chain several tool calls in one exchange if the request needs it (e.g. reschedule a job AND text the customer AND remember a preference).`;
+You can: text the owner back on request (text_me), remember arbitrary facts/notes for later (remember/recall — use this whenever they say "remember", "keep track of", or "note that"), schedule future text reminders (set_reminder — resolve any relative time like "tomorrow at 9am" into an exact ISO datetime yourself using the current date/time above before calling it; list_reminders/cancel_reminder manage existing ones), summarize the schedule (get_calendar_summary), add a non-job event to the owner's real Google Calendar (create_calendar_event — use schedule_job instead for an actual pressure-washing job tied to a customer), and review/approve or deny employee job requests (list_job_requests, respond_to_job_request). These are in addition to the core CRM actions (create/reschedule jobs, assign employees, create customers, check who's clocked in and what they're working on, send/list invoices). Use whichever tool actually matches what's being asked, and don't hesitate to chain several tool calls in one exchange if the request needs it (e.g. reschedule a job AND text the customer AND remember a preference).`;
 
   let rounds = 0;
   let finalText = "";
