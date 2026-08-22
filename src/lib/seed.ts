@@ -675,16 +675,12 @@ export const AUTOMATION_TEMPLATES = [
   // and payment_received categories with custom messageBody text). Every
   // trigger label here is exact-matched against classifyTrigger's regexes —
   // see that function's comments for why label wording matters.
-  {
-    id: "tpl_owner_eod_summary", name: "Owner: End-of-Day Summary",
-    trigger: "End of day", action: "Email today's business summary",
-    description: "Emails you a same-day recap — jobs completed, revenue, and new leads — once in the 6-7pm window.",
-    steps: [
-      { id: uid(), type: "trigger", label: "End of day", icon: "🌆" },
-      { id: uid(), type: "action",  label: "Email end-of-day summary", channel: "email",
-        messageBody: "Hi {{first_name}}, here's your end-of-day summary: {{jobs_completed}} of {{jobs_total}} jobs completed today, {{revenue}} in revenue, and {{new_leads}} new lead(s). — Crew Boss Automations" },
-    ],
-  },
+  // "Owner: End-of-Day Summary" template removed — App.tsx's
+  // checkAndSendDailySummary effect already sends this exact recap
+  // unconditionally, direct, once per day after 6pm, no approval gate.
+  // Adding this template just re-queued the same summary a second time
+  // through the "review before sending" approval popup — see
+  // useAutomationEngine.ts's owner_daily_summary comment.
   {
     id: "tpl_owner_periodic_summary", name: "Owner: Quarterly & Yearly Summary",
     trigger: "Quarterly business summary", action: "Email business performance summary",

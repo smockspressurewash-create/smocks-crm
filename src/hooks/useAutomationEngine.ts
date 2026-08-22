@@ -746,15 +746,18 @@ export function useAutomationEngine({
               new_leads: String(newLeads),
             };
           },
-          getCandidates: () => {
-            const cfgHour = Number((settings as any).ownerSummaryHour);
-            const targetHour = Number.isFinite(cfgHour) && cfgHour >= 0 && cfgHour <= 23 ? cfgHour : 18;
-            const freq = (settings as any).ownerSummaryFreq || "daily";
-            if (hour !== targetHour) return [];
-            if (freq === "weekly" && now.getDay() !== 1) return [];
-            if (freq === "off") return [];
-            return [ownerCandidate(settings, "eod")].filter(Boolean) as Candidate[];
-          },
+          // BUG FIX — same duplicate-send pattern as employee_shift_summary
+          // below: App.tsx's checkAndSendDailySummary effect already emails
+          // the owner's end-of-day summary unconditionally, no approval gate,
+          // once per day after 6pm (dedup'd via localStorage). An owner who'd
+          // added the "Owner: End-of-Day Summary" automation template got the
+          // SAME recap they'd already received show up again minutes later
+          // in the "review before sending" popup — "William Knight, owner,
+          // end-of-day summary... 1 message about to go out" for a summary
+          // that had, in fact, already gone out. Always return no candidates
+          // so this built-in trigger can never re-queue what the direct send
+          // already covered.
+          getCandidates: () => [],
         },
         // FEATURE — owner quarterly/yearly business summary. The engine has
         // no arbitrary cron scheduler (see classifyTrigger's comment block
