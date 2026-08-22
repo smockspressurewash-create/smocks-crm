@@ -406,14 +406,29 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
       // own follow-up text a few seconds later via the Messages API —
       // exactly like sendSms elsewhere in this agent already does, so it
       // also gets logged to the Inbox like every other outbound text.
+      // OUTER WATCHDOG — runAlfredSmsAgent already gives up on its own after
+      // ~75s and replies with whatever it managed to finish (see its
+      // overallDeadline), but that only guards against the agent loop
+      // itself running long. Something else in this chain (transcription,
+      // a Supabase call with no timeout) could still hang indefinitely, and
+      // per the owner's report, a "huge" multi-action text sometimes got NO
+      // reply at all — total silence, no error either. Racing the whole
+      // chain against a fixed outer deadline means SOMETHING always gets
+      // texted back, in plain simple English, no matter what hangs.
+      const withDeadline = <T,>(p: Promise<T>, ms: number, fallback: T): Promise<T> =>
+        Promise.race([p, new Promise<T>((resolve) => setTimeout(() => resolve(fallback), ms))]);
+
       context.waitUntil(
-        resolveIncomingText(params, bodyRaw, twilioSid, twilioToken, openaiKey, (context.env as any).AI)
-          .then((text) => runAlfredSmsAgent(ctx, modelKeys, modelPriority, activeModel, from, text))
-          .catch((e: any) => {
-            console.error("[TwilioSmsWebhook] Alfred SMS agent failed:", e?.message);
-            return "Sorry, something went wrong on my end — try again in a moment.";
-          })
-          .then((reply) => sendAlfredSms(ctx, from, reply))
+        withDeadline(
+          resolveIncomingText(params, bodyRaw, twilioSid, twilioToken, openaiKey, (context.env as any).AI)
+            .then((text) => runAlfredSmsAgent(ctx, modelKeys, modelPriority, activeModel, from, text))
+            .catch((e: any) => {
+              console.error("[TwilioSmsWebhook] Alfred SMS agent failed:", e?.message);
+              return "Sorry, something went wrong on my end — try texting again.";
+            }),
+          90000,
+          "Sorry, that took too long and I had to stop — try again, maybe as a couple of shorter texts instead of one big one."
+        ).then((reply) => sendAlfredSms(ctx, from, reply))
       );
       return twiml();
     }

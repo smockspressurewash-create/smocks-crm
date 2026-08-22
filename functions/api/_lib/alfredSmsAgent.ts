@@ -1205,15 +1205,34 @@ CUSTOMER REQUESTS AWAITING YOU: some customers have Alfred auto-response turned 
 
 MASS MESSAGING — real power, use it carefully: notify_all_customers texts EVERY eligible customer at once (optionally narrowed by tag) — this is a real, immediate send to real people, not a draft. Use it for broadcast requests like "let everyone know I'm running late today", "tell my customers about the weather closure", or "send a promo to my whole list". Always confirm you have the FULL exact wording before calling it if the owner was vague ("send something to everyone" — ask what it should say, don't invent business content on their behalf). create_promotion sets up a tracked discount code but does NOT send anything by itself — for "create a promo and send it out", call create_promotion first, then notify_all_customers with a message that includes the returned code, in the same reply.
 
-You can: text the owner back on request (text_me), remember arbitrary facts/notes for later (remember/recall — use this whenever they say "remember", "keep track of", or "note that"), schedule future text reminders/follow-ups (set_reminder; list_reminders/cancel_reminder manage existing ones), summarize the schedule (get_calendar_summary), add a non-job event to the owner's real Google Calendar (create_calendar_event — use schedule_job instead for an actual pressure-washing job tied to a customer), review/approve or deny employee job requests (list_job_requests, respond_to_job_request), resolve customer requests awaiting approval (list_pending_customer_requests, approve_customer_request, decline_customer_request — see above), and message many customers at once or run a promotion (notify_all_customers, create_promotion — see above). Core CRM actions: create/reschedule/cancel jobs, reprioritize a job, look up full job or customer detail (get_job_details, get_customer_details), add a checklist item, assign employees, create customers, check who's clocked in and what they're working on, and create/send quotes and invoices (create_estimate then send_estimate — two steps, creating one does NOT notify the customer). Use whichever tool actually matches what's being asked, and don't hesitate to chain several tool calls in one exchange if the request needs it (e.g. reschedule a job AND text the customer AND remember a preference). You can also receive and understand voice memos sent as a text — they're transcribed automatically before you ever see them, so just respond to the transcribed content normally.`;
+You can: text the owner back on request (text_me), remember arbitrary facts/notes for later (remember/recall — use this whenever they say "remember", "keep track of", or "note that"), schedule future text reminders/follow-ups (set_reminder; list_reminders/cancel_reminder manage existing ones), summarize the schedule (get_calendar_summary), add a non-job event to the owner's real Google Calendar (create_calendar_event — use schedule_job instead for an actual pressure-washing job tied to a customer), review/approve or deny employee job requests (list_job_requests, respond_to_job_request), resolve customer requests awaiting approval (list_pending_customer_requests, approve_customer_request, decline_customer_request — see above), and message many customers at once or run a promotion (notify_all_customers, create_promotion — see above). Core CRM actions: create/reschedule/cancel jobs, reprioritize a job, look up full job or customer detail (get_job_details, get_customer_details), add a checklist item, assign employees, create customers, check who's clocked in and what they're working on, and create/send quotes and invoices (create_estimate then send_estimate — two steps, creating one does NOT notify the customer). Use whichever tool actually matches what's being asked, and don't hesitate to chain several tool calls in one exchange if the request needs it (e.g. reschedule a job AND text the customer AND remember a preference). You can also receive and understand voice memos sent as a text — they're transcribed automatically before you ever see them, so just respond to the transcribed content normally.
+
+BE CONCISE — this is a text message, and every extra sentence costs real API tokens. One short line per part of the request is enough ("✅ Luke's clocked in, no job. ✅ Created Franco Serenelli. ✅ Sent him a $424 quote.") — no throat-clearing, no restating the question, no closing pleasantries.`;
 
   let finalText = "";
   let succeeded = false;
+  // Plain-English log of what actually happened, built up across every tool
+  // call in every round/model attempt — used to build a real (not vague)
+  // fallback reply if we run out of time/rounds before the model itself
+  // produces a closing text-only reply. Each entry is already the concise,
+  // human-readable outcome of one action.
+  const stepLog: string[] = [];
+  // Owner reports (per the note this fixes) that "huge" multi-action texts
+  // sometimes get NO reply at all. 10 rounds × up to a handful of models,
+  // each round doing real network round-trips (LLM + several Supabase
+  // calls), can run long enough to hit the Cloudflare Function's execution
+  // ceiling — which kills this whole background task outright, so none of
+  // the try/catch below ever gets a chance to run and nothing is ever sent.
+  // A hard wall-clock budget, checked before every round/model, means we
+  // always bail out with SOMETHING (built from stepLog) well before that
+  // ceiling, instead of gambling the entire reply on finishing in time.
+  const overallDeadline = Date.now() + 75_000;
 
   // Try each configured provider in priority order — a failure (bad key,
   // provider outage, timeout) falls through to the next one instead of
   // just failing the whole text, same failover behavior as in-app Alfred.
   for (const modelKey of chain) {
+    if (Date.now() > overallDeadline) break;
     const apiKey = modelKeys[modelKey];
     const def = SMS_MODELS[modelKey];
     let rounds = 0;
@@ -1236,7 +1255,9 @@ You can: text the owner back on request (text_me), remember arbitrary facts/note
     // this — the whole thing already runs in the background via waitUntil
     // and the real reply goes out as its own follow-up text once ready,
     // not as the webhook response itself.
+    let ranOutOfTime = false;
     while (rounds < 10) {
+      if (Date.now() > overallDeadline) { ranOutOfTime = true; break; }
       rounds++;
       // A hung provider call (no error, no response) would otherwise burn
       // an unbounded amount of time silently. Hard-cap each individual
@@ -1253,11 +1274,11 @@ You can: text the owner back on request (text_me), remember arbitrary facts/note
         if (result.text) localFinal = result.text;
         if (result.toolUses.length > 0 && result.stopReason === "tool_use") {
           convMessages.push({ role: "assistant", content: result.raw });
-          const results = await Promise.all(result.toolUses.map(async (tu) => ({
-            type: "tool_result",
-            tool_use_id: tu.id,
-            content: JSON.stringify(await executeTool(ctx, tu.name, tu.input || {})),
-          })));
+          const results = await Promise.all(result.toolUses.map(async (tu) => {
+            const out: any = await executeTool(ctx, tu.name, tu.input || {});
+            stepLog.push(out?.error ? `${tu.name}: failed — ${out.error}` : `${tu.name}: done`);
+            return { type: "tool_result", tool_use_id: tu.id, content: JSON.stringify(out) };
+          }));
           convMessages.push({ role: "user", content: results });
           continue;
         }
@@ -1270,6 +1291,7 @@ You can: text the owner back on request (text_me), remember arbitrary facts/note
       }
     }
 
+    if (ranOutOfTime) break;
     if (!modelFailed) {
       finalText = localFinal;
       succeeded = true;
@@ -1277,8 +1299,20 @@ You can: text the owner back on request (text_me), remember arbitrary facts/note
     }
   }
 
-  if (!succeeded) return "Sorry, I hit an error reaching every configured AI model — try again in a bit, or check your API keys in Settings → AI Models.";
-  if (!finalText) finalText = "Done.";
+  // Guaranteed plain-English reply in every case — never leave the owner
+  // with total silence. If we have real completed steps to report (from
+  // stepLog) but never got a proper closing reply from the model (timed
+  // out, hit the round cap, or every provider failed partway through),
+  // report exactly what actually happened instead of a vague apology.
+  if (!succeeded || !finalText) {
+    if (stepLog.length > 0) {
+      finalText = "Didn't finish everything in time, but here's what went through: " + stepLog.join("; ") + ".";
+    } else if (!succeeded) {
+      finalText = "Sorry, I hit an error reaching every configured AI model — try again in a bit, or check your API keys in Settings → AI Models.";
+    } else {
+      finalText = "Done.";
+    }
+  }
   await saveThread(ctx, fromPhone, [...messages, { role: "assistant", content: finalText }]);
   return finalText;
 };
