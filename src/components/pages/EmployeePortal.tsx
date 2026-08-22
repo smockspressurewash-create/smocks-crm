@@ -2826,6 +2826,34 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     if ((myEmployee as any)?.dayClockInAt) startAutoMileageTracking();
   }, [(myEmployee as any)?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // FEATURE — mobile browsers throttle/suspend background tabs, so
+  // watchPosition's callback can go quiet (or stop firing entirely) the
+  // moment the employee switches apps or locks the phone — a genuine
+  // browser-platform limit no website can fully override (only an
+  // installed native app gets real background location). The one thing
+  // that IS fixable: get a fresh fix the INSTANT the tab becomes visible
+  // again, rather than leaving the owner looking at a stale pin until the
+  // next ~90s tick (which itself may not have fired at all while backgrounded).
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState !== "visible") return;
+      if (!locationSharingRef.current || !navigator.geolocation) return;
+      const empId = (myEmployee as any)?.id;
+      if (!empId) return;
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          lastLocationPushRef.current = Date.now();
+          (supabase as any).from("employees").update({ lastLocation: { lat: pos.coords.latitude, lng: pos.coords.longitude, updatedAt: Date.now() } }).eq("id", empId)
+            .then((r: any) => { if (r?.error) console.warn("[Share Location] resume-on-visible update failed:", r.error.message); });
+        },
+        () => { /* permission may have lapsed while backgrounded — next manual toggle will re-prompt */ },
+        { enableHighAccuracy: true, timeout: 10000, maximumAge: 30000 }
+      );
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, [(myEmployee as any)?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
   useEffect(() => {
     if (optimisticDayClockInAt !== undefined && (myEmployee as any)?.dayClockInAt === optimisticDayClockInAt) {
       setOptimisticDayClockInAt(undefined);
@@ -5656,7 +5684,16 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
               const lunchRemainSecs = Math.max(0, maxLunchMins * 60 - lunchElapsedSecs);
               const lunchOverSecs = Math.max(0, lunchElapsedSecs - maxLunchMins * 60);
               const lunchCountdownHHMMSS = [Math.floor(lunchRemainSecs / 3600), Math.floor((lunchRemainSecs % 3600) / 60), lunchRemainSecs % 60].map(n => String(n).padStart(2, "0")).join(":");
-              const locationSharing = !!(myEmployee as any)?.locationSharing;
+              // BUG FIX — this Today-tab toggle used to read `myEmployee.
+              // locationSharing` directly with NO optimistic state at all,
+              // completely separate from the header shift-bar's toggle
+              // (which DOES use optimisticLocationSharing). Result: tapping
+              // "Share My Location" here updated the header instantly (it
+              // showed active) but this control kept showing "off" until
+              // refetchEmployees() actually resolved — reading exactly like
+              // "I have to press the banner at top, and it still doesn't
+              // show here." Same source of truth as the header now.
+              const locationSharing = optimisticLocationSharing !== undefined ? optimisticLocationSharing : !!(myEmployee as any)?.locationSharing;
               const toggleLocationSharing = async () => {
                 if (!empId) { toast("Still loading your profile — try again in a moment", "yellow"); return; }
                 const turningOn = !locationSharing;
@@ -5684,8 +5721,12 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                       if (settled) return;
                       settled = true; clearTimeout(safety);
                       setLocationPermissionPending(false);
+                      setOptimisticLocationSharing(true);
                       toast("📍 Location sharing active");
-                      (supabase as any).from("employees").update({ lastLocation: { lat: pos.coords.latitude, lng: pos.coords.longitude, updatedAt: Date.now() }, locationSharing: true }).eq("id", empId).then((r: any) => { if (r?.error) console.error("[Share Location] — error saving coords:", r.error.message); else refetchEmployees?.(); });
+                      (supabase as any).from("employees").update({ lastLocation: { lat: pos.coords.latitude, lng: pos.coords.longitude, updatedAt: Date.now() }, locationSharing: true }).eq("id", empId).then((r: any) => {
+                        if (r?.error) { console.error("[Share Location] — error saving coords:", r.error.message); setOptimisticLocationSharing(false); toast("Failed to save location sharing — " + r.error.message, "red"); }
+                        else { refetchEmployees?.(); startAutoMileageTracking(); }
+                      });
                     },
                     (err) => {
                       if (settled) return;
@@ -5696,15 +5737,28 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                     },
                     { enableHighAccuracy: true, timeout: 10000 }
                   );
+                  // BUG FIX — there was no `return` here, so execution fell
+                  // straight through to the unconditional write below EVERY
+                  // time this ran (turning on), racing against the position
+                  // callback's own write above. Whichever one landed second
+                  // silently won — this one writes locationSharing:true with
+                  // NO coordinates, so if it landed after the real coords
+                  // write, the badge would show "on" with lastLocation
+                  // never actually set. The getCurrentPosition callback
+                  // above already handles the full write (coords + flag +
+                  // optimistic state + error toast) for this case.
+                  return;
                 } else if (turningOn && !navigator.geolocation) {
                   toast("This browser doesn't support location sharing", "red");
                   return;
                 }
+                // Only reaches here for "turning off."
+                setOptimisticLocationSharing(false);
                 try {
                   const result = await (supabase as any).from("employees").update({ locationSharing: turningOn }).eq("id", empId);
-                  if (result?.error) { toast("Failed to save — " + result.error.message, "red"); return; }
+                  if (result?.error) { setOptimisticLocationSharing(true); toast("Failed to save — " + result.error.message, "red"); return; }
                   refetchEmployees?.();
-                } catch (e: any) { toast("Failed to save — " + (e?.message || "try again"), "red"); }
+                } catch (e: any) { setOptimisticLocationSharing(true); toast("Failed to save — " + (e?.message || "try again"), "red"); }
               };
               // FEATURE — shift-end digest data, computed from real data
               // already tracked on `jobs` for today (never a new tracking

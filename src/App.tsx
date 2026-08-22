@@ -2727,8 +2727,20 @@ export function App() {
   // server-side and signs the account out of EVERY device, not just this
   // one — that's what made signing out on one device log out the other.
   // scope: "local" only clears this browser's session.
+  // BUG FIX — this had NO timeout and no try/catch. If Supabase's own
+  // signOut() call hung (network blip, degraded project — see
+  // supabaseDegraded elsewhere in this file, a real recurring condition for
+  // this deployment) or threw, none of the state clears below ever ran —
+  // the button just did nothing forever with zero feedback, exactly
+  // matching "I press sign out and nothing happens." Clearing local state
+  // is what actually gets the user back to the login screen; it no longer
+  // waits on (or gets blocked by) the network call succeeding.
   const handleSignOut = async () => {
-    await supabase.auth.signOut({ scope: "local" });
+    try {
+      await withTimeout(supabase.auth.signOut({ scope: "local" }), 5000, "Sign out");
+    } catch (e: any) {
+      console.warn("[SignOut] server sign-out failed/timed out — clearing local session anyway:", e?.message);
+    }
     setSettings((prev: any) => ({
       ...prev,
       googleConnected: false,
@@ -2740,6 +2752,7 @@ export function App() {
     setHasCrmSession(false);
     setLastOwnerSessionFlag(false);
     setProfileDropOpen(false);
+    setSidebarOpen(false);
   };
 
   // No OAuth loading gate either — oauthProcessing still flips false once the
