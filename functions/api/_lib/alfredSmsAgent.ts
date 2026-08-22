@@ -390,6 +390,85 @@ const TOOLS = [
       required: ["message"],
     },
   },
+  // ROUND — capability parity pass with the in-app Alfred (AlfredPage.tsx).
+  // These 7 tools were the biggest real gaps: no way to cancel a job, look
+  // up job/customer details, touch a checklist, reprioritize a job, or
+  // create/send a fresh quote, all from a text.
+  {
+    name: "cancel_job",
+    description: "Cancel an existing job. Identify it by jobId (from an earlier tool result) or customerName (cancels their next upcoming job).",
+    input_schema: {
+      type: "object",
+      properties: {
+        jobId: { type: "string" }, customerName: { type: "string" },
+        reason: { type: "string" },
+        notify: { type: "string", enum: ["none", "sms"], description: "Whether to text the customer that it's cancelled" },
+      },
+    },
+  },
+  {
+    name: "get_job_details",
+    description: "Full detail on one job — address, crew, checklist progress, photo count, payment status. Use for 'what's the status on X's job' type questions. For a lighter list of many jobs use list_jobs instead.",
+    input_schema: {
+      type: "object",
+      properties: { jobId: { type: "string" }, customerName: { type: "string", description: "Finds that customer's most recent non-cancelled job" } },
+    },
+  },
+  {
+    name: "add_checklist_item",
+    description: "Add an item to a job's checklist (pre-arrival, during-service, or post-service phase).",
+    input_schema: {
+      type: "object",
+      properties: {
+        jobId: { type: "string" }, item: { type: "string" },
+        phase: { type: "string", enum: ["pre", "during", "post"], description: "Defaults to pre if omitted" },
+      },
+      required: ["jobId", "item"],
+    },
+  },
+  {
+    name: "update_job_priority",
+    description: "Change a job's priority level.",
+    input_schema: {
+      type: "object",
+      properties: {
+        jobId: { type: "string" }, customerName: { type: "string" },
+        priority: { type: "string", enum: ["low", "normal", "high", "urgent"] },
+      },
+      required: ["priority"],
+    },
+  },
+  {
+    name: "get_customer_details",
+    description: "Look up a customer's contact info, total spent, and recent job history by name.",
+    input_schema: {
+      type: "object",
+      properties: { customerName: { type: "string" } },
+      required: ["customerName"],
+    },
+  },
+  {
+    name: "create_estimate",
+    description: "Create a new quote/estimate for a customer with one line item description and a total amount. Does NOT text it to the customer — call send_estimate after (or in the same reply) to actually deliver it. For 'send an invoice for $X' set invoiced true.",
+    input_schema: {
+      type: "object",
+      properties: {
+        customerName: { type: "string" },
+        description: { type: "string", description: "What the line item is for, e.g. 'House wash + driveway'" },
+        amount: { type: "number" },
+        invoiced: { type: "boolean", description: "true = this is an invoice (payment due now), false/omitted = a quote awaiting approval" },
+      },
+      required: ["customerName", "amount"],
+    },
+  },
+  {
+    name: "send_estimate",
+    description: "Text a customer the link to view/sign (or pay, if invoiced) an existing estimate. Use create_estimate first if it doesn't exist yet, or list_overdue_invoices/get_customer_details to find an existing one's id.",
+    input_schema: {
+      type: "object",
+      properties: { estimateId: { type: "string" }, customerName: { type: "string", description: "Alternative to estimateId — sends that customer's most recent estimate" } },
+    },
+  },
   {
     name: "remember",
     description: "Save a fact/note for later recall — use whenever the owner says 'remember that...', 'keep track of...', 'note that...', or similar. Not a scheduled reminder (use set_reminder for a future text) — this is just durable memory you can look up later with recall.",
@@ -631,6 +710,117 @@ const executeTool = async (ctx: Ctx, name: string, input: Record<string, any>): 
         if (!res.ok) return { error: res.error };
         return { success: true, sentTo: `${cust.firstName} ${cust.lastName}`, amount: inv.total };
       }
+      case "cancel_job": {
+        const job = await findJob(ctx, { jobId: input.jobId, customerName: input.customerName });
+        if (!job) return { error: "Couldn't find that job." };
+        const patch = { status: "cancelled", cancelReason: input.reason || "" };
+        const res = await fetch(`${SUPABASE_URL}/rest/v1/jobs?id=eq.${encodeURIComponent(job.id)}`, {
+          method: "PATCH", headers: { ...ctx.authHeaders, "Content-Type": "application/json", Prefer: "return=minimal" },
+          body: JSON.stringify(patch),
+        });
+        if (!res.ok) return { error: (await res.text().catch(() => "")).slice(0, 200) };
+        let notifyWarning: string | undefined;
+        if (input.notify === "sms") {
+          const cust = (await sbGet(ctx, `customers?id=eq.${encodeURIComponent(job.customerId)}&select=phone,firstName`))[0];
+          if (cust?.phone) {
+            const msg = `Hi ${cust.firstName || ""}, your ${ctx.companyName} appointment${job.scheduledDate ? " on " + job.scheduledDate : ""} has been cancelled.${input.reason ? ` (${input.reason})` : ""} Reach out any time to reschedule.`;
+            const smsRes = await sendSms(ctx, cust.phone, msg);
+            if (!smsRes.ok) notifyWarning = smsRes.error;
+          } else {
+            notifyWarning = "customer has no phone on file";
+          }
+        }
+        return { success: true, jobId: job.id, ...(notifyWarning ? { notifyWarning } : {}) };
+      }
+      case "get_job_details": {
+        const job = await findJob(ctx, { jobId: input.jobId, customerName: input.customerName });
+        if (!job) return { error: "Couldn't find that job." };
+        const full = (await sbGet(ctx, `jobs?id=eq.${encodeURIComponent(job.id)}&select=id,customerId,customerName,address,scheduledDate,scheduledTime,status,amount,priority,notes,crew,preChecklist,duringChecklist,postChecklist,photos,paymentStatus,invoiced,paidAt`))[0];
+        if (!full) return { error: "Job not found." };
+        const emps = full.crew?.length ? await sbGet(ctx, `employees?select=id,firstName,lastName${ownerScope(ctx)}&limit=200`) : [];
+        const crewNames = (full.crew || []).map((id: string) => { const e = emps.find((x: any) => x.id === id); return e ? `${e.firstName} ${e.lastName}` : id; });
+        const allCk = [...(full.preChecklist || []), ...(full.duringChecklist || []), ...(full.postChecklist || [])];
+        return {
+          jobId: full.id, customer: full.customerName, address: full.address, date: full.scheduledDate, time: full.scheduledTime,
+          status: full.status, amount: full.amount, priority: full.priority, notes: full.notes, crew: crewNames,
+          checklist: { totalItems: allCk.length, completed: allCk.filter((c: any) => c?.done).length },
+          photoCount: (full.photos || []).length,
+          paymentStatus: full.paymentStatus || (full.invoiced ? (full.paidAt ? "Paid" : "Invoiced, unpaid") : "Not invoiced"),
+        };
+      }
+      case "add_checklist_item": {
+        if (!input.jobId || !input.item) return { error: "jobId and item required" };
+        const job = (await sbGet(ctx, `jobs?id=eq.${encodeURIComponent(input.jobId)}&select=preChecklist,duringChecklist,postChecklist`))[0];
+        if (!job) return { error: "Job not found" };
+        const phase = input.phase === "during" ? "duringChecklist" : input.phase === "post" ? "postChecklist" : "preChecklist";
+        const updated = [...(job[phase] || []), { id: crypto.randomUUID(), label: input.item, done: false }];
+        const res = await fetch(`${SUPABASE_URL}/rest/v1/jobs?id=eq.${encodeURIComponent(input.jobId)}`, {
+          method: "PATCH", headers: { ...ctx.authHeaders, "Content-Type": "application/json", Prefer: "return=minimal" },
+          body: JSON.stringify({ [phase]: updated }),
+        });
+        if (!res.ok) return { error: (await res.text().catch(() => "")).slice(0, 200) };
+        return { success: true, added: input.item, phase };
+      }
+      case "update_job_priority": {
+        const job = await findJob(ctx, { jobId: input.jobId, customerName: input.customerName });
+        if (!job) return { error: "Couldn't find that job." };
+        const res = await fetch(`${SUPABASE_URL}/rest/v1/jobs?id=eq.${encodeURIComponent(job.id)}`, {
+          method: "PATCH", headers: { ...ctx.authHeaders, "Content-Type": "application/json", Prefer: "return=minimal" },
+          body: JSON.stringify({ priority: input.priority }),
+        });
+        if (!res.ok) return { error: (await res.text().catch(() => "")).slice(0, 200) };
+        return { success: true, jobId: job.id, priority: input.priority };
+      }
+      case "get_customer_details": {
+        const cust = await findCustomerByName(ctx, input.customerName);
+        if (!cust) return { error: `No customer found matching "${input.customerName}".` };
+        const jobs = await sbGet(ctx, `jobs?customerId=eq.${encodeURIComponent(cust.id)}&select=scheduledDate,status,amount${ownerScope(ctx)}&order=scheduledDate.desc&limit=5`);
+        const full = (await sbGet(ctx, `customers?id=eq.${encodeURIComponent(cust.id)}&select=totalSpent,address`))[0];
+        return {
+          success: true, name: `${cust.firstName} ${cust.lastName}`.trim(), phone: cust.phone, email: cust.email,
+          address: full?.address, totalSpent: full?.totalSpent || 0,
+          recentJobs: jobs.map((j: any) => ({ date: j.scheduledDate, status: j.status, amount: j.amount })),
+        };
+      }
+      case "create_estimate": {
+        const cust = await findCustomerByName(ctx, input.customerName);
+        if (!cust) return { error: `No customer found matching "${input.customerName}".` };
+        const amount = Number(input.amount) || 0;
+        if (amount <= 0) return { error: "amount must be greater than 0" };
+        const invoiced = !!input.invoiced;
+        const row = {
+          id: crypto.randomUUID(), customerId: cust.id,
+          lineItems: [{ id: crypto.randomUUID(), description: input.description || "Service", quantity: 1, unitPrice: amount }],
+          subtotal: amount, discount: 0, depositRequired: 0, tax: 0, total: amount,
+          status: "approved", createdAt: today(), validUntil: today(),
+          terms: "Payment due upon receipt.", notes: "", invoiced, ...(invoiced ? { invoicedAt: today() } : {}),
+        };
+        const res = await sbWrite(ctx, "estimates", "POST", row);
+        if (!res.ok) return { error: res.error };
+        return { success: true, estimateId: row.id, customer: `${cust.firstName} ${cust.lastName}`.trim(), total: amount, invoiced };
+      }
+      case "send_estimate": {
+        let est: any = null;
+        if (input.estimateId) {
+          est = (await sbGet(ctx, `estimates?id=eq.${encodeURIComponent(input.estimateId)}&select=id,customerId,total,invoiced,paidAt`))[0];
+        } else if (input.customerName) {
+          const cust = await findCustomerByName(ctx, input.customerName);
+          if (!cust) return { error: `No customer found matching "${input.customerName}".` };
+          const rows = await sbGet(ctx, `estimates?customerId=eq.${encodeURIComponent(cust.id)}&select=id,customerId,total,invoiced,paidAt,createdAt${ownerScope(ctx)}`);
+          est = rows.sort((a: any, b: any) => (b.createdAt || "").localeCompare(a.createdAt || ""))[0];
+          if (!est) return { error: `${input.customerName} has no estimate on file.` };
+        } else {
+          return { error: "Need either estimateId or customerName." };
+        }
+        if (!est) return { error: "Estimate not found." };
+        const cust = (await sbGet(ctx, `customers?id=eq.${encodeURIComponent(est.customerId)}&select=phone,firstName`))[0];
+        if (!cust?.phone) return { error: "That customer has no phone number on file." };
+        const link = `${ctx.origin}/#/estimate/${est.id}`;
+        const label = est.invoiced ? "invoice" : "estimate";
+        const res = await sendSms(ctx, cust.phone, `Hi ${cust.firstName || ""}, here's your ${label} from ${ctx.companyName} for $${Number(est.total || 0).toFixed(2)}: ${link}`);
+        if (!res.ok) return { error: res.error };
+        return { success: true, sentTo: cust.firstName, amount: est.total, type: label };
+      }
       case "text_me": {
         if (!ctx.fromPhone) return { error: "Don't know which number to text back." };
         const res = await sendSms(ctx, ctx.fromPhone, input.message);
@@ -814,9 +1004,13 @@ export const runAlfredSmsAgent = async (
   const messages = [...history, { role: "user", content: incomingText }];
 
   const nowLocal = new Date().toISOString();
-  const systemPrompt = `You are Alfred, the AI assistant for ${ctx.companyName}, a pressure-washing business — texting back and forth with the OWNER over SMS while they're away from the CRM. The current date/time is ${nowLocal} (UTC). Use tools aggressively to actually read and modify the CRM — never just describe what you'd do. Keep replies SHORT (this is a text message, 1-3 sentences, no markdown). If a tool result has an "error" field, tell the owner exactly what went wrong — do not claim success. If a request is missing something a tool needs (which customer, which date), ask one short clarifying question instead of guessing. When you finish an action, confirm plainly what happened.
+  const systemPrompt = `You are Alfred, the AI assistant for ${ctx.companyName}, a pressure-washing business — texting back and forth with the OWNER over SMS while they're away from the CRM. The current date/time is ${nowLocal} (UTC). Use tools aggressively to actually read and modify the CRM — never just describe what you'd do. Keep replies SHORT (this is a text message, 1-3 sentences, no markdown). If a tool result has an "error" field, tell the owner exactly what went wrong — do not claim success. When you finish an action, confirm plainly what happened.
 
-You can: text the owner back on request (text_me), remember arbitrary facts/notes for later (remember/recall — use this whenever they say "remember", "keep track of", or "note that"), schedule future text reminders (set_reminder — resolve any relative time like "tomorrow at 9am" into an exact ISO datetime yourself using the current date/time above before calling it; list_reminders/cancel_reminder manage existing ones), summarize the schedule (get_calendar_summary), add a non-job event to the owner's real Google Calendar (create_calendar_event — use schedule_job instead for an actual pressure-washing job tied to a customer), and review/approve or deny employee job requests (list_job_requests, respond_to_job_request). These are in addition to the core CRM actions (create/reschedule jobs, assign employees, create customers, check who's clocked in and what they're working on, send/list invoices). Use whichever tool actually matches what's being asked, and don't hesitate to chain several tool calls in one exchange if the request needs it (e.g. reschedule a job AND text the customer AND remember a preference).`;
+CLARIFYING QUESTIONS: if a request is missing something a tool needs (which customer, which date, which job when there are several matches), ask ONE short, specific question instead of guessing — then stop and wait for their reply. The full conversation history is remembered, so when they answer, pick up exactly where you left off and finish the original request; don't make them repeat themselves.
+
+FOLLOWING UP LATER: you are not limited to replying only in this exact moment. If a task naturally needs a check-in later (e.g. "did the crew actually show up", "nudge me if Mike hasn't replied by 3", "nudge me if [job] isn't marked done by tonight"), use set_reminder to text yourself — meaning the owner — back at that time, resolving any relative time ("in 20 min", "by 3pm", "tonight") into an exact ISO datetime using the current date/time above. This is a real scheduled text, not just a note — use it whenever the owner asks to be followed up with, checked on, or reminded about something, even mid-conversation.
+
+You can: text the owner back on request (text_me), remember arbitrary facts/notes for later (remember/recall — use this whenever they say "remember", "keep track of", or "note that"), schedule future text reminders/follow-ups (set_reminder; list_reminders/cancel_reminder manage existing ones), summarize the schedule (get_calendar_summary), add a non-job event to the owner's real Google Calendar (create_calendar_event — use schedule_job instead for an actual pressure-washing job tied to a customer), and review/approve or deny employee job requests (list_job_requests, respond_to_job_request). Core CRM actions: create/reschedule/cancel jobs, reprioritize a job, look up full job or customer detail (get_job_details, get_customer_details), add a checklist item, assign employees, create customers, check who's clocked in and what they're working on, and create/send quotes and invoices (create_estimate then send_estimate — two steps, creating one does NOT notify the customer). Use whichever tool actually matches what's being asked, and don't hesitate to chain several tool calls in one exchange if the request needs it (e.g. reschedule a job AND text the customer AND remember a preference). You can also receive and understand voice memos sent as a text — they're transcribed automatically before you ever see them, so just respond to the transcribed content normally.`;
 
   let finalText = "";
   let succeeded = false;

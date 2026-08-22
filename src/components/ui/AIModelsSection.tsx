@@ -128,6 +128,11 @@ export function AIModelsSection({ f, setF, modelStatus, setModelStatus, toast })
             {!Object.keys(MODELS).some(mid => !!modelKeys[mid]) && <div className="text-[11px] text-yellow-400 mt-1.5">⚠️ Add at least one AI provider key below first.</div>}
             {!f.myPhone && <div className="text-[11px] text-yellow-400 mt-1.5">⚠️ Set "Your Mobile #" under Settings → Company first.</div>}
             {f.alfredSmsEnabled && (
+              <div className="text-[11px] text-white/40 mt-1.5">
+                Alfred can also text you follow-ups later ("nudge me at 3", "text me once that job's done") — that needs one free one-time setup: a scheduler pinging <code className="text-white/60">/api/check-reminders</code> every few minutes, since Cloudflare Pages has no built-in cron. Free option: <a href="https://cron-job.org" target="_blank" rel="noreferrer" className="text-red-400 underline">cron-job.org</a> — point it at your domain + that path.
+              </div>
+            )}
+            {f.alfredSmsEnabled && (
               <div className="mt-3 pt-3 border-t border-white/10">
                 <div className="text-[11px] font-semibold text-white/70 mb-1">Other numbers allowed to text Alfred</div>
                 <div className="text-[10px] text-white/40 mb-2">Useful if you're testing the CUSTOMER side of texting from your main number and want a second number just for Alfred, or if a manager should also be able to text Alfred.</div>
