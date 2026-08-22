@@ -25,6 +25,16 @@
 --
 -- Current single owner in this deployment (used for backfill below):
 --   9b7cab5e-c10e-4c71-9c41-bfc15b3e53c9
+--
+-- Wrapped in a transaction — if ANY statement below errors, Postgres rolls
+-- back everything in this file instead of leaving it half-applied (which is
+-- exactly what happened the first time this ran: it errored partway through
+-- STEP 1, so nothing after that point — including the new owner-scoped RLS
+-- policies — ever took effect, safely). Verified live: as of this fix,
+-- production is still on the OLD fully-permissive RLS, confirming the first
+-- run's failure really did stop everything at that point rather than
+-- leaving a mixed state.
+begin;
 
 -- ═══════════════════════════════════════════════════════════════════════
 -- STEP 1 — add owner_id (text) to every table that needs one, or convert a
@@ -42,6 +52,15 @@ alter table campaigns      add column if not exists owner_id text;
 alter table services       add column if not exists owner_id text;
 alter table reviews        add column if not exists owner_id text;
 
+-- FIX — job_requests.owner_id already carries a FOREIGN KEY to
+-- auth.users(id) (uuid) from before this migration existed. Postgres can't
+-- retype a column to text while a uuid-typed FK still references it — this
+-- is the exact "foreign key constraint ... cannot be implemented ... text
+-- and uuid" error hit when this file was first run. Drop that FK first;
+-- owner_id is a scoping tag matched against other tables' owner_id text
+-- columns everywhere else in this app, not a literal FK relationship, so it
+-- isn't recreated.
+alter table job_requests drop constraint if exists job_requests_owner_id_fkey;
 alter table job_requests alter column owner_id type text using owner_id::text;
 alter table promotions   alter column owner_id type text using owner_id::text;
 
@@ -282,3 +301,5 @@ create table if not exists public.owner_stripe_accounts (
 
 alter table public.owner_stripe_accounts enable row level security;
 -- No policies added on purpose — default-deny for anon/authenticated.
+
+commit;

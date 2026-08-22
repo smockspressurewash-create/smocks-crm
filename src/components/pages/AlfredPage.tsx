@@ -1324,7 +1324,20 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           // an insert reports no error (e.g. RLS silently accepting a write
           // path but a mismatched WITH CHECK, or a trigger rewriting/
           // dropping the row) yet nothing is really there to find.
-          const { data: verifyRow, error: verifyErr } = await (supabase as any).from("jobs").select("id, scheduledDate").eq("id", newJ.id).maybeSingle();
+          // BUG FIX — this SELECT was the one Supabase call in the whole
+          // schedule_job flow with NO withTimeout wrapper. Every insert
+          // around it already had one (see ITEM 23 above) precisely because
+          // a hung request here can't be told apart from a real hang — but
+          // this specific await had no escape hatch, so if it (not the
+          // insert) was the thing hanging, the ENTIRE tool call — and with
+          // it, the whole Alfred round-trip, regardless of which AI model
+          // was in use — blocked forever with no timeout, no error, no
+          // failover. This is almost certainly what "all models timed out"
+          // scheduling a job actually was: not a model problem at all.
+          const { data: verifyRow, error: verifyErr } = await withTimeout<any>(
+            (supabase as any).from("jobs").select("id, scheduledDate").eq("id", newJ.id).maybeSingle(),
+            10000, "Verify job save"
+          ).catch((e: any) => ({ data: null, error: e }));
           console.log("[AlfredTool schedule_job] post-insert verification SELECT — row found:", !!verifyRow, "data:", verifyRow, "error:", verifyErr?.message);
           if (!verifyRow) {
             console.error("[AlfredTool schedule_job] ✗ Insert reported no error, but the row can't be read back — something is silently dropping it (RLS, a trigger, or a check constraint).");
@@ -2171,8 +2184,17 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
             if (result.text) localFinal = result.text;
             if (result.toolUses.length > 0 && result.stopReason === "tool_use" && toolsForModel) {
               localConv.push({ role: "assistant", content: result.raw });
+              // BUG FIX — general safety net alongside the specific
+              // schedule_job fix above: any one of the ~30 tools having its
+              // own unguarded await (a Supabase call with no withTimeout)
+              // would hang this entire round with no way out, no matter
+              // which AI model triggered it. Cap each tool call individually
+              // so a single bad one reports a clear timeout error back to
+              // the model (which can then tell the user plainly) instead of
+              // freezing the whole conversation.
               const toolResults = await Promise.all(result.toolUses.map(async tu => {
-                const r = await executeTool(tu.name, tu.input || {});
+                const r = await withTimeout<any>(executeTool(tu.name, tu.input || {}), 30000, tu.name)
+                  .catch((e: any) => ({ error: (e?.message || String(e)) + " — the action may or may not have actually completed; check the relevant page before retrying." }));
                 localTraces.push({ tool: tu.name, input: tu.input, result: r });
                 return { type: "tool_result", tool_use_id: tu.id, content: JSON.stringify(r) };
               }));

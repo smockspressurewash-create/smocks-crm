@@ -3,7 +3,7 @@ import {
   Clock, Briefcase, Calendar, ChevronLeft, CheckSquare, Camera,
   LogOut, MapPin, Phone, User, Play, Pause, Square, Plus, X, Eye, EyeOff, DollarSign, BookOpen,
   ChevronRight, Home, List, CheckCircle, AlertCircle, AlertTriangle, Image, FileText,
-  Video, PenLine, Shield, Navigation, Database, Route, ToggleRight, ToggleLeft, Download, Bell, CreditCard
+  Video, PenLine, Shield, Navigation, Database, Route, ToggleRight, ToggleLeft, Download, Bell, CreditCard, Mic
 } from "lucide-react";
 import { supabase, getStoredGoogleConnection, fetchOwnerGoogleToken } from "../../lib/supabase";
 import { getEmpGoogleToken, isEmpGoogleTokenValid, saveEmpGoogleToken, refreshEmpGoogleToken, getValidEmpGoogleToken, createGCalEvent, updateGCalEvent } from "../../lib/googleApi";
@@ -153,6 +153,40 @@ function PortalChecklistSection({ jobId, title, emoji, items, onUpdate, allowPho
   const done = items.filter(i => i.done).length;
   const toggle = (id: string) => { if (!disabled) onUpdate(items.map(it => it.id === id ? { ...it, done: !it.done } : it)); };
   const updateNotes = (id: string, notes: string) => onUpdate(items.map(it => it.id === id ? { ...it, notes } : it));
+
+  // FEATURE — voice-to-text checklist notes. Wet/gloved hands make typing
+  // on a phone slow mid-job; this uses the browser's built-in Web Speech
+  // API (no API key, no backend call) — supported on Chrome/Safari/Edge
+  // mobile, not on Firefox, so the mic button only renders when the API
+  // actually exists rather than showing a control that'd silently do
+  // nothing on an unsupported browser.
+  const SpeechRecognitionCtor = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+  const [recordingItemId, setRecordingItemId] = useState<string | null>(null);
+  const recognitionRef = useRef<any>(null);
+  const toggleVoiceNote = (item: JobChecklistItem) => {
+    if (!SpeechRecognitionCtor) return;
+    if (recordingItemId === item.id) {
+      recognitionRef.current?.stop();
+      return;
+    }
+    recognitionRef.current?.stop();
+    const rec = new SpeechRecognitionCtor();
+    rec.lang = "en-US";
+    rec.interimResults = false;
+    rec.maxAlternatives = 1;
+    rec.onresult = (e: any) => {
+      const transcript = Array.from(e.results).map((r: any) => r[0].transcript).join(" ").trim();
+      if (!transcript) return;
+      const existing = (item.notes || "").trim();
+      updateNotes(item.id, existing ? existing + " " + transcript : transcript);
+    };
+    rec.onerror = (e: any) => { console.warn("[VoiceNote] speech recognition error:", e?.error); };
+    rec.onend = () => setRecordingItemId(cur => cur === item.id ? null : cur);
+    recognitionRef.current = rec;
+    setRecordingItemId(item.id);
+    try { rec.start(); } catch { setRecordingItemId(null); }
+  };
+  useEffect(() => () => recognitionRef.current?.stop(), []);
   const addItemPhoto = async (id: string, dataUrl: string, isVideo: boolean, contentType?: string) => {
     const mediaId = uid();
     const ext = isVideo ? (contentType?.split("/")[1] || "mp4").replace("quicktime", "mov") : "jpg";
@@ -245,13 +279,25 @@ function PortalChecklistSection({ jobId, title, emoji, items, onUpdate, allowPho
                     ))}
                   </div>
                 )}
-                <input
-                  type="text"
-                  value={item.notes || ""}
-                  onChange={e => updateNotes(item.id, e.target.value)}
-                  placeholder="Add note..."
-                  className="mt-1 w-full bg-transparent border-0 border-b border-white/10 text-xs text-white/50 placeholder-white/20 focus:outline-none focus:border-white/30 py-0.5"
-                />
+                <div className="mt-1 flex items-center gap-1.5">
+                  <input
+                    type="text"
+                    value={item.notes || ""}
+                    onChange={e => updateNotes(item.id, e.target.value)}
+                    placeholder="Add note..."
+                    className="flex-1 min-w-0 bg-transparent border-0 border-b border-white/10 text-xs text-white/50 placeholder-white/20 focus:outline-none focus:border-white/30 py-0.5"
+                  />
+                  {SpeechRecognitionCtor && !disabled && (
+                    <button
+                      type="button"
+                      onClick={() => toggleVoiceNote(item)}
+                      title={recordingItemId === item.id ? "Stop recording" : "Add note by voice"}
+                      className={"flex-shrink-0 p-1 rounded-lg transition " + (recordingItemId === item.id ? "bg-red-600 text-white animate-pulse" : "bg-white/5 text-white/40 hover:text-white/70 hover:bg-white/10")}
+                    >
+                      <Mic size={11} />
+                    </button>
+                  )}
+                </div>
               </div>
             </div>
           </div>

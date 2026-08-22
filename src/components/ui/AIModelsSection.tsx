@@ -113,6 +113,23 @@ export function AIModelsSection({ f, setF, modelStatus, setModelStatus, toast })
         </div>
       </Glass>
 
+      {/* FIX — "text Alfred" was only discoverable buried in the Company
+          tab under the myPhone field, with no heading calling it out. Since
+          it's gated on having a Claude key set (right here in this tab)
+          and the owner specifically looked here for it, surface it
+          directly in AI Models too, not just Company. */}
+      <Glass className={"p-4 " + (f.alfredSmsEnabled ? "!bg-gradient-to-br !from-red-950/20 !to-black/60 !border-red-700/40" : "!bg-black/40")}>
+        <div className="flex items-start gap-3">
+          <button onClick={() => setF({ ...f, alfredSmsEnabled: !f.alfredSmsEnabled })}>{f.alfredSmsEnabled ? <ToggleRight size={28} className="text-red-400" /> : <ToggleLeft size={28} className="text-white/30" />}</button>
+          <div className="flex-1 min-w-0">
+            <div className="font-semibold text-sm flex items-center gap-1.5"><Bot size={13} />Text Alfred from your phone</div>
+            <div className="text-[11px] text-white/60 mt-0.5">Text your CRM's Twilio number from your own mobile number (set under Company → Your Mobile #) and Alfred replies right there — schedule/reschedule jobs, assign crew, text customers, business stats. Needs a Claude API key below and your mobile number set.</div>
+            {!modelKeys.claude && <div className="text-[11px] text-yellow-400 mt-1.5">⚠️ Add a Claude API key below first — text-Alfred only runs on Claude.</div>}
+            {!f.myPhone && <div className="text-[11px] text-yellow-400 mt-1.5">⚠️ Set "Your Mobile #" under Settings → Company first.</div>}
+          </div>
+        </div>
+      </Glass>
+
       {/* Active model picker */}
       <div>
         <label className="text-xs text-white/60 mb-2 block">Active model (first to try)</label>
