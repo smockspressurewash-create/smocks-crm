@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+﻿import { useState, useEffect, useRef } from "react";
 import {
   LayoutDashboard, Users, FileText, Receipt, Briefcase, GitBranch,
   Calendar, MessageSquare, Megaphone, Star, Zap, Share2, UserPlus,
@@ -539,110 +539,13 @@ export function App() {
   useEffect(() => {
     if (!["welcome", "features", "pricing", "about", "login"].includes(page)) setMarketingPreview(false);
   }, [page]);
-  // FIX 3 (mobile round 4) — round 3's 50px edge zone / 50px threshold still
-  // felt too hard to trigger reliably on a real phone. Widened the edge zone
-  // further (a thumb rarely starts a swipe from the literal first 50px) and
-  // lowered the distance needed, kept the flat vertical-drift allowance from
-  // round 3. edgeSwipeProgress now also drives a live "peek" of the sidebar
-  // itself (see the <aside> style below) proportional to how far the swipe
-  // has gone, instead of only revealing it once the threshold is crossed.
-  // BLOCKER 16 (mobile round 9) — user report: "detection area too small" —
-  // widened from 120px to 150px so a thumb swipe starting further from the
-  // literal screen edge still registers as an open-gesture.
-  // BUG (mobile round 10) — that 150px zone covered most of the left third
-  // of the screen, which overlapped in-page back buttons positioned near
-  // the left edge (e.g. the Inbox conversation-panel back button — see
-  // InboxPage.tsx). Tapping/dragging one's finger slightly while pressing
-  // such a button landed inside the zone and got misread as a sidebar-open
-  // swipe, eating the tap. Narrowed back down to a true edge zone (matches
-  // the iOS/Android edge-swipe-back convention) so only touches that
-  // actually start at the literal screen edge can arm the gesture; normal
-  // taps/drags on in-page controls, even ones near the left side, are no
-  // longer affected. Individual controls that still sit inside this zone
-  // (like the Inbox back button) additionally stopPropagation on their own
-  // touchstart as a second safeguard.
-  const EDGE_ZONE_PX = 24;
-  const SWIPE_THRESHOLD_PX = 30;
-  const MAX_VERTICAL_DRIFT_PX = 100;
-  const SIDEBAR_WIDTH_PX = 256; // matches the aside's w-64
-  const mainTouchStartRef = useRef<{ x: number; y: number } | null>(null);
-  const [edgeSwipeProgress, setEdgeSwipeProgress] = useState(0); // 0..1
-  const handleMainTouchStart = (e: React.TouchEvent) => {
-    const t = e.touches[0];
-    if (t.clientX < EDGE_ZONE_PX && !sidebarOpen) {
-      mainTouchStartRef.current = { x: t.clientX, y: t.clientY };
-      // FIX 3 (mobile round 4) — visible immediately on touch-down within the
-      // zone, not just once the finger has moved (round 3's 0.05 was almost
-      // imperceptible).
-      setEdgeSwipeProgress(0.12);
-    } else {
-      mainTouchStartRef.current = null;
-    }
-  };
-  const handleMainTouchMove = (e: React.TouchEvent) => {
-    const start = mainTouchStartRef.current;
-    if (!start) return;
-    const t = e.touches[0];
-    const dx = t.clientX - start.x;
-    const dy = t.clientY - start.y;
-    if (Math.abs(dy) > MAX_VERTICAL_DRIFT_PX) {
-      mainTouchStartRef.current = null;
-      setEdgeSwipeProgress(0);
-      return;
-    }
-    setEdgeSwipeProgress(Math.max(0.12, Math.min(1, dx / SWIPE_THRESHOLD_PX)));
-  };
-  const handleMainTouchEnd = (e: React.TouchEvent) => {
-    const start = mainTouchStartRef.current;
-    mainTouchStartRef.current = null;
-    setEdgeSwipeProgress(0);
-    if (!start || sidebarOpen) return;
-    const t = e.changedTouches[0];
-    const dx = t.clientX - start.x;
-    const dy = t.clientY - start.y;
-    const distance = Math.round(Math.hypot(dx, dy));
-    if (dx > SWIPE_THRESHOLD_PX && Math.abs(dy) <= MAX_VERTICAL_DRIFT_PX) {
-      setSidebarOpen(true);
-    }
-  };
-  const sidebarTouchStartRef = useRef<{ x: number; y: number } | null>(null);
-  // FIX 3 (mobile round 5) — swipe-to-close only ever checked the delta on
-  // touchend, with no touchmove handler at all, so there was no live
-  // animation and (per user report) the close gesture wasn't registering
-  // reliably. sidebarCloseProgress mirrors edgeSwipeProgress's open-gesture
-  // pattern: drives a live drag-out transform (see the <aside> style below)
-  // so the sidebar visibly slides left as the finger moves, and commits the
-  // close once the drag crosses SWIPE_THRESHOLD_PX.
-  const [sidebarCloseProgress, setSidebarCloseProgress] = useState(0); // 0..1
-  const handleSidebarTouchStart = (e: React.TouchEvent) => {
-    const t = e.touches[0];
-    sidebarTouchStartRef.current = { x: t.clientX, y: t.clientY };
-  };
-  const handleSidebarTouchMove = (e: React.TouchEvent) => {
-    const start = sidebarTouchStartRef.current;
-    if (!start) return;
-    const t = e.touches[0];
-    const dx = start.x - t.clientX; // positive = dragging left (closing)
-    const dy = t.clientY - start.y;
-    if (Math.abs(dy) > MAX_VERTICAL_DRIFT_PX) {
-      sidebarTouchStartRef.current = null;
-      setSidebarCloseProgress(0);
-      return;
-    }
-    setSidebarCloseProgress(Math.max(0, Math.min(1, dx / SWIPE_THRESHOLD_PX)));
-  };
-  const handleSidebarTouchEnd = (e: React.TouchEvent) => {
-    const start = sidebarTouchStartRef.current;
-    sidebarTouchStartRef.current = null;
-    setSidebarCloseProgress(0);
-    if (!start) return;
-    const t = e.changedTouches[0];
-    const dx = start.x - t.clientX;
-    const dy = t.clientY - start.y;
-    if (dx > SWIPE_THRESHOLD_PX && Math.abs(dy) <= MAX_VERTICAL_DRIFT_PX) {
-      setSidebarOpen(false);
-    }
-  };
+  // Sidebar open/close is button-only now (Menu icon / X / nav item taps /
+  // outside-click on the overlay) — edge-swipe open and swipe-to-close were
+  // removed per explicit user feedback: the gesture felt unreliable on a
+  // real phone and, worse, the swipe-to-close touch handlers lived on the
+  // same <aside> element as the Sign Out button, so an ordinary tap on Sign
+  // Out with the slightest finger drift was sometimes read as a close-drag
+  // instead of a click, making sign-out feel flaky.
   const [settingsOpen, setSettingsOpen] = useState(false);
   // Stripe Connect OAuth redirect landing — functions/api/stripe-connect-oauth.ts
   // sends the browser back to `${origin}/#/settings?stripe_connected=1` (or
@@ -3414,36 +3317,11 @@ export function App() {
       {/* Sidebar overlay for mobile */}
       {sidebarOpen && <div className="fixed inset-0 bg-black/60 z-20 md:hidden" onClick={() => setSidebarOpen(false)} />}
 
-      {/* Sidebar — its own touch handlers close it on a leftward swipe */}
+      {/* Sidebar — open/close is button-only (see comment above); no touch
+          handlers on this element at all, so a tap on Sign Out (or anything
+          else in here) is a plain, unintercepted click every time. */}
       <aside
-        onTouchStart={handleSidebarTouchStart}
-        onTouchMove={handleSidebarTouchMove}
-        onTouchEnd={handleSidebarTouchEnd}
         className={"fixed inset-y-0 left-0 z-30 w-64 bg-black/95 border-r border-red-900/30 flex flex-col transition-transform duration-300 ease-out md:relative md:translate-x-0 " + (sidebarOpen ? "translate-x-0" : "-translate-x-full md:translate-x-0")}
-        // FIX 3 (mobile round 4/5) — while an edge-swipe-open is actively in
-        // progress (not yet open), or a swipe-to-close drag is in progress
-        // (already open), override the class-driven transform so the sidebar
-        // visibly follows the finger instead of only snapping at the
-        // threshold. transition: "none" here so it tracks 1:1 with no lag;
-        // once the touch ends both progress values reset to 0, this inline
-        // style drops away, and the normal duration-300 class transition
-        // takes over for the final snap open/closed.
-        // BLOCKER 8 (mobile round 7) — without an explicit touch-action, a
-        // touchmove that starts anywhere inside the scrollable <nav> below
-        // (overflow-y-auto) can get claimed by the browser's own native
-        // scroll-vs-gesture disambiguation before our horizontal-delta JS
-        // ever sees a clean drag, which is why swipe-to-close could feel
-        // like it "didn't work" depending on exactly where the drag started.
-        // pan-y tells the browser vertical scrolling is still native but
-        // horizontal motion is ours to interpret.
-        style={{
-          touchAction: "pan-y",
-          ...(edgeSwipeProgress > 0 && !sidebarOpen
-            ? { transform: `translateX(calc(-100% + ${Math.round(edgeSwipeProgress * SIDEBAR_WIDTH_PX)}px))`, transition: "none" }
-            : sidebarCloseProgress > 0 && sidebarOpen
-            ? { transform: `translateX(-${Math.round(sidebarCloseProgress * SIDEBAR_WIDTH_PX)}px)`, transition: "none" }
-            : {}),
-        }}
       >
         {/* Logo — navigates in-place to the marketing landing page via
             marketingPreview (see that flag's own comment above), which
@@ -3511,31 +3389,10 @@ export function App() {
         </div>
       </aside>
 
-      {/* Edge-swipe visual feedback — a growing shadow/gradient on the left
-          edge while an armed swipe is in progress, so there's an indication
-          the sidebar is about to open before it actually crosses the
-          threshold. Pointer-events-none so it never intercepts the touch. */}
-      {edgeSwipeProgress > 0 && !sidebarOpen && (
-        <div
-          className="md:hidden fixed inset-y-0 left-0 z-40 pointer-events-none transition-opacity"
-          style={{
-            width: 80,
-            opacity: edgeSwipeProgress,
-            background: "linear-gradient(to right, rgba(220,38,38,0.35), transparent)",
-            boxShadow: "4px 0 24px rgba(220,38,38,0.25)",
-          }}
-        />
-      )}
-
-      {/* Main content — its own touch handlers open the sidebar on an
-          edge-swipe-right (only armed when the touch starts within
-          EDGE_ZONE_PX of the left edge, so normal scrolling/tapping
-          elsewhere, including in-page back buttons, is untouched) */}
+      {/* Main content — no edge-swipe handlers; open the sidebar via the
+          Menu button in the header only (see comment above). */}
       <div
         className="flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden"
-        onTouchStart={handleMainTouchStart}
-        onTouchMove={handleMainTouchMove}
-        onTouchEnd={handleMainTouchEnd}
       >
         {/* Header — sticky top-0 is belt-and-suspenders on top of the flex
             layout above (which already pins it, since it's a flex-shrink-0
