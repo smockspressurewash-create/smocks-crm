@@ -18,6 +18,7 @@ import { loadMapsScript, AddressAutocomplete } from "../ui/AddressAutocomplete";
 import { LiveMap } from "../ui/LiveMap";
 import { PropertyMapEmbed } from "../ui/PropertyMapEmbed";
 import { SaveCardModal } from "../ui/SaveCardModal";
+import { InstallAppButton } from "../ui/InstallAppButton";
 import { SopModal } from "../ui/SopModal";
 import { chargeSavedPaymentMethod } from "../../lib/stripe";
 import { BarChart, Bar, LineChart, Line, XAxis, YAxis, ResponsiveContainer, Tooltip, CartesianGrid } from "recharts";
@@ -4375,6 +4376,12 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
             </div>
             <div className="text-xl font-bold">{settings.companyName || "Crew Boss OS"}</div>
             <div className="text-sm text-white/50 mt-1">{inviteRecord ? "Create Your Crew Account" : "Employee Portal"}</div>
+            {/* PWA — lets a crew member install this as an app on their
+                phone (own icon, full-screen, no browser chrome) straight
+                from the login screen, before they even sign in. Renders
+                nothing until Chrome actually offers it — see
+                InstallAppButton.tsx. */}
+            <div className="mt-3 flex justify-center"><InstallAppButton label="Install App on This Phone" /></div>
           </div>
 
           {!inviteRecord && (

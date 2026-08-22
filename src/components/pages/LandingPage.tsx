@@ -150,7 +150,14 @@ export function LandingPage({
   onNavigate: (page: MarketingPage) => void;
 }) {
   return (
-    <div className="min-h-screen bg-black text-white overflow-x-hidden">
+    // BUG FIX — index.css locks html/body/#root to a hard 100% height with
+    // overflow:hidden (this app's whole architecture is "only specific
+    // internal panes scroll," never the page itself — see index.css's own
+    // comment). A marketing page assuming normal page/body scroll (just
+    // min-h-screen, no overflow of its own) had literally nowhere for a
+    // scroll to happen once its content exceeded one viewport — this div
+    // must BE the scrolling pane itself, same as every other page's <main>.
+    <div className="h-dvh h-screen overflow-y-auto bg-black text-white overflow-x-hidden">
       <MarketingStyles />
       <BackgroundBlobs />
       <MarketingNav active="welcome" onNavigate={onNavigate} onGetStarted={onGetStarted} />

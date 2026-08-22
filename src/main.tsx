@@ -30,6 +30,17 @@ window.addEventListener("unhandledrejection", (e) => console.error("[Boot] unhan
 // blocks rendering.
 supabase.auth.initialize().catch(err => console.error("[Boot] supabase.auth.initialize() failed:", err));
 
+// PWA — registers the minimal shell-caching service worker (public/sw.js)
+// so Chrome/Android offers the "Install App" / Add to Home Screen prompt.
+// Registered after load, never blocking first paint. Safe no-op on
+// browsers without SW support (Safari has partial support; this just
+// silently skips there).
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("/sw.js").catch(err => console.warn("[PWA] service worker registration failed:", err?.message));
+  });
+}
+
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <ErrorBoundary>

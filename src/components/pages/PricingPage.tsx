@@ -94,7 +94,10 @@ export function PricingPage({
   onNavigate: (page: MarketingPage) => void;
 }) {
   return (
-    <div className="min-h-screen bg-black text-white overflow-x-hidden">
+    // BUG FIX — see the identical fix + comment in LandingPage.tsx: this
+    // div must be the scrolling pane itself since html/body/#root are
+    // locked to overflow:hidden app-wide.
+    <div className="h-dvh h-screen overflow-y-auto bg-black text-white overflow-x-hidden">
       <MarketingStyles />
       <BackgroundBlobs />
       <MarketingNav active="pricing" onNavigate={onNavigate} onGetStarted={onGetStarted} />

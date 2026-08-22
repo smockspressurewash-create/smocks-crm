@@ -60,6 +60,7 @@ import { CustomerReviewPage } from "./components/pages/CustomerReviewPage";
 import { LeadFormPage } from "./components/pages/LeadFormPage";
 import { TermsPage, PrivacyPolicyPage } from "./components/pages/LegalPages";
 import { LandingPage } from "./components/pages/LandingPage";
+import { InstallAppButton } from "./components/ui/InstallAppButton";
 import { FeaturesPage } from "./components/pages/FeaturesPage";
 import { PricingPage } from "./components/pages/PricingPage";
 import { AboutPage } from "./components/pages/AboutPage";
@@ -3087,8 +3088,15 @@ export function App() {
     // already-authenticated owner to see the login form itself, even in
     // marketingPreview mode (e.g. if they tap the nav's "Log In" button
     // while previewing the marketing site).
-    setMarketingPreview(false);
-    setTimeout(() => setPage("dashboard"), 0);
+    // BUG FIX — setMarketingPreview(false) used to fire synchronously
+    // right here, during render, the one place in this whole redirect
+    // block that didn't match the setTimeout(...,0) deferral every other
+    // "set state in response to a render condition, not a real event"
+    // guard in this file already uses (see the identical pattern two
+    // blocks up for the employee-portal redirect). Matching that
+    // convention here too, deferred together with the page change so
+    // they land in the same tick.
+    setTimeout(() => { setMarketingPreview(false); setPage("dashboard"); }, 0);
   } else if (hasCrmSession && !marketingPreview && (page === "welcome" || page === "features" || page === "pricing" || page === "about")) {
     setTimeout(() => setPage("dashboard"), 0);
   }
@@ -3578,6 +3586,8 @@ export function App() {
           >
             <Globe size={13} />Portal
           </button>
+          {/* PWA — install prompt, renders nothing until Chrome offers it. */}
+          <InstallAppButton className="hidden sm:flex" label="Install App" />
           {/* Notifications */}
           <div className="relative">
           <button onClick={() => setNotifOpen(!notifOpen)} className="relative p-2 text-white/60 hover:text-white">
