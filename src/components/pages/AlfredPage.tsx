@@ -95,7 +95,7 @@ import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 // selected — the personality never actually reached the model at all.
 const getPersonality = (id: string) => personalities.find(p => p.id === id) || personalities[0];
 
-export function AlfredPage({ conversations, setConversations, activeConvId, setActiveConvId, memory = [], setMemory, personality, setPersonality, apiKey, openSettings, toast, jobs = [], setJobs, estimates = [], setEstimates, customers = [], setCustomers, employees = [], automations = [], setAutomations = () => {}, stats, setWins, goals = [], setGoals, setSettings, settings = {} as AppSettings, modelStatus = {}, setModelStatus = () => {}, onNav, onSpotlight, expenses = [], entries = [], ownerId = "" }: { conversations?: any; setConversations?: any; activeConvId?: any; setActiveConvId?: any; memory?: any; setMemory?: any; personality?: any; setPersonality?: any; apiKey?: any; openSettings?: any; toast?: any; jobs?: any; setJobs?: any; estimates?: any; setEstimates?: any; customers?: any; setCustomers?: any; employees?: any; automations?: any; setAutomations?: any; stats?: any; setWins?: any; goals?: any; setGoals?: any; setSettings?: any; settings?: AppSettings; modelStatus?: any; setModelStatus?: any; onNav?: any; onSpotlight?: (step: { page: string; type?: string; id?: string; label?: string }) => void; expenses?: any[]; entries?: any[]; ownerId?: string }) {
+export function AlfredPage({ conversations, setConversations, activeConvId, setActiveConvId, memory = [], setMemory, personality, setPersonality, apiKey, openSettings, toast, jobs = [], setJobs, estimates = [], setEstimates, customers = [], setCustomers, employees = [], automations = [], setAutomations = () => {}, stats, setWins, goals = [], setGoals, setSettings, settings = {} as AppSettings, modelStatus = {}, setModelStatus = () => {}, onNav, onSpotlight, expenses = [], setExpenses, entries = [], ownerId = "" }: { conversations?: any; setConversations?: any; activeConvId?: any; setActiveConvId?: any; memory?: any; setMemory?: any; personality?: any; setPersonality?: any; apiKey?: any; openSettings?: any; toast?: any; jobs?: any; setJobs?: any; estimates?: any; setEstimates?: any; customers?: any; setCustomers?: any; employees?: any; automations?: any; setAutomations?: any; stats?: any; setWins?: any; goals?: any; setGoals?: any; setSettings?: any; settings?: AppSettings; modelStatus?: any; setModelStatus?: any; onNav?: any; onSpotlight?: (step: { page: string; type?: string; id?: string; label?: string }) => void; expenses?: any[]; setExpenses?: any; entries?: any[]; ownerId?: string }) {
   const [input, setInput] = useState("");
   const [voiceMode, setVoiceMode] = useState<"dictate" | "note">("dictate");
   const [loading, setLoading] = useState(false);
@@ -2903,9 +2903,36 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
                   <div key={m.id} className={"flex gap-3 " + (isUser ? "justify-end" : "justify-start")}>
                     {!isUser && <div className={"flex-shrink-0 w-8 h-8 rounded-lg flex items-center justify-center bg-gradient-to-br " + (isError ? "from-red-900 to-red-950" : cur.color)}><CurIcon size={13} /></div>}
                     <div className={"flex-1 min-w-0 " + (isUser ? "max-w-[85%] md:max-w-[75%]" : "max-w-full")}>
+                      {/* BUG FIX — imagePreview was set on the message object
+                          when a receipt/photo was attached, but nothing ever
+                          rendered it — the attachment silently vanished from
+                          the chat transcript entirely. */}
+                      {(m as any).imagePreview && (
+                        <img src={(m as any).imagePreview} alt="Attachment" className={"max-w-[220px] rounded-xl border border-white/10 mb-1.5 " + (isUser ? "ml-auto float-right block" : "")} />
+                      )}
                       <div className={"px-4 py-2.5 rounded-2xl text-sm whitespace-pre-wrap leading-relaxed inline-block " + (isUser ? "bg-gradient-to-br from-red-600 to-red-800 text-white rounded-br-sm float-right" : isError ? "bg-red-950/60 border border-red-700/50 rounded-bl-sm text-red-200" : "bg-black/50 border border-red-900/30 rounded-bl-sm text-white/90")}>
                         {isUser ? m.content : String(m.content || "").split("\n").filter(l => l.trim() !== "---").join("\n").replace(/\*\*([^*]+)\*\*/g, "$1").replace(/\*([^*]+)\*/g, "$1").replace(/^#{1,6} /gm, "").trim()}
                       </div>
+                      {/* FEATURE — receipt → expense. A clickable button
+                          instead of the old "say 'yes log it'" magic phrase,
+                          which nothing in the send pipeline ever actually
+                          recognized — that dead end never created a real
+                          expense no matter what the owner typed back. */}
+                      {(m as any).pendingExpense && (
+                        <div className="clear-both pt-1">
+                          <button
+                            onClick={() => {
+                              const pe = (m as any).pendingExpense;
+                              setExpenses?.((prev: any[]) => [{ id: uid(), date: pe.date || today(), description: pe.vendor || "Receipt", amount: pe.amount, category: pe.category || "other", vendor: pe.vendor, receiptDataUrl: pe.receiptDataUrl, isBusiness: true, isDeductible: true }, ...(prev || [])]);
+                              toast?.(`Logged $${pe.amount} — ${pe.vendor} ✓`, "green");
+                              setConversations((prev: any[]) => prev.map((c: any) => c.id === activeId ? { ...c, messages: [...c.messages.map((cm: any) => cm.id === m.id ? { ...cm, pendingExpense: null } : cm), { id: uid(), role: "alfred", content: `✓ Logged to Expenses: ${pe.vendor} · $${pe.amount} · ${pe.category}`, timestamp: Date.now() }] } : c));
+                            }}
+                            className="text-xs px-3 py-1.5 rounded-lg bg-green-900/30 border border-green-700/40 text-green-300 hover:bg-green-900/50 transition flex items-center gap-1.5"
+                          >
+                            <Receipt size={12} />Log ${(m as any).pendingExpense.amount} to Expenses
+                          </button>
+                        </div>
+                      )}
                       {!isUser && (
                         <div className="flex items-center gap-1 mt-1 opacity-0 hover:opacity-100 transition">
                           <button onClick={() => { navigator.clipboard?.writeText(m.content); toast("Copied"); }} className="p-1 text-white/40 hover:text-white text-[10px]"><Copy size={10} /></button>
@@ -2963,48 +2990,68 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
               </div>
             )}
             <div className="flex items-end gap-2 bg-black/60 border border-red-900/40 rounded-2xl p-2 focus-within:border-red-500/60 transition">
-              {/* Image/receipt upload */}
-              <label className="flex-shrink-0 cursor-pointer p-2 rounded-xl text-white/40 hover:text-white/70 hover:bg-white/5 transition" title="Attach photo or receipt">
-                <input type="file" accept="image/*" capture="environment" className="hidden" onChange={async e => {
+              {/* Image/PDF/receipt upload */}
+              <label className="flex-shrink-0 cursor-pointer p-2 rounded-xl text-white/40 hover:text-white/70 hover:bg-white/5 transition" title="Attach photo, receipt, or PDF">
+                <input type="file" accept="image/*,application/pdf" className="hidden" onChange={async e => {
                   const file = e.target.files?.[0]; if (!file) return;
                   e.target.value = "";
+                  // BUG FIX — this whole feature was silently broken end to
+                  // end: (1) the analysis call hit api.anthropic.com directly
+                  // with NO api-key header at all, so it always 401'd, (2)
+                  // the image it attached to the message was never actually
+                  // rendered in the chat, and (3) the follow-up "say yes log
+                  // it" was a dead end — nothing in the send pipeline ever
+                  // recognized that phrase, so no expense was ever created no
+                  // matter what the owner typed back. Fixed all three: route
+                  // through the same callModel() every other Alfred call
+                  // uses (real auth), render the attached image, and offer a
+                  // real clickable "Log to Expenses" button instead of a
+                  // phrase to guess.
+                  const isPdf = file.type === "application/pdf";
+                  const anthropicKey = (settings.modelKeys || {}).claude;
+                  if (!anthropicKey) {
+                    appendMessage({ id: uid(), role: "user", content: "📎 " + file.name, timestamp: Date.now() });
+                    appendMessage({ id: uid(), role: "alfred", content: "Reading receipts/photos needs an Anthropic API key (Settings → AI Models) — that's the only provider this app can send images/PDFs to right now.", timestamp: Date.now() });
+                    return;
+                  }
                   const r = new FileReader();
                   r.onload = async ev => {
                     const dataUrl = ev.target!.result as string;
                     const base64 = dataUrl.split(",")[1];
                     const mediaType = file.type || "image/jpeg";
-                    // Show preview in chat
-                    appendMessage({ id: uid(), role: "user", content: "📎 " + file.name + " (analyzing...)", imagePreview: dataUrl, timestamp: Date.now() });
+                    appendMessage({ id: uid(), role: "user", content: "📎 " + file.name + " (analyzing...)", imagePreview: isPdf ? undefined : dataUrl, timestamp: Date.now() });
                     setLoading(true);
                     try {
-                      const res = await fetch("https://api.anthropic.com/v1/messages", {
-                        method: "POST",
-                        headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({
-                          model: "claude-sonnet-4-20250514",
-                          max_tokens: 400,
-                          messages: [{
-                            role: "user",
-                            content: [
-                              { type: "image", source: { type: "base64", media_type: mediaType, data: base64 } },
-                              { type: "text", text: "You are Alfred, business assistant for Crew Boss. Analyze this image. If it's a receipt or invoice: extract vendor name, date, total amount, and category (fuel/supplies/equipment/food/other). Format as: RECEIPT: [vendor] | [date] | $[amount] | [category]. If it's a job photo: describe what you see and whether it's before/after. If other: describe briefly." }
-                            ]
-                          }]
-                        })
-                      });
-                      const data = await res.json();
-                      const reply = data.content?.[0]?.text || "Could not analyze image.";
-                      appendMessage({ id: uid(), role: "alfred", content: reply, timestamp: Date.now() });
-                      // Auto-parse receipt and offer to create expense
-                      if (reply.includes("RECEIPT:")) {
-                        const parts = reply.match(/RECEIPT: (.+?) \| (.+?) \| \$?([\d.]+) \| (.+)/i);
-                        if (parts) {
-                          const [, vendor, date, amount, category] = parts;
-                          setTimeout(() => appendMessage({ id: uid(), role: "alfred", content: "💡 Want me to log this as a business expense?\n\n" + vendor + " · $" + amount + " · " + category + "\n\nSay 'yes log it' to add to Expenses.", timestamp: Date.now() }), 500);
-                        }
+                      const result: any = await withTimeout<any>((callModel as any)({
+                        modelId: "claude",
+                        apiKey: anthropicKey,
+                        messages: [{
+                          role: "user",
+                          content: [
+                            isPdf
+                              ? { type: "document", source: { type: "base64", media_type: "application/pdf", data: base64 } }
+                              : { type: "image", source: { type: "base64", media_type: mediaType, data: base64 } },
+                            { type: "text", text: "You are Alfred, business assistant for a pressure-washing company. Analyze this file. If it's a receipt or invoice: extract vendor name, date (YYYY-MM-DD), total amount, and category (fuel/supplies/equipment/food/other). Format as: RECEIPT: [vendor] | [date] | $[amount] | [category]. If it's a job photo: describe what you see and whether it's before/after. If other: describe briefly." }
+                          ]
+                        }],
+                        maxTokens: 400,
+                      }), 25000, "Receipt analysis");
+                      const reply = result.text || "Could not analyze the file.";
+                      const parts = reply.match(/RECEIPT: (.+?) \| (.+?) \| \$?([\d.,]+) \| (.+)/i);
+                      if (parts) {
+                        const [, vendor, date, amountStr, category] = parts;
+                        const amount = Number(amountStr.replace(/,/g, ""));
+                        appendMessage({
+                          id: uid(), role: "alfred",
+                          content: `📋 Receipt detected: ${vendor.trim()} · $${amount} · ${category.trim().toLowerCase()}${date.trim() ? " · " + date.trim() : ""}`,
+                          timestamp: Date.now(),
+                          pendingExpense: { vendor: vendor.trim(), date: date.trim(), amount, category: category.trim().toLowerCase(), receiptDataUrl: isPdf ? undefined : dataUrl },
+                        } as any);
+                      } else {
+                        appendMessage({ id: uid(), role: "alfred", content: reply, timestamp: Date.now() });
                       }
-                    } catch (err) {
-                      appendMessage({ id: uid(), role: "alfred", content: "Image analysis failed: " + err.message + ". Alfred out.", timestamp: Date.now() });
+                    } catch (err: any) {
+                      appendMessage({ id: uid(), role: "alfred", content: "Couldn't analyze that file — " + (err?.message || "unknown error") + ".", timestamp: Date.now() });
                     } finally { setLoading(false); }
                   };
                   r.readAsDataURL(file);
