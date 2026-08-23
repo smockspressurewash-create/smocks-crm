@@ -321,9 +321,12 @@ function persistEmployeeGoogleToken(session: any): void {
   // confirmed Supabase success, purely as an instant-read cache for this
   // device — never the other way around, or a token saved here would show
   // as "connected" on THIS device while never reaching the other one.
-  (supabase as any).from("employees")
-    .update({ google_token: providerToken, google_refresh_token: bridgedRefreshToken || null, google_email: googleEmail, google_token_expires_at: new Date(expiresAt).toISOString() })
-    .eq("user_id", session.user.id)
+  withTimeout(
+    (supabase as any).from("employees")
+      .update({ google_token: providerToken, google_refresh_token: bridgedRefreshToken || null, google_email: googleEmail, google_token_expires_at: new Date(expiresAt).toISOString() })
+      .eq("user_id", session.user.id),
+    15000, "Employee Google token save"
+  )
     .then((result: any) => {
       if (result?.error) {
         console.error("Could not persist employee Google token to Supabase:", result.error.message);
@@ -331,7 +334,12 @@ function persistEmployeeGoogleToken(session: any): void {
       }
       saveEmpGoogleToken(session.user.id, { token: providerToken, refreshToken: bridgedRefreshToken, email: googleEmail, expiresAt });
     })
-    .catch((e: any) => console.error("Could not persist employee Google token to Supabase:", e?.message));
+    // BUG FIX — a hung/timed-out write here previously left saveEmpGoogleToken
+    // (the localStorage cache the "Connected" badge reads) never called at
+    // all, and nothing told the employee why — they'd just see "not
+    // connected" with no explanation and no local cache to fall back on
+    // even though the OAuth grant itself succeeded seconds earlier.
+    .catch((e: any) => console.error("Could not persist employee Google token to Supabase (timed out or network error):", e?.message));
 }
 
 // ─── App ──────────────────────────────────────────────────────────────────────
@@ -2596,7 +2604,36 @@ export function App() {
     // applies, no matter how many times or in what order events fire — so
     // "already have a real token, incoming call has none" is judged against
     // reality, not a snapshot.
-    const applyGoogleIdentity = (session: any) => {
+    // BUG FIX ("Google keeps disconnecting, especially after a redeploy") —
+    // the refresh_token Google hands back is a ONE-TIME value: it only
+    // appears in the OAuth redirect hash on the authorization that actually
+    // grants offline access, never again after. Previously it only ever
+    // reached Supabase by riding along in the next tick of the general,
+    // debounced, whole-object `settings` sync (the same effect whose
+    // "Settings sync save timed out" failures were found and logged
+    // earlier this session) — a payload that also carries every template/
+    // logo/photo the owner has ever saved, and can legitimately time out.
+    // If that happened to fail (or simply hadn't fired yet) right as the
+    // owner closed the tab or the page redeployed underneath them, the
+    // refresh_token was gone for good — the access token it would have
+    // renewed dies silently ~55 minutes later with no way back except a
+    // full manual reconnect. Firing a small, dedicated, immediately-retried
+    // write for just the Google token fields — decoupled from the bulk
+    // settings payload — closes that window.
+    const persistGoogleTokensNow = async (ownerId: string, patch: Record<string, any>) => {
+      if (!ownerId) { console.warn("[GoogleConnect] persistGoogleTokensNow — no ownerId yet, skipping immediate persist (will still ride the next settings sync)"); return; }
+      try {
+        const { data: row } = await (supabase as any).from("app_settings").select("data").eq("owner_id", ownerId).maybeSingle();
+        const merged = { ...(row?.data || {}), ...patch };
+        const r: any = await withTimeout((supabase as any).from("app_settings").upsert({ owner_id: ownerId, data: merged, updated_at: new Date().toISOString() }, { onConflict: "owner_id" }), 15000, "Google token save");
+        if (r?.error) throw new Error(r.error.message);
+        console.log("[GoogleConnect] refresh_token persisted immediately to app_settings (not waiting on the general settings-sync debounce)");
+      } catch (e: any) {
+        console.error("[GoogleConnect] immediate refresh_token persist FAILED — connection may not survive a reload:", e?.message);
+        toast?.("Google connected, but saving the connection to the server failed (" + (e?.message || "unknown error") + ") — it may not survive a reload. Try reconnecting if Google keeps disconnecting.", "red");
+      }
+    };
+    const applyGoogleIdentity = (session: any, ownerId?: string) => {
       if (!session?.user) { console.log("[GoogleConnect] applyGoogleIdentity — no session, skipping"); return; }
       const googleId = (session.user.identities || []).find((i: any) => i.provider === "google");
       if (!googleId) { console.log("[GoogleConnect] applyGoogleIdentity — session has no google identity, skipping"); return; }
@@ -2619,8 +2656,7 @@ export function App() {
           return prev;
         }
         console.log("[GoogleConnect] saving google identity — provider token:", providerToken ? "NEW value from this event" : prev.googleProviderToken ? "keeping existing value" : "none yet on file");
-        return {
-          ...prev,
+        const tokenPatch = {
           googleConnected: true,
           googleEmail,
           googleScopes: prev.googleScopes && Object.keys(prev.googleScopes).length ? prev.googleScopes : { gmail: true, calendar: true, drive: true, contacts: true, tasks: true },
@@ -2631,6 +2667,10 @@ export function App() {
           ...(providerToken ? { googleProviderToken: providerToken, googleTokenExpiresAt: Date.now() + 55 * 60 * 1000 } : {}),
           ...(bridgedRefreshToken ? { googleRefreshToken: bridgedRefreshToken } : {}),
         };
+        // Only the refresh_token is truly irreplaceable (a one-time value) —
+        // that's the one worth an immediate out-of-band write.
+        if (bridgedRefreshToken && ownerId) persistGoogleTokensNow(ownerId, tokenPatch);
+        return { ...prev, ...tokenPatch };
       });
     };
 
@@ -2757,7 +2797,7 @@ export function App() {
             setCrmRole(userRole === "manager" ? "manager" : "owner");
             if (session?.user?.email) setCrmUserEmail(session.user.email);
             if (session?.user?.id) { setCrmUserId(resolvedOwnerId || session.user.id); setLastOwnerId(resolvedOwnerId || session.user.id); }
-            applyGoogleIdentity(session);
+            applyGoogleIdentity(session, resolvedOwnerId || session?.user?.id);
 
             if (event === "SIGNED_IN" || (event as string) === "IDENTITY_LINKED") {
               const isGoogle = (session?.user?.identities || []).some((i: any) => i.provider === "google");
@@ -2805,7 +2845,7 @@ export function App() {
           else { setHasCrmSession(false); setLastOwnerSessionFlag(false); }
           setCrmRole(initRole === "manager" ? "manager" : "owner");
           if (initial?.user?.id) { setCrmUserId(initOwnerId || initial.user.id); setLastOwnerId(initOwnerId || initial.user.id); }
-          applyGoogleIdentity(initial);
+          applyGoogleIdentity(initial, initOwnerId || initial?.user?.id);
           if (isOAuthCallback && initIsGoogle) {
             setPage("google");
             setOauthProcessing(false);
