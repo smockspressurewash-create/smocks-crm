@@ -48,9 +48,63 @@ export const onRequest = async (context: { request: Request; env: Record<string,
     return s;
   };
 
+  // FEATURE — owner-configurable "don't bother me" window (Settings →
+  // Notifications → Alfred Quiet Hours): quiet hours/weekends/vacation mode.
+  // Local HH:MM is converted to UTC minutes-since-midnight client-side at
+  // save time (see SettingsModal.tsx) using the browser's own offset, since
+  // there's no stored per-owner IANA timezone anywhere in this app — accepts
+  // being off by an hour right around a DST transition as a fair tradeoff
+  // for not needing a whole timezone-database dependency for this.
+  const isQuietNow = (s: any): boolean => {
+    if (!s?.alfredDndEnabled && !s?.alfredVacationMode) return false;
+    const now = new Date();
+    if (s?.alfredVacationMode) {
+      const until = s.alfredVacationUntil ? new Date(s.alfredVacationUntil + "T23:59:59Z") : null;
+      if (!until || now <= until) return true;
+    }
+    if (!s?.alfredDndEnabled) return false;
+    const day = now.getUTCDay(); // 0 = Sunday, 6 = Saturday
+    if (s.alfredDndWeekends && (day === 0 || day === 6)) return true;
+    const startMin = Number(s.alfredDndStartUtcMin);
+    const endMin = Number(s.alfredDndEndUtcMin);
+    if (!Number.isFinite(startMin) || !Number.isFinite(endMin)) return false;
+    const nowMin = now.getUTCHours() * 60 + now.getUTCMinutes();
+    return startMin <= endMin ? (nowMin >= startMin && nowMin < endMin) : (nowMin >= startMin || nowMin < endMin);
+  };
+  // Next quiet-hours end, in minutes-of-day (UTC) — used to push a deferred
+  // reminder to right after quiet hours end rather than dropping it.
+  const nextQuietEnd = (s: any): Date => {
+    const now = new Date();
+    if (s?.alfredVacationMode && s.alfredVacationUntil) {
+      const d = new Date(s.alfredVacationUntil + "T23:59:59Z");
+      d.setUTCMinutes(d.getUTCMinutes() + 1);
+      return d;
+    }
+    const endMin = Number(s?.alfredDndEndUtcMin);
+    const d = new Date(now);
+    if (Number.isFinite(endMin)) {
+      d.setUTCHours(Math.floor(endMin / 60), endMin % 60, 0, 0);
+      if (d <= now) d.setUTCDate(d.getUTCDate() + 1);
+    } else {
+      d.setUTCHours(d.getUTCHours() + 1); // vacation mode w/ no end date: just retry in an hour
+    }
+    return d;
+  };
+
   let sentCount = 0;
   const errors: string[] = [];
   for (const r of due) {
+    // Check quiet hours BEFORE claiming, so a deferred reminder stays
+    // unclaimed (sent:false) and gets picked up again once quiet hours end.
+    const sPre = await getSettings(r.owner_id);
+    if (isQuietNow(sPre)) {
+      await fetch(`${SUPABASE_URL}/rest/v1/alfred_reminders?id=eq.${encodeURIComponent(r.id)}`, {
+        method: "PATCH", headers: { ...headers, "Content-Type": "application/json", Prefer: "return=minimal" },
+        body: JSON.stringify({ due_at: nextQuietEnd(sPre).toISOString() }),
+      }).catch(() => {});
+      continue;
+    }
+
     // Claim this row FIRST (sent:true) so two overlapping cron calls can
     // never double-send the same reminder — same idea as the webhook's
     // MessageSid dedup, just via a flag instead of an id check.

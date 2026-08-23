@@ -1792,6 +1792,60 @@ export function SettingsModal({ open, onClose, settings, setSettings, jobs = [],
               <button onClick={() => setF({ ...f, [n.k]: !f[n.k] })} className={"transition " + (f[n.k] ? "text-red-400" : "text-white/30")}>{f[n.k] ? <ToggleRight size={28} /> : <ToggleLeft size={28} />}</button>
             </div>)}
 
+            {/* FEATURE — "avoid being bothered by Alfred at certain times of
+                day, on weekends, or when on vacation." Enforced server-side
+                in functions/api/check-reminders.ts (the only truly proactive
+                Alfred→owner channel — replies to a text the owner sent
+                first aren't something a DND window makes sense for). Local
+                HH:MM is converted to UTC minutes-of-day here, at save time,
+                using this browser's own offset — there's no stored per-owner
+                timezone anywhere in this app, so this is the same tradeoff
+                the server-side check documents (off by an hour right around
+                a DST transition, never for illustrative/most-of-the-year use). */}
+            <div className="pt-3 border-t border-red-900/20">
+              <div className="font-semibold text-sm mb-2">🌙 Alfred Quiet Hours</div>
+              <div className="flex items-center justify-between p-3 bg-black/40 border border-red-900/20 rounded-xl mb-2">
+                <div className="flex-1 min-w-0 pr-3"><div className="text-sm font-medium">Enable quiet hours</div><div className="text-[10px] text-white/50">Alfred's reminders won't text you during this window — they arrive right after it ends instead</div></div>
+                <button onClick={() => setF({ ...f, alfredDndEnabled: !f.alfredDndEnabled })} className={"transition " + (f.alfredDndEnabled ? "text-red-400" : "text-white/30")}>{f.alfredDndEnabled ? <ToggleRight size={28} /> : <ToggleLeft size={28} />}</button>
+              </div>
+              {f.alfredDndEnabled && (() => {
+                const tz = new Date().getTimezoneOffset(); // minutes to ADD to local to get UTC
+                const utcMinToLocalHHMM = (utcMin: number | undefined): string => {
+                  if (!Number.isFinite(utcMin as number)) return "";
+                  const localMin = (((utcMin as number) - tz) % 1440 + 1440) % 1440;
+                  return String(Math.floor(localMin / 60)).padStart(2, "0") + ":" + String(localMin % 60).padStart(2, "0");
+                };
+                const localHHMMToUtcMin = (hhmm: string): number | undefined => {
+                  if (!hhmm) return undefined;
+                  const [h, m] = hhmm.split(":").map(Number);
+                  if (!Number.isFinite(h) || !Number.isFinite(m)) return undefined;
+                  return (((h * 60 + m) + tz) % 1440 + 1440) % 1440;
+                };
+                return (
+                  <div className="pl-4 border-l border-red-900/30 space-y-2 mb-2">
+                    <div className="grid grid-cols-2 gap-2">
+                      <div><label className="text-[10px] text-white/50 block mb-1">From</label><GInput type="time" value={utcMinToLocalHHMM(f.alfredDndStartUtcMin)} onChange={e => setF({ ...f, alfredDndStartUtcMin: localHHMMToUtcMin(e.target.value) })} className="!text-xs" /></div>
+                      <div><label className="text-[10px] text-white/50 block mb-1">Until</label><GInput type="time" value={utcMinToLocalHHMM(f.alfredDndEndUtcMin)} onChange={e => setF({ ...f, alfredDndEndUtcMin: localHHMMToUtcMin(e.target.value) })} className="!text-xs" /></div>
+                    </div>
+                    <label className="flex items-center gap-2 cursor-pointer hover:text-white/80 text-white/60 transition">
+                      <input type="checkbox" checked={!!f.alfredDndWeekends} onChange={e => setF({ ...f, alfredDndWeekends: e.target.checked })} className="w-3.5 h-3.5 accent-red-500 rounded" />
+                      <span className="text-xs">Also stay quiet all weekend</span>
+                    </label>
+                  </div>
+                );
+              })()}
+              <div className="flex items-center justify-between p-3 bg-black/40 border border-red-900/20 rounded-xl mb-2">
+                <div className="flex-1 min-w-0 pr-3"><div className="text-sm font-medium">Vacation mode</div><div className="text-[10px] text-white/50">Blocks all Alfred reminder texts until the date below (or until you turn this off, if left blank)</div></div>
+                <button onClick={() => setF({ ...f, alfredVacationMode: !f.alfredVacationMode })} className={"transition " + (f.alfredVacationMode ? "text-red-400" : "text-white/30")}>{f.alfredVacationMode ? <ToggleRight size={28} /> : <ToggleLeft size={28} />}</button>
+              </div>
+              {f.alfredVacationMode && (
+                <div className="pl-4 border-l border-red-900/30">
+                  <label className="text-[10px] text-white/50 block mb-1">Back on (optional)</label>
+                  <GDate value={f.alfredVacationUntil || ""} onChange={e => setF({ ...f, alfredVacationUntil: e.target.value })} className="!text-xs !w-auto" />
+                </div>
+              )}
+            </div>
+
             {/* BUG FIX — dailyBriefingAutoSend/weeklyDigestAutoSend have
                 driven real automatic email sends in App.tsx for a while
                 (opt-out flags — undefined/true means "on"), but neither had
