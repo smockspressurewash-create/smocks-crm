@@ -337,39 +337,93 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
       const accessToken = (context.request.headers.get("authorization") || "").replace(/^Bearer\s+/i, "");
       const email = await resolveCallerEmail(accessToken, anonKey);
       if (!email) return json({ error: "Not signed in" }, 401);
+      // MULTI-BUSINESS — a customer can be a customer of more than one
+      // business on this platform (e.g. one company pressure-washes their
+      // house, a different one mows their lawn), all through the same
+      // login. This used to grab only custRow.data[0] — a customer with
+      // more than one matching row (one per business) would silently only
+      // ever see the first, and there was no way to add a second business
+      // from inside the portal at all. Now returns one "account" per
+      // matching customer row.
       const custRow = await sb(serviceRoleKey, `customers?email=ilike.${encodeURIComponent(email)}&select=*`);
-      const customer = Array.isArray(custRow.data) ? custRow.data[0] : null;
-      if (!customer) return json({ customer: null, jobs: [], estimates: [] });
-      const [jobsRow, estRow] = await Promise.all([
-        sb(serviceRoleKey, `jobs?customerId=eq.${encodeURIComponent(customer.id)}&select=*`),
-        sb(serviceRoleKey, `estimates?customerId=eq.${encodeURIComponent(customer.id)}&select=*`),
-      ]);
+      const custList: any[] = Array.isArray(custRow.data) ? custRow.data : [];
+      if (custList.length === 0) return json({ accounts: [] });
 
-      // BUG FIX — ClientAuthPortal.tsx (#/client) used to render off
-      // App.tsx's GLOBAL `settings` prop for its Stripe calls, which is
-      // populated from that DEVICE's own localStorage/owner_id-scoped RLS
-      // fetch — empty by default on a real customer's own phone, since
-      // they're not the owner and have no session that resolves
-      // current_owner_id(). This resolves and returns the real owning
-      // business's public branding + Stripe publishable key/Connect
-      // account id, the same way get_estimate already does for the
-      // separate #/estimate/:id link flow.
-      let settings: any = null;
-      if (customer.owner_id) {
-        const [settingsRow, stripeAcctRow] = await Promise.all([
-          sb(serviceRoleKey, `app_settings?owner_id=eq.${encodeURIComponent(customer.owner_id)}&select=data`),
-          sb(serviceRoleKey, `owner_stripe_accounts?owner_id=eq.${encodeURIComponent(customer.owner_id)}&select=stripe_account_id,stripe_publishable_key`),
+      const accounts = await Promise.all(custList.map(async (customer: any) => {
+        const [jobsRow, estRow] = await Promise.all([
+          sb(serviceRoleKey, `jobs?customerId=eq.${encodeURIComponent(customer.id)}&select=*`),
+          sb(serviceRoleKey, `estimates?customerId=eq.${encodeURIComponent(customer.id)}&select=*`),
         ]);
-        const fullSettings = Array.isArray(settingsRow.data) ? settingsRow.data[0]?.data : null;
-        const stripeAcct = Array.isArray(stripeAcctRow.data) ? stripeAcctRow.data[0] : null;
-        settings = {
-          ...(fullSettings ? publicSettingsSubset(fullSettings) : {}),
-          stripeAccountId: stripeAcct?.stripe_account_id || "",
-          stripePublishableKey: fullSettings?.stripePublishableKey || stripeAcct?.stripe_publishable_key || (stripeAcct?.stripe_account_id ? (context.env.STRIPE_PUBLISHABLE_KEY || "") : ""),
-        };
-      }
+        // BUG FIX — ClientAuthPortal.tsx (#/client) used to render off
+        // App.tsx's GLOBAL `settings` prop for its Stripe calls, which is
+        // populated from that DEVICE's own localStorage/owner_id-scoped RLS
+        // fetch — empty by default on a real customer's own phone, since
+        // they're not the owner and have no session that resolves
+        // current_owner_id(). This resolves and returns the real owning
+        // business's public branding + Stripe publishable key/Connect
+        // account id, the same way get_estimate already does for the
+        // separate #/estimate/:id link flow.
+        let settings: any = null;
+        if (customer.owner_id) {
+          const [settingsRow, stripeAcctRow] = await Promise.all([
+            sb(serviceRoleKey, `app_settings?owner_id=eq.${encodeURIComponent(customer.owner_id)}&select=data`),
+            sb(serviceRoleKey, `owner_stripe_accounts?owner_id=eq.${encodeURIComponent(customer.owner_id)}&select=stripe_account_id,stripe_publishable_key`),
+          ]);
+          const fullSettings = Array.isArray(settingsRow.data) ? settingsRow.data[0]?.data : null;
+          const stripeAcct = Array.isArray(stripeAcctRow.data) ? stripeAcctRow.data[0] : null;
+          settings = {
+            ...(fullSettings ? publicSettingsSubset(fullSettings) : {}),
+            stripeAccountId: stripeAcct?.stripe_account_id || "",
+            stripePublishableKey: fullSettings?.stripePublishableKey || stripeAcct?.stripe_publishable_key || (stripeAcct?.stripe_account_id ? (context.env.STRIPE_PUBLISHABLE_KEY || "") : ""),
+          };
+        }
+        return { customer, jobs: jobsRow.data || [], estimates: estRow.data || [], settings };
+      }));
 
-      return json({ customer, jobs: jobsRow.data || [], estimates: estRow.data || [], settings });
+      return json({ accounts });
+    }
+
+    // ── ClientAuthPortal.tsx "Find & Connect" — lets a customer search
+    // businesses on this platform by name before they've been added as a
+    // customer anywhere. Returns only public, non-secret fields (company
+    // name + phone), never a raw app_settings dump.
+    if (action === "search_businesses") {
+      const q = String(body.query || "").trim();
+      if (q.length < 2) return json({ businesses: [] });
+      const rows = await sb(serviceRoleKey, `app_settings?select=owner_id,data`);
+      const all: any[] = Array.isArray(rows.data) ? rows.data : [];
+      const needle = q.toLowerCase();
+      const matches = all
+        .filter(r => (r.data?.companyName || "").toLowerCase().includes(needle))
+        .slice(0, 20)
+        .map(r => ({ ownerId: r.owner_id, companyName: r.data?.companyName || "Unnamed business", companyPhone: r.data?.companyPhone || "", logoUrl: r.data?.logoUrl || "" }));
+      return json({ businesses: matches });
+    }
+
+    // ── ClientAuthPortal.tsx "Find & Connect" — the customer picked a
+    // business; create a pending customer record under it. Lands with
+    // pipelineStage "lead" so it surfaces in that owner's existing Lead
+    // Intake page (same sort/filter/actions already built for that list) —
+    // the owner approves by converting it to a customer from there, same as
+    // any other inbound lead, rather than a brand-new approval UI.
+    if (action === "request_customer_link") {
+      const accessToken = (context.request.headers.get("authorization") || "").replace(/^Bearer\s+/i, "");
+      const email = await resolveCallerEmail(accessToken, anonKey);
+      if (!email) return json({ error: "Not signed in" }, 401);
+      const { ownerId, firstName, lastName, phone } = body;
+      if (!ownerId) return json({ error: "Missing ownerId" }, 400);
+      const existing = await sb(serviceRoleKey, `customers?owner_id=eq.${encodeURIComponent(ownerId)}&email=ilike.${encodeURIComponent(email)}&select=id`);
+      if (Array.isArray(existing.data) && existing.data.length > 0) return json({ error: "You're already connected to this business" }, 409);
+      const insert = await sb(serviceRoleKey, `customers`, {
+        method: "POST", headers: { Prefer: "return=representation" },
+        body: JSON.stringify({
+          id: crypto.randomUUID(), owner_id: ownerId, email, firstName: firstName || "New", lastName: lastName || "Customer",
+          phone: phone || "", tags: [], createdAt: new Date().toISOString().slice(0, 10), totalSpent: 0,
+          pipelineStage: "lead", leadSource: "Client Portal Self-Signup",
+        }),
+      });
+      if (!insert.ok) return json({ error: "Failed to request connection" }, 500);
+      return json({ success: true, customer: Array.isArray(insert.data) ? insert.data[0] : insert.data });
     }
 
     // ── ClientAuthPortal.tsx — self-serve cancel/reschedule. Owner-gated:

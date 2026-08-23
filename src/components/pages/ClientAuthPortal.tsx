@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import { Lock, Mail, User, Phone, LogOut, CreditCard, Receipt, CheckCircle, Clock, Gift, Copy, Repeat, ImageIcon, ChevronRight, FileText, Briefcase, CalendarClock } from "lucide-react";
+import { Lock, Mail, User, Phone, LogOut, CreditCard, Receipt, CheckCircle, Clock, Gift, Copy, Repeat, ImageIcon, ChevronRight, FileText, Briefcase, CalendarClock, Eye, EyeOff, Search, Plus, Building2 } from "lucide-react";
 import { supabase } from "../../lib/supabase";
 import { fmt, uid, today, mediaSrc } from "../../lib/utils";
 import type { Customer, Estimate, Job, AppSettings } from "../../types";
@@ -8,6 +8,7 @@ import { GBtn } from "../ui/GBtn";
 import { GInput } from "../ui/GInput";
 import { Badge } from "../ui/Badge";
 import { Stat } from "../ui/Stat";
+import { Modal } from "../ui/Modal";
 import { StripePaymentModal } from "../ui/StripePaymentModal";
 import { SaveCardModal } from "../ui/SaveCardModal";
 import { getMySavedCard, getMySavedCards, detachMyPaymentMethod, sendPaymentReceipt, type StripeSavedCard } from "../../lib/stripe";
@@ -35,6 +36,7 @@ export function ClientAuthPortal({
   const [firstName, setFirstName] = useState("");
   const [lastName, setLastName] = useState("");
   const [phone, setPhone] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [authError, setAuthError] = useState("");
   const [authBusy, setAuthBusy] = useState(false);
   const [forgotBusy, setForgotBusy] = useState(false);
@@ -73,7 +75,7 @@ export function ClientAuthPortal({
       });
       const data = await res.json().catch(() => ({} as any));
       if (!res.ok || data?.error) throw new Error(data?.error || `Request failed (${res.status})`);
-      setPortalData(prev => prev ? { ...prev, jobs: prev.jobs.map(x => x.id === directActionJobId ? { ...x, status: data.status, scheduledDate: data.scheduledDate } as any : x) } : prev);
+      patchActiveJobs(jobs => jobs.map(x => x.id === directActionJobId ? { ...x, status: data.status, scheduledDate: data.scheduledDate } as any : x));
       toast?.(directActionType === "cancel" ? "Job cancelled ✓" : "Job rescheduled ✓", "green");
       setDirectActionJobId(null); setDirectActionType(null); setDirectReason(""); setDirectNewDate(""); setDirectNewTime("");
     } catch (e: any) {
@@ -116,27 +118,74 @@ export function ClientAuthPortal({
   // Stripe/branding info (never the global App.tsx `settings` prop, which
   // is empty on a real customer's own device — see the server-side comment
   // on get_customer_portal_data in public-data.ts).
-  const [portalData, setPortalData] = useState<{ customer: Customer | null; jobs: Job[]; estimates: Estimate[]; settings: { stripePublishableKey?: string; stripeAccountId?: string; companyName?: string } | null } | null>(null);
+  // MULTI-BUSINESS — a customer can be linked to more than one business
+  // through the same login (e.g. one company pressure-washes their house, a
+  // different one mows their lawn). `accounts` is one entry per business
+  // they're a customer of; `activeIdx` picks which one this screen shows.
+  type PortalAccount = { customer: Customer; jobs: Job[]; estimates: Estimate[]; settings: { stripePublishableKey?: string; stripeAccountId?: string; companyName?: string } | null };
+  const [portalData, setPortalData] = useState<{ accounts: PortalAccount[] } | null>(null);
   const [portalDataLoading, setPortalDataLoading] = useState(false);
+  const [activeIdx, setActiveIdx] = useState(0);
 
   const fetchPortalData = async () => {
     setPortalDataLoading(true);
     try {
       const { data: sessData } = await supabase.auth.getSession();
       const token = sessData.session?.access_token;
-      if (!token) { setPortalData({ customer: null, jobs: [], estimates: [], settings: null }); return; }
+      if (!token) { setPortalData({ accounts: [] }); return; }
       const res = await fetch("/api/public-data", {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
         body: JSON.stringify({ action: "get_customer_portal_data" }),
       });
       const data = await res.json().catch(() => null);
-      if (!res.ok || data?.error) { setPortalData({ customer: null, jobs: [], estimates: [], settings: null }); return; }
-      setPortalData({ customer: data.customer || null, jobs: data.jobs || [], estimates: data.estimates || [], settings: data.settings || null });
+      if (!res.ok || data?.error) { setPortalData({ accounts: [] }); return; }
+      setPortalData({ accounts: data.accounts || [] });
+      setActiveIdx(prev => Math.min(prev, Math.max(0, (data.accounts?.length || 1) - 1)));
     } catch {
-      setPortalData({ customer: null, jobs: [], estimates: [], settings: null });
+      setPortalData({ accounts: [] });
     } finally {
       setPortalDataLoading(false);
+    }
+  };
+
+  // ── "Find & Connect" — search businesses on the platform and request to
+  // become their customer (lands as a pending "lead" in that owner's Lead
+  // Intake list; see request_customer_link in public-data.ts).
+  const [findQuery, setFindQuery] = useState("");
+  const [findResults, setFindResults] = useState<Array<{ ownerId: string; companyName: string; companyPhone?: string; logoUrl?: string }>>([]);
+  const [findBusy, setFindBusy] = useState(false);
+  const [findOpen, setFindOpen] = useState(false);
+  const [connectingOwnerId, setConnectingOwnerId] = useState<string | null>(null);
+  const [connectedOwnerIds, setConnectedOwnerIds] = useState<string[]>([]);
+  const searchBusinesses = async (q: string) => {
+    setFindQuery(q);
+    if (q.trim().length < 2) { setFindResults([]); return; }
+    setFindBusy(true);
+    try {
+      const res = await fetch("/api/public-data", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "search_businesses", query: q.trim() }) });
+      const data = await res.json().catch(() => null);
+      setFindResults(data?.businesses || []);
+    } catch { setFindResults([]); }
+    finally { setFindBusy(false); }
+  };
+  const requestConnect = async (ownerId: string) => {
+    setConnectingOwnerId(ownerId);
+    try {
+      const { data: sessData } = await supabase.auth.getSession();
+      const token = sessData.session?.access_token;
+      const res = await fetch("/api/public-data", {
+        method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ action: "request_customer_link", ownerId, firstName, lastName, phone }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok || data?.error) throw new Error(data?.error || "Request failed");
+      setConnectedOwnerIds(prev => [...prev, ownerId]);
+      toast?.("Request sent ✓ — they'll confirm you as a customer soon", "green");
+    } catch (e: any) {
+      toast?.(e?.message || "Couldn't send that request", "red");
+    } finally {
+      setConnectingOwnerId(null);
     }
   };
 
@@ -158,7 +207,8 @@ export function ClientAuthPortal({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session?.user?.id]);
 
-  const cust = portalData?.customer || null;
+  const active = portalData?.accounts?.[activeIdx] || null;
+  const cust = active?.customer || null;
 
   // Real brand/last4 for the saved-card display below (closes the TODO left
   // where the display previously only had the generic literal "Card on
@@ -189,9 +239,9 @@ export function ClientAuthPortal({
     const params = new URLSearchParams(hash.slice(qIndex + 1));
     const invoiceId = params.get("invoice");
     if (!invoiceId) return;
-    const inv = (portalData?.estimates || []).find(e => e.id === invoiceId && e.customerId === cust.id);
+    const inv = (active?.estimates || []).find(e => e.id === invoiceId && e.customerId === cust.id);
     if (inv) { setTab("invoices"); setPayingInv(inv); deepLinkHandledRef.current = true; }
-  }, [cust, portalData]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [cust, active]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // BUG 10 — if an OWNER/employee is logged in and lands on #/client, they'll
   // have a session but no matching customer record, which used to strand them
@@ -223,27 +273,12 @@ export function ClientAuthPortal({
       if (mode === "signup") {
         const { data, error } = await supabase.auth.signUp({ email: email.trim(), password });
         if (error) throw error;
-        // TODO(multitenant): this local-only setCustomers() was already a
-        // pre-existing gap (no matching Supabase insert ever fired here, so
-        // a brand-new signup with no prior CRM customer record never
-        // actually reached the `customers` table on any device but this
-        // one). Since `cust` below now comes from portalData (fetched via
-        // /api/public-data's get_customer_portal_data, resolved server-side
-        // by verified session email), a genuinely new signup with no
-        // existing customer row will land on the "Setting up your account"
-        // screen instead of a locally-faked one — surfacing the gap sooner
-        // rather than papering over it with state that silently never
-        // persisted. Not fixing here since it needs a real server-side
-        // insert path (with an owner_id to satisfy the new RLS) that
-        // doesn't exist yet in public-data.ts.
-        if (!customers.find(c => (c.email || "").toLowerCase() === email.trim().toLowerCase())) {
-          const id = uid();
-          const referralCode = (firstName.slice(0, 3) || "REF").toUpperCase() + id.slice(-4).toUpperCase();
-          setCustomers((prev: Customer[]) => [...prev, {
-            id, firstName: firstName || "Customer", lastName: lastName || "", email: email.trim(), phone,
-            address: "", tags: [], totalSpent: 0, createdAt: today(), referralCode,
-          } as Customer]);
-        }
+        // BUG FIX — this used to fake a customer record into local React
+        // state with no matching Supabase insert at all, so it silently
+        // never persisted anywhere and vanished on reload/another device.
+        // A brand-new signup with no existing customer row anywhere now
+        // correctly lands on the "Find & Connect" screen (see the !cust
+        // render branch below) instead of a record that was never real.
         setSession(data.session || null);
         toast?.("Account created — welcome!", "green");
       } else {
@@ -277,7 +312,13 @@ export function ClientAuthPortal({
     }
   };
 
-  const companyName = settings?.companyName || "Crew Boss";
+  // BUG FIX — this used to always read the GLOBAL `settings` prop, which is
+  // empty on a real customer's own device (they're not the owner, so it
+  // never resolves current_owner_id()) — and, once a customer can belong to
+  // more than one business, was wrong regardless since each account has its
+  // own name. Prefer the active account's own resolved company name once
+  // logged in; the prop/generic fallback only matters pre-login.
+  const companyName = active?.settings?.companyName || settings?.companyName || "Crew Boss";
 
   if (!checked || (session?.user?.email && portalData === null)) {
     return <div className="min-h-screen bg-black flex items-center justify-center text-white/40 text-sm">Loading…</div>;
@@ -311,7 +352,12 @@ export function ClientAuthPortal({
             )}
             <GInput type="email" placeholder="Email" value={email} onChange={(e: any) => setEmail(e.target.value)} className="!text-sm" />
             {mode === "signup" && <GInput type="tel" placeholder="Phone" value={phone} onChange={(e: any) => setPhone(e.target.value)} className="!text-sm" />}
-            <GInput type="password" placeholder="Password" value={password} onChange={(e: any) => setPassword(e.target.value)} onKeyDown={(e: any) => e.key === "Enter" && handleAuth()} className="!text-sm" />
+            <div className="relative">
+              <GInput type={showPassword ? "text" : "password"} placeholder="Password" value={password} onChange={(e: any) => setPassword(e.target.value)} onKeyDown={(e: any) => e.key === "Enter" && handleAuth()} className="!text-sm !pr-10" />
+              <button type="button" onClick={() => setShowPassword(v => !v)} className="absolute right-3 top-1/2 -translate-y-1/2 text-white/30 hover:text-white/60 transition" tabIndex={-1}>
+                {showPassword ? <EyeOff size={15} /> : <Eye size={15} />}
+              </button>
+            </div>
             {authError && <div className="text-xs text-red-400">{authError}</div>}
             <GBtn onClick={handleAuth} disabled={authBusy} className="w-full !py-3">{authBusy ? "Please wait…" : mode === "login" ? "Log In" : "Create Account"}</GBtn>
             {mode === "login" && (
@@ -329,20 +375,60 @@ export function ClientAuthPortal({
     );
   }
 
-  // ── Logged in, no matching customer record yet ─────────────────────────────
+  // ── Logged in, no matching customer record yet — "Find & Connect" ─────────
+  // BUG FIX — this used to be a dead end ("we couldn't find a customer
+  // record... contact the business to link your account") with no way
+  // forward from inside the app at all. Now lets the customer search
+  // businesses on the platform and request to become their customer —
+  // lands as a pending "lead" the owner approves from Lead Intake, same as
+  // any other inbound lead.
   if (!cust) {
     return (
-      <div className="min-h-screen bg-black flex items-center justify-center p-4 text-center">
-        <div className="max-w-sm space-y-3">
-          <div className="text-white font-semibold">Setting up your account…</div>
-          <div className="text-xs text-white/40">We couldn't find a customer record for {session.user.email}. Contact {companyName} to link your account, or sign out and try a different email.</div>
-          <GBtn variant="ghost" onClick={signOut}><LogOut size={13} className="inline mr-1.5" />Sign Out</GBtn>
+      <div className="min-h-screen bg-black p-4">
+        <div className="max-w-sm mx-auto space-y-4 pt-8">
+          <div className="text-center space-y-1.5">
+            <Building2 size={32} className="mx-auto text-white/20" />
+            <div className="text-white font-semibold">Find a business</div>
+            <div className="text-xs text-white/40">Search for the company you work with — we'll let them know you'd like to connect.</div>
+          </div>
+          <div className="relative">
+            <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-white/30" />
+            <GInput placeholder="Search by business name..." value={findQuery} onChange={(e: any) => searchBusinesses(e.target.value)} className="!text-sm !pl-9" />
+          </div>
+          {findBusy && <div className="text-center text-xs text-white/30">Searching…</div>}
+          <div className="space-y-2">
+            {findResults.map(b => {
+              const isConnecting = connectingOwnerId === b.ownerId;
+              const isConnected = connectedOwnerIds.includes(b.ownerId);
+              return (
+                <Glass key={b.ownerId} className="p-3 flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="text-sm font-medium truncate">{b.companyName}</div>
+                    {b.companyPhone && <div className="text-[11px] text-white/40">{b.companyPhone}</div>}
+                  </div>
+                  {isConnected ? (
+                    <Badge tone="green">Requested</Badge>
+                  ) : (
+                    <GBtn disabled={isConnecting} onClick={() => requestConnect(b.ownerId)} className="!text-xs !py-1.5 flex-shrink-0">
+                      {isConnecting ? "Sending…" : <><Plus size={12} className="inline mr-1" />Connect</>}
+                    </GBtn>
+                  )}
+                </Glass>
+              );
+            })}
+            {!findBusy && findQuery.trim().length >= 2 && findResults.length === 0 && (
+              <div className="text-center text-xs text-white/30 py-4">No businesses found matching "{findQuery}" — double-check the spelling, or ask them for their direct signup link instead.</div>
+            )}
+          </div>
+          <div className="text-center pt-2">
+            <GBtn variant="ghost" onClick={signOut}><LogOut size={13} className="inline mr-1.5" />Sign Out</GBtn>
+          </div>
         </div>
       </div>
     );
   }
 
-  const myEstimates = portalData?.estimates || [];
+  const myEstimates = active?.estimates || [];
   const myInvoices = myEstimates.filter(e => e.customerId === cust.id && e.invoiced);
   const outstanding = myInvoices.filter(e => !e.paidAt);
 
@@ -359,7 +445,7 @@ export function ClientAuthPortal({
     });
   }, [outstanding.map(i => i.id).join(",")]); // eslint-disable-line react-hooks/exhaustive-deps
   const paid = myInvoices.filter(e => !!e.paidAt);
-  const myJobsList = portalData?.jobs || [];
+  const myJobsList = active?.jobs || [];
   const myJobs = myJobsList.filter(j => j.customerId === cust.id).sort((a, b) => (b.scheduledDate || "").localeCompare(a.scheduledDate || ""));
   const completedJobs = myJobs.filter(j => j.status === "completed");
   // AUDIT FIX (round 13, item 7) — upcoming vs past, instead of one
@@ -391,7 +477,7 @@ export function ClientAuthPortal({
       // truth for `jobs` (see MULTI-TENANT note above), so without this the
       // "Reschedule requested" badge wouldn't show until the next full
       // fetchPortalData() call.
-      setPortalData(prev => prev ? { ...prev, jobs: prev.jobs.map(x => x.id === jobId ? { ...x, rescheduleRequested: true } as any : x) } : prev);
+      patchActiveJobs(jobs => jobs.map(x => x.id === jobId ? { ...x, rescheduleRequested: true } as any : x));
       toast?.("Reschedule request sent — we'll be in touch to confirm a new date ✓", "green");
       setRescheduleJobId(null);
       setRescheduleNote("");
@@ -418,9 +504,26 @@ export function ClientAuthPortal({
   // immediately, same as it did when `cust` was sourced from `customers`.
   const patchCust = (patch: Partial<Customer> | ((c: Customer) => Partial<Customer>)) => {
     setPortalData(prev => {
-      if (!prev?.customer) return prev;
-      const p = typeof patch === "function" ? patch(prev.customer) : patch;
-      return { ...prev, customer: { ...prev.customer, ...p } };
+      if (!prev?.accounts?.[activeIdx]?.customer) return prev;
+      const c = prev.accounts[activeIdx].customer;
+      const p = typeof patch === "function" ? patch(c) : patch;
+      const accounts = prev.accounts.map((a, i) => i === activeIdx ? { ...a, customer: { ...a.customer, ...p } } : a);
+      return { ...prev, accounts };
+    });
+  };
+  // Patches jobs/estimates on the currently active account only.
+  const patchActiveJobs = (fn: (jobs: Job[]) => Job[]) => {
+    setPortalData(prev => {
+      if (!prev?.accounts?.[activeIdx]) return prev;
+      const accounts = prev.accounts.map((a, i) => i === activeIdx ? { ...a, jobs: fn(a.jobs) } : a);
+      return { ...prev, accounts };
+    });
+  };
+  const patchActiveEstimates = (fn: (estimates: Estimate[]) => Estimate[]) => {
+    setPortalData(prev => {
+      if (!prev?.accounts?.[activeIdx]) return prev;
+      const accounts = prev.accounts.map((a, i) => i === activeIdx ? { ...a, estimates: fn(a.estimates) } : a);
+      return { ...prev, accounts };
     });
   };
 
@@ -434,7 +537,24 @@ export function ClientAuthPortal({
         <button onClick={signOut} className="text-white/80 hover:text-white flex items-center gap-1 text-xs"><LogOut size={14} />Sign Out</button>
       </div>
 
+      {/* MULTI-BUSINESS — switcher, only shown once there's more than one
+          business to switch between (a brand-new single-business customer
+          sees nothing extra here). */}
+      {(portalData?.accounts?.length || 0) > 1 && (
+        <div className="bg-black/60 border-b border-white/10 px-4 py-2 flex items-center gap-2 overflow-x-auto">
+          {portalData!.accounts.map((a, i) => (
+            <button key={a.customer.id} onClick={() => setActiveIdx(i)} className={"flex-shrink-0 px-3 py-1.5 rounded-lg text-xs font-medium transition whitespace-nowrap " + (i === activeIdx ? "bg-red-700/40 text-white border border-red-700/50" : "bg-white/5 text-white/50 border border-white/10 hover:text-white/80")}>
+              {a.settings?.companyName || "Business " + (i + 1)}
+            </button>
+          ))}
+          <button onClick={() => setFindOpen(true)} className="flex-shrink-0 px-3 py-1.5 rounded-lg text-xs text-white/40 hover:text-white/70 border border-dashed border-white/15 flex items-center gap-1"><Plus size={11} />Add</button>
+        </div>
+      )}
+
       <div className="max-w-2xl mx-auto p-4 space-y-4">
+        {(portalData?.accounts?.length || 0) <= 1 && (
+          <button onClick={() => setFindOpen(true)} className="w-full text-center text-[11px] text-white/30 hover:text-white/60 transition flex items-center justify-center gap-1.5"><Plus size={11} />Connect to another business</button>
+        )}
         <div className="grid grid-cols-3 gap-3">
           <Stat icon={Receipt} label="Outstanding" value={fmt(outstanding.reduce((s, e) => s + e.total, 0))} />
           <Stat icon={CheckCircle} label="Jobs Done" value={String(completedJobs.length)} />
@@ -719,8 +839,8 @@ export function ClientAuthPortal({
               ) : (
                 <div className="text-xs text-white/40 mb-2">No cards saved yet.</div>
               )}
-              <button onClick={() => setShowSaveCard(true)} disabled={!portalData?.settings?.stripePublishableKey} className="w-full py-2.5 rounded-xl bg-white/10 hover:bg-white/15 text-sm flex items-center justify-center gap-2 disabled:opacity-40"><CreditCard size={14} />{myCards.length > 0 ? "Add Another Card" : "Save a Card"}</button>
-              {!portalData?.settings?.stripePublishableKey && <div className="text-[10px] text-white/30 mt-2">{companyName} hasn't connected online payments yet.</div>}
+              <button onClick={() => setShowSaveCard(true)} disabled={!active?.settings?.stripePublishableKey} className="w-full py-2.5 rounded-xl bg-white/10 hover:bg-white/15 text-sm flex items-center justify-center gap-2 disabled:opacity-40"><CreditCard size={14} />{myCards.length > 0 ? "Add Another Card" : "Save a Card"}</button>
+              {!active?.settings?.stripePublishableKey && <div className="text-[10px] text-white/30 mt-2">{companyName} hasn't connected online payments yet.</div>}
             </Glass>
 
             {isCommercial && (
@@ -747,8 +867,8 @@ export function ClientAuthPortal({
       <StripePaymentModal
         open={!!payingInv}
         onClose={() => setPayingInv(null)}
-        publishableKey={portalData?.settings?.stripePublishableKey || ""}
-        stripeAccountId={portalData?.settings?.stripeAccountId}
+        publishableKey={active?.settings?.stripePublishableKey || ""}
+        stripeAccountId={active?.settings?.stripeAccountId}
         amount={payingInv?.total || 0}
         description={`${companyName} — Invoice #${payingInv?.id || ""}`}
         invoiceId={payingInv?.id}
@@ -759,7 +879,7 @@ export function ClientAuthPortal({
           // update that instead. Still call setEstimates too in case it's
           // ever non-empty (e.g. owner previewing this portal).
           setEstimates((prev: Estimate[]) => prev.map(e => e.id === invId ? { ...e, paidAt: today(), stripePaymentIntentId: paymentIntentId, stripePaymentStatus: "paid" as const } : e));
-          setPortalData(prev => prev ? { ...prev, estimates: prev.estimates.map(e => e.id === invId ? { ...e, paidAt: today(), stripePaymentIntentId: paymentIntentId, stripePaymentStatus: "paid" as const } : e) } : prev);
+          patchActiveEstimates(ests => ests.map(e => e.id === invId ? { ...e, paidAt: today(), stripePaymentIntentId: paymentIntentId, stripePaymentStatus: "paid" as const } : e));
           // Persist to Supabase so the OWNER's CRM poll sees the payment and
           // fires an owner notification (BUG 15 / FEATURE 5).
           if (invId) {
@@ -777,8 +897,8 @@ export function ClientAuthPortal({
       <SaveCardModal
         open={showSaveCard}
         onClose={() => setShowSaveCard(false)}
-        publishableKey={portalData?.settings?.stripePublishableKey || ""}
-        stripeAccountId={portalData?.settings?.stripeAccountId}
+        publishableKey={active?.settings?.stripePublishableKey || ""}
+        stripeAccountId={active?.settings?.stripeAccountId}
         ownerId={(cust as any).owner_id}
         email={cust.email}
         name={`${cust.firstName} ${cust.lastName}`}
@@ -799,6 +919,43 @@ export function ClientAuthPortal({
           refreshMyCards();
         }}
       />
+
+      {/* MULTI-BUSINESS — "Connect to another business" from inside an
+          already-logged-in portal, same search/request flow as the
+          logged-in-but-no-account screen above. */}
+      <Modal open={findOpen} onClose={() => setFindOpen(false)} title="Connect to a Business">
+        <div className="space-y-3">
+          <div className="relative">
+            <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-white/30" />
+            <GInput placeholder="Search by business name..." value={findQuery} onChange={(e: any) => searchBusinesses(e.target.value)} className="!text-sm !pl-9" />
+          </div>
+          {findBusy && <div className="text-center text-xs text-white/30">Searching…</div>}
+          <div className="space-y-2 max-h-[50vh] overflow-y-auto">
+            {findResults.filter(b => !(portalData?.accounts || []).some(a => (a.customer as any).owner_id === b.ownerId)).map(b => {
+              const isConnecting = connectingOwnerId === b.ownerId;
+              const isConnected = connectedOwnerIds.includes(b.ownerId);
+              return (
+                <div key={b.ownerId} className="p-3 rounded-xl bg-white/5 border border-white/10 flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="text-sm font-medium truncate">{b.companyName}</div>
+                    {b.companyPhone && <div className="text-[11px] text-white/40">{b.companyPhone}</div>}
+                  </div>
+                  {isConnected ? (
+                    <Badge tone="green">Requested</Badge>
+                  ) : (
+                    <GBtn disabled={isConnecting} onClick={() => requestConnect(b.ownerId)} className="!text-xs !py-1.5 flex-shrink-0">
+                      {isConnecting ? "Sending…" : <><Plus size={12} className="inline mr-1" />Connect</>}
+                    </GBtn>
+                  )}
+                </div>
+              );
+            })}
+            {!findBusy && findQuery.trim().length >= 2 && findResults.length === 0 && (
+              <div className="text-center text-xs text-white/30 py-4">No businesses found matching "{findQuery}"</div>
+            )}
+          </div>
+        </div>
+      </Modal>
     </div>
   );
 }
