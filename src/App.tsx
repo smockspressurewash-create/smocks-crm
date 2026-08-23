@@ -1723,13 +1723,29 @@ export function App() {
         const todaysJobs = jobs.filter(j => j.scheduledDate === tKey);
         const completed = todaysJobs.filter(j => j.status === "completed");
         const revenue = completed.reduce((s, j) => s + (Number(j.amount) || 0), 0);
+        // BUG FIX — "give the owner total revenue AND profit" — same
+        // labor+material+chemicals cost formula JobsPage.tsx already uses
+        // for its own per-job margin display, just summed across today.
+        const profit = completed.reduce((s, j: any) => {
+          const cost = (Number(j.laborCost) || 0) + (Number(j.materialCost) || 0) + ((j.chemicalsUsed || []).reduce((s2: number, ch: any) => s2 + (Number(ch.cost) || 0), 0));
+          return s + ((Number(j.amount) || 0) - cost);
+        }, 0);
         const late = todaysJobs.filter(j => {
           if (!j.clockInAt || !j.scheduledTime) return false;
           const scheduled = new Date(`${j.scheduledDate}T${j.scheduledTime}:00`).getTime();
           return (j.clockInAt - scheduled) / 60000 > 15;
         }).length;
         const issues = todaysJobs.flatMap(j => (j.commLog || []).filter((e: any) => e.type === "note" && (e.date || "").startsWith(tKey))).length;
-        const html = buildDailyBriefingEmailHtml(settings as any, { completed: completed.length, total: todaysJobs.length, revenue, late, issues });
+        const jobRows = todaysJobs.map(j => {
+          const c = customers.find((x: any) => x.id === j.customerId);
+          return { customerName: c ? `${c.firstName || ""} ${c.lastName || ""}`.trim() : (j.address || "Job"), address: j.address, amount: Number(j.amount) || 0, status: j.status || "scheduled" };
+        });
+        const origin = `${window.location.origin}${window.location.pathname}`;
+        const actionButtons = [
+          { label: "View Today's Jobs", href: `${origin}#/jobs` },
+          { label: "Open Dashboard", href: `${origin}#/` },
+        ];
+        const html = buildDailyBriefingEmailHtml(settings as any, { completed: completed.length, total: todaysJobs.length, revenue, profit, late, issues }, jobRows, actionButtons);
         await sendEmail(settings as any, toEmail, "Daily Summary", html);
         console.log("[DailySummary] auto-sent for", tKey);
       } catch (e: any) {
@@ -2773,13 +2789,23 @@ export function App() {
     const todaysJobs = jobs.filter(j => j.scheduledDate === tKey);
     const completed = todaysJobs.filter(j => j.status === "completed");
     const revenue = completed.reduce((s, j) => s + (Number(j.amount) || 0), 0);
+    const profit = completed.reduce((s, j: any) => {
+      const cost = (Number(j.laborCost) || 0) + (Number(j.materialCost) || 0) + ((j.chemicalsUsed || []).reduce((s2: number, ch: any) => s2 + (Number(ch.cost) || 0), 0));
+      return s + ((Number(j.amount) || 0) - cost);
+    }, 0);
     const late = todaysJobs.filter(j => {
       if (!j.clockInAt || !j.scheduledTime) return false;
       const scheduled = new Date(`${j.scheduledDate}T${j.scheduledTime}:00`).getTime();
       return (j.clockInAt - scheduled) / 60000 > 15;
     }).length;
     const issues = todaysJobs.flatMap(j => (j.commLog || []).filter((e: any) => e.type === "note" && (e.date || "").startsWith(tKey))).length;
-    const html = buildDailyBriefingEmailHtml(settings as any, { completed: completed.length, total: todaysJobs.length, revenue, late, issues });
+    const jobRows = todaysJobs.map(j => {
+      const c = customers.find((x: any) => x.id === j.customerId);
+      return { customerName: c ? `${c.firstName || ""} ${c.lastName || ""}`.trim() : (j.address || "Job"), address: j.address, amount: Number(j.amount) || 0, status: j.status || "scheduled" };
+    });
+    const origin = `${window.location.origin}${window.location.pathname}`;
+    const actionButtons = [{ label: "View Today's Jobs", href: `${origin}#/jobs` }, { label: "Open Dashboard", href: `${origin}#/` }];
+    const html = buildDailyBriefingEmailHtml(settings as any, { completed: completed.length, total: todaysJobs.length, revenue, profit, late, issues }, jobRows, actionButtons);
     const toEmail = settings.companyEmail || settings.myEmail;
     if (!toEmail) { toast("Add a business email in Settings → My Profile first", "yellow"); return; }
     try {

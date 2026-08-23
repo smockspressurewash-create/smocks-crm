@@ -958,15 +958,36 @@ export const buildTomorrowJobsEmailHtml = (brand: string | Parameters<typeof ema
   return emailShell(brand, "Tomorrow's Jobs", body);
 };
 
-export const buildDailyBriefingEmailHtml = (brand: string | Parameters<typeof emailShell>[0], stats: { completed: number; total: number; revenue: number; late: number; issues: number }): string => {
+// BUG FIX — the owner asked for "more information at the end of the day":
+// total revenue AND profit (not just revenue), a full per-job breakdown, and
+// clickable action buttons — this used to be 4 flat numbers with nothing to
+// act on or drill into.
+export const buildDailyBriefingEmailHtml = (
+  brand: string | Parameters<typeof emailShell>[0],
+  stats: { completed: number; total: number; revenue: number; profit: number; late: number; issues: number },
+  jobRows: Array<{ customerName: string; address?: string; amount: number; status: string }> = [],
+  actionButtons: Array<{ label: string; href: string }> = []
+): string => {
+  const margin = stats.revenue > 0 ? Math.round((stats.profit / stats.revenue) * 100) : 0;
+  const rowsHtml = jobRows.length
+    ? jobRows.map(j => `<div style="display:flex;justify-content:space-between;gap:10px;padding:7px 0;border-bottom:1px solid rgba(255,255,255,0.08);font-size:13px">
+        <span>${j.customerName}${j.address ? ` <span style="color:rgba(255,255,255,0.4)">· ${j.address}</span>` : ""}</span>
+        <span style="white-space:nowrap;color:${j.status === "completed" ? "#4ade80" : j.status === "cancelled" ? "rgba(255,255,255,0.4)" : "#facc15"}">${j.status.replace("_", " ")}${j.status === "completed" ? ` · $${j.amount.toLocaleString()}` : ""}</span>
+      </div>`).join("")
+    : `<p style="font-size:12px;color:rgba(255,255,255,0.4)">No jobs scheduled today.</p>`;
+  const buttonsHtml = actionButtons.map(b => emailButton(b.label, b.href)).join("");
   const body = `
     <p style="font-size:14px;color:rgba(255,255,255,0.8)">Here's how today went:</p>
     <table style="width:100%;border-collapse:collapse;margin-top:10px">
       <tr><td style="padding:8px 0;color:rgba(255,255,255,0.5);font-size:13px">Jobs completed</td><td style="text-align:right;font-weight:700;font-size:13px">${stats.completed} / ${stats.total}</td></tr>
       <tr><td style="padding:8px 0;color:rgba(255,255,255,0.5);font-size:13px">Revenue today</td><td style="text-align:right;font-weight:700;font-size:13px;color:#4ade80">$${stats.revenue.toLocaleString()}</td></tr>
+      <tr><td style="padding:8px 0;color:rgba(255,255,255,0.5);font-size:13px">Profit today</td><td style="text-align:right;font-weight:700;font-size:13px;color:${stats.profit >= 0 ? "#4ade80" : "#f87171"}">$${stats.profit.toLocaleString()} (${margin}% margin)</td></tr>
       <tr><td style="padding:8px 0;color:rgba(255,255,255,0.5);font-size:13px">Late arrivals</td><td style="text-align:right;font-weight:700;font-size:13px;color:${stats.late > 0 ? "#facc15" : "#fff"}">${stats.late}</td></tr>
       <tr><td style="padding:8px 0;color:rgba(255,255,255,0.5);font-size:13px">Field notes/issues</td><td style="text-align:right;font-weight:700;font-size:13px;color:${stats.issues > 0 ? "#fb923c" : "#fff"}">${stats.issues}</td></tr>
-    </table>`;
+    </table>
+    <h3 style="margin:20px 0 8px;font-size:14px;color:rgba(255,255,255,0.9)">Today's jobs (${stats.total})</h3>
+    ${rowsHtml}
+    ${buttonsHtml}`;
   return emailShell(brand, "Daily Briefing", body);
 };
 

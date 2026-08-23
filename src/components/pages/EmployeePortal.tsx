@@ -5559,13 +5559,27 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                 `;
                 const companyName = settings?.companyName || "Crew Boss";
 
+                // BUG FIX — "the employee's email should be a little more
+                // encouraging" — was a single flat "Nice work today" line
+                // regardless of how the day actually went. Picks a warmer,
+                // more specific line based on real performance (completed
+                // everything + clean checklists vs. just got through it),
+                // so it reads like actual recognition, not a form letter.
+                const encouragement = completedToday.length === 0
+                  ? `Rough one today, ${myEmployee.firstName} — no jobs marked complete. Reach out if anything got in the way.`
+                  : ckRate >= 95
+                  ? `🌟 Amazing work today, ${myEmployee.firstName}! ${completedToday.length} job${completedToday.length !== 1 ? "s" : ""} done and every checklist buttoned up — that's exactly the standard we want. Go enjoy your evening!`
+                  : completedToday.length >= 3
+                  ? `Great hustle today, ${myEmployee.firstName}! ${completedToday.length} jobs done — that's a strong day's work. Thank you for grinding it out.`
+                  : `Nice work today, ${myEmployee.firstName}! Thanks for putting in the effort — every job done well adds up.`;
+
                 // ISSUE 10 (round 11) — used generic sendEmail (Resend-capable
                 // fallback) for an in-portal automated send; per CLAUDE.md's
                 // critical rule, field-portal automated sends must go through
                 // the owner's own connected Gmail (sendOwnerGmailOnly), never
                 // silently fall back to Resend.
                 if (myEmployee?.email) {
-                  sendOwnerGmailOnly(settings as any, myEmployee.email, `Your day summary — ${todayStr}`, emailShell(settings, "End of Day Summary", `<p>Nice work today, ${myEmployee.firstName}!</p>${summaryRows}`))
+                  sendOwnerGmailOnly(settings as any, myEmployee.email, `Your day summary — ${todayStr}`, emailShell(settings, "End of Day Summary", `<p>${encouragement}</p>${summaryRows}`))
                     .catch((e: any) => console.error("[EndOfDaySummary] employee copy failed to send:", e?.message));
                 }
                 const ownerEmail = settings?.myEmail || settings?.companyEmail;
