@@ -104,7 +104,6 @@ export function SettingsModal({ open, onClose, settings, setSettings, jobs = [],
   const [stripeStatusLoading, setStripeStatusLoading] = useState(false);
   const [stripeSecretInput, setStripeSecretInput] = useState("");
   const [stripeWebhookInput, setStripeWebhookInput] = useState("");
-  const [stripeMode, setStripeMode] = useState<"test" | "live">("test");
   const [stripeSaving, setStripeSaving] = useState(false);
   const [stripeConnecting, setStripeConnecting] = useState(false);
   const [showManualStripeKeys, setShowManualStripeKeys] = useState(false);
@@ -118,7 +117,6 @@ export function SettingsModal({ open, onClose, settings, setSettings, jobs = [],
         if (!token) return;
         const status = await getOwnerStripeStatus(token);
         setStripeStatus(status);
-        setStripeMode(status.mode);
         // BUG FIX — a Connect owner's publishableKey used to always be
         // empty (see stripe-action.ts's platform-key fallback comment),
         // so this never fired and every customer-facing payment silently
@@ -147,11 +145,18 @@ export function SettingsModal({ open, onClose, settings, setSettings, jobs = [],
       const { data: { session } } = await supabase.auth.getSession();
       const token = session?.access_token;
       if (!token) throw new Error("Not signed in");
+      // Test vs. live isn't something the owner needs to pick — Stripe keys
+      // are self-describing (sk_test_.../pk_test_... vs sk_live_.../pk_live_...),
+      // and nothing server-side branches on this `mode` field except the
+      // status badge below. Derive it from whichever key was actually
+      // entered so there's no toggle to forget to flip.
+      const keyForMode = stripeSecretInput || f.stripePublishableKey || "";
+      const inferredMode: "test" | "live" | undefined = /_live_/.test(keyForMode) ? "live" : /_test_/.test(keyForMode) ? "test" : undefined;
       await saveOwnerStripeKeys(token, {
         publishableKey: f.stripePublishableKey || "",
         secretKey: stripeSecretInput || undefined,
         webhookSecret: stripeWebhookInput || undefined,
-        mode: stripeMode,
+        mode: inferredMode,
       });
       const status = await getOwnerStripeStatus(token);
       setStripeStatus(status);
@@ -1351,16 +1356,21 @@ export function SettingsModal({ open, onClose, settings, setSettings, jobs = [],
                 </div>
               )}
 
+              {!stripeStatus?.connected && !stripeStatus?.hasSecretKey && (
+                <div className="p-3 bg-black/60 rounded-xl border border-white/5 text-[10px] text-white/60 space-y-1.5 mb-3">
+                  <div className="font-semibold text-white/70 text-xs">How to get your keys</div>
+                  <div>1. No Stripe account yet? <a href="https://dashboard.stripe.com/register" target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:text-blue-300 underline">Create one free</a> — takes a couple minutes.</div>
+                  <div>2. Go to <a href="https://dashboard.stripe.com/apikeys" target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:text-blue-300 underline">Stripe Dashboard → Developers → API keys</a>.</div>
+                  <div>3. Copy the <b>Publishable key</b> and <b>Secret key</b> shown there and paste each into the matching field below.</div>
+                  <div>4. Stripe starts you in test mode automatically (keys start "pk_test_"/"sk_test_") — flip the toggle at the top of that page to Live mode once you're ready to accept real payments; your live keys start "pk_live_"/"sk_live_". Just paste whichever pair you're using — this app reads the mode straight off the key, nothing else to set.</div>
+                </div>
+              )}
+
               <div className="space-y-2.5">
                 <div>
                   <label className="text-[10px] text-white/50 mb-1 block uppercase tracking-wider">Publishable Key</label>
                   <GInput placeholder="pk_live_… or pk_test_…" value={f.stripePublishableKey || ""} onChange={e => setF({ ...f, stripePublishableKey: e.target.value })} className="!text-xs font-mono" />
                   <div className="text-[10px] text-white/30 mt-1">Safe to store here — this key is meant to be public, it can only start a payment, never move money on its own.</div>
-                </div>
-
-                <div className="flex gap-2">
-                  <button type="button" onClick={() => setStripeMode("test")} className={"flex-1 py-1.5 rounded-lg text-[11px] font-medium transition " + (stripeMode === "test" ? "bg-yellow-500/20 text-yellow-300 border border-yellow-600/40" : "bg-white/5 text-white/40 border border-white/10")}>Test Mode</button>
-                  <button type="button" onClick={() => setStripeMode("live")} className={"flex-1 py-1.5 rounded-lg text-[11px] font-medium transition " + (stripeMode === "live" ? "bg-green-500/20 text-green-300 border border-green-600/40" : "bg-white/5 text-white/40 border border-white/10")}>Live Mode</button>
                 </div>
 
                 {/* SECURITY (multi-tenant Phase F + round-12 audit) — the
@@ -1449,16 +1459,29 @@ export function SettingsModal({ open, onClose, settings, setSettings, jobs = [],
                       typed, with the specific wrong-prefix named instead of
                       a generic "invalid" message. */}
                   <label className="text-[10px] text-white/50 uppercase tracking-wider">Account SID <span className="text-white/30 normal-case">(starts with "AC" — not your API Key SID, which starts "SK")</span></label>
-                  <GInput value={f.twilioSid || ""} onChange={e => setF({ ...f, twilioSid: e.target.value.trim() })} placeholder="ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" className="!text-xs mt-1" />
-                  {f.twilioSid && !f.twilioSid.startsWith("AC") && (
-                    <div className="text-[10px] text-red-400 mt-1">
-                      {f.twilioSid.startsWith("SK")
-                        ? "This looks like an API Key SID (starts \"SK\"), not your Account SID. Copy the \"Account SID\" value from your Twilio Console dashboard — it starts with \"AC\"."
-                        : f.twilioSid.startsWith("MG")
-                        ? "This looks like a Messaging Service SID (starts \"MG\") — that goes in Campaigns' Messaging Service field, not here. Your Account SID starts with \"AC\"."
-                        : "Twilio Account SIDs start with \"AC\". Double-check this value in your Twilio Console."}
-                    </div>
-                  )}
+                  {/* BUG FIX — a value pasted straight from the Twilio Console
+                      can carry a zero-width space or non-breaking space that
+                      .trim() doesn't strip (trim only removes normal
+                      whitespace), so a genuinely correct "AC..." SID with an
+                      invisible leading character would fail startsWith("AC")
+                      and show the "looks like an API Key SID" warning even
+                      though the real value is fine and sends work. Strip
+                      those invisible characters on every edit so what's
+                      stored and validated matches what's visibly on screen. */}
+                  <GInput value={f.twilioSid || ""} onChange={e => setF({ ...f, twilioSid: e.target.value.replace(/[​-‍﻿ ]/g, "").trim() })} placeholder="ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" className="!text-xs mt-1" />
+                  {(() => {
+                    const cleanSid = (f.twilioSid || "").replace(/[​-‍﻿ ]/g, "").trim();
+                    if (!cleanSid || cleanSid.startsWith("AC")) return null;
+                    return (
+                      <div className="text-[10px] text-red-400 mt-1">
+                        {cleanSid.startsWith("SK")
+                          ? "This looks like an API Key SID (starts \"SK\"), not your Account SID. Copy the \"Account SID\" value from your Twilio Console dashboard — it starts with \"AC\"."
+                          : cleanSid.startsWith("MG")
+                          ? "This looks like a Messaging Service SID (starts \"MG\") — that goes in Campaigns' Messaging Service field, not here. Your Account SID starts with \"AC\"."
+                          : "Twilio Account SIDs start with \"AC\". Double-check this value in your Twilio Console."}
+                      </div>
+                    );
+                  })()}
                 </div>
                 <div>
                   <label className="text-[10px] text-white/50 uppercase tracking-wider">Auth Token</label>

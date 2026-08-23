@@ -1203,6 +1203,7 @@ export function App() {
               : " — if this keeps happening, check your Supabase project isn't paused or over its usage quota (Supabase dashboard → Usage)";
             console.warn("[Settings Sync] error:", firstErr?.message + hint, `(payload ${sizeKb}KB)`);
             toast("Settings saved to this device but not to the server — " + (firstErr?.message || "check connection") + hint, "red");
+            pushSettingsSyncNotification("Settings didn't sync to the server" + hint);
             return;
           }
           try {
@@ -1220,7 +1221,9 @@ export function App() {
           } catch (secondErr: any) {
             const isTimeout2 = /timed out/i.test(secondErr?.message || "");
             console.warn("[Settings Sync] error (both attempts failed):", secondErr?.message);
-            toast("Settings saved to this device but not to the server — " + (secondErr?.message || "check connection") + (isTimeout2 ? " — likely a slow/unstable connection, not your Supabase account. Will retry on the next change." : " — if this keeps happening, check your Supabase project isn't paused or over its usage quota (Supabase dashboard → Usage)"), "red");
+            const hint2 = isTimeout2 ? " — likely a slow/unstable connection, not your Supabase account. Will retry on the next change." : " — if this keeps happening, check your Supabase project isn't paused or over its usage quota (Supabase dashboard → Usage)";
+            toast("Settings saved to this device but not to the server — " + (secondErr?.message || "check connection") + hint2, "red");
+            pushSettingsSyncNotification("Settings didn't sync to the server" + hint2);
           }
         }
       })();
@@ -1375,6 +1378,18 @@ export function App() {
   // becomes a short "recent + unread" preview of the same store.
   const [notifications, setNotifications] = usePersistent<AppNotification[]>("smocks.notifications", []);
   const NOTIFICATIONS_CAP = 300;
+  // Settings-sync failures previously only fired a toast, which disappears
+  // and is easy to miss — the Notifications tab is where the owner would
+  // expect to find it later. Throttled to once per 5 minutes so a bad
+  // connection retrying on every keystroke doesn't flood the list with
+  // duplicates of the same failure.
+  const lastSettingsSyncNotifAtRef = useRef(0);
+  const pushSettingsSyncNotification = (text: string) => {
+    const now = Date.now();
+    if (now - lastSettingsSyncNotifAtRef.current < 5 * 60 * 1000) return;
+    lastSettingsSyncNotifAtRef.current = now;
+    setNotifications((prev: AppNotification[]) => [{ id: uid(), text, at: now, read: false, category: "system" as const, page: "dashboard" }, ...prev].slice(0, NOTIFICATIONS_CAP));
+  };
   const deleteNotification = (id: string) => setNotifications((prev: AppNotification[]) => prev.filter(n => n.id !== id));
   const clearAllNotifications = () => setNotifications([]);
   const markAllNotificationsRead = () => setNotifications((prev: AppNotification[]) => prev.map(n => ({ ...n, read: true })));
