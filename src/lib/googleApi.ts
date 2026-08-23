@@ -67,6 +67,28 @@ const gFetch = async (url: string, token: string, opts: RequestInit = {}): Promi
   }
 };
 
+// FEATURE — "the Google Workspace section should show the ACTUAL status if
+// they're connected," not just whether a token happens to be cached. Every
+// other check on this token (isEmpGoogleTokenValid, isConnected in
+// GoogleWorkspacePage) only ever asks "do I have a token and has its
+// self-reported expiry passed" — that's a claim, not a fact, and a token can
+// be genuinely dead (revoked, wrong scopes, wrong project) while still
+// passing that check. Google's tokeninfo endpoint is the actual source of
+// truth: it round-trips to Google and asks "is this exact token good right
+// now," with no scopes of its own required and no quota cost against
+// Gmail/Calendar/Drive.
+export const verifyGoogleTokenLive = async (token: string): Promise<{ valid: boolean; email?: string; scopes?: string[]; expiresInSec?: number; error?: string }> => {
+  if (!token) return { valid: false, error: "No token" };
+  try {
+    const res = await fetch(`https://www.googleapis.com/oauth2/v3/tokeninfo?access_token=${encodeURIComponent(token)}`);
+    const data = await res.json().catch(() => ({} as any));
+    if (!res.ok) return { valid: false, error: data?.error_description || data?.error || `HTTP ${res.status}` };
+    return { valid: true, email: data.email, scopes: (data.scope || "").split(" ").filter(Boolean), expiresInSec: Number(data.expires_in) || undefined };
+  } catch (e: any) {
+    return { valid: false, error: e?.message || "Network error" };
+  }
+};
+
 // ─── Gmail ────────────────────────────────────────────────────────────────────
 
 export interface GmailMessage {

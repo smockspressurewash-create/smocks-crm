@@ -6,7 +6,7 @@ import {
   Video, PenLine, Shield, Navigation, Database, Route, ToggleRight, ToggleLeft, Download, Bell, CreditCard, Mic
 } from "lucide-react";
 import { supabase, getStoredGoogleConnection, fetchOwnerGoogleToken } from "../../lib/supabase";
-import { getEmpGoogleToken, isEmpGoogleTokenValid, saveEmpGoogleToken, clearEmpGoogleToken, refreshEmpGoogleToken, getValidEmpGoogleToken, createGCalEvent, updateGCalEvent, onGoogleAuthFailure } from "../../lib/googleApi";
+import { getEmpGoogleToken, isEmpGoogleTokenValid, saveEmpGoogleToken, clearEmpGoogleToken, refreshEmpGoogleToken, getValidEmpGoogleToken, createGCalEvent, updateGCalEvent, onGoogleAuthFailure, verifyGoogleTokenLive } from "../../lib/googleApi";
 import { sendViaGmail, sendEmail, sendOwnerGmailOnly, emailShell, emailButton, twilioSend, logOutboundSmsToInbox } from "../../lib/messaging";
 import { Glass } from "../ui/Glass";
 import { CrewBossMark } from "../ui/CrewBossMark";
@@ -4171,6 +4171,42 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   // separately so the employee (and whoever they forward the screenshot to)
   // knows to escalate instead of retrying forever.
   const [empGoogleConfigMissing, setEmpGoogleConfigMissing] = useState(false);
+  // FEATURE — "should show the actual status if connected," not just "a
+  // token is cached and its self-reported expiry hasn't passed yet." Mirrors
+  // GoogleWorkspacePage.tsx's existing owner-side live check (a real
+  // round-trip to Google's tokeninfo endpoint) — the owner side already had
+  // this; the employee side only ever trusted the cache. null = not checked
+  // yet / checking, true = verified live just now, false = verified dead.
+  const [empGoogleVerified, setEmpGoogleVerified] = useState<boolean | null>(null);
+  useEffect(() => {
+    if (tab !== "google" || !empSession?.user?.id) return;
+    const uid = empSession.user.id;
+    let cancelled = false;
+    (async () => {
+      const existing = getEmpGoogleToken(uid);
+      if (!existing?.token) { if (!cancelled) setEmpGoogleVerified(null); return; }
+      setEmpGoogleVerified(null); // "verifying…"
+      try {
+        let result = await withTimeout(verifyGoogleTokenLive(existing.token), 8000, "GoogleVerify");
+        if (!result.valid && existing.refreshToken) {
+          const refreshed = await withTimeout(refreshEmpGoogleToken(settings?.googleBackendUrl, existing.refreshToken), 10000, "GoogleRefresh");
+          if (refreshed?.token) {
+            saveEmpGoogleToken(uid, { ...existing, token: refreshed.token, expiresAt: refreshed.expiresAt });
+            result = await withTimeout(verifyGoogleTokenLive(refreshed.token), 8000, "GoogleVerify");
+          }
+        }
+        if (cancelled) return;
+        setEmpGoogleVerified(result.valid);
+        if (!result.valid) setEmpGoogleRefreshFailed(true);
+      } catch (e: any) {
+        if (cancelled) return;
+        console.warn("[GoogleToken] employee verification chain failed or timed out:", e?.message);
+        setEmpGoogleVerified(false);
+        setEmpGoogleRefreshFailed(true);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [tab, empSession?.user?.id]); // eslint-disable-line react-hooks/exhaustive-deps
   const [showCanceledJobs, setShowCanceledJobs] = useState(false);
   const [jobsStatusFilter, setJobsStatusFilter] = useState<"all" | "scheduled" | "today" | "completed">("all");
   const [jobsSearchText, setJobsSearchText] = useState("");
@@ -7475,7 +7511,13 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
           {tab === "google" && (() => {
             const empUserId = empSession?.user?.id;
             const storedToken = empUserId ? getEmpGoogleToken(empUserId) : null;
-            const empGoogleValid = isEmpGoogleTokenValid(storedToken);
+            // empGoogleValid: cache-only claim (token present, self-reported
+            // expiry not passed). empGoogleVerified (state, set by the live
+            // tokeninfo-check effect above): the actual, just-now-confirmed
+            // truth. A cache-valid token that verification proved dead
+            // (empGoogleVerified === false) must NOT show "Connected ✓".
+            const empGoogleValid = isEmpGoogleTokenValid(storedToken) && empGoogleVerified !== false;
+            const empGoogleVerifying = !!storedToken?.token && empGoogleVerified === null;
             const empGoogleIdentityLinked = empSession
               ? (empSession.user?.identities || []).some((i: any) => i.provider === "google")
               : false;
@@ -7489,7 +7531,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
             // employees over a transient, self-healing state — but silently retrying
             // forever against a revoked refresh_token with no visible failure state
             // was the opposite problem.
-            const empGoogleExpired = empGoogleIdentityLinked && !empGoogleValid && (!storedToken?.refreshToken || empGoogleRefreshFailed);
+            const empGoogleExpired = empGoogleIdentityLinked && !empGoogleValid && !empGoogleVerifying && (!storedToken?.refreshToken || empGoogleRefreshFailed);
             const empGoogleEmail = storedToken?.email
               || ((empSession?.user?.identities || []).find((i: any) => i.provider === "google")?.identity_data?.email || "");
             const upcomingForCal = myJobs
@@ -7552,7 +7594,14 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
             return (
               <div className="space-y-4">
                 {/* Connect / connected / expired banner */}
-                {empGoogleValid ? (
+                {empGoogleVerifying ? (
+                  <Glass className="p-4 !bg-black/40">
+                    <div className="flex items-center gap-3">
+                      <div className="w-[18px] h-[18px] border-2 border-white/30 border-t-transparent rounded-full animate-spin flex-shrink-0" />
+                      <div className="text-sm text-white/60">Verifying connection…</div>
+                    </div>
+                  </Glass>
+                ) : empGoogleValid ? (
                   <Glass className="p-4 !bg-green-950/20 !border-green-700/30">
                     <div className="flex items-center gap-3 mb-3">
                       <CheckCircle size={18} className="text-green-400 flex-shrink-0" />
