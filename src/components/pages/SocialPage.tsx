@@ -22,7 +22,7 @@ import {
 } from "recharts";
 import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE } from "../../lib/utils";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
-import { twilioSend, sendEmail, postToBuffer } from "../../lib/messaging";
+import { twilioSend, sendEmail, postToBuffer, fetchBufferPostAnalytics } from "../../lib/messaging";
 import { postToFacebookPage, postToLinkedIn } from "../../lib/socialOAuth";
 import { seedWeather } from "../../lib/weather";
 import { seedCustomers, seedEstimates, seedJobs, seedEmployees, seedVehicles, seedExpenses, seedChemicals, seedServices, seedAutomations, seedEmailTemplates, seedSmsTemplates, seedRewardTiers, seedReferrals, seedMaintenance, campaignTemplates, seedSocialPosts, seedTimeline, seedGoals, seedReminders, seedAccountabilityEntries, seedMileage, seedLeadSrc, STEP_TYPES, AUTOMATION_TEMPLATES } from "../../lib/seed";
@@ -78,12 +78,45 @@ import { ChemicalModal } from "../ui/ChemicalModal";
 import { WeeklyBusinessReview } from "../ui/WeeklyBusinessReview";
 import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 
+const SOCIAL_HASHTAGS_DEFAULT = "#pressurewashing #softwash #yorkpa #homeimprovement #curb appeal";
+
 export function SocialPage({ posts = [], setPosts, toast, settings = {} as AppSettings }: { posts?: any[]; setPosts?: any; toast?: any; settings?: AppSettings }) {
   const [modal, setModal] = useState(false);
   const [tab, setTab] = useState("scheduled");
-  const [f, setF] = useState({ platform: "instagram", type: "before_after", caption: "", scheduledFor: daysFromNow(1), hashtags: "#pressurewashing #softwash #yorkpa #homeimprovement #curb appeal", _imageData: null as any });
+  const initialForm = () => ({
+    platforms: ["instagram"] as string[],
+    type: "before_after",
+    caption: "",
+    publishMode: "now" as "now" | "schedule",
+    scheduledFor: daysFromNow(1),
+    scheduledTime: "09:00",
+    hashtags: SOCIAL_HASHTAGS_DEFAULT,
+    _imageData: null as any,
+    _photoUrl: null as any
+  });
+  const [f, setF] = useState(initialForm);
   const [generating, setGenerating] = useState(false);
-  const [previewPost, setPreviewPost] = useState(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [refreshingId, setRefreshingId] = useState<string | null>(null);
+  const [platformFilter, setPlatformFilter] = useState("all");
+
+  // Cross-page handoff from Alfred's Content Scripts panel ("Send to Social")
+  // — same localStorage-handoff pattern already used elsewhere in this app
+  // (App.tsx doesn't thread arbitrary nav-time state between pages), so a
+  // script caption + optional before/after photo URL arrives here as JSON
+  // under this key, gets consumed once, then cleared.
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem("smocks.socialPrefill");
+      if (!raw) return;
+      const prefill = JSON.parse(raw);
+      localStorage.removeItem("smocks.socialPrefill");
+      if (!prefill?.caption) return;
+      setF(prev => ({ ...prev, caption: prefill.caption, _photoUrl: prefill.photoUrl || null }));
+      setModal(true);
+      toast?.("Loaded script from Alfred — review and schedule ✓");
+    } catch { /* ignore malformed handoff */ }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const platformMeta = {
     instagram: { color: "from-pink-600 to-purple-700", icon: "📸", limit: 2200, label: "Instagram" },
@@ -94,24 +127,33 @@ export function SocialPage({ posts = [], setPosts, toast, settings = {} as AppSe
     nextdoor: { color: "from-green-600 to-green-800", icon: "🏘️", limit: 3000, label: "Nextdoor" }
   };
 
+  // Personalization — mirrors the {{token}} pattern used for SMS/email merge
+  // fields elsewhere (see useScheduledCampaigns.ts's `merge`), so a caption
+  // template never leaves a literal placeholder for the owner to hand-edit.
+  const mergeCaption = (text: string) => (text || "")
+    .replace(/\{\{company_name\}\}/g, settings.companyName || "Crew Boss")
+    .replace(/\{\{company_phone\}\}/g, settings.companyPhone || "(717) 555-0100");
+
   const captionTemplates = [
     { type: "before_after", captions: [
-      "Before vs. After 😍\n\nYears of algae, grime, and weathering — gone in one afternoon. Our soft wash system is gentle on your home and devastating on buildup.\n\n📍 York, PA | 📞 (717) 555-0100 | Free estimates →",
+      "Before vs. After 😍\n\nYears of algae, grime, and weathering — gone in one afternoon. Our soft wash system is gentle on your home and devastating on buildup.\n\n📍 York, PA | 📞 {{company_phone}} | Free estimates →",
       "The transformation is real ✨\n\nThis customer had NO idea how good their home could look. Soft wash + surface clean = curb appeal on steroids.\n\nDM us to book before the season fills up! 🔥",
       "Can you believe this is the same driveway? 🤯\n\nPressure washing + sealer = looking brand new. We serve all of York County.\n\nTag a neighbor who needs this! 👇"
     ]},
     { type: "promo", captions: [
-      "🌸 SPRING SPECIAL — 15% off house soft washes this month only!\n\nSpots are filling fast. Don't wait until the moss wins.\n\nCall or DM to book. York, PA & surrounding areas.",
-      "LIMITED TIME: Book any job over $400 and get your driveway done at 50% off.\n\nWe have openings this week. First come, first served.\n\n📲 (717) 555-0100"
+      "🌸 SPRING SPECIAL — 15% off house soft washes this month only!\n\nSpots are filling fast. Don't wait until the moss wins.\n\nCall or DM {{company_name}} to book. York, PA & surrounding areas.",
+      "LIMITED TIME: Book any job over $400 and get your driveway done at 50% off.\n\nWe have openings this week. First come, first served.\n\n📲 {{company_phone}}"
     ]},
     { type: "testimonial", captions: [
       "⭐⭐⭐⭐⭐ \"Couldn't believe the difference. Looked brand new. Worth every penny!\" — Jennifer W.\n\nReviews like this make the early mornings worth it. 🙏\n\n#CustomerLove #5Stars #PressureWashing",
-      "We don't just clean houses — we restore them. 🏠✨\n\nThank you to all our amazing York County customers for the 5-star love. We work hard to earn every review."
+      "We don't just clean houses — we restore them. 🏠✨\n\nThank you to all our amazing {{company_name}} customers for the 5-star love. We work hard to earn every review."
     ]}
   ];
 
   const generate = async () => {
     setGenerating(true);
+    const companyName = settings.companyName || "Crew Boss";
+    const companyPhone = settings.companyPhone || "(717) 555-0100";
     const typeDesc = { before_after: "a before/after transformation post", promo: "a promotional offer post", testimonial: "a customer testimonial/review post", tip: "a helpful pressure washing tip", team: "a team/culture/behind-the-scenes post" }[f.type] || "a social media post";
     try {
       // If there's an uploaded image and it's a before_after, use vision analysis
@@ -120,10 +162,10 @@ export function SocialPage({ posts = [], setPosts, toast, settings = {} as AppSe
       if (imageData && f.type === "before_after") {
         messageContent = [
           { type: "image", source: { type: "base64", media_type: imageData.mediaType, data: imageData.data } },
-          { type: "text", text: `You are writing a social media caption for Crew Boss in York, PA. Analyze this before/after or transformation photo and write a compelling ${f.platform} caption. The owner is Will. Make it engaging, real, and slightly casual. Include a call to action (DM or call (717) 555-0100). Keep it under 150 words. Use natural line breaks.` }
+          { type: "text", text: `You are writing a social media caption for ${companyName} in York, PA. Analyze this before/after or transformation photo and write a compelling ${f.platforms[0] || "instagram"} caption. Make it engaging, real, and slightly casual. Include a call to action (DM or call ${companyPhone}). Keep it under 150 words. Use natural line breaks.` }
         ];
       } else {
-        messageContent = `Write ${typeDesc} for Crew Boss in York, PA. The owner's name is Will. Write one caption only — no alternatives, no intro text. Make it engaging, real, and slightly casual. Include a call to action. Keep it under 150 words. Use natural line breaks for readability. Don't use quotation marks around the whole thing. Platform: ${f.platform}.`;
+        messageContent = `Write ${typeDesc} for ${companyName} in York, PA. Write one caption only — no alternatives, no intro text. Make it engaging, real, and slightly casual. Include a call to action (mention calling ${companyPhone} if relevant). Keep it under 150 words. Use natural line breaks for readability. Don't use quotation marks around the whole thing. Platform: ${f.platforms[0] || "instagram"}.`;
       }
       const modelId = settings.activeModel || "claude";
       const apiKey = (settings.modelKeys || {})[modelId] || (modelId === "claude" ? settings.anthropicKey : undefined);
@@ -134,108 +176,174 @@ export function SocialPage({ posts = [], setPosts, toast, settings = {} as AppSe
     } catch {
       // Fallback to template
       const templates = captionTemplates.find(t => t.type === f.type)?.captions || captionTemplates[0].captions;
-      setF(prev => ({ ...prev, caption: templates[Math.floor(Math.random() * templates.length)] }));
+      setF(prev => ({ ...prev, caption: mergeCaption(templates[Math.floor(Math.random() * templates.length)]) }));
       toast("Caption generated (offline template)");
     } finally {
       setGenerating(false);
     }
   };
 
-  const save = () => {
-    if (!f.caption.trim()) return;
-    const fullCaption = f.caption + "\n\n" + f.hashtags;
-    setPosts([{ id: uid(), ...f, caption: fullCaption, status: "scheduled", likes: 0, shares: 0, comments: 0, reach: 0 }, ...posts]);
-    setF({ platform: "instagram", type: "before_after", caption: "", scheduledFor: daysFromNow(1), hashtags: "#pressurewashing #softwash #yorkpa #homeimprovement #curb appeal", _imageData: null as any });
-    setModal(false);
-    toast("Post scheduled ✓");
-  };
-
-  const publish = async id => {
-    const post = posts.find(p => p.id === id);
-    setPosts(posts.map(p => p.id === id ? { ...p, status: "published", publishedAt: today(), likes: p.likes || 0, shares: p.shares || 0, comments: p.comments || 0, reach: p.reach || 0 } : p));
-
-    if (post) {
-      const caption = (post.caption || "") + (post.hashtags ? "\n\n" + post.hashtags : "");
-      // Real posting via Buffer when an API key + channel are configured for
-      // this platform — otherwise fall through to a direct platform token
-      // (Facebook/LinkedIn only — those accept plain text), then finally the
-      // manual copy/deep-link/share-sheet flow below.
-      if (settings.bufferApiKey && settings.bufferChannelIds?.[post.platform]) {
-        try {
-          await postToBuffer(settings, post.platform, caption);
-          toast(`Posted to ${post.platform} via Buffer ✓`, "green");
-          return;
-        } catch (e: any) {
-          toast(e?.message || "Buffer post failed — copy/paste instead", "yellow");
-        }
-      }
-      if (post.platform === "facebook" && (settings as any).metaAccessToken && (settings as any).metaPageId) {
-        try {
-          await postToFacebookPage((settings as any).metaAccessToken, (settings as any).metaPageId, caption);
-          toast("Posted to Facebook ✓", "green");
-          return;
-        } catch (e: any) {
-          toast(e?.message || "Facebook post failed — copy/paste instead", "yellow");
-        }
-      }
-      if (post.platform === "linkedin" && (settings as any).linkedinAccessToken && (settings as any).linkedinAuthorUrn) {
-        try {
-          await postToLinkedIn((settings as any).linkedinAccessToken, (settings as any).linkedinAuthorUrn, caption);
-          toast("Posted to LinkedIn ✓", "green");
-          return;
-        } catch (e: any) {
-          toast(e?.message || "LinkedIn post failed — copy/paste instead", "yellow");
-        }
-      }
+  // Fires the actual send for one platform: Buffer first (also handles real
+  // scheduling via dueAt when scheduledAt is passed), then a direct platform
+  // token (Facebook/LinkedIn), then Instagram/TikTok app bridges, then a
+  // generic Web Share/clipboard fallback so every platform — not just
+  // Instagram/TikTok — gets a real action instead of a no-op "Published" toast.
+  const publishOnePlatform = async (platform: string, caption: string, scheduledAt?: Date): Promise<{ bufferPostId?: string; method: string }> => {
+    if (settings.bufferApiKey && settings.bufferChannelIds?.[platform]) {
+      const bufferPostId = await postToBuffer(settings, platform, caption, scheduledAt);
+      toast(`${scheduledAt ? "Scheduled" : "Posted"} to ${platformMeta[platform]?.label || platform} via Buffer ✓`, "green");
+      return { bufferPostId: bufferPostId || undefined, method: "buffer" };
     }
-    if (post && (post.platform === "instagram" || post.platform === "tiktok")) {
-      const caption = (post.caption || "") + (post.hashtags ? "\n\n" + post.hashtags : "");
-      // Instagram bridge: open app via deep link with caption pre-filled
-      if (settings.instaBridge && post.platform === "instagram") {
-        navigator.clipboard?.writeText(caption).catch(() => {});
-        // Try deep link to Instagram app
-        const igUrl = "instagram://library?AssetPath=";
-        window.location.href = igUrl;
-        setTimeout(() => {
-          // Fallback if app not installed
-          window.open("https://www.instagram.com/", "_blank");
-        }, 1500);
-        toast("Caption copied! Instagram opening — paste and post 📸");
-        return;
-      }
-      // TikTok bridge
-      if (post.platform === "tiktok") {
-        navigator.clipboard?.writeText(caption).catch(() => {});
-        window.open("tiktok://", "_blank");
-        setTimeout(() => window.open("https://www.tiktok.com/upload", "_blank"), 1500);
-        toast("Caption copied! TikTok opening — paste and upload 🎵");
-        return;
-      }
-      // Generic: Web Share API
-      if (navigator.share) {
-        try {
-          await navigator.share({ title: "Crew Boss", text: caption, url: "https://smocks.com" });
-          toast("Share sheet opened ✓");
-          return;
-        } catch { /* cancelled */ }
-      }
+    if (scheduledAt) {
+      // No Buffer channel connected for this platform — nothing can actually
+      // hold a future publish time on its own, so this becomes a local
+      // reminder the owner fires manually from the Scheduled tab.
+      toast(`No Buffer channel connected for ${platformMeta[platform]?.label || platform} — saved as a reminder, publish it manually when it's time`, "yellow");
+      return { method: "local-reminder" };
+    }
+    if (platform === "facebook" && (settings as any).metaAccessToken && (settings as any).metaPageId) {
+      await postToFacebookPage((settings as any).metaAccessToken, (settings as any).metaPageId, caption);
+      toast("Posted to Facebook ✓", "green");
+      return { method: "meta" };
+    }
+    if (platform === "linkedin" && (settings as any).linkedinAccessToken && (settings as any).linkedinAuthorUrn) {
+      await postToLinkedIn((settings as any).linkedinAccessToken, (settings as any).linkedinAuthorUrn, caption);
+      toast("Posted to LinkedIn ✓", "green");
+      return { method: "linkedin" };
+    }
+    if (platform === "instagram" && settings.instaBridge) {
       navigator.clipboard?.writeText(caption).catch(() => {});
-      toast("Caption copied! Open " + post.platform + " and paste 📋");
-      return;
+      window.location.href = "instagram://library?AssetPath=";
+      setTimeout(() => window.open("https://www.instagram.com/", "_blank"), 1500);
+      toast("Caption copied! Instagram opening — paste and post 📸");
+      return { method: "manual" };
     }
-    toast("Published ✓");
+    if (platform === "tiktok") {
+      navigator.clipboard?.writeText(caption).catch(() => {});
+      window.open("tiktok://", "_blank");
+      setTimeout(() => window.open("https://www.tiktok.com/upload", "_blank"), 1500);
+      toast("Caption copied! TikTok opening — paste and upload 🎵");
+      return { method: "manual" };
+    }
+    if (navigator.share) {
+      try {
+        await navigator.share({ title: settings.companyName || "Crew Boss", text: caption, url: "https://smocks.com" });
+        toast(`Share sheet opened for ${platformMeta[platform]?.label || platform} ✓`);
+        return { method: "manual" };
+      } catch { /* cancelled — still copy below so the owner has the caption */ }
+    }
+    navigator.clipboard?.writeText(caption).catch(() => {});
+    toast(`Caption copied! Open ${platformMeta[platform]?.label || platform} and paste 📋`);
+    return { method: "manual" };
   };
-  const del = id => { if (confirm("Delete post?")) setPosts(posts.filter(p => p.id !== id)); };
 
-  const scheduled = posts.filter(p => p.status === "scheduled");
-  const published = posts.filter(p => p.status === "published");
-  const totalReach = published.reduce((s, p) => s + (p.reach || 0), 0);
-  const totalLikes = published.reduce((s, p) => s + (p.likes || 0), 0);
+  // New Post now supports Publish Now (fires publishOnePlatform immediately)
+  // and Schedule Post (real date + time, wired through as Buffer's dueAt when
+  // a channel is connected) — and multi-selecting platforms fires the whole
+  // flow once per selected platform/channel.
+  const submitPost = async () => {
+    if (!f.caption.trim()) { toast("Write a caption first", "red"); return; }
+    if (f.platforms.length === 0) { toast("Pick at least one platform", "red"); return; }
+    setSubmitting(true);
+    const fullCaption = f.caption + "\n\n" + f.hashtags;
+    const isSchedule = f.publishMode === "schedule";
+    const scheduledAt = isSchedule && f.scheduledFor ? new Date(`${f.scheduledFor}T${f.scheduledTime || "09:00"}:00`) : undefined;
+    const created: any[] = [];
+    let anyFailed = false;
+    for (const platform of f.platforms) {
+      try {
+        const result = await publishOnePlatform(platform, fullCaption, scheduledAt);
+        created.push({
+          id: uid(), platform, type: f.type, caption: fullCaption, hashtags: f.hashtags, _imageData: f._imageData,
+          status: isSchedule ? "scheduled" : "published",
+          scheduledFor: isSchedule ? f.scheduledFor : undefined,
+          scheduledTime: isSchedule ? f.scheduledTime : undefined,
+          publishedAt: isSchedule ? undefined : today(),
+          likes: 0, shares: 0, comments: 0, reach: 0,
+          bufferPostId: result.bufferPostId, postMethod: result.method
+        });
+      } catch (e: any) {
+        anyFailed = true;
+        toast(`Failed to post to ${platformMeta[platform]?.label || platform}: ${e?.message || "unknown error"}`, "red");
+      }
+    }
+    if (created.length > 0) {
+      setPosts((prev: any[]) => [...created, ...prev]);
+      toast(
+        `${isSchedule ? "Scheduled" : "Published"} for ${created.length} platform${created.length > 1 ? "s" : ""} ✓`,
+        anyFailed ? "yellow" : "green"
+      );
+      setModal(false);
+      setF(initialForm());
+    }
+    setSubmitting(false);
+  };
+
+  // Manual "Publish Now" on an already-scheduled card — only relevant for
+  // posts that couldn't be handed to Buffer (see local-reminder above); a
+  // post actually scheduled via Buffer publishes itself automatically.
+  const publishScheduled = async (id: string) => {
+    const post = posts.find((p: any) => p.id === id);
+    if (!post) return;
+    try {
+      const result = await publishOnePlatform(post.platform, post.caption, undefined);
+      setPosts((prev: any[]) => prev.map(p => p.id === id ? { ...p, status: "published", publishedAt: today(), bufferPostId: result.bufferPostId || p.bufferPostId, postMethod: result.method } : p));
+    } catch (e: any) {
+      toast(e?.message || "Publish failed", "red");
+    }
+  };
+
+  const del = (id: string) => { if (confirm("Delete post?")) setPosts(posts.filter((p: any) => p.id !== id)); };
+
+  // Real analytics refresh — only works for posts that actually went through
+  // Buffer (bufferPostId set at post time). Buffer's Post.metrics is
+  // populated by the destination network after the fact, so this is a
+  // pull-on-demand action, not something we can compute locally.
+  const refreshAnalytics = async (post: any) => {
+    if (!post.bufferPostId || !settings.bufferApiKey) return;
+    setRefreshingId(post.id);
+    try {
+      const data = await fetchBufferPostAnalytics(settings.bufferApiKey, post.bufferPostId);
+      if (!data) { toast("Buffer has no analytics for this post yet", "yellow"); return; }
+      const metricValue = (types: string[]) => {
+        for (const t of types) {
+          const m = data.metrics.find(x => x.type === t);
+          if (m) return m.value;
+        }
+        return undefined;
+      };
+      setPosts((prev: any[]) => prev.map(x => x.id === post.id ? {
+        ...x,
+        likes: metricValue(["reactions", "likes"]) ?? x.likes,
+        reach: metricValue(["reach", "impressions"]) ?? x.reach,
+        comments: metricValue(["comments"]) ?? x.comments,
+        shares: metricValue(["reposts", "shares"]) ?? x.shares,
+        externalLink: data.externalLink || x.externalLink,
+        metricsUpdatedAt: data.metricsUpdatedAt
+      } : x));
+      toast("Analytics refreshed from Buffer ✓", "green");
+    } catch (e: any) {
+      toast(e?.message || "Could not fetch analytics from Buffer", "red");
+    } finally {
+      setRefreshingId(null);
+    }
+  };
+
+  const togglePlatform = (k: string) => setF(prev => ({
+    ...prev,
+    platforms: prev.platforms.includes(k) ? prev.platforms.filter(p => p !== k) : [...prev.platforms, k]
+  }));
+
+  const allScheduled = posts.filter((p: any) => p.status === "scheduled");
+  const allPublished = posts.filter((p: any) => p.status === "published");
+  const scheduled = platformFilter === "all" ? allScheduled : allScheduled.filter((p: any) => p.platform === platformFilter);
+  const published = platformFilter === "all" ? allPublished : allPublished.filter((p: any) => p.platform === platformFilter);
 
   const platformColors = {
     instagram: "bg-gradient-to-r from-pink-600 to-purple-700",
     facebook: "bg-blue-700",
     tiktok: "bg-black border border-white/20",
+    linkedin: "bg-gradient-to-r from-blue-700 to-sky-800",
     google: "bg-gradient-to-r from-blue-500 to-red-500",
     nextdoor: "bg-green-700"
   };
@@ -281,8 +389,8 @@ export function SocialPage({ posts = [], setPosts, toast, settings = {} as AppSe
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <Stat icon={Clock} label="Scheduled" value={scheduled.length} />
         <Stat icon={CheckCircle} label="Published" value={published.length} />
-        <Stat icon={TrendingUp} label="Total Reach" value={totalReach > 0 ? totalReach.toLocaleString() : "—"} />
-        <Stat icon={Star} label="Total Likes" value={totalLikes > 0 ? totalLikes.toLocaleString() : "—"} />
+        <Stat icon={TrendingUp} label="Total Reach" value={allPublished.reduce((s: number, p: any) => s + (p.reach || 0), 0) > 0 ? allPublished.reduce((s: number, p: any) => s + (p.reach || 0), 0).toLocaleString() : "—"} />
+        <Stat icon={Star} label="Total Likes" value={allPublished.reduce((s: number, p: any) => s + (p.likes || 0), 0) > 0 ? allPublished.reduce((s: number, p: any) => s + (p.likes || 0), 0).toLocaleString() : "—"} />
       </div>
 
       {/* Platform quick-links */}
@@ -377,7 +485,7 @@ export function SocialPage({ posts = [], setPosts, toast, settings = {} as AppSe
             </div>
             <div className="text-sm text-white/80 whitespace-pre-wrap mb-3 line-clamp-5 leading-relaxed">{p.caption}</div>
             <div className="flex gap-2 pt-3 border-t border-white/5">
-              <GBtn onClick={() => publish(p.id)} className="flex-1 !text-xs !py-1.5"><Send size={10} className="inline mr-1" />Publish Now</GBtn>
+              <GBtn onClick={() => publishScheduled(p.id)} className="flex-1 !text-xs !py-1.5"><Send size={10} className="inline mr-1" />Publish Now</GBtn>
               <button onClick={() => del(p.id)} className="px-2.5 py-1.5 rounded-lg border bg-white/5 border-white/10 text-white/60 hover:text-red-400 text-xs opacity-0 group-hover:opacity-100 transition"><Trash2 size={12} /></button>
             </div>
           </Glass>;
@@ -428,9 +536,9 @@ export function SocialPage({ posts = [], setPosts, toast, settings = {} as AppSe
         <div className="space-y-4">
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="text-xs text-white/60 mb-1 block">Platform</label>
+              <label className="text-xs text-white/60 mb-1 block">Platform{f.platforms.length > 1 ? "s" : ""} ({f.platforms.length} selected)</label>
               <div className="grid grid-cols-1 gap-1">
-                {Object.entries(platformMeta).map(([k, m]) => <button key={k} onClick={() => setF({ ...f, platform: k })} className={"flex items-center gap-2 px-3 py-2 rounded-xl border text-xs transition " + (f.platform === k ? "bg-gradient-to-r " + m.color + " border-white/30 text-white" : "bg-black/40 border-white/10 text-white/60 hover:text-white")}>{m.icon} {m.label}</button>)}
+                {Object.entries(platformMeta).map(([k, m]) => <button key={k} onClick={() => togglePlatform(k)} className={"flex items-center gap-2 px-3 py-2 rounded-xl border text-xs transition " + (f.platforms.includes(k) ? "bg-gradient-to-r " + m.color + " border-white/30 text-white" : "bg-black/40 border-white/10 text-white/60 hover:text-white")}>{m.icon} {m.label}</button>)}
               </div>
             </div>
             <div className="space-y-3">
@@ -477,6 +585,13 @@ export function SocialPage({ posts = [], setPosts, toast, settings = {} as AppSe
               </div>}
             </div>
           </div>
+          {(f as any)._photoUrl && (
+            <div className="flex items-center gap-2 p-2 bg-orange-950/20 border border-orange-800/40 rounded-xl">
+              <img src={(f as any)._photoUrl} alt="From Alfred" className="w-12 h-12 rounded-lg object-cover flex-shrink-0" />
+              <div className="text-[10px] text-orange-300 flex-1">Before/after photo from Alfred — attach it on the platform when you post.</div>
+              <button onClick={() => setF(prev => ({ ...prev, _photoUrl: null } as any))} className="text-white/40 hover:text-white flex-shrink-0"><X size={12} /></button>
+            </div>
+          )}
           <div>
             <div className="flex items-center justify-between mb-1">
               <label className="text-xs text-white/60">Caption</label>
@@ -545,7 +660,7 @@ export function SocialPage({ posts = [], setPosts, toast, settings = {} as AppSe
           </div>
           <div className="flex gap-2 justify-end">
             <GBtn variant="ghost" onClick={() => setModal(false)}>Cancel</GBtn>
-            <GBtn onClick={save} disabled={!f.caption.trim()}>Schedule Post</GBtn>
+            <GBtn onClick={submitPost} disabled={!f.caption.trim() || f.platforms.length === 0 || submitting}>{submitting ? "Posting…" : f.publishMode === "schedule" ? "Schedule Post" : "Post Now"}</GBtn>
           </div>
         </div>
       </Modal>

@@ -13,7 +13,7 @@ import {
   Globe, Share2, Trophy, ExternalLink, Workflow, ToggleLeft, ToggleRight,
   Navigation, TrendingDown, PieChart as PieIcon, Package, Wrench,
   CheckSquare, Route, Users2, Layers, ArrowRight, BarChart2, Filter,
-  Paperclip, ImageIcon, FileImage, MoreVertical, Mic, Upload, Link, Lock, User
+  Paperclip, ImageIcon, FileImage, MoreVertical, Mic, Upload, Link, Lock, User, Sparkles
 } from "lucide-react";
 import {
   BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid,
@@ -80,6 +80,7 @@ import { AIModelsSection } from "../ui/AIModelsSection";
 import { ChemicalModal } from "../ui/ChemicalModal";
 import { WeeklyBusinessReview } from "../ui/WeeklyBusinessReview";
 import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
+import { AlfredScriptsPanel } from "../ui/AlfredScriptsPanel";
 
 // FIX 6 — `personalities` (lib/utils.ts) is an ARRAY keyed by each entry's
 // `id` field ("drillsergeant"/"butler"/"quietpro"/"savage"), not by array
@@ -105,6 +106,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
   const isMobile = useIsMobile();
   const [sidebarOpen, setSidebarOpen] = useState(() => !isMobile);
   const [memoryOpen, setMemoryOpen] = useState(false);
+  const [scriptsOpen, setScriptsOpen] = useState(false);
   const [convSearch, setConvSearch] = useState("");
   const [editingTitle, setEditingTitle] = useState(null);
   const [titleDraft, setTitleDraft] = useState("");
@@ -2787,6 +2789,10 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
             <span className="flex-1 text-left">Memory</span>
             <span className="text-[10px] text-white/40">{memory.length}</span>
           </button>
+          <button onClick={() => setScriptsOpen(true)} className="w-full flex items-center gap-2 px-2.5 py-2 rounded-lg hover:bg-white/5 text-xs text-white/70 hover:text-white transition">
+            <div className="p-1.5 rounded bg-orange-900/30"><Sparkles size={11} className="text-orange-400" /></div>
+            <span className="flex-1 text-left">Content Scripts</span>
+          </button>
           <div className="px-2.5 py-2">
             <div className="text-[10px] uppercase tracking-wider text-white/40 mb-1.5">Personality</div>
             <div className="grid grid-cols-2 gap-1">
@@ -2886,6 +2892,10 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
               </>}
             </div>;
           })()}
+
+          <button onClick={() => setScriptsOpen(true)} className="p-2 rounded-lg hover:bg-white/5 text-orange-400 flex-shrink-0" title="Content Scripts">
+            <Sparkles size={16} />
+          </button>
 
           <div className="relative flex-shrink-0">
             <button onClick={() => setMenuOpen(!menuOpen)} className="p-2 rounded-lg hover:bg-white/5 text-white/70" title="Menu">
@@ -3197,6 +3207,16 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           </div>
         </>;
       })()}
+
+      <AlfredScriptsPanel
+        open={scriptsOpen}
+        onClose={() => setScriptsOpen(false)}
+        settings={settings}
+        jobs={jobs}
+        ownerId={ownerId}
+        toast={toast}
+        onNav={onNav}
+      />
 
       {/* Delete confirmation */}
       <Modal open={!!confirmDelete} onClose={() => setConfirmDelete(null)} title="Delete conversation?">
