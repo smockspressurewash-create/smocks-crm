@@ -9,23 +9,24 @@ import React from "react";
 // public/favicon.svg is a separate static asset (can't reference a React
 // component) but should stay visually identical.
 //
-// Canvas is 88x88, not 64x64 — the letters were clipping against a 64
-// viewBox's own edges once they got large/spread enough to look right, so
-// the whole canvas was widened (not just the letter positions) to give them
-// room to sit farther from the body and get bigger without clipping.
+// This exact layout (100x100 canvas, curved arms, letter position/size) was
+// chosen by actually rendering candidates with Playwright and inspecting
+// the pixels — prior rounds adjusted coordinates by calculation alone and
+// kept clipping against the rounded corners or crossing behind the letters
+// in ways that weren't caught until the user saw the real render.
 export function CrewBossMark({ className = "" }: { className?: string }) {
   return (
-    <svg viewBox="0 0 88 88" className={className} fill="none">
-      <g stroke="#ffffff" strokeWidth={8.9} strokeLinecap="round">
-        <path d="M34 42 L12 58" fill="none" />
-        <path d="M54 42 L76 58" fill="none" />
+    <svg viewBox="0 0 100 100" className={className} fill="none">
+      <g stroke="#ffffff" strokeWidth={7.5} strokeLinecap="round">
+        <path d="M39 54 Q21 66 13 80" />
+        <path d="M61 54 Q79 66 87 80" />
       </g>
-      <circle cx="12" cy="58" r="5.8" fill="#ffffff" />
-      <circle cx="76" cy="58" r="5.8" fill="#ffffff" />
-      <circle cx="44" cy="22" r="8.9" fill="#ffffff" />
-      <path d="M31.6 63.3 C31.6 45.4 37.1 38.5 44 38.5 C50.9 38.5 56.4 45.4 56.4 63.3 C56.4 70.1 50.9 72.9 44 72.9 C37.1 72.9 31.6 70.1 31.6 63.3 Z" fill="#ffffff" />
-      <text x="12" y="58" fontFamily="Arial, Helvetica, sans-serif" fontWeight={900} fontSize={38} fill="#ffffff" textAnchor="middle">C</text>
-      <text x="76" y="58" fontFamily="Arial, Helvetica, sans-serif" fontWeight={900} fontSize={38} fill="#ffffff" textAnchor="middle">B</text>
+      <circle cx="13" cy="80" r="5" fill="#ffffff" />
+      <circle cx="87" cy="80" r="5" fill="#ffffff" />
+      <circle cx="50" cy="22" r="9" fill="#ffffff" />
+      <path d="M36 78 C36 55 42 46 50 46 C58 46 64 55 64 78 C64 87 58 90 50 90 C42 90 36 87 36 78 Z" fill="#ffffff" />
+      <text x="12" y="72" fontFamily="Arial, Helvetica, sans-serif" fontWeight={900} fontSize={43} fill="#ffffff" textAnchor="middle">C</text>
+      <text x="88" y="72" fontFamily="Arial, Helvetica, sans-serif" fontWeight={900} fontSize={43} fill="#ffffff" textAnchor="middle">B</text>
     </svg>
   );
 }

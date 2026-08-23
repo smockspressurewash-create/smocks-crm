@@ -205,7 +205,12 @@ export function CampaignsPage({ campaigns = [], setCampaigns, customers = [], es
     }
   }, [twilioConfigured, settings]);
 
-  useEffect(() => { refreshTwilioStatus(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  // BUG FIX / EXPLICIT REQUEST — this used to auto-run on every mount, so an
+  // owner who KNOWS their Twilio credentials work (sends succeed) still got
+  // an unprompted warning banner every time they opened this page whenever
+  // Twilio's own status endpoint disagreed with the client-side SID check.
+  // Per explicit owner request, this is now on-demand only (the "Check
+  // Status" button below) — never runs, or shows anything, until asked.
 
   // ISSUE 11 (round 3) — no way to verify a campaign body/subject actually
   // sends before blasting the whole recipient list. Reuses the exact same

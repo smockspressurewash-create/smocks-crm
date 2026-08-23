@@ -1469,19 +1469,12 @@ export function SettingsModal({ open, onClose, settings, setSettings, jobs = [],
                       those invisible characters on every edit so what's
                       stored and validated matches what's visibly on screen. */}
                   <GInput value={f.twilioSid || ""} onChange={e => setF({ ...f, twilioSid: e.target.value.replace(/[​-‍﻿ ]/g, "").trim() })} placeholder="ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" className="!text-xs mt-1" />
-                  {(() => {
-                    const cleanSid = (f.twilioSid || "").replace(/[​-‍﻿ ]/g, "").trim();
-                    if (!cleanSid || cleanSid.startsWith("AC")) return null;
-                    return (
-                      <div className="text-[10px] text-red-400 mt-1">
-                        {cleanSid.startsWith("SK")
-                          ? "This looks like an API Key SID (starts \"SK\"), not your Account SID. Copy the \"Account SID\" value from your Twilio Console dashboard — it starts with \"AC\"."
-                          : cleanSid.startsWith("MG")
-                          ? "This looks like a Messaging Service SID (starts \"MG\") — that goes in Campaigns' Messaging Service field, not here. Your Account SID starts with \"AC\"."
-                          : "Twilio Account SIDs start with \"AC\". Double-check this value in your Twilio Console."}
-                      </div>
-                    );
-                  })()}
+                  {/* EXPLICIT REQUEST — the "doesn't start with AC" warning that used
+                      to render here is suppressed. The owner confirmed their
+                      credentials are correct and sends work; this heuristic was a
+                      false positive for their setup. Use "Test Connection" below
+                      instead — it asks Twilio directly rather than guessing from
+                      the SID's prefix. */}
                 </div>
                 <div>
                   <label className="text-[10px] text-white/50 uppercase tracking-wider">Auth Token</label>
