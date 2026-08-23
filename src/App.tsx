@@ -4,7 +4,7 @@ import {
   Calendar, MessageSquare, Megaphone, Star, Zap, Share2, UserPlus,
   Bot, Database, Users2, Truck, DollarSign, FlaskConical, BarChart3,
   TrendingUp, PiggyBank, Wallet, Heart, Gift, Monitor, Tag,
-  Bell, Settings, X, Lock, Globe, ChevronLeft, ChevronRight, Plus, Undo2, Redo2, CheckCircle, Eye, EyeOff, Menu, AlertTriangle, Trash2, BookOpen
+  Bell, Settings, X, Lock, Globe, ChevronLeft, ChevronRight, Plus, Undo2, Redo2, CheckCircle, Eye, EyeOff, Menu, AlertTriangle, Trash2, BookOpen, UserCheck
 } from "lucide-react";
 
 import { useGlobalStyles } from "./hooks/useGlobalStyles";
@@ -58,6 +58,8 @@ import { ClientAuthPortal } from "./components/pages/ClientAuthPortal";
 import { ReferralLanding } from "./components/pages/ReferralLanding";
 import { CustomerReviewPage } from "./components/pages/CustomerReviewPage";
 import { LeadFormPage } from "./components/pages/LeadFormPage";
+import { ApplyPage } from "./components/pages/ApplyPage";
+import { HiringPage } from "./components/pages/HiringPage";
 import { TermsPage, PrivacyPolicyPage } from "./components/pages/LegalPages";
 import { LandingPage } from "./components/pages/LandingPage";
 import { InstallAppButton } from "./components/ui/InstallAppButton";
@@ -165,6 +167,7 @@ const navGroups = [
     label: "Team & Assets",
     items: [
       { id: "employees", label: "Employees", icon: Users2      },
+      { id: "hiring",    label: "Hiring",    icon: UserCheck   },
       { id: "fleet",     label: "Fleet",     icon: Truck       },
       { id: "chemicals", label: "Chemicals & Equipment", icon: FlaskConical},
     ],
@@ -473,6 +476,10 @@ export function App() {
     // Embed Code"). No owner session/auth — see LeadFormPage.tsx for why it
     // deliberately never reads app_settings (secrets exposure).
     if (hash === "lead-form" || hash.startsWith("lead-form?")) return "lead-form";
+    // FEATURE — public, unauthenticated job-application form (see
+    // HiringPage.tsx's "Apply Link"). Same no-app_settings-read reasoning as
+    // lead-form/trash-cans above.
+    if (hash === "apply" || hash.startsWith("apply?")) return "apply";
     // FEATURE (round 13, items 16-18) — public, unauthenticated Trash Can
     // Cleaning signup form. Same reasoning as lead-form above (no app_settings
     // read — see TrashCanSignupPage.tsx).
@@ -517,7 +524,7 @@ export function App() {
     if (hash === "features") return "features";
     if (hash === "pricing") return "pricing";
     if (hash === "about") return "about";
-    const valid = ["dashboard","alfred","inbox","notifications","customers","estimates","invoices","pipeline","intake","jobs","calendar","crew","campaigns","reviews","automations","social","referrals","promotions","trashcans","sops","expenses","reports","analytics","budget","personal","accountability","employees","fleet","chemicals","google","portal","reset-password","client","referral","rate","welcome","login","features","pricing","about"];
+    const valid = ["dashboard","alfred","inbox","notifications","customers","estimates","invoices","pipeline","intake","jobs","calendar","crew","campaigns","reviews","automations","social","referrals","promotions","trashcans","sops","expenses","reports","analytics","budget","personal","accountability","employees","hiring","fleet","chemicals","google","portal","reset-password","client","referral","rate","welcome","login","features","pricing","about"];
     return valid.includes(hash) ? hash : "dashboard";
   });
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -804,13 +811,14 @@ export function App() {
 
   // Listen for browser back/forward
   useEffect(() => {
-    const valid = ["dashboard","alfred","inbox","notifications","customers","estimates","invoices","pipeline","intake","jobs","calendar","crew","campaigns","reviews","automations","social","referrals","promotions","trashcans","sops","expenses","reports","analytics","budget","personal","accountability","employees","fleet","chemicals","google","portal","reset-password","client","referral","rate","lead-form","trash-cans","terms","privacy","welcome","login","features","pricing","about"];
+    const valid = ["dashboard","alfred","inbox","notifications","customers","estimates","invoices","pipeline","intake","jobs","calendar","crew","campaigns","reviews","automations","social","referrals","promotions","trashcans","sops","expenses","reports","analytics","budget","personal","accountability","employees","hiring","fleet","chemicals","google","portal","reset-password","client","referral","rate","lead-form","trash-cans","apply","terms","privacy","welcome","login","features","pricing","about"];
     const handler = () => {
       const hash = window.location.hash.replace(/^#\/?/, "").split("?")[0];
       if (hash === "portal" || hash.startsWith("portal/")) { setPage("portal"); return; }
       if (hash === "referral" || hash.startsWith("r/")) { setPage("referral"); return; }
       if (hash === "rate" || hash.startsWith("rate?")) { setPage("rate"); return; }
       if (hash === "lead-form" || hash.startsWith("lead-form?")) { setPage("lead-form"); return; }
+      if (hash === "apply" || hash.startsWith("apply?")) { setPage("apply"); return; }
       if (hash === "terms" || hash.startsWith("terms?")) { setPage("terms"); return; }
       if (hash === "privacy" || hash.startsWith("privacy?")) { setPage("privacy"); return; }
       if (hash.startsWith("estimate/")) { setPage("estimate"); return; }
@@ -3024,6 +3032,12 @@ export function App() {
     return <TrashCanSignupPage />;
   }
 
+  // ── Public job application form — no auth. See ApplyPage.tsx and
+  // HiringPage.tsx's "Apply Link". URL: #/apply?oid=OWNER_ID&co=COMPANY_NAME
+  if (page === "apply") {
+    return <ApplyPage />;
+  }
+
   // ── Public legal pages — no auth, required as live HTTPS links for Twilio
   // A2P 10DLC campaign registration. See LegalPages.tsx.
   if (page === "terms") {
@@ -3770,6 +3784,7 @@ export function App() {
                 {page === "alfred"         && (managerBlocked("alfred") ? <RestrictedNotice label="Alfred AI" /> : <AlfredPage conversations={alfredConversations} setConversations={setAlfredConversations} activeConvId={activeConvId} setActiveConvId={setActiveConvId} memory={alfredMemory} setMemory={setAlfredMemory} personality={personality} setPersonality={setPersonality} apiKey={settings.anthropicKey ?? settings.geminiKey ?? ""} openSettings={() => setSettingsOpen(true)} toast={toast} jobs={jobs} setJobs={setJobs} estimates={estimates} setEstimates={setEstimates} customers={customers} setCustomers={setCustomers} employees={employees} automations={automations} setAutomations={setAutomations} stats={{ totalRev, activeJobs, pendingEst, closeRate, doneMonth }} setWins={setWins} goals={goalsList} setGoals={setGoalsList} setSettings={setSettings} settings={settings} modelStatus={modelStatus} setModelStatus={setModelStatus} onNav={setPage} onSpotlight={queueAlfredSpotlight} expenses={expenses} setExpenses={setExpenses} ownerId={crmUserId} />)}
                 {page === "google"         && (managerBlocked("google") ? <RestrictedNotice label="Google Workspace" /> : <GoogleWorkspacePage settings={settings} setSettings={setSettings} googleData={googleData as any} setGoogleData={setGoogleData} customers={customers} setCustomers={setCustomers} jobs={jobs} toast={toast} onNav={setPage} />)}
                 {page === "employees"      && <EmployeesPage employees={employees} setEmployees={setEmployees} jobs={jobs} setJobs={setJobs} customers={customers} settings={settings} toast={toast} autoOpenManagerInvite={autoOpenManagerInvite} onAutoOpenManagerInviteConsumed={() => setAutoOpenManagerInvite(false)} initialView={employeesInitialView} onInitialViewConsumed={() => setEmployeesInitialView(undefined)} ownerId={crmUserId} />}
+                {page === "hiring"         && <HiringPage settings={settings} setSettings={setSettings} toast={toast} ownerId={crmUserId} onNav={setPage} />}
                 {page === "fleet"          && <FleetPage vehicles={vehicles} setVehicles={setVehicles} maintenance={maintenance} setMaintenance={setMaintenance} toast={toast} />}
                 {page === "expenses"       && <ExpensesPage expenses={expenses} setExpenses={setExpenses} />}
                 {page === "chemicals"      && <ChemicalsPage chemicals={chemicals} setChemicals={setChemicals} toast={toast} settings={settings} />}

@@ -194,6 +194,17 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
       });
     }
 
+    // ── ApplyPage.tsx (#/apply) submit — see migration
+    // 0049_hiring_candidates.sql. Same public-write pattern as
+    // submit_lead_form/submit_trashcan_signup below.
+    if (action === "submit_job_application") {
+      const { ownerId, candidate } = body;
+      if (!ownerId || !candidate) return json({ error: "Missing ownerId/candidate" }, 400);
+      const insert = await sb(serviceRoleKey, `candidates`, { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify({ ...candidate, owner_id: ownerId }) });
+      if (!insert.ok) return json({ error: "Failed to submit application" }, 500);
+      return json({ success: true });
+    }
+
     // ── LeadFormPage.tsx (#/lead-form) submit — same class of bug as
     // trash-can signup below: a direct anon-key insert with no owner_id had
     // nothing to satisfy owner_id-scoped RLS's WITH CHECK once that policy
