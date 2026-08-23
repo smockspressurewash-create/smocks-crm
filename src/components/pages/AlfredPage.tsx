@@ -95,7 +95,7 @@ import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 // selected — the personality never actually reached the model at all.
 const getPersonality = (id: string) => personalities.find(p => p.id === id) || personalities[0];
 
-export function AlfredPage({ conversations, setConversations, activeConvId, setActiveConvId, memory = [], setMemory, personality, setPersonality, apiKey, openSettings, toast, jobs = [], setJobs, estimates = [], setEstimates, customers = [], setCustomers, employees = [], automations = [], setAutomations = () => {}, stats, setWins, goals = [], setGoals, setSettings, settings = {} as AppSettings, modelStatus = {}, setModelStatus = () => {}, onNav, onSpotlight, expenses = [], setExpenses, entries = [], ownerId = "" }: { conversations?: any; setConversations?: any; activeConvId?: any; setActiveConvId?: any; memory?: any; setMemory?: any; personality?: any; setPersonality?: any; apiKey?: any; openSettings?: any; toast?: any; jobs?: any; setJobs?: any; estimates?: any; setEstimates?: any; customers?: any; setCustomers?: any; employees?: any; automations?: any; setAutomations?: any; stats?: any; setWins?: any; goals?: any; setGoals?: any; setSettings?: any; settings?: AppSettings; modelStatus?: any; setModelStatus?: any; onNav?: any; onSpotlight?: (step: { page: string; type?: string; id?: string; label?: string }) => void; expenses?: any[]; setExpenses?: any; entries?: any[]; ownerId?: string }) {
+export function AlfredPage({ conversations, setConversations, activeConvId, setActiveConvId, memory = [], setMemory, personality, setPersonality, apiKey, openSettings, toast, jobs = [], setJobs, estimates = [], setEstimates, customers = [], setCustomers, employees = [], automations = [], setAutomations = () => {}, stats, setWins, goals = [], setGoals, setSettings, settings = {} as AppSettings, modelStatus = {}, setModelStatus = () => {}, onNav, onSpotlight, expenses = [], setExpenses, entries = [], chemicals = [], ownerId = "" }: { conversations?: any; setConversations?: any; activeConvId?: any; setActiveConvId?: any; memory?: any; setMemory?: any; personality?: any; setPersonality?: any; apiKey?: any; openSettings?: any; toast?: any; jobs?: any; setJobs?: any; estimates?: any; setEstimates?: any; customers?: any; setCustomers?: any; employees?: any; automations?: any; setAutomations?: any; stats?: any; setWins?: any; goals?: any; setGoals?: any; setSettings?: any; settings?: AppSettings; modelStatus?: any; setModelStatus?: any; onNav?: any; onSpotlight?: (step: { page: string; type?: string; id?: string; label?: string }) => void; expenses?: any[]; setExpenses?: any; entries?: any[]; chemicals?: any[]; ownerId?: string }) {
   const [input, setInput] = useState("");
   const [voiceMode, setVoiceMode] = useState<"dictate" | "note">("dictate");
   const [loading, setLoading] = useState(false);
@@ -1891,6 +1891,35 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
             total_employees: employees.length
           };
         }
+        case "text_supplier": {
+          // FEATURE — scoped, sandboxed supplier outreach. Deliberately
+          // text-only: this app has no vendor-payment infrastructure (no
+          // stored vendor payment methods, no "pay a supplier" flow
+          // anywhere), so there is nothing safe to automate beyond sending
+          // a message a real person on the other end has to act on. The
+          // tool description above already tells the model never to use
+          // this for placing an order/authorizing payment, and to always
+          // get explicit confirmation of the exact text first — this is the
+          // last line of defense if that's skipped somehow.
+          const item = (chemicals || []).find((c: any) => (c.name || "").toLowerCase().trim() === String(inputs.itemName || "").toLowerCase().trim())
+            || (chemicals || []).find((c: any) => (c.name || "").toLowerCase().includes(String(inputs.itemName || "").toLowerCase().trim()));
+          if (!item) return { error: `No chemical/equipment item found named "${inputs.itemName}". Check Chemicals & Equipment for the exact name.` };
+          const suppliers = (item.suppliers || []).filter((s: any) => s.phone);
+          if (suppliers.length === 0) return { error: `"${item.name}" has no supplier phone number on file — add one in Chemicals & Equipment first.` };
+          const supplier = inputs.supplierName
+            ? suppliers.find((s: any) => (s.name || "").toLowerCase().includes(String(inputs.supplierName).toLowerCase()))
+            : suppliers[0];
+          if (!supplier) return { error: `No supplier named "${inputs.supplierName}" on "${item.name}". Suppliers on file: ${suppliers.map((s: any) => s.name).join(", ")}` };
+          if (!inputs.message?.trim()) return { error: "message is required — the exact text to send." };
+          try {
+            await withTimeout(twilioSend(settings as any, supplier.phone, inputs.message), 15000, "Supplier SMS");
+          } catch (e: any) {
+            return { error: "Failed to send — " + (e?.message || "unknown error") };
+          }
+          logOutboundSmsToInbox({ contactName: supplier.name || "Supplier", contactPhone: supplier.phone, body: inputs.message }).catch(() => {});
+          toast("Alfred texted " + (supplier.name || "supplier") + " re: " + item.name);
+          return { success: true, supplier: supplier.name, phone: supplier.phone, sent: inputs.message };
+        }
         case "switch_ai_model": {
           const wanted = String(inputs.provider || "").toLowerCase().trim();
           const entry = Object.values(MODELS).find((m: any) =>
@@ -2228,6 +2257,11 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
       name: "get_business_stats",
       description: "Get current live business KPIs.",
       input_schema: { type: "object", properties: {} }
+    },
+    {
+      name: "text_supplier",
+      description: "Send a real SMS to a chemical/equipment supplier's phone number (from Chemicals & Equipment → that item's Suppliers list). Use this ONLY for outreach — asking about stock, pricing, or availability, or requesting a callback — NEVER to place an order or authorize any purchase/payment; this app has no way to actually complete a purchase or move money to a vendor. ALWAYS show the user the exact message text and get an explicit 'yes, send it' before calling this tool — never send unconfirmed.",
+      input_schema: { type: "object", properties: { itemName: { type: "string", description: "The chemical/equipment item name, e.g. 'Sodium Hypochlorite'" }, supplierName: { type: "string", description: "Optional — which supplier on that item to text, if it has more than one" }, message: { type: "string", description: "The exact SMS text to send" } }, required: ["itemName", "message"] }
     },
     {
       name: "navigate_to",
