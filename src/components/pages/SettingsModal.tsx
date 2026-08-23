@@ -91,7 +91,7 @@ const isValidHttpsUrl = (value: string): boolean => {
   }
 };
 
-export function SettingsModal({ open, onClose, settings, setSettings, jobs = [], setJobs = (() => {}) as any, services, setServices, emailTemplates, setEmailTemplates, smsTemplates, setSmsTemplates, estimateTemplates = [], setEstimateTemplates = (() => {}) as any, modelStatus = {}, setModelStatus = (() => {}) as any, employees = [], toast, onSignOut, restrictToProfile = false, onAddManager }: { open?: any; onClose?: any; settings?: any; setSettings?: any; jobs?: any[]; setJobs?: any; services?: any; setServices?: any; emailTemplates?: any; setEmailTemplates?: any; smsTemplates?: any; setSmsTemplates?: any; estimateTemplates?: any[]; setEstimateTemplates?: any; modelStatus?: any; setModelStatus?: any; employees?: any[]; toast?: any; onSignOut?: () => void; restrictToProfile?: boolean; onAddManager?: () => void }) {
+export function SettingsModal({ open, onClose, settings, setSettings, jobs = [], setJobs = (() => {}) as any, customers = [], estimates = [], campaigns = [], services, setServices, emailTemplates, setEmailTemplates, smsTemplates, setSmsTemplates, estimateTemplates = [], setEstimateTemplates = (() => {}) as any, modelStatus = {}, setModelStatus = (() => {}) as any, employees = [], toast, onSignOut, restrictToProfile = false, onAddManager }: { open?: any; onClose?: any; settings?: any; setSettings?: any; jobs?: any[]; setJobs?: any; customers?: any[]; estimates?: any[]; campaigns?: any[]; services?: any; setServices?: any; emailTemplates?: any; setEmailTemplates?: any; smsTemplates?: any; setSmsTemplates?: any; estimateTemplates?: any[]; setEstimateTemplates?: any; modelStatus?: any; setModelStatus?: any; employees?: any[]; toast?: any; onSignOut?: () => void; restrictToProfile?: boolean; onAddManager?: () => void }) {
   const [f, setF] = useState(settings);
   const [sec, setSec] = useState(restrictToProfile ? "profile" : "api");
   // Per-owner Stripe keys (Phase F, multi-tenant) — deliberately NOT part of
@@ -552,34 +552,49 @@ export function SettingsModal({ open, onClose, settings, setSettings, jobs = [],
             </Glass>
           </div>}
 
-          {sec === "audit" && <div className="space-y-3">
-            <h4 className="font-semibold text-sm flex items-center gap-2"><Shield size={14} className="text-red-400" />Audit Log</h4>
-            <div className="text-xs text-white/50">Recent system events and data changes.</div>
-            <div className="space-y-1.5">
-              {[
-                { ts: new Date(Date.now() - 300000).toLocaleString(), action: "Settings saved", user: "Will", detail: "Updated company name + Twilio credentials" },
-                { ts: new Date(Date.now() - 900000).toLocaleString(), action: "Estimate created", user: "Will", detail: "Estimate #X7K2 for Jennifer Walsh — $742.00" },
-                { ts: new Date(Date.now() - 1800000).toLocaleString(), action: "Job marked complete", user: "Will", detail: "Job at 412 Oak Ridge Ln → Completed" },
-                { ts: new Date(Date.now() - 3600000).toLocaleString(), action: "Customer added", user: "Will", detail: "Lead intake: Mike Harrison from Nextdoor" },
-                { ts: new Date(Date.now() - 7200000).toLocaleString(), action: "Invoice sent", user: "Will", detail: "Invoice $1,100 sent to Mike Harrison" },
-                { ts: new Date(Date.now() - 86400000).toLocaleString(), action: "Automation triggered", user: "System", detail: "Post-job review request sent — Jennifer Walsh" },
-                { ts: new Date(Date.now() - 86400000 * 2).toLocaleString(), action: "Campaign sent", user: "Will", detail: "SMS blast to 24 customers — Spring Special" },
-              ].map((e, i) => (
-                <div key={i} className="flex items-start gap-3 p-2.5 bg-black/40 border border-white/5 rounded-xl text-xs">
-                  <div className="w-1.5 h-1.5 rounded-full bg-red-500 mt-1.5 flex-shrink-0" />
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <span className="font-semibold">{e.action}</span>
-                      <span className="text-[9px] px-1.5 py-0.5 bg-white/5 rounded text-white/40">{e.user}</span>
+          {sec === "audit" && (() => {
+            // BUG FIX — this used to be entirely fabricated placeholder data
+            // (a fake "Estimate #X7K2 for Jennifer Walsh" etc.), not a real
+            // log of anything that actually happened — misleading regardless
+            // of the "cut off" complaint. There's no dedicated audit_log
+            // table yet, but every event type shown below already exists as
+            // a real timestamp on data already loaded (jobs/estimates/
+            // customers/campaigns), so this derives real recent activity
+            // from that instead of inventing any of it.
+            const custName = (id: any) => { const c = customers.find((x: any) => x.id === id); return c ? `${c.firstName || ""} ${c.lastName || ""}`.trim() : "a customer"; };
+            const events: { ts: number; action: string; detail: string }[] = [
+              ...jobs.filter((j: any) => j.completedAt).map((j: any) => ({ ts: new Date(j.completedAt).getTime(), action: "Job completed", detail: `${custName(j.customerId)} — ${j.address || ""} (${fmt(j.amount || 0)})` })),
+              ...jobs.filter((j: any) => j.cancelledAt).map((j: any) => ({ ts: new Date(j.cancelledAt).getTime(), action: "Job cancelled", detail: `${custName(j.customerId)} — ${j.address || ""}` })),
+              ...estimates.filter((e: any) => e.paidAt).map((e: any) => ({ ts: new Date(e.paidAt).getTime(), action: e.invoiced ? "Invoice paid" : "Estimate paid", detail: `${custName(e.customerId)} — ${fmt(e.total || 0)}` })),
+              ...estimates.filter((e: any) => e.invoicedAt).map((e: any) => ({ ts: new Date(e.invoicedAt).getTime(), action: "Invoice sent", detail: `${custName(e.customerId)} — ${fmt(e.total || 0)}` })),
+              ...estimates.filter((e: any) => !e.invoiced && e.createdAt).map((e: any) => ({ ts: new Date(e.createdAt).getTime(), action: "Estimate created", detail: `${custName(e.customerId)} — ${fmt(e.total || 0)}` })),
+              ...customers.filter((c: any) => c.createdAt).map((c: any) => ({ ts: new Date(c.createdAt).getTime(), action: "Customer added", detail: `${c.firstName || ""} ${c.lastName || ""}`.trim() + (c.leadSource ? ` via ${c.leadSource}` : "") })),
+              ...campaigns.filter((cp: any) => cp.sentAt || cp.createdAt).map((cp: any) => ({ ts: new Date(cp.sentAt || cp.createdAt).getTime(), action: "Campaign sent", detail: `${cp.name || "Campaign"} — ${cp.recipientCount ?? cp.sent ?? "?"} recipient(s)` })),
+            ]
+              .filter(e => Number.isFinite(e.ts) && e.ts > 0)
+              .sort((a, b) => b.ts - a.ts)
+              .slice(0, 25);
+            return (
+              <div className="space-y-3">
+                <h4 className="font-semibold text-sm flex items-center gap-2"><Shield size={14} className="text-red-400" />Audit Log</h4>
+                <div className="text-xs text-white/50">Real recent activity, derived from your jobs, estimates, customers, and campaigns.</div>
+                <div className="space-y-1.5">
+                  {events.length === 0 && <div className="text-center py-8 text-xs text-white/30">No activity yet — this fills in as jobs complete, invoices go out, and customers are added.</div>}
+                  {events.map((e, i) => (
+                    <div key={i} className="flex items-start gap-3 p-2.5 bg-black/40 border border-white/5 rounded-xl text-xs">
+                      <div className="w-1.5 h-1.5 rounded-full bg-red-500 mt-1.5 flex-shrink-0" />
+                      <div className="flex-1 min-w-0">
+                        <div className="font-semibold">{e.action}</div>
+                        <div className="text-white/50 mt-0.5">{e.detail}</div>
+                        <div className="text-[10px] text-white/30 mt-0.5">{new Date(e.ts).toLocaleString()}</div>
+                      </div>
                     </div>
-                    <div className="text-white/50 mt-0.5">{e.detail}</div>
-                    <div className="text-[10px] text-white/30 mt-0.5">{e.ts}</div>
-                  </div>
+                  ))}
                 </div>
-              ))}
-            </div>
-            <div className="text-[10px] text-white/30 text-center">Showing last 7 events · Full audit log export coming in v2</div>
-          </div>}
+                {events.length > 0 && <div className="text-[10px] text-white/30 text-center">Showing last {events.length} event{events.length !== 1 ? "s" : ""}</div>}
+              </div>
+            );
+          })()}
 
           {sec === "models" && <AIModelsSection f={f} setF={setF} modelStatus={modelStatus} setModelStatus={setModelStatus} employees={employees} toast={toast} />}
 
@@ -1776,6 +1791,24 @@ export function SettingsModal({ open, onClose, settings, setSettings, jobs = [],
               <div className="flex-1 min-w-0 pr-3"><div className="text-sm font-medium">{n.label}</div><div className="text-[10px] text-white/50">{n.desc}</div></div>
               <button onClick={() => setF({ ...f, [n.k]: !f[n.k] })} className={"transition " + (f[n.k] ? "text-red-400" : "text-white/30")}>{f[n.k] ? <ToggleRight size={28} /> : <ToggleLeft size={28} />}</button>
             </div>)}
+
+            {/* BUG FIX — dailyBriefingAutoSend/weeklyDigestAutoSend have
+                driven real automatic email sends in App.tsx for a while
+                (opt-out flags — undefined/true means "on"), but neither had
+                any Settings control to actually see or turn off, so "email
+                frequency" was invisible/unmanageable to the owner even
+                though the feature itself worked. */}
+            <div className="pt-3 border-t border-red-900/20">
+              <div className="font-semibold text-sm mb-2">📧 Email Digests</div>
+              {[
+                { k: "dailyBriefingAutoSend", label: "Daily end-of-day summary", desc: "Emailed automatically after 6pm each day jobs ran — revenue, completions, and what's ahead" },
+                { k: "weeklyDigestAutoSend", label: "Weekly owner digest", desc: "Emailed automatically every Monday morning — goal progress, overdue invoices, upcoming jobs" },
+              ].map(n => <div key={n.k} className="flex items-center justify-between p-3 bg-black/40 border border-red-900/20 rounded-xl mb-2">
+                <div className="flex-1 min-w-0 pr-3"><div className="text-sm font-medium">{n.label}</div><div className="text-[10px] text-white/50">{n.desc}</div></div>
+                <button onClick={() => setF({ ...f, [n.k]: f[n.k] === false ? true : false })} className={"transition " + (f[n.k] !== false ? "text-red-400" : "text-white/30")}>{f[n.k] !== false ? <ToggleRight size={28} /> : <ToggleLeft size={28} />}</button>
+              </div>)}
+              <div className="text-[10px] text-white/30">Sent to your Business Email above (or your account email if that's blank). On by default — turn either off if it's too much.</div>
+            </div>
 
             <div className="pt-3 border-t border-red-900/20">
               <div className="font-semibold text-sm mb-2">📱 Social Automation</div>

@@ -3765,6 +3765,9 @@ export function App() {
         setSettings={setSettings}
         jobs={jobs}
         setJobs={setJobs}
+        customers={customers}
+        estimates={estimates}
+        campaigns={campaigns}
         services={services}
         setServices={setServices}
         emailTemplates={emailTemplates}
