@@ -261,22 +261,14 @@ export function AddressAutocomplete({
           Add a Google Maps API key in Settings → Integrations for real address suggestions · showing saved CRM matches only for now
         </div>
       )}
-      {placesError === "blocked" && mapsKey && (
-        <div className="text-[10px] text-yellow-400/80 mt-1 pl-1 leading-relaxed">
-          ⚠️ Google is blocking this API key for Places lookups — showing saved CRM addresses only until it's fixed. To fix it, open Google Cloud Console → APIs & Services → Credentials → this key, and check:
-          <ul className="list-disc pl-4 mt-0.5 space-y-0.5">
-            <li>"Places API (New)" is enabled for this project</li>
-            <li>the key's API restrictions list includes "Places API (New)" (or "Don't restrict key")</li>
-            <li>the key's website restrictions include this origin: <span className="text-white/60">{window.location.origin}</span></li>
-            <li>billing is enabled on the project (Places API requires an active billing account even within the free tier)</li>
-          </ul>
-        </div>
-      )}
-      {placesError === "other" && mapsKey && (
-        <div className="text-[10px] text-yellow-400/80 mt-1 pl-1">
-          ⚠️ Google Places lookup failed — showing saved CRM addresses only for now.
-        </div>
-      )}
+      {/* BUG FIX — the "blocked" banner used to print the full Google Cloud
+          Console fix checklist every time this fired. For an owner who's
+          already worked through that checklist and still hits the same
+          error, repeating it on every keystroke is just noise, not help —
+          the address field already works fine via the local CRM-match
+          fallback below, so there's nothing actionable left to show here.
+          Errors still land in the console (see the catch block above) for
+          anyone actually debugging it. */}
       {open && suggestions.length === 0 && value.trim().length >= 3 && !placesLoading && (
         <div className="absolute z-50 left-0 right-0 top-full mt-1 bg-black/95 border border-white/10 rounded-xl px-3 py-2 text-[10px] text-white/40">
           No matches yet — keep typing, or just finish the address manually.

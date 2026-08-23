@@ -1140,10 +1140,23 @@ export function App() {
             // supabaseDegraded banner above is built to detect (paused
             // project / usage quota) — point the owner at the same place.
             const isSchemaErr = /relation .* does not exist/i.test(firstErr?.message || "") || /on conflict/i.test(firstErr?.message || "");
+            const isTimeout = /timed out/i.test(firstErr?.message || "");
+            const sizeKb = Math.round(json.length / 1024);
+            // BUG FIX — this used to always suggest "check your Supabase
+            // project isn't paused or over its usage quota" even on a plain
+            // timeout, which is misleading when usage is actually fine (the
+            // far more common cause of a slow settings save is just the size
+            // of the payload — this blob holds every template/logo/photo in
+            // one JSONB object — or a slow connection, neither of which is a
+            // quota problem). Only suggest the quota/paused explanation for
+            // errors that actually look account-related; a timeout gets a
+            // size-aware hint instead.
             const hint = isSchemaErr
               ? " — run supabase/migrations/0011_owner_settings_and_alfred_schema_fixes.sql in the Supabase SQL editor"
+              : isTimeout
+              ? ` — settings payload is ${sizeKb}KB; a slow/unstable connection or a large embedded image (logo, template photo) is the most likely cause, not your Supabase account. Will retry automatically on the next change.`
               : " — if this keeps happening, check your Supabase project isn't paused or over its usage quota (Supabase dashboard → Usage)";
-            console.warn("[Settings Sync] error:", firstErr?.message + hint);
+            console.warn("[Settings Sync] error:", firstErr?.message + hint, `(payload ${sizeKb}KB)`);
             toast("Settings saved to this device but not to the server — " + (firstErr?.message || "check connection") + hint, "red");
             return;
           }
@@ -1160,8 +1173,9 @@ export function App() {
             }
             throw new Error(r2.error.message);
           } catch (secondErr: any) {
+            const isTimeout2 = /timed out/i.test(secondErr?.message || "");
             console.warn("[Settings Sync] error (both attempts failed):", secondErr?.message);
-            toast("Settings saved to this device but not to the server — " + (secondErr?.message || "check connection") + " — if this keeps happening, check your Supabase project isn't paused or over its usage quota (Supabase dashboard → Usage)", "red");
+            toast("Settings saved to this device but not to the server — " + (secondErr?.message || "check connection") + (isTimeout2 ? " — likely a slow/unstable connection, not your Supabase account. Will retry on the next change." : " — if this keeps happening, check your Supabase project isn't paused or over its usage quota (Supabase dashboard → Usage)"), "red");
           }
         }
       })();
