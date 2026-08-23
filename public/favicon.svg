@@ -10,16 +10,17 @@
        joint cleanly. Angle down-and-out to a hand resting just under each
        letter, like holding a sign up from below. -->
   <g stroke="#ffffff" stroke-width="6.5" stroke-linecap="round">
-    <path d="M25 34 L13 44" fill="none"/>
-    <path d="M39 34 L51 44" fill="none"/>
+    <path d="M25 34 L11 44" fill="none"/>
+    <path d="M39 34 L53 44" fill="none"/>
   </g>
-  <circle cx="12" cy="45" r="4.2" fill="#ffffff"/>
-  <circle cx="52" cy="45" r="4.2" fill="#ffffff"/>
+  <circle cx="9" cy="45" r="4.2" fill="#ffffff"/>
+  <circle cx="55" cy="45" r="4.2" fill="#ffffff"/>
   <!-- Flat rounded mascot silhouette (narrow, matching the reference avatar
        style), sized to leave room for the large C/B on either side -->
   <circle cx="32" cy="16" r="6.5" fill="#ffffff"/>
   <path d="M23 46 C23 33 27 28 32 28 C37 28 41 33 41 46 C41 51 37 53 32 53 C27 53 23 51 23 46 Z" fill="#ffffff"/>
-  <!-- Large, high-contrast C and B, pushed out wide and resting on the hands -->
-  <text x="10" y="41" font-family="Arial, Helvetica, sans-serif" font-weight="900" font-size="29" fill="#ffffff" text-anchor="middle">C</text>
-  <text x="54" y="41" font-family="Arial, Helvetica, sans-serif" font-weight="900" font-size="29" fill="#ffffff" text-anchor="middle">B</text>
+  <!-- Large, high-contrast C and B, pushed further out to the edges and
+       bigger than before, still resting on the hands -->
+  <text x="8" y="42" font-family="Arial, Helvetica, sans-serif" font-weight="900" font-size="32" fill="#ffffff" text-anchor="middle">C</text>
+  <text x="56" y="42" font-family="Arial, Helvetica, sans-serif" font-weight="900" font-size="32" fill="#ffffff" text-anchor="middle">B</text>
 </svg>
