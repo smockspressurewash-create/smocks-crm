@@ -1,11 +1,10 @@
 import React, { useState } from "react";
 import { CheckCircle } from "lucide-react";
-import { supabase } from "../../lib/supabase";
 import { uid, today } from "../../lib/utils";
 
 // Public-facing lead intake form — no auth required, meant to be embedded via
 // iframe on the owner's own website (see LeadIntakePage.tsx's "Get Embed
-// Code"). URL: #/lead-form?co=COMPANY_NAME&ph=COMPANY_PHONE
+// Code"). URL: #/lead-form?oid=OWNER_ID&co=COMPANY_NAME&ph=COMPANY_PHONE
 //
 // FIX 18 — the previous embed code pointed at a hardcoded, nonexistent URL
 // ("https://smocks.com/lead-form") that isn't part of this app at all —
@@ -13,16 +12,19 @@ import { uid, today } from "../../lib/utils";
 // so leads submitted through it could never reach the CRM. This is a real
 // route in this app, reachable standalone with no owner session.
 //
-// This inserts DIRECTLY into Supabase's `customers` table (single-tenant per
-// deployment — see CLAUDE.md — so there's exactly one business per Supabase
-// project, no owner_id needed to route the write to the right account).
-// Deliberately does NOT read `app_settings` — that table holds live secrets
-// (Twilio auth token, Stripe secret key, Google OAuth token, AI API keys)
-// behind a permissive `USING (true)` RLS policy; exposing it to an
-// unauthenticated public page would leak every one of those to anyone who
-// opens the embed's network tab. Company name/phone are passed as plain,
-// non-secret query params instead (baked into the embed snippet at copy
-// time, from the owner's own already-loaded settings).
+// MULTI-TENANT (Phase D) — was a direct anon-key `.from("customers").insert()`
+// with no owner_id, on the theory that this app is single-tenant per
+// deployment. Once RLS went owner_id-scoped (0033_multitenant_owner_scoping.sql)
+// that had nothing to satisfy WITH CHECK, so every public lead submission was
+// silently rejected. Routed through /api/public-data's submit_lead_form
+// action (service role) instead, same pattern as submit_review/
+// submit_trashcan_signup. Deliberately does NOT read `app_settings` directly
+// — that table holds live secrets (Twilio auth token, Stripe secret key,
+// Google OAuth token, AI API keys) behind a permissive RLS policy; exposing
+// it to an unauthenticated public page would leak every one of those to
+// anyone who opens the embed's network tab. Company name/phone are passed as
+// plain, non-secret query params instead (baked into the embed snippet at
+// copy time, from the owner's own already-loaded settings).
 
 function hashParam(key: string): string {
   const hash = window.location.hash;
@@ -38,6 +40,7 @@ const COMMON_SERVICES = ["Pressure Washing", "House Washing", "Roof Cleaning", "
 const isHex = (v: string) => /^#[0-9a-fA-F]{3,8}$/.test(v);
 
 export function LeadFormPage() {
+  const ownerId = hashParam("oid");
   const companyName = decodeURIComponent(hashParam("co") || "") || "Get a Free Quote";
   const companyPhone = decodeURIComponent(hashParam("ph") || "");
   const bgParam = hashParam("bg");
@@ -81,19 +84,20 @@ export function LeadFormPage() {
         utmSource: utmParams.utm_source, utmMedium: utmParams.utm_medium, utmCampaign: utmParams.utm_campaign,
         smsOptIn: true, smsOptInAt: new Date().toISOString(),
       };
-      console.log("[LeadForm] submitting new lead:", newCustomer.firstName, newCustomer.lastName);
-      let { error: insertError } = await (supabase as any).from("customers").insert(newCustomer);
-      if (insertError) {
-        // BUG FIX — smsOptIn/smsOptInAt (migration 0025) not existing yet
-        // would otherwise reject the WHOLE lead insert, losing a real lead
-        // entirely rather than just the opt-in timestamp.
-        console.warn("[LeadForm] insert failed:", insertError.message, "— retrying without smsOptIn columns");
-        const { smsOptIn, smsOptInAt, ...coreCustomer } = newCustomer as any;
-        const retry = await (supabase as any).from("customers").insert(coreCustomer);
-        insertError = retry.error;
+      if (!ownerId) {
+        console.error("[LeadForm] no oid in URL — this embed link predates owner routing, re-copy it from Lead Intake → Get Embed Code");
+        setError("This form isn't fully set up yet — please call or text us instead.");
+        setSubmitting(false);
+        return;
       }
-      if (insertError) {
-        console.error("[LeadForm] insert failed:", insertError.message);
+      console.log("[LeadForm] submitting new lead:", newCustomer.firstName, newCustomer.lastName);
+      const res = await fetch("/api/public-data", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "submit_lead_form", ownerId, customer: newCustomer }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok || data?.error) {
+        console.error("[LeadForm] submit failed:", data?.error || res.status);
         setError("Something went wrong submitting your request — please call or text us instead.");
         setSubmitting(false);
         return;

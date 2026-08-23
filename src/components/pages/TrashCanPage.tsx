@@ -295,6 +295,10 @@ export function TrashCanPage({ jobs = [], customers = [], settings = {} as AppSe
           lineItems: [lineItem], subtotal: feeAmount, discount: 0, depositRequired: 0, tax: 0, total: feeAmount,
           status: "approved" as const, createdAt: today(), validUntil: daysFromNow(30),
           invoiced: true, invoicedAt: today(), standalone: true,
+          // BUG FIX — missing owner_id violated the owner_id-scoped RLS
+          // policy added by the multi-tenant migration, silently rejecting
+          // every trash-can inconvenience-fee invoice insert.
+          owner_id: ownerId,
         };
         const { error } = await (supabase as any).from("estimates").insert(newInv);
         if (error) throw new Error(error.message);

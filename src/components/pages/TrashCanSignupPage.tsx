@@ -1,6 +1,5 @@
 import React, { useState, useEffect } from "react";
 import { CheckCircle, Trash2, CreditCard } from "lucide-react";
-import { supabase } from "../../lib/supabase";
 import { uid, today } from "../../lib/utils";
 import { loadStripeJs, createStripeCustomer, createSetupIntent } from "../../lib/stripe";
 
@@ -144,14 +143,6 @@ export function TrashCanSignupPage() {
         smsOptIn: true, smsOptInAt: new Date().toISOString(),
         ...(stripeCustomerIdRef.current ? { stripeCustomerId: stripeCustomerIdRef.current, savedPaymentMethodId: paymentMethodIdRef.current, savedPaymentMethodLabel: "Card on file" } : {}),
       };
-      let { error: custErr } = await (supabase as any).from("customers").insert(newCustomer);
-      if (custErr) {
-        const { smsOptIn: _a, smsOptInAt: _b, stripeCustomerId: _c, savedPaymentMethodId: _d, savedPaymentMethodLabel: _e, ...core } = newCustomer;
-        const retry = await (supabase as any).from("customers").insert(core);
-        custErr = retry.error;
-      }
-      if (custErr) throw new Error(custErr.message);
-
       const isRecurring = frequency !== "onetime";
       const recurringFreq = frequency === "onetime" ? undefined : frequency;
       const newJob: any = {
@@ -162,8 +153,17 @@ export function TrashCanSignupPage() {
         isRecurring, ...(recurringFreq ? { recurringFreq, recurringMode: "preset" } : {}),
         createdAt: today(),
       };
-      const { error: jobErr } = await (supabase as any).from("jobs").insert(newJob);
-      if (jobErr) throw new Error(jobErr.message);
+      // MULTI-TENANT (Phase D) — was a direct anon-key insert into
+      // customers/jobs with no owner_id, so RLS silently rejected every
+      // signup once the owner_id-scoped policy went live (same class of
+      // bug already fixed for get_trashcan_signup_settings's read side).
+      // Routed through /api/public-data (service role) instead.
+      const res = await fetch("/api/public-data", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "submit_trashcan_signup", ownerId, customer: newCustomer, job: newJob }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok || data?.error) throw new Error(data?.error || `Signup failed (${res.status})`);
 
       setSubmitted(true);
     } catch (e: any) {

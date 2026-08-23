@@ -78,7 +78,7 @@ import { ChemicalModal } from "../ui/ChemicalModal";
 import { WeeklyBusinessReview } from "../ui/WeeklyBusinessReview";
 import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 
-export function LeadIntakePage({ customers = [], setCustomers, estimates = [], setEstimates, services = [], jobs = [], settings = {} as AppSettings, setSettings, toast, onNav, onConvertToEstimate }: { customers?: any[]; setCustomers?: any; estimates?: any[]; setEstimates?: any; services?: any[]; jobs?: any[]; settings?: AppSettings; setSettings?: any; toast?: any; onNav?: any; onConvertToEstimate?: (customerId: string) => void }) {
+export function LeadIntakePage({ customers = [], setCustomers, estimates = [], setEstimates, services = [], jobs = [], settings = {} as AppSettings, setSettings, toast, onNav, onConvertToEstimate, ownerId = "" }: { customers?: any[]; setCustomers?: any; estimates?: any[]; setEstimates?: any; services?: any[]; jobs?: any[]; settings?: AppSettings; setSettings?: any; toast?: any; onNav?: any; onConvertToEstimate?: (customerId: string) => void; ownerId?: string }) {
   const [submissions, setSubmissions] = usePersistent("smocks.intakeLeads", []);
   const [preview, setPreview] = useState(false);
   const [embedOpen, setEmbedOpen] = useState(false);
@@ -279,7 +279,11 @@ export function LeadIntakePage({ customers = [], setCustomers, estimates = [], s
         // ITEM 1 — owner-set colors ride along as bg/btn/text query params;
         // LeadFormPage.tsx reads and applies them, same non-secret pattern as
         // co/ph above.
-        const embedUrl = `${window.location.origin}${window.location.pathname}#/lead-form?co=${encodeURIComponent(companyName)}&ph=${encodeURIComponent(settings?.companyPhone || "")}&bg=${encodeURIComponent(leadBg)}&btn=${encodeURIComponent(leadBtn)}&text=${encodeURIComponent(leadText)}`;
+        // BUG FIX — this embed URL never carried which business the lead
+        // belongs to (oid=). Harmless when this was truly single-tenant, but
+        // once RLS went owner_id-scoped there was no way for the public
+        // #/lead-form page to know whose account to save the lead under.
+        const embedUrl = `${window.location.origin}${window.location.pathname}#/lead-form?oid=${encodeURIComponent(ownerId)}&co=${encodeURIComponent(companyName)}&ph=${encodeURIComponent(settings?.companyPhone || "")}&bg=${encodeURIComponent(leadBg)}&btn=${encodeURIComponent(leadBtn)}&text=${encodeURIComponent(leadText)}`;
         const embedHtml = `<!-- ${companyName} — Request a Quote -->\n<iframe\n  src="${embedUrl}"\n  width="100%"\n  height="720"\n  frameborder="0"\n  style="border-radius:12px;box-shadow:0 4px 20px rgba(0,0,0,0.15)"\n  title="Request a Quote"\n></iframe>`;
         return (
           <Glass className="p-5 space-y-3">

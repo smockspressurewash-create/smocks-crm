@@ -80,7 +80,7 @@ import { ChemicalModal } from "../ui/ChemicalModal";
 import { WeeklyBusinessReview } from "../ui/WeeklyBusinessReview";
 import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 
-export function InboxPage({ threads = [], setThreads, customers = [], setCustomers, settings = {} as AppSettings, toast }: { threads?: any[]; setThreads?: any; customers?: any[]; setCustomers?: any; settings?: AppSettings; toast?: any }) {
+export function InboxPage({ threads = [], setThreads, customers = [], setCustomers, settings = {} as AppSettings, toast, ownerId = "" }: { threads?: any[]; setThreads?: any; customers?: any[]; setCustomers?: any; settings?: AppSettings; toast?: any; ownerId?: string }) {
   const [active, setActive] = useState(threads[0]?.id || null);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
@@ -832,6 +832,10 @@ export function InboxPage({ threads = [], setThreads, customers = [], setCustome
       email: t.contactEmail || "",
       pipelineStage: "lead",
       createdAt: new Date().toISOString(),
+      // BUG FIX — missing owner_id violated the owner_id-scoped RLS policy
+      // added by the multi-tenant migration, silently rejecting every
+      // "convert to lead" insert from the Inbox.
+      owner_id: ownerId,
     };
     try {
       const r: any = await (supabase as any).from("customers").insert(newCustomer);

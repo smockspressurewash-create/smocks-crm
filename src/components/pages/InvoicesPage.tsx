@@ -81,7 +81,7 @@ import { ChemicalModal } from "../ui/ChemicalModal";
 import { WeeklyBusinessReview } from "../ui/WeeklyBusinessReview";
 import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 
-export function InvoicesPage({ estimates = [], setEstimates, customers = [], settings = {} as AppSettings, toast, jobs = [], setJobs = (() => {}) as any }: { estimates?: any[]; setEstimates?: any; customers?: any[]; settings?: AppSettings; toast?: any; jobs?: any[]; setJobs?: any }) {
+export function InvoicesPage({ estimates = [], setEstimates, customers = [], settings = {} as AppSettings, toast, jobs = [], setJobs = (() => {}) as any, ownerId = "" }: { estimates?: any[]; setEstimates?: any; customers?: any[]; settings?: AppSettings; toast?: any; jobs?: any[]; setJobs?: any; ownerId?: string }) {
   // ITEM 30 — same fake "smocks.com" domain bug fixed in EstimatesPage.tsx
   // last round existed here too (Copy Link / Text Link on an invoice),
   // pointing every invoice link at a domain that resolves nowhere for any
@@ -95,8 +95,15 @@ export function InvoicesPage({ estimates = [], setEstimates, customers = [], set
   // marks the job as invoiced without creating an estimate or sending any
   // email/SMS, so it drops out of "Needs Invoice" without a duplicate send.
   const markInvoiceSentManually = (job: any) => {
-    setJobs((prev: any[]) => prev.map(j => j.id === job.id ? { ...j, invoiceSentAt: today(), paymentType: j.paymentType || "Invoice" } : j));
-    toast?.("Marked as sent (outside the CRM)", "green");
+    // BUG FIX — this only ever updated local React state, never Supabase —
+    // a reload wiped it out immediately. Same silent-local-only mutation bug
+    // this file's own sendInvoiceForJob comment already called out for a
+    // different spot.
+    const patch = { invoiceSentAt: today(), paymentType: job.paymentType || "Invoice" };
+    setJobs((prev: any[]) => prev.map(j => j.id === job.id ? { ...j, ...patch } : j));
+    (supabase as any).from("jobs").update(patch).eq("id", job.id)
+      .then((r: any) => { if (r?.error) { console.error("[MarkSent] job patch failed:", r.error.message); toast?.("Marked locally, but failed to sync — " + r.error.message, "red"); } else { toast?.("Marked as sent (outside the CRM)", "green"); } })
+      .catch((e: any) => { console.error("[MarkSent] job patch threw:", e?.message); toast?.("Marked locally, but failed to sync — " + (e?.message || "unknown error"), "red"); });
   };
 
   const [previewInvoiceJob, setPreviewInvoiceJob] = useState<any>(null);
@@ -111,6 +118,11 @@ export function InvoicesPage({ estimates = [], setEstimates, customers = [], set
         lineItems: [{ id: uid(), description: job.notes || job.address || "Service", quantity: 1, unitPrice: Number(job.amount) || 0 }],
         subtotal: Number(job.amount) || 0, discount: 0, depositRequired: 0, tax: 0, total: Number(job.amount) || 0,
         status: "approved" as const, createdAt: today(), validUntil: daysFromNow(30), invoiced: true, invoicedAt: today(),
+        // BUG FIX — missing owner_id violated the owner_id-scoped RLS policy
+        // added by the multi-tenant migration (WITH CHECK owner_id =
+        // current_owner_id()), so this insert was silently rejected — the
+        // exact "Send Invoice doesn't persist, gone after reload" symptom.
+        owner_id: ownerId,
       };
       // [SendInvoice] this used to only call setEstimates (local React state)
       // with no Supabase write at all — the payLink texted/emailed to the
@@ -165,12 +177,23 @@ export function InvoicesPage({ estimates = [], setEstimates, customers = [], set
       subtotal: newInvTotal, discount: 0, depositRequired: 0, tax: 0, total: newInvTotal,
       status: "approved" as const, createdAt: today(), validUntil: daysFromNow(30),
       invoiced: true, invoicedAt: today(), standalone: true,
+      // BUG FIX — missing owner_id violated the owner_id-scoped RLS policy
+      // (WITH CHECK owner_id = current_owner_id()) added by the multi-tenant
+      // migration, so this insert was silently rejected — the fire-and-forget
+      // .catch below only ever logged it to the console, and the success
+      // toast fired unconditionally regardless of whether the save actually
+      // worked, so there was no visible sign anything had gone wrong.
+      owner_id: ownerId,
     };
     setEstimates((prev: any[]) => [...prev, inv]);
-    (supabase as any).from("estimates").insert(inv).then((r: any) => { if (r?.error) console.warn("Standalone invoice save failed:", r.error.message); }).catch(() => {});
+    (supabase as any).from("estimates").insert(inv)
+      .then((r: any) => {
+        if (r?.error) { console.error("[NewInvoice] save failed:", r.error.message); toast?.("Created locally, but failed to sync — " + r.error.message, "red"); }
+        else toast?.("Invoice created ✓ — open it to send or take payment", "green");
+      })
+      .catch((e: any) => { console.error("[NewInvoice] save threw:", e?.message); toast?.("Created locally, but failed to sync — " + (e?.message || "unknown error"), "red"); });
     setNewInvOpen(false);
     setNewInvForm({ customerId: "", title: "", items: [{ id: uid(), description: "", quantity: 1, unitPrice: 0 }] });
-    toast?.("Invoice created ✓ — open it to send or take payment", "green");
   };
   // FEATURE 3 — prefill the New Invoice form from a completed job that hasn't
   // been invoiced yet, so the owner can turn a finished job into an invoice in

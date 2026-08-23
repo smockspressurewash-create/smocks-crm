@@ -185,6 +185,13 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
         lineItems: [{ id: uid(), description: job.notes || job.address || "Service", quantity: 1, unitPrice: Number(job.amount) || 0 }],
         subtotal: Number(job.amount) || 0, discount: 0, depositRequired: 0, tax: 0, total: Number(job.amount) || 0,
         status: "approved" as const, createdAt: today(), validUntil: daysFromNow(30), invoiced: true, invoicedAt: today(),
+        // BUG FIX — missing owner_id meant this insert violated the
+        // owner_id-scoped RLS policy added by the multi-tenant migration
+        // (estimates_owner_scoped: WITH CHECK owner_id = current_owner_id()),
+        // so the row was silently rejected — "Send Invoice" on the Dashboard
+        // looked like it worked (no visible crash before this fix's error
+        // surfacing) but never actually persisted; a reload showed nothing.
+        owner_id: ownerId,
       };
       // [SendInvoice] this insert used to be fire-and-forget (not awaited) —
       // a failed save only logged a console.warn while the function carried

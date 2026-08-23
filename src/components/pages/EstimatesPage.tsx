@@ -87,7 +87,7 @@ const DECLINE_REASON_LABELS: Record<string, string> = {
   other: "Declined",
 };
 
-export function EstimatesPage({ estimates = [], setEstimates, customers = [], services = [], settings = {} as AppSettings, toast, onPortal = () => {}, estimateTemplates = [], setEstimateTemplates = () => {}, setJobs = () => {}, onNav = () => {}, autoOpenNew = false, onAutoOpenNewConsumed, presetCustomerId = "" }: { estimates?: any[]; setEstimates?: any; customers?: any[]; services?: any[]; settings?: AppSettings; toast?: any; onPortal?: any; estimateTemplates?: any[]; setEstimateTemplates?: any; setJobs?: any; onNav?: any; autoOpenNew?: boolean; onAutoOpenNewConsumed?: () => void; presetCustomerId?: string }) {
+export function EstimatesPage({ estimates = [], setEstimates, customers = [], services = [], settings = {} as AppSettings, toast, onPortal = () => {}, estimateTemplates = [], setEstimateTemplates = () => {}, setJobs = () => {}, onNav = () => {}, autoOpenNew = false, onAutoOpenNewConsumed, presetCustomerId = "", ownerId = "" }: { estimates?: any[]; setEstimates?: any; customers?: any[]; services?: any[]; settings?: AppSettings; toast?: any; onPortal?: any; estimateTemplates?: any[]; setEstimateTemplates?: any; setJobs?: any; onNav?: any; autoOpenNew?: boolean; onAutoOpenNewConsumed?: () => void; presetCustomerId?: string; ownerId?: string }) {
   const [builderOpen, setBuilderOpen] = useState(false);
   // ISSUE 21 — FAB's "New Quote" now opens the builder immediately.
   useEffect(() => {
@@ -212,6 +212,10 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
         equipment: [], tags: ["Needs Scheduling"], commLog: [],
         notes: "From approved estimate #" + estId.slice(-4).toUpperCase(),
         createdAt: today(), estimateId: estId,
+        // BUG FIX — missing owner_id violated the owner_id-scoped RLS policy
+        // added by the multi-tenant migration, silently rejecting the insert
+        // below for every job created by approving an estimate.
+        owner_id: (est as any).owner_id || ownerId,
         // FIX 4 (mobile round 2) — carry a recurring quote's pattern
         // straight onto the job it becomes, instead of the owner having to
         // re-enter it in JobDetailModal after the fact.
@@ -294,9 +298,13 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
   };
 
   const duplicate = e => {
+    // BUG FIX — local-state-only, no Supabase write — a reload silently
+    // dropped every duplicated estimate.
     const copy = { ...e, id: uid(), createdAt: today(), validUntil: daysFromNow(30), status: "pending", viewed: false, viewedAt: null };
     setEstimates([copy, ...estimates]);
-    toast("Estimate duplicated");
+    (supabase as any).from("estimates").insert(copy)
+      .then((r: any) => { if (r?.error) { console.error("[Duplicate] insert failed:", r.error.message); toast("Duplicated locally, but failed to sync — " + r.error.message, "red"); } else toast("Estimate duplicated"); })
+      .catch((e2: any) => { console.error("[Duplicate] insert threw:", e2?.message); toast("Duplicated locally, but failed to sync — " + (e2?.message || "unknown error"), "red"); });
   };
 
   const exportPDF = e => {
@@ -488,7 +496,11 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
       </div>
 
       <EstimateBuilder open={builderOpen} onClose={() => setBuilderOpen(false)} customers={customers} services={services} settings={settings} estimateTemplates={estimateTemplates} setEstimateTemplates={setEstimateTemplates} initialCustomerId={presetCustomerId} onSave={est => {
-        setEstimates([...estimates, est]);
+        // BUG FIX — missing owner_id violated the owner_id-scoped RLS policy
+        // added by the multi-tenant migration (WITH CHECK owner_id =
+        // current_owner_id()), so this insert was silently rejected.
+        const estWithOwner = { ...est, owner_id: ownerId };
+        setEstimates([...estimates, estWithOwner]);
         setBuilderOpen(false);
         toast("Estimate created");
         // FIX 13 — a brand-new estimate previously only reached Supabase via
@@ -496,7 +508,7 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
         // Sign" link within that window, the customer's #/estimate/ID page
         // (an anonymous fetch straight from Supabase) would 404 on a row that
         // doesn't exist there yet. Insert immediately instead.
-        (supabase as any).from("estimates").insert(est)
+        (supabase as any).from("estimates").insert(estWithOwner)
           .then((r: any) => { if (r?.error) toast("Saved locally, but failed to sync — " + r.error.message, "red"); })
           .catch((e: any) => toast("Saved locally, but failed to sync — " + (e?.message || ""), "red"));
         // Auto-add to customer timeline
@@ -508,11 +520,26 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
         createJobFromApprovedEstimate(id);
         setViewing(null);
         toast("Approved!");
-      }} onConvert={id => { setEstimates(estimates.map(x => x.id === id ? { ...x, invoiced: true, invoicedAt: today() } : x)); setViewing(null); toast("Converted to invoice"); }} onSchedule={est => {
+      }} onConvert={id => {
+        // BUG FIX — "Convert to Invoice" only ever updated local React
+        // state, never Supabase — the same silent-local-only-mutation bug
+        // found on this page's own estimate-create path, just further down.
+        // A reload wiped the invoiced:true flag right back off.
+        const patch = { invoiced: true, invoicedAt: today() };
+        setEstimates(estimates.map(x => x.id === id ? { ...x, ...patch } : x));
+        setViewing(null);
+        (supabase as any).from("estimates").update(patch).eq("id", id)
+          .then((r: any) => { if (r?.error) { console.error("[ConvertToInvoice] update failed:", r.error.message); toast("Converted locally, but failed to sync — " + r.error.message, "red"); } else toast("Converted to invoice"); })
+          .catch((e: any) => { console.error("[ConvertToInvoice] update threw:", e?.message); toast("Converted locally, but failed to sync — " + (e?.message || "unknown error"), "red"); });
+      }} onSchedule={est => {
         const c = customers.find(x => x.id === est.customerId);
         const combinedChecklist = buildChecklistFromServices(est.lineItems, services);
         const newJob = {
           id: uid(), customerId: est.customerId, address: c?.address || "", amount: est.total, status: "scheduled", scheduledDate: today(), duration: 3, priority: "normal", checklist: combinedChecklist, preChecklist: combinedChecklist, photos: [], chemicalsUsed: [], crew: [], notes: "From estimate #" + (est.id || "").slice(-4), pipelineStage: "scheduled", createdAt: today(),
+          // BUG FIX — missing owner_id violated the owner_id-scoped RLS
+          // policy added by the multi-tenant migration, silently rejecting
+          // every job created by scheduling straight from an estimate.
+          owner_id: (est as any).owner_id || ownerId,
           // FIX 4 (mobile round 2) — carry the estimate's recurring pattern
           // onto the job instead of always hardcoding isRecurring: false.
           isRecurring: !!(est as any).isRecurring,
