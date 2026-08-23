@@ -241,6 +241,37 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
       return json({ success: true, review: Array.isArray(insert.data) ? insert.data[0] : insert.data });
     }
 
+    // ── ClientPortal.tsx (#/estimate/:id) payment/sign confirmation texts —
+    // sent from an unauthenticated customer-facing page (no owner session),
+    // so a direct client-side insert against inbox_threads (owner_id-scoped
+    // RLS) silently fails there just like the pre-fix submit_review did.
+    // Bounded by customerId (an unguessable UUID the page already has from
+    // the estimate it's viewing), never a client-claimed owner_id.
+    if (action === "log_outbound_sms") {
+      const { customerId, contactName, contactPhone, smsBody } = body;
+      if (!customerId || !contactPhone || !smsBody) return json({ error: "Missing customerId/contactPhone/smsBody" }, 400);
+      const custRow = await sb(serviceRoleKey, `customers?id=eq.${encodeURIComponent(customerId)}&select=owner_id`);
+      const ownerId = Array.isArray(custRow.data) ? custRow.data[0]?.owner_id : null;
+      if (!ownerId) return json({ error: "Customer not found" }, 404);
+      const normPhone = (p: string) => (p || "").replace(/\D/g, "");
+      const existingRow = await sb(serviceRoleKey, `inbox_threads?channel=eq.sms&owner_id=eq.${encodeURIComponent(ownerId)}&select=*`);
+      const rows: any[] = Array.isArray(existingRow.data) ? existingRow.data : [];
+      const existing = rows.find(r => normPhone(r.contact_phone) === normPhone(contactPhone));
+      const newMsg = { id: crypto.randomUUID(), dir: "out", body: smsBody, ts: Date.now(), status: "sent" };
+      if (existing) {
+        const messages = [...(Array.isArray(existing.messages) ? existing.messages : []), newMsg];
+        await sb(serviceRoleKey, `inbox_threads?id=eq.${encodeURIComponent(existing.id)}`, {
+          method: "PATCH", body: JSON.stringify({ messages, unread: false, last_message_at: newMsg.ts, updated_at: new Date().toISOString() }),
+        });
+      } else {
+        await sb(serviceRoleKey, `inbox_threads`, {
+          method: "POST",
+          body: JSON.stringify({ id: crypto.randomUUID(), channel: "sms", contact_name: contactName || "", contact_phone: contactPhone, customer_id: customerId, owner_id: ownerId, unread: false, messages: [newMsg], last_message_at: newMsg.ts, updated_at: new Date().toISOString() }),
+        });
+      }
+      return json({ success: true });
+    }
+
     // ── ClientAuthPortal.tsx (#/client) — a logged-in customer's own data.
     // Bounded by their VERIFIED session email (via resolveCallerEmail),
     // never a client-claimed id — a customer can only ever fetch their own

@@ -23,7 +23,7 @@ import {
 import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, weekdayLabels, computeNextRecurringDate, describeRecurringSchedule, isEmployeeUnavailable, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, withTimeout, getEffectiveRate, totalJobPhotoCount, stripLegacyJobFields, insertClientIdRowWithRetry, insertJobRequestSafely } from "../../lib/utils";
 const weatherRisk = (_dateStr: string): {icon: string; level: string; reason: string} | null => null;
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
-import { twilioSend, sendEmail, emailShell, emailButton, getFreshOwnerGoogleToken } from "../../lib/messaging";
+import { twilioSend, sendEmail, emailShell, emailButton, getFreshOwnerGoogleToken, logOutboundSmsToInbox } from "../../lib/messaging";
 import { supabase } from "../../lib/supabase";
 import { seedWeather } from "../../lib/weather";
 import { seedCustomers, seedEstimates, seedJobs, seedEmployees, seedVehicles, seedExpenses, seedChemicals, seedServices, seedAutomations, seedEmailTemplates, seedSmsTemplates, seedRewardTiers, seedReferrals, seedMaintenance, campaignTemplates, seedSocialPosts, seedTimeline, seedGoals, seedReminders, seedAccountabilityEntries, seedMileage, seedLeadSrc, STEP_TYPES, AUTOMATION_TEMPLATES } from "../../lib/seed";
@@ -243,7 +243,9 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
         const coName = (settings as any)?.companyName || "Crew Boss";
         const coPhone = (settings as any)?.companyPhone || "(717) 555-0100";
         const msg = "Hi " + c.firstName + "! Your pressure washing service has been confirmed for " + (j.scheduledDate || "your requested date") + ". We'll text you when we're on the way. Questions? Call " + coPhone + ". — " + coName;
-        twilioSend(settings, c.phone, msg).catch((e: any) => console.warn("[JobsPage] scheduled-confirmation text failed:", e?.message));
+        twilioSend(settings, c.phone, msg)
+          .then(() => logOutboundSmsToInbox({ contactName: `${c.firstName} ${c.lastName}`, contactPhone: c.phone, customerId: c.id, body: msg }).catch(() => {}))
+          .catch((e: any) => console.warn("[JobsPage] scheduled-confirmation text failed:", e?.message));
       }
     }
     // Job completed thank-you text (separate from review request)
@@ -252,7 +254,9 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
       const c = j && customers.find(x => x.id === j.customerId);
       if (c?.phone && settings?.twilioSid) {
         const msg = "Hi " + c.firstName + "! Your home is looking great 🙌 Thank you for choosing Crew Boss. We appreciate your business! If you ever need us again, reply or call (717) 555-0100. — Will @ Crew Boss";
-        setTimeout(() => twilioSend(settings, c.phone, msg).catch((e: any) => console.warn("[JobsPage] job-completed thank-you text failed:", e?.message)), 1000);
+        setTimeout(() => twilioSend(settings, c.phone, msg)
+          .then(() => logOutboundSmsToInbox({ contactName: `${c.firstName} ${c.lastName}`, contactPhone: c.phone, customerId: c.id, body: msg }).catch(() => {}))
+          .catch((e: any) => console.warn("[JobsPage] job-completed thank-you text failed:", e?.message)), 1000);
       }
       // Auto-add to customer timeline
       if (j && c) {
@@ -1005,7 +1009,7 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
               const coPhone = (settings as any)?.companyPhone || "(717) 555-0100";
               const msg = "Hi " + c.firstName + ", reminder about your scheduled pressure wash on " + (j?.scheduledDate || "your upcoming date") + ". Questions? Call " + coPhone + " — " + coName;
               try {
-                if (settings?.twilioSid) { await twilioSend(settings, c.phone, msg); sent++; }
+                if (settings?.twilioSid) { await twilioSend(settings, c.phone, msg); logOutboundSmsToInbox({ contactName: `${c.firstName} ${c.lastName}`, contactPhone: c.phone, customerId: c.id, body: msg }).catch(() => {}); sent++; }
                 else { window.location.href = "sms:" + c.phone.replace(/\D/g, "") + "?body=" + encodeURIComponent(msg); sent++; break; }
               } catch { failed++; }
             }
@@ -1129,7 +1133,7 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
                 <button onClick={async () => {
                   if (!c?.phone) { toast("No phone number for " + c?.firstName, "error"); return; }
                   const msg = "Hi " + c.firstName + ", we have rain forecast for your service on " + rj.scheduledDate + ". Would you like to reschedule? What day works for you? — " + ((settings as any)?.companyName || "Crew Boss");
-                  if (settings?.twilioSid) { try { await twilioSend(settings, c.phone, msg); toast("Weather reschedule text sent to " + c.firstName + " ✓"); } catch(e) { toast(e.message, "error"); } }
+                  if (settings?.twilioSid) { try { await twilioSend(settings, c.phone, msg); logOutboundSmsToInbox({ contactName: `${c.firstName} ${c.lastName}`, contactPhone: c.phone, customerId: c.id, body: msg }).catch(() => {}); toast("Weather reschedule text sent to " + c.firstName + " ✓"); } catch(e) { toast(e.message, "error"); } }
                   else { window.location.href = "sms:" + c.phone.replace(/\D/g,"") + "?body=" + encodeURIComponent(msg); }
                 }} className="px-2 py-1 rounded-lg text-[10px] bg-white/5 hover:bg-white/10 text-white/60 border border-white/10 whitespace-nowrap">Text customer</button>
               </div>;
@@ -1353,7 +1357,7 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
                       const locationLink = lat != null ? "https://maps.google.com/?q=" + lat + "," + lng : null;
                       const omwMsg = `Hi ${c.firstName}! Your technician is on the way! ETA: ${eta}. 🚗` + (locationLink ? " Track me: " + locationLink : "") + " — Will @ Crew Boss";
                       if (settings?.twilioSid && c.phone) {
-                        try { await twilioSend(settings, c.phone, omwMsg); toast("OTW text sent to " + c.firstName + " ✓"); }
+                        try { await twilioSend(settings, c.phone, omwMsg); logOutboundSmsToInbox({ contactName: `${c.firstName} ${c.lastName}`, contactPhone: c.phone, customerId: c.id, body: omwMsg }).catch(() => {}); toast("OTW text sent to " + c.firstName + " ✓"); }
                         catch (e: any) { toast(e?.message || "Failed to send OTW text", "red"); }
                       } else if (c.email) {
                         const html = emailShell(settings,"On My Way", `<p>${omwMsg}</p>`);
@@ -1507,7 +1511,7 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
                   if (c?.phone) {
                     const msg = "Hi " + c.firstName + ", we've rescheduled your service to " + newDate + ". Reply to confirm or request a different date. — " + ((settings as any)?.companyName || "Crew Boss");
                     if (settings?.twilioSid) {
-                      try { await twilioSend(settings, c.phone, msg); toast("Rescheduled + customer texted ✓"); } catch { toast("Rescheduled — text failed"); }
+                      try { await twilioSend(settings, c.phone, msg); logOutboundSmsToInbox({ contactName: `${c.firstName} ${c.lastName}`, contactPhone: c.phone, customerId: c.id, body: msg }).catch(() => {}); toast("Rescheduled + customer texted ✓"); } catch { toast("Rescheduled — text failed"); }
                     } else {
                       window.location.href = "sms:" + c.phone.replace(/\D/g,"") + "?body=" + encodeURIComponent(msg);
                     }

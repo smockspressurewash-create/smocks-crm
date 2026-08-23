@@ -363,7 +363,9 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
     // Payment confirmation SMS to customer
     if (settings?.twilioSid && c.phone) {
       const confirmMsg = "Hi " + c.firstName + "! Your payment of $" + totalWithTip.toFixed(2) + " to " + (settings?.companyName || "Crew Boss") + " has been received ✅ We'll be in touch to confirm your service date. Thank you! — " + (settings?.companyName || "Crew Boss");
-      twilioSend(settings, c.phone, confirmMsg).catch(() => {});
+      twilioSend(settings, c.phone, confirmMsg)
+        .then(() => fetch("/api/public-data", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "log_outbound_sms", customerId: c.id, contactName: `${c.firstName} ${c.lastName}`, contactPhone: c.phone, smsBody: confirmMsg }) }).catch(() => {}))
+        .catch(() => {});
     }
 
     // Payment confirmation email to customer

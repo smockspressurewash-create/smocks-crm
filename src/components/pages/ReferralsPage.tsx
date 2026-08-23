@@ -22,7 +22,7 @@ import {
 } from "recharts";
 import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE } from "../../lib/utils";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
-import { twilioSend, sendEmail } from "../../lib/messaging";
+import { twilioSend, sendEmail, logOutboundSmsToInbox } from "../../lib/messaging";
 import { seedWeather } from "../../lib/weather";
 import { seedCustomers, seedEstimates, seedJobs, seedEmployees, seedVehicles, seedExpenses, seedChemicals, seedServices, seedAutomations, seedEmailTemplates, seedSmsTemplates, seedRewardTiers, seedReferrals, seedMaintenance, campaignTemplates, seedSocialPosts, seedTimeline, seedGoals, seedReminders, seedAccountabilityEntries, seedMileage, seedLeadSrc, STEP_TYPES, AUTOMATION_TEMPLATES } from "../../lib/seed";
 import { callModel, MODELS } from "../../lib/api";
@@ -127,10 +127,17 @@ export function ReferralsPage({ customers = [], setCustomers = (() => {}) as any
 
   const sendReferralRequest = async c => {
     setSending(c.id);
-    const msg = "Hi " + c.firstName + "! Thanks for being a loyal Crew Boss customer 🙏 Know anyone who needs exterior cleaning? Share your unique link and earn $" + rewardSettings.referrerCredit + " credit: smocks.com/refer/" + c.m.code + " — They save " + rewardSettings.refereeDiscount + (rewardSettings.refereeDiscountType === "percent" ? "%" : "$") + " off their first service. Thanks!";
+    // BUG FIX — "smocks.com/refer/CODE" isn't a real domain/route this app
+    // owns; the actual referral landing page is #/r/CODE (ReferralLanding.tsx,
+    // wired in App.tsx). Every referral text sent from here pointed at a
+    // dead link.
+    const companyName = (settings as any)?.companyName || "Crew Boss";
+    const referUrl = `${window.location.origin}${window.location.pathname}#/r/${c.m.code}`;
+    const msg = "Hi " + c.firstName + "! Thanks for being a loyal " + companyName + " customer 🙏 Know anyone who needs exterior cleaning? Share your unique link and earn $" + rewardSettings.referrerCredit + " credit: " + referUrl + " — They save " + rewardSettings.refereeDiscount + (rewardSettings.refereeDiscountType === "percent" ? "%" : "$") + " off their first service. Thanks!";
     if (settings?.twilioSid && c.phone) {
       try {
         await twilioSend(settings, c.phone, msg);
+        logOutboundSmsToInbox({ contactName: `${c.firstName} ${c.lastName}`, contactPhone: c.phone, customerId: c.id, body: msg }).catch(() => {});
         toast("Referral request sent to " + c.firstName + " ✓");
       } catch(e) { toast(e.message, "error"); }
     } else if (c.phone) {

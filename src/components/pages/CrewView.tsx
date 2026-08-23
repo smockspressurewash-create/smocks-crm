@@ -22,7 +22,7 @@ import {
 } from "recharts";
 import { fmt, uid, today, localDateStr, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, compressImageFile, mediaSrc, dataUrlToBlob, uploadJobMedia } from "../../lib/utils";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
-import { twilioSend, sendEmail, emailShell } from "../../lib/messaging";
+import { twilioSend, sendEmail, emailShell, logOutboundSmsToInbox } from "../../lib/messaging";
 import { seedWeather } from "../../lib/weather";
 import { seedCustomers, seedEstimates, seedJobs, seedEmployees, seedVehicles, seedExpenses, seedChemicals, seedServices, seedAutomations, seedEmailTemplates, seedSmsTemplates, seedRewardTiers, seedReferrals, seedMaintenance, campaignTemplates, seedSocialPosts, seedTimeline, seedGoals, seedReminders, seedAccountabilityEntries, seedMileage, seedLeadSrc, STEP_TYPES, AUTOMATION_TEMPLATES } from "../../lib/seed";
 import { callModel, MODELS } from "../../lib/api";
@@ -459,7 +459,7 @@ export function CrewView({ jobs = [], setJobs, customers = [], employees = [], t
                 const eta = new Date(Date.now() + 17 * 60000).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
                 const msg = `Hi ${c.firstName}! Your technician is on the way! ETA: ${eta}. — ${(settings as any)?.companyName || "Crew Boss"}`;
                 if (settings?.twilioSid && c.phone) {
-                  try { await twilioSend(settings, c.phone, msg); toast("OTW text sent to " + c.firstName + " ✓"); }
+                  try { await twilioSend(settings, c.phone, msg); logOutboundSmsToInbox({ contactName: `${c.firstName} ${c.lastName}`, contactPhone: c.phone, customerId: c.id, body: msg }).catch(() => {}); toast("OTW text sent to " + c.firstName + " ✓"); }
                   catch (e: any) { toast(e?.message || "Failed to send OTW text", "red"); }
                 } else if (c.email) {
                   try {

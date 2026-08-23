@@ -22,7 +22,7 @@ import {
 } from "recharts";
 import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE } from "../../lib/utils";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
-import { twilioSend, sendEmail } from "../../lib/messaging";
+import { twilioSend, sendEmail, logOutboundSmsToInbox } from "../../lib/messaging";
 import { seedWeather } from "../../lib/weather";
 import { seedCustomers, seedEstimates, seedJobs, seedEmployees, seedVehicles, seedExpenses, seedChemicals, seedServices, seedAutomations, seedEmailTemplates, seedSmsTemplates, seedRewardTiers, seedReferrals, seedMaintenance, campaignTemplates, seedSocialPosts, seedTimeline, seedGoals, seedReminders, seedAccountabilityEntries, seedMileage, seedLeadSrc, STEP_TYPES, AUTOMATION_TEMPLATES } from "../../lib/seed";
 import { callModel, MODELS } from "../../lib/api";
@@ -119,14 +119,19 @@ export function ReviewsPage({ reviews = [], setReviews, jobs = [], customers = [
     if ((settings.unsubscribedEmails || []).includes(c.email)) { toast("Customer has unsubscribed from review requests"); return; }
     if ((settings.reviewUnsubscribedPhones || []).includes(c.phone)) { toast("Customer opted out of SMS review requests"); return; }
 
-    // Build review URL with token
-    const reviewUrl = "smocks.com/r/" + r.token;
-    const unsubUrl = "smocks.com/unsub/" + btoa(c.phone || c.email || c.id).slice(0, 12);
-    const msg = "Hi " + c.firstName + "! Thanks for choosing Crew Boss 🙌 How'd we do? Leave us a quick review — it means the world to a small business: " + reviewUrl + "\n\nReply STOP to opt out.";
+    // BUG FIX — this used to build a link at "smocks.com/r/TOKEN", a domain
+    // this app doesn't own and a route that doesn't exist anywhere in the
+    // codebase — every review request sent from this page pointed the
+    // customer at a dead link. The real public route is #/rate (see
+    // CustomerReviewPage.tsx), same one useAutomationEngine.ts's automated
+    // review-request path already builds correctly.
+    const companyName = (settings as any)?.companyName || "Crew Boss";
+    const reviewUrl = `${window.location.origin}${window.location.pathname}#/rate?c=${encodeURIComponent(c.id)}&n=${encodeURIComponent(c.firstName)}&g=${encodeURIComponent((settings as any)?.googlePlaceId ?? "")}&rl=${encodeURIComponent((settings as any)?.googleReviewLink ?? "")}&co=${encodeURIComponent(companyName)}`;
+    const msg = "Hi " + c.firstName + "! Thanks for choosing " + companyName + " 🙌 How'd we do? Leave us a quick review — it means the world to a small business: " + reviewUrl + "\n\nReply STOP to opt out.";
 
     let sent = false;
     if (settings?.twilioSid && c.phone) {
-      try { await twilioSend(settings, c.phone, msg); sent = true; toast("Review request sent to " + c.firstName + " via SMS ✓"); }
+      try { await twilioSend(settings, c.phone, msg); logOutboundSmsToInbox({ contactName: `${c.firstName} ${c.lastName}`, contactPhone: c.phone, customerId: c.id, body: msg }).catch(() => {}); sent = true; toast("Review request sent to " + c.firstName + " via SMS ✓"); }
       catch(e) { toast("SMS failed: " + e.message, "error"); }
     } else if (c.phone) {
       window.location.href = "sms:" + c.phone.replace(/\D/g,"") + "?body=" + encodeURIComponent(msg);

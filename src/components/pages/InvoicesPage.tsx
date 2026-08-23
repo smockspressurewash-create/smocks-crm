@@ -273,8 +273,15 @@ export function InvoicesPage({ estimates = [], setEstimates, customers = [], set
             if (data?.paidAt) {
               confirmedViaWebhook = true;
               setEstimates(prev => prev.map(e => e.id === invId ? { ...e, paidAt: data.paidAt, status: "approved", stripePaymentStatus: "paid" as const, stripePaymentIntentId: data.stripePaymentIntentId || e.stripePaymentIntentId } : e));
-              toast?.("Payment received ✓ (confirmed by server)");
+              // BUG FIX — this webhook-confirmed branch is the authoritative,
+              // primary path per the comment above, but it only ever updated
+              // `estimates`, never the linked job's paymentStatus — only the
+              // client-side fallback below (markPaidViaStripe) did that. So a
+              // job's payment status silently never flipped to "Paid" for
+              // the normal/expected payment flow.
               const invNow = estimates.find(e => e.id === invId);
+              syncJobPaymentStatus((invNow as any)?.jobId, "Paid");
+              toast?.("Payment received ✓ (confirmed by server)");
               if (invNow) sendStripeReceipt({ ...invNow, paidAt: data.paidAt });
             }
           } catch { /* fall through to retry / fallback below */ }
