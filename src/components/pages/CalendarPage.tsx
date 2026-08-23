@@ -286,7 +286,13 @@ export function CalendarPage({ jobs = [], setJobs, customers = [], employees = [
     if (!jid) return;
     const job = jobs.find(j => j.id === jid);
     const oldDate = job?.scheduledDate;
-    setJobs(jobs.map(j => j.id === jid ? { ...j, scheduledDate: targetKey } : j));
+    // BUG FIX — this used to read `jobs` from the closure (setJobs(jobs.map(...)))
+    // instead of the functional-update form. Dragging several jobs in quick
+    // succession (multiple drops before React re-renders between them) meant
+    // every call after the first closed over the SAME stale `jobs` snapshot,
+    // so each subsequent optimistic update silently overwrote/reverted the
+    // ones before it — "only lets me do one at a time; the others disappear."
+    setJobs((prev: any[]) => prev.map(j => j.id === jid ? { ...j, scheduledDate: targetKey } : j));
     toast("Rescheduled to " + targetKey);
     setDragId(null);
 
@@ -337,7 +343,10 @@ export function CalendarPage({ jobs = [], setJobs, customers = [], employees = [
   const unschedule = jid => {
     const job = jobs.find(j => j.id === jid);
     const oldDate = job?.scheduledDate;
-    setJobs(jobs.map(j => j.id === jid ? { ...j, scheduledDate: "" } : j));
+    // Same stale-closure fix as handleDrop above — functional update so
+    // moving several jobs to Unscheduled back-to-back doesn't clobber
+    // earlier optimistic updates still pending a re-render.
+    setJobs((prev: any[]) => prev.map(j => j.id === jid ? { ...j, scheduledDate: "" } : j));
     toast("Moved to unscheduled");
     (supabase as any).from("jobs").update({ scheduledDate: "" }).eq("id", jid)
       .then((result: any) => {
@@ -401,7 +410,7 @@ export function CalendarPage({ jobs = [], setJobs, customers = [], employees = [
   const cancelJobQuick = (jid: string) => {
     if (!window.confirm("Cancel this job?")) return;
     const job = jobs.find(j => j.id === jid);
-    setJobs(jobs.map(j => j.id === jid ? { ...j, status: "cancelled", cancelReason: "Cancelled via calendar quick action" } : j));
+    setJobs((prev: any[]) => prev.map(j => j.id === jid ? { ...j, status: "cancelled", cancelReason: "Cancelled via calendar quick action" } : j));
     toast("Job cancelled");
     if (job?.googleEventId && settings?.googleConnected && (settings as any)?.googleProviderToken) {
       deleteGCalEventApi((settings as any).googleProviderToken, job.googleEventId).catch(() => {});

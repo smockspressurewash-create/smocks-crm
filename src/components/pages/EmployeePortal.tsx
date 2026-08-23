@@ -6,7 +6,7 @@ import {
   Video, PenLine, Shield, Navigation, Database, Route, ToggleRight, ToggleLeft, Download, Bell, CreditCard, Mic
 } from "lucide-react";
 import { supabase, getStoredGoogleConnection, fetchOwnerGoogleToken } from "../../lib/supabase";
-import { getEmpGoogleToken, isEmpGoogleTokenValid, saveEmpGoogleToken, refreshEmpGoogleToken, getValidEmpGoogleToken, createGCalEvent, updateGCalEvent } from "../../lib/googleApi";
+import { getEmpGoogleToken, isEmpGoogleTokenValid, saveEmpGoogleToken, clearEmpGoogleToken, refreshEmpGoogleToken, getValidEmpGoogleToken, createGCalEvent, updateGCalEvent, onGoogleAuthFailure } from "../../lib/googleApi";
 import { sendViaGmail, sendEmail, sendOwnerGmailOnly, emailShell, emailButton, twilioSend, logOutboundSmsToInbox } from "../../lib/messaging";
 import { Glass } from "../ui/Glass";
 import { CrewBossMark } from "../ui/CrewBossMark";
@@ -3142,6 +3142,23 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     console.log("[GoogleConnect] EmployeePortal — hydrated Google token from Supabase (employees.google_token)");
     setGoogleHydrateTick(t => t + 1);
   }, [(myEmployee as any)?.id, empSession?.user?.id, (myEmployee as any)?.google_token, (myEmployee as any)?.google_token_expires_at, (myEmployee as any)?.google_refresh_token]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // BUG FIX — "shows Google connected even when it's actually disconnected."
+  // The "Connected ✓" banner was computed purely from a locally cached
+  // token's expiresAt, which never learns a token was invalidated (revoked,
+  // failed refresh_token exchange) until the cache's own expiry catches up —
+  // could be up to an hour of showing a stale green badge. gFetch (shared by
+  // owner and employee Google calls) now calls every onGoogleAuthFailure
+  // subscriber the moment a 401 survives a refresh attempt.
+  useEffect(() => {
+    return onGoogleAuthFailure(() => {
+      const uid = empSession?.user?.id;
+      if (!uid) return;
+      clearEmpGoogleToken(uid);
+      setGoogleHydrateTick(t => t + 1);
+      toast?.("Your Google connection expired — reconnect from the Google tab to resume calendar sync.", "red");
+    });
+  }, [empSession?.user?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Silently refresh an expired Google access token using the stored
   // refresh_token before ever asking the employee to reconnect. Checked on

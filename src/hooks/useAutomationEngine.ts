@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import type { Automation, AutomationStep, Job, Customer, Estimate, Referral, AppSettings, Employee, Goal } from "../types";
-import { today, daysSince } from "../lib/utils";
+import { today, daysSince, recurringFreqs } from "../lib/utils";
 import { twilioSend, logOutboundSmsToInbox, sendOwnerGmailOnly, emailShell } from "../lib/messaging";
 
 interface AutomationEngineProps {
@@ -48,6 +48,14 @@ const SMS_TEMPLATES: Record<string, string> = {
   referral_reward:      "Hi {{first_name}}, your referral just booked — you've earned ${{reward}} credit toward your next Crew Boss service! 🎉",
   referral_booked:      "Hi {{first_name}}, your referral just booked their first Crew Boss service! Thank you for spreading the word 🎉",
   anniversary:          "Hi {{first_name}}, happy anniversary with Crew Boss! Thanks for trusting us — enjoy 10% off your next service this month. Reply BOOK.",
+  estimate_declined:    "Hi {{first_name}}, no problem on passing for now — if the price was the sticking point, reply BUDGET and we'll see what we can do. Your quote for {{amount}} stays on file. — Crew Boss",
+  estimate_expired:     "Hi {{first_name}}, your Crew Boss quote for {{amount}} has expired. Want us to re-issue it at the same price? Reply YES: {{payment_link}}",
+  job_cancelled:        "Hi {{first_name}}, sorry we missed you! Want to get back on the schedule? Reply BOOK and we'll find a new time. — Crew Boss",
+  first_job_welcome:    "Hi {{first_name}}, thanks for your first job with Crew Boss! Save this number — text us anytime for a quote or to book your next service. — Will",
+  vip_thank_you:        "Hi {{first_name}}, you're one of our best customers — thank you! Enjoy 10% off your next Crew Boss service, on us. Reply BOOK. — Will",
+  recurring_due:        "Hi {{first_name}}, your recurring Crew Boss service is coming due. Want us to put you back on the schedule? Reply BOOK. — Crew Boss",
+  owner_reschedule:     "Heads up {{first_name}} — {{customer_name}} requested a reschedule for the job at {{job_address}} on {{date}}. Note: {{reschedule_note}}",
+  owner_unassigned:     "Heads up {{first_name}} — the job for {{customer_name}} at {{job_address}} on {{date}} still has nobody assigned to it.",
 };
 
 // BLOCKER 1 (mobile round 9) — module scope (not inside the hook) so it
@@ -127,10 +135,28 @@ type Category =
   // ownerCandidate()/employee candidate builders below) so the rest of the
   // pipeline (buildMessage, sendOne, dedup, daily cap) doesn't need to know
   // the difference.
-  | "owner_daily_summary" | "owner_periodic_summary" | "employee_shift_summary" | "employee_performance_report";
+  | "owner_daily_summary" | "owner_periodic_summary" | "employee_shift_summary" | "employee_performance_report"
+  // Added categories — every one is backed by a real spec below reading data
+  // this app already stores (estimate.declinedAt/validUntil, job.status
+  // "cancelled", job.isRecurring/recurringFreq, customer.totalSpent,
+  // job.rescheduleRequested, job.crew).
+  | "estimate_declined" | "estimate_expired" | "job_cancelled" | "first_job_welcome"
+  | "vip_thank_you" | "recurring_service_due" | "owner_reschedule_request" | "owner_unassigned_job";
 
 const classifyTrigger = (labelRaw: string): Category | null => {
   const t = (labelRaw || "").toLowerCase();
+  // These run FIRST because several of them would otherwise be swallowed by
+  // a broader pattern further down — "Estimate expired" matches /expir/
+  // (estimate_expiring), and "First job completed" matches /job complete/
+  // (review_request).
+  if (/estimate (declined|rejected)|quote (declined|rejected)/.test(t)) return "estimate_declined";
+  if (/estimate expired|quote expired/.test(t)) return "estimate_expired";
+  if (/job cancell?ed|cancell?ed job/.test(t)) return "job_cancelled";
+  if (/first job|welcome new customer/.test(t)) return "first_job_welcome";
+  if (/\bvip\b|top customer|best customer/.test(t)) return "vip_thank_you";
+  if (/recurring (service )?(due|renewal)|next recurring/.test(t)) return "recurring_service_due";
+  if (/reschedule request/.test(t)) return "owner_reschedule_request";
+  if (/unassigned|no crew assigned/.test(t)) return "owner_unassigned_job";
   if (/new (lead|inquiry|customer)|lead (form )?submitted|inquiry submitted/.test(t)) return "new_lead";
   if (/expir/.test(t)) return "estimate_expiring";
   if (/24h before|before.*scheduled job/.test(t)) return "job_reminder";
@@ -202,7 +228,15 @@ interface CategorySpec {
   getCandidates: () => Candidate[];
 }
 
-const evalCondition = (key: string, cand: Candidate): boolean => {
+// `ctx` carries the wider dataset some conditions need (a customer's job
+// history, their referrals, the owner's VIP threshold). It's optional so the
+// existing "estimate/job/invoice on this candidate" checks keep working
+// unchanged if it isn't passed.
+interface ConditionCtx { jobs?: Job[]; referrals?: Referral[]; settings?: AppSettings }
+const evalCondition = (key: string, cand: Candidate, ctx: ConditionCtx = {}): boolean => {
+  const custJobs = (ctx.jobs || []).filter(j => j.customerId === cand.customer.id);
+  const lastDone = custJobs.filter(j => j.status === "completed" && j.scheduledDate)
+    .reduce<string | null>((latest, j) => (!latest || j.scheduledDate > latest ? j.scheduledDate : latest), null);
   switch (key) {
     case "estimate_pending": return cand.estimate?.status === "pending";
     case "estimate_not_viewed": return !cand.estimate?.viewed;
@@ -212,6 +246,20 @@ const evalCondition = (key: string, cand: Candidate): boolean => {
     case "invoice_unpaid": return !!cand.estimate?.invoiced && !cand.estimate?.paidAt;
     case "invoice_paid": return !!cand.estimate?.paidAt;
     case "job_completed": return cand.job?.status === "completed";
+    // Previously these were all listed in the builder's condition dropdown
+    // but had no case here, so they silently passed (default: true) and the
+    // owner got a condition step that did nothing.
+    case "estimate_unsigned": return !cand.estimate?.signedAt;
+    case "quote_not_viewed": return !cand.estimate?.viewed;
+    case "job_cancelled": return cand.job?.status === "cancelled";
+    case "has_dog": return !!(cand.customer as any).hasDog;
+    case "stale_customer": return !lastDone || daysSince(lastDone) >= 180;
+    case "no_recent_job": return !lastDone || daysSince(lastDone) >= 30;
+    case "no_new_job": return !custJobs.some(j => j.status === "scheduled" || j.status === "in_progress");
+    case "zero_referrals": return !(ctx.referrals || []).some(r => r.referrerId === cand.customer.id);
+    case "customer_is_vip":
+      return Number(cand.customer.totalSpent || 0) >= (Number((ctx.settings as any)?.automationVipSpendThreshold) || 2000);
+    case "customer_opted_in_sms": return !cand.customer.smsOptOut;
     default: return true; // unrecognized custom condition keys don't block sends
   }
 };
@@ -225,6 +273,9 @@ interface Directive {
   messageBody?: string;
   templateKey?: string;
   label: string;
+  // Webhook action steps only (VisualWorkflowBuilder's webhook panel).
+  url?: string;
+  payload?: string;
 }
 
 // Walks every step after the trigger, accumulating "wait" time and condition
@@ -252,6 +303,7 @@ const extractDirectives = (steps: AutomationStep[]): Directive[] => {
         stepId: s.id, delayMinutes, explicitDelay, conditions: [...conditions],
         channel: s.type === "webhook" ? "webhook" : (s.channel || "sms"),
         messageBody: s.messageBody, templateKey: s.template, label: s.label || "",
+        url: s.url, payload: s.payload,
       });
     }
     // branch/tag steps aren't modeled as real branching/tagging yet — later
@@ -282,6 +334,8 @@ export interface PendingAutomationItem {
   jobId?: string;
   referralId?: string;
   conditions: string[];
+  webhookUrl?: string;
+  webhookPayload?: string;
 }
 export interface PendingAutomationBatch {
   items: PendingAutomationItem[];
@@ -418,14 +472,81 @@ export function useAutomationEngine({
     // the inline fallback above) without touching the template table.
     const coName = (settings as any).companyName || "Crew Boss";
     const branded = coName === "Crew Boss" ? raw : raw.replace(/Crew Boss/g, coName);
-    return { subject: auto.name || dir.label || `Update from ${coName}`, body: fillTemplate(branded, vars) };
+    return {
+      subject: auto.name || dir.label || `Update from ${coName}`,
+      body: fillTemplate(branded, vars),
+      payload: dir.payload ? fillTemplate(dir.payload, { ...vars, trigger: auto.trigger || "" }) : undefined,
+    };
   };
+
+  // Owner's own inbox — used by the "internal"/"task"/"calendar" action
+  // channels, which are notes to the business, not messages to the customer.
+  const ownerEmailAddress = (settings: AppSettings): string =>
+    (settings as any).companyEmail || (settings as any).myEmail || (settings as any).googleEmail || "";
 
   // Actually performs one send (email or SMS, with the existing Twilio ->
   // email fallback). Only ever called from approveBatch, i.e. only after the
   // owner has explicitly clicked "Send All" on a reviewed batch.
-  const sendOne = async (auto: Automation, channel: string, cand: Candidate, subject: string, body: string, settings: AppSettings, toast: (msg: string) => void, onSent: () => void): Promise<boolean> => {
+  const sendOne = async (auto: Automation, channelRaw: string, cand: Candidate, subject: string, body: string, settings: AppSettings, toast: (msg: string) => void, onSent: () => void, extra?: { url?: string; payload?: string }): Promise<boolean> => {
     const c = cand.customer;
+    let channel = channelRaw;
+
+    // "task"/"internal"/"calendar" steps describe work for the BUSINESS
+    // ("Call customer to follow up", "Leave door hanger"). They used to fall
+    // through to the SMS branch below and text that reminder straight to the
+    // customer. They're delivered to the owner's own inbox instead.
+    if (channel === "task" || channel === "internal" || channel === "calendar") {
+      const to = ownerEmailAddress(settings);
+      if (!to) {
+        const key = `${auto.id}:no-owner-email`;
+        if (!notConfiguredWarnedThisSession.has(key)) {
+          notConfiguredWarnedThisSession.add(key);
+          console.warn(`[Automations] "${auto.name}" — internal/task step has no owner email to notify. Set your company email in Settings.`);
+        }
+        return false;
+      }
+      const kind = channel === "task" ? "Task" : channel === "calendar" ? "Calendar reminder" : "Internal note";
+      const line = `${kind} · ${c.firstName} ${c.lastName}`;
+      try {
+        await sendOwnerGmailOnly(settings as any, to, `${kind}: ${subject}`, emailShell(settings as any, subject, `<p><strong>${line}</strong></p><p>${body.replace(/\n/g, "<br/>")}</p>`));
+        onSent();
+        toast(`🔔 ${auto.name} → your inbox (${kind.toLowerCase()})`);
+        return true;
+      } catch (e: any) {
+        console.error("[Automations]", auto.name, "— internal notification failed:", e?.message || String(e));
+        return false;
+      }
+    }
+
+    if (channel === "webhook") {
+      const url = extra?.url || "";
+      if (!/^https?:\/\//i.test(url)) {
+        const key = `${auto.id}:webhook-url`;
+        if (!notConfiguredWarnedThisSession.has(key)) {
+          notConfiguredWarnedThisSession.add(key);
+          console.warn(`[Automations] "${auto.name}" — webhook step has no valid URL; skipped.`);
+        }
+        return false;
+      }
+      try {
+        await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: extra?.payload || JSON.stringify({ automation: auto.name, customer: `${c.firstName} ${c.lastName}`, customerId: c.id, message: body }),
+        });
+        onSent();
+        toast(`🔗 ${auto.name} → webhook sent`);
+        return true;
+      } catch (e: any) {
+        console.error("[Automations]", auto.name, "— webhook failed:", e?.message || String(e));
+        return false;
+      }
+    }
+
+    // Owner/employee pseudo-recipients carry an email but never a phone —
+    // an SMS-channel report step would otherwise fail silently forever.
+    if (channel !== "email" && !c.phone && c.email && /^(owner|employee):/.test(c.id)) channel = "email";
+
     if (channel === "email") {
       if (!c.email) return false;
       try {
@@ -447,7 +568,6 @@ export function useAutomationEngine({
         return false;
       }
     }
-    if (channel === "webhook") return false; // no reliable webhook URL field wired from the builder yet
     if (!c.phone || c.smsOptOut) return false;
     try {
       await twilioSend(settings, c.phone, body);
@@ -833,6 +953,136 @@ export function useAutomationEngine({
           },
           getCandidates: () => (now.getDay() === 1 && hour === 9) ? employeeCandidates(employees, "perf-" + todayStr) : [],
         },
+
+        // ── Added categories ────────────────────────────────────────────────
+        // A quote the customer said no to. `declinedAt` is written by the
+        // client portal's Decline action; older rows only flip status to
+        // "rejected", so both are accepted here.
+        estimate_declined: {
+          direction: "after", defaultDelayMinutes: 1440, defaultCooldownDays: 3650, smsTemplateKey: "estimate_declined",
+          extraVars: cand => ({ payment_link: paymentLink(cand.estimate!.id), decline_reason: (cand.estimate as any)?.declineReasonCategory || "" }),
+          getCandidates: () => estimates.filter(e => (e.status === "rejected" || !!e.declinedAt) && daysSince(e.declinedAt || e.createdAt) <= 30).map(e => {
+            const c = customers.find(x => x.id === e.customerId);
+            return c ? { key: e.id, customer: c, estimate: e, anchorMs: new Date(e.declinedAt || e.createdAt).getTime() } : null;
+          }).filter(Boolean) as Candidate[],
+        },
+        // Distinct from estimate_expiring (which fires BEFORE validUntil) —
+        // this is the "it lapsed, want it re-issued" touch afterwards.
+        estimate_expired: {
+          direction: "after", defaultDelayMinutes: 0, defaultCooldownDays: 3650,
+          conditionKey: "estimate_not_approved", smsTemplateKey: "estimate_expired",
+          extraVars: cand => ({ payment_link: paymentLink(cand.estimate!.id) }),
+          getCandidates: () => estimates
+            .filter(e => (e.status === "pending" || e.status === "expired") && e.validUntil && new Date(e.validUntil).getTime() < Date.now() && daysSince(e.validUntil) <= 21)
+            .map(e => {
+              const c = customers.find(x => x.id === e.customerId);
+              return c ? { key: e.id, customer: c, estimate: e, anchorMs: new Date(e.validUntil).getTime() } : null;
+            }).filter(Boolean) as Candidate[],
+        },
+        job_cancelled: {
+          direction: "immediate", defaultDelayMinutes: 0, defaultCooldownDays: 3650, smsTemplateKey: "job_cancelled",
+          getCandidates: () => jobs
+            .filter(j => j.status === "cancelled" && daysSince((j as any).stageChangedAt || (j as any).createdAt || j.scheduledDate) <= 14)
+            .map(j => {
+              const c = customers.find(x => x.id === j.customerId);
+              return c ? { key: j.id, customer: c, job: j, anchorMs: Date.now() } : null;
+            }).filter(Boolean) as Candidate[],
+        },
+        // Onboarding touch after a customer's very FIRST completed job —
+        // exactly one completed job on file, finished in the last week.
+        first_job_welcome: {
+          direction: "after", defaultDelayMinutes: 60, defaultCooldownDays: 3650, smsTemplateKey: "first_job_welcome",
+          getCandidates: () => customers.map(c => {
+            const done = jobs.filter(j => j.customerId === c.id && j.status === "completed");
+            if (done.length !== 1) return null;
+            const j = done[0];
+            const d = (j as any).completedAt || j.signOff?.timestamp || j.scheduledDate;
+            if (!d || daysSince(d) > 7) return null;
+            return { key: c.id, customer: c, job: j, anchorMs: new Date(d).getTime() };
+          }).filter(Boolean) as Candidate[],
+        },
+        vip_thank_you: {
+          direction: "immediate", defaultDelayMinutes: 0, defaultCooldownDays: 180, smsTemplateKey: "vip_thank_you",
+          extraVars: cand => ({ total_spent: `$${Number(cand.customer.totalSpent || 0).toFixed(2)}` }),
+          getCandidates: () => {
+            const threshold = Math.max(1, Number((settings as any).automationVipSpendThreshold) || 2000);
+            return customers
+              .filter(c => Number(c.totalSpent || 0) >= threshold)
+              .filter(c => jobs.some(j => j.customerId === c.id && j.status === "completed" && daysSince((j as any).completedAt || j.scheduledDate) <= 14))
+              .map(c => ({ key: `${c.id}:vip:${now.getFullYear()}`, customer: c, anchorMs: Date.now() }));
+          },
+        },
+        // Reads the recurring schedule already stored on the job
+        // (isRecurring + recurringFreq / recurringMode + recurringInterval)
+        // and fires 3 days before the next occurrence is due.
+        recurring_service_due: {
+          direction: "after", defaultDelayMinutes: 0, defaultCooldownDays: 30, smsTemplateKey: "recurring_due",
+          getCandidates: () => {
+            const intervalDays = (j: Job): number => {
+              const mode = (j as any).recurringMode;
+              const n = Math.max(1, Number((j as any).recurringInterval) || 1);
+              if (mode === "days") return n;
+              if (mode === "weeks" || mode === "weekdays") return n * 7;
+              if (mode === "months") return n * 30;
+              return recurringFreqs.find(f => f.key === (j as any).recurringFreq)?.days || 30;
+            };
+            const byCustomer = new Map<string, Job>();
+            for (const j of jobs) {
+              if (!(j as any).isRecurring || j.status !== "completed" || !j.scheduledDate) continue;
+              const prev = byCustomer.get(j.customerId);
+              if (!prev || j.scheduledDate > prev.scheduledDate) byCustomer.set(j.customerId, j);
+            }
+            const out: Candidate[] = [];
+            byCustomer.forEach((j, customerId) => {
+              const c = customers.find(x => x.id === customerId);
+              if (!c) return;
+              const dueMs = new Date(j.scheduledDate).getTime() + intervalDays(j) * 86400000;
+              if (dueMs - Date.now() > 30 * 86400000) return; // too far out
+              if (Date.now() - dueMs > 30 * 86400000) return; // long overdue — reengage/maintenance covers it
+              out.push({ key: `${j.id}:${j.scheduledDate}`, customer: c, job: j, anchorMs: dueMs - 3 * 86400000 });
+            });
+            return out;
+          },
+        },
+        // Owner-facing alert: a customer asked to move a job from the client
+        // portal (job.rescheduleRequested) and it's still flagged.
+        owner_reschedule_request: {
+          direction: "immediate", defaultDelayMinutes: 0, defaultCooldownDays: 3650, smsTemplateKey: "owner_reschedule",
+          extraVars: cand => {
+            const j = cand.job!;
+            const c = customers.find(x => x.id === j.customerId);
+            return {
+              customer_name: c ? `${c.firstName} ${c.lastName}` : "A customer",
+              job_address: j.address || "",
+              date: j.scheduledDate || "",
+              reschedule_note: (j as any).rescheduleRequestNote || "(none)",
+            };
+          },
+          getCandidates: () => jobs.filter(j => (j as any).rescheduleRequested && j.status !== "cancelled").map(j => {
+            const oc = ownerCandidate(settings, `reschedule:${j.id}`);
+            return oc ? { ...oc, job: j } : null;
+          }).filter(Boolean) as Candidate[],
+        },
+        // Owner-facing alert: tomorrow's job still has an empty crew array.
+        owner_unassigned_job: {
+          direction: "immediate", defaultDelayMinutes: 0, defaultCooldownDays: 3650, smsTemplateKey: "owner_unassigned",
+          extraVars: cand => {
+            const j = cand.job!;
+            const c = customers.find(x => x.id === j.customerId);
+            return {
+              customer_name: c ? `${c.firstName} ${c.lastName}` : "A customer",
+              job_address: j.address || "",
+              date: j.scheduledDate || "",
+            };
+          },
+          getCandidates: () => {
+            const tomorrowStr = new Date(Date.now() + 86400000).toISOString().slice(0, 10);
+            return jobs.filter(j => j.status === "scheduled" && j.scheduledDate === tomorrowStr && (j.crew || []).length === 0).map(j => {
+              const oc = ownerCandidate(settings, `unassigned:${j.id}`);
+              return oc ? { ...oc, job: j } : null;
+            }).filter(Boolean) as Candidate[];
+          },
+        },
       };
 
       // ── Gather phase — no sends happen here. Every candidate that clears
@@ -909,7 +1159,7 @@ export function useAutomationEngine({
             // never actually sent, but a confusing perpetual entry in the
             // owner's approval modal. Skip them before they ever reach it.
             if (dir.channel === "sms" && cand.customer.smsOptOut) continue;
-            if (dir.conditions.some(c => !evalCondition(c, cand))) continue;
+            if (dir.conditions.some(c => !evalCondition(c, cand, { jobs, referrals, settings }))) continue;
             let ok: boolean;
             if (spec.direction === "before") {
               const untilMs = cand.anchorMs - Date.now();
@@ -934,13 +1184,14 @@ export function useAutomationEngine({
             if (firedThisSession.has(sessionKey)) continue;
             if (alreadySentTodayCount + gathered.length >= maxSendsPerDay) { heldBackCount++; continue; }
             claimedCustomersThisBatch.add(cand.customer.id);
-            const { subject, body } = buildMessage(auto, dir, spec, cand, settings);
+            const { subject, body, payload } = buildMessage(auto, dir, spec, cand, settings);
             gathered.push({
               id: sessionKey,
               autoId: auto.id, autoName: auto.name, category, dedupKey, channel: dir.channel,
               subject, body, customerId: cand.customer.id, customerName: `${cand.customer.firstName} ${cand.customer.lastName}`,
               estimateId: cand.estimate?.id, jobId: cand.job?.id, referralId: cand.referral?.id,
               conditions: dir.conditions,
+              webhookUrl: dir.url, webhookPayload: payload,
             });
           }
         }
@@ -979,13 +1230,24 @@ export function useAutomationEngine({
   const stillQualifies = (item: PendingAutomationItem): { cand: Candidate; auto: Automation } | null => {
     const auto = automationsRef.current.find(a => a.id === item.autoId);
     if (!auto || !auto.active) return null;
-    const customer = customersRef.current.find(c => c.id === item.customerId);
+    // Owner/employee report + alert categories address a synthetic
+    // pseudo-recipient that by definition isn't in `customers` — looking it
+    // up there returned null and silently dropped every internal report at
+    // send time. Rebuild it from settings/employees instead.
+    let customer: Customer | undefined;
+    if (item.customerId.startsWith("owner:")) {
+      customer = ownerCandidate(settingsRef.current, item.customerId.slice("owner:".length))?.customer;
+    } else if (item.customerId.startsWith("employee:")) {
+      customer = employeeCandidates(employeesRef.current, "").find(c => c.customer.id === item.customerId)?.customer;
+    } else {
+      customer = customersRef.current.find(c => c.id === item.customerId);
+    }
     if (!customer) return null;
     const job = item.jobId ? jobsRef.current.find(j => j.id === item.jobId) : undefined;
     const estimate = item.estimateId ? estimatesRef.current.find(e => e.id === item.estimateId) : undefined;
     const referral = item.referralId ? referralsRef.current.find(r => r.id === item.referralId) : undefined;
     const cand: Candidate = { key: item.dedupKey, customer, job, estimate, referral, anchorMs: Date.now() };
-    if (item.conditions.some(c => !evalCondition(c, cand))) return null;
+    if (item.conditions.some(c => !evalCondition(c, cand, { jobs: jobsRef.current, referrals: referralsRef.current, settings: settingsRef.current }))) return null;
     // Also re-check the daily cap and dedup one more time — belt and
     // suspenders against a batch that's been sitting a while.
     const settings = settingsRef.current;
@@ -1043,7 +1305,7 @@ export function useAutomationEngine({
           patchesByAutoId[item.autoId].sentTo[item.dedupKey] = todayStr;
           patchesByAutoId[item.autoId].sent += 1;
           console.log("[Automations] fired:", item.autoName, "->", item.customerName);
-        });
+        }, { url: item.webhookUrl, payload: item.webhookPayload });
         if (sent) {
           newDailyLog[item.customerId] = todayStr;
           sentThisApprovalForCustomer.add(item.customerId);

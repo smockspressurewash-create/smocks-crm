@@ -78,7 +78,7 @@ import { ChemicalModal } from "../ui/ChemicalModal";
 import { WeeklyBusinessReview } from "../ui/WeeklyBusinessReview";
 import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 
-export function CustomersPage({ customers = [], setCustomers, estimates = [], jobs = [], employees = [], toast, timeline = {}, setTimeline = () => {}, settings = {} as AppSettings, setSettings = (() => {}) as any, autoOpenNew = false, onAutoOpenNewConsumed, highlightId = null }: { customers?: any[]; setCustomers?: any; estimates?: any[]; jobs?: any[]; employees?: any[]; toast?: any; timeline?: any; setTimeline?: any; settings?: AppSettings; setSettings?: any; autoOpenNew?: boolean; onAutoOpenNewConsumed?: () => void; highlightId?: string | null }) {
+export function CustomersPage({ customers = [], setCustomers, estimates = [], jobs = [], employees = [], toast, timeline = {}, setTimeline = () => {}, settings = {} as AppSettings, setSettings = (() => {}) as any, autoOpenNew = false, onAutoOpenNewConsumed, highlightId = null, pushUndo = (_desc: string, _fn: () => void, _redoFn?: () => void) => {} }: { customers?: any[]; setCustomers?: any; estimates?: any[]; jobs?: any[]; employees?: any[]; toast?: any; timeline?: any; setTimeline?: any; settings?: AppSettings; setSettings?: any; autoOpenNew?: boolean; onAutoOpenNewConsumed?: () => void; highlightId?: string | null; pushUndo?: (desc: string, fn: () => void, redoFn?: () => void) => void }) {
   const [search, setSearch] = useState("");
   // FEATURE — "Alfred spotlight": briefly glows + scrolls to the row Alfred
   // just created/touched, driven by App.tsx's spotlight queue.
@@ -368,6 +368,17 @@ export function CustomersPage({ customers = [], setCustomers, estimates = [], jo
   const deleteCustomer = (c: any) => {
     setCustomers(customers.filter(x => x.id !== c.id));
     setDetail(null);
+    pushUndo(`Deleted customer ${c.firstName || ""} ${c.lastName || ""}`.trim(), () => {
+      setCustomers((prev: any[]) => [c, ...prev]);
+      (supabase as any).from("customers").insert(c).then((r: any) => {
+        if (r?.error) toast("Restored locally, but failed to restore on server — " + r.error.message, "red");
+      }).catch(() => {});
+    }, () => {
+      setCustomers((prev: any[]) => prev.filter((x: any) => x.id !== c.id));
+      (supabase as any).from("customers").delete().eq("id", c.id).then((r: any) => {
+        if (r?.error) toast("Removed locally, but failed to remove on server — " + r.error.message, "red");
+      }).catch(() => {});
+    });
     (supabase as any).from("customers").delete().eq("id", c.id)
       .then((result: any) => { if (result?.error) toast("Deleted locally, but failed to delete from server — " + result.error.message, "red"); else toast("Customer deleted"); })
       .catch((e: any) => toast("Deleted locally, but failed to delete from server — " + (e?.message || ""), "red"));

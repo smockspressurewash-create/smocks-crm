@@ -20,9 +20,9 @@ import {
   Tooltip, ResponsiveContainer, Area, AreaChart, LineChart, Line,
   ComposedChart, Legend
 } from "recharts";
-import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE } from "../../lib/utils";
+import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, withTimeout } from "../../lib/utils";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
-import { twilioSend, sendEmail, logOutboundSmsToInbox } from "../../lib/messaging";
+import { twilioSend, sendEmail, sendOwnerGmailOnly, emailShell, emailButton, logOutboundSmsToInbox } from "../../lib/messaging";
 import { seedWeather } from "../../lib/weather";
 import { seedCustomers, seedEstimates, seedJobs, seedEmployees, seedVehicles, seedExpenses, seedChemicals, seedServices, seedAutomations, seedEmailTemplates, seedSmsTemplates, seedRewardTiers, seedReferrals, seedMaintenance, campaignTemplates, seedSocialPosts, seedTimeline, seedGoals, seedReminders, seedAccountabilityEntries, seedMileage, seedLeadSrc, STEP_TYPES, AUTOMATION_TEMPLATES } from "../../lib/seed";
 import { callModel, MODELS } from "../../lib/api";
@@ -81,6 +81,40 @@ export function ReviewsPage({ reviews = [], setReviews, jobs = [], customers = [
   const [preview, setPreview] = useState(null);
   const [landingReview, setLandingReview] = useState(null);
   const [tab, setTab] = useState("inbox");
+
+  // FEATURE — manual "Send Review Request" (previously only reachable from a
+  // completed job's own detail modal, JobDetailModal.tsx's sendReviewRequest
+  // — nothing on this page let the owner ask ANY customer for a review on
+  // demand, e.g. an older job or a customer who never got asked).
+  const [manualSendOpen, setManualSendOpen] = useState(false);
+  const [manualSendCustomerId, setManualSendCustomerId] = useState("");
+  const [manualSendBusy, setManualSendBusy] = useState(false);
+  const sendManualReviewRequest = async () => {
+    const c = customers.find(x => x.id === manualSendCustomerId);
+    if (!c) { toast?.("Pick a customer first", "red"); return; }
+    if (!c.phone && !c.email) { toast?.("No phone or email on file for this customer", "red"); return; }
+    setManualSendBusy(true);
+    try {
+      const companyName = (settings as any)?.companyName || "Crew Boss";
+      const rateLink = `${window.location.origin}${window.location.pathname}#/rate?c=${encodeURIComponent(c.id)}&n=${encodeURIComponent(c.firstName)}&g=${encodeURIComponent((settings as any).googlePlaceId || "")}&rl=${encodeURIComponent((settings as any).googleReviewLink || "")}&co=${encodeURIComponent(companyName)}`;
+      if ((settings as any)?.twilioSid && c.phone) {
+        const body = `Hi ${c.firstName}, thanks for choosing ${companyName}! How did we do? ${rateLink}`;
+        await withTimeout(twilioSend(settings as any, c.phone, body), 10000, "Review SMS");
+        logOutboundSmsToInbox({ contactName: `${c.firstName} ${c.lastName}`, contactPhone: c.phone, customerId: c.id, body }).catch(() => {});
+        toast?.(`Review request sent to ${c.firstName} ✓`, "green");
+      } else if (c.email) {
+        const html = emailShell(settings as any, "How did we do?", `<p>Hi ${c.firstName},</p><p>Thanks for choosing ${companyName}! We'd love your feedback.</p>` + emailButton("Leave a Review", rateLink));
+        await withTimeout(sendOwnerGmailOnly(settings as any, c.email, `How did we do, ${c.firstName}?`, html), 10000, "Review email");
+        toast?.(`Review request emailed to ${c.firstName} ✓`, "green");
+      }
+      setManualSendOpen(false);
+      setManualSendCustomerId("");
+    } catch (e: any) {
+      toast?.("Failed to send review request — " + (e?.message || "unknown error"), "red");
+    } finally {
+      setManualSendBusy(false);
+    }
+  };
 
   // AUDIT FIX (mobile round 10) — real customer-submitted reviews (from the
   // public #/rate page, CustomerReviewPage.tsx -> Supabase "reviews" table,
@@ -207,11 +241,30 @@ export function ReviewsPage({ reviews = [], setReviews, jobs = [], customers = [
         <Stat icon={Star} label="Avg Rating" value={avg} />
       </div>
 
-      <div className="flex gap-2 flex-wrap">
-        {[{ k: "inbox", l: "Inbox", n: reviews.length }, { k: "showcase", l: "Showcase Wall", n: completed.filter(r => r.rating >= (settings.reviewShowcaseMinRating || 5)).length }, { k: "monitor", l: "🔍 Monitor" }, { k: "analytics", l: "📊 Analytics" }].map(t => (
-          <button key={t.k} onClick={() => setTab(t.k)} className={"px-4 py-2 rounded-xl text-sm font-medium transition border " + (tab === t.k ? "bg-gradient-to-r from-red-600 to-red-800 text-white border-red-500/50" : "bg-black/40 text-white/60 hover:text-white border-red-900/30")}>{t.l}{t.n !== undefined ? " (" + t.n + ")" : ""}</button>
-        ))}
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <div className="flex gap-2 flex-wrap">
+          {[{ k: "inbox", l: "Inbox", n: reviews.length }, { k: "showcase", l: "Showcase Wall", n: completed.filter(r => r.rating >= (settings.reviewShowcaseMinRating || 5)).length }, { k: "monitor", l: "🔍 Monitor" }, { k: "analytics", l: "📊 Analytics" }].map(t => (
+            <button key={t.k} onClick={() => setTab(t.k)} className={"px-4 py-2 rounded-xl text-sm font-medium transition border " + (tab === t.k ? "bg-gradient-to-r from-red-600 to-red-800 text-white border-red-500/50" : "bg-black/40 text-white/60 hover:text-white border-red-900/30")}>{t.l}{t.n !== undefined ? " (" + t.n + ")" : ""}</button>
+          ))}
+        </div>
+        <button onClick={() => setManualSendOpen(true)} className="px-4 py-2 rounded-xl text-sm font-semibold bg-gradient-to-r from-red-600 to-red-800 text-white flex items-center gap-1.5"><Send size={13} />Send Review Request</button>
       </div>
+
+      {manualSendOpen && (
+        <Modal open onClose={() => setManualSendOpen(false)} title="Send Review Request">
+          <div className="p-4 space-y-3">
+            <div className="text-xs text-white/50">Pick any customer to ask for a review — not tied to a specific job.</div>
+            <GSel value={manualSendCustomerId} onChange={(e: any) => setManualSendCustomerId(e.target.value)}>
+              <option value="">Select a customer…</option>
+              {customers.map((c: any) => <option key={c.id} value={c.id}>{c.firstName} {c.lastName}{c.phone ? " · " + c.phone : c.email ? " · " + c.email : ""}</option>)}
+            </GSel>
+            <div className="flex gap-2 justify-end pt-2">
+              <GBtn variant="ghost" onClick={() => setManualSendOpen(false)}>Cancel</GBtn>
+              <GBtn onClick={sendManualReviewRequest} disabled={!manualSendCustomerId || manualSendBusy}>{manualSendBusy ? "Sending…" : "Send"}</GBtn>
+            </div>
+          </div>
+        </Modal>
+      )}
 
       {tab === "monitor" && <ReviewMonitor settings={settings} toast={toast} />}
 

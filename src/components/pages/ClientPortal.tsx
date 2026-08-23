@@ -132,6 +132,18 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
     if (paid > 0 && !e.paidFull) setPayType("remaining");
   }, [e?.id]);
 
+  // BUG FIX — the `onView` prop existed but was never actually called from
+  // here, so "quote/invoice viewed" tracking silently never fired for this
+  // component — the anonymous #/estimate/:id link path most customers
+  // actually use to view a quote (ClientAuthPortal.tsx, the separate
+  // logged-in customer portal, was the only place that really marked a view).
+  // Guarded on `clientViewedAt` already being set so re-renders/re-visits
+  // don't keep re-firing.
+  useEffect(() => {
+    if (!e?.id || e.clientViewedAt) return;
+    onView(e.id);
+  }, [e?.id, e?.clientViewedAt]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Initialize options/package state when estimate is available
   useEffect(() => {
     if (!e) return;

@@ -96,21 +96,26 @@ export const fetchBufferChannels = async (apiKey: string, organizationId: string
   return data?.channels ?? [];
 };
 
+// BUG FIX — scheduledAt was accepted as a param but never actually sent as
+// `dueAt` in the mutation, so a "scheduled" post always just landed in
+// Buffer's next open queue slot instead of the specific date/time picked in
+// the UI. Buffer's schema wants mode `customScheduled` (not `addToQueue`)
+// paired with a `dueAt` ISO datetime to honor an exact time.
 export const postToBuffer = async (
   settings: BufferSettings,
   platform: string,
   text: string,
   scheduledAt?: Date
-): Promise<void> => {
+): Promise<string> => {
   const { bufferApiKey, bufferChannelIds } = settings;
   const channelId = bufferChannelIds?.[platform];
   if (!bufferApiKey || !channelId) {
     throw new Error("Buffer not connected for this platform — add an API key and pick a channel in Settings.");
   }
-  const data = await bufferGraphQL<{ createPost: { __typename: string; message?: string } }>(
+  const data = await bufferGraphQL<{ createPost: { __typename: string; message?: string; post?: { id: string } } }>(
     bufferApiKey,
-    `mutation CreatePost($text: String!, $channelId: String!, $schedulingType: PostSchedulingTypeInput!, $mode: PostCreationModeInput!) {
-      createPost(input: { text: $text, channelId: $channelId, schedulingType: $schedulingType, mode: $mode }) {
+    `mutation CreatePost($text: String!, $channelId: String!, $schedulingType: PostSchedulingTypeInput!, $mode: PostCreationModeInput!, $dueAt: DateTime) {
+      createPost(input: { text: $text, channelId: $channelId, schedulingType: $schedulingType, mode: $mode, dueAt: $dueAt }) {
         ... on PostActionSuccess { post { id } }
         ... on MutationError { message }
       }
@@ -118,10 +123,33 @@ export const postToBuffer = async (
     {
       text, channelId,
       schedulingType: scheduledAt ? "automatic" : "notification",
-      mode: scheduledAt ? "addToQueue" : "shareNow",
+      mode: scheduledAt ? "customScheduled" : "shareNow",
+      dueAt: scheduledAt ? scheduledAt.toISOString() : null,
     }
   );
   if (data?.createPost?.message) throw new Error(data.createPost.message);
+  return data?.createPost?.post?.id || "";
+};
+
+// Real per-post analytics — Buffer's Post type exposes `metrics` (normalized
+// reactions/impressions/reach/etc, populated by the destination network once
+// a post is sent) and `externalLink` (the live URL of the published post).
+// Only meaningful for posts actually sent through Buffer (i.e. we have the
+// bufferPostId Buffer handed back from createPost) — there's no equivalent
+// data source for posts published manually outside Buffer.
+export interface BufferPostMetric { type: string; name: string; value: number; unit: string }
+
+export const fetchBufferPostAnalytics = async (
+  apiKey: string,
+  postId: string
+): Promise<{ metrics: BufferPostMetric[]; externalLink?: string; metricsUpdatedAt?: string } | null> => {
+  const data = await bufferGraphQL<{ post: { id: string; externalLink?: string; metrics?: BufferPostMetric[]; metricsUpdatedAt?: string } }>(
+    apiKey,
+    `query GetPostMetrics($id: PostId!) { post(input: { id: $id }) { id externalLink metrics { type name value unit } metricsUpdatedAt } }`,
+    { id: postId }
+  );
+  if (!data?.post) return null;
+  return { metrics: data.post.metrics || [], externalLink: data.post.externalLink, metricsUpdatedAt: data.post.metricsUpdatedAt };
 };
 
 // ─── SMS opt-out enforcement ────────────────────────────────────────────────

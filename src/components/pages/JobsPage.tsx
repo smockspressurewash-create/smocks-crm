@@ -80,7 +80,7 @@ import { ChemicalModal } from "../ui/ChemicalModal";
 import { WeeklyBusinessReview } from "../ui/WeeklyBusinessReview";
 import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 
-export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = (() => {}) as any, employees = [], estimates = [], setEstimates = () => {}, settings = {} as AppSettings, setSettings, toast, posts = [], setPosts = () => {}, setTimeline = () => {}, initialDetailId = null, onInitialDetailIdConsumed = () => {}, onPortal = (_id: string) => {}, ownerId = "", autoOpenNew = false, onAutoOpenNewConsumed, highlightId = null }: { jobs?: any[]; setJobs?: any; customers?: any[]; setCustomers?: any; employees?: any[]; estimates?: any[]; setEstimates?: any; settings?: AppSettings; setSettings?: any; toast?: any; posts?: any[]; setPosts?: any; setTimeline?: any; initialDetailId?: string | null; onInitialDetailIdConsumed?: () => void; onPortal?: (id: string) => void; ownerId?: string; autoOpenNew?: boolean; onAutoOpenNewConsumed?: () => void; highlightId?: string | null }) {
+export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = (() => {}) as any, employees = [], estimates = [], setEstimates = () => {}, settings = {} as AppSettings, setSettings, toast, posts = [], setPosts = () => {}, setTimeline = () => {}, initialDetailId = null, onInitialDetailIdConsumed = () => {}, onPortal = (_id: string) => {}, ownerId = "", autoOpenNew = false, onAutoOpenNewConsumed, highlightId = null, pushUndo = (_desc: string, _fn: () => void, _redoFn?: () => void) => {} }: { jobs?: any[]; setJobs?: any; customers?: any[]; setCustomers?: any; employees?: any[]; estimates?: any[]; setEstimates?: any; settings?: AppSettings; setSettings?: any; toast?: any; posts?: any[]; setPosts?: any; setTimeline?: any; initialDetailId?: string | null; onInitialDetailIdConsumed?: () => void; onPortal?: (id: string) => void; ownerId?: string; autoOpenNew?: boolean; onAutoOpenNewConsumed?: () => void; highlightId?: string | null; pushUndo?: (desc: string, fn: () => void, redoFn?: () => void) => void }) {
   const [tab, setTab] = useState("scheduled");
   // FEATURE — "Alfred spotlight": jump to whichever tab the highlighted job
   // actually lives on (it may not be the currently-open tab), then glow +
@@ -97,8 +97,26 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
   const confirmDelete = async () => {
     if (!deleteModal) return;
     const jid = deleteModal;
+    const deletedJob = jobs.find((x: any) => x.id === jid);
     setJobs((prev: any[]) => prev.filter((x: any) => x.id !== jid));
     if (jid === detailId) setDetailId(null);
+    // BUG FIX — pushUndo existed in App.tsx but nothing in the app ever
+    // called it, so the Undo button was permanently disabled (undoCount
+    // stuck at 0). Wiring the highest-value destructive actions (job/
+    // customer/estimate/invoice delete) so Undo actually has something to do.
+    if (deletedJob) {
+      pushUndo(`Deleted job at ${deletedJob.address || "unknown address"}`, () => {
+        setJobs((prev: any[]) => [deletedJob, ...prev]);
+        (supabase as any).from("jobs").insert(deletedJob).then((r: any) => {
+          if (r?.error) toast("Restored locally, but failed to restore on server — " + r.error.message, "red");
+        }).catch(() => {});
+      }, () => {
+        setJobs((prev: any[]) => prev.filter((x: any) => x.id !== jid));
+        (supabase as any).from("jobs").delete().eq("id", jid).then((r: any) => {
+          if (r?.error) toast("Removed locally, but failed to remove on server — " + r.error.message, "red");
+        }).catch(() => {});
+      });
+    }
     // Must also delete server-side — otherwise the next cross-device sync
     // poll just re-fetches this row from Supabase and it reappears locally.
     // The query builder is thenable but not a real Promise, so calling

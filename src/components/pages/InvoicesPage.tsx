@@ -81,7 +81,7 @@ import { ChemicalModal } from "../ui/ChemicalModal";
 import { WeeklyBusinessReview } from "../ui/WeeklyBusinessReview";
 import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 
-export function InvoicesPage({ estimates = [], setEstimates, customers = [], settings = {} as AppSettings, toast, jobs = [], setJobs = (() => {}) as any, ownerId = "", highlightId = null }: { estimates?: any[]; setEstimates?: any; customers?: any[]; settings?: AppSettings; toast?: any; jobs?: any[]; setJobs?: any; ownerId?: string; highlightId?: string | null }) {
+export function InvoicesPage({ estimates = [], setEstimates, customers = [], settings = {} as AppSettings, toast, jobs = [], setJobs = (() => {}) as any, ownerId = "", highlightId = null, pushUndo = (_desc: string, _fn: () => void, _redoFn?: () => void) => {} }: { estimates?: any[]; setEstimates?: any; customers?: any[]; settings?: AppSettings; toast?: any; jobs?: any[]; setJobs?: any; ownerId?: string; highlightId?: string | null; pushUndo?: (desc: string, fn: () => void, redoFn?: () => void) => void }) {
   // FEATURE — "Alfred spotlight": briefly glows + scrolls to the invoice
   // Alfred just sent, driven by App.tsx's spotlight queue.
   useEffect(() => {
@@ -363,7 +363,13 @@ export function InvoicesPage({ estimates = [], setEstimates, customers = [], set
   const avgDaysToPay = (() => {
     const paid = invoices.filter(i => i.paidAt && i.invoicedAt);
     if (paid.length === 0) return "—";
-    const avg = paid.reduce((s, i) => s + (daysSince(i.invoicedAt) - daysSince(i.paidAt)), 0) / paid.length;
+    // BUG FIX — a job paid up-front (e.g. a deposit collected at time of
+    // service, invoiced afterward) has paidAt BEFORE invoicedAt, which made
+    // this go negative and drag the whole average down to something that
+    // looked obviously wrong ("-4d" etc). Floor each sample at 0 — you can't
+    // take negative days to pay something you were paid for before it was
+    // even invoiced.
+    const avg = paid.reduce((s, i) => s + Math.max(0, daysSince(i.invoicedAt) - daysSince(i.paidAt)), 0) / paid.length;
     return Math.round(avg) + "d";
   })();
 
@@ -424,6 +430,17 @@ export function InvoicesPage({ estimates = [], setEstimates, customers = [], set
     if (!window.confirm(`Permanently delete invoice #${(inv.id || "").toUpperCase()}? This can't be undone.`)) return;
     setEstimates(estimates.filter(e => e.id !== inv.id));
     setViewing(null);
+    pushUndo(`Deleted invoice #${(inv.id || "").toUpperCase()}`, () => {
+      setEstimates((prev: any[]) => [inv, ...prev]);
+      (supabase as any).from("estimates").insert(inv).then((r: any) => {
+        if (r?.error) toast("Restored locally, but failed to restore on server — " + r.error.message, "red");
+      }).catch(() => {});
+    }, () => {
+      setEstimates((prev: any[]) => prev.filter((e: any) => e.id !== inv.id));
+      withTimeout((supabase as any).from("estimates").delete().eq("id", inv.id), 10000, "Invoice delete").then((r: any) => {
+        if (r?.error) toast("Removed locally, but failed to remove on server — " + r.error.message, "red");
+      }).catch(() => {});
+    });
     // BUG FIX — this delete had no timeout, so a hung request (dropped
     // connection, slow network) left the optimistic local removal with no
     // error toast either — the next 3s poll then silently restored the row

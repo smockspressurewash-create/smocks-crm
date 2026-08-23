@@ -87,7 +87,7 @@ const DECLINE_REASON_LABELS: Record<string, string> = {
   other: "Declined",
 };
 
-export function EstimatesPage({ estimates = [], setEstimates, customers = [], services = [], settings = {} as AppSettings, toast, onPortal = () => {}, estimateTemplates = [], setEstimateTemplates = () => {}, setJobs = () => {}, onNav = () => {}, autoOpenNew = false, onAutoOpenNewConsumed, presetCustomerId = "", ownerId = "", highlightId = null }: { estimates?: any[]; setEstimates?: any; customers?: any[]; services?: any[]; settings?: AppSettings; toast?: any; onPortal?: any; estimateTemplates?: any[]; setEstimateTemplates?: any; setJobs?: any; onNav?: any; autoOpenNew?: boolean; onAutoOpenNewConsumed?: () => void; presetCustomerId?: string; ownerId?: string; highlightId?: string | null }) {
+export function EstimatesPage({ estimates = [], setEstimates, customers = [], services = [], settings = {} as AppSettings, toast, onPortal = () => {}, estimateTemplates = [], setEstimateTemplates = () => {}, setJobs = () => {}, onNav = () => {}, autoOpenNew = false, onAutoOpenNewConsumed, presetCustomerId = "", ownerId = "", highlightId = null, pushUndo = (_desc: string, _fn: () => void, _redoFn?: () => void) => {} }: { estimates?: any[]; setEstimates?: any; customers?: any[]; services?: any[]; settings?: AppSettings; toast?: any; onPortal?: any; estimateTemplates?: any[]; setEstimateTemplates?: any; setJobs?: any; onNav?: any; autoOpenNew?: boolean; onAutoOpenNewConsumed?: () => void; presetCustomerId?: string; ownerId?: string; highlightId?: string | null; pushUndo?: (desc: string, fn: () => void, redoFn?: () => void) => void }) {
   const [builderOpen, setBuilderOpen] = useState(false);
   // FEATURE — "Alfred spotlight": briefly glows + scrolls to the estimate/
   // invoice Alfred just created, driven by App.tsx's spotlight queue.
@@ -330,8 +330,20 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
     if (selected.length === 0) return;
     if (!window.confirm(`Permanently delete ${selected.length} estimate${selected.length !== 1 ? "s" : ""}? This can't be undone.`)) return;
     const ids = [...selected];
+    const deleted = estimates.filter(e => ids.includes(e.id));
     setEstimates(estimates.filter(e => !ids.includes(e.id)));
     setSelected([]);
+    pushUndo(`Deleted ${deleted.length} estimate${deleted.length !== 1 ? "s" : ""}`, () => {
+      setEstimates((prev: any[]) => [...deleted, ...prev]);
+      (supabase as any).from("estimates").insert(deleted).then((r: any) => {
+        if (r?.error) toast("Restored locally, but failed to restore on server — " + r.error.message, "red");
+      }).catch(() => {});
+    }, () => {
+      setEstimates((prev: any[]) => prev.filter((e: any) => !ids.includes(e.id)));
+      (supabase as any).from("estimates").delete().in("id", ids).then((r: any) => {
+        if (r?.error) toast("Removed locally, but failed to remove on server — " + r.error.message, "red");
+      }).catch(() => {});
+    });
     // Must also delete server-side — otherwise the next cross-device sync poll
     // just re-fetches these rows from Supabase and they reappear locally.
     try {
@@ -462,7 +474,13 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
                   <div>
                     <div className="text-xs text-white/50 uppercase tracking-wider flex items-center gap-1.5">
                       #{e.id.toUpperCase()}
-                      {e.viewed && <span title={"Viewed " + e.viewedAt}><Eye size={10} className="text-green-400" /></span>}
+                      {/* BUG FIX — was reading e.viewed/e.viewedAt, fields nothing
+                          in the app actually ever wrote (a dead local-only
+                          onView callback in App.tsx set them, but ClientPortal.tsx
+                          never even called onView). The real, persisted field is
+                          clientViewedAt, written by ClientAuthPortal.tsx and now
+                          also ClientPortal.tsx via the mark_estimate_viewed action. */}
+                      {(e as any).clientViewedAt && <span title={"Viewed " + (e as any).clientViewedAt}><Eye size={10} className="text-green-400" /></span>}
                     </div>
                     <div className="font-semibold mt-1">{cn(e.customerId)}</div>
                   </div>

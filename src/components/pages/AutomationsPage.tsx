@@ -81,6 +81,7 @@ import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 export function AutomationsPage({ automations = [], setAutomations, jobs = [], customers = [], estimates = [], settings = {} as any, setSettings = (() => {}) as any, toast }: { automations?: any[]; setAutomations?: any; jobs?: any[]; customers?: any[]; estimates?: any[]; settings?: any; setSettings?: any; toast?: any }) {
   const [builderOpen, setBuilderOpen] = useState<{ open: boolean; data: any }>({ open: false, data: null });
   const [templatesOpen, setTemplatesOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [search, setSearch] = useState("");
   const [category, setCategory] = useState("all");
   const [logOpen, setLogOpen] = useState(false);
@@ -183,164 +184,42 @@ export function AutomationsPage({ automations = [], setAutomations, jobs = [], c
 
   return (
     <div className="space-y-4">
-      {/* Header bar */}
-      <div className="flex items-center justify-between flex-wrap gap-3">
-        <div>
-          <h2 className="text-xl font-bold flex items-center gap-2">
-            <Workflow size={20} className="text-purple-400" />
-            Automation Hub
-          </h2>
-          <div className="text-xs text-white/50 mt-0.5">{activeCount} active · {totalRuns} total runs · workflows fire automatically as events happen</div>
-        </div>
-        <div className="flex items-center gap-2">
-          <GBtn variant="ghost" onClick={() => setLogOpen(!logOpen)} className={"!text-xs " + (execLog.length > 0 ? "!border-green-700/50 !text-green-400" : "")}>
-            <Activity size={12} className="inline mr-1.5" />Log {execLog.length > 0 && `(${execLog.length})`}
-          </GBtn>
-          <GBtn variant="ghost" onClick={() => setTemplatesOpen(true)} className="!text-xs">
-            <Layers size={12} className="inline mr-1.5" />Templates
-          </GBtn>
-          <GBtn onClick={() => openBuilder()} className="!text-sm">
-            <Plus size={14} className="inline mr-1.5" />New Workflow
-          </GBtn>
+      {/* Header bar — gradient banner matching the app's red/black identity
+          (see JobsPage.tsx / EstimatesPage.tsx header treatment). All the
+          global toggles/caps that used to live inline here (pause switch,
+          send-rate caps, late-employee notify, owner stats email) now live
+          in the "Automation Settings" modal below so this page opens
+          straight onto the workflow list instead of a wall of controls. */}
+      <div className="relative overflow-hidden rounded-2xl border border-red-900/30 bg-gradient-to-br from-red-950/40 via-black to-purple-950/20 p-5">
+        <div className="absolute -top-16 -right-16 w-56 h-56 rounded-full bg-red-600/10 blur-3xl pointer-events-none" />
+        <div className="absolute -bottom-20 -left-10 w-56 h-56 rounded-full bg-purple-600/10 blur-3xl pointer-events-none" />
+        <div className="relative flex items-center justify-between flex-wrap gap-3">
+          <div>
+            <h2 className="text-xl font-bold flex items-center gap-2">
+              <Workflow size={20} className="text-purple-400" />
+              Automation Hub
+              <Badge tone={settings?.automationsPaused === false ? "green" : "red"}>
+                {settings?.automationsPaused === false ? "● Live" : "⏸ Paused"}
+              </Badge>
+            </h2>
+            <div className="text-xs text-white/50 mt-0.5">{activeCount} active · {totalRuns} total runs · workflows fire automatically as events happen</div>
+          </div>
+          <div className="flex items-center gap-2">
+            <GBtn variant="ghost" onClick={() => setLogOpen(!logOpen)} className={"!text-xs " + (execLog.length > 0 ? "!border-green-700/50 !text-green-400" : "")}>
+              <Activity size={12} className="inline mr-1.5" />Log {execLog.length > 0 && `(${execLog.length})`}
+            </GBtn>
+            <GBtn variant="ghost" onClick={() => setTemplatesOpen(true)} className="!text-xs">
+              <Layers size={12} className="inline mr-1.5" />Templates
+            </GBtn>
+            <GBtn variant="ghost" onClick={() => setSettingsOpen(true)} className={"!text-xs " + (settings?.automationsPaused === false ? "" : "!border-red-700/50 !text-red-300")}>
+              <Settings size={12} className="inline mr-1.5" />Automation Settings
+            </GBtn>
+            <GBtn onClick={() => openBuilder()} className="!text-sm">
+              <Plus size={14} className="inline mr-1.5" />New Workflow
+            </GBtn>
+          </div>
         </div>
       </div>
-
-      {/* CRITICAL — kill switch (automation spam incident). Defaults to
-          PAUSED for every existing owner (settings.automationsPaused is
-          undefined until someone touches this toggle, and `!== false` reads
-          undefined as paused) — the repeat-send bug meant real customers got
-          messaged 10+ times, so automations stay off until the owner
-          consciously flips this back on having read what changed. The engine
-          (useAutomationEngine.ts) checks this exact same flag and skips
-          every send entirely while paused — this isn't just a UI hint. */}
-      <Glass className={"p-4 " + (settings?.automationsPaused === false ? "!bg-emerald-950/10 !border-emerald-700/20" : "!bg-red-950/20 !border-red-700/40")}>
-        <div className="flex items-center justify-between gap-3 flex-wrap">
-          <div>
-            <div className="text-sm font-semibold flex items-center gap-1.5">
-              {settings?.automationsPaused === false ? "🟢 Automations are running" : "⏸ All automations are paused"}
-            </div>
-            <div className="text-xs text-white/60 mt-0.5 max-w-xl">
-              {settings?.automationsPaused === false
-                ? "Workflows send automatically as events happen. Use this switch any time to stop every automation instantly."
-                : "A bug let editing a workflow silently reset its \"already sent\" memory, causing repeat messages to the same customers. That's fixed (edits now preserve send history, and a session-level guard blocks any duplicate send). Automations stay off until you turn them back on here."}
-            </div>
-          </div>
-          <button
-            onClick={() => setSettings((s: any) => ({ ...s, automationsPaused: s?.automationsPaused === false }))}
-            className={"flex-shrink-0 px-4 py-2 rounded-lg text-xs font-semibold transition " + (settings?.automationsPaused === false ? "bg-white/10 hover:bg-red-900/30 text-white/70 hover:text-red-300" : "bg-emerald-600 hover:bg-emerald-500 text-white")}
-          >
-            {settings?.automationsPaused === false ? "Pause All Automations" : "Enable Automations"}
-          </button>
-        </div>
-      </Glass>
-
-      {/* FEATURE — explicit cap on total automation sends per day, on top of
-          the existing one-touch-per-customer-per-day guardrail. That existing
-          rule stops any ONE customer being messaged twice in a day, but does
-          nothing to stop a single automation from legitimately matching e.g.
-          200 customers at once (a seasonal promo) and queuing all 200 into
-          one approval batch — this cap holds the excess back and warns
-          instead of dumping an unbounded blast on "Send All". */}
-      <Glass className="p-4 !bg-blue-950/10 !border-blue-700/20 space-y-3">
-        <div className="flex items-center justify-between gap-3 flex-wrap">
-          <div>
-            <div className="text-sm font-semibold flex items-center gap-1.5">🛡 Max Automation Sends Per Day</div>
-            <div className="text-xs text-white/50 mt-0.5 max-w-xl">Caps how many customers can be reached by automations in a single day, across every workflow combined. If a batch would exceed this, the extra sends are held back with a warning instead of going out — raise it if you're running a planned mass promo.</div>
-          </div>
-          <GInput
-            type="number" min="1" step="1"
-            value={settings?.automationMaxSendsPerDay ?? 50}
-            onChange={(e: any) => setSettings((s: any) => ({ ...s, automationMaxSendsPerDay: Math.max(1, Number(e.target.value) || 50) }))}
-            className="!w-24 !text-sm flex-shrink-0"
-          />
-        </div>
-        {/* AUDIT FIX — the per-day cap alone doesn't stop a huge batch from
-            hitting Twilio all at once the moment "Send All" is clicked — a
-            200-customer approved batch still fires 200 texts in the same
-            second, which is exactly the kind of burst that trips carrier
-            filtering/A2P throughput limits (and is generally how "spam"
-            gets flagged). Per-hour/per-minute caps throttle the actual send
-            RATE, independent of the daily total. 0 or blank = no limit
-            (same "off" convention as elsewhere in this app). */}
-        <div className="flex items-center justify-between gap-3 flex-wrap pt-3 border-t border-white/5">
-          <div>
-            <div className="text-sm font-semibold flex items-center gap-1.5">⏱ Max Sends Per Hour</div>
-            <div className="text-xs text-white/50 mt-0.5 max-w-xl">Throttles how fast a big approved batch actually goes out, independent of the daily cap above. Leave blank/0 for no hourly limit.</div>
-          </div>
-          <GInput
-            type="number" min="0" step="1"
-            value={settings?.automationMaxSendsPerHour ?? ""}
-            placeholder="No limit"
-            onChange={(e: any) => setSettings((s: any) => ({ ...s, automationMaxSendsPerHour: Math.max(0, Number(e.target.value) || 0) }))}
-            className="!w-24 !text-sm flex-shrink-0"
-          />
-        </div>
-        <div className="flex items-center justify-between gap-3 flex-wrap pt-3 border-t border-white/5">
-          <div>
-            <div className="text-sm font-semibold flex items-center gap-1.5">⏱ Max Sends Per Minute</div>
-            <div className="text-xs text-white/50 mt-0.5 max-w-xl">The tightest throttle of the three — caps burst rate within any single minute. Leave blank/0 for no per-minute limit.</div>
-          </div>
-          <GInput
-            type="number" min="0" step="1"
-            value={settings?.automationMaxSendsPerMinute ?? ""}
-            placeholder="No limit"
-            onChange={(e: any) => setSettings((s: any) => ({ ...s, automationMaxSendsPerMinute: Math.max(0, Number(e.target.value) || 0) }))}
-            className="!w-24 !text-sm flex-shrink-0"
-          />
-        </div>
-      </Glass>
-
-      {/* Late-employee auto-notifications — separate from the workflow builder
-          above since it reads live clock-in/job timing rather than firing on a
-          discrete event; surfaced as a banner+button on the affected job in
-          Crew View → Live Now when a crew member is running behind. */}
-      <Glass className="p-4 !bg-amber-950/10 !border-amber-700/20">
-        <div className="flex items-center justify-between gap-3">
-          <div>
-            <div className="text-sm font-semibold flex items-center gap-1.5">⏰ Late Employee Auto-Notifications</div>
-            <div className="text-xs text-white/50 mt-0.5">When a crew member runs behind schedule, show a one-tap option in Crew View to text/email the next client a new ETA.</div>
-          </div>
-          <button onClick={() => setSettings((s: any) => ({ ...s, autoNotifyLate: !s.autoNotifyLate }))} className={"flex-shrink-0 w-12 h-7 rounded-full transition relative " + (settings?.autoNotifyLate ? "bg-amber-600" : "bg-white/10")}>
-            <div className={"absolute top-1 w-5 h-5 rounded-full bg-white transition " + (settings?.autoNotifyLate ? "left-6" : "left-1")} />
-          </button>
-        </div>
-        {settings?.autoNotifyLate && (
-          <div className="grid md:grid-cols-2 gap-3 mt-3 pt-3 border-t border-amber-700/20">
-            <div>
-              <label className="text-xs text-white/60 mb-1 block">Late threshold (minutes)</label>
-              <GInput type="number" value={settings?.lateThresholdMinutes ?? 15} onChange={(e: any) => setSettings((s: any) => ({ ...s, lateThresholdMinutes: Number(e.target.value) }))} className="!text-xs" />
-            </div>
-            <div>
-              <label className="text-xs text-white/60 mb-1 block">Message template</label>
-              <GInput value={settings?.lateNotifyTemplate || "Your technician is running slightly behind. New ETA: {{eta}}. We apologize for the delay."} onChange={(e: any) => setSettings((s: any) => ({ ...s, lateNotifyTemplate: e.target.value }))} className="!text-xs" placeholder="Use {{eta}} for the new estimated time" />
-            </div>
-          </div>
-        )}
-      </Glass>
-
-      {/* FEATURE — owner-configurable frequency/time for the "Owner:
-          End-of-Day Summary" report automation (useAutomationEngine.ts
-          owner_daily_summary spec). Read fresh off settings every 15-min
-          engine tick, so a change here takes effect on the next poll without
-          a reload — no separate "save" step needed. */}
-      <Glass className="p-4 !bg-purple-950/10 !border-purple-700/20">
-        <div className="text-sm font-semibold flex items-center gap-1.5">📊 Owner Stats Email</div>
-        <div className="text-xs text-white/50 mt-0.5 max-w-xl">Controls the "Owner: End-of-Day Summary" automation (Templates → Owner) — a real email with today's jobs completed, revenue, and new leads, computed the same way the Dashboard's "Send Daily Briefing Now" button does.</div>
-        <div className="grid md:grid-cols-2 gap-3 mt-3 pt-3 border-t border-purple-700/20">
-          <div>
-            <label className="text-xs text-white/60 mb-1 block">Frequency</label>
-            <GSel value={settings?.ownerSummaryFreq || "daily"} onChange={(e: any) => setSettings((s: any) => ({ ...s, ownerSummaryFreq: e.target.value }))} className="!text-xs">
-              <option value="daily">Daily</option>
-              <option value="weekly">Weekly (Mondays)</option>
-              <option value="off">Off</option>
-            </GSel>
-          </div>
-          <div>
-            <label className="text-xs text-white/60 mb-1 block">Send hour (24h, local time)</label>
-            <GInput type="number" min="0" max="23" value={settings?.ownerSummaryHour ?? 18} onChange={(e: any) => setSettings((s: any) => ({ ...s, ownerSummaryHour: Math.max(0, Math.min(23, Number(e.target.value) || 0)) }))} className="!text-xs" />
-          </div>
-        </div>
-      </Glass>
 
       {/* Stats row */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
@@ -350,7 +229,7 @@ export function AutomationsPage({ automations = [], setAutomations, jobs = [], c
           { label: "Total Runs", value: totalRuns, icon: "▶", color: "text-purple-400" },
           { label: "Fired Today", value: automations.filter(a => a.lastTriggered === today()).length, icon: "⚡", color: "text-yellow-400" },
         ].map(s => (
-          <Glass key={s.label} className="p-4 flex items-center gap-3">
+          <Glass key={s.label} className="p-4 flex items-center gap-3 hover:!border-purple-700/30 transition-colors">
             <span className="text-2xl">{s.icon}</span>
             <div>
               <div className={"text-2xl font-bold " + s.color}>{s.value}</div>
@@ -359,6 +238,177 @@ export function AutomationsPage({ automations = [], setAutomations, jobs = [], c
           </Glass>
         ))}
       </div>
+
+      {/* Automation Settings modal — pause switch, send-rate caps,
+          late-employee auto-notify, owner stats email. Same fields/handlers
+          as before, just relocated out of the page body. */}
+      <Modal open={settingsOpen} onClose={() => setSettingsOpen(false)} title="Automation Settings" maxW="max-w-2xl">
+        <div className="space-y-4">
+          {/* CRITICAL — kill switch (automation spam incident). Defaults to
+              PAUSED for every existing owner (settings.automationsPaused is
+              undefined until someone touches this toggle, and `!== false` reads
+              undefined as paused) — the repeat-send bug meant real customers got
+              messaged 10+ times, so automations stay off until the owner
+              consciously flips this back on having read what changed. The engine
+              (useAutomationEngine.ts) checks this exact same flag and skips
+              every send entirely while paused — this isn't just a UI hint. */}
+          <Glass className={"p-4 " + (settings?.automationsPaused === false ? "!bg-emerald-950/10 !border-emerald-700/20" : "!bg-red-950/20 !border-red-700/40")}>
+            <div className="flex items-center justify-between gap-3 flex-wrap">
+              <div>
+                <div className="text-sm font-semibold flex items-center gap-1.5">
+                  {settings?.automationsPaused === false ? "🟢 Automations are running" : "⏸ All automations are paused"}
+                </div>
+                <div className="text-xs text-white/60 mt-0.5 max-w-xl">
+                  {settings?.automationsPaused === false
+                    ? "Workflows send automatically as events happen. Use this switch any time to stop every automation instantly."
+                    : "A bug let editing a workflow silently reset its \"already sent\" memory, causing repeat messages to the same customers. That's fixed (edits now preserve send history, and a session-level guard blocks any duplicate send). Automations stay off until you turn them back on here."}
+                </div>
+              </div>
+              <button
+                onClick={() => {
+                  const nowPaused = settings?.automationsPaused === false;
+                  try {
+                    setSettings((s: any) => ({ ...s, automationsPaused: s?.automationsPaused === false }));
+                    toast?.(nowPaused ? "⏸ All automations paused — nothing will send" : "🟢 Automations enabled — workflows will send as events happen");
+                  } catch (e: any) {
+                    toast?.("Couldn't change the automation kill switch: " + (e?.message || String(e)), "error");
+                  }
+                }}
+                className={"flex-shrink-0 px-4 py-2 rounded-lg text-xs font-semibold transition " + (settings?.automationsPaused === false ? "bg-white/10 hover:bg-red-900/30 text-white/70 hover:text-red-300" : "bg-emerald-600 hover:bg-emerald-500 text-white")}
+              >
+                {settings?.automationsPaused === false ? "Pause All Automations" : "Enable Automations"}
+              </button>
+            </div>
+          </Glass>
+
+          {/* FEATURE — explicit cap on total automation sends per day, on top of
+              the existing one-touch-per-customer-per-day guardrail. That existing
+              rule stops any ONE customer being messaged twice in a day, but does
+              nothing to stop a single automation from legitimately matching e.g.
+              200 customers at once (a seasonal promo) and queuing all 200 into
+              one approval batch — this cap holds the excess back and warns
+              instead of dumping an unbounded blast on "Send All". */}
+          <Glass className="p-4 !bg-blue-950/10 !border-blue-700/20 space-y-3">
+            <div className="flex items-center justify-between gap-3 flex-wrap">
+              <div>
+                <div className="text-sm font-semibold flex items-center gap-1.5">🛡 Max Automation Sends Per Day</div>
+                <div className="text-xs text-white/50 mt-0.5 max-w-xl">Caps how many customers can be reached by automations in a single day, across every workflow combined. If a batch would exceed this, the extra sends are held back with a warning instead of going out — raise it if you're running a planned mass promo.</div>
+              </div>
+              <GInput
+                type="number" min="1" step="1"
+                value={settings?.automationMaxSendsPerDay ?? 50}
+                onChange={(e: any) => setSettings((s: any) => ({ ...s, automationMaxSendsPerDay: Math.max(1, Number(e.target.value) || 50) }))}
+                className="!w-24 !text-sm flex-shrink-0"
+              />
+            </div>
+            {/* AUDIT FIX — the per-day cap alone doesn't stop a huge batch from
+                hitting Twilio all at once the moment "Send All" is clicked — a
+                200-customer approved batch still fires 200 texts in the same
+                second, which is exactly the kind of burst that trips carrier
+                filtering/A2P throughput limits (and is generally how "spam"
+                gets flagged). Per-hour/per-minute caps throttle the actual send
+                RATE, independent of the daily total. 0 or blank = no limit
+                (same "off" convention as elsewhere in this app). */}
+            <div className="flex items-center justify-between gap-3 flex-wrap pt-3 border-t border-white/5">
+              <div>
+                <div className="text-sm font-semibold flex items-center gap-1.5">⏱ Max Sends Per Hour</div>
+                <div className="text-xs text-white/50 mt-0.5 max-w-xl">Throttles how fast a big approved batch actually goes out, independent of the daily cap above. Leave blank/0 for no hourly limit.</div>
+              </div>
+              <GInput
+                type="number" min="0" step="1"
+                value={settings?.automationMaxSendsPerHour ?? ""}
+                placeholder="No limit"
+                onChange={(e: any) => setSettings((s: any) => ({ ...s, automationMaxSendsPerHour: Math.max(0, Number(e.target.value) || 0) }))}
+                className="!w-24 !text-sm flex-shrink-0"
+              />
+            </div>
+            <div className="flex items-center justify-between gap-3 flex-wrap pt-3 border-t border-white/5">
+              <div>
+                <div className="text-sm font-semibold flex items-center gap-1.5">⏱ Max Sends Per Minute</div>
+                <div className="text-xs text-white/50 mt-0.5 max-w-xl">The tightest throttle of the three — caps burst rate within any single minute. Leave blank/0 for no per-minute limit.</div>
+              </div>
+              <GInput
+                type="number" min="0" step="1"
+                value={settings?.automationMaxSendsPerMinute ?? ""}
+                placeholder="No limit"
+                onChange={(e: any) => setSettings((s: any) => ({ ...s, automationMaxSendsPerMinute: Math.max(0, Number(e.target.value) || 0) }))}
+                className="!w-24 !text-sm flex-shrink-0"
+              />
+            </div>
+          </Glass>
+
+          {/* Late-employee auto-notifications — separate from the workflow builder
+              above since it reads live clock-in/job timing rather than firing on a
+              discrete event; surfaced as a banner+button on the affected job in
+              Crew View → Live Now when a crew member is running behind. */}
+          <Glass className="p-4 !bg-amber-950/10 !border-amber-700/20">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div className="text-sm font-semibold flex items-center gap-1.5">⏰ Late Employee Auto-Notifications</div>
+                <div className="text-xs text-white/50 mt-0.5">When a crew member runs behind schedule, show a one-tap option in Crew View to text/email the next client a new ETA.</div>
+              </div>
+              <button onClick={() => setSettings((s: any) => ({ ...s, autoNotifyLate: !s.autoNotifyLate }))} className={"flex-shrink-0 w-12 h-7 rounded-full transition relative " + (settings?.autoNotifyLate ? "bg-amber-600" : "bg-white/10")}>
+                <div className={"absolute top-1 w-5 h-5 rounded-full bg-white transition " + (settings?.autoNotifyLate ? "left-6" : "left-1")} />
+              </button>
+            </div>
+            {settings?.autoNotifyLate && (
+              <div className="grid md:grid-cols-2 gap-3 mt-3 pt-3 border-t border-amber-700/20">
+                <div>
+                  <label className="text-xs text-white/60 mb-1 block">Late threshold (minutes)</label>
+                  <GInput type="number" value={settings?.lateThresholdMinutes ?? 15} onChange={(e: any) => setSettings((s: any) => ({ ...s, lateThresholdMinutes: Number(e.target.value) }))} className="!text-xs" />
+                </div>
+                <div>
+                  <label className="text-xs text-white/60 mb-1 block">Message template</label>
+                  <GInput value={settings?.lateNotifyTemplate || "Your technician is running slightly behind. New ETA: {{eta}}. We apologize for the delay."} onChange={(e: any) => setSettings((s: any) => ({ ...s, lateNotifyTemplate: e.target.value }))} className="!text-xs" placeholder="Use {{eta}} for the new estimated time" />
+                </div>
+              </div>
+            )}
+          </Glass>
+
+          {/* FEATURE — owner-configurable frequency/time for the "Owner:
+              End-of-Day Summary" report automation (useAutomationEngine.ts
+              owner_daily_summary spec). Read fresh off settings every 15-min
+              engine tick, so a change here takes effect on the next poll without
+              a reload — no separate "save" step needed. */}
+          <Glass className="p-4 !bg-purple-950/10 !border-purple-700/20">
+            <div className="text-sm font-semibold flex items-center gap-1.5">📊 Owner Stats Email</div>
+            <div className="text-xs text-white/50 mt-0.5 max-w-xl">Controls the "Owner: End-of-Day Summary" automation (Templates → Owner) — a real email with today's jobs completed, revenue, and new leads, computed the same way the Dashboard's "Send Daily Briefing Now" button does.</div>
+            <div className="grid md:grid-cols-2 gap-3 mt-3 pt-3 border-t border-purple-700/20">
+              <div>
+                <label className="text-xs text-white/60 mb-1 block">Frequency</label>
+                <GSel value={settings?.ownerSummaryFreq || "daily"} onChange={(e: any) => setSettings((s: any) => ({ ...s, ownerSummaryFreq: e.target.value }))} className="!text-xs">
+                  <option value="daily">Daily</option>
+                  <option value="weekly">Weekly (Mondays)</option>
+                  <option value="off">Off</option>
+                </GSel>
+              </div>
+              <div>
+                <label className="text-xs text-white/60 mb-1 block">Send hour (24h, local time)</label>
+                <GInput type="number" min="0" max="23" value={settings?.ownerSummaryHour ?? 18} onChange={(e: any) => setSettings((s: any) => ({ ...s, ownerSummaryHour: Math.max(0, Math.min(23, Number(e.target.value) || 0)) }))} className="!text-xs" />
+              </div>
+            </div>
+          </Glass>
+
+          {/* Drives the "VIP customer milestone" trigger and the "Customer is
+              a VIP" condition in the workflow builder (useAutomationEngine.ts
+              vip_thank_you / customer_is_vip), both of which compare against
+              customer.totalSpent. */}
+          <Glass className="p-4 !bg-yellow-950/10 !border-yellow-700/20">
+            <div className="flex items-center justify-between gap-3 flex-wrap">
+              <div>
+                <div className="text-sm font-semibold flex items-center gap-1.5">👑 VIP Customer Threshold</div>
+                <div className="text-xs text-white/50 mt-0.5 max-w-xl">Lifetime spend at which a customer counts as a VIP. Used by the "VIP customer milestone" trigger and the "Customer is a VIP" condition.</div>
+              </div>
+              <GInput
+                type="number" min="1" step="50"
+                value={settings?.automationVipSpendThreshold ?? 2000}
+                onChange={(e: any) => setSettings((s: any) => ({ ...s, automationVipSpendThreshold: Math.max(1, Number(e.target.value) || 2000) }))}
+                className="!w-28 !text-sm flex-shrink-0"
+              />
+            </div>
+          </Glass>
+        </div>
+      </Modal>
 
       {/* Execution log */}
       {logOpen && (

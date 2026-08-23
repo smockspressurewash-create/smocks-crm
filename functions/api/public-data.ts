@@ -94,6 +94,33 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
       return json({ estimate, customer, settings });
     }
 
+    // ── ClientPortal.tsx (via App.tsx's #/estimate/:id route) — marks
+    // clientViewedAt the first time an anonymous visitor opens their
+    // estimate/invoice link. BUG FIX — this used to go through a client-side
+    // supabase.from("estimates").update(...) call with no session at all,
+    // which RLS (owner_id = current_owner_id(), migration 0033) silently
+    // rejects for an anonymous caller — "viewed" tracking, the owner
+    // notification email, and the Alfred "quote viewed" alert all quietly
+    // never fired for this route (the one most customers actually use — see
+    // ClientAuthPortal.tsx for the separate logged-in-customer path, which
+    // already wrote this field correctly). Same unguessable-id capability
+    // model as get_estimate above; only ever sets one timestamp field.
+    if (action === "mark_estimate_viewed") {
+      const { id } = body;
+      if (!id) return json({ error: "Missing id" }, 400);
+      const est = await sb(serviceRoleKey, `estimates?id=eq.${encodeURIComponent(id)}&select=id,clientViewedAt`);
+      const row = Array.isArray(est.data) ? est.data[0] : null;
+      if (!row) return json({ error: "Not found" }, 404);
+      if (row.clientViewedAt) return json({ success: true, alreadyViewed: true });
+      const upd = await sb(serviceRoleKey, `estimates?id=eq.${encodeURIComponent(id)}`, {
+        method: "PATCH",
+        headers: { Prefer: "return=minimal" },
+        body: JSON.stringify({ clientViewedAt: new Date().toISOString() }),
+      });
+      if (!upd.ok) return json({ error: "Failed to record view" }, 500);
+      return json({ success: true });
+    }
+
     // ── ClientPortal.tsx (via App.tsx's #/estimate/:id route) — the actual
     // accept/sign/pay action. Bounded to a fixed, narrow set of fields (never
     // arbitrary columns) and matched by estimate id (the same unguessable

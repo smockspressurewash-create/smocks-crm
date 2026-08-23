@@ -851,19 +851,43 @@ export function App() {
     return () => window.removeEventListener("hashchange", handler);
   }, []);
 
-  // ── Undo stack ────────────────────────────────────────────────────────────
-  const undoStackRef = useRef<Array<{ desc: string; fn: () => void }>>([]);
+  // ── Undo / redo stacks ────────────────────────────────────────────────────
+  // BUG FIX — pushUndo existed but nothing in the app ever called it (the
+  // Undo button was permanently disabled), and Redo was a hardcoded-disabled
+  // stub with no stack at all ("visual only — stack not yet wired"). Delete
+  // actions across Jobs/Customers/Estimates/Invoices now call pushUndo with
+  // both a restore function AND a redo function (re-running the original
+  // delete), so undo/redo can round-trip in either direction.
+  const undoStackRef = useRef<Array<{ desc: string; fn: () => void; redoFn?: () => void }>>([]);
+  const redoStackRef = useRef<Array<{ desc: string; fn: () => void; redoFn?: () => void }>>([]);
   const [undoCount, setUndoCount] = useState(0);
-  const pushUndo = (desc: string, fn: () => void) => {
-    undoStackRef.current = [...undoStackRef.current.slice(-19), { desc, fn }];
+  const [redoCount, setRedoCount] = useState(0);
+  const pushUndo = (desc: string, fn: () => void, redoFn?: () => void) => {
+    undoStackRef.current = [...undoStackRef.current.slice(-19), { desc, fn, redoFn }];
     setUndoCount(undoStackRef.current.length);
+    // A fresh action invalidates whatever was previously redo-able.
+    redoStackRef.current = [];
+    setRedoCount(0);
   };
   const undo = () => {
     if (!undoStackRef.current.length) return;
     const last = undoStackRef.current.pop()!;
     setUndoCount(undoStackRef.current.length);
     last.fn();
+    if (last.redoFn) {
+      redoStackRef.current = [...redoStackRef.current, last];
+      setRedoCount(redoStackRef.current.length);
+    }
     toast("Undone: " + last.desc, "yellow");
+  };
+  const redo = () => {
+    if (!redoStackRef.current.length) return;
+    const last = redoStackRef.current.pop()!;
+    setRedoCount(redoStackRef.current.length);
+    last.redoFn!();
+    undoStackRef.current = [...undoStackRef.current, last];
+    setUndoCount(undoStackRef.current.length);
+    toast("Redone: " + last.desc, "yellow");
   };
 
   // ── Toasts ────────────────────────────────────────────────────────────────
@@ -1902,6 +1926,13 @@ export function App() {
   // Portal
   const [portalEstId, setPortalEstId] = useState<string | null>(null);
   const [openJobId, setOpenJobId] = useState<string | null>(null);
+  // FEATURE — "Client Demo" (renamed from the old "Portal" button, which
+  // only ever opened the latest approved estimate). Owner picks a real
+  // customer + which flow to test; each option opens the actual
+  // customer-facing surface for that flow with that customer's real data,
+  // rather than a separate fabricated demo.
+  const [clientDemoOpen, setClientDemoOpen] = useState(false);
+  const [clientDemoCustomerId, setClientDemoCustomerId] = useState("");
 
   // MULTI-TENANT (Phase D) — public #/estimate/:id data. Once RLS is
   // owner_id-scoped, an anonymous visitor (or a customer with no `employees`
@@ -3005,7 +3036,10 @@ export function App() {
         customers={customers}
         setCustomers={setCustomers}
         onClose={() => { window.location.hash = "/client"; }}
-        onView={id => setEstimates(prev => prev.map(e => e.id === id && !e.viewed ? { ...e, viewed: true, viewedAt: new Date().toISOString() } : e))}
+        onView={id => {
+          setEstimates(prev => prev.map(e => e.id === id && !(e as any).clientViewedAt ? { ...e, clientViewedAt: new Date().toISOString() } as any : e));
+          fetch("/api/public-data", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "mark_estimate_viewed", id }) }).catch(() => {});
+        }}
         onApprove={(id, data) => {
           const paid = data.payChoice !== "later";
           setEstimates(prev => prev.map(e => e.id === id ? {
@@ -3628,8 +3662,8 @@ export function App() {
           <button onClick={undo} disabled={undoCount === 0} title="Undo last action" className={"p-2 rounded-lg transition " + (undoCount > 0 ? "text-white/60 hover:text-white hover:bg-white/5" : "text-white/20 cursor-not-allowed")}>
             <Undo2 size={16} />
           </button>
-          {/* Redo (visual only — stack not yet wired) */}
-          <button disabled title="Nothing to redo" className="p-2 rounded-lg text-white/20 cursor-not-allowed hidden md:flex">
+          {/* Redo */}
+          <button onClick={redo} disabled={redoCount === 0} title="Redo last undone action" className={"p-2 rounded-lg transition hidden md:flex " + (redoCount > 0 ? "text-white/60 hover:text-white hover:bg-white/5" : "text-white/20 cursor-not-allowed")}>
             <Redo2 size={16} />
           </button>
           {/* Auto-save indicator */}
@@ -3648,16 +3682,16 @@ export function App() {
               </>
             )}
           </div>
-          {/* Portal button — opens latest approved estimate in ClientPortal */}
+          {/* Client Demo — lets the owner test every customer-facing flow
+              (view/sign a quote, pay an invoice, leave a review, view the
+              full client portal, reschedule a job) against a real customer's
+              real data, picked from a modal instead of always jumping to
+              whatever estimate happens to be newest. */}
           <button
-            onClick={() => {
-              const latest = estimates.find(e => e.status === "approved" || (e as any).invoiced);
-              if (latest) { setPortalEstId(latest.id); }
-              else { setPage("estimates"); toast("Approve an estimate first to access the client portal", "yellow"); }
-            }}
+            onClick={() => setClientDemoOpen(true)}
             className="hidden md:flex items-center gap-1.5 px-3 py-1.5 bg-black/40 border border-red-900/30 rounded-xl text-xs text-white/50 hover:text-white hover:border-red-600/50 transition"
           >
-            <Globe size={13} />Portal
+            <Globe size={13} />Client Demo
           </button>
           {/* PWA — always-visible install button (see InstallAppButton.tsx —
               it explains itself instead of disappearing when there's
@@ -3807,10 +3841,10 @@ export function App() {
             <PageFade key={page} className={page === "alfred" || page === "inbox" ? "flex-1 min-h-0 flex flex-col" : ""}>
               <SafePage>
                 {page === "dashboard"      && <Dashboard jobs={jobs} setJobs={setJobs} customers={customers} estimates={estimates} setEstimates={setEstimates} automations={automations} stats={{ totalRev, activeJobs, pendingEst, closeRate, doneMonth }} goals={{ revenue: settings.monthlyRevenueGoal ?? 8000, jobCount: settings.monthlyJobsGoal ?? 20 }} vehicles={vehicles} maintenance={maintenance} chemicals={chemicals} settings={settings} setSettings={setSettings} onNav={setPage} toast={toast} weatherData={weatherData} weatherFetchError={weatherFetchError} inboxThreads={inboxThreads} employees={employees} crewFetchError={crewFetchError} reviews={reviews} onSendDailyBriefing={sendDailyBriefingNow} onViewJob={id => { setOpenJobId(id); setPage("jobs"); }} ownerId={crmUserId} />}
-                {page === "customers"      && <CustomersPage customers={customers} setCustomers={setCustomers} estimates={estimates} jobs={jobs} employees={employees} toast={toast} timeline={timeline} setTimeline={setTimeline} settings={settings} setSettings={setSettings} autoOpenNew={fabAutoOpenNew === "customers"} onAutoOpenNewConsumed={() => setFabAutoOpenNew(null)} highlightId={alfredHighlight?.type === "customer" ? alfredHighlight.id : null} />}
-                {page === "estimates"      && <EstimatesPage estimates={estimates} setEstimates={setEstimates} customers={customers} services={services} settings={settings} toast={toast} onPortal={id => setPortalEstId(id)} estimateTemplates={estimateTemplates} setEstimateTemplates={setEstimateTemplates} setJobs={setJobs} onNav={setPage} autoOpenNew={fabAutoOpenNew === "estimates"} onAutoOpenNewConsumed={() => { setFabAutoOpenNew(null); setEstimatePresetCustomerId(null); }} presetCustomerId={estimatePresetCustomerId || ""} ownerId={crmUserId} highlightId={alfredHighlight?.type === "estimate" ? alfredHighlight.id : null} />}
-                {page === "invoices"       && <InvoicesPage estimates={estimates} setEstimates={setEstimates} customers={customers} settings={settings} toast={toast} jobs={jobs} setJobs={setJobs} ownerId={crmUserId} highlightId={alfredHighlight?.type === "invoice" ? alfredHighlight.id : null} />}
-                {page === "jobs"           && <JobsPage jobs={jobs} setJobs={setJobs} customers={customers} setCustomers={setCustomers} employees={employees} estimates={estimates} setEstimates={setEstimates} settings={settings} setSettings={setSettings} toast={toast} posts={socialPosts} setPosts={setSocialPosts} setTimeline={setTimeline} initialDetailId={openJobId} onInitialDetailIdConsumed={() => setOpenJobId(null)} onPortal={id => setPortalEstId(id)} ownerId={crmUserId} autoOpenNew={fabAutoOpenNew === "jobs"} onAutoOpenNewConsumed={() => setFabAutoOpenNew(null)} highlightId={alfredHighlight?.type === "job" ? alfredHighlight.id : null} />}
+                {page === "customers"      && <CustomersPage customers={customers} setCustomers={setCustomers} estimates={estimates} jobs={jobs} employees={employees} toast={toast} timeline={timeline} setTimeline={setTimeline} settings={settings} setSettings={setSettings} autoOpenNew={fabAutoOpenNew === "customers"} onAutoOpenNewConsumed={() => setFabAutoOpenNew(null)} highlightId={alfredHighlight?.type === "customer" ? alfredHighlight.id : null} pushUndo={pushUndo} />}
+                {page === "estimates"      && <EstimatesPage estimates={estimates} setEstimates={setEstimates} customers={customers} services={services} settings={settings} toast={toast} onPortal={id => setPortalEstId(id)} estimateTemplates={estimateTemplates} setEstimateTemplates={setEstimateTemplates} setJobs={setJobs} onNav={setPage} autoOpenNew={fabAutoOpenNew === "estimates"} onAutoOpenNewConsumed={() => { setFabAutoOpenNew(null); setEstimatePresetCustomerId(null); }} presetCustomerId={estimatePresetCustomerId || ""} ownerId={crmUserId} highlightId={alfredHighlight?.type === "estimate" ? alfredHighlight.id : null} pushUndo={pushUndo} />}
+                {page === "invoices"       && <InvoicesPage estimates={estimates} setEstimates={setEstimates} customers={customers} settings={settings} toast={toast} jobs={jobs} setJobs={setJobs} ownerId={crmUserId} highlightId={alfredHighlight?.type === "invoice" ? alfredHighlight.id : null} pushUndo={pushUndo} />}
+                {page === "jobs"           && <JobsPage jobs={jobs} setJobs={setJobs} customers={customers} setCustomers={setCustomers} employees={employees} estimates={estimates} setEstimates={setEstimates} settings={settings} setSettings={setSettings} toast={toast} posts={socialPosts} setPosts={setSocialPosts} setTimeline={setTimeline} initialDetailId={openJobId} onInitialDetailIdConsumed={() => setOpenJobId(null)} onPortal={id => setPortalEstId(id)} ownerId={crmUserId} autoOpenNew={fabAutoOpenNew === "jobs"} onAutoOpenNewConsumed={() => setFabAutoOpenNew(null)} highlightId={alfredHighlight?.type === "job" ? alfredHighlight.id : null} pushUndo={pushUndo} />}
                 {page === "pipeline"       && <PipelinePage jobs={jobs} setJobs={setJobs} customers={customers} toast={toast} />}
                 {page === "calendar"       && <CalendarPage jobs={jobs} setJobs={setJobs} customers={customers} employees={employees} toast={toast} settings={settings} setSettings={setSettings} ownerId={crmUserId} />}
                 {page === "inbox"          && (managerBlocked("inbox") ? <RestrictedNotice label="the Inbox" /> : <InboxPage threads={inboxThreads} setThreads={setInboxThreads} customers={customers} setCustomers={setCustomers} settings={settings} toast={toast} ownerId={crmUserId} />)}
@@ -3900,6 +3934,56 @@ export function App() {
         onAddManager={() => { setSettingsOpen(false); setAutoOpenManagerInvite(true); setPage("employees"); }}
       />
 
+      {clientDemoOpen && (() => {
+        const demoCust = customers.find(c => c.id === clientDemoCustomerId) as any;
+        const custEstimates = demoCust ? estimates.filter(e => e.customerId === demoCust.id).sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || "")) : [];
+        const latestQuote = custEstimates.find(e => !(e as any).invoiced);
+        const latestUnpaidInvoice = custEstimates.find(e => (e as any).invoiced && !e.paidAt);
+        const latestInvoice = custEstimates.find(e => (e as any).invoiced);
+        const companyName = (settings as any)?.companyName || "Crew Boss";
+        const rateLink = demoCust ? `${window.location.origin}${window.location.pathname}#/rate?c=${encodeURIComponent(demoCust.id)}&n=${encodeURIComponent(demoCust.firstName)}&g=${encodeURIComponent((settings as any).googlePlaceId || "")}&rl=${encodeURIComponent((settings as any).googleReviewLink || "")}&co=${encodeURIComponent(companyName)}` : "";
+        return (
+          <div className="fixed inset-0 z-[200] bg-black/80 backdrop-blur flex items-center justify-center p-4" onClick={() => setClientDemoOpen(false)}>
+            <div className="w-full max-w-md bg-neutral-950 border border-white/10 rounded-2xl shadow-2xl overflow-hidden" onClick={e => e.stopPropagation()}>
+              <div className="flex items-center justify-between px-4 py-3 border-b border-white/10 bg-gradient-to-r from-red-600 to-red-800">
+                <div className="font-bold text-white flex items-center gap-2"><Globe size={16} />Client Demo</div>
+                <button onClick={() => setClientDemoOpen(false)} className="p-1.5 rounded-lg hover:bg-white/15 text-white"><X size={16} /></button>
+              </div>
+              <div className="p-4 space-y-3">
+                <div>
+                  <label className="text-[10px] text-white/50 uppercase tracking-wider mb-1 block">Test as customer</label>
+                  <select value={clientDemoCustomerId} onChange={e => setClientDemoCustomerId(e.target.value)} className="w-full bg-white/5 border border-white/15 rounded-xl px-3 py-2.5 text-sm text-white">
+                    <option value="">Select a customer…</option>
+                    {customers.map((c: any) => <option key={c.id} value={c.id}>{c.firstName} {c.lastName}</option>)}
+                  </select>
+                </div>
+                {demoCust && (
+                  <div className="space-y-2">
+                    <button disabled={!latestQuote} onClick={() => { setClientDemoOpen(false); setPortalEstId(latestQuote!.id); }} className="w-full text-left px-3 py-2.5 rounded-xl bg-white/5 hover:bg-white/10 disabled:opacity-30 disabled:cursor-not-allowed text-sm text-white/80 flex items-center justify-between">
+                      View / Sign a Quote {!latestQuote && <span className="text-[10px] text-white/30">no open quote</span>}
+                    </button>
+                    <button disabled={!latestUnpaidInvoice} onClick={() => { setClientDemoOpen(false); setPortalEstId(latestUnpaidInvoice!.id); }} className="w-full text-left px-3 py-2.5 rounded-xl bg-white/5 hover:bg-white/10 disabled:opacity-30 disabled:cursor-not-allowed text-sm text-white/80 flex items-center justify-between">
+                      Pay an Invoice {!latestUnpaidInvoice && <span className="text-[10px] text-white/30">no unpaid invoice</span>}
+                    </button>
+                    <button disabled={!latestInvoice} onClick={() => { setClientDemoOpen(false); setPortalEstId(latestInvoice!.id); }} className="w-full text-left px-3 py-2.5 rounded-xl bg-white/5 hover:bg-white/10 disabled:opacity-30 disabled:cursor-not-allowed text-sm text-white/80">
+                      View Invoice
+                    </button>
+                    <button disabled={!rateLink} onClick={() => window.open(rateLink, "_blank", "noopener,noreferrer")} className="w-full text-left px-3 py-2.5 rounded-xl bg-white/5 hover:bg-white/10 text-sm text-white/80">
+                      Leave a Review
+                    </button>
+                    <div className="p-3 rounded-xl bg-black/40 border border-white/10 text-[11px] text-white/50 space-y-1.5">
+                      <div className="font-semibold text-white/70">Full Client Portal (view all jobs, reschedule, pay)</div>
+                      <div>The full portal at <span className="text-blue-400">#/client</span> requires signing in as the customer — {demoCust.email ? <>log in with <span className="text-white/70">{demoCust.email}</span></> : "this customer has no email on file to log in with"}.</div>
+                      <button onClick={() => window.open(`${window.location.origin}${window.location.pathname}#/client`, "_blank", "noopener,noreferrer")} className="text-blue-400 hover:text-blue-300 underline">Open Client Login →</button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
       {/* Automation batch-approval gate — nothing an automation wants to send
           goes out until the owner explicitly approves it here. */}
       {pendingAutomationBatch && (
@@ -3928,7 +4012,10 @@ export function App() {
           customers={customers}
           setCustomers={setCustomers}
           onClose={() => setPortalEstId(null)}
-          onView={id => setEstimates(prev => prev.map(e => e.id === id && !e.viewed ? { ...e, viewed: true, viewedAt: new Date().toISOString() } : e))}
+          onView={id => {
+          setEstimates(prev => prev.map(e => e.id === id && !(e as any).clientViewedAt ? { ...e, clientViewedAt: new Date().toISOString() } as any : e));
+          fetch("/api/public-data", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "mark_estimate_viewed", id }) }).catch(() => {});
+        }}
           onApprove={(id, data) => {
             const paid = data.payChoice !== "later";
             setEstimates(prev => prev.map(e => e.id === id ? {

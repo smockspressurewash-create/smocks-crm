@@ -351,17 +351,17 @@ export function SocialPage({ posts = [], setPosts, toast, settings = {} as AppSe
   return (
     <div className="space-y-4">
       {/* Header */}
-      <Glass className="p-5 !bg-gradient-to-br !from-purple-950/30 !to-black/60 !border-purple-700/40 overflow-hidden relative">
-        <div className="absolute -right-8 -top-8 w-40 h-40 bg-purple-600/10 rounded-full blur-2xl" />
+      <Glass className="p-5 !bg-gradient-to-br !from-red-950/30 !to-black/60 !border-red-900/30 overflow-hidden relative">
+        <div className="absolute -right-8 -top-8 w-40 h-40 bg-red-600/10 rounded-full blur-2xl" />
         <div className="relative flex items-start justify-between gap-4 flex-wrap">
           <div>
-            <div className="flex items-center gap-2 mb-1"><Share2 size={16} className="text-purple-400" /><h3 className="font-bold text-lg">Social Media</h3></div>
-            <p className="text-xs text-white/60 max-w-sm">Schedule posts across platforms. AI generates captions from your templates — paste a before/after photo on the platform after scheduling.</p>
+            <div className="flex items-center gap-2 mb-1"><Share2 size={16} className="text-red-400" /><h3 className="font-bold text-lg">Social Media</h3></div>
+            <p className="text-xs text-white/60 max-w-sm">Post across platforms — publish instantly or schedule for a specific time. AI generates captions from your templates.</p>
             <label className="flex items-center gap-2 mt-2 cursor-pointer">
-              <input type="checkbox" checked={!!posts.find(p => p.id === "__autopost_enabled__")} onChange={e => {
-                if (e.target.checked) setPosts(prev => [...prev, { id: "__autopost_enabled__", type: "setting" }]);
-                else setPosts(prev => prev.filter(p => p.id !== "__autopost_enabled__"));
-              }} className="w-4 h-4 accent-purple-500" />
+              <input type="checkbox" checked={!!posts.find((p: any) => p.id === "__autopost_enabled__")} onChange={e => {
+                if (e.target.checked) setPosts((prev: any[]) => [...prev, { id: "__autopost_enabled__", type: "setting" }]);
+                else setPosts((prev: any[]) => prev.filter(p => p.id !== "__autopost_enabled__"));
+              }} className="w-4 h-4 accent-red-500" />
               <span className="text-xs text-white/70">Auto-post completed jobs <span className="text-white/40">(AI generates caption when job status → Completed)</span></span>
             </label>
           </div>
@@ -371,7 +371,7 @@ export function SocialPage({ posts = [], setPosts, toast, settings = {} as AppSe
 
       {/* Connection status per platform — Buffer first, then a direct token */}
       <div className="flex gap-2 flex-wrap">
-        {Object.entries(platformMeta).filter(([k]) => k !== "google" && k !== "nextdoor").map(([k, m]) => {
+        {Object.entries(platformMeta).filter(([k]) => k !== "google" && k !== "nextdoor").map(([k, m]: [string, any]) => {
           const connected = !!settings.bufferChannelIds?.[k]
             || (k === "facebook" && !!(settings as any).metaAccessToken)
             || (k === "linkedin" && !!(settings as any).linkedinAccessToken);
@@ -385,19 +385,23 @@ export function SocialPage({ posts = [], setPosts, toast, settings = {} as AppSe
         })}
       </div>
 
-      {/* Stats */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        <Stat icon={Clock} label="Scheduled" value={scheduled.length} />
-        <Stat icon={CheckCircle} label="Published" value={published.length} />
-        <Stat icon={TrendingUp} label="Total Reach" value={allPublished.reduce((s: number, p: any) => s + (p.reach || 0), 0) > 0 ? allPublished.reduce((s: number, p: any) => s + (p.reach || 0), 0).toLocaleString() : "—"} />
-        <Stat icon={Star} label="Total Likes" value={allPublished.reduce((s: number, p: any) => s + (p.likes || 0), 0) > 0 ? allPublished.reduce((s: number, p: any) => s + (p.likes || 0), 0).toLocaleString() : "—"} />
+      {/* Stats — real counts only. No fake/invented reach or engagement
+          numbers: Buffer only reports post-level metrics per-post (see the
+          "Refresh" action on a published card below), and there's no
+          aggregate analytics endpoint to sum honestly here. */}
+      <div className="grid grid-cols-2 gap-3">
+        <Stat icon={Clock} label="Scheduled" value={allScheduled.length} />
+        <Stat icon={CheckCircle} label="Published" value={allPublished.length} />
       </div>
 
-      {/* Platform quick-links */}
+      {/* Platform filter — click a platform to filter Scheduled/Published below */}
       <div className="flex gap-2 flex-wrap">
-        {Object.entries(platformMeta).map(([k, m]) => {
-          const n = posts.filter(p => p.platform === k).length;
-          return <button key={k} className={"flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-medium text-white transition-all hover:scale-105 " + (platformColors[k] || "bg-white/10")}>
+        <button onClick={() => setPlatformFilter("all")} className={"flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-medium transition-all hover:scale-105 border " + (platformFilter === "all" ? "bg-red-900/40 border-red-500/50 text-white" : "bg-black/40 border-red-900/30 text-white/60 hover:text-white")}>
+          All {posts.filter((p: any) => p.status !== "setting").length > 0 ? <span className="bg-white/10 px-1.5 py-0.5 rounded-full text-[9px]">{posts.filter((p: any) => p.status !== "setting").length}</span> : null}
+        </button>
+        {Object.entries(platformMeta).map(([k, m]: [string, any]) => {
+          const n = posts.filter((p: any) => p.platform === k).length;
+          return <button key={k} onClick={() => setPlatformFilter(k)} className={"flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-medium text-white transition-all hover:scale-105 border " + (platformFilter === k ? "border-white/40 " + (platformColors[k] || "bg-white/10") : "border-transparent opacity-60 hover:opacity-100 " + (platformColors[k] || "bg-white/10"))}>
             {m.icon} {m.label} {n > 0 ? <span className="bg-white/20 px-1.5 py-0.5 rounded-full text-[9px]">{n}</span> : null}
           </button>;
         })}
@@ -406,7 +410,7 @@ export function SocialPage({ posts = [], setPosts, toast, settings = {} as AppSe
       {/* Tab bar */}
       <div className="flex gap-2 flex-wrap">
         {["calendar", "scheduled", "published", "review_graphic", "bulk", "best_time"].map(t => (
-          <button key={t} onClick={() => setTab(t)} className={"px-4 py-2 rounded-xl text-xs font-semibold capitalize border transition " + (tab === t ? "bg-purple-900/40 border-purple-500/50 text-white" : "bg-black/40 border-white/10 text-white/60 hover:text-white")}>
+          <button key={t} onClick={() => setTab(t)} className={"px-4 py-2 rounded-xl text-xs font-semibold capitalize border transition " + (tab === t ? "bg-red-900/40 border-red-500/50 text-white" : "bg-black/40 border-white/10 text-white/60 hover:text-white")}>
             {t === "review_graphic" ? "⭐ Review Graphic" : t === "bulk" ? "📸 Bulk Upload" : t === "best_time" ? "⏰ Best Times" : t === "calendar" ? "📅 Calendar" : t + " (" + (t === "scheduled" ? scheduled.length : published.length) + ")"}
           </button>
         ))}
@@ -416,10 +420,9 @@ export function SocialPage({ posts = [], setPosts, toast, settings = {} as AppSe
         const days = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
         // Analyze published posts by day of week
         const dayStats = days.map((day, i) => {
-          const dayPosts = published.filter(p => p.publishedAt && new Date(p.publishedAt + "T00:00:00").getDay() === i);
-          const avgLikes = dayPosts.length > 0 ? Math.round(dayPosts.reduce((s,p) => s+p.likes,0)/dayPosts.length) : 0;
-          const avgReach = dayPosts.length > 0 ? Math.round(dayPosts.reduce((s,p) => s+p.reach,0)/dayPosts.length) : 0;
-          return { day, posts: dayPosts.length, avgLikes, avgReach };
+          const dayPosts = published.filter((p: any) => p.publishedAt && new Date(p.publishedAt + "T00:00:00").getDay() === i);
+          const avgLikes = dayPosts.length > 0 ? Math.round(dayPosts.reduce((s: number, p: any) => s + (p.likes || 0), 0) / dayPosts.length) : 0;
+          return { day, posts: dayPosts.length, avgLikes };
         });
         const maxLikes = Math.max(...dayStats.map(d => d.avgLikes), 1);
         // Industry best times for pressure washing (service industry)
@@ -438,9 +441,9 @@ export function SocialPage({ posts = [], setPosts, toast, settings = {} as AppSe
                 <div key={d.day} className="text-center">
                   <div className="text-[10px] text-white/50 mb-2">{d.day}</div>
                   <div className="mx-auto w-8 bg-black/40 rounded-full overflow-hidden" style={{height: "60px", display:"flex", alignItems:"flex-end"}}>
-                    <div className="w-full rounded-full" style={{height: d.avgLikes > 0 ? (d.avgLikes/maxLikes*100)+"%" : "4%", background: "#a855f7", minHeight: "4px"}} />
+                    <div className="w-full rounded-full" style={{height: d.avgLikes > 0 ? (d.avgLikes/maxLikes*100)+"%" : "4%", background: "#dc2626", minHeight: "4px"}} />
                   </div>
-                  <div className="text-[9px] text-purple-300 mt-1">{d.avgLikes > 0 ? d.avgLikes + "❤" : "—"}</div>
+                  <div className="text-[9px] text-red-300 mt-1">{d.avgLikes > 0 ? d.avgLikes + "❤" : "—"}</div>
                   <div className="text-[9px] text-white/40">{d.posts} posts</div>
                 </div>
               ))}
@@ -448,10 +451,10 @@ export function SocialPage({ posts = [], setPosts, toast, settings = {} as AppSe
             <div className="space-y-2">
               <div className="text-xs font-semibold text-white/70 mb-2">🏆 Industry Best Times (Home Services)</div>
               {industryTips.map((tip, i) => (
-                <div key={i} className="flex items-start gap-3 p-3 bg-purple-950/20 border border-purple-800/30 rounded-xl">
-                  <div className="text-purple-400 font-mono text-xs font-bold flex-shrink-0">{i+1}</div>
+                <div key={i} className="flex items-start gap-3 p-3 bg-red-950/20 border border-red-900/30 rounded-xl">
+                  <div className="text-red-400 font-mono text-xs font-bold flex-shrink-0">{i+1}</div>
                   <div>
-                    <div className="text-sm font-semibold text-purple-200">{tip.time}</div>
+                    <div className="text-sm font-semibold text-red-200">{tip.time}</div>
                     <div className="text-[11px] text-white/50 mt-0.5">{tip.reason}</div>
                   </div>
                 </div>
@@ -473,19 +476,22 @@ export function SocialPage({ posts = [], setPosts, toast, settings = {} as AppSe
           <div className="text-sm font-medium">No posts scheduled</div>
           <div className="text-xs mt-1">Click "New Post" to schedule your first one</div>
         </div>}
-        {scheduled.map(p => {
+        {scheduled.map((p: any) => {
           const meta = platformMeta[p.platform] || platformMeta.instagram;
-          return <Glass key={p.id} className="p-4 hover:border-purple-500/40 transition-all group">
+          const viaBuffer = !!p.bufferPostId;
+          return <Glass key={p.id} className="p-4 hover:border-red-500/40 transition-all group">
             <div className="flex items-center justify-between mb-3">
               <div className="flex items-center gap-2">
                 <div className={"px-2.5 py-1 rounded-lg text-[10px] uppercase font-bold text-white bg-gradient-to-r " + (meta.color || "from-gray-600 to-gray-800")}>{meta.icon} {meta.label}</div>
                 <Badge tone="yellow">scheduled</Badge>
               </div>
-              <div className="text-xs text-white/50 flex items-center gap-1"><Clock size={10} />{p.scheduledFor}</div>
+              <div className="text-xs text-white/50 flex items-center gap-1"><Clock size={10} />{p.scheduledFor}{p.scheduledTime ? " @ " + p.scheduledTime : ""}</div>
             </div>
             <div className="text-sm text-white/80 whitespace-pre-wrap mb-3 line-clamp-5 leading-relaxed">{p.caption}</div>
             <div className="flex gap-2 pt-3 border-t border-white/5">
-              <GBtn onClick={() => publishScheduled(p.id)} className="flex-1 !text-xs !py-1.5"><Send size={10} className="inline mr-1" />Publish Now</GBtn>
+              {viaBuffer
+                ? <div className="flex-1 text-center text-[10px] text-green-300 bg-green-950/20 border border-green-800/30 rounded-lg py-1.5">Scheduled via Buffer — publishes automatically</div>
+                : <GBtn onClick={() => publishScheduled(p.id)} className="flex-1 !text-xs !py-1.5"><Send size={10} className="inline mr-1" />Publish Now</GBtn>}
               <button onClick={() => del(p.id)} className="px-2.5 py-1.5 rounded-lg border bg-white/5 border-white/10 text-white/60 hover:text-red-400 text-xs opacity-0 group-hover:opacity-100 transition"><Trash2 size={12} /></button>
             </div>
           </Glass>;
@@ -497,8 +503,9 @@ export function SocialPage({ posts = [], setPosts, toast, settings = {} as AppSe
           <CheckCircle size={40} className="mx-auto mb-3 opacity-30" />
           <div className="text-sm">No published posts yet</div>
         </div>}
-        {published.map(p => {
+        {published.map((p: any) => {
           const meta = platformMeta[p.platform] || platformMeta.instagram;
+          const hasRealAnalytics = !!p.bufferPostId;
           return <Glass key={p.id} className="p-4">
             <div className="flex items-center justify-between mb-3">
               <div className={"px-2.5 py-1 rounded-lg text-[10px] uppercase font-bold text-white bg-gradient-to-r " + (meta.color || "from-gray-600 to-gray-800")}>{meta.icon} {meta.label}</div>
@@ -508,37 +515,55 @@ export function SocialPage({ posts = [], setPosts, toast, settings = {} as AppSe
               </div>
             </div>
             <div className="text-sm text-white/70 line-clamp-3 mb-3">{p.caption}</div>
-            {/* Editable performance stats */}
-            <div className="grid grid-cols-3 gap-2 text-center p-2 bg-black/40 rounded-xl">
-              {[
-                { key: "likes", label: "Likes", color: "text-pink-400", icon: "❤️" },
-                { key: "reach", label: "Reach", color: "text-blue-400", icon: "👁" },
-                { key: "shares", label: "Shares", color: "text-green-400", icon: "↗️" }
-              ].map(stat => (
-                <div key={stat.key}>
-                  <div className="text-white/40 text-[9px] uppercase mb-1">{stat.icon} {stat.label}</div>
-                  <input
-                    type="number"
-                    min="0"
-                    value={p[stat.key] || 0}
-                    onChange={e => setPosts(prev => prev.map(x => x.id === p.id ? { ...x, [stat.key]: Number(e.target.value) } : x))}
-                    className={"w-full bg-transparent text-center font-bold text-base border-b border-white/10 focus:border-white/30 focus:outline-none " + stat.color}
-                  />
+            {/* Live post link — only rendered when Buffer actually reported a
+                real externalLink for this post; never fabricated. */}
+            {p.externalLink && (
+              <a href={p.externalLink} target="_blank" rel="noopener noreferrer" className="flex items-center gap-1.5 text-[11px] text-red-300 hover:text-red-200 mb-2">
+                <ExternalLink size={11} />View live post
+              </a>
+            )}
+            {/* Real Buffer analytics only — posts published outside Buffer
+                (manual copy/paste, share sheet) have no data source, so we
+                show nothing rather than an editable box of invented zeros. */}
+            {hasRealAnalytics ? (
+              <div>
+                <div className="grid grid-cols-3 gap-2 text-center p-2 bg-black/40 rounded-xl">
+                  {[
+                    { key: "likes", label: "Likes", color: "text-pink-400", icon: "❤️" },
+                    { key: "reach", label: "Reach", color: "text-blue-400", icon: "👁" },
+                    { key: "shares", label: "Shares", color: "text-green-400", icon: "↗️" }
+                  ].map(stat => (
+                    <div key={stat.key}>
+                      <div className="text-white/40 text-[9px] uppercase mb-1">{stat.icon} {stat.label}</div>
+                      <div className={"font-bold text-base " + stat.color}>{p[stat.key] > 0 ? p[stat.key].toLocaleString() : "—"}</div>
+                    </div>
+                  ))}
                 </div>
-              ))}
-            </div>
-            <div className="text-[9px] text-white/30 text-center mt-1">Tap numbers to update from your platform analytics</div>
+                <button onClick={() => refreshAnalytics(p)} disabled={refreshingId === p.id} className="w-full mt-2 flex items-center justify-center gap-1.5 text-[10px] text-white/50 hover:text-white py-1 disabled:opacity-40">
+                  <RefreshCw size={10} className={refreshingId === p.id ? "animate-spin" : ""} />
+                  {refreshingId === p.id ? "Refreshing…" : p.metricsUpdatedAt ? "Refresh analytics from Buffer" : "Load real analytics from Buffer"}
+                </button>
+              </div>
+            ) : (
+              <div className="text-[10px] text-white/30 text-center py-1">Published manually — no analytics source connected</div>
+            )}
           </Glass>;
         })}
       </div>}
 
-      <Modal open={modal} onClose={() => setModal(false)} title="Schedule Social Post" maxW="max-w-xl">
+      <Modal open={modal} onClose={() => setModal(false)} title="New Social Post" maxW="max-w-xl">
         <div className="space-y-4">
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="text-xs text-white/60 mb-1 block">Platform{f.platforms.length > 1 ? "s" : ""} ({f.platforms.length} selected)</label>
+              <label className="text-xs text-white/60 mb-1 block">Platforms <span className="text-white/30">(pick one or more)</span></label>
               <div className="grid grid-cols-1 gap-1">
-                {Object.entries(platformMeta).map(([k, m]) => <button key={k} onClick={() => togglePlatform(k)} className={"flex items-center gap-2 px-3 py-2 rounded-xl border text-xs transition " + (f.platforms.includes(k) ? "bg-gradient-to-r " + m.color + " border-white/30 text-white" : "bg-black/40 border-white/10 text-white/60 hover:text-white")}>{m.icon} {m.label}</button>)}
+                {Object.entries(platformMeta).map(([k, m]: [string, any]) => {
+                  const active = f.platforms.includes(k);
+                  return <button key={k} type="button" onClick={() => togglePlatform(k)} className={"flex items-center justify-between gap-2 px-3 py-2 rounded-xl border text-xs transition " + (active ? "bg-gradient-to-r " + m.color + " border-white/30 text-white" : "bg-black/40 border-white/10 text-white/60 hover:text-white")}>
+                    <span>{m.icon} {m.label}</span>
+                    {active && <CheckCircle size={12} />}
+                  </button>;
+                })}
               </div>
             </div>
             <div className="space-y-3">
@@ -552,20 +577,34 @@ export function SocialPage({ posts = [], setPosts, toast, settings = {} as AppSe
                   <option value="team" className="bg-black">Team/Culture</option>
                 </GSel>
               </div>
+              {/* Publish Now vs Schedule Post — explicit choice, not forced scheduling */}
               <div>
-                <label className="text-xs text-white/60 mb-1 block">Scheduled for</label>
-                <GDate value={f.scheduledFor} onChange={e => setF({ ...f, scheduledFor: e.target.value })} className="!text-xs" />
+                <label className="text-xs text-white/60 mb-1 block">When</label>
+                <div className="grid grid-cols-2 gap-1">
+                  <button type="button" onClick={() => setF(prev => ({ ...prev, publishMode: "now" }))} className={"px-3 py-2 rounded-xl border text-xs font-semibold transition flex items-center justify-center gap-1.5 " + (f.publishMode === "now" ? "bg-gradient-to-r from-red-600 to-red-800 border-red-500/50 text-white" : "bg-black/40 border-white/10 text-white/60 hover:text-white")}>
+                    <Send size={11} />Publish Now
+                  </button>
+                  <button type="button" onClick={() => setF(prev => ({ ...prev, publishMode: "schedule" }))} className={"px-3 py-2 rounded-xl border text-xs font-semibold transition flex items-center justify-center gap-1.5 " + (f.publishMode === "schedule" ? "bg-gradient-to-r from-red-600 to-red-800 border-red-500/50 text-white" : "bg-black/40 border-white/10 text-white/60 hover:text-white")}>
+                    <Clock size={11} />Schedule
+                  </button>
+                </div>
+                {f.publishMode === "schedule" && (
+                  <div className="grid grid-cols-2 gap-1.5 mt-1.5">
+                    <GDate value={f.scheduledFor} onChange={e => setF({ ...f, scheduledFor: e.target.value })} className="!text-xs" />
+                    <GInput type="time" value={f.scheduledTime} onChange={e => setF({ ...f, scheduledTime: e.target.value })} className="!text-xs" />
+                  </div>
+                )}
                 <div className="text-[9px] text-white/40 mt-1 flex items-center gap-1">
                   <span>💡</span>
                   <span>Best times: Instagram 9–11am, Facebook 1–3pm, TikTok 7–9pm (Tue–Fri)</span>
                 </div>
               </div>
-              <button onClick={generate} disabled={generating} className={"w-full flex items-center justify-center gap-2 py-2.5 rounded-xl border text-xs font-semibold transition " + (generating ? "bg-purple-900/20 border-purple-700/30 text-purple-400 animate-pulse" : "bg-purple-900/30 border-purple-600/50 text-purple-300 hover:bg-purple-900/50")}>
-                {generating ? <><div className="w-3 h-3 border-2 border-purple-400 border-t-transparent rounded-full animate-spin" />Generating…</> : <><Zap size={12} />{f._imageData ? "Analyze Photo + Generate Caption" : "AI Generate Caption"}</>}
+              <button onClick={generate} disabled={generating} className={"w-full flex items-center justify-center gap-2 py-2.5 rounded-xl border text-xs font-semibold transition " + (generating ? "bg-red-900/20 border-red-700/30 text-red-400 animate-pulse" : "bg-red-900/30 border-red-600/50 text-red-300 hover:bg-red-900/50")}>
+                {generating ? <><div className="w-3 h-3 border-2 border-red-400 border-t-transparent rounded-full animate-spin" />Generating…</> : <><Zap size={12} />{f._imageData ? "Analyze Photo + Generate Caption" : "AI Generate Caption"}</>}
               </button>
               {/* Photo upload for vision analysis */}
               {f.type === "before_after" && <div>
-                <label className="w-full flex items-center justify-center gap-2 py-2 rounded-xl border border-dashed border-purple-700/40 text-purple-400/70 text-xs cursor-pointer hover:bg-purple-950/20 transition">
+                <label className="w-full flex items-center justify-center gap-2 py-2 rounded-xl border border-dashed border-red-700/40 text-red-400/70 text-xs cursor-pointer hover:bg-red-950/20 transition">
                   <input type="file" accept="image/*" className="hidden" onChange={e => {
                     const file = e.target.files?.[0];
                     if (!file) return;
@@ -585,11 +624,11 @@ export function SocialPage({ posts = [], setPosts, toast, settings = {} as AppSe
               </div>}
             </div>
           </div>
-          {(f as any)._photoUrl && (
-            <div className="flex items-center gap-2 p-2 bg-orange-950/20 border border-orange-800/40 rounded-xl">
-              <img src={(f as any)._photoUrl} alt="From Alfred" className="w-12 h-12 rounded-lg object-cover flex-shrink-0" />
-              <div className="text-[10px] text-orange-300 flex-1">Before/after photo from Alfred — attach it on the platform when you post.</div>
-              <button onClick={() => setF(prev => ({ ...prev, _photoUrl: null } as any))} className="text-white/40 hover:text-white flex-shrink-0"><X size={12} /></button>
+          {f._photoUrl && (
+            <div className="flex items-center gap-2 p-2 bg-red-950/20 border border-red-800/40 rounded-xl">
+              <img src={f._photoUrl} alt="From Alfred" className="w-12 h-12 rounded-lg object-cover flex-shrink-0" />
+              <div className="text-[10px] text-red-300 flex-1">Before/after photo from Alfred — attach it on the platform when you post.</div>
+              <button onClick={() => setF(prev => ({ ...prev, _photoUrl: null }))} className="text-white/40 hover:text-white flex-shrink-0"><X size={12} /></button>
             </div>
           )}
           <div>
@@ -597,19 +636,20 @@ export function SocialPage({ posts = [], setPosts, toast, settings = {} as AppSe
               <label className="text-xs text-white/60">Caption</label>
               <span className="text-[9px] text-white/40">{f.caption.length} chars</span>
             </div>
-            {/* Post Templates */}
+            {/* Post Templates — placeholders auto-fill from Settings (business
+                name / phone) via mergeCaption, no manual typing needed. */}
             <div className="mb-2">
               <GSel defaultValue="" onChange={e => {
                 const templates = [
-                  { id: "ba", label: "Before/After Reveal", body: "🚿 Before & After transformation in York, PA!\n\nThis [SERVICE] was looking rough — years of grime, mold, and algae. One visit from Crew Boss and it looks brand new! 🤩\n\nReady to restore your home? Link in bio or DM us for a free quote!\n\n📞 (717) 555-0100" },
-                  { id: "seasonal", label: "Seasonal Promo", body: "🌸 Spring is here and your home deserves a deep clean!\n\nWinter left behind dirt, algae, and mildew on your siding, driveway, and roof. We remove it all safely with our soft wash system.\n\n✅ No damage to plants or surfaces\n✅ Same-day quotes\n✅ York PA & surrounding areas\n\nBook now — slots filling fast! DM or call (717) 555-0100" },
-                  { id: "review", label: "Customer Review Feature", body: "⭐⭐⭐⭐⭐ \"[CUSTOMER QUOTE HERE]\"\n\n— Happy customer in York, PA\n\nThank you for the kind words! Nothing motivates us more than knowing we made your home shine again. 🙏\n\nYour home could look like this too. DM us for a free estimate!\n\n#smockspressurewashing #yorkpa #pressurewashing" },
-                  { id: "tip", label: "Pro Tip / Educational", body: "💡 PRO TIP: Did you know soft washing is SAFER than pressure washing for most surfaces?\n\nHigh pressure can:\n❌ Crack siding\n❌ Damage wood decks\n❌ Force water behind walls\n\nOur low-pressure soft wash uses eco-friendly solutions to clean safely and effectively.\n\nQuestions? Drop them below 👇 or DM us!\n\n📞 (717) 555-0100 | York, PA" },
-                  { id: "cta", label: "Strong CTA / Urgency", body: "🔴 SPOTS AVAILABLE THIS WEEK in York PA!\n\nWe had a cancellation and can fit in [X] more homes this week. If your driveway, siding, or roof needs some love — now's the time!\n\n💧 House Wash starting at $[PRICE]\n💧 Driveway Cleaning from $[PRICE]\n💧 Roof Soft Wash from $[PRICE]\n\nDM us or call (717) 555-0100 to grab your spot!" },
-                  { id: "team", label: "Meet the Team / Behind the Scenes", body: "👋 Just another day at Crew Boss!\n\nStarted at 7am, [X] jobs on the books, and we're making York PA look its best one property at a time. 💪\n\nSmall business, big results. We treat every home like it's our own.\n\nTag someone whose house needs a wash! 👇" },
+                  { id: "ba", label: "Before/After Reveal", body: "🚿 Before & After transformation in York, PA!\n\nThis [SERVICE] was looking rough — years of grime, mold, and algae. One visit from {{company_name}} and it looks brand new! 🤩\n\nReady to restore your home? Link in bio or DM us for a free quote!\n\n📞 {{company_phone}}" },
+                  { id: "seasonal", label: "Seasonal Promo", body: "🌸 Spring is here and your home deserves a deep clean!\n\nWinter left behind dirt, algae, and mildew on your siding, driveway, and roof. We remove it all safely with our soft wash system.\n\n✅ No damage to plants or surfaces\n✅ Same-day quotes\n✅ York PA & surrounding areas\n\nBook now — slots filling fast! DM or call {{company_phone}}" },
+                  { id: "review", label: "Customer Review Feature", body: "⭐⭐⭐⭐⭐ \"[CUSTOMER QUOTE HERE]\"\n\n— Happy customer in York, PA\n\nThank you for the kind words! Nothing motivates us more than knowing we made your home shine again. 🙏\n\nYour home could look like this too. DM us for a free estimate!\n\n#{{company_name}}pressurewashing #yorkpa #pressurewashing" },
+                  { id: "tip", label: "Pro Tip / Educational", body: "💡 PRO TIP: Did you know soft washing is SAFER than pressure washing for most surfaces?\n\nHigh pressure can:\n❌ Crack siding\n❌ Damage wood decks\n❌ Force water behind walls\n\nOur low-pressure soft wash uses eco-friendly solutions to clean safely and effectively.\n\nQuestions? Drop them below 👇 or DM us!\n\n📞 {{company_phone}} | York, PA" },
+                  { id: "cta", label: "Strong CTA / Urgency", body: "🔴 SPOTS AVAILABLE THIS WEEK in York PA!\n\nWe had a cancellation and can fit in [X] more homes this week. If your driveway, siding, or roof needs some love — now's the time!\n\n💧 House Wash starting at $[PRICE]\n💧 Driveway Cleaning from $[PRICE]\n💧 Roof Soft Wash from $[PRICE]\n\nDM us or call {{company_phone}} to grab your spot!" },
+                  { id: "team", label: "Meet the Team / Behind the Scenes", body: "👋 Just another day at {{company_name}}!\n\nStarted at 7am, [X] jobs on the books, and we're making York PA look its best one property at a time. 💪\n\nSmall business, big results. We treat every home like it's our own.\n\nTag someone whose house needs a wash! 👇" },
                 ];
                 const t = templates.find(x => x.id === e.target.value);
-                if (t) setF(prev => ({ ...prev, caption: t.body }));
+                if (t) setF(prev => ({ ...prev, caption: mergeCaption(t.body) }));
                 e.target.value = "";
               }} className="!text-xs w-full">
                 <option value="" className="bg-black">📋 Load post template…</option>
@@ -639,7 +679,7 @@ export function SocialPage({ posts = [], setPosts, toast, settings = {} as AppSe
                   { label: "Gutter", tags: "#guttercleaning #gutterguards #falllleafcleanup #homeprotection #guttermaintenance" },
                   { label: "General", tags: "#pressurewashing #softwash #yorkpa #pennsylvania #homeimprovement #curb appeal #smallbusiness #localsmallbusiness #hometransformation" },
                 ].map(lib => (
-                  <button key={lib.label} onClick={() => setF(prev => ({ ...prev, hashtags: lib.tags }))} className="px-2 py-1 rounded-lg bg-purple-950/30 border border-purple-700/30 text-purple-300 text-[10px] hover:bg-purple-900/40 transition">
+                  <button key={lib.label} onClick={() => setF(prev => ({ ...prev, hashtags: lib.tags }))} className="px-2 py-1 rounded-lg bg-red-950/30 border border-red-900/30 text-red-300 text-[10px] hover:bg-red-900/40 transition">
                     {lib.label}
                   </button>
                 ))}
@@ -654,13 +694,23 @@ export function SocialPage({ posts = [], setPosts, toast, settings = {} as AppSe
                 { label: "Commercial", tags: "#commercialcleaning #pressurewashing #businesscleaning #yorkpa" },
                 { label: "Before/After", tags: "#beforeandafter #transformation #pressurewashing #softwash #yorkpa" },
               ].map(h => (
-                <button key={h.label} onClick={() => setF(prev => ({ ...prev, hashtags: h.tags }))} className="text-[9px] px-2 py-1 rounded-full bg-white/5 border border-white/10 text-white/60 hover:text-white hover:border-purple-500/50 transition">{h.label}</button>
+                <button key={h.label} onClick={() => setF(prev => ({ ...prev, hashtags: h.tags }))} className="text-[9px] px-2 py-1 rounded-full bg-white/5 border border-white/10 text-white/60 hover:text-white hover:border-red-500/50 transition">{h.label}</button>
               ))}
             </div>
           </div>
+          {/* Manual multi-platform fallback note — when Buffer isn't
+              connected for a selected platform, submitPost still fires the
+              copy/share flow once per platform in sequence below. */}
+          {f.platforms.length > 1 && f.platforms.some(p => !settings.bufferChannelIds?.[p]) && (
+            <div className="text-[10px] text-white/40 bg-white/5 border border-white/10 rounded-lg px-3 py-2">
+              Some selected platforms aren't connected to Buffer — for those, the caption will be copied to your clipboard one platform at a time so you can paste it in.
+            </div>
+          )}
           <div className="flex gap-2 justify-end">
             <GBtn variant="ghost" onClick={() => setModal(false)}>Cancel</GBtn>
-            <GBtn onClick={submitPost} disabled={!f.caption.trim() || f.platforms.length === 0 || submitting}>{submitting ? "Posting…" : f.publishMode === "schedule" ? "Schedule Post" : "Post Now"}</GBtn>
+            <GBtn onClick={submitPost} disabled={!f.caption.trim() || f.platforms.length === 0 || submitting}>
+              {submitting ? "Posting…" : f.publishMode === "schedule" ? "Schedule Post" : "Publish Now"}
+            </GBtn>
           </div>
         </div>
       </Modal>

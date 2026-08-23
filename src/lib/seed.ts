@@ -802,6 +802,87 @@ export const AUTOMATION_TEMPLATES = [
         messageBody: "Hi {{first_name}}, it's been a few months since your last Crew Boss service — want us to get you back on the schedule? Reply BOOK for 10% off." },
     ],
   },
+  // Each of the templates below rides one of the engine categories added
+  // alongside them in useAutomationEngine.ts (estimate_declined,
+  // estimate_expired, job_cancelled, first_job_welcome, vip_thank_you,
+  // recurring_service_due, owner_reschedule_request, owner_unassigned_job) —
+  // every trigger label is exact-matched by classifyTrigger() there.
+  {
+    id: "tpl_estimate_declined_winback", name: "Quote Declined — Soft Win-Back",
+    trigger: "Estimate declined", action: "Send a no-pressure win-back SMS",
+    description: "One respectful follow-up a day after a customer declines a quote, inviting them to talk price rather than walk away.",
+    steps: [
+      { id: uid(), type: "trigger",   label: "Estimate declined", icon: "🙅" },
+      { id: uid(), type: "condition", label: "Wait 1 day", delay: 1440 },
+      { id: uid(), type: "action",    label: "Send win-back SMS", channel: "sms", template: "estimate_declined" },
+    ],
+  },
+  {
+    id: "tpl_estimate_expired_reissue", name: "Quote Expired — Offer to Re-Issue",
+    trigger: "Estimate expired", action: "Offer to re-issue at the same price",
+    description: "Catches quotes that quietly lapsed past their valid-until date and offers to honour the original price.",
+    steps: [
+      { id: uid(), type: "trigger", label: "Estimate expired", icon: "⌛" },
+      { id: uid(), type: "action",  label: "Send re-issue offer SMS", channel: "sms", template: "estimate_expired" },
+    ],
+  },
+  {
+    id: "tpl_job_cancelled_rebook", name: "Cancelled Job — Rebook Offer",
+    trigger: "Job cancelled", action: "Invite the customer to rebook",
+    description: "Texts a customer whose job was cancelled to get them back on the schedule instead of losing them silently.",
+    steps: [
+      { id: uid(), type: "trigger", label: "Job cancelled", icon: "🚫" },
+      { id: uid(), type: "action",  label: "Send rebook SMS", channel: "sms", template: "job_cancelled" },
+    ],
+  },
+  {
+    id: "tpl_first_job_welcome", name: "First Job — New Customer Welcome",
+    trigger: "First job completed", action: "Send a welcome/save-our-number SMS",
+    description: "Fires only after a customer's very first completed job — a warm welcome that turns a one-off into a repeat account.",
+    steps: [
+      { id: uid(), type: "trigger",   label: "First job completed", icon: "🎉" },
+      { id: uid(), type: "condition", label: "Wait 1 day", delay: 1440 },
+      { id: uid(), type: "action",    label: "Send welcome SMS", channel: "sms", template: "first_job_welcome" },
+    ],
+  },
+  {
+    id: "tpl_vip_thank_you", name: "VIP Customer Thank-You",
+    trigger: "VIP customer milestone", action: "Send a VIP perk SMS",
+    description: "Thanks your highest-lifetime-spend customers after a recent job. Set the spend threshold in Automations → Automation Settings.",
+    steps: [
+      { id: uid(), type: "trigger", label: "VIP customer milestone", icon: "👑" },
+      { id: uid(), type: "action",  label: "Send VIP thank-you SMS", channel: "sms", template: "vip_thank_you" },
+    ],
+  },
+  {
+    id: "tpl_recurring_service_due", name: "Recurring Service Coming Due",
+    trigger: "Recurring service due", action: "Send a rebook reminder",
+    description: "Reads the recurring schedule already on the job (weekly/monthly/quarterly…) and reminds the customer about 3 days before the next one is due.",
+    steps: [
+      { id: uid(), type: "trigger", label: "Recurring service due", icon: "🔁" },
+      { id: uid(), type: "action",  label: "Send recurring-due SMS", channel: "sms", template: "recurring_due" },
+    ],
+  },
+  {
+    id: "tpl_owner_reschedule_alert", name: "Owner: Reschedule Requested",
+    trigger: "Reschedule requested", action: "Email the owner the request",
+    description: "Emails you as soon as a customer asks to move a job from their portal, so the request doesn't sit unnoticed.",
+    steps: [
+      { id: uid(), type: "trigger", label: "Reschedule requested", icon: "📆" },
+      { id: uid(), type: "action",  label: "Email reschedule alert", channel: "email",
+        messageBody: "Heads up — {{customer_name}} requested a reschedule for the job at {{job_address}} on {{date}}. Their note: {{reschedule_note}}" },
+    ],
+  },
+  {
+    id: "tpl_owner_unassigned_job_alert", name: "Owner: Tomorrow's Job Has No Crew",
+    trigger: "Unassigned job tomorrow", action: "Email the owner an alert",
+    description: "Emails you when a job scheduled for tomorrow still has nobody assigned — the single easiest way to miss a job.",
+    steps: [
+      { id: uid(), type: "trigger", label: "Unassigned job tomorrow", icon: "⚠️" },
+      { id: uid(), type: "action",  label: "Email unassigned-job alert", channel: "email",
+        messageBody: "Heads up — the job for {{customer_name}} at {{job_address}} on {{date}} still has nobody assigned to it." },
+    ],
+  },
 ];
 
 // AUDIT FIX ("I'm not seeing any for owners") — root cause: the owner/

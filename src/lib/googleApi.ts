@@ -12,6 +12,24 @@ export const setGoogleTokenRefresher = (fn: (() => Promise<string>) | null): voi
   _tokenRefresher = fn;
 };
 
+// BUG FIX — "the employee portal shows Google connected even when it's
+// actually disconnected" / "owner Google Workspace section still shows
+// connected." Both sides only ever computed "connected" from a locally
+// cached token's expiresAt timestamp — nothing ever flipped that cached
+// state back to false when a REAL API call proved the token dead (revoked,
+// invalid_grant on refresh, etc.), so the UI kept reporting "Connected ✓"
+// indefinitely after the underlying access actually broke. Owner (App.tsx)
+// and employee (EmployeePortal.tsx) each subscribe their own "mark
+// disconnected + prompt reconnect" handler; gFetch notifies every
+// subscriber the moment a definitive (refresh-already-attempted) auth
+// failure happens, regardless of which side's fetch triggered it.
+const authFailureListeners = new Set<() => void>();
+export const onGoogleAuthFailure = (fn: () => void): (() => void) => {
+  authFailureListeners.add(fn);
+  return () => authFailureListeners.delete(fn);
+};
+const notifyGoogleAuthFailure = () => { authFailureListeners.forEach(fn => { try { fn(); } catch { /* ignore */ } }); };
+
 const gFetch = async (url: string, token: string, opts: RequestInit = {}): Promise<unknown> => {
   const doReq = async (tok: string) => {
     const res = await fetch(url, {
@@ -40,9 +58,11 @@ const gFetch = async (url: string, token: string, opts: RequestInit = {}): Promi
         const newToken = await _tokenRefresher();
         return await doReq(newToken);
       } catch {
+        notifyGoogleAuthFailure();
         throw new Error("Google API 401: Token expired and refresh failed. Please disconnect and reconnect Google.");
       }
     }
+    if (e.status === 401) notifyGoogleAuthFailure();
     throw e;
   }
 };

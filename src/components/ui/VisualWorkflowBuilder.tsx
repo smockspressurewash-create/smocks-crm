@@ -146,7 +146,7 @@ export function VisualWorkflowBuilder({ open, data, onClose, onSave }) {
     setTestRunning(false);
   };
 
-  const MERGE_TAGS = ["{{first_name}}", "{{last_name}}", "{{amount}}", "{{date}}", "{{address}}", "{{review_link}}", "{{portal_link}}", "{{company_phone}}"];
+  const MERGE_TAGS = ["{{first_name}}", "{{last_name}}", "{{amount}}", "{{date}}", "{{address}}", "{{review_link}}", "{{payment_link}}", "{{referral_link}}", "{{company_phone}}", "{{customer_name}}", "{{job_address}}", "{{total_spent}}"];
 
   const NODE_STYLES = {
     trigger:   { bg: "bg-blue-600",    border: "border-blue-500",    glow: "rgba(59,130,246,0.4)",  icon: "▶",  label: "TRIGGER",   ring: "ring-blue-500" },
@@ -156,12 +156,26 @@ export function VisualWorkflowBuilder({ open, data, onClose, onSave }) {
     branch:    { bg: "bg-rose-600",    border: "border-rose-500",    glow: "rgba(244,63,94,0.4)",   icon: "⑂",  label: "BRANCH",    ring: "ring-rose-500" },
   };
 
+  // Every item below is exact-matched against useAutomationEngine.ts's
+  // classifyTrigger() regexes and backed by a non-empty getCandidates() spec
+  // there — the 🤝 Referrals and 📊 Owner/Team Reports groups are new
+  // additions that plug engine categories (referral_ask/referral_reward/
+  // referral_booked/owner_periodic_summary/employee_performance_report) which
+  // already fire correctly but had no way to be picked when building a
+  // workflow from scratch (they were only reachable via the template
+  // gallery). owner_daily_summary/employee_shift_summary are deliberately
+  // NOT offered here — both intentionally return zero candidates in the
+  // engine because App.tsx/EmployeePortal.tsx already send that exact recap
+  // directly, so exposing them as pickable triggers would look like a
+  // working automation that in fact can never fire.
   const TRIGGER_PRESETS = [
-    { group: "🔨 Jobs", items: ["Job scheduled", "24h before scheduled job", "Job day morning", "Crew starts job", "Job complete", "Job complete + 2h", "Job complete + 48h"] },
-    { group: "📋 Estimates", items: ["Estimate sent", "Estimate viewed", "Estimate accepted", "Quote unviewed 24h", "Quote unviewed 5 days", "Estimate expires in 3 days", "Estimate signed"] },
+    { group: "🔨 Jobs", items: ["Job scheduled", "24h before scheduled job", "Job day morning", "Crew starts job", "Job complete", "Job complete + 2h", "Job complete + 48h", "Job cancelled", "Recurring service due"] },
+    { group: "📋 Estimates", items: ["Estimate sent", "Estimate viewed", "Estimate accepted", "Quote unviewed 24h", "Quote unviewed 5 days", "Estimate expires in 3 days", "Estimate signed", "Estimate declined", "Estimate expired"] },
     { group: "💸 Payments", items: ["Payment received", "Invoice unpaid 3 days", "Invoice unpaid 7 days", "Invoice unpaid 14 days", "Invoice overdue"] },
-    { group: "👤 Customers", items: ["New customer added", "New inquiry submitted", "6 months since last wash", "Customer birthday", "1 year anniversary", "Re-engagement (inactive 90d)"] },
+    { group: "👤 Customers", items: ["New customer added", "New inquiry submitted", "6 months since last wash", "Customer birthday", "1 year anniversary", "Re-engagement (inactive 90d)", "First job completed", "VIP customer milestone"] },
     { group: "⭐ Reviews", items: ["Post-job review request", "Review submitted (5 star)", "Negative review (≤3 stars)"] },
+    { group: "🤝 Referrals", items: ["3rd job complete", "Referral reward earned", "Referral booked"] },
+    { group: "📊 Owner/Team Reports", items: ["Quarterly business summary", "Weekly performance report", "Reschedule requested", "Unassigned job tomorrow"] },
     { group: "📅 Scheduled", items: ["March 1st annually", "October 1st annually", "Manual trigger", "Every Monday 8am"] },
   ];
 
@@ -179,7 +193,7 @@ export function VisualWorkflowBuilder({ open, data, onClose, onSave }) {
       subject: false
     },
     internal: {
-      presets: ["Log contact to timeline", "Add note to customer record", "Notify Will via SMS", "Create CRM task", "Flag as high priority"],
+      presets: ["Log contact to timeline", "Add note to customer record", "Notify the office", "Create CRM task", "Flag as high priority"],
       subject: false
     },
     webhook: { presets: [], subject: false },
@@ -192,6 +206,7 @@ export function VisualWorkflowBuilder({ open, data, onClose, onSave }) {
     { k: "estimate_unsigned", l: "Estimate not yet signed" },
     { k: "invoice_unpaid", l: "Invoice is unpaid" },
     { k: "invoice_paid", l: "Invoice has been paid" },
+    { k: "job_completed", l: "Job has been completed" },
     { k: "quote_not_viewed", l: "Quote hasn't been opened" },
     { k: "rated_5", l: "Customer rated 5 stars" },
     { k: "rated_low", l: "Customer rated ≤3 stars" },
@@ -201,6 +216,9 @@ export function VisualWorkflowBuilder({ open, data, onClose, onSave }) {
     { k: "no_recent_job", l: "No job in 30 days" },
     { k: "zero_referrals", l: "Customer has 0 referrals" },
     { k: "has_dog", l: "Property has dog on file" },
+    { k: "customer_is_vip", l: "Customer is a VIP (lifetime spend)" },
+    { k: "customer_opted_in_sms", l: "Customer hasn't opted out of texts" },
+    { k: "job_cancelled", l: "Job was cancelled" },
   ];
 
   const selected = selectedIdx !== null ? w.steps[selectedIdx] : null;
@@ -353,10 +371,13 @@ export function VisualWorkflowBuilder({ open, data, onClose, onSave }) {
                     <div>
                       <label className="text-[10px] text-white/50 uppercase tracking-wider mb-2 block">Send via</label>
                       <div className="grid grid-cols-3 gap-1.5">
-                        {[{v:"sms",l:"💬 SMS"},{v:"email",l:"📧 Email"},{v:"task",l:"✅ Task"},{v:"webhook",l:"🔗 Webhook"},{v:"calendar",l:"📅 Calendar"},{v:"internal",l:"🔔 Internal"}].map(o => (
-                          <button key={o.v} onClick={() => updateStep(selectedIdx, { channel: o.v })} className={"text-[10px] py-2 rounded-xl border transition text-center font-medium " + (selected.channel === o.v ? "bg-emerald-600/30 border-emerald-500/50 text-emerald-200 shadow-sm" : "bg-black/40 border-white/8 text-white/45 hover:text-white hover:border-white/20")}>{o.l}</button>
+                        {[{v:"sms",l:"💬 SMS",t:"Text the customer"},{v:"email",l:"📧 Email",t:"Email the customer"},{v:"task",l:"✅ Task",t:"Emails the task to your own inbox — the customer never sees it"},{v:"webhook",l:"🔗 Webhook",t:"POSTs JSON to a URL you provide (Zapier, Make, n8n…)"},{v:"calendar",l:"📅 Calendar",t:"Emails a calendar reminder to your own inbox"},{v:"internal",l:"🔔 Internal",t:"Emails an internal note to your own inbox"}].map(o => (
+                          <button key={o.v} title={o.t} onClick={() => updateStep(selectedIdx, { channel: o.v })} className={"text-[10px] py-2 rounded-xl border transition text-center font-medium " + (selected.channel === o.v ? "bg-emerald-600/30 border-emerald-500/50 text-emerald-200 shadow-sm" : "bg-black/40 border-white/8 text-white/45 hover:text-white hover:border-white/20")}>{o.l}</button>
                         ))}
                       </div>
+                      {["task", "internal", "calendar"].includes(selected.channel) && (
+                        <div className="text-[10px] text-white/40 mt-2 bg-blue-950/20 border border-blue-900/30 rounded-xl p-2.5">🔔 This goes to <strong>your own inbox</strong>, not the customer's — use it for reminders to yourself or the crew.</div>
+                      )}
                     </div>
 
                     {/* Action name / description */}

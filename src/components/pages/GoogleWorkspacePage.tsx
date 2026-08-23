@@ -14,7 +14,7 @@ import {
   fetchGmailMessages, sendGmailMessage, markGmailRead,
   fetchCalendarEvents, fetchGTasks, createGTask, patchGTask, deleteGTask,
   fetchGContacts, fetchGDriveFiles,
-  setGoogleTokenRefresher, refreshEmpGoogleToken,
+  setGoogleTokenRefresher, refreshEmpGoogleToken, onGoogleAuthFailure,
   type GmailMessage, type GCalEvent, type GTask, type GContact, type GDriveFile,
 } from "../../lib/googleApi";
 
@@ -853,6 +853,22 @@ export function GoogleWorkspacePage({
     });
     return () => setGoogleTokenRefresher(null);
   }, [hasToken, getRefreshedGoogleToken]);
+
+  // BUG FIX — "Settings still shows Connected even after Gmail/Calendar
+  // actually broke." isConnected above only ever checked a cached token's
+  // presence/expiry — nothing flipped it back to false when a real API call
+  // proved the connection dead. gFetch now calls every onGoogleAuthFailure
+  // subscriber the moment a 401 survives a refresh attempt; when that
+  // happens here, actually clear the stored connection so the UI drops into
+  // the real "Connect Google Account" state instead of a stale green badge.
+  useEffect(() => {
+    return onGoogleAuthFailure(() => {
+      clearStoredGoogleConnection();
+      setStoredGoogle(getStoredGoogleConnection());
+      setSettings?.((prev: any) => ({ ...prev, googleConnected: false, googleProviderToken: "" }));
+      toast?.("Your Google connection expired — reconnect in Settings → Google Workspace to resume sync.", "red");
+    });
+  }, [setSettings]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // FIX 1 — real refresh-token exchange (via functions/api/google-refresh.ts,
   // same helper the employee portal uses), with a graceful message if that
