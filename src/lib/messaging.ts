@@ -38,12 +38,16 @@ export interface EmailSettings {}
 // ─── Buffer (social posting) ────────────────────────────────────────────────
 // Buffer retired its old REST API (api.bufferapp.com/1/...) in favor of a
 // GraphQL API at api.buffer.com, authenticated with a Bearer API key from
-// https://publish.buffer.com/settings/api (see developers.buffer.com). This
-// is a best-effort direct browser call exactly like the Twilio direct-API
-// path below — the caller is expected to catch failures and fall back to
-// the manual copy/share flow when CORS or permissions block it.
-const BUFFER_GRAPHQL_URL = "https://api.buffer.com";
-
+// https://publish.buffer.com/settings/api (see developers.buffer.com).
+//
+// BUG FIX — this used to call api.buffer.com DIRECTLY from the browser
+// (exactly like the Twilio direct-API path). Buffer's API never returns
+// Access-Control-Allow-Origin, so every call was rejected by CORS before it
+// even reached Buffer ("blocked by CORS policy: Response to preflight
+// request doesn't pass access control check") — org lookup, channel list,
+// and posting were all 100% broken, not just occasionally failing. Routed
+// through functions/api/buffer-action.ts (same-origin, server-side, no CORS
+// restriction) instead, same fix as twilio-send.ts.
 export interface BufferSettings {
   bufferApiKey?: string;
   bufferOrganizationId?: string;
@@ -51,14 +55,14 @@ export interface BufferSettings {
 }
 
 const bufferGraphQL = async <T = any>(apiKey: string, query: string, variables: Record<string, unknown>): Promise<T> => {
-  const res = await fetch(BUFFER_GRAPHQL_URL, {
+  const res = await fetch("/api/buffer-action", {
     method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
-    body: JSON.stringify({ query, variables }),
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ apiKey, query, variables }),
   });
   const json = await res.json().catch(() => ({}));
-  if (!res.ok || json.errors) {
-    throw new Error(json.errors?.[0]?.message ?? `Buffer error ${res.status}`);
+  if (!res.ok || json.error) {
+    throw new Error(json.error ?? `Buffer error ${res.status}`);
   }
   return json.data as T;
 };

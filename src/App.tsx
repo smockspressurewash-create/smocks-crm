@@ -85,7 +85,7 @@ import {
 import { seedWeather } from "./lib/weather";
 import { fetchRealWeather } from "./lib/weather";
 import { fmt, uid, today, daysSince, daysFromNow, consumeOAuthIntent, getLastOwnerSessionFlag, setLastOwnerSessionFlag, getLastOwnerId, setLastOwnerId, buildChecklistFromServices, withTimeout, normalizeJobRow, totalJobPhotoCount, notifyDesktop, stripLegacyJobFields, getPollIntervalMs, purgeOldJobMedia } from "./lib/utils";
-import { sendEmail, sendOwnerGmailOnly, emailShell, buildTomorrowJobsEmailHtml, buildDailyBriefingEmailHtml, buildWeeklyOwnerDigestEmailHtml, setOptedOutPhones, setTestModeContacts } from "./lib/messaging";
+import { sendEmail, sendOwnerGmailOnly, emailShell, emailButton, buildTomorrowJobsEmailHtml, buildDailyBriefingEmailHtml, buildWeeklyOwnerDigestEmailHtml, setOptedOutPhones, setTestModeContacts } from "./lib/messaging";
 import { exchangeSocialOAuthCode, type SocialPlatform } from "./lib/socialOAuth";
 import type {
   Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense,
@@ -583,6 +583,26 @@ export function App() {
       alfredSpotlightRunning.current = false;
     })();
   }, [alfredSpotlightQueue]);
+  // "View" buttons in automated owner emails (invoice paid, new lead, etc.)
+  // link to e.g. #/invoices?open=ID — reuses the exact same highlight/glow
+  // mechanism Alfred's spotlight already drives, just seeded from the URL
+  // instead of a chat action. Runs once on mount and again on every
+  // hashchange so clicking a second email link while the CRM tab is already
+  // open also jumps/glows, not just the very first load.
+  useEffect(() => {
+    const OPEN_TYPE_BY_PAGE: Record<string, string> = { invoices: "invoice", estimates: "estimate", jobs: "job", customers: "customer" };
+    const applyOpenParam = () => {
+      const raw = window.location.hash.replace(/^#\/?/, "");
+      const [pagePart, queryPart] = raw.split("?");
+      if (!queryPart) return;
+      const openId = new URLSearchParams(queryPart).get("open");
+      const type = OPEN_TYPE_BY_PAGE[pagePart];
+      if (openId && type) setAlfredHighlight({ type, id: openId });
+    };
+    applyOpenParam();
+    window.addEventListener("hashchange", applyOpenParam);
+    return () => window.removeEventListener("hashchange", applyOpenParam);
+  }, []);
   // Sidebar open/close is button-only now (Menu icon / X / nav item taps /
   // outside-click on the overlay) — edge-swipe open and swipe-to-close were
   // removed per explicit user feedback: the gesture felt unreliable on a
@@ -1436,8 +1456,17 @@ export function App() {
       // land in their inbox.
       const ownerEmail = (settings as any)?.myEmail || (settings as any)?.companyEmail;
       if (ownerEmail) {
+        // Every owner-facing automated email gets a "View in CRM" button that
+        // deep-links straight to the record (#/PAGE?open=ID — picked up by
+        // the effect above, which glows the row via the same mechanism
+        // Alfred's spotlight uses) instead of leaving the owner to go dig it
+        // up themselves. Matches the CTA-button treatment employee emails
+        // (job assignment, tomorrow's jobs, daily briefing) already get.
+        const linkTo = (page: string, id: string) => `${window.location.origin}${window.location.pathname}#/${page}?open=${encodeURIComponent(id)}`;
         newEvents.filter(ev => ev.id.endsWith(":approved") || ev.id.endsWith(":rejected")).forEach(ev => {
-          sendEmail(settings as any, { to: ownerEmail, subject: "Quote update — " + (settings as any)?.companyName || "Crew Boss", body: ev.text }).catch(() => {});
+          const estId = ev.id.split(":")[0];
+          const html = emailShell(settings as any, "Quote Update", `<p>${ev.text}</p>` + emailButton("View Estimate", linkTo("estimates", estId)));
+          sendEmail(settings as any, { to: ownerEmail, subject: "Quote update — " + ((settings as any)?.companyName || "Crew Boss"), body: html }).catch(() => {});
         });
         // ISSUE 11 (round 11) — getting paid was the one invoice event that
         // DIDN'T email the owner (only approved/rejected quotes did) despite
@@ -1445,17 +1474,23 @@ export function App() {
         // open. Branded (emailShell) + routed through the owner's own
         // connected Gmail, matching every other in-app automated send.
         newEvents.filter(ev => ev.id.endsWith(":paid")).forEach(ev => {
-          sendOwnerGmailOnly(settings as any, ownerEmail, "💰 Invoice paid — " + ((settings as any)?.companyName || "Crew Boss"), emailShell(settings as any, "Invoice Paid", `<p>${ev.text.replace("💰 ", "")}</p>`)).catch(() => {});
+          const estId = ev.id.split(":")[0];
+          const html = emailShell(settings as any, "Invoice Paid", `<p>${ev.text.replace("💰 ", "")}</p>` + emailButton("View Invoice", linkTo("invoices", estId)));
+          sendOwnerGmailOnly(settings as any, ownerEmail, "💰 Invoice paid — " + ((settings as any)?.companyName || "Crew Boss"), html).catch(() => {});
         });
         // AUDIT (round 12) — refunds and disputes are the two highest-stakes
         // payment events (real money leaving the account, or a chargeback
         // clock running) and previously had no owner email at all — a bell/
         // toast only reaches someone with the CRM tab open.
         newEvents.filter(ev => ev.id.endsWith(":refunded")).forEach(ev => {
-          sendOwnerGmailOnly(settings as any, ownerEmail, "↩️ Invoice refunded — " + ((settings as any)?.companyName || "Crew Boss"), emailShell(settings as any, "Invoice Refunded", `<p>${ev.text.replace("↩️ ", "")}</p>`)).catch(() => {});
+          const estId = ev.id.split(":")[0];
+          const html = emailShell(settings as any, "Invoice Refunded", `<p>${ev.text.replace("↩️ ", "")}</p>` + emailButton("View Invoice", linkTo("invoices", estId)));
+          sendOwnerGmailOnly(settings as any, ownerEmail, "↩️ Invoice refunded — " + ((settings as any)?.companyName || "Crew Boss"), html).catch(() => {});
         });
         newEvents.filter(ev => ev.id.endsWith(":disputed")).forEach(ev => {
-          sendOwnerGmailOnly(settings as any, ownerEmail, "🚨 Payment dispute opened — " + ((settings as any)?.companyName || "Crew Boss"), emailShell(settings as any, "Payment Dispute", `<p>${ev.text.replace("🚨 ", "")}</p><p>Disputes have a short response window — check your Stripe dashboard for evidence submission.</p>`)).catch(() => {});
+          const estId = ev.id.split(":")[0];
+          const html = emailShell(settings as any, "Payment Dispute", `<p>${ev.text.replace("🚨 ", "")}</p><p>Disputes have a short response window — check your Stripe dashboard for evidence submission.</p>` + emailButton("View Invoice", linkTo("invoices", estId)));
+          sendOwnerGmailOnly(settings as any, ownerEmail, "🚨 Payment dispute opened — " + ((settings as any)?.companyName || "Crew Boss"), html).catch(() => {});
         });
       }
     }
@@ -3523,10 +3558,7 @@ export function App() {
             <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-red-600 to-red-900 flex items-center justify-center shadow-lg shadow-red-900/40">
               <CrewBossMark className="w-5 h-5" />
             </div>
-            <div>
-              <div className="font-bold text-sm leading-tight">{settings.companyName || "Crew Boss OS"}</div>
-              <div className="text-[10px] text-white/40">Business CRM</div>
-            </div>
+            <div className="font-bold text-sm leading-tight">Crew<span className="text-red-500">Boss</span></div>
           </button>
           <button onClick={() => setSidebarOpen(false)} className="md:hidden text-white/40 hover:text-white p-1"><X size={16} /></button>
         </div>
@@ -4084,7 +4116,7 @@ export function App() {
           content area instead of the viewport, leaving nothing usable visible
           on mobile. Rendered here, as a sibling at the top level like every
           other modal, it escapes that trap and truly covers the viewport. */}
-      <SopModal open={page === "sops"} onClose={() => setPage("dashboard")} editable />
+      <SopModal open={page === "sops"} onClose={() => setPage("dashboard")} editable ownerId={crmUserId} employees={employees} />
 
       {/* Company first-run setup modal */}
       {companySetupOpen && (

@@ -424,7 +424,12 @@ export function InvoicesPage({ estimates = [], setEstimates, customers = [], set
     if (!window.confirm(`Permanently delete invoice #${(inv.id || "").toUpperCase()}? This can't be undone.`)) return;
     setEstimates(estimates.filter(e => e.id !== inv.id));
     setViewing(null);
-    (supabase as any).from("estimates").delete().eq("id", inv.id)
+    // BUG FIX — this delete had no timeout, so a hung request (dropped
+    // connection, slow network) left the optimistic local removal with no
+    // error toast either — the next 3s poll then silently restored the row
+    // from the server since the delete never actually landed, reading to
+    // the owner as "I deleted it, but on reload it's back."
+    withTimeout((supabase as any).from("estimates").delete().eq("id", inv.id), 10000, "Invoice delete")
       .then((result: any) => { if (result?.error) toast("Deleted locally, but failed to delete from server — " + result.error.message, "red"); else toast("Invoice deleted"); })
       .catch((e: any) => toast("Deleted locally, but failed to delete from server — " + (e?.message || ""), "red"));
   };
@@ -491,7 +496,7 @@ export function InvoicesPage({ estimates = [], setEstimates, customers = [], set
     const ids = [...selected];
     setEstimates(estimates.filter(e => !ids.includes(e.id)));
     setSelected([]);
-    (supabase as any).from("estimates").delete().in("id", ids)
+    withTimeout((supabase as any).from("estimates").delete().in("id", ids), 10000, "Invoice bulk delete")
       .then((r: any) => { if (r?.error) toast?.("Deleted locally, but failed to delete from server — " + r.error.message, "red"); else toast?.(ids.length + " invoice(s) deleted"); })
       .catch((e: any) => toast?.("Deleted locally, but failed to delete from server — " + (e?.message || ""), "red"));
   };

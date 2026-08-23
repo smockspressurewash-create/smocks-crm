@@ -5257,7 +5257,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
         </div>
       </header>
 
-      <SopModal open={sopOpen} onClose={() => setSopOpen(false)} />
+      <SopModal open={sopOpen} onClose={() => setSopOpen(false)} ownerId={(myEmployee as any)?.owner_id || ""} currentEmployeeId={myEmployee?.id || ""} />
 
       {/* Persistent shift timer bar — visible on all tabs while clocked in */}
       {empDayClockInAt && (() => {

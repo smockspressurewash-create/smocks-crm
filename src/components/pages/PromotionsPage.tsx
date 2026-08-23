@@ -52,8 +52,11 @@ export function PromotionsPage({ promotions = [], setPromotions = (() => {}) as 
     return emailShell(settings, p.name, body + emailButton("Claim This Offer", `${window.location.origin}${window.location.pathname}#/customers`));
   };
 
-  const promoSms = (p: Promotion, cust: Customer) =>
-    `Hi ${cust.firstName}! ${discountLabel(p)} on your next service with ${companyName} — valid through ${p.validTo}. Reply to book. — ${companyName}`;
+  const promoSms = (p: Promotion, cust: Customer) => {
+    const line = p.description || `${discountLabel(p)} on your next service with ${companyName}`;
+    const link = `${window.location.origin}${window.location.pathname}#/customers`;
+    return `Hi ${cust.firstName}! ${line} — valid through ${p.validTo}. Book here: ${link} — ${companyName}`;
+  };
 
   const send = async (p: Promotion) => {
     const targets = matchAudience(p);

@@ -38,12 +38,29 @@ export const loadStripeJs = (publishableKey: string, stripeAccount?: string): Pr
 // environment variable and never returns it to the client. Nothing in this
 // file touches a Stripe secret key anymore — only the publishable key
 // (loadStripeJs above), which is safe to expose by design.
+// BUG FIX — this fetch had no timeout, so a hung Cloudflare Function
+// request (cold start, dropped connection) left the Settings "Save Stripe
+// Settings" button stuck on "Saving…" forever with no error — nothing ever
+// rejected the promise. AbortController + a 20s timeout matches the
+// treatment CLAUDE.md requires for user-facing action buttons elsewhere in
+// the app (field-portal withTimeout wrapper).
 const stripeAction = async (action: string, params: Record<string, any> = {}, accessToken?: string): Promise<any> => {
-  const res = await fetch("/api/stripe-action", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}) },
-    body: JSON.stringify({ action, ...params }),
-  });
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 20000);
+  let res: Response;
+  try {
+    res = await fetch("/api/stripe-action", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}) },
+      body: JSON.stringify({ action, ...params }),
+      signal: controller.signal,
+    });
+  } catch (e: any) {
+    if (e?.name === "AbortError") throw new Error("Stripe request timed out — check your connection and try again.");
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
   const data = await res.json().catch(() => ({} as any));
   if (!res.ok) throw new Error(data?.error || `Stripe error ${res.status}`);
   return data;
