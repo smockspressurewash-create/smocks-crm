@@ -16,6 +16,7 @@ import { useScheduledCampaigns } from "./hooks/useScheduledCampaigns";
 import { useIsMobile } from "./hooks/useIsMobile";
 import { supabase } from "./lib/supabase";
 import { SafePage } from "./components/ui/ErrorBoundary";
+import { CrewBossMark } from "./components/ui/CrewBossMark";
 import { PageFade } from "./components/ui/PageFade";
 import { GlobalSearch } from "./components/ui/GlobalSearch";
 
@@ -3306,12 +3307,7 @@ export function App() {
         <div className="w-full max-w-sm flex flex-col items-center gap-6 py-8">
           <div className="text-center">
             <div className="w-20 h-20 rounded-3xl bg-gradient-to-br from-red-600 to-red-900 flex items-center justify-center mx-auto mb-5 shadow-2xl shadow-red-900/50">
-              <svg viewBox="0 0 64 64" className="w-11 h-11" fill="none">
-                <path d="M14 44 Q30 46 40 34 Q46 27 50 16" stroke="#ffffff" strokeWidth="6" strokeLinecap="round" strokeOpacity="0.95"/>
-                <circle cx="50" cy="16" r="4.5" fill="#ffffff"/>
-                <circle cx="41" cy="32" r="3" fill="#ffffff" fillOpacity="0.85"/>
-                <circle cx="32" cy="42" r="2.2" fill="#ffffff" fillOpacity="0.65"/>
-              </svg>
+              <CrewBossMark className="w-11 h-11" />
             </div>
             <div className="text-2xl font-bold tracking-tight">CrewBoss</div>
             <div className="text-sm text-white/40 mt-1">{settings.companyName || "Business Management"}</div>
@@ -3510,12 +3506,7 @@ export function App() {
             title="View landing page"
           >
             <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-red-600 to-red-900 flex items-center justify-center shadow-lg shadow-red-900/40">
-              <svg viewBox="0 0 64 64" className="w-5 h-5" fill="none">
-                <path d="M14 44 Q30 46 40 34 Q46 27 50 16" stroke="#ffffff" strokeWidth="7" strokeLinecap="round" strokeOpacity="0.95"/>
-                <circle cx="50" cy="16" r="5" fill="#ffffff"/>
-                <circle cx="41" cy="32" r="3.3" fill="#ffffff" fillOpacity="0.85"/>
-                <circle cx="32" cy="42" r="2.4" fill="#ffffff" fillOpacity="0.65"/>
-              </svg>
+              <CrewBossMark className="w-5 h-5" />
             </div>
             <div>
               <div className="font-bold text-sm leading-tight">{settings.companyName || "Crew Boss OS"}</div>
