@@ -95,7 +95,7 @@ import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 // selected — the personality never actually reached the model at all.
 const getPersonality = (id: string) => personalities.find(p => p.id === id) || personalities[0];
 
-export function AlfredPage({ conversations, setConversations, activeConvId, setActiveConvId, memory = [], setMemory, personality, setPersonality, apiKey, openSettings, toast, jobs = [], setJobs, estimates = [], setEstimates, customers = [], setCustomers, employees = [], automations = [], setAutomations = () => {}, stats, setWins, goals = [], setGoals, setSettings, settings = {} as AppSettings, modelStatus = {}, setModelStatus = () => {}, onNav, expenses = [], entries = [], ownerId = "" }: { conversations?: any; setConversations?: any; activeConvId?: any; setActiveConvId?: any; memory?: any; setMemory?: any; personality?: any; setPersonality?: any; apiKey?: any; openSettings?: any; toast?: any; jobs?: any; setJobs?: any; estimates?: any; setEstimates?: any; customers?: any; setCustomers?: any; employees?: any; automations?: any; setAutomations?: any; stats?: any; setWins?: any; goals?: any; setGoals?: any; setSettings?: any; settings?: AppSettings; modelStatus?: any; setModelStatus?: any; onNav?: any; expenses?: any[]; entries?: any[]; ownerId?: string }) {
+export function AlfredPage({ conversations, setConversations, activeConvId, setActiveConvId, memory = [], setMemory, personality, setPersonality, apiKey, openSettings, toast, jobs = [], setJobs, estimates = [], setEstimates, customers = [], setCustomers, employees = [], automations = [], setAutomations = () => {}, stats, setWins, goals = [], setGoals, setSettings, settings = {} as AppSettings, modelStatus = {}, setModelStatus = () => {}, onNav, onSpotlight, expenses = [], entries = [], ownerId = "" }: { conversations?: any; setConversations?: any; activeConvId?: any; setActiveConvId?: any; memory?: any; setMemory?: any; personality?: any; setPersonality?: any; apiKey?: any; openSettings?: any; toast?: any; jobs?: any; setJobs?: any; estimates?: any; setEstimates?: any; customers?: any; setCustomers?: any; employees?: any; automations?: any; setAutomations?: any; stats?: any; setWins?: any; goals?: any; setGoals?: any; setSettings?: any; settings?: AppSettings; modelStatus?: any; setModelStatus?: any; onNav?: any; onSpotlight?: (step: { page: string; type?: string; id?: string; label?: string }) => void; expenses?: any[]; entries?: any[]; ownerId?: string }) {
   const [input, setInput] = useState("");
   const [voiceMode, setVoiceMode] = useState<"dictate" | "note">("dictate");
   const [loading, setLoading] = useState(false);
@@ -1124,7 +1124,11 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           // local state directly, so there's no path where the UI shows a
           // customer that doesn't actually exist in the database.
           toast("Alfred created customer: " + saved.firstName + " " + saved.lastName);
-          setTimeout(() => onNav("customers"), 1200);
+          // FEATURE — "demonstrate the action": queue a visible spotlight
+          // (navigate to Customers, glow the new row, then return to this
+          // chat) instead of just navigating away and staying there with no
+          // visible confirmation of which row Alfred actually touched.
+          if (onSpotlight) onSpotlight({ page: "customers", type: "customer", id: saved.id }); else setTimeout(() => onNav("customers"), 1200);
           return { success: true, customer: saved };
         }
         case "create_estimate": {
@@ -1157,7 +1161,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           }
           // No local setEstimates call — see create_customer above.
           toast("Alfred created estimate #" + savedE.id.toUpperCase() + " · " + fmt(total));
-          setTimeout(() => onNav("estimates"), 1200);
+          if (onSpotlight) onSpotlight({ page: "estimates", type: "estimate", id: savedE.id }); else setTimeout(() => onNav("estimates"), 1200);
           return { success: true, estimateId: savedE.id, total, customer: c.firstName + " " + c.lastName };
         }
         case "send_estimate": {
@@ -1368,7 +1372,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           }
           setJobs(prev => [...prev, newJ as any]);
           toast("Alfred scheduled job for " + c.firstName + " on " + newJ.scheduledDate);
-          setTimeout(() => onNav("jobs"), 1200);
+          if (onSpotlight) onSpotlight({ page: "jobs", type: "job", id: (newJ as any).id }); else setTimeout(() => onNav("jobs"), 1200);
 
           // Optional same-call crew assignment — the job itself is already
           // saved at this point, so a failure here must never be reported as
@@ -1458,7 +1462,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           if (reschedErr) return { error: "Could not reschedule — " + (reschedErr.message || String(reschedErr)) };
           setJobs(prev => prev.map(x => x.id === inputs.jobId ? { ...x, ...patch } : x));
           toast("Alfred rescheduled job to " + inputs.date + (inputs.time ? " at " + inputs.time : ""));
-          setTimeout(() => onNav("jobs"), 1200);
+          if (onSpotlight) onSpotlight({ page: "jobs", type: "job", id: inputs.jobId }); else setTimeout(() => onNav("jobs"), 1200);
           // FEATURE — "reschedule this job and text/email the customer" used
           // to require the model to independently chain reschedule_job then
           // send_reminder across two rounds, which worked only if the model
@@ -1503,7 +1507,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           if (cancelErr) return { error: "Could not cancel job — " + (cancelErr.message || String(cancelErr)) };
           setJobs(prev => prev.map(x => x.id === inputs.jobId ? { ...x, ...patch } : x));
           toast("Alfred cancelled the " + (j.scheduledDate || "") + " job");
-          setTimeout(() => onNav("jobs"), 1200);
+          if (onSpotlight) onSpotlight({ page: "jobs", type: "job", id: inputs.jobId }); else setTimeout(() => onNav("jobs"), 1200);
           let cancelNotifyWarning: string | undefined;
           if (inputs.notify && inputs.notify !== "none") {
             const c = customers.find(x => x.id === j.customerId);
@@ -1616,7 +1620,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           console.log("[AlfredTool create_invoice] Supabase response — data:", savedInv, "error:", invErr);
           if (invErr || !savedInv) return { error: "Failed to create invoice — " + (invErr?.message || "Supabase write did not return a row") };
           toast("Alfred created invoice for " + c.firstName + " · " + fmt(total));
-          setTimeout(() => onNav("invoices"), 1200);
+          if (onSpotlight) onSpotlight({ page: "invoices", type: "invoice", id: savedInv.id }); else setTimeout(() => onNav("invoices"), 1200);
           return { success: true, invoiceId: savedInv.id, total, customer: c.firstName + " " + c.lastName };
         }
         case "get_calendar_summary": {

@@ -87,8 +87,14 @@ const DECLINE_REASON_LABELS: Record<string, string> = {
   other: "Declined",
 };
 
-export function EstimatesPage({ estimates = [], setEstimates, customers = [], services = [], settings = {} as AppSettings, toast, onPortal = () => {}, estimateTemplates = [], setEstimateTemplates = () => {}, setJobs = () => {}, onNav = () => {}, autoOpenNew = false, onAutoOpenNewConsumed, presetCustomerId = "", ownerId = "" }: { estimates?: any[]; setEstimates?: any; customers?: any[]; services?: any[]; settings?: AppSettings; toast?: any; onPortal?: any; estimateTemplates?: any[]; setEstimateTemplates?: any; setJobs?: any; onNav?: any; autoOpenNew?: boolean; onAutoOpenNewConsumed?: () => void; presetCustomerId?: string; ownerId?: string }) {
+export function EstimatesPage({ estimates = [], setEstimates, customers = [], services = [], settings = {} as AppSettings, toast, onPortal = () => {}, estimateTemplates = [], setEstimateTemplates = () => {}, setJobs = () => {}, onNav = () => {}, autoOpenNew = false, onAutoOpenNewConsumed, presetCustomerId = "", ownerId = "", highlightId = null }: { estimates?: any[]; setEstimates?: any; customers?: any[]; services?: any[]; settings?: AppSettings; toast?: any; onPortal?: any; estimateTemplates?: any[]; setEstimateTemplates?: any; setJobs?: any; onNav?: any; autoOpenNew?: boolean; onAutoOpenNewConsumed?: () => void; presetCustomerId?: string; ownerId?: string; highlightId?: string | null }) {
   const [builderOpen, setBuilderOpen] = useState(false);
+  // FEATURE — "Alfred spotlight": briefly glows + scrolls to the estimate/
+  // invoice Alfred just created, driven by App.tsx's spotlight queue.
+  useEffect(() => {
+    if (!highlightId) return;
+    document.querySelector(`[data-estimate-id="${highlightId}"]`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }, [highlightId]);
   // ISSUE 21 — FAB's "New Quote" now opens the builder immediately.
   useEffect(() => {
     if (!autoOpenNew) return;
@@ -449,7 +455,7 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
           const expiry = getExpiryStatus(e);
           const isSel = selected.includes(e.id);
           return (
-            <Glass key={e.id} className={"p-5 hover:border-red-600/50 transition-all " + (isSel ? "ring-2 ring-red-500/50 " : "") + (expiry ? expiry.border : "")}>
+            <Glass key={e.id} data-estimate-id={e.id} className={"p-5 hover:border-red-600/50 transition-all " + (isSel ? "ring-2 ring-red-500/50 " : "") + (expiry ? expiry.border : "") + (highlightId === e.id ? " ring-2 ring-red-500 shadow-[0_0_25px_rgba(239,68,68,0.65)]" : "")}>
               <div className="flex items-start justify-between mb-3">
                 <div className="flex items-start gap-2 flex-1 min-w-0">
                   <input type="checkbox" checked={isSel} onChange={() => toggleSel(e.id)} className="mt-1 w-4 h-4 rounded accent-red-600" />

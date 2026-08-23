@@ -81,7 +81,13 @@ import { ChemicalModal } from "../ui/ChemicalModal";
 import { WeeklyBusinessReview } from "../ui/WeeklyBusinessReview";
 import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 
-export function InvoicesPage({ estimates = [], setEstimates, customers = [], settings = {} as AppSettings, toast, jobs = [], setJobs = (() => {}) as any, ownerId = "" }: { estimates?: any[]; setEstimates?: any; customers?: any[]; settings?: AppSettings; toast?: any; jobs?: any[]; setJobs?: any; ownerId?: string }) {
+export function InvoicesPage({ estimates = [], setEstimates, customers = [], settings = {} as AppSettings, toast, jobs = [], setJobs = (() => {}) as any, ownerId = "", highlightId = null }: { estimates?: any[]; setEstimates?: any; customers?: any[]; settings?: AppSettings; toast?: any; jobs?: any[]; setJobs?: any; ownerId?: string; highlightId?: string | null }) {
+  // FEATURE — "Alfred spotlight": briefly glows + scrolls to the invoice
+  // Alfred just sent, driven by App.tsx's spotlight queue.
+  useEffect(() => {
+    if (!highlightId) return;
+    document.querySelector(`[data-invoice-id="${highlightId}"]`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }, [highlightId]);
   // ITEM 30 — same fake "smocks.com" domain bug fixed in EstimatesPage.tsx
   // last round existed here too (Copy Link / Text Link on an invoice),
   // pointing every invoice link at a domain that resolves nowhere for any
@@ -635,7 +641,7 @@ export function InvoicesPage({ estimates = [], setEstimates, customers = [], set
                 const age = inv.invoicedAt ? daysSince(inv.invoicedAt) : 0;
                 const isSel = selected.includes(inv.id);
                 return (
-                  <tr key={inv.id} className={"border-b border-red-900/10 transition " + (isSel ? "bg-red-950/20" : "hover:bg-white/5")}>
+                  <tr key={inv.id} data-invoice-id={inv.id} className={"border-b border-red-900/10 transition " + (isSel ? "bg-red-950/20" : "hover:bg-white/5") + (highlightId === inv.id ? " ring-2 ring-inset ring-red-500 shadow-[0_0_25px_rgba(239,68,68,0.5)]" : "")}>
                     <td className="px-3 py-3"><input type="checkbox" checked={isSel} onChange={() => toggleSel(inv.id)} className="w-4 h-4 rounded accent-red-600" /></td>
                     <td className="px-3 py-3"><span className="font-mono text-xs text-red-400">#{inv.id.toUpperCase()}</span></td>
                     <td className="px-3 py-3"><div className="font-medium">{c?.firstName} {c?.lastName}</div><div className="text-[10px] text-white/50 md:hidden">{inv.invoicedAt}</div></td>

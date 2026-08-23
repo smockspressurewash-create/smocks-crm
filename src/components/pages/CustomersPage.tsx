@@ -78,8 +78,19 @@ import { ChemicalModal } from "../ui/ChemicalModal";
 import { WeeklyBusinessReview } from "../ui/WeeklyBusinessReview";
 import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 
-export function CustomersPage({ customers = [], setCustomers, estimates = [], jobs = [], employees = [], toast, timeline = {}, setTimeline = () => {}, settings = {} as AppSettings, setSettings = (() => {}) as any, autoOpenNew = false, onAutoOpenNewConsumed }: { customers?: any[]; setCustomers?: any; estimates?: any[]; jobs?: any[]; employees?: any[]; toast?: any; timeline?: any; setTimeline?: any; settings?: AppSettings; setSettings?: any; autoOpenNew?: boolean; onAutoOpenNewConsumed?: () => void }) {
+export function CustomersPage({ customers = [], setCustomers, estimates = [], jobs = [], employees = [], toast, timeline = {}, setTimeline = () => {}, settings = {} as AppSettings, setSettings = (() => {}) as any, autoOpenNew = false, onAutoOpenNewConsumed, highlightId = null }: { customers?: any[]; setCustomers?: any; estimates?: any[]; jobs?: any[]; employees?: any[]; toast?: any; timeline?: any; setTimeline?: any; settings?: AppSettings; setSettings?: any; autoOpenNew?: boolean; onAutoOpenNewConsumed?: () => void; highlightId?: string | null }) {
   const [search, setSearch] = useState("");
+  // FEATURE — "Alfred spotlight": briefly glows + scrolls to the row Alfred
+  // just created/touched, driven by App.tsx's spotlight queue.
+  useEffect(() => {
+    if (!highlightId) return;
+    // Two card renderings exist (mobile-stacked + desktop-table); only one
+    // is actually visible at a given viewport width — scroll to whichever
+    // one has layout (offsetParent is null for display:none elements).
+    const els = document.querySelectorAll<HTMLElement>(`[data-customer-id="${highlightId}"]`);
+    Array.from(els).find(el => el.offsetParent !== null)?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }, [highlightId]);
+  const spotlightCls = (id: string) => highlightId === id ? " ring-2 ring-red-500 shadow-[0_0_25px_rgba(239,68,68,0.65)]" : "";
   // FEATURE — filter/sort controls for the customer list (previously just a
   // plain text search with no way to sort or filter by tag).
   const [sortBy, setSortBy] = useState<"name" | "dateAdded" | "lastJob" | "totalSpent">("name");
@@ -783,7 +794,7 @@ export function CustomersPage({ customers = [], setCustomers, estimates = [], jo
         {filtered.map(c => {
           const sel = mergePair.includes(c.id);
           return (
-            <Glass key={c.id} className={"p-3 " + (sel ? "!bg-yellow-950/20" : "") + (draggedCustomerId === c.id ? " opacity-40" : "")}>
+            <Glass key={c.id} data-customer-id={c.id} className={"p-3 transition-shadow " + (sel ? "!bg-yellow-950/20" : "") + (draggedCustomerId === c.id ? " opacity-40" : "") + spotlightCls(c.id)}>
               <div className="flex items-start justify-between gap-2">
                 <div className="flex items-start gap-2 min-w-0">
                   {mergeMode && <input type="checkbox" checked={sel} onChange={() => toggleMerge(c.id)} className="w-4 h-4 mt-1 accent-red-600 shrink-0" />}
@@ -832,10 +843,11 @@ export function CustomersPage({ customers = [], setCustomers, estimates = [], jo
                 const sel = mergePair.includes(c.id);
                 return (
                   <tr key={c.id}
+                    data-customer-id={c.id}
                     draggable={!mergeMode && !bulkMode}
                     onDragStart={() => setDraggedCustomerId(c.id)}
                     onDragEnd={() => setDraggedCustomerId(null)}
-                    className={"border-b border-red-900/10 hover:bg-white/5 transition " + (sel ? "bg-yellow-950/20" : "") + (draggedCustomerId === c.id ? " opacity-40" : "")}>
+                    className={"border-b border-red-900/10 hover:bg-white/5 transition " + (sel ? "bg-yellow-950/20" : "") + (draggedCustomerId === c.id ? " opacity-40" : "") + (highlightId === c.id ? " ring-2 ring-inset ring-red-500 shadow-[0_0_25px_rgba(239,68,68,0.5)]" : "")}>
                     {mergeMode && <td className="px-4 py-4"><input type="checkbox" checked={sel} onChange={() => toggleMerge(c.id)} className="w-4 h-4 accent-red-600" /></td>}
                     {bulkMode && <td className="px-4 py-4"><input type="checkbox" checked={bulkSelected.includes(c.id)} onChange={() => toggleBulk(c.id)} className="w-4 h-4 rounded accent-red-600" /></td>}
                     <td className="px-5 py-4 cursor-pointer" onClick={() => !mergeMode && !bulkMode && setDetail(c)}>

@@ -80,8 +80,17 @@ import { ChemicalModal } from "../ui/ChemicalModal";
 import { WeeklyBusinessReview } from "../ui/WeeklyBusinessReview";
 import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 
-export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = (() => {}) as any, employees = [], estimates = [], setEstimates = () => {}, settings = {} as AppSettings, setSettings, toast, posts = [], setPosts = () => {}, setTimeline = () => {}, initialDetailId = null, onInitialDetailIdConsumed = () => {}, onPortal = (_id: string) => {}, ownerId = "", autoOpenNew = false, onAutoOpenNewConsumed }: { jobs?: any[]; setJobs?: any; customers?: any[]; setCustomers?: any; employees?: any[]; estimates?: any[]; setEstimates?: any; settings?: AppSettings; setSettings?: any; toast?: any; posts?: any[]; setPosts?: any; setTimeline?: any; initialDetailId?: string | null; onInitialDetailIdConsumed?: () => void; onPortal?: (id: string) => void; ownerId?: string; autoOpenNew?: boolean; onAutoOpenNewConsumed?: () => void }) {
+export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = (() => {}) as any, employees = [], estimates = [], setEstimates = () => {}, settings = {} as AppSettings, setSettings, toast, posts = [], setPosts = () => {}, setTimeline = () => {}, initialDetailId = null, onInitialDetailIdConsumed = () => {}, onPortal = (_id: string) => {}, ownerId = "", autoOpenNew = false, onAutoOpenNewConsumed, highlightId = null }: { jobs?: any[]; setJobs?: any; customers?: any[]; setCustomers?: any; employees?: any[]; estimates?: any[]; setEstimates?: any; settings?: AppSettings; setSettings?: any; toast?: any; posts?: any[]; setPosts?: any; setTimeline?: any; initialDetailId?: string | null; onInitialDetailIdConsumed?: () => void; onPortal?: (id: string) => void; ownerId?: string; autoOpenNew?: boolean; onAutoOpenNewConsumed?: () => void; highlightId?: string | null }) {
   const [tab, setTab] = useState("scheduled");
+  // FEATURE — "Alfred spotlight": jump to whichever tab the highlighted job
+  // actually lives on (it may not be the currently-open tab), then glow +
+  // scroll to it, driven by App.tsx's spotlight queue.
+  useEffect(() => {
+    if (!highlightId) return;
+    const j = jobs.find((x: any) => x.id === highlightId);
+    if (j) setTab(!j.scheduledDate && j.status !== "completed" && j.status !== "cancelled" ? "unscheduled" : j.status);
+    setTimeout(() => document.querySelector(`[data-job-id="${highlightId}"]`)?.scrollIntoView({ behavior: "smooth", block: "center" }), 50);
+  }, [highlightId]); // eslint-disable-line react-hooks/exhaustive-deps
   const [cancelModal, setCancelModal] = useState(null);
   const [cancelReason, setCancelReason] = useState(cancelReasons[0]);
   const [deleteModal, setDeleteModal] = useState<string | null>(null);
@@ -1093,7 +1102,7 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
                 const c = customers.find(x => x.id === j.customerId);
                 const isScheduling = schedulingJobId === j.id;
                 return (
-                  <div key={j.id} className="p-3 rounded-xl bg-black/30 border border-purple-700/30">
+                  <div key={j.id} data-job-id={j.id} className={"p-3 rounded-xl bg-black/30 border border-purple-700/30" + (highlightId === j.id ? " ring-2 ring-red-500 shadow-[0_0_25px_rgba(239,68,68,0.65)]" : "")}>
                     <div className="flex items-center justify-between gap-3">
                       <div className="min-w-0 flex-1">
                         <div className="text-sm font-medium truncate">{c ? `${c.firstName} ${c.lastName}` : j.address}</div>
@@ -1237,7 +1246,7 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
           const jobMargin = j.amount > 0 && jobCost > 0 ? Math.round(((j.amount - jobCost) / j.amount) * 100) : null;
           const isBulkSel = bulkSelected.includes(j.id);
           return (
-            <Glass key={j.id} className={"p-5 transition-all relative overflow-hidden " + (isBulkSel ? "!border-purple-500/60 !bg-purple-950/10" : j.noShow ? "border-red-500/60 bg-red-950/20" : "hover:border-red-600/50")} onTouchStart={e => handleTouchStart(j.id, e)} onTouchEnd={e => handleTouchEnd(j.id, e, j)}>
+            <Glass key={j.id} data-job-id={j.id} className={"p-5 transition-all relative overflow-hidden " + (isBulkSel ? "!border-purple-500/60 !bg-purple-950/10" : j.noShow ? "border-red-500/60 bg-red-950/20" : "hover:border-red-600/50") + (highlightId === j.id ? " ring-2 ring-red-500 shadow-[0_0_25px_rgba(239,68,68,0.65)]" : "")} onTouchStart={e => handleTouchStart(j.id, e)} onTouchEnd={e => handleTouchEnd(j.id, e, j)}>
               {/* Priority stripe */}
               {j.priority && j.priority !== "normal" && <div className={"absolute top-0 left-0 w-1 h-full " + (priorityLevels.find(p => p.key === j.priority)?.color || "bg-gray-600")} />}
               <div className="flex items-start justify-between mb-3">
