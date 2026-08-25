@@ -22,8 +22,8 @@ import {
 } from "recharts";
 import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE } from "../../lib/utils";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
-import { twilioSend, sendEmail, pollTwilioIncoming } from "../../lib/messaging";
-import { supabase, getStoredGoogleConnection } from "../../lib/supabase";
+import { twilioSend, sendEmail, pollTwilioIncoming, getFreshOwnerGoogleToken } from "../../lib/messaging";
+import { supabase, getStoredGoogleConnection, setStoredGoogleToken } from "../../lib/supabase";
 import { seedWeather } from "../../lib/weather";
 import { seedCustomers, seedEstimates, seedJobs, seedEmployees, seedVehicles, seedExpenses, seedChemicals, seedServices, seedAutomations, seedEmailTemplates, seedSmsTemplates, seedRewardTiers, seedReferrals, seedMaintenance, campaignTemplates, seedSocialPosts, seedTimeline, seedGoals, seedReminders, seedAccountabilityEntries, seedMileage, seedLeadSrc, STEP_TYPES, AUTOMATION_TEMPLATES } from "../../lib/seed";
 import { callModel, MODELS } from "../../lib/api";
@@ -450,6 +450,19 @@ export function InboxPage({ threads = [], setThreads, customers = [], setCustome
   }, [settings.twilioSid, settings.googleBackendUrl]);
 
   // Load Gmail messages when Google is connected
+  //
+  // ROOT FIX (Inbox "keeps asking to reconnect Google") — this used to read
+  // `gmailToken` directly (a raw access token, good for ~1hr) and treat a 401
+  // from an ordinary, expected expiry EXACTLY like a real 403 permission
+  // error: gate the token forever and show "reconnect required." Every other
+  // Gmail-sending call site in this app (sendOwnerGmailOnly, Calendar sync)
+  // goes through getFreshOwnerGoogleToken() first, which proactively
+  // refreshes an expiring token using the stored refresh_token BEFORE it's
+  // used — Inbox was the one place that skipped that step, so it hit an
+  // expired token on essentially every session and asked the owner to fully
+  // reconnect instead of silently refreshing like everywhere else. Now this
+  // resolves a fresh token the same way, and persists any refresh back to
+  // localStorage (setStoredGoogleToken) so gmailToken itself picks it up too.
   useEffect(() => {
     if (!gmailToken) {
       console.log("[GoogleConnect] Inbox — no gmail token available, skipping Gmail load");
@@ -466,10 +479,27 @@ export function InboxPage({ threads = [], setThreads, customers = [], setCustome
       setGmailPermissionError(false);
       return; // the state flip above re-triggers this effect with a clean pass
     }
-    console.log("[GoogleConnect] Inbox — loading Gmail messages, token source:", storedGoogle?.token ? "localStorage" : "settings (legacy)");
+    let cancelled = false;
     setGmailLoading(true);
-    fetchGmailMessages(gmailToken)
-      .then(msgs => {
+    (async () => {
+      // Proactively refresh before using — mirrors sendOwnerGmailOnly/
+      // getFreshOwnerGoogleToken's own pattern instead of waiting to hit a
+      // 401 first.
+      const freshToken = await getFreshOwnerGoogleToken(settings as any, (token, expiresAt) => {
+        setStoredGoogleToken(token, expiresAt);
+        // storedGoogle (React state) only otherwise refreshes on window
+        // focus — without this, a refresh that happens mid-session leaves
+        // `gmailToken` (and markRead's use of it below) pointing at the old,
+        // now-replaced token until the tab loses and regains focus.
+        setStoredGoogle(getStoredGoogleConnection());
+      }) || gmailToken;
+      if (cancelled) return;
+      console.log("[GoogleConnect] Inbox — loading Gmail messages, token source:", freshToken === gmailToken ? (storedGoogle?.token ? "localStorage" : "settings (legacy)") : "proactively refreshed");
+      return fetchGmailMessages(freshToken).then(msgs => ({ msgs, usedToken: freshToken }));
+    })()
+      .then((result) => {
+        if (cancelled || !result) return;
+        const { msgs } = result;
         // ISSUE 7 — this used to make ONE "thread" per individual Gmail
         // MESSAGE (id: "gmail-" + m.id), so a back-and-forth conversation
         // with several inbox messages from the same person showed up as
@@ -508,10 +538,11 @@ export function InboxPage({ threads = [], setThreads, customers = [], setCustome
         setGmailThreads(gThreads);
       })
       .catch((e: any) => {
-        // 401 (expired/invalid token) is grouped with 403 (insufficient
-        // scope) here — both mean "this exact token can't be used again
-        // until the owner reconnects," and the token-change check above is
-        // what lets a real reconnect clear this, not a timer.
+        if (cancelled) return;
+        // Reaching here now means a PROACTIVELY REFRESHED token (or a
+        // refresh attempt that itself failed) still got a 401/403 — a real
+        // permission/reconnect problem, not routine hourly expiry, which the
+        // refresh step above already handles silently.
         if (e?.status === 403 || e?.status === 401) {
           console.error("[GoogleConnect] Inbox — Gmail " + e.status + " — disabling further Gmail calls for this token. Reconnect Google in Settings → Integrations.");
           lastFailedGmailTokenRef.current = gmailToken;
@@ -520,7 +551,8 @@ export function InboxPage({ threads = [], setThreads, customers = [], setCustome
           console.warn("[GoogleConnect] Inbox — Gmail load failed:", e?.message);
         }
       })
-      .finally(() => setGmailLoading(false));
+      .finally(() => { if (!cancelled) setGmailLoading(false); });
+    return () => { cancelled = true; };
   }, [gmailToken, gmailPermissionError]);
 
   const markRead = id => {

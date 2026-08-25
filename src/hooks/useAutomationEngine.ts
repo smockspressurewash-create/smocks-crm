@@ -424,6 +424,18 @@ export function useAutomationEngine({
   // sync — skipping today always sticks for the rest of THIS session
   // regardless of what the settings sync is doing.
   const skippedTodayRef = useRef<Set<string>>(new Set());
+  // BUG FIX — "the approval popup keeps interrupting me all day." The gather
+  // tick runs every 15 minutes, and used to call setPendingBatch() (which
+  // pops AutomationBatchModal) every single time it found ANY newly-ready
+  // item, all day long, as different automations became ready at different
+  // times — nothing capped it to once. Track the last calendar date a batch
+  // was actually shown to the owner (localStorage so it survives a reload,
+  // matching the once-per-day pattern already used elsewhere in this file for
+  // dedup); once a batch has been shown today, further ready items are held
+  // in-memory and folded into tomorrow's single popup instead of opening a
+  // new one immediately.
+  const lastBatchShownDateRef = useRef<string>(localStorage.getItem("smocks.automationBatchShownDate") || "");
+  const heldForNextPopupRef = useRef<PendingAutomationItem[]>([]);
 
   const reviewLink = (c: Customer, settings: AppSettings) =>
     `${window.location.origin}${window.location.pathname}#/rate?c=${encodeURIComponent(c.id)}&n=${encodeURIComponent(c.firstName)}&g=${encodeURIComponent((settings as any).googlePlaceId ?? "")}&rl=${encodeURIComponent((settings as any).googleReviewLink ?? "")}&co=${encodeURIComponent((settings as any).companyName ?? "Crew Boss")}`;
@@ -1272,10 +1284,23 @@ export function useAutomationEngine({
       // (rendered from App.tsx) shows count + first few names + Send All /
       // Skip / Pause Automations.
       if (gathered.length > 0 || heldBackCount > 0) {
-        const campaignWarning = settings.twilioMessagingServiceSid && settings.twilioA2pCampaignStatus && settings.twilioA2pCampaignStatus !== "VERIFIED"
-          ? `Your Twilio A2P campaign status was last checked as "${settings.twilioA2pCampaignStatus}", not VERIFIED — carriers may filter or block these texts. Check Settings → Integrations → Twilio.`
-          : null;
-        setPendingBatch({ items: gathered, createdAt: Date.now(), heldBackCount, campaignWarning });
+        if (lastBatchShownDateRef.current === todayStr) {
+          // Already showed the owner one popup today — fold these into the
+          // held queue instead of interrupting again; they'll appear in the
+          // next popup (tomorrow, or immediately if the owner reloads after
+          // midnight and a fresh tick runs).
+          heldForNextPopupRef.current = [...heldForNextPopupRef.current, ...gathered];
+          console.log(`[Automations] ${gathered.length} item(s) ready but already showed today's approval popup — held for the next one (${heldForNextPopupRef.current.length} held total).`);
+        } else {
+          const campaignWarning = settings.twilioMessagingServiceSid && settings.twilioA2pCampaignStatus && settings.twilioA2pCampaignStatus !== "VERIFIED"
+            ? `Your Twilio A2P campaign status was last checked as "${settings.twilioA2pCampaignStatus}", not VERIFIED — carriers may filter or block these texts. Check Settings → Integrations → Twilio.`
+            : null;
+          const allItems = [...heldForNextPopupRef.current, ...gathered];
+          heldForNextPopupRef.current = [];
+          lastBatchShownDateRef.current = todayStr;
+          localStorage.setItem("smocks.automationBatchShownDate", todayStr);
+          setPendingBatch({ items: allItems, createdAt: Date.now(), heldBackCount, campaignWarning });
+        }
       }
       if (autoSend.length > 0) sendItems(autoSend);
       if (heldBackCount > 0) {

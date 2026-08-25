@@ -281,6 +281,46 @@ export function AutomationsPage({ automations = [], setAutomations, jobs = [], c
             </div>
           </Glass>
 
+          {/* FEATURE — global default + bulk apply for the per-automation
+              "Auto-send" / "Ask first" toggle (the small button on each
+              workflow card, below). Most owners want ALL (or almost all)
+              workflows to behave the same way, and flipping each one
+              individually is tedious — this sets settings.automationDefaultAutoApprove
+              (applied to any NEW workflow created from here on) and offers a
+              one-click "Apply to all" that bulk-updates every existing
+              automation's autoApprove flag at once. */}
+          <Glass className="p-4 !bg-purple-950/10 !border-purple-700/20">
+            <div className="flex items-center justify-between gap-3 flex-wrap">
+              <div>
+                <div className="text-sm font-semibold flex items-center gap-1.5">📝 Default Send Behavior</div>
+                <div className="text-xs text-white/50 mt-0.5 max-w-xl">
+                  Most workflows ask for your approval (the "Ask first" popup) before sending. Applies to every new workflow you create, and can bulk-set every existing one below. Each workflow can still be switched individually from its card.
+                </div>
+              </div>
+              <div className="flex-shrink-0 flex items-center rounded-lg border border-white/10 overflow-hidden">
+                <button
+                  onClick={() => setSettings((s: any) => ({ ...s, automationDefaultAutoApprove: false }))}
+                  className={"px-3 py-1.5 text-xs font-semibold transition " + (!settings?.automationDefaultAutoApprove ? "bg-white/15 text-white" : "text-white/40 hover:text-white/70")}
+                >Ask first</button>
+                <button
+                  onClick={() => setSettings((s: any) => ({ ...s, automationDefaultAutoApprove: true }))}
+                  className={"px-3 py-1.5 text-xs font-semibold transition " + (settings?.automationDefaultAutoApprove ? "bg-green-600 text-white" : "text-white/40 hover:text-white/70")}
+                >Auto-send</button>
+              </div>
+            </div>
+            <div className="flex items-center justify-end gap-2 mt-3 pt-3 border-t border-white/5">
+              <span className="text-[10px] text-white/40 mr-auto">Apply the setting above to every existing workflow right now:</span>
+              <GBtn variant="ghost" className="!text-[10px] !py-1" onClick={() => {
+                setAutomations(automations.map(x => ({ ...x, autoApprove: false })));
+                toast?.("Every workflow now asks for approval before sending");
+              }}>Set all to Ask first</GBtn>
+              <GBtn variant="ghost" className="!text-[10px] !py-1" onClick={() => {
+                setAutomations(automations.map(x => ({ ...x, autoApprove: true })));
+                toast?.("Every workflow now sends automatically, no popup");
+              }}>Set all to Auto-send</GBtn>
+            </div>
+          </Glass>
+
           {/* FEATURE — explicit cap on total automation sends per day, on top of
               the existing one-touch-per-customer-per-day guardrail. That existing
               rule stops any ONE customer being messaged twice in a day, but does
@@ -649,6 +689,10 @@ export function AutomationsPage({ automations = [], setAutomations, jobs = [], c
           active: existing?.active ?? true,
           sentLog: existing?.sentLog ?? {},
           runLog: existing?.runLog ?? [],
+          // Preserve an existing workflow's own send-behavior choice on edit;
+          // a brand new one picks up the owner's "Default Send Behavior"
+          // setting above instead of silently defaulting to "ask first".
+          autoApprove: existing ? existing.autoApprove : !!(settings as any)?.automationDefaultAutoApprove,
         };
         if (existing) setAutomations(automations.map(a => a.id === d.id ? newAuto : a));
         else setAutomations([...automations, newAuto]);

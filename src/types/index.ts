@@ -1035,6 +1035,10 @@ export interface AppSettings {
   // combined (distinct from automationDailySendLog's per-customer cap above).
   // Defaults to 50 when unset. See useAutomationEngine.ts's gather loop.
   automationMaxSendsPerDay?: number;
+  // FEATURE — default autoApprove value applied to newly-created workflows;
+  // existing workflows keep whatever their own card's Auto-send/Ask first
+  // toggle is set to. See AutomationsPage.tsx's "Default Send Behavior".
+  automationDefaultAutoApprove?: boolean;
   // FEATURE — throttles (not just caps) the actual send rate of an approved
   // batch. 0/unset = no limit. See computeThrottleDelayMs in
   // useAutomationEngine.ts.
