@@ -389,8 +389,15 @@ export const logOutboundSmsToInbox = async (
     const existing = rows.find(r => normPhone(r.contact_phone) === normPhone(opts.contactPhone) && normPhone(opts.contactPhone));
     const newMsg: InboxSyncMessage = { id: uid(), dir: "out", body: opts.body, ts: Date.now(), status: "sent" };
     if (existing) {
-      const messages = [...(Array.isArray(existing.messages) ? existing.messages : []), newMsg];
-      await (supabase as any).from("inbox_threads").update({ messages, unread: false, last_message_at: newMsg.ts, updated_at: new Date().toISOString() }).eq("id", existing.id);
+      // BUG FIX — "some conversations aren't showing Alfred's responses" /
+      // "it accidentally separated two chats." This read-then-write raced
+      // with the exact same class of write happening server-side (the
+      // Twilio webhook / Alfred SMS agent logging around the same moment)
+      // — whichever update landed second silently overwrote the other's
+      // addition. append_inbox_message (Postgres function, see migration
+      // 0062) does the append inside one atomic UPDATE instead.
+      const { error: rpcError } = await (supabase as any).rpc("append_inbox_message", { p_thread_id: existing.id, p_message: newMsg, p_unread: false });
+      if (rpcError) console.warn("[Inbox Sync] append_inbox_message failed:", rpcError.message);
     } else {
       await (supabase as any).from("inbox_threads").insert({
         id: uid(), channel: "sms", contact_name: opts.contactName, contact_phone: opts.contactPhone,

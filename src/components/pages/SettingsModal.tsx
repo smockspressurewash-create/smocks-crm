@@ -390,23 +390,37 @@ export function SettingsModal({ open, onClose, settings, setSettings, jobs = [],
   // stays open and the owner is mid-edit.
   useEffect(() => { if (open) setF(settings); }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const save = () => {
-    // SECURITY AUDIT (round 12) — no longer writes a stripeSecretKeyEnc here;
-    // the secret key isn't collected in this form anymore (see the Stripe
-    // section below) and must never be re-introduced into synced settings —
-    // that's the exact field that was exposing it to every customer session.
-    // "Connected" is now just "publishable key present"; the real gate on
-    // whether payments actually work is the STRIPE_SECRET_KEY Cloudflare env
-    // var, which this client-side form has no visibility into by design.
-    setSettings({
+  // BUG FIX — "I kept adding my Stripe/Buffer info and it wasn't saving."
+  // Root cause: `f` is only a local DRAFT — nothing about typing into a
+  // field ever touched the real `settings` state, only clicking the bottom
+  // "Save Settings" button did (via this function). Every other way of
+  // closing this modal (the X button, clicking the backdrop) called the raw
+  // `onClose` prop directly and threw the whole draft away — including the
+  // Buffer section's own "Connect" button, which fetches channels and shows
+  // success feedback but never itself persists `f`, making it very easy to
+  // believe a key had saved when it hadn't. `<Modal onClose={save}>` below
+  // now routes every close path through this same function, so nothing
+  // typed here can be silently lost again.
+  const save = (skipToastIfUnchanged = false) => {
+    const next = {
       ...f,
       monthlyRevenueGoal: Number(f.monthlyRevenueGoal), monthlyJobsGoal: Number(f.monthlyJobsGoal), taxRate: Number(f.taxRate),
       annualRevenueGoal: Number(f.annualRevenueGoal) || 0, customerAcquisitionGoal: Number(f.customerAcquisitionGoal) || 0,
       avgJobValueGoal: Number(f.avgJobValueGoal) || 0, reviewRatingGoal: Number(f.reviewRatingGoal) || 0,
+      // SECURITY AUDIT (round 12) — no longer writes a stripeSecretKeyEnc
+      // here; the secret key isn't collected in this form anymore (see the
+      // Stripe section below) and must never be re-introduced into synced
+      // settings — that's the exact field that was exposing it to every
+      // customer session. "Connected" is now just "publishable key
+      // present"; the real gate on whether payments actually work is the
+      // STRIPE_SECRET_KEY Cloudflare env var, this client form can't see.
       stripeConnected: !!f.stripePublishableKey?.trim(),
       googleMapsKey: (f.googleMapsKey || "").trim(),
-    });
-    onClose(); toast("Settings saved");
+    };
+    const unchanged = skipToastIfUnchanged && JSON.stringify(next) === JSON.stringify(settings);
+    setSettings(next);
+    onClose();
+    if (!unchanged) toast("Settings saved");
   };
 
   // Managers only get their own profile — no API keys, billing/Stripe (under
@@ -437,7 +451,7 @@ export function SettingsModal({ open, onClose, settings, setSettings, jobs = [],
 
   return (
     <>
-    <Modal open={open} onClose={onClose} title="Settings" maxW="max-w-5xl" noBodyScroll>
+    <Modal open={open} onClose={() => save(true)} title="Settings" maxW="max-w-5xl" noBodyScroll>
       <div className="h-full flex flex-col">
         <div className="flex-1 min-h-0 flex flex-col sm:flex-row overflow-hidden">
         {/* Sidebar nav — vertical on desktop, horizontal scroll strip on mobile */}
@@ -2222,7 +2236,7 @@ export function SettingsModal({ open, onClose, settings, setSettings, jobs = [],
           {/* Sticky footer */}
           <div className="flex-shrink-0 flex gap-2 justify-end px-5 py-3 border-t border-red-900/30 bg-black/60 backdrop-blur-xl rounded-br-2xl">
             <GBtn variant="ghost" onClick={onClose}>Cancel</GBtn>
-            <GBtn onClick={save}><Save size={14} className="inline mr-1.5" />Save Settings</GBtn>
+            <GBtn onClick={() => save()}><Save size={14} className="inline mr-1.5" />Save Settings</GBtn>
           </div>
         </div>
       </div>

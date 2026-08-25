@@ -657,9 +657,12 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
             ...(inMediaUrl ? { mediaUrl: inMediaUrl, mediaType: inMediaType } : {}),
           };
           if (existingThread) {
-            await fetch(`${SUPABASE_URL}/rest/v1/inbox_threads?id=eq.${encodeURIComponent(existingThread.id)}`, {
-              method: "PATCH", headers: { ...authHeaders, "Content-Type": "application/json", Prefer: "return=minimal" },
-              body: JSON.stringify({ messages: [...(existingThread.messages || []), newMsg], unread: true, last_message_at: newMsg.ts, updated_at: new Date().toISOString() }),
+            // BUG FIX — atomic append (see append_inbox_message migration)
+            // instead of read-then-write, so this can't race with Alfred's
+            // own reply-logging in sendSms and silently drop one side.
+            await fetch(`${SUPABASE_URL}/rest/v1/rpc/append_inbox_message`, {
+              method: "POST", headers: { ...authHeaders, "Content-Type": "application/json" },
+              body: JSON.stringify({ p_thread_id: existingThread.id, p_message: newMsg, p_unread: true }),
             });
           } else {
             await fetch(`${SUPABASE_URL}/rest/v1/inbox_threads`, {
@@ -876,13 +879,17 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
       if (alreadyHave) {
         console.log("[TwilioSmsWebhook] message", msgId, "already recorded — skipping duplicate insert");
       } else if (existingThread) {
-        const merged = [...(Array.isArray(existingThread.messages) ? existingThread.messages : []), newMsg];
-        const patchRes = await fetch(`${SUPABASE_URL}/rest/v1/inbox_threads?id=eq.${encodeURIComponent(existingThread.id)}`, {
-          method: "PATCH",
-          headers: { ...authHeaders, "Content-Type": "application/json", Prefer: "return=minimal" },
-          body: JSON.stringify({ messages: merged, unread: true, last_message_at: newMsg.ts, updated_at: new Date().toISOString() }),
+        // BUG FIX — atomic append instead of read-then-write (see
+        // append_inbox_message migration) — this same thread can also be
+        // written to by sendSms's Alfred-reply logging around the same
+        // moment; the old read-modify-write PATCH here could win the race
+        // and silently drop whichever message the OTHER logger just added.
+        const patchRes = await fetch(`${SUPABASE_URL}/rest/v1/rpc/append_inbox_message`, {
+          method: "POST",
+          headers: { ...authHeaders, "Content-Type": "application/json" },
+          body: JSON.stringify({ p_thread_id: existingThread.id, p_message: newMsg, p_unread: true }),
         });
-        if (!patchRes.ok) console.error("[TwilioSmsWebhook] inbox_threads PATCH failed (" + patchRes.status + "):", await patchRes.text().catch(() => ""));
+        if (!patchRes.ok) console.error("[TwilioSmsWebhook] inbox_threads append failed (" + patchRes.status + "):", await patchRes.text().catch(() => ""));
       } else {
         const contactName = match ? `${match.firstName || ""} ${match.lastName || ""}`.trim() || from : from;
         const postRes = await fetch(`${SUPABASE_URL}/rest/v1/inbox_threads`, {
@@ -960,13 +967,13 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
         if (alreadyHave) return;
         const replyMsg = { id: replyId, dir: "out", body: text, ts: Date.now() };
         if (existingThread) {
-          const merged = [...(Array.isArray(existingThread.messages) ? existingThread.messages : []), replyMsg];
-          const patchRes = await fetch(`${SUPABASE_URL}/rest/v1/inbox_threads?id=eq.${encodeURIComponent(existingThread.id)}`, {
-            method: "PATCH",
-            headers: { ...authHeaders, "Content-Type": "application/json", Prefer: "return=minimal" },
-            body: JSON.stringify({ messages: merged, last_message_at: replyMsg.ts, updated_at: new Date().toISOString() }),
+          // BUG FIX — atomic append (see append_inbox_message migration).
+          const patchRes = await fetch(`${SUPABASE_URL}/rest/v1/rpc/append_inbox_message`, {
+            method: "POST",
+            headers: { ...authHeaders, "Content-Type": "application/json" },
+            body: JSON.stringify({ p_thread_id: existingThread.id, p_message: replyMsg, p_unread: existingThread.unread !== false }),
           });
-          if (!patchRes.ok) console.error("[TwilioSmsWebhook] auto-reply PATCH failed (" + patchRes.status + "):", await patchRes.text().catch(() => ""));
+          if (!patchRes.ok) console.error("[TwilioSmsWebhook] auto-reply append failed (" + patchRes.status + "):", await patchRes.text().catch(() => ""));
         } else {
           const contactName = match ? `${match.firstName || ""} ${match.lastName || ""}`.trim() || from : from;
           const postRes = await fetch(`${SUPABASE_URL}/rest/v1/inbox_threads`, {

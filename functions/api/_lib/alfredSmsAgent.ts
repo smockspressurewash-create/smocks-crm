@@ -371,15 +371,31 @@ const sendSms = async (ctx: Ctx, toPhone: string, bodyRaw: string, isOwnerReply 
     // a blank/silent bubble in the owner's Inbox with nothing to play back.
     const msg = { id: crypto.randomUUID(), dir: "out", body, ts: Date.now(), via: "alfred", ...(mediaUrl ? { mediaUrl, mediaType: "audio/mpeg" } : {}) };
     if (existing) {
-      const patch: Record<string, unknown> = { messages: [...(existing.messages || []), msg], last_message_at: msg.ts, updated_at: new Date().toISOString() };
-      // Backfill a real name/customer_id onto a thread that was previously
-      // created with only a bare phone number (e.g. from before this fix).
-      if (!isOwnerReply && contact?.name && (!existing.contact_name || existing.contact_name === toPhone)) patch.contact_name = contact.name;
-      if (!isOwnerReply && contact?.customerId && !existing.customer_id) patch.customer_id = contact.customerId;
-      await fetch(`${SUPABASE_URL}/rest/v1/inbox_threads?id=eq.${encodeURIComponent(existing.id)}`, {
-        method: "PATCH", headers: { ...ctx.authHeaders, "Content-Type": "application/json", Prefer: "return=minimal" },
-        body: JSON.stringify(patch),
+      // BUG FIX — "some conversations aren't showing Alfred's responses."
+      // A plain PATCH here reads existing.messages (fetched a moment ago
+      // at the top of this function) and writes the whole array back —
+      // if the INBOUND message for this same thread got logged by the
+      // webhook handler in between that read and this write, this PATCH
+      // would silently overwrite it with a Alfred-reply-only array. The
+      // append_inbox_message RPC does the append inside a single atomic
+      // UPDATE, so this can no longer race with any other logger.
+      await fetch(`${SUPABASE_URL}/rest/v1/rpc/append_inbox_message`, {
+        method: "POST", headers: { ...ctx.authHeaders, "Content-Type": "application/json" },
+        body: JSON.stringify({ p_thread_id: existing.id, p_message: msg, p_unread: !!isOwnerReply || existing.unread !== false }),
       });
+      // Backfill a real name/customer_id onto a thread that was previously
+      // created with only a bare phone number (e.g. from before this fix) —
+      // a separate, harmless-to-race PATCH of fields the append above
+      // doesn't touch at all.
+      const backfill: Record<string, unknown> = {};
+      if (!isOwnerReply && contact?.name && (!existing.contact_name || existing.contact_name === toPhone)) backfill.contact_name = contact.name;
+      if (!isOwnerReply && contact?.customerId && !existing.customer_id) backfill.customer_id = contact.customerId;
+      if (Object.keys(backfill).length > 0) {
+        await fetch(`${SUPABASE_URL}/rest/v1/inbox_threads?id=eq.${encodeURIComponent(existing.id)}`, {
+          method: "PATCH", headers: { ...ctx.authHeaders, "Content-Type": "application/json", Prefer: "return=minimal" },
+          body: JSON.stringify(backfill),
+        });
+      }
     } else {
       // BUG FIX — this used to name the owner's own conversation-with-Alfred
       // thread literally "Alfred" in the Inbox, which the owner explicitly

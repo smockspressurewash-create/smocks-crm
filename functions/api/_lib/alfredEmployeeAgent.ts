@@ -66,9 +66,13 @@ const sendCustomerSms = async (ctx: Ctx, toPhone: string, bodyRaw: string, conta
     const existing = threads.find((t: any) => norm(t.contact_phone) === norm(digits));
     const msg = { id: crypto.randomUUID(), dir: "out", body, ts: Date.now(), via: "alfred" };
     if (existing) {
-      await fetch(`${SUPABASE_URL}/rest/v1/inbox_threads?id=eq.${encodeURIComponent(existing.id)}`, {
-        method: "PATCH", headers: { ...ctx.authHeaders, "Content-Type": "application/json", Prefer: "return=minimal" },
-        body: JSON.stringify({ messages: [...(existing.messages || []), msg], last_message_at: msg.ts, updated_at: new Date().toISOString() }),
+      // BUG FIX — atomic append (see append_inbox_message migration) —
+      // this same thread's other loggers (the inbound webhook, the owner
+      // agent's own reply) can write around the same moment; a plain
+      // read-then-write PATCH here could win the race and drop one side.
+      await fetch(`${SUPABASE_URL}/rest/v1/rpc/append_inbox_message`, {
+        method: "POST", headers: { ...ctx.authHeaders, "Content-Type": "application/json" },
+        body: JSON.stringify({ p_thread_id: existing.id, p_message: msg, p_unread: existing.unread !== false }),
       });
     } else {
       await fetch(`${SUPABASE_URL}/rest/v1/inbox_threads`, {
