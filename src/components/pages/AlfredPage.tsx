@@ -2491,7 +2491,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
     },
     {
       name: "create_customer",
-      description: "Add a new customer to the CRM.",
+      description: "Add a new customer to the CRM. Use ONLY the exact name/phone/email the user actually gave you in this conversation — never substitute, invent, or default to a different name or contact info for any reason.",
       input_schema: { type: "object", properties: { firstName: { type: "string" }, lastName: { type: "string" }, email: { type: "string" }, phone: { type: "string" }, address: { type: "string" }, notes: { type: "string" } }, required: ["firstName", "lastName"] }
     },
     {

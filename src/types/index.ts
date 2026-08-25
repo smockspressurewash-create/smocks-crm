@@ -538,6 +538,7 @@ export interface Chemical {
   id: string;
   name: string;
   itemType?: "chemical" | "equipment";
+  brand?: string;
   stock: number;
   unit: string;
   unitCost: number;

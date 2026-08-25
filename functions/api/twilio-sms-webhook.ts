@@ -200,7 +200,19 @@ const shapeSettings = (row: any, data: any): ResolvedOwnerSettings => ({
   // voice memo", "say it instead", etc. — see VOICE_REQUEST_PHRASES
   // below). Uses Cloudflare Workers AI's free MeloTTS model — no
   // ElevenLabs/paid API required, standard voice only (no cloning).
-  alfredVoiceReplies: (data?.alfredVoiceReplies === "always" || data?.alfredVoiceReplies === "ask") ? data.alfredVoiceReplies : "off",
+  // BUG FIX — "Alfred still can't send voice messages back." Root cause
+  // (found live, not guessed): this owner's alfredVoiceReplies was simply
+  // unset in the database, which fell back to "off" — meaning voice replies
+  // were disabled entirely regardless of any other fix, since "off" never
+  // reaches the wantsVoice check at all. The feature only exists to answer
+  // "I sent voice, why no voice back," and "ask" mode (now correctly
+  // triggers on any real inbound voice memo — see the isInboundVoiceMemo
+  // fix) is the low-risk match for that expectation: plain texts stay text,
+  // only a voice memo (or an explicit typed request) gets a voice reply.
+  // Defaulting unset to "ask" instead of "off" means this works out of the
+  // box with no Settings trip required, for every deployment, not just an
+  // explicit opt-in.
+  alfredVoiceReplies: (data?.alfredVoiceReplies === "always" || data?.alfredVoiceReplies === "off") ? data.alfredVoiceReplies : "ask",
 });
 
 const fetchAppSettings = async (env: Record<string, string>, toNumber: string): Promise<ResolvedOwnerSettings> => {
