@@ -6,7 +6,7 @@ import {
 } from "lucide-react";
 import {
   Reveal, MarketingStyles, BackgroundBlobs, MarketingNav, MarketingFooter,
-  MarketingPage,
+  MarketingPage, HeroSprayCanvas, MarketingMarquee, SectionDivider,
 } from "./MarketingShared";
 
 // ─── Public marketing / landing page for CrewBoss (this product) ──────────────
@@ -163,10 +163,19 @@ export function LandingPage({
       <MarketingNav active="welcome" onNavigate={onNavigate} onGetStarted={onGetStarted} />
 
       {/* ── Hero ─────────────────────────────────────────────────────────────── */}
-      <section className="relative px-4 md:px-6 pt-16 pb-20 md:pt-28 md:pb-32 max-w-5xl mx-auto text-center">
+      <section className="relative px-4 md:px-6 pt-16 pb-20 md:pt-28 md:pb-32 max-w-5xl mx-auto text-center overflow-hidden">
+        {/* BUG FIX (user report) — "landing page looks bad/basic." The only
+            motion on the whole page used to be two blurred static-position
+            blobs and a one-time scroll-reveal. This is a real animated
+            graphic grounded in the actual product (a pressure-washer spray,
+            rendered as continuously moving particle streaks), not another
+            generic gradient blob. */}
+        <div className="lp-hero-glow-pulse absolute left-1/2 top-1/3 -translate-x-1/2 -translate-y-1/2 w-[36rem] h-[36rem] rounded-full bg-red-600/25 blur-[100px] z-0" />
+        <HeroSprayCanvas />
+        <div className="relative z-10">
         <Reveal>
-          <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full glass text-xs text-red-300 mb-6">
-            <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse-ring" />
+          <div className="relative inline-flex items-center gap-2 px-3 py-1.5 rounded-full glass text-xs text-red-300 mb-6">
+            <span className="w-1.5 h-1.5 rounded-full bg-red-500 lp-pulse-dot" />
             Built for pressure-washing crews
           </div>
         </Reveal>
@@ -202,7 +211,10 @@ export function LandingPage({
           </div>
           <p className="text-xs text-white/30 mt-4">No credit card required to explore. Cancel anytime.</p>
         </Reveal>
+        </div>
       </section>
+
+      <MarketingMarquee items={["Scheduling", "Estimates & Invoices", "Stripe Payments", "Client Portal", "Alfred AI Assistant", "Live Crew Tracking", "Mobile Field Portal", "Automated Follow-Ups", "Referral Program"]} />
 
       {/* ── Feature grid (teaser — full breakdown on #/features) ────────────── */}
       <section className="px-4 md:px-6 py-16 md:py-24 max-w-6xl mx-auto">
@@ -249,12 +261,17 @@ export function LandingPage({
             { stat: "1", label: "screen for the whole business" },
           ].map(s => (
             <div key={s.label}>
-              <div className="text-3xl md:text-4xl font-black gradient-text">{s.stat}</div>
+              <div className="flex items-center justify-center gap-2">
+                <span className="w-1.5 h-1.5 rounded-full bg-red-500 lp-pulse-dot" />
+                <div className="text-3xl md:text-4xl font-black gradient-text">{s.stat}</div>
+              </div>
               <div className="text-white/50 text-xs md:text-sm mt-1">{s.label}</div>
             </div>
           ))}
         </section>
       </Reveal>
+
+      <SectionDivider />
 
       {/* ── How it works ─────────────────────────────────────────────────────── */}
       <section className="px-4 md:px-6 py-16 md:py-24 max-w-5xl mx-auto">
@@ -308,6 +325,8 @@ export function LandingPage({
           </div>
         </section>
       </Reveal>
+
+      <SectionDivider />
 
       {/* ── Pricing (teaser — full comparison on #/pricing) ─────────────────── */}
       <section className="px-4 md:px-6 py-16 md:py-24 max-w-6xl mx-auto">

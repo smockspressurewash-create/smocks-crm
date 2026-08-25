@@ -94,6 +94,46 @@ export function MarketingStyles() {
         border-color: rgba(220,38,38,0.5);
         box-shadow: 0 12px 32px -12px rgba(220,38,38,0.35);
       }
+
+      @keyframes lp-sweep-move {
+        0% { transform: translateX(-30%) rotate(8deg); }
+        100% { transform: translateX(30%) rotate(8deg); }
+      }
+      .lp-sweep {
+        background: linear-gradient(100deg, transparent 40%, rgba(220,38,38,0.06) 48%, rgba(248,113,113,0.1) 50%, rgba(220,38,38,0.06) 52%, transparent 60%);
+        animation: lp-sweep-move 9s ease-in-out infinite alternate;
+      }
+
+      @keyframes lp-marquee-scroll {
+        0% { transform: translateX(0); }
+        100% { transform: translateX(-50%); }
+      }
+      .lp-marquee-track { animation: lp-marquee-scroll 26s linear infinite; }
+      .lp-marquee:hover .lp-marquee-track { animation-play-state: paused; }
+
+      @keyframes lp-pulse-dot {
+        0%, 100% { opacity: 0.4; transform: scale(0.85); }
+        50% { opacity: 1; transform: scale(1.15); }
+      }
+      .lp-pulse-dot { animation: lp-pulse-dot 1.8s ease-in-out infinite; }
+
+      @keyframes lp-hero-glow-pulse-move {
+        0%, 100% { opacity: 0.6; transform: translate(-50%, -50%) scale(1); }
+        50% { opacity: 1; transform: translate(-50%, -50%) scale(1.15); }
+      }
+      .lp-hero-glow-pulse { animation: lp-hero-glow-pulse-move 4s ease-in-out infinite; }
+
+      @keyframes lp-divider-sweep-move {
+        0% { transform: translateX(-120%); }
+        100% { transform: translateX(320%); }
+      }
+      .lp-divider-sweep { animation: lp-divider-sweep-move 3.2s ease-in-out infinite; }
+
+      @media (prefers-reduced-motion: reduce) {
+        .lp-blob, .lp-blob-slow, .lp-sweep, .lp-marquee-track, .lp-pulse-dot, .lp-hero-gradient, .lp-divider-sweep, .lp-hero-glow-pulse {
+          animation: none !important;
+        }
+      }
     `}</style>
   );
 }
@@ -104,6 +144,163 @@ export function BackgroundBlobs() {
       <div className="lp-blob absolute -top-32 -left-24 w-96 h-96 rounded-full bg-red-700/20 blur-3xl" />
       <div className="lp-blob-slow absolute top-1/3 -right-32 w-[28rem] h-[28rem] rounded-full bg-red-900/25 blur-3xl" />
       <div className="lp-blob absolute bottom-0 left-1/4 w-80 h-80 rounded-full bg-red-800/15 blur-3xl" />
+      {/* FEATURE — "the landing page looks bad/basic, add moving animation
+          throughout." A slow diagonal light sweep across the whole page,
+          on top of the existing blob glow, so there's ambient motion behind
+          every section, not just the hero. Cheap (single gradient, GPU
+          transform only) and respects prefers-reduced-motion below. */}
+      <div className="lp-sweep absolute -inset-y-full -inset-x-1/2 w-[200%]" />
+    </div>
+  );
+}
+
+// ─── Animated hero graphic — a pressure-washer spray rendered as real
+// moving particle streaks (canvas, not a static image), grounded in the
+// actual subject instead of generic decorative blobs. Sits behind the hero
+// headline as its own bounded visual. Respects prefers-reduced-motion (skips
+// straight to a static single frame) and pauses via IntersectionObserver
+// when scrolled out of view so it never burns cycles for content further
+// down the page.
+export function HeroSprayCanvas({ className = "" }: { className?: string }) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const wrapRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    const wrap = wrapRef.current;
+    if (!canvas || !wrap) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+
+    const reduceMotion = typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+
+    type Streak = { x: number; y: number; len: number; speed: number; angle: number; width: number; hue: number; life: number };
+    let streaks: Streak[] = [];
+    let raf = 0;
+    let running = true;
+    let w = 0, h = 0, dpr = 1;
+
+    const spawn = (): Streak => {
+      const angle = (28 + Math.random() * 10) * (Math.PI / 180); // consistent downward-right spray angle
+      return {
+        x: -40 - Math.random() * 200,
+        y: Math.random() * h * 0.9,
+        len: 90 + Math.random() * 160,
+        speed: 8 + Math.random() * 11,
+        angle,
+        width: 2 + Math.random() * 3,
+        hue: Math.random() > 0.3 ? 0 : 355, // mostly hot red, some white-hot
+        life: 1,
+      };
+    };
+
+    const resize = () => {
+      const rect = wrap.getBoundingClientRect();
+      dpr = Math.min(window.devicePixelRatio || 1, 2);
+      w = rect.width; h = rect.height;
+      canvas.width = w * dpr; canvas.height = h * dpr;
+      canvas.style.width = w + "px"; canvas.style.height = h + "px";
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    };
+    resize();
+    const count = reduceMotion ? 0 : (w < 640 ? 30 : 58);
+    streaks = Array.from({ length: count }, spawn);
+
+    const drawStatic = () => {
+      // Reduced-motion fallback: a single soft radial glow, no animation loop at all.
+      ctx.clearRect(0, 0, w, h);
+      const g = ctx.createRadialGradient(w * 0.5, h * 0.35, 0, w * 0.5, h * 0.35, Math.max(w, h) * 0.5);
+      g.addColorStop(0, "rgba(220,38,38,0.18)");
+      g.addColorStop(1, "rgba(220,38,38,0)");
+      ctx.fillStyle = g;
+      ctx.fillRect(0, 0, w, h);
+    };
+
+    const draw = () => {
+      if (!running) return;
+      ctx.clearRect(0, 0, w, h);
+      for (const s of streaks) {
+        s.x += Math.cos(s.angle) * s.speed;
+        s.y += Math.sin(s.angle) * s.speed;
+        if (s.x > w + 80 || s.y > h + 80) { Object.assign(s, spawn()); continue; }
+        const x2 = s.x - Math.cos(s.angle) * s.len;
+        const y2 = s.y - Math.sin(s.angle) * s.len;
+        const grad = ctx.createLinearGradient(s.x, s.y, x2, y2);
+        grad.addColorStop(0, `hsla(${s.hue}, 95%, ${s.hue === 0 ? 58 : 75}%, 1)`);
+        grad.addColorStop(1, `hsla(${s.hue}, 95%, 50%, 0)`);
+        ctx.strokeStyle = grad;
+        ctx.lineWidth = s.width;
+        ctx.lineCap = "round";
+        ctx.beginPath();
+        ctx.moveTo(s.x, s.y);
+        ctx.lineTo(x2, y2);
+        ctx.stroke();
+      }
+      raf = requestAnimationFrame(draw);
+    };
+
+    if (reduceMotion) { drawStatic(); }
+    else { raf = requestAnimationFrame(draw); }
+
+    const obs = new IntersectionObserver(([entry]) => {
+      running = entry.isIntersecting && !reduceMotion;
+      if (running && !raf) raf = requestAnimationFrame(draw);
+    }, { threshold: 0 });
+    obs.observe(wrap);
+
+    const onResize = () => resize();
+    window.addEventListener("resize", onResize);
+    return () => {
+      running = false;
+      cancelAnimationFrame(raf);
+      window.removeEventListener("resize", onResize);
+      obs.disconnect();
+    };
+  }, []);
+
+  return (
+    // z-0 (not -z-10): an absolutely-positioned element with z-index:auto
+    // paints AFTER normal-flow siblings regardless of DOM order, and a
+    // negative z-index can just as easily sink BELOW an ancestor's own
+    // solid background depending on where the nearest stacking context
+    // lands — explicit z-0 here plus z-10 on the caller's text wrapper
+    // gives a real, direct, unambiguous comparison between the two.
+    <div ref={wrapRef} className={"absolute inset-0 pointer-events-none z-0 " + className}>
+      <canvas ref={canvasRef} />
+    </div>
+  );
+}
+
+// ─── Thin animated divider — a moving light sweep across an otherwise plain
+// horizontal rule, used between sections so motion isn't only concentrated
+// in the hero.
+export function SectionDivider() {
+  return (
+    <div className="relative h-px max-w-4xl mx-auto my-2 overflow-hidden">
+      <div className="absolute inset-0 bg-white/10" />
+      <div className="lp-divider-sweep absolute inset-y-0 w-1/3 bg-gradient-to-r from-transparent via-red-500 to-transparent" />
+    </div>
+  );
+}
+
+// ─── Infinite scrolling marquee of feature keywords — a common, very
+// effective "this page is alive" technique on top of scroll-triggered
+// reveals, which only animate once and then sit still. Pure CSS transform
+// loop (two duplicated tracks back to back so it wraps seamlessly), pauses
+// under prefers-reduced-motion via the .lp-marquee-track animation being
+// disabled in MarketingStyles below.
+export function MarketingMarquee({ items }: { items: string[] }) {
+  const track = [...items, ...items];
+  return (
+    <div className="lp-marquee relative overflow-hidden border-y border-red-900/30 bg-gradient-to-r from-red-950/40 via-black to-red-950/40 py-3">
+      <div className="lp-marquee-track flex items-center gap-10 w-max">
+        {track.map((item, i) => (
+          <span key={i} className="flex items-center gap-10 text-xs md:text-sm font-semibold tracking-wide text-white/70 whitespace-nowrap">
+            <span className="w-1.5 h-1.5 rounded-full bg-red-500 flex-shrink-0" />
+            {item}
+          </span>
+        ))}
+      </div>
     </div>
   );
 }
