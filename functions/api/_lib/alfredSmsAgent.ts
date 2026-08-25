@@ -612,6 +612,27 @@ const TOOLS = [
       required: ["customerName", "documentName"],
     },
   },
+  // FEATURE — "text a photo or PDF to Alfred and say 'upload this to this
+  // client'." When the owner sends a photo/PDF, resolveIncomingText (see
+  // twilio-sms-webhook.ts) has already uploaded it and handed you a message
+  // containing its real URL, content type, and inferred file name — this
+  // tool is how you actually save that into the named customer's Document
+  // Vault. Only call it with a URL that genuinely appeared in the
+  // conversation — never invent one.
+  {
+    name: "attach_file_to_customer",
+    description: "Save a file the owner just sent (photo or PDF — its URL will already be in this conversation as '[Attached file ready to save — url: ...]') into a customer's Document Vault. Use whenever the owner sends a file and says to upload/save/attach it to a client.",
+    input_schema: {
+      type: "object",
+      properties: {
+        customerName: { type: "string" },
+        fileUrl: { type: "string", description: "The exact url from the '[Attached file ready to save...]' message" },
+        fileName: { type: "string", description: "The fileName from that same message" },
+        category: { type: "string", enum: ["Insurance", "Contract", "Waiver", "HOA", "Photo", "Document"], description: "Best guess from context — default 'Photo' for an image, 'Document' otherwise" },
+      },
+      required: ["customerName", "fileUrl"],
+    },
+  },
   {
     name: "get_customer_card_info",
     description: "Check whether a customer has a payment card on file and what's known about it. Only ever returns the card BRAND and LAST 4 DIGITS (e.g. 'Visa ····4242') — the full card number is never stored anywhere in this app (Stripe handles that directly, by design, for PCI compliance) and can never be retrieved by anyone, including you.",
@@ -1214,6 +1235,25 @@ const executeTool = async (ctx: Ctx, name: string, input: Record<string, any>): 
         if (!res.ok) return { error: res.error };
         return { success: true, sent: doc.name };
       }
+      case "attach_file_to_customer": {
+        if (!input.fileUrl) return { error: "fileUrl required" };
+        const cust = await findCustomerByName(ctx, input.customerName);
+        if (!cust) return { error: `No customer found matching "${input.customerName}".` };
+        const newDoc = {
+          id: crypto.randomUUID(),
+          name: input.fileName || input.fileUrl.split("/").pop() || "file",
+          url: input.fileUrl,
+          category: input.category || "Document",
+          uploadedAt: new Date().toISOString().slice(0, 10),
+        };
+        const docs = [...(Array.isArray(cust.documents) ? cust.documents : []), newDoc];
+        const res = await fetch(`${SUPABASE_URL}/rest/v1/customers?id=eq.${encodeURIComponent(cust.id)}`, {
+          method: "PATCH", headers: { ...ctx.authHeaders, "Content-Type": "application/json", Prefer: "return=minimal" },
+          body: JSON.stringify({ documents: docs }),
+        });
+        if (!res.ok) return { error: (await res.text().catch(() => "")).slice(0, 200) };
+        return { success: true, savedTo: `${cust.firstName} ${cust.lastName}`.trim(), fileName: newDoc.name };
+      }
       case "get_customer_card_info": {
         const cust = await findCustomerByName(ctx, input.customerName);
         if (!cust) return { error: `No customer found matching "${input.customerName}".` };
@@ -1296,6 +1336,7 @@ const executeTool = async (ctx: Ctx, name: string, input: Record<string, any>): 
             "Talk to customers": "Text an existing customer, text ANY phone number directly (leads, applicants, personal contacts — not just customers), mass-text everyone or a tagged group, look up a customer's saved card on file (brand/last4/expiry only — never the full card number, that's never stored anywhere)",
             "Run the business": "Create, reschedule, cancel jobs; reassign or request crew; create customers and estimates/invoices, then send them; add checklist items; check who's clocked in",
             "Look things up": "Business stats and revenue, today's/upcoming schedule, overdue invoices, full job or customer detail, the weather, a customer's documents on file",
+            "Files": "Text me a photo or PDF and say which client it's for and I'll save it to their file — text 'send me [file] for [client]' and I'll send it right back as an MMS",
             "Remember and follow up": "Save facts/notes for later, save standing 'from now on' preferences, schedule one-time or recurring follow-up texts to you",
             "Admin": "Create a tracked promotion code, turn on auto review-request texting, approve/decline a reschedule a customer's own assistant proposed, switch which AI model I'm running on",
           },
@@ -1689,6 +1730,8 @@ FOLLOWING UP LATER: you are not limited to replying only in this exact moment. I
 CUSTOMER REQUESTS AWAITING YOU: some customers have Alfred auto-response turned on for texting directly with them — when one of them asks to reschedule, that Alfred (a separate, more restricted agent) proposes it to YOU here rather than committing to anything itself, and texts you the details. If the owner replies "yes"/"sure"/"that works" (or similar) without more context, and there's a recent proposal in this conversation, that's almost always what they're confirming — call list_pending_customer_requests to find it (don't assume which one from memory alone, always look it up) then approve_customer_request or decline_customer_request. These are the ONLY customer-initiated actions that need the owner's yes/no this way — everything else that customer-facing agent handles (pricing questions, appointment status) it answers on its own without involving you.
 
 CUSTOMER FILES AND CARDS: "do we have the file/paperwork for X" or "what's on file for X" → get_customer_documents. "Text me the [file] for X" → get_customer_documents first if you don't already know the exact name, then text_me_document — this sends a REAL MMS attachment straight to the owner's own phone, not a description of the file. "What's the card info for X" / "do they have a card on file" → get_customer_card_info — this ONLY ever returns brand + last 4 digits (e.g. "Visa ····4242"); the full card number is never stored anywhere in this app and cannot be retrieved by you or anyone else, so never imply you could get more than that.
+
+RECEIVING A PHOTO OR PDF: when the owner texts a photo or PDF, the file has ALREADY been uploaded and saved somewhere safe by the time you see this conversation — the message will contain a line like "[Attached file ready to save — url: ..., type: ..., fileName: ...]". If they said which client it's for ("upload this to the Millers"), call attach_file_to_customer right away with that exact url. If they didn't say who it's for, ask which customer before attaching — never guess a customer for a file. Never claim you "can't see" or "can't process" an attached photo/PDF — you always can via this tool; the only reason to not attach it immediately is not knowing which customer it belongs to.
 
 WHAT CAN YOU DO: if the owner asks what you can do / your capabilities / what you're able to help with, call list_capabilities and answer from that — don't describe your abilities from memory, since the real tool list is the source of truth.
 

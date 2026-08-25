@@ -20,7 +20,7 @@ import {
   Tooltip, ResponsiveContainer, Area, AreaChart, LineChart, Line,
   ComposedChart, Legend
 } from "recharts";
-import { fmt, uid, today, localDateStr, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, forecastFor, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, withTimeout, totalJobPhotoCount, desktopNotifsSupported, desktopNotifPermission, requestDesktopNotifPermission } from "../../lib/utils";
+import { fmt, uid, today, localDateStr, localDateKey, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, forecastFor, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, withTimeout, totalJobPhotoCount, desktopNotifsSupported, desktopNotifPermission, requestDesktopNotifPermission } from "../../lib/utils";
 // BLOCKER 5/9 (mobile round 9) — same robust crew-matching helper the
 // employee portal uses (tolerates object-shaped crew entries, stringified
 // JSON, casing, and the employees.id vs employees.user_id mismatch). Live
@@ -254,8 +254,23 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
   // uses local Date components instead, matching what the owner actually
   // considers "today."
   const revToday = completedJobs.filter(j => j.scheduledDate === localDateStr()).reduce((s, j) => s + j.amount, 0);
-  const revWeek = completedJobs.filter(j => new Date(j.scheduledDate) >= weekStart).reduce((s, j) => s + j.amount, 0);
-  const revMonth = completedJobs.filter(j => new Date(j.scheduledDate) >= monthStart).reduce((s, j) => s + j.amount, 0);
+  // BUG FIX (owner report — "make sure Today/This Week revenue numbers are
+  // accurate") — same class of bug FIX 2 above already fixed for revToday,
+  // just missed here: job.scheduledDate is a plain "YYYY-MM-DD" string,
+  // which `new Date(...)` always parses as UTC MIDNIGHT regardless of the
+  // browser's timezone. Comparing that against weekStart/monthStart (Date
+  // objects anchored to LOCAL midnight) means, for any negative-UTC-offset
+  // timezone (all of the US), a job scheduled for the FIRST day of the
+  // week/month got its UTC-midnight instant compared against a LATER
+  // local-midnight-in-UTC instant and silently failed the >= check —
+  // dropped out of "This Week"/"This Month" revenue entirely. Comparing
+  // the plain date strings instead (via localDateKey, same helper
+  // utils.ts already documents for exactly this bug class) sidesteps the
+  // UTC-parsing step altogether.
+  const weekStartStr = localDateKey(weekStart);
+  const monthStartStr = localDateKey(monthStart);
+  const revWeek = completedJobs.filter(j => j.scheduledDate >= weekStartStr).reduce((s, j) => s + j.amount, 0);
+  const revMonth = completedJobs.filter(j => j.scheduledDate >= monthStartStr).reduce((s, j) => s + j.amount, 0);
   const avgJobVal = completedJobs.length > 0 ? completedJobs.reduce((s, j) => s + j.amount, 0) / completedJobs.length : 0;
 
   // FIX 5 — run-rate/forecast must project from MONTH-TO-DATE revenue
@@ -1703,7 +1718,12 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
           <Glass className="p-5">
             <div className="text-[10px] text-white/50 uppercase tracking-wider font-semibold mb-2">📅 This Week</div>
             <div className="text-3xl font-black text-blue-400">{fmt(revWeek)}</div>
-            <div className="text-[10px] text-white/40 mt-0.5">{jobs.filter(j => new Date(j.scheduledDate) >= weekStart && j.status === "completed").length} jobs</div>
+            {/* BUG FIX — was comparing new Date(j.scheduledDate) >= weekStart
+                directly, the same UTC-vs-local mismatch just fixed for
+                revWeek above (weekStartStr) — this count could disagree
+                with the revenue figure right above it about which jobs
+                counted as "this week." */}
+            <div className="text-[10px] text-white/40 mt-0.5">{jobs.filter(j => j.scheduledDate >= weekStartStr && j.status === "completed").length} jobs</div>
           </Glass>
           <Glass className="p-5">
             <div className="text-[10px] text-white/50 uppercase tracking-wider font-semibold mb-2">🗓️ This Month</div>
