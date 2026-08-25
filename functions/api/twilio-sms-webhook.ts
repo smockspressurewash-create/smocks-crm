@@ -572,7 +572,35 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
     // though the number is technically still in authorizedPhones — the
     // owner's explicit assignment is the real intent, not "extra owner".
     const assignedEmployeeId = alfredExtraPhoneRoles[fromDigits] || "";
-    if (alfredSmsEnabled && authorizedPhones.includes(fromDigits) && !assignedEmployeeId) {
+    // BUG FIX — "Alfred refuses an employee who was explicitly granted
+    // access" (Settings → Employees → Edit → Portal Permissions → Text
+    // Alfred). If that same phone number was ALSO ever added to Settings →
+    // AI Models → "Numbers allowed to text Alfred" (e.g. for earlier
+    // testing) without an explicit "Assign to" pick, the check just above
+    // (`authorizedPhones.includes(fromDigits) && !assignedEmployeeId`) used
+    // to unconditionally win — routing that employee's texts into the
+    // OWNER-only Alfred agent, whose system prompt only knows how to talk to
+    // the owner. That agent then correctly (from ITS perspective) refused
+    // once it realized from the conversation content that it wasn't
+    // actually talking to the owner. A number an employee's own record
+    // claims via can_text_alfred is a more specific, more recent grant than
+    // a loose "extra owner number" list — it should win, except for the
+    // owner's own real primary number, which must always stay owner-level
+    // regardless of what else got added to that list.
+    let preResolvedEmployee: any = null;
+    if (fromDigits !== normalizePhoneDigits(myPhone)) {
+      try {
+        const preEmpRes = await fetch(`${SUPABASE_URL}/rest/v1/employees?select=id,firstName,lastName,phone,permissions,dayClockInAt,dayPausedMinutes,lastShiftHours,lastShiftDate,hourlyRate,google_token,google_refresh_token,google_token_expires_at${ownerFilter}`, { headers: authHeaders });
+        const preEmpRows = await preEmpRes.json().catch(() => []);
+        preResolvedEmployee = Array.isArray(preEmpRows)
+          ? (assignedEmployeeId ? preEmpRows.find((e: any) => e.id === assignedEmployeeId) : null)
+            || preEmpRows.find((e: any) => e.phone && normalizePhoneDigits(e.phone) === fromDigits && e.permissions?.can_text_alfred === true)
+          : null;
+      } catch (e: any) {
+        console.warn("[TwilioSmsWebhook] pre-check employee lookup failed, falling back to owner-phone logic:", e?.message);
+      }
+    }
+    if (alfredSmsEnabled && authorizedPhones.includes(fromDigits) && !assignedEmployeeId && !preResolvedEmployee) {
       const ctx = { authHeaders, ownerId, companyName, twilioSid, twilioToken, twilioFrom, origin: new URL(context.request.url).origin, fromPhone: from, googleProviderToken, googleRefreshToken, googleTokenExpiresAt, testModeEnabled, ownerAuthorizedPhones: authorizedPhones, alfredPersonality, owmKey, weatherLocation, companyAddress, myEmail, env: context.env as Record<string, string> };
       // BUG FIX — this branch never logged the OWNER's own inbound text to
       // inbox_threads at all (only to alfred_sms_threads, which the Inbox
@@ -716,16 +744,9 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
     // (an owner number always wins) and before the customer STOP/opt-in
     // logic below, matching that same "resolve who this is once" shape.
     {
-      const empRes = await fetch(`${SUPABASE_URL}/rest/v1/employees?select=id,firstName,lastName,phone,permissions,dayClockInAt,dayPausedMinutes,lastShiftHours,lastShiftDate,hourlyRate,google_token,google_refresh_token,google_token_expires_at${ownerFilter}`, { headers: authHeaders });
-      const empRows = await empRes.json().catch(() => []);
-      // An explicit "assign this number to this employee" (Settings → AI
-      // Models) is its own authorization — no need for their own phone on
-      // file to match or can_text_alfred to be separately toggled. Falls
-      // back to the original phone-match + permission lookup otherwise.
-      const employee = Array.isArray(empRows)
-        ? (assignedEmployeeId ? empRows.find((e: any) => e.id === assignedEmployeeId) : null)
-          || empRows.find((e: any) => e.phone && normalizePhoneDigits(e.phone) === fromDigits && e.permissions?.can_text_alfred === true)
-        : null;
+      // Reuse the pre-check lookup above (same query) instead of hitting
+      // Supabase twice for the same row on every single inbound text.
+      const employee = preResolvedEmployee;
       if (employee) {
         const empCtx = { authHeaders, ownerId, companyName, twilioSid, twilioToken, twilioFrom, origin: new URL(context.request.url).origin, owmKey, weatherLocation, companyAddress, env: context.env as Record<string, string> };
         context.waitUntil((async () => {

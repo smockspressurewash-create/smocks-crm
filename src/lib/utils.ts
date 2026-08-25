@@ -13,10 +13,13 @@ export const POLL_INTERVAL_OPTIONS = [
   { label: "120 seconds (recommended)", value: 120000 },
   { label: "300 seconds (lowest egress)", value: 300000 },
 ] as const;
-export const getPollIntervalMs = (settings: { pollIntervalMs?: number } | null | undefined): number => {
-  const v = Number(settings?.pollIntervalMs) || DEFAULT_POLL_INTERVAL_MS;
-  return Math.min(600000, Math.max(30000, v));
-};
+// BUG FIX — this was owner-editable in Settings, but a user-chosen value here
+// has no way to account for what actually drives egress cost (tab count,
+// realtime already covering same-device changes, etc.) — the owner has no
+// real basis to pick a "correct" number, and a bad pick either wastes egress
+// or misses cross-device updates for minutes. Always automatic now: ignores
+// any stored override and returns the single recommended interval.
+export const getPollIntervalMs = (_settings?: { pollIntervalMs?: number } | null): number => DEFAULT_POLL_INTERVAL_MS;
 
 // ─── Job media (Storage-backed photos/videos/signatures) ──────────────────────
 // Every Photo/ChecklistPhoto/JobVideo/JobSignOff can carry EITHER a Storage

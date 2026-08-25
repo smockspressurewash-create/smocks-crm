@@ -1564,10 +1564,21 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setJobs
               const nextLog = nowPaid ? [...(f.paymentLog || []), { id: uid(), periodStart: start, periodEnd: period?.end || start, amount: period?.pay ?? 0, paidAt: Date.now() }] : (f.paymentLog || []);
               setF((p: any) => ({ ...p, paidPeriods: next, paymentLog: nextLog }));
               setEmployees((prev: any[]) => prev.map(e => e.id === f.id ? { ...e, paidPeriods: next, paymentLog: nextLog } : e));
+              // BUG FIX — "marking as paid doesn't save" (this modal's own
+              // togglePeriod/toggleDay, unlike markPeriodPaidFor's Payroll-tab
+              // version above, never had the safe-column retry). paidPeriods
+              // and paymentLog are two separate columns (migration 0019) —
+              // PostgREST rejects the WHOLE update if either doesn't exist on
+              // this deployment yet, which silently dropped the paid/unpaid
+              // STATUS too, not just the log. Retry with paidPeriods alone so
+              // the actual status always lands even if the log can't.
               (supabase as any).from("employees").update({ paidPeriods: next, paymentLog: nextLog }).eq("id", f.id)
-                .then((r: any) => {
-                  if (r?.error) { console.error("[MarkPaid] failed:", r.error.message); toast?.("Failed to save pay status — " + r.error.message, "red"); }
-                  else toast?.(next[start] === "paid" ? "Marked as paid ✓" : "Marked as unpaid", "green");
+                .then(async (r: any) => {
+                  if (!r?.error) { toast?.(next[start] === "paid" ? "Marked as paid ✓" : "Marked as unpaid", "green"); return; }
+                  console.warn("[MarkPaid] full update failed:", r.error.message, "— retrying with paidPeriods only");
+                  const retry = await (supabase as any).from("employees").update({ paidPeriods: next }).eq("id", f.id);
+                  if (retry?.error) { console.error("[MarkPaid] paidPeriods-only retry also failed:", retry.error.message); toast?.("Failed to save pay status — " + retry.error.message, "red"); }
+                  else toast?.(next[start] === "paid" ? "Marked as paid ✓ (payment log needs a pending database migration)" : "Marked as unpaid", "yellow");
                 })
                 .catch((e: any) => { console.error("[MarkPaid] threw:", e?.message); toast?.("Failed to save pay status — " + (e?.message || "unknown error"), "red"); });
             };
@@ -1661,10 +1672,17 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setJobs
               const nextLog = nowPaid ? [...(f.paymentLog || []), { id: uid(), periodStart: key, periodEnd: key, amount: day?.pay ?? 0, paidAt: Date.now() }] : (f.paymentLog || []);
               setF((p: any) => ({ ...p, paidDays: next, paymentLog: nextLog }));
               setEmployees((prev: any[]) => prev.map(e => e.id === f.id ? { ...e, paidDays: next, paymentLog: nextLog } : e));
+              // BUG FIX — same safe-column retry as togglePeriod above:
+              // paidDays and paymentLog are separate columns, so a missing/
+              // mismatched paymentLog column must not be able to block the
+              // paidDays status itself from saving.
               (supabase as any).from("employees").update({ paidDays: next, paymentLog: nextLog }).eq("id", f.id)
-                .then((r: any) => {
-                  if (r?.error) { console.error("[MarkPaid] failed:", r.error.message); toast?.("Failed to save pay status — " + r.error.message, "red"); }
-                  else toast?.(next[key] === "paid" ? "Marked as paid ✓" : "Marked as unpaid", "green");
+                .then(async (r: any) => {
+                  if (!r?.error) { toast?.(next[key] === "paid" ? "Marked as paid ✓" : "Marked as unpaid", "green"); return; }
+                  console.warn("[MarkPaid] full update failed:", r.error.message, "— retrying with paidDays only");
+                  const retry = await (supabase as any).from("employees").update({ paidDays: next }).eq("id", f.id);
+                  if (retry?.error) { console.error("[MarkPaid] paidDays-only retry also failed:", retry.error.message); toast?.("Failed to save pay status — " + retry.error.message, "red"); }
+                  else toast?.(next[key] === "paid" ? "Marked as paid ✓ (payment log needs a pending database migration)" : "Marked as unpaid", "yellow");
                 })
                 .catch((e: any) => { console.error("[MarkPaid] threw:", e?.message); toast?.("Failed to save pay status — " + (e?.message || "unknown error"), "red"); });
             };
@@ -1708,6 +1726,29 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setJobs
               ))}
             </div>
           )}
+          {/* FEATURE — a standalone, hard-to-miss "Full Alfred Access" switch.
+              can_text_alfred/can_text_alfred_message_customers already existed
+              buried inside the long Portal Permissions list below (the second
+              one only visible once the first is checked) — easy to miss, and
+              the reported symptom ("employee texts Alfred, gets refused")
+              gave no clue that the fix lived in a collapsed section two
+              levels deep. One switch, right up top, grants both at once. */}
+          <div className="border border-cyan-700/30 rounded-xl p-3 bg-cyan-950/10 flex items-center justify-between gap-3">
+            <div>
+              <div className="text-xs font-semibold text-cyan-300 flex items-center gap-1.5">🤖 Full Alfred Access</div>
+              <div className="text-[10px] text-white/40 mt-0.5">Lets this employee text the company's Alfred number to clock in/out, check their hours/jobs, manage their calendar, and message customers on their own jobs.</div>
+            </div>
+            <button
+              onClick={() => setF((p: any) => {
+                const on = !(p.permissions?.can_text_alfred && p.permissions?.can_text_alfred_message_customers);
+                return { ...p, permissions: { ...(p.permissions || DEFAULT_PERMS), can_text_alfred: on, can_text_alfred_message_customers: on } };
+              })}
+              className="flex-shrink-0 w-12 h-7 rounded-full transition relative"
+              style={{ background: (f.permissions?.can_text_alfred && f.permissions?.can_text_alfred_message_customers) ? "#0891b2" : "rgba(255,255,255,0.1)" }}
+            >
+              <div className={"absolute top-1 w-5 h-5 rounded-full bg-white transition " + ((f.permissions?.can_text_alfred && f.permissions?.can_text_alfred_message_customers) ? "left-6" : "left-1")} />
+            </button>
+          </div>
           {/* Permissions editor */}
           <div className="border border-white/10 rounded-xl overflow-hidden">
             <button

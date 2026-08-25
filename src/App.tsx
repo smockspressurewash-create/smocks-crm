@@ -3904,13 +3904,10 @@ export function App() {
         <div className="p-4 border-b border-red-900/30 flex items-center justify-between">
           <button
             onClick={() => { setMarketingPreview(true); window.location.hash = "/welcome"; setPage("welcome"); }}
-            className="flex items-center gap-2.5 text-left hover:opacity-80 transition"
+            className="flex items-center text-left hover:opacity-80 transition"
             title="View landing page"
           >
-            <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-red-600 to-red-900 flex items-center justify-center shadow-lg shadow-red-900/40">
-              <CrewBossMark className="w-5 h-5" />
-            </div>
-            <div className="font-bold text-sm leading-tight">Crew<span className="text-red-500">Boss</span></div>
+            <div className="font-extrabold text-2xl leading-tight tracking-tight">Crew<span className="text-red-500">Boss</span></div>
           </button>
           <button onClick={() => setSidebarOpen(false)} className="md:hidden text-white/40 hover:text-white p-1"><X size={16} /></button>
         </div>

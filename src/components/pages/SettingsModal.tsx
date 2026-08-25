@@ -93,7 +93,16 @@ const isValidHttpsUrl = (value: string): boolean => {
 
 export function SettingsModal({ open, onClose, settings, setSettings, jobs = [], setJobs = (() => {}) as any, customers = [], estimates = [], campaigns = [], services, setServices, emailTemplates, setEmailTemplates, smsTemplates, setSmsTemplates, estimateTemplates = [], setEstimateTemplates = (() => {}) as any, modelStatus = {}, setModelStatus = (() => {}) as any, employees = [], toast, onSignOut, restrictToProfile = false, onAddManager, markRecentlyDeleted }: { open?: any; onClose?: any; settings?: any; setSettings?: any; jobs?: any[]; setJobs?: any; customers?: any[]; estimates?: any[]; campaigns?: any[]; services?: any; setServices?: any; emailTemplates?: any; setEmailTemplates?: any; smsTemplates?: any; setSmsTemplates?: any; estimateTemplates?: any[]; setEstimateTemplates?: any; modelStatus?: any; setModelStatus?: any; employees?: any[]; toast?: any; onSignOut?: () => void; restrictToProfile?: boolean; onAddManager?: () => void; markRecentlyDeleted?: (table: "jobs" | "customers" | "estimates", ids: string[]) => void }) {
   const [f, setF] = useState(settings);
-  const [sec, setSec] = useState(restrictToProfile ? "profile" : "api");
+  const [sec, setSec] = useState("profile");
+  // BUG FIX — "Settings always opens to API keys instead of my profile."
+  // This modal stays mounted for the whole session (App.tsx just toggles
+  // `open`), so the `useState` initializer above only ever ran once, on
+  // first mount — any later navigation to another tab stuck as the starting
+  // point for every future open. Reset to Profile every time the modal is
+  // actually opened, not just on the very first mount.
+  useEffect(() => {
+    if (open) setSec("profile");
+  }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
   // Per-owner Stripe keys (Phase F, multi-tenant) — deliberately NOT part of
   // `f`/`settings` (that object syncs into app_settings.data, which every
   // session loads including unauthenticated customer portals — see the
@@ -1915,11 +1924,8 @@ export function SettingsModal({ open, onClose, settings, setSettings, jobs = [],
             <Glass className="p-3 !bg-black/40 space-y-2">
               <div className="flex items-center gap-2 text-xs"><RefreshCw size={12} className="text-blue-400" /><span className="font-semibold">Background Sync Interval</span></div>
               <div className="text-[10px] text-white/50">
-                How often the app re-checks Supabase for changes made on another device. Realtime updates (the same device making a change) are always instant regardless of this setting — this only controls the fallback poll. Lower it and Supabase egress usage goes up; if you're near your project's usage cap, raise it.
+                How often the app re-checks Supabase for changes made on another device. Realtime updates (the same device making a change) are always instant regardless of this — this is only the fallback poll, and is managed automatically ({DEFAULT_POLL_INTERVAL_MS / 1000}s) so it can't accidentally be set too low (higher egress cost) or too high (slow to notice cross-device changes).
               </div>
-              <GSel value={f.pollIntervalMs || DEFAULT_POLL_INTERVAL_MS} onChange={e => setF({ ...f, pollIntervalMs: Number(e.target.value) })}>
-                {POLL_INTERVAL_OPTIONS.map(o => <option key={o.value} value={o.value} className="bg-black">{o.label}</option>)}
-              </GSel>
             </Glass>
 
             <Glass className="p-3 !bg-red-950/10 !border-red-700/30 space-y-2">
