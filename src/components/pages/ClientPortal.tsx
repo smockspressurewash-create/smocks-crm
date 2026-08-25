@@ -417,15 +417,20 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
   }
 
   return (
-    <Modal open={!!e} onClose={onClose} title="" maxW="max-w-2xl">
-      <div className="-mx-5 -mt-5" style={fontFamily ? { fontFamily } : undefined}>
-        {/* Portal header — FIX (round 13, item 2): sticky so it stays pinned
-            at the top of the scrollable estimate content instead of
-            scrolling away with the rest of the page (mobile especially).
-            Rounded top corners removed — the card's own overflow-hidden +
-            rounded-2xl (Modal.tsx) already clips this to the right shape at
-            rest; keeping rounded-t-2xl here looked wrong once the header
-            sticks mid-scroll below that clipped edge. */}
+    <Modal open={!!e} onClose={onClose} title="" maxW="max-w-2xl" noBodyScroll>
+      <div className="h-full flex flex-col overflow-hidden" style={fontFamily ? { fontFamily } : undefined}>
+        {/* Portal header — BUG FIX (2nd report — still overlapping): this
+            used to be `position: sticky` inside a PADDED scroll container,
+            with a negative margin pulling it up to cancel that padding —
+            a known CSS trap (sticky's "top: 0" is measured from the
+            scrollport's padding edge, but the element's rest position sits
+            above that edge because of the negative margin), which visibly
+            overlapped whatever came right after it by about the padding
+            amount. Switched the whole layout to noBodyScroll: header and
+            step indicator are now plain flex-column siblings OUTSIDE any
+            scroll container (so they can never overlap anything), and only
+            the actual estimate content below scrolls, in its own
+            unpadded/unmargined flex-1 region. */}
         {/* BUG FIX — "the red banner partially covers the progress bar
             (1/2/3/4)." A long company name + phone/address on one side and
             "My Account"/invoice # on the other had no truncation or wrap
@@ -436,7 +441,7 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
             keeps the header a single predictable height regardless of how
             long the company name is; flex-shrink-0 keeps the right side
             from ever being squeezed into wrapping either. */}
-        <div className={"px-4 sm:px-6 py-3 sm:py-4 sticky top-0 z-20 " + (headerColor ? "" : "bg-gradient-to-r from-red-600 to-red-800")} style={headerColor ? { background: headerColor } : undefined}>
+        <div className={"px-4 sm:px-6 py-3 sm:py-4 flex-shrink-0 " + (headerColor ? "" : "bg-gradient-to-r from-red-600 to-red-800")} style={headerColor ? { background: headerColor } : undefined}>
           <div className="flex items-center justify-between gap-2">
             <div className="flex items-center gap-2 sm:gap-2.5 min-w-0">
               {tpl?.logoUrl && <img src={tpl.logoUrl} alt="" className="w-8 h-8 sm:w-9 sm:h-9 rounded-lg object-contain bg-white/90 p-1 flex-shrink-0" />}
@@ -456,6 +461,7 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
           </div>
         </div>
 
+        <div className="flex-1 min-h-0 overflow-y-auto">
         {showAccount ? (
           <div className="p-6 space-y-4">
             <div className="text-lg font-bold">Hi {c.firstName} 👋</div>
@@ -946,6 +952,7 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
         </div>
         </>
         )}
+        </div>
       </div>
     </Modal>
   );

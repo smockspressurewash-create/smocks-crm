@@ -2135,6 +2135,14 @@ export function App() {
   // window.open()-ing a new tab.
   const [clientDemoOpen, setClientDemoOpen] = useState(false);
   const [demoQuoteTypeMenuOpen, setDemoQuoteTypeMenuOpen] = useState(false);
+  // FEATURE — "Test Viewing a Quote should allow clicking the package quote
+  // option." Package/Options quote types are opt-in per estimate — a real
+  // deployment often has zero examples of one or both, which used to just
+  // disable that button forever ("none yet"). A synthetic, NEVER-persisted
+  // preview (id prefixed "demo-", filtered out of every write path below) is
+  // built on the fly instead, so all three quote types are always previewable
+  // regardless of what real data exists.
+  const [demoSyntheticEstimate, setDemoSyntheticEstimate] = useState<{ estimate: any; customer: any } | null>(null);
   const [clientDemoReviewOpen, setClientDemoReviewOpen] = useState(false);
   const [clientDemoLoginOpen, setClientDemoLoginOpen] = useState(false);
 
@@ -3924,13 +3932,13 @@ export function App() {
             centered in this header bar instead of pinned to the left edge;
             the mobile-only close button is absolutely positioned so it
             doesn't skew that centering. */}
-        <div className="relative p-6 border-b border-red-900/30 flex items-center justify-center">
+        <div className="relative p-7 border-b border-red-900/30 flex items-center justify-center">
           <button
             onClick={() => { setMarketingPreview(true); window.location.hash = "/welcome"; setPage("welcome"); }}
             className="flex items-center text-left hover:opacity-80 transition"
             title="View landing page"
           >
-            <div className="font-extrabold text-3xl leading-tight tracking-tight">Crew<span className="text-red-500">Boss</span></div>
+            <div className="font-extrabold text-4xl leading-tight tracking-tight">Crew<span className="text-red-500">Boss</span></div>
           </button>
           <button onClick={() => setSidebarOpen(false)} className="md:hidden absolute right-4 top-1/2 -translate-y-1/2 text-white/40 hover:text-white p-1"><X size={16} /></button>
         </div>
@@ -4302,6 +4310,25 @@ export function App() {
           { key: "package", label: "Package Quote" },
           { key: "options", label: "Options Quote" },
         ];
+        const buildSyntheticQuote = (t: "standard" | "package" | "options") => {
+          const realCust = customers[0];
+          const customer = realCust || { id: "demo-cust", firstName: "Jamie", lastName: "Rivera", address: "412 Oak Ridge Ln, York PA", phone: "", email: "" };
+          const svc = services.slice(0, 3);
+          const li = (n: number) => svc[n] ? { id: "demo-li" + n, description: svc[n].name, quantity: 1, unitPrice: svc[n].basePrice || 199 } : { id: "demo-li" + n, description: ["House Soft Wash", "Driveway Wash", "Gutter Cleaning"][n], quantity: 1, unitPrice: [349, 175, 149][n] };
+          const base: any = { id: "demo-" + t + "-" + Date.now(), customerId: customer.id, createdAt: today(), status: "pending", invoiced: false, subtotal: 0, tax: 0, total: 0, notes: "" };
+          if (t === "package") {
+            const packages = [0, 1].map(i => ({ id: "demo-pkg" + i, name: i === 0 ? "Standard Package" : "Premium Package", description: i === 0 ? "Our most popular combo" : "Everything, top to bottom", lineItems: i === 0 ? [li(0)] : [li(0), li(1), li(2)], subtotal: i === 0 ? li(0).unitPrice : li(0).unitPrice + li(1).unitPrice + li(2).unitPrice }));
+            Object.assign(base, { estimateType: "package", packages, total: packages[0].subtotal });
+          } else if (t === "options") {
+            const lineItems = [{ ...li(0), optional: false }, { ...li(1), optional: true }, { ...li(2), optional: true }];
+            Object.assign(base, { estimateType: "options", lineItems, subtotal: lineItems.reduce((s, x) => s + x.unitPrice, 0), total: lineItems.reduce((s, x) => s + x.unitPrice, 0) });
+          } else {
+            const lineItems = [li(0), li(1)];
+            const subtotal = lineItems.reduce((s, x) => s + x.unitPrice, 0);
+            Object.assign(base, { estimateType: "standard", lineItems, subtotal, tax: Math.round(subtotal * (settings?.taxRate || 0)) / 100, total: subtotal + Math.round(subtotal * (settings?.taxRate || 0)) / 100 });
+          }
+          setDemoSyntheticEstimate({ estimate: base, customer });
+        };
         // Same reasoning as latestQuote above — prefer an invoice that
         // genuinely still has something to pay (not already paid in full,
         // not declined) so the payment walkthrough has a real balance due
@@ -4319,17 +4346,20 @@ export function App() {
               </div>
               <div className="p-4 space-y-2">
                 <div className="text-[11px] text-white/40 mb-1">Preview any customer-facing flow instantly — real records are picked automatically.</div>
-                <button disabled={!latestQuote} onClick={() => setDemoQuoteTypeMenuOpen(o => !o)} className={demoBtnClass}>
-                  Test Viewing a Quote {!latestQuote && <span className="text-[10px] text-white/30">no open quote to preview</span>}
-                  {latestQuote && <ChevronRight size={13} className={"text-white/30 transition-transform " + (demoQuoteTypeMenuOpen ? "rotate-90" : "")} />}
+                <button onClick={() => setDemoQuoteTypeMenuOpen(o => !o)} className={demoBtnClass}>
+                  Test Viewing a Quote
+                  <ChevronRight size={13} className={"text-white/30 transition-transform " + (demoQuoteTypeMenuOpen ? "rotate-90" : "")} />
                 </button>
-                {demoQuoteTypeMenuOpen && latestQuote && (
+                {demoQuoteTypeMenuOpen && (
                   <div className="pl-2 space-y-1.5 border-l-2 border-red-700/30 ml-1.5">
                     {quoteTypeOptions.map(opt => {
                       const match = quoteByType(opt.key);
                       return (
-                        <button key={opt.key} disabled={!match} onClick={() => { setClientDemoOpen(false); setDemoQuoteTypeMenuOpen(false); setPortalEstId(match!.id); }} className={demoBtnClass + " !text-xs"}>
-                          {opt.label} {!match && <span className="text-[10px] text-white/30">none yet</span>}
+                        <button key={opt.key} onClick={() => {
+                          setClientDemoOpen(false); setDemoQuoteTypeMenuOpen(false);
+                          if (match) setPortalEstId(match.id); else buildSyntheticQuote(opt.key);
+                        }} className={demoBtnClass + " !text-xs"}>
+                          {opt.label} {!match && <span className="text-[10px] text-white/30">preview (no real example yet)</span>}
                         </button>
                       );
                     })}
@@ -4416,10 +4446,10 @@ export function App() {
       )}
 
       {/* Client portal */}
-      {portalEstId && (
+      {(portalEstId || demoSyntheticEstimate) && (
         <ClientPortal
-          estimate={estimates.find(e => e.id === portalEstId)}
-          customer={customers.find(c => c.id === estimates.find(e => e.id === portalEstId)?.customerId)}
+          estimate={demoSyntheticEstimate ? demoSyntheticEstimate.estimate : estimates.find(e => e.id === portalEstId)}
+          customer={demoSyntheticEstimate ? demoSyntheticEstimate.customer : customers.find(c => c.id === estimates.find(e => e.id === portalEstId)?.customerId)}
           jobs={jobs}
           invoices={estimates.filter(e => e.invoiced)}
           settings={settings}
@@ -4427,12 +4457,20 @@ export function App() {
           promotions={promotions}
           customers={customers}
           setCustomers={setCustomers}
-          onClose={() => setPortalEstId(null)}
+          onClose={() => { setPortalEstId(null); setDemoSyntheticEstimate(null); }}
           onView={id => {
+          // A synthetic demo quote (id starts "demo-") was never written to
+          // Supabase — nothing real to mark viewed.
+          if (String(id).startsWith("demo-")) return;
           setEstimates(prev => prev.map(e => e.id === id && !(e as any).clientViewedAt ? { ...e, clientViewedAt: new Date().toISOString() } as any : e));
           fetch("/api/public-data", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "mark_estimate_viewed", id }) }).catch(() => {});
         }}
           onApprove={(id, data) => {
+            // FEATURE — package/options quote preview has nothing real to
+            // sign or pay against (no row exists to update) — tell the
+            // owner plainly this is a preview instead of silently doing
+            // nothing or throwing trying to update a non-existent row.
+            if (String(id).startsWith("demo-")) { toast?.("This is a preview — nothing was actually signed or charged."); return; }
             const paid = data.payChoice !== "later";
             setEstimates(prev => prev.map(e => e.id === id ? {
               ...e, status: "approved", signedAt: data.signedAt || e.signedAt, sigData: data.sigData || e.sigData, payChoice: data.payChoice,
@@ -4476,6 +4514,7 @@ export function App() {
             setPortalEstId(null);
           }}
           onDecline={async (id: string, data: { reason?: string; category?: string }) => {
+            if (String(id).startsWith("demo-")) { setDemoSyntheticEstimate(prev => prev ? { ...prev, estimate: { ...prev.estimate, status: "rejected" } } : prev); return; }
             const declinedAt = new Date().toISOString();
             setEstimates(prev => prev.map(est => est.id === id ? { ...est, status: "rejected", declinedAt, declineReason: data.reason || "", declineReasonCategory: data.category || "" } as any : est));
             // Write immediately rather than waiting on the 30s bulk autosave —
