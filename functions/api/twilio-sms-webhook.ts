@@ -152,6 +152,7 @@ interface ResolvedOwnerSettings {
   weatherLocation: string;
   companyAddress: string;
   alfredVoiceReplies: "off" | "always" | "ask";
+  myEmail: string;
 }
 
 const shapeSettings = (row: any, data: any): ResolvedOwnerSettings => ({
@@ -188,6 +189,9 @@ const shapeSettings = (row: any, data: any): ResolvedOwnerSettings => ({
   owmKey: data?.owmKey || "",
   weatherLocation: data?.weatherLocation || "",
   companyAddress: data?.companyAddress || "",
+  // FEATURE — text-Alfred gains an email tool (send_me_files via:"email"),
+  // matching the in-app chat's Gmail send. Needs to know where to send it.
+  myEmail: data?.myEmail || data?.companyEmail || "",
   // FEATURE — free voice-memo replies (Settings → Alfred → Voice Replies).
   // "off" (default): always plain text. "always": every reply from Alfred
   // over text goes out as a real voice memo (MMS audio) instead. "ask":
@@ -498,7 +502,7 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
     const isStop = STOP_WORDS.includes(body);
     const isStart = START_WORDS.includes(body);
     const resolved = await fetchAppSettings(context.env, params.To || "");
-    const { companyName, keyword, ownerId, myPhone, alfredExtraPhones, alfredExtraPhoneRoles, alfredSmsEnabled, twilioSid, twilioToken, twilioFrom, modelKeys, modelPriority, activeModel, openaiKey, googleProviderToken, googleRefreshToken, googleTokenExpiresAt, testModeEnabled, alfredAutoApproveReschedules, alfredPersonality, owmKey, weatherLocation, companyAddress, alfredVoiceReplies } = resolved;
+    const { companyName, keyword, ownerId, myPhone, alfredExtraPhones, alfredExtraPhoneRoles, alfredSmsEnabled, twilioSid, twilioToken, twilioFrom, modelKeys, modelPriority, activeModel, openaiKey, googleProviderToken, googleRefreshToken, googleTokenExpiresAt, testModeEnabled, alfredAutoApproveReschedules, alfredPersonality, owmKey, weatherLocation, companyAddress, alfredVoiceReplies, myEmail } = resolved;
     const isOptInKeyword = body === keyword;
     const isConfirm = CONFIRM_WORDS.includes(body);
 
@@ -569,7 +573,7 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
     // owner's explicit assignment is the real intent, not "extra owner".
     const assignedEmployeeId = alfredExtraPhoneRoles[fromDigits] || "";
     if (alfredSmsEnabled && authorizedPhones.includes(fromDigits) && !assignedEmployeeId) {
-      const ctx = { authHeaders, ownerId, companyName, twilioSid, twilioToken, twilioFrom, origin: new URL(context.request.url).origin, fromPhone: from, googleProviderToken, googleRefreshToken, googleTokenExpiresAt, testModeEnabled, ownerAuthorizedPhones: authorizedPhones, alfredPersonality, owmKey, weatherLocation, companyAddress, env: context.env as Record<string, string> };
+      const ctx = { authHeaders, ownerId, companyName, twilioSid, twilioToken, twilioFrom, origin: new URL(context.request.url).origin, fromPhone: from, googleProviderToken, googleRefreshToken, googleTokenExpiresAt, testModeEnabled, ownerAuthorizedPhones: authorizedPhones, alfredPersonality, owmKey, weatherLocation, companyAddress, myEmail, env: context.env as Record<string, string> };
       // BUG FIX — this branch never logged the OWNER's own inbound text to
       // inbox_threads at all (only to alfred_sms_threads, which the Inbox
       // UI never reads) — sendAlfredSms below only logs Alfred's OUTGOING

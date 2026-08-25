@@ -4163,8 +4163,13 @@ export function App() {
         // genuinely still-pending quote so the walkthrough has steps to
         // actually walk through; falls back to any quote if none are pending.
         const latestQuote = sortedEstimates.find(e => !(e as any).invoiced && (!e.status || e.status === "pending")) || sortedEstimates.find(e => !(e as any).invoiced);
-        const latestUnpaidInvoice = sortedEstimates.find(e => (e as any).invoiced && !e.paidAt);
-        const latestInvoice = sortedEstimates.find(e => (e as any).invoiced);
+        // Same reasoning as latestQuote above — prefer an invoice that
+        // genuinely still has something to pay (not already paid in full,
+        // not declined) so the payment walkthrough has a real balance due
+        // to show instead of a $0-due dead end.
+        const latestUnpaidInvoice = sortedEstimates.find(e => (e as any).invoiced && !e.paidAt && !(e as any).paidFull && e.status !== "rejected")
+          || sortedEstimates.find(e => (e as any).invoiced && !e.paidAt);
+        const latestInvoice = sortedEstimates.find(e => (e as any).invoiced && e.status !== "rejected") || sortedEstimates.find(e => (e as any).invoiced);
         const demoBtnClass = "w-full text-left px-3 py-2.5 rounded-xl bg-white/5 hover:bg-white/10 disabled:opacity-30 disabled:cursor-not-allowed text-sm text-white/80 flex items-center justify-between transition";
         return (
           <div className="fixed inset-0 z-[200] bg-black/80 backdrop-blur flex items-center justify-center p-4" onClick={() => setClientDemoOpen(false)}>

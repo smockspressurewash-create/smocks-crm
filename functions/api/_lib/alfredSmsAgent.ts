@@ -197,6 +197,8 @@ type Ctx = {
   googleProviderToken?: string;
   googleRefreshToken?: string;
   googleTokenExpiresAt?: number;
+  // Owner's own email — where send_me_files (via:"email") delivers to.
+  myEmail?: string;
   // Same Testing Mode gate lib/messaging.ts's twilioSend already enforces
   // client-side (settings.testModeEnabled) — this file sends via raw fetch
   // (it runs server-side, not through that wrapper), so bulk sends need
@@ -615,6 +617,20 @@ const TOOLS = [
       required: ["customerName", "documentName"],
     },
   },
+  {
+    name: "send_me_files",
+    description: "Send yourself (the owner) files on file for a customer — Document Vault items AND job photos/videos, optionally scoped to one job — as a text or an email. Use for 'do you remember this client, send me the PDFs for this job', 'email me anything we have in the vault for them'.",
+    input_schema: {
+      type: "object",
+      properties: {
+        customerName: { type: "string" },
+        jobId: { type: "string", description: "Optional — scope job photos/videos to one specific job" },
+        fileQuery: { type: "string", description: "Optional partial name match against Vault documents" },
+        via: { type: "string", enum: ["text", "email"], description: "Defaults to text" },
+      },
+      required: ["customerName"],
+    },
+  },
   // FEATURE — "text a photo or PDF to Alfred and say 'upload this to this
   // client'." When the owner sends a photo/PDF, resolveIncomingText (see
   // twilio-sms-webhook.ts) has already uploaded it and handed you a message
@@ -865,6 +881,29 @@ const getGoogleAccessToken = async (ctx: Ctx): Promise<string | null> => {
     } catch { /* fall through with whatever token we have; the Calendar call below will fail clearly if it's stale */ }
   }
   return accessToken || null;
+};
+
+// FEATURE — gives text-Alfred an email tool, matching the in-app chat's
+// existing Gmail send (send_me_files via:"email") — text-Alfred previously
+// had no email capability at all, a real cross-channel parity gap. Same raw
+// Gmail API MIME-send lib/messaging.ts's sendViaGmail uses client-side,
+// reimplemented here since Cloudflare Functions can't import from src/lib.
+const sendGmailFromCtx = async (ctx: Ctx, to: string, subject: string, html: string): Promise<{ ok: boolean; error?: string }> => {
+  const accessToken = await getGoogleAccessToken(ctx);
+  if (!accessToken) return { ok: false, error: "Gmail isn't connected — connect Google in Settings → Integrations to send email." };
+  const mime = [`To: ${to}`, `Subject: ${subject}`, `MIME-Version: 1.0`, `Content-Type: text/html; charset=utf-8`, ``, html].join("\r\n");
+  const raw = btoa(unescape(encodeURIComponent(mime))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  try {
+    const res = await fetchWithTimeout("https://gmail.googleapis.com/gmail/v1/users/me/messages/send", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ raw }),
+    }, 12000);
+    if (!res.ok) return { ok: false, error: (await res.text().catch(() => "")).slice(0, 200) };
+    return { ok: true };
+  } catch (e: any) {
+    return { ok: false, error: e?.message || "Gmail send failed" };
+  }
 };
 
 // Google's events.list, mapped down to just what the discrepancy check and
@@ -1237,6 +1276,37 @@ const executeTool = async (ctx: Ctx, name: string, input: Record<string, any>): 
         const res = await sendSms(ctx, ctx.fromPhone, `${doc.name} — ${cust.firstName} ${cust.lastName}`, true, undefined, doc.url);
         if (!res.ok) return { error: res.error };
         return { success: true, sent: doc.name };
+      }
+      // FEATURE — "do you remember this client? send me the PDFs/photos for
+      // this job" / "email me anything in the vault for them." Mirrors the
+      // in-app chat's send_me_files tool (AlfredPage.tsx) for cross-channel
+      // parity — pulls from both the Document Vault AND job photos/videos,
+      // delivers via text (same pattern text_me_document uses) or email
+      // (new — see sendGmailFromCtx above).
+      case "send_me_files": {
+        const cust = await findCustomerByName(ctx, input.customerName);
+        if (!cust) return { error: `No customer found matching "${input.customerName}".` };
+        const docs = Array.isArray(cust.documents) ? cust.documents : [];
+        const q = String(input.fileQuery || "").toLowerCase().trim();
+        const matchedDocs = docs.filter((d: any) => d.url && (!q || (d.name || "").toLowerCase().includes(q)));
+        const custJobs = await sbGet(ctx, `jobs?customerId=eq.${encodeURIComponent(cust.id)}&select=id,address,photos,videos${ownerScope(ctx)}${input.jobId ? `&id=eq.${encodeURIComponent(input.jobId)}` : ""}`);
+        const jobPhotos = (custJobs || []).flatMap((j: any) => (j.photos || []).filter((p: any) => p?.url).map((p: any) => ({ name: `Photo — ${j.address || "job"}`, url: p.url })));
+        const jobVideos = (custJobs || []).flatMap((j: any) => (j.videos || []).filter((v: any) => v?.url).map((v: any) => ({ name: `Video — ${j.address || "job"}`, url: v.url })));
+        const files = [...matchedDocs.map((d: any) => ({ name: d.name, url: d.url })), ...jobPhotos, ...jobVideos];
+        if (files.length === 0) return { error: `No files with a cloud-synced URL found for ${cust.firstName}${input.jobId ? " on that job" : ""}${q ? ` matching "${input.fileQuery}"` : ""}. On file (docs): ${docs.map((d: any) => d.name).join(", ") || "none"}.` };
+        const via = input.via === "email" ? "email" : "text";
+        if (via === "email") {
+          if (!ctx.myEmail) return { error: "No owner email saved yet — add one in Settings → Company first." };
+          const html = `<p>Here's everything on file for ${cust.firstName} ${cust.lastName}:</p><ul>` + files.map((f: any) => `<li><a href="${f.url}">${f.name || "View file"}</a></li>`).join("") + `</ul>`;
+          const res = await sendGmailFromCtx(ctx, ctx.myEmail, `Files — ${cust.firstName} ${cust.lastName}`, html);
+          if (!res.ok) return { error: res.error };
+          return { success: true, sentCount: files.length, via: "email" };
+        }
+        if (!ctx.fromPhone) return { error: "Don't know which number to text back." };
+        const body = `Files for ${cust.firstName} ${cust.lastName}:\n` + files.map((f: any) => `${f.name}: ${f.url}`).join("\n");
+        const res = await sendSms(ctx, ctx.fromPhone, body, true);
+        if (!res.ok) return { error: res.error };
+        return { success: true, sentCount: files.length, via: "text" };
       }
       case "attach_file_to_customer": {
         if (!input.fileUrl) return { error: "fileUrl required" };

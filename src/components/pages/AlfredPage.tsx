@@ -1167,6 +1167,49 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           toast(`Alfred texted you "${doc.name}" ✓`);
           return { success: true, sent: doc.name };
         }
+        // FEATURE — "do you remember this client? send me the PDFs/photos
+        // for this job" / "send me anything we have in the vault for them."
+        // Pulls from BOTH customer.documents (the Vault) AND job.photos/
+        // job.videos (optionally scoped to one job), and can deliver either
+        // as a text (a plain SMS with the links, same pattern text_me_document
+        // already used) or an email (branded, one button per file/job).
+        // Never invents a file — only ever lists/sends what's actually on
+        // that customer's real records.
+        case "send_me_files": {
+          const c = customers.find(x => x.id === inputs.customerId || (x.firstName + " " + x.lastName).trim().toLowerCase() === (inputs.name || "").trim().toLowerCase());
+          if (!c) {
+            const suggestions = suggestNames(inputs.name || "", customers, x => `${x.firstName} ${x.lastName}`);
+            return suggestions.length
+              ? { error: "Customer not found", suggestions, instruction: "Ask the user 'Do you mean " + suggestions.join(", or ") + "?' — do not ask a generic follow-up question." }
+              : { error: "Customer not found" };
+          }
+          const docs = Array.isArray((c as any).documents) ? (c as any).documents : [];
+          const custJobs = jobs.filter((j: any) => j.customerId === c.id && (!inputs.jobId || j.id === inputs.jobId));
+          const q = String(inputs.fileQuery || "").toLowerCase().trim();
+          const matchedDocs = docs.filter((d: any) => d.url && (!q || (d.name || "").toLowerCase().includes(q)));
+          const jobPhotos = custJobs.flatMap((j: any) => (j.photos || []).filter((p: any) => p?.url).map((p: any) => ({ name: `Photo — ${j.address || "job"}`, url: p.url })));
+          const jobVideos = custJobs.flatMap((j: any) => (j.videos || []).filter((v: any) => v?.url).map((v: any) => ({ name: `Video — ${j.address || "job"}`, url: v.url })));
+          const files = [...matchedDocs.map((d: any) => ({ name: d.name, url: d.url })), ...jobPhotos, ...jobVideos];
+          if (files.length === 0) return { error: `No files with a cloud-synced URL found for ${c.firstName}${inputs.jobId ? " on that job" : ""}${q ? ` matching "${inputs.fileQuery}"` : ""}. On file (docs): ${docs.map((d: any) => d.name).join(", ") || "none"}.` };
+          const via = inputs.via === "email" ? "email" : "text";
+          if (via === "email") {
+            const myEmail = (settings as any)?.myEmail || (settings as any)?.companyEmail;
+            if (!myEmail) return { error: "No owner email saved yet — add one in Settings → Company first." };
+            const html = emailShell(settings as any, `Files for ${c.firstName} ${c.lastName}`, `<p>Here's everything on file:</p>` + files.map((f: any) => emailButton(f.name || "View file", f.url)).join(""));
+            try { await withTimeout(sendEmail(settings as any, { to: myEmail, subject: `Files — ${c.firstName} ${c.lastName}`, body: html }), 15000, "Files email"); }
+            catch (e: any) { return { error: "Email failed: " + (e?.message || String(e)) }; }
+            toast(`Alfred emailed you ${files.length} file(s) for ${c.firstName} ✓`);
+          } else {
+            const myPhone = (settings as any)?.myPhone;
+            if (!myPhone) return { error: "No phone number saved for you yet — add one in Settings → Company first." };
+            if (!settings?.twilioSid) return { error: "Twilio isn't configured — add credentials in Settings → API Keys." };
+            const body = `Files for ${c.firstName} ${c.lastName}:\n` + files.map((f: any) => `${f.name}: ${f.url}`).join("\n");
+            try { await withTimeout(twilioSend(settings as any, myPhone, body), 15000, "Files text"); }
+            catch (e: any) { return { error: "SMS failed: " + (e?.message || String(e)) }; }
+            toast(`Alfred texted you ${files.length} file(s) for ${c.firstName} ✓`);
+          }
+          return { success: true, sentCount: files.length, via };
+        }
         case "get_customer_card_info": {
           const c = customers.find(x => x.id === inputs.customerId || (x.firstName + " " + x.lastName).trim().toLowerCase() === (inputs.name || "").trim().toLowerCase());
           if (!c) {
@@ -2320,6 +2363,11 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
       name: "text_me_document",
       description: "Send a document already on file for a customer to the OWNER's own phone as a real MMS attachment. Use get_customer_documents first if the exact file name isn't already known.",
       input_schema: { type: "object", properties: { name: { type: "string" }, customerId: { type: "string" }, documentName: { type: "string" } }, required: ["documentName"] }
+    },
+    {
+      name: "send_me_files",
+      description: "Send yourself (the owner) files on file for a customer — Document Vault items AND job photos/videos, optionally scoped to one job — as a text or an email. Use for 'do you remember this client, send me the PDFs for this job', 'email me anything we have in the vault for them', 'text me their before/after photos'.",
+      input_schema: { type: "object", properties: { name: { type: "string" }, customerId: { type: "string" }, jobId: { type: "string", description: "Optional — scope job photos/videos to one specific job" }, fileQuery: { type: "string", description: "Optional partial name match against Vault documents" }, via: { type: "string", enum: ["text", "email"], description: "Defaults to text" } }, required: ["name"] }
     },
     {
       name: "get_customer_card_info",
