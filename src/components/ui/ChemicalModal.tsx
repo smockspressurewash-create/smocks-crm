@@ -99,13 +99,20 @@ export function ChemicalModal({ open, onClose, data, onSave }) {
         {(f.suppliers || []).length === 0 && <div className="text-[11px] text-white/30 italic">No suppliers on file yet.</div>}
         <div className="space-y-2">
           {(f.suppliers || []).map((s: any) => (
-            <div key={s.id} className="flex items-center gap-2">
-              <GInput value={s.name} onChange={e => updateSupplier(s.id, { name: e.target.value })} placeholder="Supplier name" className="flex-1" />
-              <GInput type="tel" value={s.phone} onChange={e => updateSupplier(s.id, { phone: e.target.value })} placeholder="Phone" className="w-32" />
-              <button type="button" onClick={() => removeSupplier(s.id)} className="p-1.5 rounded-lg text-white/30 hover:text-red-400 hover:bg-red-950/30 transition flex-shrink-0"><X size={14} /></button>
+            <div key={s.id} className="p-2 rounded-lg bg-black/20 border border-white/5 space-y-1.5">
+              <div className="flex items-center gap-2">
+                <GInput value={s.name} onChange={e => updateSupplier(s.id, { name: e.target.value })} placeholder="Supplier name" className="flex-1" />
+                <GInput type="tel" value={s.phone} onChange={e => updateSupplier(s.id, { phone: e.target.value })} placeholder="Phone" className="w-32" />
+                <button type="button" onClick={() => removeSupplier(s.id)} className="p-1.5 rounded-lg text-white/30 hover:text-red-400 hover:bg-red-950/30 transition flex-shrink-0"><X size={14} /></button>
+              </div>
+              <div className="flex items-center gap-2">
+                <GInput type="email" value={s.email || ""} onChange={e => updateSupplier(s.id, { email: e.target.value })} placeholder="Email (optional)" className="flex-1" />
+                <GInput value={s.notes || ""} onChange={e => updateSupplier(s.id, { notes: e.target.value })} placeholder="Notes — account #, lead time, etc." className="flex-1" />
+              </div>
             </div>
           ))}
         </div>
+        {(f.suppliers || []).length > 0 && <div className="text-[10px] text-white/30 mt-1.5">Alfred can text or email any supplier here about stock, pricing, or availability — just ask.</div>}
       </div>
       <div><label className="text-xs text-white/60 mb-1 block">Notes</label><GTxt value={f.notes || ""} onChange={e => setF({ ...f, notes: e.target.value })} rows={2} placeholder="Nozzle size, hookup type, storage instructions, anything worth remembering" /></div>
       <div className="flex gap-2 justify-end pt-3"><GBtn variant="ghost" onClick={onClose}>Cancel</GBtn><GBtn onClick={() => { if (!f.name) return; const clean = { ...f, stock: Number(f.stock), reorderLevel: Number(f.reorderLevel), unitCost: Number(f.unitCost), suppliers: (f.suppliers || []).filter((s: any) => s.name.trim()) }; onSave(data ? { ...data, ...clean } : clean); }}>{data ? "Save" : "Add"}</GBtn></div>

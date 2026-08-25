@@ -631,6 +631,21 @@ const TOOLS = [
       required: ["customerName"],
     },
   },
+  {
+    name: "check_stock",
+    description: "Check current stock levels against reorder thresholds for chemicals/equipment. Read-only; never places an order on its own.",
+    input_schema: { type: "object", properties: { itemName: { type: "string", description: "Optional — check one specific item; omit to check everything" } } },
+  },
+  {
+    name: "text_supplier",
+    description: "Send a real SMS to a chemical/equipment supplier's phone number. Outreach only — stock/pricing/availability/callback — NEVER to place an order or authorize payment; this app has no way to complete a purchase or move money to a vendor. Always confirm the exact message text with the owner first.",
+    input_schema: { type: "object", properties: { itemName: { type: "string" }, supplierName: { type: "string" }, message: { type: "string" } }, required: ["itemName", "message"] },
+  },
+  {
+    name: "email_supplier",
+    description: "Send a real email to a chemical/equipment supplier's email address. Same rules as text_supplier — outreach only, always confirm the exact subject+message first.",
+    input_schema: { type: "object", properties: { itemName: { type: "string" }, supplierName: { type: "string" }, subject: { type: "string" }, message: { type: "string" } }, required: ["itemName", "subject", "message"] },
+  },
   // FEATURE — "text a photo or PDF to Alfred and say 'upload this to this
   // client'." When the owner sends a photo/PDF, resolveIncomingText (see
   // twilio-sms-webhook.ts) has already uploaded it and handed you a message
@@ -1307,6 +1322,55 @@ const executeTool = async (ctx: Ctx, name: string, input: Record<string, any>): 
         const res = await sendSms(ctx, ctx.fromPhone, body, true);
         if (!res.ok) return { error: res.error };
         return { success: true, sentCount: files.length, via: "text" };
+      }
+      // FEATURE — cross-channel parity with the in-app chat's text_supplier/
+      // email_supplier/check_stock (AlfredPage.tsx). Reads the new
+      // `chemicals` table (migration 0056) — this data used to be
+      // localStorage-only, so text-Alfred had no way to see it at all.
+      // Same sandboxing as the in-app version: outreach only, never places
+      // an order or moves money — this app has no vendor-payment
+      // infrastructure to automate beyond that regardless.
+      case "check_stock": {
+        const q = String(input.itemName || "").toLowerCase().trim();
+        const all = await sbGet(ctx, `chemicals?select=name,stock,unit,reorderLevel,suppliers${ownerScope(ctx)}&limit=500`);
+        const pool = q ? all.filter((c: any) => (c.name || "").toLowerCase().includes(q)) : all;
+        if (pool.length === 0) return { error: q ? `No item found matching "${input.itemName}".` : "No chemicals/equipment on file yet." };
+        const low = pool.filter((c: any) => Number(c.stock) <= Number(c.reorderLevel));
+        return {
+          success: true,
+          items: pool.map((c: any) => ({ name: c.name, stock: c.stock, unit: c.unit, reorderLevel: c.reorderLevel, needsReorder: Number(c.stock) <= Number(c.reorderLevel), suppliers: (c.suppliers || []).map((s: any) => s.name) })),
+          lowStockCount: low.length,
+          note: low.length > 0 ? `${low.length} item(s) at or below reorder level: ${low.map((c: any) => c.name).join(", ")}. Ask before texting/emailing a supplier — never contact one without explicit go-ahead on the exact message.` : "Everything is above its reorder level.",
+        };
+      }
+      case "text_supplier": {
+        if (!ctx.fromPhone) return { error: "Don't know which number to text back." };
+        const items = await sbGet(ctx, `chemicals?select=name,suppliers${ownerScope(ctx)}&limit=500`);
+        const item = items.find((c: any) => (c.name || "").toLowerCase().trim() === String(input.itemName || "").toLowerCase().trim())
+          || items.find((c: any) => (c.name || "").toLowerCase().includes(String(input.itemName || "").toLowerCase().trim()));
+        if (!item) return { error: `No chemical/equipment item found named "${input.itemName}".` };
+        const suppliers = (item.suppliers || []).filter((s: any) => s.phone);
+        if (suppliers.length === 0) return { error: `"${item.name}" has no supplier phone number on file — add one in Chemicals & Equipment first.` };
+        const supplier = input.supplierName ? suppliers.find((s: any) => (s.name || "").toLowerCase().includes(String(input.supplierName).toLowerCase())) : suppliers[0];
+        if (!supplier) return { error: `No supplier named "${input.supplierName}" on "${item.name}". Suppliers on file: ${suppliers.map((s: any) => s.name).join(", ")}` };
+        if (!input.message?.trim()) return { error: "message is required — the exact SMS text to send." };
+        const res = await sendSms(ctx, supplier.phone, input.message, false, { name: supplier.name });
+        if (!res.ok) return { error: res.error };
+        return { success: true, supplier: supplier.name, phone: supplier.phone, sent: input.message };
+      }
+      case "email_supplier": {
+        const items = await sbGet(ctx, `chemicals?select=name,suppliers${ownerScope(ctx)}&limit=500`);
+        const item = items.find((c: any) => (c.name || "").toLowerCase().trim() === String(input.itemName || "").toLowerCase().trim())
+          || items.find((c: any) => (c.name || "").toLowerCase().includes(String(input.itemName || "").toLowerCase().trim()));
+        if (!item) return { error: `No chemical/equipment item found named "${input.itemName}".` };
+        const suppliers = (item.suppliers || []).filter((s: any) => s.email);
+        if (suppliers.length === 0) return { error: `"${item.name}" has no supplier email on file — add one in Chemicals & Equipment first.` };
+        const supplier = input.supplierName ? suppliers.find((s: any) => (s.name || "").toLowerCase().includes(String(input.supplierName).toLowerCase())) : suppliers[0];
+        if (!supplier) return { error: `No supplier named "${input.supplierName}" on "${item.name}" with an email on file.` };
+        if (!input.subject?.trim() || !input.message?.trim()) return { error: "subject and message are required — the exact email to send." };
+        const res = await sendGmailFromCtx(ctx, supplier.email, input.subject, `<p>${String(input.message).replace(/\n/g, "<br/>")}</p>`);
+        if (!res.ok) return { error: res.error };
+        return { success: true, supplier: supplier.name, email: supplier.email, sent: input.message };
       }
       case "attach_file_to_customer": {
         if (!input.fileUrl) return { error: "fileUrl required" };

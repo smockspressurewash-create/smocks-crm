@@ -2116,6 +2116,44 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           toast("Alfred texted " + (supplier.name || "supplier") + " re: " + item.name);
           return { success: true, supplier: supplier.name, phone: supplier.phone, sent: inputs.message };
         }
+        case "email_supplier": {
+          // Same sandboxing reasoning as text_supplier — no vendor-payment
+          // infrastructure exists anywhere in this app, so this can only
+          // ever send a message a real person on the other end acts on.
+          const item = (chemicals || []).find((c: any) => (c.name || "").toLowerCase().trim() === String(inputs.itemName || "").toLowerCase().trim())
+            || (chemicals || []).find((c: any) => (c.name || "").toLowerCase().includes(String(inputs.itemName || "").toLowerCase().trim()));
+          if (!item) return { error: `No chemical/equipment item found named "${inputs.itemName}". Check Chemicals & Equipment for the exact name.` };
+          const suppliers = ((item as any).suppliers || []).filter((s: any) => s.email);
+          if (suppliers.length === 0) return { error: `"${item.name}" has no supplier email on file — add one in Chemicals & Equipment first.` };
+          const supplier = inputs.supplierName
+            ? suppliers.find((s: any) => (s.name || "").toLowerCase().includes(String(inputs.supplierName).toLowerCase()))
+            : suppliers[0];
+          if (!supplier) return { error: `No supplier named "${inputs.supplierName}" on "${item.name}" with an email on file. Suppliers: ${suppliers.map((s: any) => s.name).join(", ")}` };
+          if (!inputs.subject?.trim() || !inputs.message?.trim()) return { error: "subject and message are required — the exact email to send." };
+          try {
+            await withTimeout(sendEmail(settings as any, { to: supplier.email, subject: inputs.subject, body: `<p>${String(inputs.message).replace(/\n/g, "<br/>")}</p>` }), 15000, "Supplier email");
+          } catch (e: any) {
+            return { error: "Failed to send — " + (e?.message || "unknown error") };
+          }
+          toast("Alfred emailed " + (supplier.name || "supplier") + " re: " + item.name);
+          return { success: true, supplier: supplier.name, email: supplier.email, sent: inputs.message };
+        }
+        // FEATURE — "check stock, suggest reorder" (read-only — never places
+        // an order on its own; ordering still only ever happens via
+        // text_supplier/email_supplier, which require the owner to have
+        // asked for that exact message to go out, same sandboxing as those).
+        case "check_stock": {
+          const q = String(inputs.itemName || "").toLowerCase().trim();
+          const pool = q ? (chemicals || []).filter((c: any) => (c.name || "").toLowerCase().includes(q)) : (chemicals || []);
+          if (pool.length === 0) return { error: q ? `No item found matching "${inputs.itemName}".` : "No chemicals/equipment on file yet." };
+          const low = pool.filter((c: any) => Number(c.stock) <= Number(c.reorderLevel));
+          return {
+            success: true,
+            items: pool.map((c: any) => ({ name: c.name, stock: c.stock, unit: c.unit, reorderLevel: c.reorderLevel, needsReorder: Number(c.stock) <= Number(c.reorderLevel), suppliers: (c.suppliers || []).map((s: any) => s.name) })),
+            lowStockCount: low.length,
+            note: low.length > 0 ? `${low.length} item(s) at or below reorder level: ${low.map((c: any) => c.name).join(", ")}. Ask before texting/emailing a supplier — never contact one without the owner's explicit go-ahead on the exact message.` : "Everything is above its reorder level.",
+          };
+        }
         case "text_phone_number": {
           if (!inputs.phone?.trim()) return { error: "phone required" };
           if (!inputs.message?.trim()) return { error: "message required" };
@@ -2524,6 +2562,16 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
       name: "text_supplier",
       description: "Send a real SMS to a chemical/equipment supplier's phone number (from Chemicals & Equipment → that item's Suppliers list). Use this ONLY for outreach — asking about stock, pricing, or availability, or requesting a callback — NEVER to place an order or authorize any purchase/payment; this app has no way to actually complete a purchase or move money to a vendor. ALWAYS show the user the exact message text and get an explicit 'yes, send it' before calling this tool — never send unconfirmed.",
       input_schema: { type: "object", properties: { itemName: { type: "string", description: "The chemical/equipment item name, e.g. 'Sodium Hypochlorite'" }, supplierName: { type: "string", description: "Optional — which supplier on that item to text, if it has more than one" }, message: { type: "string", description: "The exact SMS text to send" } }, required: ["itemName", "message"] }
+    },
+    {
+      name: "email_supplier",
+      description: "Send a real email to a chemical/equipment supplier's email address (from Chemicals & Equipment → that item's Suppliers list). Same rules as text_supplier: outreach only (stock/pricing/availability/callback), never to place an order or authorize payment, always confirm the exact subject+message with the user first.",
+      input_schema: { type: "object", properties: { itemName: { type: "string" }, supplierName: { type: "string", description: "Optional — which supplier on that item to email, if it has more than one" }, subject: { type: "string" }, message: { type: "string", description: "The exact email body to send" } }, required: ["itemName", "subject", "message"] }
+    },
+    {
+      name: "check_stock",
+      description: "Check current stock levels against reorder thresholds for chemicals/equipment — use whenever the owner asks what's running low or needs reordering. Read-only; never places an order on its own.",
+      input_schema: { type: "object", properties: { itemName: { type: "string", description: "Optional — check one specific item; omit to check everything" } } }
     },
     {
       name: "navigate_to",

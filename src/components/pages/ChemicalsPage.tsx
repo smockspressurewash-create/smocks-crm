@@ -20,9 +20,10 @@ import {
   Tooltip, ResponsiveContainer, Area, AreaChart, LineChart, Line,
   ComposedChart, Legend
 } from "recharts";
-import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE } from "../../lib/utils";
+import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, withTimeout } from "../../lib/utils";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
 import { twilioSend, sendEmail, sendOwnerGmailOnly, emailShell } from "../../lib/messaging";
+import { supabase } from "../../lib/supabase";
 import { seedWeather } from "../../lib/weather";
 import { seedCustomers, seedEstimates, seedJobs, seedEmployees, seedVehicles, seedExpenses, seedChemicals, seedServices, seedAutomations, seedEmailTemplates, seedSmsTemplates, seedRewardTiers, seedReferrals, seedMaintenance, campaignTemplates, seedSocialPosts, seedTimeline, seedGoals, seedReminders, seedAccountabilityEntries, seedMileage, seedLeadSrc, STEP_TYPES, AUTOMATION_TEMPLATES } from "../../lib/seed";
 import { callModel, MODELS } from "../../lib/api";
@@ -77,7 +78,7 @@ import { ChemicalModal } from "../ui/ChemicalModal";
 import { WeeklyBusinessReview } from "../ui/WeeklyBusinessReview";
 import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 
-export function ChemicalsPage({ chemicals = [], setChemicals, toast = () => {}, settings = {} as AppSettings }: { chemicals?: any[]; setChemicals?: any; toast?: any; settings?: AppSettings }) {
+export function ChemicalsPage({ chemicals = [], setChemicals, toast = () => {}, settings = {} as AppSettings, ownerId = "", markRecentlyDeleted = (_table: "jobs" | "customers" | "estimates" | "chemicals", _ids: string[]) => {} }: { chemicals?: any[]; setChemicals?: any; toast?: any; settings?: AppSettings; ownerId?: string; markRecentlyDeleted?: (table: "jobs" | "customers" | "estimates" | "chemicals", ids: string[]) => void }) {
   const [modal, setModal] = useState({ open: false, data: null });
   // FEATURE — "Chemicals & Equipment": itemType filter so nozzles/wands/
   // surface cleaners aren't mixed into the chemical reorder math (a nozzle
@@ -89,12 +90,33 @@ export function ChemicalsPage({ chemicals = [], setChemicals, toast = () => {}, 
   const totVal = chemicals.reduce((s, c) => s + c.stock * c.unitCost, 0);
   const equipmentCount = chemicals.filter(c => c.itemType === "equipment").length;
   const save = d => {
-    if (d.id) setChemicals(chemicals.map(c => c.id === d.id ? d : c));
-    else setChemicals([...chemicals, { ...d, id: uid() }]);
+    const record = d.id ? d : { ...d, id: uid() };
+    if (d.id) setChemicals(chemicals.map(c => c.id === d.id ? record : c));
+    else setChemicals([...chemicals, record]);
     setModal({ open: false, data: null });
+    // Write immediately rather than waiting on the 30s bulk autosave — same
+    // pattern every other page's save() uses so cross-device sync doesn't
+    // lag, and so text-Alfred's stock/supplier tools see it right away.
+    (supabase as any).from("chemicals").upsert({ ...record, owner_id: ownerId }, { onConflict: "id" }).then((r: any) => {
+      if (r?.error) toast("Saved locally, but failed to sync — " + r.error.message, "red");
+    }).catch((e: any) => toast("Saved locally, but failed to sync — " + (e?.message || "unknown error"), "red"));
     toast("Chemical saved");
   };
-  const bump = (id, delta) => setChemicals(chemicals.map(c => c.id === id ? { ...c, stock: Math.max(0, c.stock + delta) } : c));
+  const bump = (id, delta) => {
+    const next = chemicals.map(c => c.id === id ? { ...c, stock: Math.max(0, c.stock + delta) } : c);
+    setChemicals(next);
+    const updated = next.find(c => c.id === id);
+    if (updated) (supabase as any).from("chemicals").update({ stock: updated.stock }).eq("id", id).then((r: any) => {
+      if (r?.error) toast("Stock updated locally, but failed to sync — " + r.error.message, "red");
+    }).catch(() => {});
+  };
+  const removeChemical = (id: string) => {
+    setChemicals(chemicals.filter(c => c.id !== id));
+    markRecentlyDeleted("chemicals", [id]);
+    withTimeout((supabase as any).from("chemicals").delete().eq("id", id), 10000, "Chemical delete").then((r: any) => {
+      if (r?.error) toast("Removed locally, but failed to remove on server — " + r.error.message, "red");
+    }).catch((e: any) => toast("Removed locally, but failed to remove on server — " + (e?.message || ""), "red"));
+  };
 
   // ISSUE 13 (round 11) — replaced SMS ("Text Me List") with email, per
   // explicit request; also used by the auto-reminder effect below so a
@@ -158,7 +180,7 @@ export function ChemicalsPage({ chemicals = [], setChemicals, toast = () => {}, 
                 <div className="font-medium text-sm truncate">{c.name}</div>
                 <div className="text-[10px] text-white/50">Stock {c.stock} · reorder at {c.reorderLevel} · suggest +{needed} ({fmt(cost)})</div>
               </div>
-              <button onClick={() => { setChemicals(chemicals.map(x => x.id === c.id ? { ...x, stock: x.stock + needed } : x)); toast("Ordered " + needed + " " + c.name.split(" ")[0]); }} className="px-3 py-1.5 rounded-lg bg-red-900/40 hover:bg-red-800/50 border border-red-600/40 text-red-300 text-xs font-semibold whitespace-nowrap">Order</button>
+              <button onClick={() => { bump(c.id, needed); toast("Ordered " + needed + " " + c.name.split(" ")[0]); }} className="px-3 py-1.5 rounded-lg bg-red-900/40 hover:bg-red-800/50 border border-red-600/40 text-red-300 text-xs font-semibold whitespace-nowrap">Order</button>
             </div>;
           })}
           <div className="flex items-center justify-between pt-2 border-t border-red-900/30 text-xs">
@@ -206,7 +228,7 @@ export function ChemicalsPage({ chemicals = [], setChemicals, toast = () => {}, 
                 <td className="px-5 py-4 text-right">
                   {lo && <a href={"https://www.amazon.com/s?k=" + encodeURIComponent((c.brand ? c.brand + " " : "") + c.name + " pressure washing")} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 px-2 py-1 text-[10px] bg-yellow-950/40 border border-yellow-700/40 text-yellow-300 rounded-lg hover:bg-yellow-900/50 mr-1.5" title="Order on Amazon">🛒 Order</a>}
                   <button onClick={() => setModal({ open: true, data: c })} className="p-1.5 rounded-lg hover:bg-white/10 text-white/60 hover:text-white transition"><Edit size={14} /></button>
-                  <button onClick={() => setChemicals(chemicals.filter(x => x.id !== c.id))} className="p-1.5 rounded-lg hover:bg-red-900/30 text-white/60 hover:text-red-400 transition"><Trash2 size={14} /></button>
+                  <button onClick={() => removeChemical(c.id)} className="p-1.5 rounded-lg hover:bg-red-900/30 text-white/60 hover:text-red-400 transition"><Trash2 size={14} /></button>
                 </td>
               </tr>;
             })}

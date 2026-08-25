@@ -887,9 +887,9 @@ export function App() {
   // the id(s) it just removed so refetchData can filter them back out of any
   // stale in-flight response for a short window, instead of trusting
   // whichever fetch happens to resolve last.
-  const recentlyDeletedRef = useRef<{ jobs: Map<string, number>; customers: Map<string, number>; estimates: Map<string, number> }>({ jobs: new Map(), customers: new Map(), estimates: new Map() });
+  const recentlyDeletedRef = useRef<{ jobs: Map<string, number>; customers: Map<string, number>; estimates: Map<string, number>; chemicals: Map<string, number> }>({ jobs: new Map(), customers: new Map(), estimates: new Map(), chemicals: new Map() });
   const RECENTLY_DELETED_TTL_MS = 2 * 60 * 1000;
-  const markRecentlyDeleted = useCallback((table: "jobs" | "customers" | "estimates", ids: string[]) => {
+  const markRecentlyDeleted = useCallback((table: "jobs" | "customers" | "estimates" | "chemicals", ids: string[]) => {
     const m = recentlyDeletedRef.current[table];
     const now = Date.now();
     for (const [id, ts] of m) { if (now - ts > RECENTLY_DELETED_TTL_MS) m.delete(id); }
@@ -898,11 +898,11 @@ export function App() {
   // Undoing a delete restores the row — it must stop being treated as
   // "recently deleted" or the next refetch would just filter the restore
   // right back out for the rest of the TTL window.
-  const unmarkRecentlyDeleted = useCallback((table: "jobs" | "customers" | "estimates", ids: string[]) => {
+  const unmarkRecentlyDeleted = useCallback((table: "jobs" | "customers" | "estimates" | "chemicals", ids: string[]) => {
     const m = recentlyDeletedRef.current[table];
     ids.forEach(id => m.delete(id));
   }, []);
-  const filterRecentlyDeleted = (table: "jobs" | "customers" | "estimates", rows: any[]) => {
+  const filterRecentlyDeleted = (table: "jobs" | "customers" | "estimates" | "chemicals", rows: any[]) => {
     const m = recentlyDeletedRef.current[table];
     if (m.size === 0) return rows;
     const now = Date.now();
@@ -2295,12 +2295,16 @@ export function App() {
   const refetchData = async () => {
     setIsSyncing(true);
     try {
-      const [{ data: sbJobs, error: jobsErr }, { data: sbCustomers, error: customersErr }, { data: sbEstimates, error: estimatesErr }, { data: sbPromotions }, { data: sbReviews, error: reviewsErr }] = await Promise.all([
+      const [{ data: sbJobs, error: jobsErr }, { data: sbCustomers, error: customersErr }, { data: sbEstimates, error: estimatesErr }, { data: sbPromotions }, { data: sbReviews, error: reviewsErr }, { data: sbChemicals }] = await Promise.all([
         (supabase as any).from("jobs").select("*").eq("owner_id", crmUserId),
         (supabase as any).from("customers").select("*").eq("owner_id", crmUserId),
         (supabase as any).from("estimates").select("*").eq("owner_id", crmUserId),
         (supabase as any).from("promotions").select("*").eq("owner_id", crmUserId).then((r: any) => r).catch(() => ({ data: null })),
         (supabase as any).from("reviews").select("*").eq("owner_id", crmUserId).then((r: any) => r).catch((e: any) => ({ data: null, error: e })),
+        // FEATURE — Chemicals & Equipment used to be localStorage-only, so
+        // it never synced cross-device and text-Alfred (server-side) had no
+        // way to read it at all — a hard blocker for its own supplier tools.
+        (supabase as any).from("chemicals").select("*").eq("owner_id", crmUserId).then((r: any) => r).catch(() => ({ data: null })),
       ]);
       // ITEM 5 (mobile audit) — reviews previously failed silently here (no
       // logging at all on this fetch), which made "reviews aren't showing"
@@ -2408,6 +2412,16 @@ export function App() {
             return toAdd.length > 0 ? [...prev, ...toAdd] : prev;
           });
         }
+      }
+      if (Array.isArray(sbChemicals) && sbChemicals.length > 0) {
+        setChemicals(prev => {
+          const filteredChemicals = filterRecentlyDeleted("chemicals", sbChemicals);
+          const sbMap = new Map(filteredChemicals.map((c: any) => [c.id, c]));
+          const merged = prev.map(c => sbMap.has(c.id) ? { ...c, ...sbMap.get(c.id) } : c);
+          const existingIds = new Set(prev.map(c => c.id));
+          const added = filteredChemicals.filter((c: any) => !existingIds.has(c.id));
+          return [...merged, ...added];
+        });
       }
       setLastSynced(new Date());
     } catch {
@@ -2592,9 +2606,17 @@ export function App() {
           if (error) console.warn("Estimate auto-save failed:", error.message);
         } catch (err: any) { console.warn("Estimate auto-save failed:", err?.message); }
       }
+      // FEATURE — Chemicals & Equipment used to never reach Supabase at all
+      // (localStorage-only) — see migration 0056's comment.
+      if (chemicals.length > 0) {
+        try {
+          const { error } = await (supabase as any).from("chemicals").upsert(chemicals.map((c: any) => ({ ...c, owner_id: crmUserId })), { onConflict: "id" });
+          if (error) console.warn("Chemicals auto-save failed:", error.message);
+        } catch (err: any) { console.warn("Chemicals auto-save failed:", err?.message); }
+      }
     }, 30000);
     return () => clearInterval(interval);
-  }, [customers, estimates]);
+  }, [customers, estimates, chemicals]);
 
   // SMS compliance — keep messaging.ts's in-memory opted-out-phone registry
   // (see setOptedOutPhones/isPhoneOptedOut in lib/messaging.ts) in sync with
@@ -2623,6 +2645,12 @@ export function App() {
           const { error } = await (supabase as any).from("estimates").upsert(storedEst.map((e: any) => ({ ...e, owner_id: crmUserId })), { onConflict: "id" });
           if (error) console.warn("Initial estimate sync failed:", error.message);
         } catch (err: any) { console.warn("Initial estimate sync failed:", err?.message); }
+      }
+      if (chemicals.length > 0) {
+        try {
+          const { error } = await (supabase as any).from("chemicals").upsert(chemicals.map((c: any) => ({ ...c, owner_id: crmUserId })), { onConflict: "id" });
+          if (error) console.warn("Initial chemicals sync failed:", error.message);
+        } catch (err: any) { console.warn("Initial chemicals sync failed:", err?.message); }
       }
     };
     syncLocalToSupabase();
@@ -4073,7 +4101,7 @@ export function App() {
                 {page === "hiring"         && <HiringPage settings={settings} setSettings={setSettings} toast={toast} ownerId={crmUserId} onNav={setPage} />}
                 {page === "fleet"          && <FleetPage vehicles={vehicles} setVehicles={setVehicles} maintenance={maintenance} setMaintenance={setMaintenance} toast={toast} />}
                 {page === "expenses"       && <ExpensesPage expenses={expenses} setExpenses={setExpenses} />}
-                {page === "chemicals"      && <ChemicalsPage chemicals={chemicals} setChemicals={setChemicals} toast={toast} settings={settings} />}
+                {page === "chemicals"      && <ChemicalsPage chemicals={chemicals} setChemicals={setChemicals} toast={toast} settings={settings} ownerId={crmUserId} markRecentlyDeleted={markRecentlyDeleted} />}
                 {page === "notifications"  && <NotificationsPage notifications={notifications} onDelete={deleteNotification} onMarkRead={markNotificationRead} onMarkAllRead={markAllNotificationsRead} onClearAll={clearAllNotifications} onNav={setPage} />}
                 {page === "reports"        && <ReportsPage jobs={jobs} customers={customers} estimates={estimates} expenses={expenses} employees={employees} chemicals={chemicals} />}
                 {page === "analytics"      && <AnalyticsPage jobs={jobs} customers={customers} estimates={estimates} expenses={expenses} />}
