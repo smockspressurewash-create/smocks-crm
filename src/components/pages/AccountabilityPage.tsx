@@ -78,7 +78,7 @@ import { ChemicalModal } from "../ui/ChemicalModal";
 import { WeeklyBusinessReview } from "../ui/WeeklyBusinessReview";
 import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 
-export function AccountabilityPage({ entries = [], setEntries, goals = [], setGoals, wins = [], setWins, toast, settings = {} as AppSettings, ownerId = "" }: { entries?: any[]; setEntries?: any; goals?: any[]; setGoals?: any; wins?: any[]; setWins?: any; toast?: any; settings?: AppSettings; ownerId?: string }) {
+export function AccountabilityPage({ entries = [], setEntries, goals = [], setGoals, wins = [], setWins, toast, settings = {} as AppSettings, ownerId = "", onNav = (_p: string) => {} }: { entries?: any[]; setEntries?: any; goals?: any[]; setGoals?: any; wins?: any[]; setWins?: any; toast?: any; settings?: AppSettings; ownerId?: string; onNav?: (page: string) => void }) {
   const [tab, setTab] = useState("today");
   // FEATURE — office-hours clock, separate from per-job clocking
   // (JobDetailModal/EmployeePortal): tracks admin/office time (invoicing,
@@ -398,98 +398,15 @@ export function AccountabilityPage({ entries = [], setEntries, goals = [], setGo
       )}
 
       {tab === "goals" && (
-        <div className="space-y-4">
-          {/* Goal Progress Overview */}
-          {goals.length > 0 && (() => {
-            const done = goals.filter(g => g.done).length;
-            const pct = Math.round(done / goals.length * 100);
-            const byCategory = { revenue: goals.filter(g => (g.category||"general") === "revenue"), fitness: goals.filter(g => g.category === "fitness"), learning: goals.filter(g => g.category === "learning"), family: goals.filter(g => g.category === "family"), general: goals.filter(g => !g.category || g.category === "general") };
-            return <Glass className="p-4">
-              <div className="flex items-center justify-between mb-3">
-                <div className="font-semibold text-sm">Goal Progress</div>
-                <div className="text-lg font-black text-red-400">{pct}%</div>
-              </div>
-              <div className="h-3 bg-black/40 rounded-full overflow-hidden mb-3">
-                <div className="h-full bg-gradient-to-r from-red-600 to-red-400 rounded-full transition-all duration-500" style={{width: pct + "%"}} />
-              </div>
-              <div className="grid grid-cols-4 gap-2">
-                {[["💰","revenue","Revenue"],["💪","fitness","Fitness"],["📚","learning","Learning"],["👨‍👩‍👧","family","Family"]].map(([icon,key,label]) => {
-                  const cats = byCategory[key] || [];
-                  if (cats.length === 0) return null;
-                  const catDone = cats.filter(g => g.done).length;
-                  return <div key={key} className="text-center p-2 bg-black/30 rounded-xl">
-                    <div className="text-lg">{icon}</div>
-                    <div className="text-[10px] text-white/50">{label}</div>
-                    <div className="text-xs font-bold">{catDone}/{cats.length}</div>
-                  </div>;
-                }).filter(Boolean)}
-              </div>
-            </Glass>;
-          })()}
-
-          <Glass className="p-5">
-            <div className="flex gap-2 mb-2">
-              <GInput placeholder="Add a goal..." value={gText} onChange={e => setGText(e.target.value)} onKeyDown={e => e.key === "Enter" && addGoal()} className="flex-1" />
-              <GSel value="" onChange={e => {}} className="!text-xs !w-32">
-                <option value="" className="bg-black">Category</option>
-                <option value="revenue" className="bg-black">💰 Revenue</option>
-                <option value="fitness" className="bg-black">💪 Fitness</option>
-                <option value="learning" className="bg-black">📚 Learning</option>
-                <option value="family" className="bg-black">👨‍👩‍👧 Family</option>
-              </GSel>
-              <GBtn onClick={addGoal}><Plus size={14} /></GBtn>
-            </div>
-            {/* FEATURE — deadline + reward: "specify a goal by a certain
-                time, and if the goal is met, increase a certain amount."
-                Both optional — a goal can still be a plain checklist item
-                with no deadline/reward, same as before. */}
-            <div className="flex gap-2 mb-3">
-              <div className="flex-1">
-                <label className="text-[10px] text-white/40 uppercase tracking-wider mb-1 block">Deadline (optional)</label>
-                <GDate value={gDeadline} onChange={(e: any) => setGDeadline(e.target.value)} />
-              </div>
-              <div className="w-28">
-                <label className="text-[10px] text-white/40 uppercase tracking-wider mb-1 block">Reward $</label>
-                <GInput type="number" placeholder="0" value={gRewardAmount} onChange={(e: any) => setGRewardAmount(e.target.value)} />
-              </div>
-              <div className="flex-1">
-                <label className="text-[10px] text-white/40 uppercase tracking-wider mb-1 block">Reward if met by deadline</label>
-                <GInput placeholder="e.g. $200 bonus, extra day off" value={gRewardDesc} onChange={(e: any) => setGRewardDesc(e.target.value)} />
-              </div>
-            </div>
-            <div className="space-y-2">
-              {goals.map(g => {
-                const catIcon = { revenue:"💰", fitness:"💪", learning:"📚", family:"👨‍👩‍👧" }[g.category] || "🎯";
-                const daysLeft = g.deadline ? Math.ceil((new Date(g.deadline + "T00:00:00").getTime() - new Date(tKey + "T00:00:00").getTime()) / 86400000) : null;
-                const overdue = !g.done && daysLeft !== null && daysLeft < 0;
-                const hasReward = !!(g.rewardAmount || g.rewardDescription);
-                return <div key={g.id} className={"flex items-center gap-3 p-3 rounded-xl border transition " + (g.done ? "bg-green-900/20 border-green-700/40" : overdue ? "bg-red-950/20 border-red-800/40" : "bg-white/5 border-white/10")}>
-                  <input type="checkbox" checked={g.done} onChange={() => setGoals(goals.map(x => {
-                    if (x.id !== g.id) return x;
-                    const nowDone = !x.done;
-                    const metByDeadline = nowDone ? (x.deadline ? tKey <= x.deadline : true) : x.metByDeadline;
-                    if (nowDone && metByDeadline && (x.rewardAmount || x.rewardDescription)) {
-                      toast?.(`🎉 Goal met by deadline — reward unlocked: ${x.rewardDescription || ("$" + x.rewardAmount)}`);
-                    }
-                    return { ...x, done: nowDone, completedAt: nowDone ? tKey : null, metByDeadline: nowDone ? metByDeadline : x.metByDeadline };
-                  }))} className="w-5 h-5 accent-red-600" />
-                  <span className="text-sm">{catIcon}</span>
-                  <div className="flex-1 min-w-0">
-                    <div className={"text-sm " + (g.done ? "line-through text-white/40" : "")}>{g.text}</div>
-                    <div className="text-[10px] text-white/40 flex flex-wrap items-center gap-x-2">
-                      <span>{g.done ? "✅ Completed " + (g.completedAt || "") : "Added " + g.createdAt}</span>
-                      {g.deadline && !g.done && <span className={overdue ? "text-red-400" : "text-white/40"}>{overdue ? `Overdue (was due ${g.deadline})` : `Due ${g.deadline} (${daysLeft}d left)`}</span>}
-                      {g.done && g.deadline && <span className={g.metByDeadline ? "text-green-400" : "text-amber-400"}>{g.metByDeadline ? "Hit deadline ✓" : "Completed after deadline"}</span>}
-                      {hasReward && <span className="text-yellow-400">🎁 {g.rewardDescription || ("$" + g.rewardAmount)}{g.done && !g.metByDeadline ? " (missed — deadline not met)" : ""}</span>}
-                    </div>
-                  </div>
-                  <button onClick={() => setGoals(goals.filter(x => x.id !== g.id))} className="p-1 text-white/40 hover:text-red-400"><Trash2 size={12} /></button>
-                </div>;
-              })}
-              {goals.length === 0 && <div className="text-center py-8 text-white/40 text-sm">No goals yet — set your first one above</div>}
-            </div>
-          </Glass>
-        </div>
+        <Glass className="p-8 text-center">
+          <Target size={32} className="mx-auto text-red-400/60 mb-3" />
+          <div className="font-semibold mb-1">Goals moved to Growth</div>
+          <div className="text-sm text-white/40 mb-4 max-w-md mx-auto">
+            Revenue, job, and client goals — with countdowns, rewards, and Alfred nudging you as you close in — now live under Growth → Goals, alongside Referrals and Promotions.
+            {goals.length > 0 && ` You have ${goals.filter(g => !g.done).length} active goal${goals.filter(g => !g.done).length !== 1 ? "s" : ""}.`}
+          </div>
+          <GBtn onClick={() => onNav("goals")}>Open Goals <ArrowRight size={14} className="inline ml-1" /></GBtn>
+        </Glass>
       )}
 
       {tab === "wins" && (

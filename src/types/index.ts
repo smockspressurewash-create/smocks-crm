@@ -752,6 +752,15 @@ export interface Goal {
   rewardAmount?: number;
   rewardDescription?: string;
   metByDeadline?: boolean;
+  // FEATURE — Growth goals: business-metric goals (revenue/jobs/clients/
+  // recurring clients/leads) whose `current` is auto-computed from real
+  // jobs/customers data instead of typed in by hand ("custom" keeps the old
+  // manual-current behavior). remindedAt/celebratedAt dedupe the Alfred
+  // near-goal reminder and the goal-hit email/toast so App.tsx's tracking
+  // effect only fires each one once per goal, not on every re-render.
+  metric?: "revenue" | "jobs" | "clients" | "recurringClients" | "leads" | "custom";
+  remindedAt?: string | null;
+  celebratedAt?: string | null;
 }
 
 export interface Win {

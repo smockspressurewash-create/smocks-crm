@@ -25,6 +25,7 @@ import { SopModal } from "../ui/SopModal";
 import { chargeSavedPaymentMethod, sendPaymentReceipt, listCustomerPaymentMethods } from "../../lib/stripe";
 import { BarChart, Bar, LineChart, Line, XAxis, YAxis, ResponsiveContainer, Tooltip, CartesianGrid } from "recharts";
 import { fmt, uid, today, localDateStr, localDateKey, shiftDayStr, daysFromNow, computeJobRatingScore, setOAuthIntent, compressImageFile, getEffectiveRate, computeNextRecurringDate, weekdayLabels, normalizeJobRow, totalJobPhotoCount, mediaSrc, dataUrlToBlob, uploadJobMedia, checkVideoLimits, stripLegacyJobFields, reconcileCrewAfterAssign, getPollIntervalMs, getPayPeriodBounds, haversineMiles } from "../../lib/utils";
+import { callModel, MODELS } from "../../lib/api";
 import { usePollGate } from "../../hooks/usePollGate";
 import { usePersistent } from "../../hooks/usePersistent";
 import type { Job, Employee, Customer, AppSettings, JobChecklistItem, EmployeeOnboarding } from "../../types";
@@ -795,10 +796,26 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
   // problem out loud to open the existing Report Problem flow pre-filled,
   // without touching the phone at all. Same Web Speech API (no key, no
   // backend call) the per-item note dictation above already relies on.
+  //
+  // GUARDRAIL — this whole feature is deliberately scoped to two, and only
+  // two, effects: toggling checklist item done/not-done, and pre-filling
+  // (never sending) the Report Problem draft. Nothing voice-driven here can
+  // complete a job, send an SMS/email, or touch a customer — those stay
+  // behind their own explicit buttons. Multi-item batches and the AI
+  // fallback below only ever pick from the job's OWN existing checklist item
+  // ids; neither can invent a new action. Every match, single or multi, is
+  // shown back to the crew member as a "Did you mean…" card they must
+  // explicitly confirm before anything saves — nothing applies from voice
+  // alone, so a misheard word never silently changes the job.
   const VoiceCmdCtor = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
   const [voiceCmdActive, setVoiceCmdActive] = useState(false);
   const voiceCmdRecRef = useRef<any>(null);
   const voiceCmdKeepRef = useRef(false);
+  type VoiceMatch = { list: "pre" | "during" | "post"; item: JobChecklistItem; action: "check" | "uncheck" };
+  const [voicePending, setVoicePending] = useState<{ matches: VoiceMatch[]; transcript: string } | null>(null);
+  const [voiceNoMatch, setVoiceNoMatch] = useState<string | null>(null);
+  const [voiceThinking, setVoiceThinking] = useState(false);
+  const [voiceTypedText, setVoiceTypedText] = useState("");
   const normalizeVoice = (s: string) => s.toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
   const VOICE_PROBLEM_KEYWORDS = ["problem", "issue", "broken", "damage", "damaged", "hazard", "injury", "hurt", "leak", "leaking", "not working", "malfunction"];
   const VOICE_UNCHECK_KEYWORDS = ["uncheck", "undo", "not done", "unmark", "wasn't done", "mistake"];
@@ -819,9 +836,89 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
     }
     return best && best.score >= 0.5 ? best : null;
   };
-  const handleVoiceCommand = (raw: string) => {
+  // FEATURE — "I just completed these things" (plural). Splits on
+  // and/commas/"then" so one breath covering several items ("ladder setup
+  // and the gutters and the walkway") is matched item-by-item instead of
+  // only ever finding the single best-scoring item in the whole sentence.
+  const splitVoiceSegments = (transcript: string): string[] =>
+    transcript.split(/\s*,\s*|\s+and then\s+|\s+and also\s+|\s+then\s+|\s+and\s+/i).map(s => s.trim()).filter(Boolean);
+  const findVoiceChecklistMatches = (transcript: string): VoiceMatch[] => {
+    const globalUncheck = VOICE_UNCHECK_KEYWORDS.some(k => normalizeVoice(transcript).includes(k));
+    const segments = splitVoiceSegments(transcript);
+    const bySegment = segments.length > 1 ? segments : [transcript];
+    const seen = new Map<string, VoiceMatch>();
+    for (const seg of bySegment) {
+      const m = findVoiceChecklistMatch(seg);
+      if (!m) continue;
+      const wantUncheck = VOICE_UNCHECK_KEYWORDS.some(k => normalizeVoice(seg).includes(k)) || (bySegment.length === 1 && globalUncheck);
+      const existing = seen.get(m.item.id);
+      if (!existing || m.score > 0) seen.set(m.item.id, { list: m.list, item: m.item, action: wantUncheck ? "uncheck" : "check" });
+    }
+    return Array.from(seen.values());
+  };
+  // FEATURE — AI-assisted fallback when the plain word-overlap match above
+  // finds nothing (a paraphrase, a synonym, background noise mangling a
+  // word). Only runs if the owner has an AI model + key configured in
+  // Settings; fails silently (falls through to "didn't recognize") if not,
+  // rather than blocking the whole voice feature on an API key. The model
+  // is given ONLY this job's checklist item ids/labels and told to pick
+  // from them — its output is still whitelist-checked against real item ids
+  // below before ever reaching voicePending, and even then only reaches the
+  // same confirm-first flow every other match goes through.
+  const aiMatchChecklist = async (transcript: string): Promise<VoiceMatch[]> => {
+    const priority: string[] = (settings as any)?.modelPriority || ["claude", "openai", "gemini", "groq", "mistral"];
+    const modelKeys = (settings as any)?.modelKeys || {};
+    const modelId = priority.find((mid: string) => { const m = (MODELS as any)[mid]; return m && (!m.needsKey || !!modelKeys[mid]); });
+    if (!modelId) return [];
+    const sources: Array<["pre" | "during" | "post", JobChecklistItem[]]> = [["pre", preItems], ["during", durItems], ["post", postItems]];
+    const catalog = sources.flatMap(([list, items]) => items.map(it => ({ id: it.id, list, label: it.label })));
+    if (catalog.length === 0) return [];
+    try {
+      const res = await withTimeout(callModel({
+        modelId,
+        apiKey: modelKeys[modelId],
+        maxTokens: 300,
+        systemPrompt: "You match a spoken phrase from a pressure-washing crew member to items on their job checklist. Reply with ONLY a JSON array, nothing else — no prose, no markdown fences. Each element: {\"id\": \"<one of the given item ids>\", \"action\": \"check\" or \"uncheck\"}. Only include items you're reasonably confident the speaker meant. If none match, reply with an empty array [].",
+        messages: [{ role: "user", content: `Checklist items:\n${catalog.map(c => `${c.id}: ${c.label}`).join("\n")}\n\nSpoken phrase: "${transcript}"` }],
+      }), 12000, "Voice AI match");
+      const text = (res.text || "").trim();
+      const jsonStr = text.startsWith("[") ? text : (text.match(/\[[\s\S]*\]/) || [""])[0];
+      const parsed = JSON.parse(jsonStr || "[]");
+      if (!Array.isArray(parsed)) return [];
+      const byId = new Map(catalog.map(c => [c.id, c]));
+      return parsed
+        .filter((p: any) => p && typeof p.id === "string" && byId.has(p.id))
+        .map((p: any) => {
+          const c = byId.get(p.id)!;
+          const item = (c.list === "pre" ? preItems : c.list === "during" ? durItems : postItems).find(it => it.id === c.id)!;
+          return { list: c.list, item, action: p.action === "uncheck" ? "uncheck" : "check" } as VoiceMatch;
+        });
+    } catch (e: any) {
+      console.warn("[VoiceAI] checklist match failed:", e?.message);
+      return [];
+    }
+  };
+  const confirmVoicePending = () => {
+    if (!voicePending) return;
+    const { matches } = voicePending;
+    const patch = (list: "pre" | "during" | "post", items: JobChecklistItem[]) => {
+      const forList = matches.filter(m => m.list === list);
+      if (forList.length === 0) return items;
+      return items.map(it => { const m = forList.find(x => x.item.id === it.id); return m ? { ...it, done: m.action === "check" } : it; });
+    };
+    const nextPre = patch("pre", preItems), nextDur = patch("during", durItems), nextPost = patch("post", postItems);
+    if (matches.some(m => m.list === "pre")) saveChecklist("Pre-Job", { preChecklist: nextPre });
+    if (matches.some(m => m.list === "during")) saveChecklist("During-Job", { duringChecklist: nextDur });
+    if (matches.some(m => m.list === "post")) saveChecklist("Post-Job", { postChecklist: nextPost });
+    toast(`🎙️ ${matches.map(m => (m.action === "check" ? "✓ " : "Unmarked: ") + m.item.label).join(" · ")}`, "green");
+    setVoicePending(null);
+    setVoiceTypedText("");
+  };
+  const cancelVoicePending = () => { setVoicePending(null); setVoiceNoMatch(null); setVoiceTypedText(""); };
+  const handleVoiceCommand = async (raw: string) => {
     const transcript = raw.trim();
     if (!transcript) return;
+    setVoiceNoMatch(null);
     const norm = normalizeVoice(transcript);
     if (VOICE_PROBLEM_KEYWORDS.some(k => norm.includes(k))) {
       setReportProblemText(transcript);
@@ -829,14 +926,14 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
       toast("🎙️ Heard a problem — review and send below", "yellow");
       return;
     }
-    const match = findVoiceChecklistMatch(transcript);
-    if (!match) { toast(`🎙️ Didn't recognize an item in "${transcript}"`, "red"); return; }
-    const wantUncheck = VOICE_UNCHECK_KEYWORDS.some(k => norm.includes(k));
-    const patched = (list: JobChecklistItem[]) => list.map(it => it.id === match.item.id ? { ...it, done: !wantUncheck } : it);
-    if (match.list === "pre") saveChecklist("Pre-Job", { preChecklist: patched(preItems) });
-    else if (match.list === "during") saveChecklist("During-Job", { duringChecklist: patched(durItems) });
-    else saveChecklist("Post-Job", { postChecklist: patched(postItems) });
-    toast(`🎙️ ${wantUncheck ? "Unmarked" : "✓ Checked off"}: ${match.item.label}`, wantUncheck ? undefined : "green");
+    let matches = findVoiceChecklistMatches(transcript);
+    if (matches.length === 0) {
+      setVoiceThinking(true);
+      matches = await aiMatchChecklist(transcript);
+      setVoiceThinking(false);
+    }
+    if (matches.length === 0) { setVoiceNoMatch(transcript); toast(`🎙️ Didn't recognize an item in "${transcript}" — type it below`, "red"); return; }
+    setVoicePending({ matches, transcript });
   };
   const toggleVoiceCommands = () => {
     if (!VoiceCmdCtor) return;
@@ -870,7 +967,7 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
     };
     startOne();
     setVoiceCmdActive(true);
-    toast("🎙️ Listening — say an item name to check it off, or describe a problem", undefined);
+    toast("🎙️ Listening — say an item name (or several) to check off, or describe a problem", undefined);
   };
   useEffect(() => () => { voiceCmdKeepRef.current = false; voiceCmdRecRef.current?.stop(); }, []);
 
@@ -2100,17 +2197,68 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
             <div className="text-xs text-white/60 uppercase tracking-wider flex items-center gap-1">
               <CheckSquare size={12} />Job Checklists
             </div>
-            {VoiceCmdCtor && effPerms.can_complete_checklist && (
-              <button
-                type="button"
-                onClick={toggleVoiceCommands}
-                title={voiceCmdActive ? "Stop listening" : "Say an item name to check it off, or describe a problem — hands-free"}
-                className={"flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[10px] font-medium transition " + (voiceCmdActive ? "bg-red-600/70 text-white animate-pulse" : "bg-white/5 text-white/50 hover:text-white/80 hover:bg-white/10")}
-              >
-                <Mic size={11} />{voiceCmdActive ? "Listening…" : "Voice Commands"}
-              </button>
+            {effPerms.can_complete_checklist && (
+              <div className="flex items-center gap-1.5">
+                {VoiceCmdCtor && (
+                  <button
+                    type="button"
+                    onClick={toggleVoiceCommands}
+                    title={voiceCmdActive ? "Stop listening" : "Say an item name (or several) to check off, or describe a problem — hands-free"}
+                    className={"flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[10px] font-medium transition " + (voiceCmdActive ? "bg-red-600/70 text-white animate-pulse" : "bg-white/5 text-white/50 hover:text-white/80 hover:bg-white/10")}
+                  >
+                    <Mic size={11} />{voiceCmdActive ? "Listening…" : "Voice Commands"}
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setVoiceNoMatch(v => v === null ? "" : null)}
+                  title="Type a checklist command instead of speaking"
+                  className={"flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[10px] font-medium transition " + (voiceNoMatch !== null && !voicePending ? "bg-white/15 text-white" : "bg-white/5 text-white/50 hover:text-white/80 hover:bg-white/10")}
+                >
+                  <List size={11} />Type Instead
+                </button>
+              </div>
             )}
           </div>
+
+          {/* GUARDRAIL — nothing above ever applies on its own; this card is
+              the one place a voice/typed checklist match actually saves,
+              and only once the crew member taps Yes. */}
+          {voiceThinking && (
+            <div className="mb-3 p-3 rounded-xl bg-white/5 border border-white/10 text-xs text-white/50 flex items-center gap-2">
+              <span className="w-3 h-3 rounded-full border-2 border-white/30 border-t-white/70 animate-spin inline-block" />
+              Checking with AI…
+            </div>
+          )}
+          {voicePending && (
+            <div className="mb-3 p-3 rounded-xl bg-red-950/20 border border-red-800/40 space-y-2">
+              <div className="text-[11px] text-white/50">🎙️ Heard: "{voicePending.transcript}"</div>
+              <div className="text-sm font-medium">Did you mean:</div>
+              <ul className="space-y-1">
+                {voicePending.matches.map(m => (
+                  <li key={m.item.id} className="text-sm flex items-center gap-2">
+                    <span className={m.action === "check" ? "text-green-400" : "text-amber-400"}>{m.action === "check" ? "✓" : "✕"}</span>
+                    {m.item.label}
+                  </li>
+                ))}
+              </ul>
+              <div className="flex gap-2 pt-1">
+                <GBtn onClick={confirmVoicePending} className="!text-xs !py-1.5">Yes, do it</GBtn>
+                <button onClick={cancelVoicePending} className="text-xs px-3 py-1.5 rounded-lg bg-white/5 border border-white/10 text-white/60 hover:text-white">No, cancel</button>
+              </div>
+            </div>
+          )}
+          {voiceNoMatch !== null && !voicePending && (
+            <div className="mb-3 p-3 rounded-xl bg-white/5 border border-white/10 space-y-2">
+              <div className="text-[11px] text-white/50">{voiceNoMatch ? `🎙️ Didn't catch a checklist item in: "${voiceNoMatch}"` : "Type what you just did, e.g. \"rinsed the driveway and set up the ladder\""}</div>
+              <div className="flex gap-2">
+                <GInput placeholder="Type what you meant…" value={voiceTypedText} onChange={(e: any) => setVoiceTypedText(e.target.value)} onKeyDown={(e: any) => e.key === "Enter" && voiceTypedText.trim() && handleVoiceCommand(voiceTypedText)} className="flex-1 !text-xs" />
+                <GBtn onClick={() => voiceTypedText.trim() && handleVoiceCommand(voiceTypedText)} className="!text-xs !py-1.5">Go</GBtn>
+                <button onClick={() => { setVoiceNoMatch(null); setVoiceTypedText(""); }} className="text-xs px-2 text-white/40 hover:text-white">✕</button>
+              </div>
+            </div>
+          )}
+
           <PortalChecklistSection
             jobId={job.id}
             title="Pre-Job" emoji="🔵" allowPhotos

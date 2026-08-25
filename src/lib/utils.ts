@@ -742,6 +742,43 @@ export const withTimeout = <T,>(p: Promise<T>, ms: number, label: string): Promi
     new Promise<T>((_, reject) => setTimeout(() => reject(new Error(label + " timed out")), ms)),
   ]);
 
+// ─── computeGoalProgress ────────────────────────────────────────────────────
+// Growth goals (GoalsPage.tsx) auto-track their `current` value from real
+// jobs/customers data for every metric except "custom" (which keeps the old
+// manually-typed-in current). Shared here (rather than living only in
+// GoalsPage) because App.tsx's own reminder/celebration effect needs the
+// exact same numbers to decide when a goal has actually been hit — computing
+// it twice, slightly differently, would let the two silently disagree.
+export const computeGoalProgress = (g: any, data: { jobs?: any[]; customers?: any[] }): { current: number; target: number; pct: number } => {
+  const since = g.createdAt || "1970-01-01";
+  const jobs = data.jobs || [];
+  const customers = data.customers || [];
+  let current = Number(g.current) || 0;
+  const completedSince = () => jobs.filter((j: any) => j.status === "completed" && (j.scheduledDate || "") >= since);
+  switch (g.metric) {
+    case "revenue":
+      current = completedSince().reduce((s: number, j: any) => s + (Number(j.amount) || 0), 0);
+      break;
+    case "jobs":
+      current = completedSince().length;
+      break;
+    case "clients":
+      current = customers.filter((c: any) => (c.createdAt || "") >= since).length;
+      break;
+    case "recurringClients":
+      current = customers.filter((c: any) => c.recurringPayment?.enabled).length;
+      break;
+    case "leads":
+      current = customers.filter((c: any) => c.pipelineStage === "lead" && !c.leadArchived && (c.createdAt || "") >= since).length;
+      break;
+    default:
+      current = Number(g.current) || 0;
+  }
+  const target = Number(g.target) || 0;
+  const pct = target > 0 ? Math.min(100, Math.round((current / target) * 100)) : 0;
+  return { current, target, pct };
+};
+
 // ─── stripLegacyJobFields ───────────────────────────────────────────────────
 // organizationId/org_id have been added to a job payload twice now on the
 // strength of evidence that didn't hold up — the column has never existed on

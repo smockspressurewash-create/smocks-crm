@@ -85,7 +85,7 @@ import {
 } from "./lib/seed";
 import { seedWeather } from "./lib/weather";
 import { fetchRealWeather, deriveWeatherLocation } from "./lib/weather";
-import { fmt, uid, today, daysSince, daysFromNow, consumeOAuthIntent, getLastOwnerSessionFlag, setLastOwnerSessionFlag, getLastOwnerId, setLastOwnerId, buildChecklistFromServices, withTimeout, normalizeJobRow, totalJobPhotoCount, notifyDesktop, stripLegacyJobFields, getPollIntervalMs, purgeOldJobMedia } from "./lib/utils";
+import { fmt, uid, today, daysSince, daysFromNow, consumeOAuthIntent, getLastOwnerSessionFlag, setLastOwnerSessionFlag, getLastOwnerId, setLastOwnerId, buildChecklistFromServices, withTimeout, normalizeJobRow, totalJobPhotoCount, notifyDesktop, stripLegacyJobFields, getPollIntervalMs, purgeOldJobMedia, computeGoalProgress } from "./lib/utils";
 import { sendEmail, sendOwnerGmailOnly, emailShell, emailButton, buildTomorrowJobsEmailHtml, buildDailyBriefingEmailHtml, buildWeeklyOwnerDigestEmailHtml, setOptedOutPhones, setTestModeContacts } from "./lib/messaging";
 import { exchangeSocialOAuthCode, type SocialPlatform } from "./lib/socialOAuth";
 import type {
@@ -151,6 +151,7 @@ const navGroups = [
   {
     label: "Growth",
     items: [
+      { id: "goals",       label: "Goals",       icon: Target },
       { id: "referrals",   label: "Referrals",   icon: Gift },
       { id: "promotions",  label: "Promotions",  icon: Tag  },
     ],
@@ -177,7 +178,6 @@ const navGroups = [
   {
     label: "Personal",
     items: [
-      { id: "goals",          label: "Goals",          icon: Target   },
       { id: "accountability", label: "Accountability", icon: Heart    },
       { id: "google",         label: "Workspace",      icon: Database },
       { id: "portal",         label: "Team Portal",    icon: Monitor  },
@@ -1603,6 +1603,59 @@ export function App() {
       }
     }
   }, [estimates, hasCrmSession]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Growth goal tracking — near-goal reminders + hit celebration ─────────────
+  // FEATURE — owner asked for Alfred to nudge them as they close in on a
+  // Growth goal and congratulate them when they hit it, plus an email on
+  // completion. Mirrors the invoice-activity diff effect above: recompute
+  // progress from the same computeGoalProgress() GoalsPage.tsx uses (so the
+  // two never disagree on whether a goal is actually hit), fire each event
+  // at most once per goal via remindedAt/celebratedAt stamped onto the goal
+  // itself, and only after the first pass (avoid replaying history / firing
+  // for every already-completed goal the moment the app loads).
+  const goalTrackingSeededRef = useRef(false);
+  useEffect(() => {
+    if (!hasCrmSession || !crmUserId) return;
+    if (!goalTrackingSeededRef.current) { goalTrackingSeededRef.current = true; return; }
+    const active = (goalsList || []).filter((g: any) => !g.done);
+    if (active.length === 0) return;
+    const toRemind: any[] = [];
+    const toCelebrate: any[] = [];
+    active.forEach((g: any) => {
+      const { pct } = computeGoalProgress(g, { jobs, customers });
+      if (pct >= 100) { toCelebrate.push(g); return; }
+      if (pct >= 90 && !g.remindedAt) toRemind.push({ ...g, pct });
+    });
+    if (toRemind.length === 0 && toCelebrate.length === 0) return;
+    setGoalsList((prev: any[]) => prev.map((g: any) => {
+      const remind = toRemind.find(r => r.id === g.id);
+      const celebrate = toCelebrate.find(c => c.id === g.id);
+      if (celebrate) return { ...g, done: true, completedAt: today(), metByDeadline: g.deadline ? today() <= g.deadline : true, celebratedAt: g.celebratedAt || today() };
+      if (remind) return { ...g, remindedAt: today() };
+      return g;
+    }));
+    toRemind.forEach((g: any) => {
+      const msg = `You're at ${g.pct}% of your goal "${g.text}" — almost there! 🔥`;
+      toast?.(`🤖 ${msg}`, "yellow");
+      fetch("/api/alfred-notify", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: "Alfred Notifications", message: msg, ownerId: crmUserId }),
+      }).catch((e: any) => console.warn("[GoalTracking] near-goal alfred-notify threw:", e?.message));
+    });
+    toCelebrate.forEach((g: any) => {
+      const msg = `🎉 Goal hit! You reached "${g.text}"${g.hasReward || g.rewardAmount || g.rewardDescription ? ` — reward unlocked: ${g.rewardDescription || (g.rewardAmount ? "$" + g.rewardAmount : "")}` : ""}. Nice work!`;
+      toast?.(msg, "green");
+      fetch("/api/alfred-notify", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: "Alfred Notifications", message: msg, ownerId: crmUserId }),
+      }).catch((e: any) => console.warn("[GoalTracking] goal-hit alfred-notify threw:", e?.message));
+      const ownerEmail = (settings as any)?.myEmail || (settings as any)?.companyEmail || crmUserEmail;
+      if (ownerEmail) {
+        const html = emailShell(settings as any, "Goal Reached! 🎉", `<p>${msg}</p>` + emailButton("View Goals", `${window.location.origin}${window.location.pathname}#/goals`));
+        sendEmail(settings as any, { to: ownerEmail, subject: "🎉 Goal reached — " + ((settings as any)?.companyName || "Crew Boss"), body: html }).catch((e: any) => console.warn("[GoalTracking] goal-hit email threw:", e?.message));
+      }
+    });
+  }, [jobs, customers, goalsList, hasCrmSession, crmUserId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Owner notifications on crew activity (FEATURE 7) ─────────────────────────
   // Diff the 3s employees/jobs poll to detect clock in/out (dayClockInAt),
@@ -4026,8 +4079,8 @@ export function App() {
                 {page === "analytics"      && <AnalyticsPage jobs={jobs} customers={customers} estimates={estimates} expenses={expenses} />}
                 {page === "budget"         && <BudgetPage jobs={jobs} estimates={estimates} expenses={expenses} settings={settings} toast={toast} />}
                 {page === "personal"       && <PersonalBudgetPage toast={toast} />}
-                {page === "accountability" && (managerBlocked("accountability") ? <RestrictedNotice label="Accountability Tools" /> : <AccountabilityPage entries={accountability} setEntries={setAccountability} goals={goalsList} setGoals={setGoalsList} wins={wins} setWins={setWins} toast={toast} settings={settings} ownerId={crmUserId} />)}
-                {page === "goals" && <GoalsPage goals={goalsList} setPage={setPage} />}
+                {page === "accountability" && (managerBlocked("accountability") ? <RestrictedNotice label="Accountability Tools" /> : <AccountabilityPage entries={accountability} setEntries={setAccountability} goals={goalsList} setGoals={setGoalsList} wins={wins} setWins={setWins} toast={toast} settings={settings} ownerId={crmUserId} onNav={setPage} />)}
+                {page === "goals" && <GoalsPage goals={goalsList} setGoals={setGoalsList} jobs={jobs} customers={customers} toast={toast} />}
                 {page === "referrals"      && <ReferralsPage customers={customers} setCustomers={setCustomers} jobs={jobs} toast={toast} settings={settings} setSettings={setSettings} />}
                 {page === "promotions"     && <PromotionsPage promotions={promotions} setPromotions={setPromotions} customers={customers} services={services} settings={settings} toast={toast} />}
                 {page === "trashcans"      && <TrashCanPage jobs={jobs} setJobs={setJobs} customers={customers} settings={settings} setSettings={setSettings} toast={toast} ownerId={crmUserId} />}
