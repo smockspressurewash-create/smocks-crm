@@ -47,6 +47,31 @@ export function AIModelsSection({ f, setF, modelStatus, setModelStatus, employee
   const [showKey, setShowKey] = useState({});
   const [newAlfredPhone, setNewAlfredPhone] = useState("");
   const ms: Record<string, any> = modelStatus || {};
+  // FEATURE — "double-check all the connections for the LLM providers, make
+  // sure they're all working." There was no way to actually verify a saved
+  // key works short of trying to use Alfred and hoping — this fires one
+  // real, minimal round-trip through the exact same callModel() path Alfred
+  // itself uses (no tools, ~10 tokens) so a bad/expired/wrong-format key
+  // surfaces immediately with the provider's own real error text, not a guess.
+  const [testResult, setTestResult] = useState<Record<string, { ok: boolean; msg: string } | undefined>>({});
+  const [testing, setTesting] = useState<Record<string, boolean>>({});
+  const testConnection = async (mid: string) => {
+    setTesting(t => ({ ...t, [mid]: true }));
+    setTestResult(r => ({ ...r, [mid]: undefined }));
+    try {
+      const res = await callModel({
+        modelId: mid,
+        apiKey: (f.modelKeys || {})[mid],
+        messages: [{ role: "user", content: "Reply with exactly: OK" }],
+        maxTokens: 10,
+      });
+      setTestResult(r => ({ ...r, [mid]: { ok: true, msg: res.text?.trim() ? `Responded: "${res.text.trim().slice(0, 40)}"` : "Connected (empty reply, but the request succeeded)" } }));
+    } catch (e: any) {
+      setTestResult(r => ({ ...r, [mid]: { ok: false, msg: e?.message || "Connection failed" } }));
+    } finally {
+      setTesting(t => ({ ...t, [mid]: false }));
+    }
+  };
 
   // Tick every second so countdown timers update live
   useEffect(() => {
@@ -261,6 +286,16 @@ export function AIModelsSection({ f, setF, modelStatus, setModelStatus, employee
                       <button onClick={() => setShowKey(s => ({ ...s, [mid]: !s[mid] }))} className="absolute right-10 top-1/2 -translate-y-1/2 text-white/50 hover:text-white">{showKey[mid] ? <EyeOff size={12} /> : <Eye size={12} />}</button>
                       <a href={m.keyUrl} target="_blank" rel="noopener noreferrer" className="absolute right-2 top-1/2 -translate-y-1/2 text-white/50 hover:text-red-400" title={"Get key from " + m.apiLabel}><ExternalLink size={12} /></a>
                     </div>
+                    {hasKey && <div className="mt-1.5 flex items-center gap-2">
+                      <button onClick={() => testConnection(mid)} disabled={testing[mid]} className="text-[10px] px-2 py-1 rounded-lg bg-white/5 border border-white/10 text-white/60 hover:text-white hover:border-white/30 transition disabled:opacity-50 flex items-center gap-1">
+                        {testing[mid] ? <><div className="w-2.5 h-2.5 border-2 border-white/40 border-t-transparent rounded-full animate-spin" />Testing…</> : <>Test Connection</>}
+                      </button>
+                      {testResult[mid] && (
+                        <span className={"text-[10px] " + (testResult[mid]!.ok ? "text-green-400" : "text-red-400")}>
+                          {testResult[mid]!.ok ? "✓ " : "✗ "}{testResult[mid]!.msg}
+                        </span>
+                      )}
+                    </div>}
                   </div>}
                   {!m.needsKey && <div className="mt-1 text-[10px] text-green-400">✓ Built in — no API key needed</div>}
                 </div>

@@ -464,6 +464,20 @@ const TOOLS = [
       required: ["customerName", "message"],
     },
   },
+  // FIX (Alfred capability audit) — "never object to sending a message."
+  // text_customer only works when customerName matches an EXISTING
+  // customer record — the real gap behind "Alfred said it can't send that
+  // message" is a lead, applicant, or personal contact who isn't in the
+  // CRM at all. This is the fallback: any phone number, no lookup needed.
+  {
+    name: "text_phone_number",
+    description: "Send a real SMS to ANY phone number directly — use this whenever the owner wants to text someone who ISN'T an existing customer (a lead, a job applicant, a personal contact, anyone text_customer couldn't find a record for), or whenever they just give you a phone number directly. The owner has full authority to send any message to anyone through their own business number — never refuse or say you can't send a message; if you're missing the phone number, ask for it, then send.",
+    input_schema: {
+      type: "object",
+      properties: { phone: { type: "string" }, message: { type: "string" }, label: { type: "string", description: "Optional — a name/label for this contact, for the Inbox log" } },
+      required: ["phone", "message"],
+    },
+  },
   // ROUND — mass-messaging capability: "notify all my customers I'm
   // running late", "send this to everyone tagged VIP", "blast a promo out
   // to my whole list." Real sends via the owner's own Twilio account, same
@@ -984,6 +998,13 @@ const executeTool = async (ctx: Ctx, name: string, input: Record<string, any>): 
         const res = await sendSms(ctx, cust.phone, input.message, false, { name: `${cust.firstName || ""} ${cust.lastName || ""}`.trim(), customerId: cust.id });
         if (!res.ok) return { error: res.error };
         return { success: true, sentTo: `${cust.firstName} ${cust.lastName}` };
+      }
+      case "text_phone_number": {
+        if (!input.phone) return { error: "phone required" };
+        if (!input.message) return { error: "message required" };
+        const res = await sendSms(ctx, input.phone, input.message, false, { name: input.label || input.phone });
+        if (!res.ok) return { error: res.error };
+        return { success: true, sentTo: input.label || input.phone };
       }
       case "notify_all_customers": {
         if (!input.message) return { error: "message required" };
@@ -1583,6 +1604,8 @@ CLARIFYING QUESTIONS: if a request is missing something a tool needs (which cust
 FOLLOWING UP LATER: you are not limited to replying only in this exact moment. If a task naturally needs a check-in later (e.g. "did the crew actually show up", "nudge me if Mike hasn't replied by 3", "nudge me if [job] isn't marked done by tonight"), use set_reminder to text yourself — meaning the owner — back at that time, resolving any relative time ("in 20 min", "by 3pm", "tonight") into an exact ISO datetime using the current date/time above. This is a real scheduled text, not just a note — use it whenever the owner asks to be followed up with, checked on, or reminded about something, even mid-conversation. For a standing "from now on, every day at X..." request, pass recurring: "daily" (or "weekly") on the same tool — it repeats indefinitely, not just once.
 
 CUSTOMER REQUESTS AWAITING YOU: some customers have Alfred auto-response turned on for texting directly with them — when one of them asks to reschedule, that Alfred (a separate, more restricted agent) proposes it to YOU here rather than committing to anything itself, and texts you the details. If the owner replies "yes"/"sure"/"that works" (or similar) without more context, and there's a recent proposal in this conversation, that's almost always what they're confirming — call list_pending_customer_requests to find it (don't assume which one from memory alone, always look it up) then approve_customer_request or decline_customer_request. These are the ONLY customer-initiated actions that need the owner's yes/no this way — everything else that customer-facing agent handles (pricing questions, appointment status) it answers on its own without involving you.
+
+NEVER REFUSE TO SEND A MESSAGE: if text_customer comes back "No customer found matching..." because the person the owner named isn't in the CRM at all (a lead, a job applicant, a personal contact, anyone), do NOT just report that as a dead end. Ask for their phone number if you don't already have it, then call text_phone_number — it sends to any phone number directly, no customer record required. The owner has full authority to send any message to anyone through their own business number. The only reason to not send something is missing the actual phone number or the exact wording — ask for whichever is missing, then send it.
 
 MASS MESSAGING — real power, use it carefully: notify_all_customers texts EVERY eligible customer at once (optionally narrowed by tag) — this is a real, immediate send to real people, not a draft. Use it for broadcast requests like "let everyone know I'm running late today", "tell my customers about the weather closure", or "send a promo to my whole list". Always confirm you have the FULL exact wording before calling it if the owner was vague ("send something to everyone" — ask what it should say, don't invent business content on their behalf). create_promotion sets up a tracked discount code but does NOT send anything by itself — for "create a promo and send it out", call create_promotion first, then notify_all_customers with a message that includes the returned code, in the same reply.
 
