@@ -1527,7 +1527,7 @@ export function App() {
   useEffect(() => {
     if (!hasCrmSession) return;
     const snapshot: Record<string, { viewed?: string; paid?: string; failed?: string; refunded?: string; disputed?: string; status?: string }> = {};
-    const newEvents: { id: string; text: string; at: number }[] = [];
+    const newEvents: { id: string; text: string; at: number; customerId?: string }[] = [];
     for (const e of estimates as any[]) {
       const cur = { viewed: e.clientViewedAt, paid: e.paidAt, failed: e.paymentFailedAt, refunded: e.refundedAt, disputed: e.disputedAt, status: e.status };
       snapshot[e.id] = cur;
@@ -1545,22 +1545,36 @@ export function App() {
       // stripe-webhook.ts now writes refundedAt/disputedAt for charge.refunded
       // and charge.dispute.created events (previously unhandled entirely —
       // neither was visible to the owner at all before this).
-      if (cur.disputed && cur.disputed !== prev.disputed) newEvents.push({ id: e.id + ":disputed", text: `🚨 DISPUTE opened by ${custName} on ${fmt(e.total)} — respond in your Stripe dashboard`, at: Date.now() });
-      else if (cur.refunded && cur.refunded !== prev.refunded) newEvents.push({ id: e.id + ":refunded", text: `↩️ ${fmt(e.total)} refunded to ${custName}`, at: Date.now() });
-      else if (cur.paid && !prev.paid) newEvents.push({ id: e.id + ":paid", text: `💰 ${custName} paid invoice ${fmt(e.total)}`, at: Date.now() });
-      else if (cur.failed && cur.failed !== prev.failed) newEvents.push({ id: e.id + ":failed", text: `⚠️ ${custName}'s payment failed on ${fmt(e.total)}`, at: Date.now() });
-      else if (cur.viewed && !prev.viewed) newEvents.push({ id: e.id + ":viewed", text: `👀 ${custName} opened ${(e as any).invoiced ? "invoice" : "estimate"} ${fmt(e.total)}`, at: Date.now() });
-      else if (cur.status === "rejected" && prev.status !== "rejected") newEvents.push({ id: e.id + ":rejected", text: `❌ ${custName} declined estimate ${fmt(e.total)}`, at: Date.now() });
+      if (cur.disputed && cur.disputed !== prev.disputed) newEvents.push({ id: e.id + ":disputed", text: `🚨 DISPUTE opened by ${custName} on ${fmt(e.total)} — respond in your Stripe dashboard`, at: Date.now(), customerId: e.customerId });
+      else if (cur.refunded && cur.refunded !== prev.refunded) newEvents.push({ id: e.id + ":refunded", text: `↩️ ${fmt(e.total)} refunded to ${custName}`, at: Date.now(), customerId: e.customerId });
+      else if (cur.paid && !prev.paid) newEvents.push({ id: e.id + ":paid", text: `💰 ${custName} paid invoice ${fmt(e.total)}`, at: Date.now(), customerId: e.customerId });
+      else if (cur.failed && cur.failed !== prev.failed) newEvents.push({ id: e.id + ":failed", text: `⚠️ ${custName}'s payment failed on ${fmt(e.total)}`, at: Date.now(), customerId: e.customerId });
+      else if (cur.viewed && !prev.viewed) newEvents.push({ id: e.id + ":viewed", text: `👀 ${custName} opened ${(e as any).invoiced ? "invoice" : "estimate"} ${fmt(e.total)}`, at: Date.now(), customerId: e.customerId });
+      else if (cur.status === "rejected" && prev.status !== "rejected") newEvents.push({ id: e.id + ":rejected", text: `❌ ${custName} declined estimate ${fmt(e.total)}`, at: Date.now(), customerId: e.customerId });
       // FIX 17 — accepting a quote previously only fired the toast the CLIENT's
       // own browser showed itself (worthless to the owner, a different
       // session entirely) — nothing told the owner a quote was accepted.
-      else if (cur.status === "approved" && prev.status !== "approved" && !(e as any).invoiced) newEvents.push({ id: e.id + ":approved", text: `✅ ${custName} accepted the quote for ${fmt(e.total)}`, at: Date.now() });
+      else if (cur.status === "approved" && prev.status !== "approved" && !(e as any).invoiced) newEvents.push({ id: e.id + ":approved", text: `✅ ${custName} accepted the quote for ${fmt(e.total)}`, at: Date.now(), customerId: e.customerId });
     }
     invoiceActivityRef.current = snapshot;
     if (!invoiceActivitySeededRef.current) { invoiceActivitySeededRef.current = true; return; }
     if (newEvents.length) {
       newEvents.forEach(ev => toast(ev.text, (ev.text.startsWith("⚠️") || ev.text.startsWith("❌")) ? "red" : "green"));
       setNotifications((prev: AppNotification[]) => [...newEvents.map(ev => ({ ...ev, read: false, category: "invoice" as const, page: "invoices" })), ...prev].slice(0, NOTIFICATIONS_CAP));
+      // FEATURE — "customer detail Timeline tab: ensure all events are
+      // logged and viewable." Timeline was entirely manual (only the
+      // owner's own typed notes) — every real invoice/estimate lifecycle
+      // event detected above now also lands on that customer's Timeline,
+      // reusing the exact same diff this effect already computes rather
+      // than adding a second, possibly-inconsistent tracking mechanism.
+      setTimeline((prev: Record<string, any[]>) => {
+        const next = { ...prev };
+        newEvents.forEach(ev => {
+          if (!ev.customerId) return;
+          next[ev.customerId] = [...(next[ev.customerId] || []), { id: uid(), type: "estimate", date: today(), note: ev.text, author: "System" }];
+        });
+        return next;
+      });
       // Email the owner too — a bell/toast only reaches them if the CRM tab is
       // open; accepted-quote and declined-quote are important enough to also
       // land in their inbox.
@@ -1671,7 +1685,7 @@ export function App() {
     if (!hasCrmSession) return;
     const empSnap: Record<string, number | null> = {};
     const jobSnap: Record<string, { status?: string; arrivedAt?: number }> = {};
-    const events: { id: string; text: string; at: number }[] = [];
+    const events: { id: string; text: string; at: number; customerId?: string }[] = [];
     const empName = (e: any) => `${e.firstName || ""} ${e.lastName || ""}`.trim() || "An employee";
     for (const e of employees as any[]) {
       const cur = e.dayClockInAt ?? null;
@@ -1702,7 +1716,7 @@ export function App() {
       const prev = crewActivityJobRef.current[j.id] || {};
       const cust = customers.find(x => x.id === j.customerId);
       const who = cust ? `${cust.firstName} ${cust.lastName}` : j.address;
-      if (cur.status === "completed" && prev.status && prev.status !== "completed") events.push({ id: j.id + ":done", text: `✅ Job completed — ${who}`, at: Date.now() });
+      if (cur.status === "completed" && prev.status && prev.status !== "completed") events.push({ id: j.id + ":done", text: `✅ Job completed — ${who}`, at: Date.now(), customerId: j.customerId });
       if (cur.arrivedAt && !prev.arrivedAt) {
         // FEATURE — arrival is tracked once per JOB (not per crew member),
         // so when a crew of several is assigned, one person tapping "I'm
@@ -1723,15 +1737,15 @@ export function App() {
           }
         }
         const text = `📍 ${crewLabel} arrived at ${who}${timingLabel}`;
-        events.push({ id: j.id + ":arrived", text, at: Date.now() });
+        events.push({ id: j.id + ":arrived", text, at: Date.now(), customerId: j.customerId });
         notifyDesktop(text);
       }
-      if (photoCount > (prev.photoCount ?? 0)) events.push({ id: j.id + ":photos:" + photoCount, text: `📸 ${photoCount - (prev.photoCount ?? 0)} new photo${photoCount - (prev.photoCount ?? 0) !== 1 ? "s" : ""} — ${who}`, at: Date.now() });
-      if (signed && !prev.signed) events.push({ id: j.id + ":signed", text: `✍️ Got customer sign-off — ${who}`, at: Date.now() });
+      if (photoCount > (prev.photoCount ?? 0)) events.push({ id: j.id + ":photos:" + photoCount, text: `📸 ${photoCount - (prev.photoCount ?? 0)} new photo${photoCount - (prev.photoCount ?? 0) !== 1 ? "s" : ""} — ${who}`, at: Date.now(), customerId: j.customerId });
+      if (signed && !prev.signed) events.push({ id: j.id + ":signed", text: `✍️ Got customer sign-off — ${who}`, at: Date.now(), customerId: j.customerId });
       if (issueCount > (prev.issueCount ?? 0)) {
         const latestNote = [...(j.commLog || [])].reverse().find((c: any) => typeof c.note === "string" && c.note.startsWith("🚨 ISSUE REPORTED"));
         const text = `🚨 Problem reported — ${who}`;
-        events.push({ id: j.id + ":issue:" + issueCount, text, at: Date.now() });
+        events.push({ id: j.id + ":issue:" + issueCount, text, at: Date.now(), customerId: j.customerId });
         // Desktop alert is the closest thing to "push" this single-page app can
         // do without a server (see notifyDesktop's own comment) — also fired
         // for shift start/end and arrival above, but this one gets the actual
@@ -1746,6 +1760,17 @@ export function App() {
     if (events.length) {
       events.forEach(ev => toast(ev.text, ev.text.startsWith("🚨") ? "red" : undefined));
       setNotifications((prev: AppNotification[]) => [...events.map(ev => ({ ...ev, read: false, category: (ev.text.startsWith("🚨") ? "issue" : "crew") as "issue" | "crew", page: "employees" })), ...prev].slice(0, NOTIFICATIONS_CAP));
+      // FEATURE — same Timeline auto-logging as the invoice-activity effect
+      // above, for the job-side events (completed/arrived/photos/signed/
+      // issue) this effect already detects.
+      setTimeline((prev: Record<string, any[]>) => {
+        const next = { ...prev };
+        events.forEach(ev => {
+          if (!ev.customerId) return;
+          next[ev.customerId] = [...(next[ev.customerId] || []), { id: uid(), type: "job", date: today(), note: ev.text, author: "System" }];
+        });
+        return next;
+      });
     }
   }, [employees, jobs, hasCrmSession]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -4134,7 +4159,7 @@ export function App() {
             <PageFade key={page} className={page === "alfred" || page === "inbox" ? "flex-1 min-h-0 flex flex-col" : ""}>
               <SafePage>
                 {page === "dashboard"      && <Dashboard jobs={jobs} setJobs={setJobs} customers={customers} estimates={estimates} setEstimates={setEstimates} automations={automations} stats={{ totalRev, activeJobs, pendingEst, closeRate, doneMonth }} goals={{ revenue: settings.monthlyRevenueGoal ?? 8000, jobCount: settings.monthlyJobsGoal ?? 20 }} vehicles={vehicles} maintenance={maintenance} chemicals={chemicals} settings={settings} setSettings={setSettings} onNav={setPage} toast={toast} weatherData={weatherData} weatherFetchError={weatherFetchError} inboxThreads={inboxThreads} employees={employees} crewFetchError={crewFetchError} reviews={reviews} onSendDailyBriefing={sendDailyBriefingNow} onViewJob={id => { setOpenJobId(id); setPage("jobs"); }} ownerId={crmUserId} />}
-                {page === "customers"      && <CustomersPage customers={customers} setCustomers={setCustomers} estimates={estimates} jobs={jobs} employees={employees} toast={toast} timeline={timeline} setTimeline={setTimeline} settings={settings} setSettings={setSettings} autoOpenNew={fabAutoOpenNew === "customers"} onAutoOpenNewConsumed={() => setFabAutoOpenNew(null)} highlightId={alfredHighlight?.type === "customer" ? alfredHighlight.id : null} pushUndo={pushUndo} markRecentlyDeleted={markRecentlyDeleted} unmarkRecentlyDeleted={unmarkRecentlyDeleted} />}
+                {page === "customers"      && <CustomersPage customers={customers} setCustomers={setCustomers} estimates={estimates} jobs={jobs} employees={employees} toast={toast} timeline={timeline} setTimeline={setTimeline} settings={settings} setSettings={setSettings} autoOpenNew={fabAutoOpenNew === "customers"} onAutoOpenNewConsumed={() => setFabAutoOpenNew(null)} highlightId={alfredHighlight?.type === "customer" ? alfredHighlight.id : null} pushUndo={pushUndo} markRecentlyDeleted={markRecentlyDeleted} unmarkRecentlyDeleted={unmarkRecentlyDeleted} onSpotlight={queueAlfredSpotlight} />}
                 {page === "estimates"      && <EstimatesPage estimates={estimates} setEstimates={setEstimates} customers={customers} services={services} settings={settings} toast={toast} onPortal={id => setPortalEstId(id)} estimateTemplates={estimateTemplates} setEstimateTemplates={setEstimateTemplates} setJobs={setJobs} onNav={setPage} autoOpenNew={fabAutoOpenNew === "estimates"} onAutoOpenNewConsumed={() => { setFabAutoOpenNew(null); setEstimatePresetCustomerId(null); }} presetCustomerId={estimatePresetCustomerId || ""} ownerId={crmUserId} highlightId={alfredHighlight?.type === "estimate" ? alfredHighlight.id : null} pushUndo={pushUndo} markRecentlyDeleted={markRecentlyDeleted} unmarkRecentlyDeleted={unmarkRecentlyDeleted} />}
                 {page === "invoices"       && <InvoicesPage estimates={estimates} setEstimates={setEstimates} customers={customers} settings={settings} toast={toast} jobs={jobs} setJobs={setJobs} ownerId={crmUserId} highlightId={alfredHighlight?.type === "invoice" ? alfredHighlight.id : null} pushUndo={pushUndo} markRecentlyDeleted={markRecentlyDeleted} unmarkRecentlyDeleted={unmarkRecentlyDeleted} />}
                 {page === "jobs"           && <JobsPage jobs={jobs} setJobs={setJobs} customers={customers} setCustomers={setCustomers} employees={employees} estimates={estimates} setEstimates={setEstimates} settings={settings} setSettings={setSettings} toast={toast} posts={socialPosts} setPosts={setSocialPosts} setTimeline={setTimeline} initialDetailId={openJobId} onInitialDetailIdConsumed={() => setOpenJobId(null)} onPortal={id => setPortalEstId(id)} ownerId={crmUserId} autoOpenNew={fabAutoOpenNew === "jobs"} onAutoOpenNewConsumed={() => setFabAutoOpenNew(null)} highlightId={alfredHighlight?.type === "job" ? alfredHighlight.id : null} pushUndo={pushUndo} markRecentlyDeleted={markRecentlyDeleted} unmarkRecentlyDeleted={unmarkRecentlyDeleted} />}

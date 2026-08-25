@@ -91,6 +91,10 @@ export function PipelinePage({ jobs = [], setJobs, customers = [], toast }) {
   const [lostJob, setLostJob] = useState(null);
   const [lostReason, setLostReason] = useState("Price too high");
   const [priorityFilter, setPriorityFilter] = useState("all");
+  // FEATURE — "add ability to switch between Jobs view (progress through
+  // pipeline stages) and Customer view (lifetime metrics)." Jobs view is
+  // the existing kanban board, unchanged; Customer view is new, below.
+  const [viewMode, setViewMode] = useState<"jobs" | "customers">("jobs");
   const [timeframe, setTimeframe] = useState("all");
   // FEATURE 6 (mobile round 7) — was a hardcoded constant with no way for the
   // owner to tune it; now an editable, persisted-per-device setting.
@@ -161,6 +165,11 @@ export function PipelinePage({ jobs = [], setJobs, customers = [], toast }) {
       {/* Controls row */}
       <div className="flex items-center gap-3 flex-wrap justify-between">
         <div className="flex items-center gap-3 flex-wrap">
+          <div className="flex gap-1 p-1 bg-black/40 border border-white/10 rounded-xl">
+            {(["jobs", "customers"] as const).map(v => (
+              <button key={v} onClick={() => setViewMode(v)} className={"px-3 py-1.5 rounded-lg text-xs font-medium transition capitalize " + (viewMode === v ? "bg-red-700/40 text-white border border-red-700/50" : "text-white/50")}>{v === "jobs" ? "📋 Jobs View" : "👥 Customer View"}</button>
+            ))}
+          </div>
           <TimeframeSelector value={timeframe} onChange={setTimeframe} options={["7d","30d","90d","6m","1y","all"]} />
           <div className="flex gap-1 items-center">
             <span className="text-xs text-white/40">Priority:</span>
@@ -176,6 +185,7 @@ export function PipelinePage({ jobs = [], setJobs, customers = [], toast }) {
         </div>
       </div>
 
+      {viewMode === "jobs" && <>
       {/* Bottleneck & health bar */}
       {bottleneck.avg >= bottleneckThreshold && (
         <Glass className="p-4 !bg-yellow-950/20 !border-yellow-700/40">
@@ -378,6 +388,51 @@ export function PipelinePage({ jobs = [], setJobs, customers = [], toast }) {
           })}
         </div>
       </PipelineScrollContainer>
+      </>}
+
+      {/* FEATURE — Customer view: lifetime metrics (total paid, job count,
+          current pipeline stage if they have an active job), auto-updates
+          the same way Jobs view does since it reads straight from the live
+          customers/jobs props — no separate data path to fall out of sync. */}
+      {viewMode === "customers" && (() => {
+        const rows = customers.map((c: any) => {
+          const custJobs = jobs.filter((j: any) => j.customerId === c.id);
+          const activeJob = custJobs
+            .filter((j: any) => effStage(j) !== "paid" && effStage(j) !== "lost")
+            .sort((a: any, b: any) => (b.stageChangedAt || b.scheduledDate || "").localeCompare(a.stageChangedAt || a.scheduledDate || ""))[0];
+          const lastActivity = custJobs.map((j: any) => j.stageChangedAt || j.scheduledDate).filter(Boolean).sort().slice(-1)[0];
+          return { customer: c, jobCount: custJobs.length, totalSpent: Number(c.totalSpent) || 0, activeStage: activeJob ? effStage(activeJob) : null, lastActivity };
+        }).sort((a, b) => b.totalSpent - a.totalSpent);
+        return (
+          <Glass className="p-0 overflow-hidden">
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-white/10 text-left text-[10px] text-white/40 uppercase tracking-wider">
+                    <th className="py-2.5 px-4">Customer</th>
+                    <th className="py-2.5 px-4 text-right">Lifetime Value</th>
+                    <th className="py-2.5 px-4 text-center">Jobs</th>
+                    <th className="py-2.5 px-4">Current Stage</th>
+                    <th className="py-2.5 px-4">Last Activity</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map(r => (
+                    <tr key={r.customer.id} className="border-b border-white/5 hover:bg-white/5">
+                      <td className="py-2.5 px-4 font-medium">{r.customer.firstName} {r.customer.lastName}</td>
+                      <td className="py-2.5 px-4 text-right text-red-400 font-semibold">{fmt(r.totalSpent)}</td>
+                      <td className="py-2.5 px-4 text-center text-white/60">{r.jobCount}</td>
+                      <td className="py-2.5 px-4">{r.activeStage ? <Badge tone="orange">{pipelineStages.find(s => s.key === r.activeStage)?.label || r.activeStage}</Badge> : <span className="text-white/30 text-xs">—</span>}</td>
+                      <td className="py-2.5 px-4 text-white/50 text-xs">{r.lastActivity || "—"}</td>
+                    </tr>
+                  ))}
+                  {rows.length === 0 && <tr><td colSpan={5} className="py-8 text-center text-white/40 text-sm">No customers yet</td></tr>}
+                </tbody>
+              </table>
+            </div>
+          </Glass>
+        );
+      })()}
 
       <Modal open={!!lostJob} onClose={() => setLostJob(null)} title="Why lost?">
         <div className="space-y-3">

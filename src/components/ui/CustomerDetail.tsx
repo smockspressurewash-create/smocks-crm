@@ -48,7 +48,7 @@ import { listCustomerPaymentMethods, detachPaymentMethod, StripeSavedCard } from
 import { SaveCardModal } from "./SaveCardModal";
 import { useIsMobile } from "../../hooks/useIsMobile";
 
-export function CustomerDetail({ customer: c, onClose, onDelete, onEdit, estimates = [], jobs = [], employees = [], timeline = {}, setTimeline = (..._args: any[]) => {}, settings = {} as any, toast = (..._args: any[]) => {}, setCustomers = (..._args: any[]) => {} }) {
+export function CustomerDetail({ customer: c, onClose, onDelete, onEdit, estimates = [], jobs = [], employees = [], timeline = {}, setTimeline = (..._args: any[]) => {}, settings = {} as any, toast = (..._args: any[]) => {}, setCustomers = (..._args: any[]) => {}, onOpenEstimate = (_id: string, _label?: string) => {} }) {
   const [tab, setTab] = useState("info");
   const [note, setNote] = useState("");
   const [noteType, setNoteType] = useState("note");
@@ -480,7 +480,43 @@ export function CustomerDetail({ customer: c, onClose, onDelete, onEdit, estimat
               }} className="flex flex-col items-center gap-1 p-3 bg-purple-950/20 border border-purple-700/30 rounded-xl hover:bg-purple-950/40 transition text-xs text-purple-300"><Mail size={16} />Email</button>
             </div>
           </div>}
-          {tab === "estimates" && <div className="space-y-2">{ce.length ? ce.map(e => <div key={e.id} className="flex items-center justify-between p-3 rounded-xl bg-white/5 border border-white/5"><div><div className="text-sm font-medium">#{e.id.toUpperCase()}</div><div className="text-xs text-white/50">{e.createdAt}</div></div><div className="flex items-center gap-3"><Badge tone={e.status === "approved" ? "green" : "yellow"}>{e.status}</Badge><span className="font-semibold text-red-400">{fmt(e.total)}</span></div></div>) : <div className="text-center py-6 text-white/40 text-sm">None</div>}</div>}
+          {/* BUG FIX — this used to be a plain, unclickable div: id/date/
+              status/total only, no way to open, edit, send, or track
+              progress on the actual estimate/invoice. onOpenEstimate
+              (wired from CustomersPage) closes this modal and navigates to
+              Estimates/Invoices with the row glowed, the same "spotlight"
+              pattern Alfred's own navigation already uses. */}
+          {tab === "estimates" && <div className="space-y-2">{ce.length ? ce.map(e => {
+            const progressSteps = [
+              { label: "Sent", done: true },
+              { label: "Viewed", done: !!e.clientViewedAt },
+              { label: e.invoiced ? "Approved" : "Signed", done: e.status === "approved" || !!e.invoiced },
+              { label: e.invoiced ? "Paid" : "Invoiced", done: e.invoiced ? !!e.paidAt : false },
+            ];
+            return (
+              <button key={e.id} onClick={() => onOpenEstimate(e.id, `#${e.id.toUpperCase()}`)} className="w-full text-left p-3 rounded-xl bg-white/5 border border-white/5 hover:bg-white/10 hover:border-red-700/30 transition">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <div className="text-sm font-medium">#{e.id.toUpperCase()}{e.invoiced ? " · Invoice" : " · Quote"}</div>
+                    <div className="text-xs text-white/50">{e.createdAt}</div>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <Badge tone={e.status === "approved" ? "green" : e.status === "rejected" ? "red" : "yellow"}>{e.status}</Badge>
+                    <span className="font-semibold text-red-400">{fmt(e.total)}</span>
+                    <ChevronRight size={14} className="text-white/30" />
+                  </div>
+                </div>
+                <div className="flex items-center gap-1.5 mt-2">
+                  {progressSteps.map((s, i) => (
+                    <React.Fragment key={s.label}>
+                      {i > 0 && <div className={"h-px flex-1 " + (s.done ? "bg-green-600/50" : "bg-white/10")} />}
+                      <span className={"text-[9px] px-1.5 py-0.5 rounded-full " + (s.done ? "bg-green-950/40 text-green-300" : "bg-white/5 text-white/30")}>{s.label}</span>
+                    </React.Fragment>
+                  ))}
+                </div>
+              </button>
+            );
+          }) : <div className="text-center py-6 text-white/40 text-sm">None</div>}</div>}
           {/* ITEM 9 — this was a plain, unclickable div: address/date/status/
               amount only, no way to see checklist/photos/signature/crew —
               exactly the reported gap. Now shares the same expand-to-see-
