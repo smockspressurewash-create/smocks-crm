@@ -1253,6 +1253,23 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           });
           return { count: overdue.length, overdue };
         }
+        // FEATURE — "Hey Alfred, create goals for me." Two shapes, matching
+        // the existing /goal slash command's own split: a NUMERIC target
+        // (revenue/job-count style, tracked on Dashboard) sets
+        // settings.monthlyRevenueGoal directly; anything else is logged as a
+        // plain checklist-style goal in Accountability. Supports creating
+        // several goals in one request — the model can call this multiple
+        // times in the same turn.
+        case "create_goal": {
+          if (!inputs.text?.trim()) return { error: "text is required — what is the goal?" };
+          if (inputs.type === "revenue" && Number(inputs.targetAmount) > 0) {
+            setSettings((s: any) => ({ ...s, monthlyRevenueGoal: Number(inputs.targetAmount) }));
+            return { success: true, kind: "revenue", target: Number(inputs.targetAmount) };
+          }
+          const newGoal = { id: uid(), text: inputs.text.trim(), createdAt: today(), done: false };
+          setGoals([...(goals || []), newGoal]);
+          return { success: true, kind: "checklist", goal: newGoal };
+        }
         case "create_customer": {
           if (!inputs.firstName || !inputs.lastName) return { error: "firstName and lastName required" };
           // A retried/second "create this customer" request (e.g. the model
@@ -2488,6 +2505,11 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
       name: "list_overdue_invoices",
       description: "List invoices that are more than 14 days past due.",
       input_schema: { type: "object", properties: {} }
+    },
+    {
+      name: "create_goal",
+      description: "Create a goal for the owner. Use type: \"revenue\" with targetAmount for a monthly revenue/dollar target (shown on Dashboard progress) — otherwise it's logged as a plain checklist-style goal in Accountability. If the owner just says \"create goals for me\" with no specifics, ask what they want to hit before inventing numbers, unless they've stated clear targets already in this conversation.",
+      input_schema: { type: "object", properties: { text: { type: "string", description: "The goal itself, in plain words" }, type: { type: "string", enum: ["checklist", "revenue"] }, targetAmount: { type: "number", description: "Required when type is revenue" } }, required: ["text"] }
     },
     {
       name: "create_customer",

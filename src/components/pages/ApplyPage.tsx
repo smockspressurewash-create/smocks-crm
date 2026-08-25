@@ -13,7 +13,7 @@ function hashParam(key: string): string {
   return new URLSearchParams(q).get(key) || "";
 }
 
-type Question = { id: string; type: "text" | "choice" | "file"; label: string; options?: string[] };
+type Question = { id: string; type: "text" | "choice" | "file"; label: string; options?: string[]; required?: boolean };
 
 const fileToBase64 = (file: File): Promise<{ base64: string; contentType: string; fileName: string }> =>
   new Promise((resolve, reject) => {
@@ -31,7 +31,7 @@ export function ApplyPage() {
   const ownerId = hashParam("oid");
   const companyName = decodeURIComponent(hashParam("co") || "") || "our team";
 
-  const [f, setF] = useState({ firstName: "", lastName: "", email: "", phone: "", notes: "" });
+  const [f, setF] = useState({ firstName: "", lastName: "", email: "", phone: "", notes: "", strengths: "", weaknesses: "" });
   const [questions, setQuestions] = useState<Question[]>([]);
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const [resumeFile, setResumeFile] = useState<File | null>(null);
@@ -55,12 +55,17 @@ export function ApplyPage() {
   const handleSubmit = async () => {
     if (!f.firstName.trim() || !f.phone.trim()) return;
     if (!ownerId) { setError("This link isn't set up correctly — please contact us directly instead."); return; }
+    // FEATURE — enforce the owner's required/optional choice per question
+    // (Settings → Hiring → Application Questions). Previously every custom
+    // question was effectively optional no matter how it was marked.
+    const missingRequired = questions.find(q => q.required !== false && q.type !== "file" && !(answers[q.id] || "").trim());
+    if (missingRequired) { setError(`Please answer: "${missingRequired.label}"`); return; }
     setSubmitting(true);
     setError("");
     try {
       const payload: any = {
         action: "submit_job_application", ownerId,
-        candidate: { id: uid(), firstName: f.firstName.trim(), lastName: f.lastName.trim(), email: f.email.trim(), phone: f.phone.trim(), notes: f.notes.trim(), source: "Apply Link", phase: "Applied", sortOrder: Date.now(), answers },
+        candidate: { id: uid(), firstName: f.firstName.trim(), lastName: f.lastName.trim(), email: f.email.trim(), phone: f.phone.trim(), notes: f.notes.trim(), strengths: f.strengths.trim(), weaknesses: f.weaknesses.trim(), source: "Apply Link", phase: "Applied", sortOrder: Date.now(), answers },
       };
       if (resumeFile) {
         const { base64, contentType, fileName } = await fileToBase64(resumeFile);
@@ -123,6 +128,16 @@ export function ApplyPage() {
           <label className="text-xs text-white/60 mb-1 block">Tell us about your experience</label>
           <textarea rows={4} value={f.notes} onChange={e => setF({ ...f, notes: e.target.value })} placeholder="Prior work experience, availability, why you'd be a good fit..." className={fieldClass + " resize-none"} />
         </div>
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className="text-xs text-white/60 mb-1 block">Your strengths</label>
+            <textarea rows={3} value={f.strengths} onChange={e => setF({ ...f, strengths: e.target.value })} placeholder="What are you great at?" className={fieldClass + " resize-none"} />
+          </div>
+          <div>
+            <label className="text-xs text-white/60 mb-1 block">Areas to improve</label>
+            <textarea rows={3} value={f.weaknesses} onChange={e => setF({ ...f, weaknesses: e.target.value })} placeholder="What's something you're working on?" className={fieldClass + " resize-none"} />
+          </div>
+        </div>
 
         {/* FEATURE — resume/photo attachments, uploaded to the same
             per-owner storage staging area Alfred's inbound files use. */}
@@ -148,7 +163,7 @@ export function ApplyPage() {
           <div className="space-y-4 pt-2 border-t border-white/10">
             {questions.map(q => (
               <div key={q.id}>
-                <label className="text-xs text-white/60 mb-1 block">{q.label}</label>
+                <label className="text-xs text-white/60 mb-1 block">{q.label}{q.required === false ? <span className="text-white/30 font-normal"> (optional)</span> : <span className="text-red-400"> *</span>}</label>
                 {q.type === "choice" ? (
                   <select value={answers[q.id] || ""} onChange={e => setAnswers(a => ({ ...a, [q.id]: e.target.value }))} className={fieldClass}>
                     <option value="" className="bg-black">Select…</option>

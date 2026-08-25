@@ -8,7 +8,8 @@ import { GSel } from "../ui/GSel";
 import { Modal } from "../ui/Modal";
 import { Badge } from "../ui/Badge";
 import { supabase } from "../../lib/supabase";
-import { uid, withTimeout } from "../../lib/utils";
+import { uid, withTimeout, today } from "../../lib/utils";
+import { twilioSend, sendEmail } from "../../lib/messaging";
 import { useIsMobile } from "../../hooks/useIsMobile";
 import type { AppSettings } from "../../types";
 
@@ -91,12 +92,58 @@ export function HiringPage({ settings = {} as AppSettings, setSettings, toast, o
     }
   };
 
+  // FEATURE — "when the owner moves a candidate to [the last stage of] the
+  // hiring process, show a pop-up asking if they want to send the full
+  // onboarding process, then provide the person with a login to the
+  // employee portal and a link." The last phase in the board (owner-
+  // renamable, but "Hired" by default) is treated as that finish line.
+  const [hireConfirm, setHireConfirm] = useState<any>(null);
+  const [hireInviteResult, setHireInviteResult] = useState<{ code: string; email: string; firstName: string; phone: string } | null>(null);
+  const [hireSending, setHireSending] = useState<"email" | "sms" | null>(null);
+  const portalUrl = `${window.location.origin}${window.location.pathname}#/portal`;
+  const onboardingTemplateItems: { id: string; title: string; description?: string }[] = (settings as any)?.onboardingTemplateItems || [];
+
   const moveCandidate = (id: string, phase: string) => {
     setCandidates(prev => prev.map(c => c.id === id ? { ...c, phase } : c));
     (supabase as any).from("candidates").update({ phase }).eq("id", id)
       .then((r: any) => { if (r?.error) toast?.("Failed to move candidate — " + r.error.message, "red"); })
       .catch((e: any) => toast?.("Failed to move candidate — " + (e?.message || "unknown error"), "red"));
+    if (phase === phases[phases.length - 1]) {
+      const cand = candidates.find(c => c.id === id);
+      if (cand) setHireConfirm(cand);
+    }
   };
+
+  const hireCandidate = async (cand: any) => {
+    if (!cand.email?.trim()) { toast?.("This candidate has no email on file — add one before sending a portal invite", "yellow"); setHireConfirm(null); return; }
+    const code = (Math.random().toString(36).substring(2, 10) + Date.now().toString(36)).toUpperCase();
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      await (supabase as any).from("invites").insert({
+        code, employee_name: `${cand.firstName} ${cand.lastName || ""}`.trim(), employee_email: cand.email,
+        role: "Technician", hourly_rate: 18, created_by: user?.id ?? null, owner_id: ownerId,
+      });
+      const newEmployeeId = uid();
+      const preCreated = {
+        id: newEmployeeId, firstName: cand.firstName, lastName: cand.lastName || "", email: cand.email,
+        role: "Technician", hourlyRate: 18, status: "active", phone: cand.phone || "",
+        startDate: today(), emergencyContact: "", notes: "Hired from candidate pipeline — account pending",
+        isNewHire: true, owner_id: ownerId,
+      };
+      await (supabase as any).from("employees").insert(preCreated);
+      if (onboardingTemplateItems.length > 0) {
+        const items = onboardingTemplateItems.map(t => ({ id: t.id, title: t.title, description: t.description, done: false, completedAt: null }));
+        await (supabase as any).from("employee_onboarding").upsert({ id: uid(), owner_id: ownerId, employee_id: newEmployeeId, items }, { onConflict: "employee_id" }).catch(() => {});
+      }
+      setHireInviteResult({ code, email: cand.email, firstName: cand.firstName, phone: cand.phone || "" });
+      toast?.(`${cand.firstName} added to the team — portal invite ready`, "green");
+    } catch (e: any) {
+      toast?.("Failed to create portal invite — " + (e?.message || "unknown error"), "red");
+    } finally {
+      setHireConfirm(null);
+    }
+  };
+  const hireInviteLink = (code: string) => `${portalUrl}?invite=${code}`;
 
   const deleteCandidate = (id: string) => {
     if (!window.confirm("Delete this candidate? This can't be undone.")) return;
@@ -272,6 +319,14 @@ export function HiringPage({ settings = {} as AppSettings, setSettings, toast, o
                   <Badge tone="gray">{q.type === "choice" ? "Multiple choice" : q.type === "file" ? "File upload" : "Text"}</Badge>
                   <button onClick={() => setQuestionDraft(prev => prev.filter((_, idx) => idx !== i))} className="p-1.5 text-red-400/60 hover:text-red-400"><Trash2 size={14} /></button>
                 </div>
+                {/* FEATURE — "toggle so new questions can be mandatory or
+                    optional." Defaults to required (matches how every
+                    existing question already behaves) so nothing changes
+                    for questions saved before this existed. */}
+                <label className="flex items-center gap-2 cursor-pointer pl-1">
+                  <input type="checkbox" checked={q.required !== false} onChange={(e: any) => setQuestionDraft(prev => prev.map((x, idx) => idx === i ? { ...x, required: e.target.checked } : x))} className="w-3.5 h-3.5 accent-red-600" />
+                  <span className="text-[11px] text-white/50">{q.required !== false ? "Required" : "Optional"}</span>
+                </label>
                 {q.type === "choice" && (
                   <div className="space-y-1.5 pl-2">
                     {(q.options || []).map((opt: string, oi: number) => (
@@ -299,10 +354,76 @@ export function HiringPage({ settings = {} as AppSettings, setSettings, toast, o
         </div>
       </Modal>
 
+      {/* Move-to-final-stage confirmation — offer the onboarding + portal
+          invite instead of silently just moving the card. */}
+      <Modal open={!!hireConfirm} onClose={() => setHireConfirm(null)} title="Send Onboarding?" maxW="max-w-sm">
+        {hireConfirm && (
+          <div className="space-y-3">
+            <div className="text-sm text-white/70">
+              {hireConfirm.firstName} is now in <strong>{phases[phases.length - 1]}</strong>. Send them the full onboarding process{onboardingTemplateItems.length > 0 ? ` (${onboardingTemplateItems.length}-item checklist)` : ""} and a login link to the employee portal?
+            </div>
+            {!hireConfirm.email?.trim() && <div className="text-[11px] text-yellow-300 bg-yellow-950/20 border border-yellow-700/30 rounded-lg px-2.5 py-1.5">No email on file for this candidate — add one on their card first, or skip for now.</div>}
+            <div className="flex gap-2 justify-end pt-1">
+              <GBtn variant="ghost" onClick={() => setHireConfirm(null)}>Not Now</GBtn>
+              <GBtn onClick={() => hireCandidate(hireConfirm)}>Yes, Send It</GBtn>
+            </div>
+          </div>
+        )}
+      </Modal>
+
+      {/* Portal invite created — same link/copy/text/email pattern as
+          EmployeesPage.tsx's own invite flow. */}
+      <Modal open={!!hireInviteResult} onClose={() => setHireInviteResult(null)} title="Portal Invite Ready" maxW="max-w-md">
+        {hireInviteResult && (
+          <div className="space-y-4">
+            <div className="p-3 rounded-xl bg-green-950/30 border border-green-700/30 text-sm text-green-300">{hireInviteResult.firstName} was added to the team. Share this link so they can create their account:</div>
+            <div className="flex items-center gap-2">
+              <div className="flex-1 px-3 py-2 bg-black/50 border border-white/10 rounded-xl text-xs font-mono text-white/60 truncate">{hireInviteLink(hireInviteResult.code)}</div>
+              <button onClick={() => navigator.clipboard.writeText(hireInviteLink(hireInviteResult.code))} className="px-3 py-2 bg-blue-900/40 border border-blue-700/40 text-blue-300 text-xs rounded-xl hover:bg-blue-800/40 transition flex items-center gap-1"><Copy size={11} />Copy</button>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={async () => {
+                  setHireSending("email");
+                  try {
+                    await sendEmail(settings, { to: hireInviteResult.email, subject: `You're hired — welcome to ${(settings as any)?.companyName || "the team"}!`, body: `<p>Hi ${hireInviteResult.firstName},</p><p>Welcome aboard! Click below to create your account and get started.</p><p><a href="${hireInviteLink(hireInviteResult.code)}" style="display:inline-block;padding:12px 24px;background:#dc2626;color:#fff;border-radius:8px;text-decoration:none;font-weight:600;">Create Your Account</a></p>` });
+                    toast?.("Invite emailed ✓", "green");
+                  } catch (e: any) { toast?.("Couldn't send email — " + (e?.message || "unknown error"), "red"); }
+                  finally { setHireSending(null); }
+                }}
+                disabled={hireSending === "email"}
+                className="flex-1 px-3 py-1.5 bg-black/40 border border-white/10 text-white/60 hover:text-white text-[11px] rounded-lg transition disabled:opacity-50"
+              >{hireSending === "email" ? "Sending…" : "✉ Email Invite"}</button>
+              <button
+                onClick={async () => {
+                  if (!hireInviteResult.phone) { toast?.("No phone number on file for this candidate", "yellow"); return; }
+                  if (!settings?.twilioSid) { toast?.("Connect Twilio in Settings to text invite links", "yellow"); return; }
+                  setHireSending("sms");
+                  try {
+                    await twilioSend(settings, hireInviteResult.phone, `Welcome to ${(settings as any)?.companyName || "the team"}! Create your account: ${hireInviteLink(hireInviteResult.code)}`);
+                    toast?.("Invite texted ✓", "green");
+                  } catch (e: any) { toast?.("Couldn't send text — " + (e?.message || "unknown error"), "red"); }
+                  finally { setHireSending(null); }
+                }}
+                disabled={hireSending === "sms"}
+                className="flex-1 px-3 py-1.5 bg-black/40 border border-white/10 text-white/60 hover:text-white text-[11px] rounded-lg transition disabled:opacity-50"
+              >{hireSending === "sms" ? "Sending…" : "💬 Text Invite"}</button>
+            </div>
+            <div className="flex justify-end pt-1"><GBtn onClick={() => setHireInviteResult(null)}>Done</GBtn></div>
+          </div>
+        )}
+      </Modal>
+
       {/* Candidate answers detail */}
       <Modal open={!!candidateDetailOpen} onClose={() => setCandidateDetailOpen(null)} title={candidateDetailOpen ? `${candidateDetailOpen.firstName} ${candidateDetailOpen.lastName || ""} — Answers` : "Answers"}>
         {candidateDetailOpen && (
           <div className="space-y-3">
+            {(candidateDetailOpen.strengths || candidateDetailOpen.weaknesses) && (
+              <div className="grid grid-cols-2 gap-3 pb-2 border-b border-white/10">
+                <div><div className="text-xs text-white/40 mb-0.5">Strengths</div><div className="text-sm">{candidateDetailOpen.strengths || "—"}</div></div>
+                <div><div className="text-xs text-white/40 mb-0.5">Areas to improve</div><div className="text-sm">{candidateDetailOpen.weaknesses || "—"}</div></div>
+              </div>
+            )}
             {Object.entries(candidateDetailOpen.answers || {}).map(([qid, val]: [string, any]) => {
               const q = questions.find(x => x.id === qid);
               return <div key={qid}><div className="text-xs text-white/40 mb-0.5">{q?.label || qid}</div><div className="text-sm">{String(val) || "—"}</div></div>;

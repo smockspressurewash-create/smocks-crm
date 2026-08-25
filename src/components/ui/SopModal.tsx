@@ -23,7 +23,7 @@ interface SopDoc {
   checklist?: { id: string; text: string; done?: boolean }[];
 }
 
-export function SopModal({ open, onClose, editable = false, ownerId = "", employees = [], currentEmployeeId = "" }: { open: boolean; onClose: () => void; editable?: boolean; ownerId?: string; employees?: { id: string; firstName?: string; lastName?: string }[]; currentEmployeeId?: string }) {
+export function SopModal({ open, onClose, editable = false, ownerId = "", employees = [], currentEmployeeId = "", toast = (() => {}) as any }: { open: boolean; onClose: () => void; editable?: boolean; ownerId?: string; employees?: { id: string; firstName?: string; lastName?: string }[]; currentEmployeeId?: string; toast?: any }) {
   const [docs, setDocs] = useState<SopDoc[]>([]);
   const [loading, setLoading] = useState(false);
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -35,8 +35,11 @@ export function SopModal({ open, onClose, editable = false, ownerId = "", employ
     (supabase as any).from("sop_documents").select("*").order("updated_at", { ascending: false })
       .then((r: any) => {
         if (!r?.error && Array.isArray(r.data)) {
+          // FEATURE — "automatically display a blank area with a Create SOP
+          // button" on open, rather than auto-jumping into whichever SOP
+          // happened to be updated most recently. Every other SOP is still
+          // one click away in the list beside it.
           setDocs(r.data);
-          if (r.data.length > 0 && !activeId) setActiveId(r.data[0].id);
         } else if (r?.error) {
           console.warn("[SOP] load failed:", r.error.message);
         }
@@ -70,10 +73,17 @@ export function SopModal({ open, onClose, editable = false, ownerId = "", employ
     setDocs(prev => isNew ? [record, ...prev] : prev.map(d => d.id === record.id ? record : d));
     setActiveId(record.id);
     setEditing(null);
+    // BUG FIX — "ensure SOPs are saved properly." This never checked for a
+    // 0-row RLS match (sop_documents is now owner_id-scoped) and never told
+    // the owner anything either way — a save could silently fail and the
+    // owner would only find out on their next visit that it never stuck.
+    // .select("id") + a real toast make both directions visible.
     const res = isNew
-      ? await (supabase as any).from("sop_documents").insert({ ...record, owner_id: ownerId })
-      : await (supabase as any).from("sop_documents").update({ title: record.title, kind: record.kind, content: record.content, file_url: record.file_url, frequency: record.frequency, assignedEmployeeIds: record.assignedEmployeeIds, checklist: record.checklist, updated_at: nowIso }).eq("id", record.id);
-    if (res?.error) console.error("[SOP] save failed:", res.error.message);
+      ? await (supabase as any).from("sop_documents").insert({ ...record, owner_id: ownerId }).select("id")
+      : await (supabase as any).from("sop_documents").update({ title: record.title, kind: record.kind, content: record.content, file_url: record.file_url, frequency: record.frequency, assignedEmployeeIds: record.assignedEmployeeIds, checklist: record.checklist, updated_at: nowIso }).eq("id", record.id).select("id");
+    if (res?.error) { console.error("[SOP] save failed:", res.error.message); toast?.("Saved locally, but failed to sync — " + res.error.message, "red"); return; }
+    if (!Array.isArray(res?.data) || res.data.length === 0) { toast?.("Saved locally, but the server didn't confirm the save — try again or refresh to check", "red"); return; }
+    toast?.("SOP saved ✓", "green");
   };
 
   const addChecklistItem = () => setEditing(prev => prev ? { ...prev, checklist: [...(prev.checklist || []), { id: uid(), text: "", done: false }] } : prev);
@@ -90,7 +100,8 @@ export function SopModal({ open, onClose, editable = false, ownerId = "", employ
     setDocs(prev => prev.filter(d => d.id !== id));
     if (activeId === id) setActiveId(null);
     const res = await (supabase as any).from("sop_documents").delete().eq("id", id);
-    if (res?.error) console.error("[SOP] delete failed:", res.error.message);
+    if (res?.error) { console.error("[SOP] delete failed:", res.error.message); toast?.("Deleted locally, but failed to delete from server — " + res.error.message, "red"); }
+    else toast?.("SOP deleted", "green");
   };
 
   const handlePdfUpload = (file: File) => {
@@ -109,7 +120,7 @@ export function SopModal({ open, onClose, editable = false, ownerId = "", employ
         <div className="flex items-center justify-between px-4 py-3 border-b border-white/10 bg-gradient-to-r from-red-600 to-red-800 flex-shrink-0">
           <div className="font-bold text-white flex items-center gap-2"><BookOpen size={16} />SOPs & Instructions</div>
           <div className="flex items-center gap-2">
-            {editable && <button onClick={() => setEditing({ id: uid(), title: "", kind: "markdown", content: "" })} className="p-2 rounded-lg bg-white/15 hover:bg-white/25 text-white transition" title="New SOP"><Plus size={18} /></button>}
+            {editable && <button onClick={() => setEditing({ id: uid(), title: "", kind: "markdown", content: "" })} className="px-3 py-2 rounded-lg bg-white/15 hover:bg-white/25 text-white text-xs font-semibold transition flex items-center gap-1.5" title="Create SOP"><Plus size={14} />Create SOP</button>}
             <button onClick={onClose} className="p-2 rounded-lg hover:bg-white/15 text-white transition"><X size={18} /></button>
           </div>
         </div>
@@ -195,7 +206,19 @@ export function SopModal({ open, onClose, editable = false, ownerId = "", employ
             </div>
             <div className="flex-1 min-h-0 overflow-y-auto p-4">
               {!active ? (
-                <div className="text-center text-white/30 text-sm py-12">Select a document</div>
+                // FEATURE — "automatically display a blank area with a
+                // 'Create SOP' button" instead of a bare "Select a document"
+                // placeholder that gave no obvious next step, especially the
+                // very first time (zero SOPs yet, nothing to select at all).
+                <div className="text-center text-white/30 text-sm py-12 flex flex-col items-center gap-3">
+                  <BookOpen size={32} className="text-white/15" />
+                  <div>{visibleDocs.length === 0 ? "No SOPs yet." : "Select a document from the list."}</div>
+                  {editable && (
+                    <button onClick={() => setEditing({ id: uid(), title: "", kind: "markdown", content: "" })} className="mt-1 px-4 py-2.5 rounded-xl text-sm font-semibold bg-gradient-to-r from-red-600 to-red-800 text-white flex items-center gap-1.5 hover:opacity-90 transition">
+                      <Plus size={14} />Create SOP
+                    </button>
+                  )}
+                </div>
               ) : active.kind === "pdf" && active.file_url ? (
                 <iframe src={active.file_url} title={active.title} className="w-full h-full min-h-[400px] rounded-xl border border-white/10" />
               ) : (

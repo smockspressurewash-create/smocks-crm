@@ -4658,7 +4658,7 @@ export function App() {
           content area instead of the viewport, leaving nothing usable visible
           on mobile. Rendered here, as a sibling at the top level like every
           other modal, it escapes that trap and truly covers the viewport. */}
-      <SopModal open={page === "sops"} onClose={() => setPage("dashboard")} editable ownerId={crmUserId} employees={employees} />
+      <SopModal open={page === "sops"} onClose={() => setPage("dashboard")} editable ownerId={crmUserId} employees={employees} toast={toast} />
 
       {/* Company first-run setup modal */}
       {companySetupOpen && (
