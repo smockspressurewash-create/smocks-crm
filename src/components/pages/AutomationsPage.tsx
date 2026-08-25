@@ -514,11 +514,23 @@ export function AutomationsPage({ automations = [], setAutomations, jobs = [], c
                         </div>
                       )}
                       {/* Toggle */}
-                      <button onClick={() => toggle(a.id)} className="flex-shrink-0">
+                      <button onClick={() => toggle(a.id)} className="flex-shrink-0" title={isActive ? "Turn off" : "Turn on"}>
                         {isActive
                           ? <ToggleRight size={28} className="text-green-400 hover:text-green-300 transition" />
                           : <ToggleLeft size={28} className="text-white/25 hover:text-white/50 transition" />
                         }
+                      </button>
+                      {/* FEATURE — "keep generating pop-ups... allow owners
+                          to disable these pop-ups per automation." The
+                          automation still runs either way; this only
+                          decides whether it waits for a Send All click or
+                          fires straight through. */}
+                      <button
+                        onClick={() => setAutomations(automations.map(x => x.id === a.id ? { ...x, autoApprove: !x.autoApprove } : x))}
+                        title={a.autoApprove ? "Sends automatically — click to require approval again" : "Requires your approval each time — click to send automatically, no popup"}
+                        className={"flex-shrink-0 px-1.5 py-0.5 rounded-lg border text-[9px] font-semibold transition " + (a.autoApprove ? "bg-green-950/40 border-green-700/40 text-green-300" : "bg-white/5 border-white/10 text-white/40 hover:text-white/70")}
+                      >
+                        {a.autoApprove ? "Auto-send" : "Ask first"}
                       </button>
                     </div>
                   </div>

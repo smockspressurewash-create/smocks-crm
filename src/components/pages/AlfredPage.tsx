@@ -2154,6 +2154,58 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
             note: low.length > 0 ? `${low.length} item(s) at or below reorder level: ${low.map((c: any) => c.name).join(", ")}. Ask before texting/emailing a supplier — never contact one without the owner's explicit go-ahead on the exact message.` : "Everything is above its reorder level.",
           };
         }
+        // FEATURE — Alfred previously had zero tools for expenses, trash-can
+        // status, SOPs, campaigns, or social — real gaps against "manage
+        // everything from chat." Kept read + one basic write per domain,
+        // querying Supabase directly (owner-scoped) rather than needing
+        // every one of these arrays threaded through as new props.
+        case "log_expense": {
+          if (!inputs.amount || !inputs.description) return { error: "amount and description are required." };
+          const exp = { id: uid(), date: inputs.date || today(), description: inputs.description, amount: Number(inputs.amount), category: inputs.category || "Other", vendor: inputs.vendor || "", isBusiness: true };
+          setExpenses((prev: any[]) => [...(prev || []), exp]);
+          toast(`Logged expense: ${inputs.description} — ${fmt(exp.amount)}`);
+          return { success: true, expense: exp };
+        }
+        case "list_expenses": {
+          const days = Number(inputs.days) || 30;
+          const cutoff = daysFromNow(-days);
+          const recent = (expenses || []).filter((e: any) => (e.date || "") >= cutoff);
+          return { success: true, count: recent.length, total: recent.reduce((s: number, e: any) => s + (Number(e.amount) || 0), 0), expenses: recent.map((e: any) => ({ date: e.date, description: e.description, amount: e.amount, category: e.category })) };
+        }
+        case "get_trash_can_status": {
+          const trashJobs = (jobs || []).filter((j: any) => j.serviceCategory === "trash_can" || j.serviceCategory === "trashcan");
+          const active = trashJobs.filter((j: any) => j.status !== "cancelled");
+          const pendingFees = trashJobs.filter((j: any) => j.inconvenienceFeePendingConfirmation);
+          return { success: true, activeCustomers: active.length, jobsWithPendingFees: pendingFees.length, note: pendingFees.length > 0 ? "Some jobs have an inconvenience fee waiting on the owner to charge or add to next invoice." : undefined };
+        }
+        case "list_sops": {
+          try {
+            const { data } = await (supabase as any).from("sop_documents").select("id,title,frequency,kind").eq("owner_id", ownerId);
+            return { success: true, count: (data || []).length, sops: (data || []).map((s: any) => ({ id: s.id, title: s.title, frequency: s.frequency, kind: s.kind })) };
+          } catch (e: any) { return { error: e?.message || "Failed to load SOPs" }; }
+        }
+        case "create_sop": {
+          if (!inputs.title?.trim() || !inputs.content?.trim()) return { error: "title and content are required." };
+          try {
+            const row = { id: uid(), owner_id: ownerId, title: inputs.title, kind: "markdown", content: inputs.content, frequency: inputs.frequency || "general", assignedEmployeeIds: [], checklist: [] };
+            const res = await (supabase as any).from("sop_documents").insert(row);
+            if (res?.error) return { error: res.error.message };
+            toast(`SOP created: ${inputs.title}`);
+            return { success: true, id: row.id, title: row.title };
+          } catch (e: any) { return { error: e?.message || "Failed to create SOP" }; }
+        }
+        case "list_campaigns": {
+          try {
+            const { data } = await (supabase as any).from("campaigns").select("id,name,status,channel").eq("owner_id", ownerId);
+            return { success: true, count: (data || []).length, campaigns: (data || []).map((c: any) => ({ id: c.id, name: c.name, status: c.status, channel: c.channel })) };
+          } catch (e: any) { return { error: e?.message || "Failed to load campaigns" }; }
+        }
+        case "list_social_posts": {
+          try {
+            const { data } = await (supabase as any).from("social_posts").select("id,caption,status,scheduledAt").eq("owner_id", ownerId).order("scheduledAt", { ascending: false }).limit(20);
+            return { success: true, count: (data || []).length, posts: (data || []).map((p: any) => ({ id: p.id, caption: (p.caption || "").slice(0, 80), status: p.status, scheduledAt: p.scheduledAt })) };
+          } catch (e: any) { return { error: "Social posts aren't cloud-synced on this deployment yet, or the table doesn't exist — check the Social page directly." }; }
+        }
         case "text_phone_number": {
           if (!inputs.phone?.trim()) return { error: "phone required" };
           if (!inputs.message?.trim()) return { error: "message required" };
@@ -2572,6 +2624,41 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
       name: "check_stock",
       description: "Check current stock levels against reorder thresholds for chemicals/equipment — use whenever the owner asks what's running low or needs reordering. Read-only; never places an order on its own.",
       input_schema: { type: "object", properties: { itemName: { type: "string", description: "Optional — check one specific item; omit to check everything" } } }
+    },
+    {
+      name: "log_expense",
+      description: "Log a business expense — use whenever the owner says they spent money on something ('log $40 for gas', 'I bought a new nozzle for $15').",
+      input_schema: { type: "object", properties: { amount: { type: "number" }, description: { type: "string" }, category: { type: "string" }, vendor: { type: "string" }, date: { type: "string", description: "YYYY-MM-DD, defaults to today" } }, required: ["amount", "description"] }
+    },
+    {
+      name: "list_expenses",
+      description: "List recent expenses and their total — use when the owner asks what they've spent recently.",
+      input_schema: { type: "object", properties: { days: { type: "number", description: "Defaults to 30" } } }
+    },
+    {
+      name: "get_trash_can_status",
+      description: "Get a quick status summary of the Trash Can Cleaning service line — active customers and any jobs with an inconvenience fee waiting to be charged.",
+      input_schema: { type: "object", properties: {} }
+    },
+    {
+      name: "list_sops",
+      description: "List the SOP/instruction documents on file.",
+      input_schema: { type: "object", properties: {} }
+    },
+    {
+      name: "create_sop",
+      description: "Create a new SOP/instruction document, visible to all employees in the portal.",
+      input_schema: { type: "object", properties: { title: { type: "string" }, content: { type: "string", description: "Markdown body" }, frequency: { type: "string", enum: ["daily", "monthly", "general"] } }, required: ["title", "content"] }
+    },
+    {
+      name: "list_campaigns",
+      description: "List marketing campaigns and their status.",
+      input_schema: { type: "object", properties: {} }
+    },
+    {
+      name: "list_social_posts",
+      description: "List recent/scheduled social media posts.",
+      input_schema: { type: "object", properties: {} }
     },
     {
       name: "navigate_to",

@@ -633,6 +633,12 @@ export interface Automation {
   // gating the whole automation on a single lastTriggered date (which used
   // to mean only the FIRST matching recipient each day ever got messaged).
   sentLog?: Record<string, string>;
+  // FEATURE — "allow owners to disable these pop-ups per automation." When
+  // true, this automation's candidates skip AutomationBatchModal entirely
+  // and send straight through — the automation itself still runs, only the
+  // per-batch confirmation popup is off. Default false/undefined keeps the
+  // existing require-approval behavior.
+  autoApprove?: boolean;
 }
 
 // ─── Review ───────────────────────────────────────────────────────────────────

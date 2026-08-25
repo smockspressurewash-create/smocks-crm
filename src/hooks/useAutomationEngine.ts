@@ -1150,6 +1150,12 @@ export function useAutomationEngine({
       // ── Gather phase — no sends happen here. Every candidate that clears
       // every check becomes a PendingAutomationItem for the owner to review.
       const gathered: PendingAutomationItem[] = [];
+      // FEATURE — "allow owners to disable these pop-ups per automation."
+      // An automation with autoApprove:true skips the AutomationBatchModal
+      // confirmation entirely and sends straight through sendItems (same
+      // send logic a manual "Send All" click uses) — the automation itself
+      // still runs, only the per-batch popup is what's turned off.
+      const autoSend: PendingAutomationItem[] = [];
       const dailyLog = settings.automationDailySendLog || {};
       const claimedCustomersThisBatch = new Set<string>();
       // GUARDRAIL — explicit total-sends-per-day cap across every automation
@@ -1247,14 +1253,16 @@ export function useAutomationEngine({
             if (alreadySentTodayCount + gathered.length >= maxSendsPerDay) { heldBackCount++; continue; }
             claimedCustomersThisBatch.add(cand.customer.id);
             const { subject, body, payload } = buildMessage(auto, dir, spec, cand, settings);
-            gathered.push({
+            const readyItem: PendingAutomationItem = {
               id: sessionKey,
               autoId: auto.id, autoName: auto.name, category, dedupKey, channel: dir.channel,
               subject, body, customerId: cand.customer.id, customerName: `${cand.customer.firstName} ${cand.customer.lastName}`,
               estimateId: cand.estimate?.id, jobId: cand.job?.id, referralId: cand.referral?.id,
               conditions: dir.conditions,
               webhookUrl: dir.url, webhookPayload: payload,
-            });
+            };
+            if ((auto as any).autoApprove) autoSend.push(readyItem);
+            else gathered.push(readyItem);
           }
         }
       }
@@ -1269,6 +1277,7 @@ export function useAutomationEngine({
           : null;
         setPendingBatch({ items: gathered, createdAt: Date.now(), heldBackCount, campaignWarning });
       }
+      if (autoSend.length > 0) sendItems(autoSend);
       if (heldBackCount > 0) {
         console.warn(`[Automations] ${heldBackCount} candidate(s) held back — daily send cap of ${maxSendsPerDay} reached (Settings → Automations → Max Automation Sends Per Day to raise it)`);
       }
@@ -1337,8 +1346,18 @@ export function useAutomationEngine({
   const approveBatch = useCallback(async () => {
     const batch = pendingBatchRef.current;
     if (!batch || isApprovingRef.current) return;
-    isApprovingRef.current = true;
     setPendingBatch(null); // clear immediately so the modal can't be double-submitted
+    await sendItems(batch.items);
+  }, []);
+
+  // FEATURE — "allow owners to disable these pop-ups per automation."
+  // Extracted from approveBatch's own send loop (unchanged logic) so a
+  // per-automation autoApprove flag can send straight through without ever
+  // populating pendingBatch/showing AutomationBatchModal at all, while a
+  // manual "Send All" click still goes through the exact same code path.
+  const sendItems = useCallback(async (items: PendingAutomationItem[]) => {
+    if (items.length === 0 || isApprovingRef.current) return;
+    isApprovingRef.current = true;
     try {
       const todayStr = today();
       const patchesByAutoId: Record<string, { sentTo: Record<string, string>; sent: number }> = {};
@@ -1348,7 +1367,7 @@ export function useAutomationEngine({
       let sentCountThisApproval = 0;
       let failedCountThisApproval = 0;
 
-      for (const item of batch.items) {
+      for (const item of items) {
         // GUARDRAIL — never send twice to the same customer in this approval
         // even if the batch (gathered up to 15 minutes ago) somehow still
         // had two entries for them.
