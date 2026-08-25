@@ -754,6 +754,92 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
     }
   };
 
+  // FEATURE — hands-free voice control for the checklist. Per-item note
+  // dictation already existed (PortalChecklistSection's mic button), but
+  // wet/gloved hands mid-job can't tap a checkbox either — this lets a
+  // crew member just say an item's name to check it off, or describe a
+  // problem out loud to open the existing Report Problem flow pre-filled,
+  // without touching the phone at all. Same Web Speech API (no key, no
+  // backend call) the per-item note dictation above already relies on.
+  const VoiceCmdCtor = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+  const [voiceCmdActive, setVoiceCmdActive] = useState(false);
+  const voiceCmdRecRef = useRef<any>(null);
+  const voiceCmdKeepRef = useRef(false);
+  const normalizeVoice = (s: string) => s.toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
+  const VOICE_PROBLEM_KEYWORDS = ["problem", "issue", "broken", "damage", "damaged", "hazard", "injury", "hurt", "leak", "leaking", "not working", "malfunction"];
+  const VOICE_UNCHECK_KEYWORDS = ["uncheck", "undo", "not done", "unmark", "wasn't done", "mistake"];
+  const VOICE_STOPWORDS = new Set(["check", "off", "mark", "done", "complete", "completed", "the", "item", "finished", "please", "and"]);
+  const findVoiceChecklistMatch = (transcript: string): { list: "pre" | "during" | "post"; item: JobChecklistItem; score: number } | null => {
+    const words = new Set(normalizeVoice(transcript).split(" ").filter(w => w.length > 2 && !VOICE_STOPWORDS.has(w)));
+    if (words.size === 0) return null;
+    let best: { list: "pre" | "during" | "post"; item: JobChecklistItem; score: number } | null = null;
+    const sources: Array<["pre" | "during" | "post", JobChecklistItem[]]> = [["pre", preItems], ["during", durItems], ["post", postItems]];
+    for (const [key, list] of sources) {
+      for (const item of list) {
+        const itemWords = normalizeVoice(item.label).split(" ").filter(w => w.length > 2);
+        if (itemWords.length === 0) continue;
+        const overlap = itemWords.filter(w => words.has(w)).length;
+        const score = overlap / itemWords.length;
+        if (overlap > 0 && (!best || score > best.score)) best = { list: key, item, score };
+      }
+    }
+    return best && best.score >= 0.5 ? best : null;
+  };
+  const handleVoiceCommand = (raw: string) => {
+    const transcript = raw.trim();
+    if (!transcript) return;
+    const norm = normalizeVoice(transcript);
+    if (VOICE_PROBLEM_KEYWORDS.some(k => norm.includes(k))) {
+      setReportProblemText(transcript);
+      setReportProblemOpen(true);
+      toast("🎙️ Heard a problem — review and send below", "yellow");
+      return;
+    }
+    const match = findVoiceChecklistMatch(transcript);
+    if (!match) { toast(`🎙️ Didn't recognize an item in "${transcript}"`, "red"); return; }
+    const wantUncheck = VOICE_UNCHECK_KEYWORDS.some(k => norm.includes(k));
+    const patched = (list: JobChecklistItem[]) => list.map(it => it.id === match.item.id ? { ...it, done: !wantUncheck } : it);
+    if (match.list === "pre") saveChecklist("Pre-Job", { preChecklist: patched(preItems) });
+    else if (match.list === "during") saveChecklist("During-Job", { duringChecklist: patched(durItems) });
+    else saveChecklist("Post-Job", { postChecklist: patched(postItems) });
+    toast(`🎙️ ${wantUncheck ? "Unmarked" : "✓ Checked off"}: ${match.item.label}`, wantUncheck ? undefined : "green");
+  };
+  const toggleVoiceCommands = () => {
+    if (!VoiceCmdCtor) return;
+    if (voiceCmdActive) { voiceCmdKeepRef.current = false; voiceCmdRecRef.current?.stop(); setVoiceCmdActive(false); return; }
+    voiceCmdKeepRef.current = true;
+    const startOne = () => {
+      const rec = new VoiceCmdCtor();
+      rec.lang = "en-US";
+      rec.continuous = true;
+      rec.interimResults = false;
+      rec.maxAlternatives = 1;
+      rec.onresult = (e: any) => {
+        const result = e.results[e.results.length - 1];
+        if (result?.isFinal) handleVoiceCommand(result[0].transcript);
+      };
+      rec.onerror = (e: any) => {
+        if (e.error === "not-allowed" || e.error === "service-not-allowed") {
+          voiceCmdKeepRef.current = false; setVoiceCmdActive(false); toast("Microphone access denied", "red");
+        }
+      };
+      // Same restart-on-end defensive pattern as VoiceMicButton/per-item
+      // dictation above — the browser recognizer times out on silence even
+      // in continuous mode, and rec.start() can throw if the previous
+      // instance hasn't fully torn down yet.
+      rec.onend = () => {
+        if (!voiceCmdKeepRef.current) return;
+        try { startOne(); } catch { setTimeout(() => { if (voiceCmdKeepRef.current) startOne(); }, 300); }
+      };
+      voiceCmdRecRef.current = rec;
+      try { rec.start(); } catch { setTimeout(() => { if (voiceCmdKeepRef.current) startOne(); }, 300); }
+    };
+    startOne();
+    setVoiceCmdActive(true);
+    toast("🎙️ Listening — say an item name to check it off, or describe a problem", undefined);
+  };
+  useEffect(() => () => { voiceCmdKeepRef.current = false; voiceCmdRecRef.current?.stop(); }, []);
+
   // Draw-mode signature canvas
   const [sigMode, setSigMode] = useState<"type" | "draw">("type");
   const [sigDrawData, setSigDrawData] = useState<string | null>(null);
@@ -1951,8 +2037,20 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
 
         {/* Checklists */}
         <Glass className="p-4 !bg-black/40">
-          <div className="text-xs text-white/60 uppercase tracking-wider mb-3 flex items-center gap-1">
-            <CheckSquare size={12} />Job Checklists
+          <div className="flex items-center justify-between mb-3">
+            <div className="text-xs text-white/60 uppercase tracking-wider flex items-center gap-1">
+              <CheckSquare size={12} />Job Checklists
+            </div>
+            {VoiceCmdCtor && effPerms.can_complete_checklist && (
+              <button
+                type="button"
+                onClick={toggleVoiceCommands}
+                title={voiceCmdActive ? "Stop listening" : "Say an item name to check it off, or describe a problem — hands-free"}
+                className={"flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[10px] font-medium transition " + (voiceCmdActive ? "bg-red-600/70 text-white animate-pulse" : "bg-white/5 text-white/50 hover:text-white/80 hover:bg-white/10")}
+              >
+                <Mic size={11} />{voiceCmdActive ? "Listening…" : "Voice Commands"}
+              </button>
+            )}
           </div>
           <PortalChecklistSection
             jobId={job.id}
