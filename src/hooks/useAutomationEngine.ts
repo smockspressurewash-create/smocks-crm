@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import type { Automation, AutomationStep, Job, Customer, Estimate, Referral, AppSettings, Employee, Goal } from "../types";
 import { today, daysSince, recurringFreqs } from "../lib/utils";
-import { twilioSend, logOutboundSmsToInbox, sendOwnerGmailOnly, emailShell } from "../lib/messaging";
+import { twilioSend, logOutboundSmsToInbox, sendOwnerGmailOnly, emailShell, emailButton } from "../lib/messaging";
 
 interface AutomationEngineProps {
   automations: Automation[];
@@ -24,10 +24,10 @@ interface AutomationEngineProps {
 
 const SMS_TEMPLATES: Record<string, string> = {
   new_lead:             "Hi {{first_name}}! Thanks for reaching out to Crew Boss. I'll send your estimate shortly. — Will",
-  estimate_followup:    "Hi {{first_name}}, just checking in on your estimate. Any questions? Ready to schedule? — Will @ Crew Boss",
-  estimate_expiring:    "Hi {{first_name}}, your Crew Boss estimate for {{amount}} expires in 48 hours. Reply BOOK to lock in this price — Crew Boss",
-  estimate_viewed_ack:  "Hi {{first_name}}, glad you had a chance to look over your Crew Boss estimate! Any questions before we get you scheduled? — Will",
-  estimate_accepted:    "Hi {{first_name}}, thanks for approving your Crew Boss estimate! We'll be in touch shortly to get you scheduled. — Will",
+  estimate_followup:    "Hi {{first_name}}, just checking in on your estimate. Ready to approve and get on the schedule? View & approve here: {{payment_link}} — Will @ Crew Boss",
+  estimate_expiring:    "Hi {{first_name}}, your Crew Boss estimate for {{amount}} expires in 48 hours. Lock in this price here: {{payment_link}} — Crew Boss",
+  estimate_viewed_ack:  "Hi {{first_name}}, glad you had a chance to look over your Crew Boss estimate! Approve and get scheduled here: {{payment_link}} — Will",
+  estimate_accepted:    "Hi {{first_name}}, thanks for approving your Crew Boss estimate! We'll be in touch shortly to get you scheduled. View it anytime: {{payment_link}} — Will",
   payment_received:     "Hi {{first_name}}, thank you for your payment! We appreciate your business. — Crew Boss",
   job_reminder:         "Hi {{first_name}}, reminder: your Crew Boss service is coming up. We'll text when on the way. — Crew Boss",
   job_scheduled:        "Hi {{first_name}}, you're booked with Crew Boss for {{date}}! We'll send reminders as it gets closer. — Will",
@@ -412,6 +412,18 @@ export function useAutomationEngine({
   const pendingBatchRef = useRef<PendingAutomationBatch | null>(null);
   pendingBatchRef.current = pendingBatch;
   const isApprovingRef = useRef(false);
+  // BUG FIX — "I keep getting the same popup even though I already said
+  // wait/no." skipBatch's persistence goes through settings.automationDailySendLog,
+  // which only reaches Supabase via the debounced settings-sync save (up to
+  // ~1.5s debounce + up to ~50s of retries on a slow connection). If a
+  // cross-device settings POLL landed in that window, it could pull the
+  // still-stale (pre-skip) server copy and overwrite the just-made local
+  // skip decision before it ever got saved — the next automation tick would
+  // then re-gather the exact same candidates with no network dependency at
+  // all. This ref is immediate, in-memory, and never touched by network
+  // sync — skipping today always sticks for the rest of THIS session
+  // regardless of what the settings sync is doing.
+  const skippedTodayRef = useRef<Set<string>>(new Set());
 
   const reviewLink = (c: Customer, settings: AppSettings) =>
     `${window.location.origin}${window.location.pathname}#/rate?c=${encodeURIComponent(c.id)}&n=${encodeURIComponent(c.firstName)}&g=${encodeURIComponent((settings as any).googlePlaceId ?? "")}&rl=${encodeURIComponent((settings as any).googleReviewLink ?? "")}&co=${encodeURIComponent((settings as any).companyName ?? "Crew Boss")}`;
@@ -456,7 +468,19 @@ export function useAutomationEngine({
       amount: cand.estimate ? `$${cand.estimate.total}` : "",
       date: cand.job?.scheduledDate || "",
       address: cand.customer.address || "",
-      review_link: "", payment_link: "", reward: "",
+      review_link: "",
+      // BUG FIX — "there's no button/link to follow up on your estimate."
+      // payment_link only ever got filled in for the handful of specs that
+      // explicitly passed it via extraVars (the payment-overdue ones) — any
+      // OTHER estimate-related template (estimate_followup, viewed_ack,
+      // accepted, expiring...) had this as a permanent empty string, so the
+      // owner had to remember to add {{payment_link}} to a template AND the
+      // spec had to remember to supply it, or the customer got a message
+      // with nothing to actually click. Defaulting it here whenever an
+      // estimate is present on the candidate means every current and future
+      // estimate-related automation gets a working link for free.
+      payment_link: cand.estimate ? paymentLink(cand.estimate.id) : "",
+      reward: "",
       company_phone: (settings as any).companyPhone || (settings as any).twilioFrom || "",
       ...(spec.extraVars ? spec.extraVars(cand) : {}),
     };
@@ -550,7 +574,14 @@ export function useAutomationEngine({
     if (channel === "email") {
       if (!c.email) return false;
       try {
-        await sendOwnerGmailOnly(settings as any, c.email, subject, emailShell(settings as any,subject, `<p>${body.replace(/\n/g, "<br/>")}</p>`));
+        // BUG FIX — "the email should have a nice-looking UI and a
+        // follow-up button." emailShell already gives branded HTML; what
+        // was missing was any actual button — a customer-facing automated
+        // email about an estimate previously rendered as plain text with no
+        // way to act on it. Any candidate carrying an estimate gets a real
+        // "View & Approve Estimate" button appended automatically.
+        const ctaHtml = cand.estimate ? emailButton("View & Approve Estimate", paymentLink(cand.estimate.id)) : "";
+        await sendOwnerGmailOnly(settings as any, c.email, subject, emailShell(settings as any, subject, `<p>${body.replace(/\n/g, "<br/>")}</p>${ctaHtml}`));
         onSent();
         toast(`📧 ${auto.name} → ${c.firstName}`);
         return true;
@@ -1178,7 +1209,7 @@ export function useAutomationEngine({
             // persisted record (a batch approved earlier today) and this same
             // gather pass (two different automations both wanting to reach
             // the same customer in one tick only get one of them queued).
-            if (dailyLog[cand.customer.id] === todayStr) continue;
+            if (dailyLog[cand.customer.id] === todayStr || skippedTodayRef.current.has(cand.customer.id)) continue;
             if (claimedCustomersThisBatch.has(cand.customer.id)) continue;
             const sessionKey = `${auto.id}:${dedupKey}`;
             if (firedThisSession.has(sessionKey)) continue;
@@ -1251,7 +1282,7 @@ export function useAutomationEngine({
     // Also re-check the daily cap and dedup one more time — belt and
     // suspenders against a batch that's been sitting a while.
     const settings = settingsRef.current;
-    if ((settings.automationDailySendLog || {})[item.customerId] === today()) return null;
+    if ((settings.automationDailySendLog || {})[item.customerId] === today() || skippedTodayRef.current.has(item.customerId)) return null;
     return { cand, auto };
   };
 
@@ -1350,6 +1381,8 @@ export function useAutomationEngine({
     const batch = pendingBatchRef.current;
     if (batch) {
       const todayStr = today();
+      // Immediate, network-independent — see skippedTodayRef's own comment.
+      for (const item of batch.items) skippedTodayRef.current.add(item.customerId);
       const newDailyLog = { ...(settingsRef.current.automationDailySendLog || {}) };
       for (const item of batch.items) newDailyLog[item.customerId] = todayStr;
       setSettingsRef.current((s: any) => ({ ...s, automationDailySendLog: newDailyLog }));

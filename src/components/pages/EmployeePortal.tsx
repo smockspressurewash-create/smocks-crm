@@ -4591,7 +4591,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
         <div className="w-full max-w-sm">
           <div className="text-center mb-6">
             <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-red-600 to-red-900 flex items-center justify-center mx-auto mb-4 shadow-lg">
-              <span className="text-2xl font-black">S</span>
+              <CrewBossMark className="w-10 h-10" />
             </div>
             <div className="text-xl font-bold">{settings.companyName || "Crew Boss OS"}</div>
             <div className="text-sm text-white/50 mt-1">{inviteRecord ? "Create Your Crew Account" : "Employee Portal"}</div>

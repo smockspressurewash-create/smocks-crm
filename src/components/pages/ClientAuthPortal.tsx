@@ -4,6 +4,7 @@ import { supabase } from "../../lib/supabase";
 import { fmt, uid, today, mediaSrc } from "../../lib/utils";
 import type { Customer, Estimate, Job, AppSettings } from "../../types";
 import { Glass } from "../ui/Glass";
+import { CrewBossMark } from "../ui/CrewBossMark";
 import { GBtn } from "../ui/GBtn";
 import { GInput } from "../ui/GInput";
 import { Badge } from "../ui/Badge";
@@ -331,7 +332,7 @@ export function ClientAuthPortal({
         <div className="w-full max-w-sm space-y-5">
           <div className="text-center space-y-2">
             <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-red-600 to-red-900 flex items-center justify-center mx-auto shadow-lg shadow-red-900/40">
-              <span className="text-xl font-black text-white">{companyName[0]}</span>
+              <CrewBossMark className="w-9 h-9" />
             </div>
             <div className="text-lg font-bold text-white">{companyName} — Client Portal</div>
             <div className="text-xs text-white/40">Pay invoices, track jobs, and view your referral rewards</div>
