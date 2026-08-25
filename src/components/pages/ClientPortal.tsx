@@ -398,6 +398,24 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
   const companyName = settings?.companyName || "Crew Boss";
   const companyPhone = settings?.companyPhone || "(717) 555-0100";
 
+  // BUG FIX — "the quote demo just sits there, no button responds." The JSX
+  // below dereferences c.firstName/e.notes/etc directly (no optional
+  // chaining) — Modal's own `open={!!e}` prop doesn't stop React from still
+  // EVALUATING these children on every render (JSX children are built by the
+  // caller before the child component ever sees them), so a customer with no
+  // matching record (a stale/orphaned estimate.customerId, or a demo picker
+  // that resolved `e` but not `c`) crashed the render entirely — the app's
+  // root ErrorBoundary then unmounts everything, which just looks like a
+  // frozen, unresponsive screen rather than a helpful error. Bail out to a
+  // real, visible message instead of a silent crash.
+  if (e && !c) {
+    return (
+      <Modal open onClose={onClose} title="Can't load this estimate">
+        <div className="text-sm text-white/70 py-4 text-center">This estimate's customer record couldn't be found — it may have been deleted. Close this and try a different one.</div>
+      </Modal>
+    );
+  }
+
   return (
     <Modal open={!!e} onClose={onClose} title="" maxW="max-w-2xl">
       <div className="-mx-5 -mt-5" style={fontFamily ? { fontFamily } : undefined}>

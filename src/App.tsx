@@ -4324,9 +4324,19 @@ export function App() {
           don't have to touch window.location.hash (which would blow away
           the CRM page underneath this overlay). */}
       {clientDemoReviewOpen && (
-        <div className="fixed inset-0 z-[200] bg-black overflow-y-auto">
+        // BUG FIX — "the review demo should be blurred, not solid black."
+        // This used to be an opaque bg-black overlay, unlike every other
+        // demo popup here (the picker modal, the review-in-picker preview)
+        // which all use the blurred-CRM-showing-through look. Matches that
+        // same treatment so it visibly reads as "a preview floating over
+        // your CRM," not a totally separate blank page.
+        <div className="fixed inset-0 z-[200] bg-black/80 backdrop-blur overflow-y-auto">
           <button onClick={() => setClientDemoReviewOpen(false)} className="fixed top-4 right-4 z-[210] p-2 rounded-lg bg-white/10 hover:bg-white/20 text-white border border-white/15"><X size={18} /></button>
-          <CustomerReviewPage overrides={{ n: "there", co: (settings as any)?.companyName || "Crew Boss", rl: (settings as any)?.googleReviewLink || "", g: (settings as any)?.googlePlaceId || "" }} />
+          <div className="min-h-full flex items-center justify-center p-4">
+            <div className="w-full max-w-md bg-neutral-950 border border-white/10 rounded-2xl shadow-2xl">
+              <CustomerReviewPage embedded overrides={{ n: "there", co: (settings as any)?.companyName || "Crew Boss", rl: (settings as any)?.googleReviewLink || "", g: (settings as any)?.googlePlaceId || "" }} />
+            </div>
+          </div>
         </div>
       )}
 

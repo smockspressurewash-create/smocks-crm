@@ -23,7 +23,12 @@ function hashParam(key: string): string {
 // this same public page inline without touching window.location.hash (which
 // would blow away the CRM's own hash-routed page underneath it) — falls
 // back to reading the real #/rate query params when not supplied.
-export function CustomerReviewPage({ overrides }: { overrides?: Partial<Record<"c" | "n" | "g" | "rl" | "co", string>> } = {}) {
+// `embedded` — used only by the CRM's in-app "Client Demo" preview, which
+// wants this floating over a blurred, dimmed CRM background (matching every
+// other demo popup) instead of this page's own normal full-screen solid
+// black — the outer demo overlay already supplies the blur/dim, so this just
+// stops fighting it with its own opaque min-h-screen background.
+export function CustomerReviewPage({ overrides, embedded = false }: { overrides?: Partial<Record<"c" | "n" | "g" | "rl" | "co", string>>; embedded?: boolean } = {}) {
   const param = (key: "c" | "n" | "g" | "rl" | "co") => overrides?.[key] ?? hashParam(key);
   const customerId = param("c");
   const firstName = decodeURIComponent(param("n") || "there");
@@ -82,7 +87,7 @@ export function CustomerReviewPage({ overrides }: { overrides?: Partial<Record<"
   ));
 
   return (
-    <div className="min-h-screen bg-black text-white flex flex-col items-center justify-center px-4 py-8">
+    <div className={embedded ? "text-white flex flex-col items-center justify-center px-4 py-8" : "min-h-screen bg-black text-white flex flex-col items-center justify-center px-4 py-8"}>
       {/* Brand header */}
       <div className="w-full max-w-sm">
         <div className="bg-gradient-to-br from-red-700 to-red-900 rounded-2xl p-6 text-center mb-6 shadow-2xl shadow-red-900/40">
