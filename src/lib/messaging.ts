@@ -87,10 +87,16 @@ export const fetchBufferOrganizationId = async (apiKey: string): Promise<string 
   return data?.account?.organizations?.[0]?.id ?? null;
 };
 
+// BUG FIX — Buffer's schema uses custom scalar types for ids, not plain
+// String. Declaring $organizationId as String! got Buffer's own GraphQL
+// validator to reject the request outright ("used in position expecting
+// type OrganizationId!") before it ever looked at the actual key/org —
+// every "Find Channels" click failed with this, regardless of whether the
+// API key was valid.
 export const fetchBufferChannels = async (apiKey: string, organizationId: string): Promise<BufferChannel[]> => {
   const data = await bufferGraphQL<{ channels: BufferChannel[] }>(
     apiKey,
-    `query GetChannels($organizationId: String!) { channels(input: { organizationId: $organizationId }) { id name displayName service avatar } }`,
+    `query GetChannels($organizationId: OrganizationId!) { channels(input: { organizationId: $organizationId }) { id name displayName service avatar } }`,
     { organizationId }
   );
   return data?.channels ?? [];
@@ -114,7 +120,7 @@ export const postToBuffer = async (
   }
   const data = await bufferGraphQL<{ createPost: { __typename: string; message?: string; post?: { id: string } } }>(
     bufferApiKey,
-    `mutation CreatePost($text: String!, $channelId: String!, $schedulingType: PostSchedulingTypeInput!, $mode: PostCreationModeInput!, $dueAt: DateTime) {
+    `mutation CreatePost($text: String!, $channelId: ChannelId!, $schedulingType: PostSchedulingTypeInput!, $mode: PostCreationModeInput!, $dueAt: DateTime) {
       createPost(input: { text: $text, channelId: $channelId, schedulingType: $schedulingType, mode: $mode, dueAt: $dueAt }) {
         ... on PostActionSuccess { post { id } }
         ... on MutationError { message }

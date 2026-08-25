@@ -55,9 +55,34 @@ export const seedWeather: WeatherData = {
 // FIX 12 — was hardcoded to York, PA regardless of where the business
 // actually operates. fetchRealWeather now takes the location string from
 // Settings → Company (a zip code or "City,ST" both work with OWM's `q=`
-// param) and only falls back to York, PA if the owner hasn't set one.
+// param) and only falls back to York, PA if the owner hasn't set one — a
+// deployment now used by owners in other states could silently show the
+// original single-tenant demo business's weather. Callers should now pass
+// deriveWeatherLocation(settings) instead of settings.weatherLocation
+// directly, so an owner who never filled in the dedicated field still gets
+// their OWN city (parsed from their company address) rather than PA.
 const DEFAULT_WEATHER_LOCATION = "York,PA,US";
 const OWM_UNITS = "imperial";
+
+// Best-effort "City,ST" extraction from a free-text street address like
+// "123 Main St, York, PA 17403" — good enough for OWM's `q=` param, which
+// only needs a city (state disambiguates same-named cities). Falls through
+// to the hardcoded PA default only if there's truly nothing to parse.
+export const deriveWeatherLocation = (weatherLocation?: string, companyAddress?: string): string => {
+  const explicit = (weatherLocation || "").trim();
+  if (explicit) return explicit;
+  const addr = (companyAddress || "").trim();
+  if (!addr) return DEFAULT_WEATHER_LOCATION;
+  const parts = addr.split(",").map(s => s.trim()).filter(Boolean);
+  if (parts.length < 2) return DEFAULT_WEATHER_LOCATION;
+  // Drop the street (first segment); the city is typically the next one.
+  const city = parts[1];
+  // The state (+ zip) usually lives in the last segment, e.g. "PA 17403" —
+  // strip trailing digits to leave just the state abbreviation/name.
+  const stateSeg = parts[parts.length - 1].replace(/\d+/g, "").trim();
+  if (!city) return DEFAULT_WEATHER_LOCATION;
+  return stateSeg ? `${city},${stateSeg}` : city;
+};
 
 interface OWMCurrentResponse {
   main: { temp: number; temp_min: number; humidity: number };

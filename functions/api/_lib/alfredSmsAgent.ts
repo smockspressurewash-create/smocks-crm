@@ -221,6 +221,12 @@ type Ctx = {
   // to OTHER records (e.g. an employee's own Google token — see
   // syncEmployeeJobToCalendar) can get it without a second HTTP round-trip.
   env: Record<string, string>;
+  // FEATURE — get_weather tool. Same OpenWeatherMap key/location the in-app
+  // weather widget uses (settings.owmKey/weatherLocation); companyAddress is
+  // the fallback when the owner never filled in the dedicated location field.
+  owmKey?: string;
+  weatherLocation?: string;
+  companyAddress?: string;
 };
 
 // ─── Supabase helpers (service-role REST, same pattern as the webhook) ────
@@ -383,6 +389,11 @@ const TOOLS = [
   {
     name: "get_business_stats",
     description: "Get a snapshot of current business stats: active jobs, pending estimates, revenue this month, jobs completed this month.",
+    input_schema: { type: "object", properties: {} },
+  },
+  {
+    name: "get_weather",
+    description: "Current weather and conditions at the business's location — use for 'what's the weather', 'is it going to rain', 'should we work today', etc.",
     input_schema: { type: "object", properties: {} },
   },
   {
@@ -814,6 +825,39 @@ const executeTool = async (ctx: Ctx, name: string, input: Record<string, any>): 
         const revenueMonth = jobs.filter((j: any) => (j.completedAt || "").startsWith(monthPrefix)).reduce((s: number, j: any) => s + (Number(j.amount) || 0), 0);
         const completedMonth = jobs.filter((j: any) => (j.completedAt || "").startsWith(monthPrefix)).length;
         return { success: true, activeJobs, pendingEstimates: pendingEst, revenueThisMonth: revenueMonth, jobsCompletedThisMonth: completedMonth };
+      }
+      case "get_weather": {
+        if (!ctx.owmKey) return { success: false, error: "No weather API key configured (Settings → Company → Weather)." };
+        // Same "derive from company address if no explicit weatherLocation"
+        // fallback as src/lib/weather.ts's deriveWeatherLocation — Cloudflare
+        // Functions can't import from src/, so this mirrors that logic rather
+        // than sharing it directly.
+        let location = (ctx.weatherLocation || "").trim();
+        if (!location) {
+          const parts = (ctx.companyAddress || "").split(",").map(s => s.trim()).filter(Boolean);
+          if (parts.length >= 2) {
+            const city = parts[1];
+            const stateSeg = parts[parts.length - 1].replace(/\d+/g, "").trim();
+            location = stateSeg ? `${city},${stateSeg}` : city;
+          }
+        }
+        if (!location) location = "York,PA,US";
+        const locParam = /^\d{5}$/.test(location) ? `zip=${location},US` : `q=${encodeURIComponent(location)}`;
+        const res = await fetchWithTimeout(`https://api.openweathermap.org/data/2.5/weather?${locParam}&units=imperial&appid=${ctx.owmKey}`, {}, 8000);
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({} as any));
+          return { success: false, error: err?.message || `Weather API error ${res.status}` };
+        }
+        const data = await res.json() as any;
+        return {
+          success: true,
+          location,
+          tempF: Math.round(data.main?.temp),
+          feelsLikeF: Math.round(data.main?.feels_like),
+          condition: data.weather?.[0]?.description || "",
+          windMph: Math.round(data.wind?.speed),
+          humidity: data.main?.humidity,
+        };
       }
       case "list_jobs": {
         let rows = await sbGet(ctx, `jobs?select=id,customerName,status,scheduledDate,scheduledTime,address,crew${ownerScope(ctx)}&limit=200`);

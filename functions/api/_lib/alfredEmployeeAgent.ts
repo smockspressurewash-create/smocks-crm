@@ -34,6 +34,9 @@ export type Ctx = {
   twilioSid?: string;
   twilioToken?: string;
   twilioFrom?: string;
+  owmKey?: string;
+  weatherLocation?: string;
+  companyAddress?: string;
 };
 
 const sbGet = async (ctx: Ctx, path: string): Promise<any[]> => {
@@ -94,6 +97,11 @@ const TOOLS = [
     input_schema: { type: "object", properties: {} },
   },
   {
+    name: "get_my_earnings",
+    description: "THIS employee's own hourly rate and pay for their current/most recent shift. Use for 'how much have I made' / 'what did I make today' / any question about THEIR OWN pay — never answer a pay question with business revenue, that is a completely different number and not this employee's own earnings.",
+    input_schema: { type: "object", properties: {} },
+  },
+  {
     name: "list_my_upcoming_jobs",
     description: "List THIS employee's own upcoming assigned jobs. Use for 'what's on my schedule' / 'what job am I on next'.",
     input_schema: { type: "object", properties: { days: { type: "number", description: "how many days forward, default 7" } } },
@@ -111,6 +119,11 @@ const TOOLS = [
     name: "delete_my_calendar_event",
     description: "Delete an event from this employee's own Google Calendar, found by title.",
     input_schema: { type: "object", properties: { title: { type: "string" }, date: { type: "string", description: "YYYY-MM-DD, narrows the search" } }, required: ["title"] },
+  },
+  {
+    name: "get_weather",
+    description: "Current weather and conditions at the business's location — use for 'what's the weather', 'is it going to rain', 'should we work today', etc.",
+    input_schema: { type: "object", properties: {} },
   },
   {
     name: "notify_upcoming_customers_running_late",
@@ -179,11 +192,61 @@ const executeTool = async (ctx: Ctx, employee: any, name: string, input: Record<
         }
         return { success: true, clockedIn: false, lastShiftHours: employee.lastShiftHours ?? null, lastShiftDate: employee.lastShiftDate ?? null };
       }
+      case "get_my_earnings": {
+        const rate = Number(employee.hourlyRate) || 0;
+        if (!rate) return { success: false, error: "No hourly rate is on file for this employee — ask the owner to set one in Employees." };
+        if (employee.dayClockInAt) {
+          const elapsedMs = Date.now() - Number(employee.dayClockInAt) - (Number(employee.dayPausedMinutes) || 0) * 60000;
+          const hoursSoFar = Math.round((elapsedMs / 3600000) * 100) / 100;
+          return { success: true, status: "still clocked in today", hourlyRate: rate, hoursSoFarToday: hoursSoFar, estimatedPayToday: Math.round(hoursSoFar * rate * 100) / 100 };
+        }
+        if (!employee.lastShiftHours) return { success: true, status: "no completed shift on file yet", hourlyRate: rate };
+        // NOTE — only the most recently completed shift is tracked per
+        // employee (no historical per-day hours log exists yet), so this can
+        // answer "what did I make on my last shift" accurately but NOT a
+        // true month-to-date total. Being explicit about that scope here so
+        // the agent doesn't imply a monthly figure it doesn't actually have.
+        return {
+          success: true, status: "most recently completed shift", lastShiftDate: employee.lastShiftDate ?? null,
+          hourlyRate: rate, lastShiftHours: employee.lastShiftHours,
+          lastShiftPay: Math.round(Number(employee.lastShiftHours) * rate * 100) / 100,
+          note: "Only the most recent shift is tracked — this is not a month-to-date total.",
+        };
+      }
+      case "get_weather": {
+        if (!ctx.owmKey) return { success: false, error: "No weather API key configured (Settings → Company → Weather)." };
+        let location = (ctx.weatherLocation || "").trim();
+        if (!location) {
+          const parts = (ctx.companyAddress || "").split(",").map(s => s.trim()).filter(Boolean);
+          if (parts.length >= 2) {
+            const city = parts[1];
+            const stateSeg = parts[parts.length - 1].replace(/\d+/g, "").trim();
+            location = stateSeg ? `${city},${stateSeg}` : city;
+          }
+        }
+        if (!location) location = "York,PA,US";
+        const locParam = /^\d{5}$/.test(location) ? `zip=${location},US` : `q=${encodeURIComponent(location)}`;
+        const res = await fetch(`https://api.openweathermap.org/data/2.5/weather?${locParam}&units=imperial&appid=${ctx.owmKey}`);
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({} as any));
+          return { success: false, error: err?.message || `Weather API error ${res.status}` };
+        }
+        const data = await res.json() as any;
+        return {
+          success: true, location,
+          tempF: Math.round(data.main?.temp), feelsLikeF: Math.round(data.main?.feels_like),
+          condition: data.weather?.[0]?.description || "", windMph: Math.round(data.wind?.speed), humidity: data.main?.humidity,
+        };
+      }
       case "list_my_upcoming_jobs": {
         const days = Math.max(1, Math.min(30, Number(input.days) || 7));
         const start = new Date().toISOString().slice(0, 10);
         const end = new Date(); end.setDate(end.getDate() + days);
-        const rows = await sbGet(ctx, `jobs?select=id,customerName,status,scheduledDate,scheduledTime,address${ownerScope(ctx)}&scheduledDate=gte.${start}&scheduledDate=lt.${end.toISOString().slice(0, 10)}&limit=200`);
+        // BUG FIX — this select never included `crew`, so the filter right
+        // below it (Array.isArray(j.crew) ? j.crew.includes(employee.id) ...)
+        // always evaluated against undefined and returned zero jobs no
+        // matter what — "what's on my schedule" always came back empty.
+        const rows = await sbGet(ctx, `jobs?select=id,customerName,status,scheduledDate,scheduledTime,address,crew${ownerScope(ctx)}&scheduledDate=gte.${start}&scheduledDate=lt.${end.toISOString().slice(0, 10)}&limit=200`);
         const mine = rows.filter((j: any) => Array.isArray(j.crew) ? j.crew.includes(employee.id) : false).filter((j: any) => j.status !== "cancelled" && j.status !== "completed");
         if (mine.length === 0) return { success: true, jobs: [], summary: "Nothing on your schedule in that window." };
         return { success: true, jobs: mine.sort((a: any, b: any) => (a.scheduledDate + (a.scheduledTime || "")).localeCompare(b.scheduledDate + (b.scheduledTime || ""))).map((j: any) => ({ date: j.scheduledDate, time: j.scheduledTime, customer: j.customerName, address: j.address })) };

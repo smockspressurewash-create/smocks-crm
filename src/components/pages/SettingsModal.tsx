@@ -21,7 +21,7 @@ import {
   Tooltip, ResponsiveContainer, Area, AreaChart, LineChart, Line,
   ComposedChart, Legend
 } from "recharts";
-import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, compressImageFile, POLL_INTERVAL_OPTIONS, DEFAULT_POLL_INTERVAL_MS, backfillJobMediaToStorage } from "../../lib/utils";
+import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, compressImageFile, POLL_INTERVAL_OPTIONS, DEFAULT_POLL_INTERVAL_MS, backfillJobMediaToStorage, withTimeout } from "../../lib/utils";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
 import { twilioSend, sendEmail, fetchBufferOrganizationId, fetchBufferChannels, checkA2pCampaignStatus, checkTwilioAccountStatus, type BufferChannel } from "../../lib/messaging";
 import { buildSocialAuthorizeUrl, type SocialPlatform } from "../../lib/socialOAuth";
@@ -152,13 +152,19 @@ export function SettingsModal({ open, onClose, settings, setSettings, jobs = [],
       // entered so there's no toggle to forget to flip.
       const keyForMode = stripeSecretInput || f.stripePublishableKey || "";
       const inferredMode: "test" | "live" | undefined = /_live_/.test(keyForMode) ? "live" : /_test_/.test(keyForMode) ? "test" : undefined;
-      await saveOwnerStripeKeys(token, {
+      // BUG FIX — stripeAction already has its own internal fetch timeout,
+      // but the reported symptom (button stuck on "Saving…" indefinitely,
+      // no error) meant something was still getting past that. Wrapping the
+      // whole save+status round trip here too guarantees the button
+      // unlocks with a visible error within a bounded time no matter where
+      // in the chain something hangs.
+      await withTimeout(saveOwnerStripeKeys(token, {
         publishableKey: f.stripePublishableKey || "",
         secretKey: stripeSecretInput || undefined,
         webhookSecret: stripeWebhookInput || undefined,
         mode: inferredMode,
-      });
-      const status = await getOwnerStripeStatus(token);
+      }), 25000, "Stripe key save");
+      const status = await withTimeout(getOwnerStripeStatus(token), 25000, "Stripe status refresh");
       setStripeStatus(status);
       setStripeSecretInput("");
       setStripeWebhookInput("");
@@ -1368,7 +1374,10 @@ export function SettingsModal({ open, onClose, settings, setSettings, jobs = [],
 
               <div className="space-y-2.5">
                 <div>
-                  <label className="text-[10px] text-white/50 mb-1 block uppercase tracking-wider">Publishable Key</label>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="text-[10px] text-white/50 uppercase tracking-wider">Publishable Key</label>
+                    <a href="https://dashboard.stripe.com/apikeys" target="_blank" rel="noopener noreferrer" className="text-[10px] text-blue-400 hover:text-blue-300 flex items-center gap-1"><ExternalLink size={10} />Find it on Stripe</a>
+                  </div>
                   <GInput placeholder="pk_live_… or pk_test_…" value={f.stripePublishableKey || ""} onChange={e => setF({ ...f, stripePublishableKey: e.target.value })} className="!text-xs font-mono" />
                   <div className="text-[10px] text-white/30 mt-1">Safe to store here — this key is meant to be public, it can only start a payment, never move money on its own.</div>
                 </div>
@@ -1383,13 +1392,19 @@ export function SettingsModal({ open, onClose, settings, setSettings, jobs = [],
                     service-role-only owner_stripe_accounts table — never
                     returned to any browser again, this one included. */}
                 <div>
-                  <label className="text-[10px] text-white/50 mb-1 block uppercase tracking-wider">Secret Key {stripeStatus?.hasSecretKey && <span className="text-green-400 normal-case">· a key is already saved</span>}</label>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="text-[10px] text-white/50 uppercase tracking-wider">Secret Key {stripeStatus?.hasSecretKey && <span className="text-green-400 normal-case">· a key is already saved</span>}</label>
+                    <a href="https://dashboard.stripe.com/apikeys" target="_blank" rel="noopener noreferrer" className="text-[10px] text-blue-400 hover:text-blue-300 flex items-center gap-1"><ExternalLink size={10} />Find it on Stripe</a>
+                  </div>
                   <GInput type="password" placeholder={stripeStatus?.hasSecretKey ? "•••••••••••••••• (leave blank to keep current key)" : "sk_live_… or sk_test_…"} value={stripeSecretInput} onChange={e => setStripeSecretInput(e.target.value)} className="!text-xs font-mono" />
                   <div className="text-[10px] text-white/30 mt-1">Stored server-side only — never sent to customers' browsers, never visible again once saved.</div>
                 </div>
 
                 <div>
-                  <label className="text-[10px] text-white/50 mb-1 block uppercase tracking-wider">Webhook Secret (optional) {stripeStatus?.hasWebhookSecret && <span className="text-green-400 normal-case">· already saved</span>}</label>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="text-[10px] text-white/50 uppercase tracking-wider">Webhook Secret (optional) {stripeStatus?.hasWebhookSecret && <span className="text-green-400 normal-case">· already saved</span>}</label>
+                    <a href="https://dashboard.stripe.com/webhooks" target="_blank" rel="noopener noreferrer" className="text-[10px] text-blue-400 hover:text-blue-300 flex items-center gap-1"><ExternalLink size={10} />Set up on Stripe</a>
+                  </div>
                   <GInput type="password" placeholder={stripeStatus?.hasWebhookSecret ? "•••••••••••••••• (leave blank to keep current)" : "whsec_…"} value={stripeWebhookInput} onChange={e => setStripeWebhookInput(e.target.value)} className="!text-xs font-mono" />
                 </div>
 
@@ -1400,8 +1415,11 @@ export function SettingsModal({ open, onClose, settings, setSettings, jobs = [],
                 <div className="p-3 bg-black/60 rounded-xl border border-white/5 text-[10px] text-white/50 space-y-1">
                   <div className="font-semibold text-white/70">Server-Verified Payment Webhook</div>
                   <div>Payments already get marked paid automatically when a customer completes checkout. For extra tamper-resistance (a signature-verified check that can't be spoofed from a browser), also set up your webhook:</div>
-                  <div className="mt-1">1. Stripe Dashboard → Developers → Webhooks → Add endpoint → paste this exact URL:</div>
-                  <div className="font-mono text-blue-400 break-all p-1.5 bg-black/40 rounded">{stripeStatusLoading ? "loading…" : (stripeStatus?.webhookUrl || `${window.location.origin}/api/stripe-webhook`)}</div>
+                  <div className="mt-1">1. <a href="https://dashboard.stripe.com/webhooks" target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:text-blue-300 underline inline-flex items-center gap-1">Open Stripe Webhooks<ExternalLink size={9} /></a> → Add endpoint → paste this exact URL:</div>
+                  <div className="flex items-center gap-1.5">
+                    <div className="font-mono text-blue-400 break-all p-1.5 bg-black/40 rounded flex-1">{stripeStatusLoading ? "loading…" : (stripeStatus?.webhookUrl || `${window.location.origin}/api/stripe-webhook`)}</div>
+                    <button type="button" onClick={() => { navigator.clipboard?.writeText(stripeStatus?.webhookUrl || `${window.location.origin}/api/stripe-webhook`); toast?.("Webhook URL copied", "green"); }} className="px-2 py-1.5 rounded bg-white/10 hover:bg-white/20 text-white/60 text-[10px] flex-shrink-0">Copy</button>
+                  </div>
                   <div className="mt-1">2. Select events: checkout.session.completed, checkout.session.async_payment_succeeded, payment_intent.succeeded, payment_intent.payment_failed, charge.refunded, charge.dispute.created.</div>
                   <div>3. Stripe shows a signing secret ("whsec_…") when you create the endpoint — paste it into the Webhook Secret field above and save.</div>
                 </div>

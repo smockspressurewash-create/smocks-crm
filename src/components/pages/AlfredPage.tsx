@@ -508,7 +508,18 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
   const appendMessage = msg => setConversations(prev => prev.map(c => c.id === activeId ? { ...c, messages: [...c.messages, msg], updatedAt: Date.now() } : c));
   const replaceMessages = msgs => setConversations(prev => prev.map(c => c.id === activeId ? { ...c, messages: msgs, updatedAt: Date.now() } : c));
 
+  // BUG FIX — "duplicate conversations" turned out to be reproducible: a
+  // fast double-click/double-tap on "New Chat" (no touch feedback delay to
+  // suggest the first click already registered) fired newConversation()
+  // twice before the first click's setConversations had a chance to update
+  // anything the second click could see, so both created a distinct
+  // "New chat" row and both got saved to Supabase as genuinely separate
+  // conversations. This ref makes a second call within 500ms a no-op.
+  const newConversationGuardRef = useRef(0);
   const newConversation = () => {
+    const now = Date.now();
+    if (now - newConversationGuardRef.current < 500) return;
+    newConversationGuardRef.current = now;
     const cid = uid();
     const newConv = {
       id: cid,
@@ -561,6 +572,41 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
       (supabase as any).from("alfred_conversations").delete().eq("owner_id", ownerId).in("id", ids)
         .then((r: any) => { if (r?.error) { console.warn("[Alfred Sync] bulk delete failed:", r.error.message); toast?.("Cleared locally, but failed to sync deletion — " + r.error.message, "red"); } })
         .catch((e: any) => { console.warn("[Alfred Sync] bulk delete threw:", e?.message); toast?.("Cleared locally, but failed to sync deletion", "red"); });
+    }
+  };
+
+  // FEATURE — "merge duplicate conversations." Genuine content duplicates
+  // are rare (each real chat has its own message history); the actual thing
+  // cluttering the list is stub conversations — same title, one message
+  // (just the greeting), never actually chatted in — created by the
+  // double-click race fixed above, or by "delete all" / "delete last one"
+  // auto-recreating a fresh one. Groups by exact title, and within any
+  // group where two or more are stubs (≤1 message), keeps only the single
+  // newest stub and removes the rest — never touches a conversation with
+  // real back-and-forth in it.
+  const cleanupDuplicateConversations = () => {
+    const byTitle = new Map<string, any[]>();
+    conversations.forEach(c => { const key = (c.title || "").trim(); if (!byTitle.has(key)) byTitle.set(key, []); byTitle.get(key)!.push(c); });
+    const toRemove: string[] = [];
+    byTitle.forEach(group => {
+      const stubs = group.filter(c => (c.messages || []).length <= 1);
+      if (stubs.length > 1) {
+        const sorted = [...stubs].sort((a, b) => {
+          const ts = (v: any) => typeof v === "number" ? v : (new Date(v).getTime() || 0);
+          return ts(b.updatedAt) - ts(a.updatedAt);
+        });
+        sorted.slice(1).forEach(c => toRemove.push(c.id));
+      }
+    });
+    if (toRemove.length === 0) { toast?.("No duplicate conversations found", "green"); return; }
+    toRemove.forEach(id => deletedConvIdsRef.current.add(id));
+    setConversations(conversations.filter(c => !toRemove.includes(c.id)));
+    if (toRemove.includes(activeConvId)) setActiveConvId(conversations.find(c => !toRemove.includes(c.id))?.id || null);
+    toast?.(`Merged/removed ${toRemove.length} duplicate conversation${toRemove.length !== 1 ? "s" : ""}`, "green");
+    if (ownerId) {
+      (supabase as any).from("alfred_conversations").delete().eq("owner_id", ownerId).in("id", toRemove)
+        .then((r: any) => { if (r?.error) { console.warn("[Alfred Sync] cleanup delete failed:", r.error.message); toast?.("Cleaned up locally, but failed to sync — " + r.error.message, "red"); } })
+        .catch((e: any) => console.warn("[Alfred Sync] cleanup delete threw:", e?.message));
     }
   };
 
@@ -2742,11 +2788,12 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           <button onClick={() => setSidebarOpen(false)} className="md:hidden p-2 rounded-lg hover:bg-white/5 text-white/50"><X size={14} /></button>
         </div>
 
-        <div className="p-3 border-b border-red-900/20">
+        <div className="p-3 border-b border-red-900/20 space-y-2">
           <div className="relative">
             <Search size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-white/40" />
             <input value={convSearch} onChange={e => setConvSearch(e.target.value)} placeholder="Search chats..." className="w-full bg-black/40 border border-red-900/20 rounded-lg pl-7 pr-2 py-1.5 text-xs text-white placeholder-white/30 focus:outline-none focus:border-red-600/40" />
           </div>
+          <button onClick={cleanupDuplicateConversations} className="w-full text-[10px] text-white/40 hover:text-white/70 transition text-left px-0.5">Merge duplicate conversations</button>
         </div>
 
         <div className="flex-1 overflow-y-auto py-2 px-2">

@@ -144,6 +144,13 @@ interface ResolvedOwnerSettings {
   alfredAutoApproveReschedules: boolean;
   alfredAutoApproveInvoiceSends: boolean;
   alfredPersonality: string;
+  // FEATURE — text-Alfred had no weather tool at all ("Alfred said it does
+  // not have weather reporting capabilities"), even though the in-app
+  // Alfred/Dashboard already show real weather. Same OpenWeatherMap key +
+  // location the in-app widget uses.
+  owmKey: string;
+  weatherLocation: string;
+  companyAddress: string;
 }
 
 const shapeSettings = (row: any, data: any): ResolvedOwnerSettings => ({
@@ -177,6 +184,9 @@ const shapeSettings = (row: any, data: any): ResolvedOwnerSettings => ({
   alfredAutoApproveReschedules: !!data?.alfredAutoApproveReschedules,
   alfredAutoApproveInvoiceSends: !!data?.alfredAutoApproveInvoiceSends,
   alfredPersonality: data?.alfredPersonality || "drillsergeant",
+  owmKey: data?.owmKey || "",
+  weatherLocation: data?.weatherLocation || "",
+  companyAddress: data?.companyAddress || "",
 });
 
 const fetchAppSettings = async (env: Record<string, string>, toNumber: string): Promise<ResolvedOwnerSettings> => {
@@ -357,7 +367,7 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
     const isStop = STOP_WORDS.includes(body);
     const isStart = START_WORDS.includes(body);
     const resolved = await fetchAppSettings(context.env, params.To || "");
-    const { companyName, keyword, ownerId, myPhone, alfredExtraPhones, alfredExtraPhoneRoles, alfredSmsEnabled, twilioSid, twilioToken, twilioFrom, modelKeys, modelPriority, activeModel, openaiKey, googleProviderToken, googleRefreshToken, googleTokenExpiresAt, testModeEnabled, alfredAutoApproveReschedules, alfredPersonality } = resolved;
+    const { companyName, keyword, ownerId, myPhone, alfredExtraPhones, alfredExtraPhoneRoles, alfredSmsEnabled, twilioSid, twilioToken, twilioFrom, modelKeys, modelPriority, activeModel, openaiKey, googleProviderToken, googleRefreshToken, googleTokenExpiresAt, testModeEnabled, alfredAutoApproveReschedules, alfredPersonality, owmKey, weatherLocation, companyAddress } = resolved;
     const isOptInKeyword = body === keyword;
     const isConfirm = CONFIRM_WORDS.includes(body);
 
@@ -428,7 +438,7 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
     // owner's explicit assignment is the real intent, not "extra owner".
     const assignedEmployeeId = alfredExtraPhoneRoles[fromDigits] || "";
     if (alfredSmsEnabled && authorizedPhones.includes(fromDigits) && !assignedEmployeeId) {
-      const ctx = { authHeaders, ownerId, companyName, twilioSid, twilioToken, twilioFrom, origin: new URL(context.request.url).origin, fromPhone: from, googleProviderToken, googleRefreshToken, googleTokenExpiresAt, testModeEnabled, ownerAuthorizedPhones: authorizedPhones, alfredPersonality, env: context.env as Record<string, string> };
+      const ctx = { authHeaders, ownerId, companyName, twilioSid, twilioToken, twilioFrom, origin: new URL(context.request.url).origin, fromPhone: from, googleProviderToken, googleRefreshToken, googleTokenExpiresAt, testModeEnabled, ownerAuthorizedPhones: authorizedPhones, alfredPersonality, owmKey, weatherLocation, companyAddress, env: context.env as Record<string, string> };
       // BUG FIX — this branch never logged the OWNER's own inbound text to
       // inbox_threads at all (only to alfred_sms_threads, which the Inbox
       // UI never reads) — sendAlfredSms below only logs Alfred's OUTGOING
@@ -514,7 +524,7 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
     // (an owner number always wins) and before the customer STOP/opt-in
     // logic below, matching that same "resolve who this is once" shape.
     {
-      const empRes = await fetch(`${SUPABASE_URL}/rest/v1/employees?select=id,firstName,lastName,phone,permissions,dayClockInAt,dayPausedMinutes,lastShiftHours,lastShiftDate,google_token,google_refresh_token,google_token_expires_at${ownerFilter}`, { headers: authHeaders });
+      const empRes = await fetch(`${SUPABASE_URL}/rest/v1/employees?select=id,firstName,lastName,phone,permissions,dayClockInAt,dayPausedMinutes,lastShiftHours,lastShiftDate,hourlyRate,google_token,google_refresh_token,google_token_expires_at${ownerFilter}`, { headers: authHeaders });
       const empRows = await empRes.json().catch(() => []);
       // An explicit "assign this number to this employee" (Settings → AI
       // Models) is its own authorization — no need for their own phone on
@@ -525,7 +535,7 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
           || empRows.find((e: any) => e.phone && normalizePhoneDigits(e.phone) === fromDigits && e.permissions?.can_text_alfred === true)
         : null;
       if (employee) {
-        const empCtx = { authHeaders, ownerId, companyName, twilioSid, twilioToken, twilioFrom, origin: new URL(context.request.url).origin, env: context.env as Record<string, string> };
+        const empCtx = { authHeaders, ownerId, companyName, twilioSid, twilioToken, twilioFrom, origin: new URL(context.request.url).origin, owmKey, weatherLocation, companyAddress, env: context.env as Record<string, string> };
         context.waitUntil((async () => {
           try {
             const text = await resolveIncomingText(params, bodyRaw, twilioSid, twilioToken, openaiKey, (context.env as any).AI);

@@ -83,7 +83,7 @@ import {
   AUTOMATION_TEMPLATES, automationFromTemplate,
 } from "./lib/seed";
 import { seedWeather } from "./lib/weather";
-import { fetchRealWeather } from "./lib/weather";
+import { fetchRealWeather, deriveWeatherLocation } from "./lib/weather";
 import { fmt, uid, today, daysSince, daysFromNow, consumeOAuthIntent, getLastOwnerSessionFlag, setLastOwnerSessionFlag, getLastOwnerId, setLastOwnerId, buildChecklistFromServices, withTimeout, normalizeJobRow, totalJobPhotoCount, notifyDesktop, stripLegacyJobFields, getPollIntervalMs, purgeOldJobMedia } from "./lib/utils";
 import { sendEmail, sendOwnerGmailOnly, emailShell, emailButton, buildTomorrowJobsEmailHtml, buildDailyBriefingEmailHtml, buildWeeklyOwnerDigestEmailHtml, setOptedOutPhones, setTestModeContacts } from "./lib/messaging";
 import { exchangeSocialOAuthCode, type SocialPlatform } from "./lib/socialOAuth";
@@ -2893,7 +2893,12 @@ export function App() {
   useEffect(() => {
     if (!settings.owmKey) { setWeatherData(null); setWeatherFetchError(null); return; }
     const run = () => {
-      fetchRealWeather(settings.owmKey, (settings as any).weatherLocation)
+      // BUG FIX — an owner who never filled in the dedicated "Weather
+      // Location" field (most owners, since it's easy to miss) silently got
+      // York, PA's weather regardless of where their business actually is —
+      // deriveWeatherLocation falls back to parsing the owner's own company
+      // address before ever reaching that hardcoded default.
+      fetchRealWeather(settings.owmKey, deriveWeatherLocation((settings as any).weatherLocation, (settings as any).companyAddress))
         .then(w => { console.log("[Weather] refreshed —", w.current.temp + "°,", w.current.description); setWeatherData(w); setWeatherFetchError(null); })
         .catch((e: any) => {
           const msg = e?.message || String(e);
