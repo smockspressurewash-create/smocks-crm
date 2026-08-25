@@ -218,16 +218,21 @@ export function HiringPage({ settings = {} as AppSettings, setSettings, toast, o
                       {...(isMobile ? {} : { draggable: true, onDragStart: () => setDragId(c.id) })}
                       className={"p-3 bg-black/60 rounded-xl border border-white/10 select-none " + (isMobile ? "" : "cursor-grab active:cursor-grabbing")}
                     >
-                      <div className="font-medium text-sm truncate">{c.firstName} {c.lastName}</div>
+                      {/* FEATURE — "clicking a name should open a pop-up
+                          showing their responses and all relevant details."
+                          This used to require finding the small pencil icon
+                          (which opens the plain edit form) or a conditional
+                          "Answers" button that only appeared if answers
+                          existed — no single obvious way to just see
+                          everything about this candidate. The name itself is
+                          now that one entry point. */}
+                      <button onClick={() => setCandidateDetailOpen(c)} className="font-medium text-sm truncate text-left hover:text-blue-300 hover:underline transition w-full">{c.firstName} {c.lastName}</button>
                       {c.source && <div className="text-[9px] text-white/30 mt-0.5">via {c.source}</div>}
                       {c.notes && <div className="text-[11px] text-white/50 mt-1 line-clamp-2">{c.notes}</div>}
-                      {/* FEATURE — resume/photo attachments (#37), visible
-                          right on the card instead of buried in an edit form. */}
-                      {(c.resumeUrl || c.photoUrl || (c.answers && Object.keys(c.answers).length > 0)) && (
+                      {(c.resumeUrl || c.photoUrl) && (
                         <div className="flex items-center gap-2 mt-1.5 flex-wrap">
                           {c.resumeUrl && <a href={c.resumeUrl} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()} className="text-[9px] px-1.5 py-0.5 rounded-full bg-blue-950/40 text-blue-300 hover:bg-blue-900/50">📄 Resume</a>}
                           {c.photoUrl && <a href={c.photoUrl} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()} className="text-[9px] px-1.5 py-0.5 rounded-full bg-purple-950/40 text-purple-300 hover:bg-purple-900/50">🖼️ Photo</a>}
-                          {c.answers && Object.keys(c.answers).length > 0 && <button onClick={() => setCandidateDetailOpen(c)} className="text-[9px] px-1.5 py-0.5 rounded-full bg-white/10 text-white/50 hover:text-white/80">📝 Answers</button>}
                         </div>
                       )}
                       <div className="flex gap-1 mt-2 pt-2 border-t border-white/5">
@@ -414,21 +419,45 @@ export function HiringPage({ settings = {} as AppSettings, setSettings, toast, o
         )}
       </Modal>
 
-      {/* Candidate answers detail */}
-      <Modal open={!!candidateDetailOpen} onClose={() => setCandidateDetailOpen(null)} title={candidateDetailOpen ? `${candidateDetailOpen.firstName} ${candidateDetailOpen.lastName || ""} — Answers` : "Answers"}>
+      {/* Candidate detail — "clicking a name should open a pop-up showing
+          their responses and all relevant details," not just answers. */}
+      <Modal open={!!candidateDetailOpen} onClose={() => setCandidateDetailOpen(null)} title={candidateDetailOpen ? `${candidateDetailOpen.firstName} ${candidateDetailOpen.lastName || ""}` : "Candidate"}>
         {candidateDetailOpen && (
           <div className="space-y-3">
+            <div className="flex items-center gap-2 flex-wrap">
+              <Badge tone="gray">{candidateDetailOpen.phase}</Badge>
+              {candidateDetailOpen.source && <span className="text-[10px] text-white/40">via {candidateDetailOpen.source}</span>}
+            </div>
+            <div className="grid grid-cols-2 gap-3 pb-2 border-b border-white/10">
+              <div><div className="text-xs text-white/40 mb-0.5">Phone</div><div className="text-sm">{candidateDetailOpen.phone || "—"}</div></div>
+              <div><div className="text-xs text-white/40 mb-0.5">Email</div><div className="text-sm truncate">{candidateDetailOpen.email || "—"}</div></div>
+            </div>
+            {candidateDetailOpen.notes && (
+              <div className="pb-2 border-b border-white/10"><div className="text-xs text-white/40 mb-0.5">Notes</div><div className="text-sm whitespace-pre-wrap">{candidateDetailOpen.notes}</div></div>
+            )}
+            {(candidateDetailOpen.resumeUrl || candidateDetailOpen.photoUrl) && (
+              <div className="flex items-center gap-2 pb-2 border-b border-white/10">
+                {candidateDetailOpen.resumeUrl && <a href={candidateDetailOpen.resumeUrl} target="_blank" rel="noopener noreferrer" className="text-xs px-2 py-1 rounded-full bg-blue-950/40 text-blue-300 hover:bg-blue-900/50">📄 Resume</a>}
+                {candidateDetailOpen.photoUrl && <a href={candidateDetailOpen.photoUrl} target="_blank" rel="noopener noreferrer" className="text-xs px-2 py-1 rounded-full bg-purple-950/40 text-purple-300 hover:bg-purple-900/50">🖼️ Photo</a>}
+              </div>
+            )}
             {(candidateDetailOpen.strengths || candidateDetailOpen.weaknesses) && (
               <div className="grid grid-cols-2 gap-3 pb-2 border-b border-white/10">
                 <div><div className="text-xs text-white/40 mb-0.5">Strengths</div><div className="text-sm">{candidateDetailOpen.strengths || "—"}</div></div>
                 <div><div className="text-xs text-white/40 mb-0.5">Areas to improve</div><div className="text-sm">{candidateDetailOpen.weaknesses || "—"}</div></div>
               </div>
             )}
-            {Object.entries(candidateDetailOpen.answers || {}).map(([qid, val]: [string, any]) => {
-              const q = questions.find(x => x.id === qid);
-              return <div key={qid}><div className="text-xs text-white/40 mb-0.5">{q?.label || qid}</div><div className="text-sm">{String(val) || "—"}</div></div>;
-            })}
-            {Object.keys(candidateDetailOpen.answers || {}).length === 0 && <div className="text-center text-white/30 text-sm py-4">No answers recorded</div>}
+            <div>
+              <div className="text-xs text-white/40 uppercase tracking-wider mb-1.5">Application Answers</div>
+              {Object.entries(candidateDetailOpen.answers || {}).map(([qid, val]: [string, any]) => {
+                const q = questions.find(x => x.id === qid);
+                return <div key={qid} className="mb-2"><div className="text-xs text-white/40 mb-0.5">{q?.label || qid}</div><div className="text-sm">{String(val) || "—"}</div></div>;
+              })}
+              {Object.keys(candidateDetailOpen.answers || {}).length === 0 && <div className="text-center text-white/30 text-sm py-4">No answers recorded</div>}
+            </div>
+            <div className="flex gap-2 justify-end pt-2 border-t border-white/10">
+              <GBtn variant="ghost" onClick={() => { setModal({ open: true, data: candidateDetailOpen }); setCandidateDetailOpen(null); }} className="!text-xs"><Edit size={11} className="inline mr-1" />Edit</GBtn>
+            </div>
           </div>
         )}
       </Modal>

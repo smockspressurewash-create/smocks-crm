@@ -363,6 +363,14 @@ export function EstimateBuilder({ open, onClose, customers = [], services = [], 
           <div className="flex items-center justify-between mb-2">
             <label className="text-xs text-white/60">{estimateType === "options" ? "Line items (customers can toggle optional ones)" : "Line items"}</label>
             <div className="flex items-center gap-2">
+              {/* FEATURE — "if it's an options package, ensure everything is
+                  optional." Each item's optional flag defaults off and has
+                  to be checked one at a time — easy to forget one and end up
+                  with a "package" the customer can't actually customize.
+                  One click flags every current line item at once. */}
+              {estimateType === "options" && items.length > 0 && (
+                <button onClick={() => setItems((items as any[]).map(i => ({ ...i, optional: true })))} className="text-[10px] text-blue-400 hover:text-blue-300 flex items-center gap-1">Make all optional</button>
+              )}
               <button onClick={() => setSavingTemplate(!savingTemplate)} className="text-[10px] text-purple-400 hover:text-purple-300 flex items-center gap-1"><Save size={10} />Save as template</button>
               <button onClick={() => setItems([...items, { id: uid(), description: "", quantity: 1, unitPrice: 0 }])} className="text-xs text-red-400 hover:text-red-300 flex items-center gap-1"><Plus size={12} /> Add</button>
             </div>

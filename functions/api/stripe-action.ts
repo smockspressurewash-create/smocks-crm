@@ -71,9 +71,16 @@ const getOwnerStripeAccount = async (
   return { secretKey: row.stripe_secret_key || undefined, publishableKey: row.stripe_publishable_key || undefined, webhookSecret: row.stripe_webhook_secret || undefined, mode: row.stripe_mode, stripeAccountId: row.stripe_account_id || undefined };
 };
 
-const getEstimateOwnerId = async (invoiceId: string): Promise<string | null> => {
+// BUG FIX — same RLS-vs-anon-key mismatch as getInvoiceAmountCents below:
+// an anonymous customer paying their invoice link has no session, so the
+// anon-key read here returned zero rows under the real owner_id-scoped RLS
+// policy and this whole resolution chain (which Stripe account to charge
+// against) silently failed. serviceRoleKey bypasses RLS for this one
+// specific, unguessable-id-bounded lookup, same trust model public-data.ts
+// already uses throughout for anonymous customer reads.
+const getEstimateOwnerId = async (invoiceId: string, serviceRoleKey: string): Promise<string | null> => {
   const res = await fetch(`${SUPABASE_URL}/rest/v1/estimates?id=eq.${encodeURIComponent(invoiceId)}&select=owner_id`, {
-    headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}` },
+    headers: { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}` },
   });
   const rows = await res.json().catch(() => []);
   return Array.isArray(rows) && rows[0]?.owner_id ? rows[0].owner_id : null;
@@ -122,9 +129,24 @@ const stripeFetch = async (secretKey: string, method: string, path: string, para
 // Looks up the real invoice total (in the estimates table — invoices ARE
 // estimate rows with invoiced:true, see CLAUDE.md) so a caller can never pay
 // less than what's actually owed by lying about the amount.
-const getInvoiceAmountCents = async (invoiceId: string): Promise<number> => {
+//
+// BUG FIX — "Stripe is having problems." This read used the ANON key, which
+// used to work back when estimates had a permissive USING(true) RLS policy
+// — but that's since been replaced with a real owner_id-scoped policy
+// (owner_id = current_owner_id()), and an anonymous customer paying their
+// invoice link has no session for current_owner_id() to resolve at all. The
+// anon-key read below has therefore been silently returning ZERO rows for
+// every invoiceId-based payment, which this function then reports as
+// "invoice not found" — every real customer payment that went through
+// invoiceId (as opposed to a raw client-supplied amount) has been failing
+// outright. serviceRoleKey bypasses RLS the same way every other anonymous-
+// customer read in this app already does (see public-data.ts) — safe here
+// because invoiceId is only ever used to look up ONE specific amount, never
+// returned to the caller or used to enumerate other rows.
+const getInvoiceAmountCents = async (invoiceId: string, serviceRoleKey: string): Promise<number> => {
+  if (!serviceRoleKey) throw new Error("Server missing SUPABASE_SERVICE_ROLE_KEY env var — add it in the Cloudflare Pages dashboard, then redeploy.");
   const res = await fetch(`${SUPABASE_URL}/rest/v1/estimates?id=eq.${encodeURIComponent(invoiceId)}&select=total`, {
-    headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}` },
+    headers: { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}` },
   });
   const rows = await res.json().catch(() => []);
   const total = Array.isArray(rows) ? Number(rows[0]?.total) : NaN;
@@ -143,8 +165,9 @@ const resolveInvoiceCustomerForSave = async (
   invoiceId: string,
   serviceRoleKey: string
 ): Promise<{ crmCustomerId: string; stripeCustomerId?: string; email?: string; name?: string } | null> => {
+  // BUG FIX — same RLS-vs-anon-key mismatch as getInvoiceAmountCents above.
   const estRes = await fetch(`${SUPABASE_URL}/rest/v1/estimates?id=eq.${encodeURIComponent(invoiceId)}&select=customerId`, {
-    headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}` },
+    headers: { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}` },
   });
   const estRows = await estRes.json().catch(() => []);
   const crmCustomerId = Array.isArray(estRows) ? estRows[0]?.customerId : null;
@@ -355,7 +378,7 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
       if (!serviceRoleKey) return new Response(JSON.stringify({ error: "Receipts require SUPABASE_SERVICE_ROLE_KEY to be configured." }), { status: 500, headers: { "Content-Type": "application/json" } });
 
       let resolvedOwnerId: string | null = null;
-      if (body.invoiceId) resolvedOwnerId = await getEstimateOwnerId(body.invoiceId);
+      if (body.invoiceId) resolvedOwnerId = await getEstimateOwnerId(body.invoiceId, serviceRoleKey);
       if (!resolvedOwnerId) {
         const accessToken = (context.request.headers.get("authorization") || "").replace(/^Bearer\s+/i, "");
         if (accessToken) resolvedOwnerId = await resolveCallerOwnerId(accessToken);
@@ -444,7 +467,7 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
     const serviceRoleKey = context.env.SUPABASE_SERVICE_ROLE_KEY;
     if (serviceRoleKey) {
       let resolvedOwnerId: string | null = null;
-      if (body.invoiceId) resolvedOwnerId = await getEstimateOwnerId(body.invoiceId);
+      if (body.invoiceId) resolvedOwnerId = await getEstimateOwnerId(body.invoiceId, serviceRoleKey);
       // BUG FIX — an owner-authenticated call (e.g. the owner adding a
       // customer's card from CustomerDetail.tsx) had no invoiceId and no
       // client-supplied ownerId either, so it silently fell through to the
@@ -476,7 +499,7 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
 
     switch (action) {
       case "create_payment_intent": {
-        const amountCents = body.invoiceId ? await getInvoiceAmountCents(body.invoiceId) : Math.round(Number(body.amountCents) || 0);
+        const amountCents = body.invoiceId ? await getInvoiceAmountCents(body.invoiceId, serviceRoleKey) : Math.round(Number(body.amountCents) || 0);
         if (amountCents <= 0) throw new Error("Invalid amount");
         const params: Record<string, string> = {
           amount: String(amountCents),
@@ -521,7 +544,7 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
         return json(intent);
       }
       case "create_checkout_session": {
-        const amountCents = body.invoiceId ? await getInvoiceAmountCents(body.invoiceId) : Math.round(Number(body.amountCents) || 0);
+        const amountCents = body.invoiceId ? await getInvoiceAmountCents(body.invoiceId, serviceRoleKey) : Math.round(Number(body.amountCents) || 0);
         if (amountCents <= 0) throw new Error("Invalid amount");
         const params: Record<string, string> = {
           mode: "payment",
@@ -556,7 +579,7 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
         // OWNER-ONLY in practice (only ever called from authenticated CRM UI,
         // never ClientPortal/ClientAuthPortal) — still amount-verified against
         // the invoice when one is given, same as the two create_* actions above.
-        const amountCents = body.invoiceId ? await getInvoiceAmountCents(body.invoiceId) : Math.round(Number(body.amountCents) || 0);
+        const amountCents = body.invoiceId ? await getInvoiceAmountCents(body.invoiceId, serviceRoleKey) : Math.round(Number(body.amountCents) || 0);
         if (!body.customerId || !body.paymentMethodId) throw new Error("Missing customerId/paymentMethodId");
         if (amountCents <= 0) throw new Error("Invalid amount");
         const params: Record<string, string> = {

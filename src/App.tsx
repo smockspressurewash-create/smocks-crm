@@ -4337,7 +4337,11 @@ export function App() {
             const packages = [0, 1].map(i => ({ id: "demo-pkg" + i, name: i === 0 ? "Standard Package" : "Premium Package", description: i === 0 ? "Our most popular combo" : "Everything, top to bottom", lineItems: i === 0 ? [li(0)] : [li(0), li(1), li(2)], subtotal: i === 0 ? li(0).unitPrice : li(0).unitPrice + li(1).unitPrice + li(2).unitPrice }));
             Object.assign(base, { estimateType: "package", packages, total: packages[0].subtotal });
           } else if (t === "options") {
-            const lineItems = [{ ...li(0), optional: false }, { ...li(1), optional: true }, { ...li(2), optional: true }];
+            // BUG FIX — "if it's an options package, ensure everything is
+            // optional." Every item here is toggleable now (was leaving the
+            // first item locked-on, which read as "I can't check gutter
+            // cleaning / commercial exterior" in the demo).
+            const lineItems = [{ ...li(0), optional: true }, { ...li(1), optional: true }, { ...li(2), optional: true }];
             Object.assign(base, { estimateType: "options", lineItems, subtotal: lineItems.reduce((s, x) => s + x.unitPrice, 0), total: lineItems.reduce((s, x) => s + x.unitPrice, 0) });
           } else {
             const lineItems = [li(0), li(1)];

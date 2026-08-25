@@ -806,7 +806,14 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
               {settings?.stripePublishableKey ? (
                 <div className="space-y-2">
                   <button
-                    onClick={() => setShowStripeModal(true)}
+                    onClick={() => {
+                      // Synthetic demo quotes (id prefixed "demo-", see the
+                      // Client Demo picker) were never written to Supabase —
+                      // there's no real invoice row for Stripe to charge
+                      // against or verify an amount from.
+                      if (String(e.id).startsWith("demo-")) { window.alert("This is a preview — no real payment is processed here."); return; }
+                      setShowStripeModal(true);
+                    }}
                     disabled={!agreedToPaymentTerms}
                     className="w-full py-4 bg-gradient-to-r from-[#635BFF] to-[#4F46E5] text-white font-bold rounded-xl shadow-lg hover:from-[#7C74FF] hover:to-[#6056F5] transition-all flex items-center justify-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:from-[#635BFF] disabled:hover:to-[#4F46E5]"
                   >
