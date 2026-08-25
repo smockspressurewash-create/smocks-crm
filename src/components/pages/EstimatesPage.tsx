@@ -87,7 +87,7 @@ const DECLINE_REASON_LABELS: Record<string, string> = {
   other: "Declined",
 };
 
-export function EstimatesPage({ estimates = [], setEstimates, customers = [], services = [], settings = {} as AppSettings, toast, onPortal = () => {}, estimateTemplates = [], setEstimateTemplates = () => {}, setJobs = () => {}, onNav = () => {}, autoOpenNew = false, onAutoOpenNewConsumed, presetCustomerId = "", ownerId = "", highlightId = null, pushUndo = (_desc: string, _fn: () => void, _redoFn?: () => void) => {} }: { estimates?: any[]; setEstimates?: any; customers?: any[]; services?: any[]; settings?: AppSettings; toast?: any; onPortal?: any; estimateTemplates?: any[]; setEstimateTemplates?: any; setJobs?: any; onNav?: any; autoOpenNew?: boolean; onAutoOpenNewConsumed?: () => void; presetCustomerId?: string; ownerId?: string; highlightId?: string | null; pushUndo?: (desc: string, fn: () => void, redoFn?: () => void) => void }) {
+export function EstimatesPage({ estimates = [], setEstimates, customers = [], services = [], settings = {} as AppSettings, toast, onPortal = () => {}, estimateTemplates = [], setEstimateTemplates = () => {}, setJobs = () => {}, onNav = () => {}, autoOpenNew = false, onAutoOpenNewConsumed, presetCustomerId = "", ownerId = "", highlightId = null, pushUndo = (_desc: string, _fn: () => void, _redoFn?: () => void) => {}, markRecentlyDeleted = (_table: "jobs" | "customers" | "estimates", _ids: string[]) => {}, unmarkRecentlyDeleted = (_table: "jobs" | "customers" | "estimates", _ids: string[]) => {} }: { estimates?: any[]; setEstimates?: any; customers?: any[]; services?: any[]; settings?: AppSettings; toast?: any; onPortal?: any; estimateTemplates?: any[]; setEstimateTemplates?: any; setJobs?: any; onNav?: any; autoOpenNew?: boolean; onAutoOpenNewConsumed?: () => void; presetCustomerId?: string; ownerId?: string; highlightId?: string | null; pushUndo?: (desc: string, fn: () => void, redoFn?: () => void) => void; markRecentlyDeleted?: (table: "jobs" | "customers" | "estimates", ids: string[]) => void; unmarkRecentlyDeleted?: (table: "jobs" | "customers" | "estimates", ids: string[]) => void }) {
   const [builderOpen, setBuilderOpen] = useState(false);
   // FEATURE — "Alfred spotlight": briefly glows + scrolls to the estimate/
   // invoice Alfred just created, driven by App.tsx's spotlight queue.
@@ -332,14 +332,17 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
     const ids = [...selected];
     const deleted = estimates.filter(e => ids.includes(e.id));
     setEstimates(estimates.filter(e => !ids.includes(e.id)));
+    markRecentlyDeleted("estimates", ids);
     setSelected([]);
     pushUndo(`Deleted ${deleted.length} estimate${deleted.length !== 1 ? "s" : ""}`, () => {
+      unmarkRecentlyDeleted("estimates", ids);
       setEstimates((prev: any[]) => [...deleted, ...prev]);
       (supabase as any).from("estimates").insert(deleted).then((r: any) => {
         if (r?.error) toast("Restored locally, but failed to restore on server — " + r.error.message, "red");
       }).catch(() => {});
     }, () => {
       setEstimates((prev: any[]) => prev.filter((e: any) => !ids.includes(e.id)));
+      markRecentlyDeleted("estimates", ids);
       (supabase as any).from("estimates").delete().in("id", ids).then((r: any) => {
         if (r?.error) toast("Removed locally, but failed to remove on server — " + r.error.message, "red");
       }).catch(() => {});

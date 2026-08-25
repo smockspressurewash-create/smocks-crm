@@ -871,6 +871,49 @@ export function App() {
     return () => window.removeEventListener("hashchange", handler);
   }, []);
 
+  // ── Recently-deleted id tracking ──────────────────────────────────────────
+  // BUG FIX — "I delete an invoice/job/customer and it comes back." Root
+  // cause: refetchData()'s merge (below) is purely additive — it updates rows
+  // it already knows about and adds any row present on the server that isn't
+  // in local state yet, but it never removes a local row just because the
+  // server no longer has it. That's deliberate for the common case (don't
+  // wipe out an unsynced local row from a slow write), but it means any
+  // refetchData() call whose SELECT was in flight BEFORE a delete lands and
+  // resolves AFTER — very possible, since refetchData() fires on every
+  // jobs/customers/estimates realtime event AND on a poll interval, so
+  // multiple calls are routinely in flight at once — resurrects the row it
+  // just fetched, because from that stale response's point of view the row
+  // still exists. markRecentlyDeleted() lets every delete call site record
+  // the id(s) it just removed so refetchData can filter them back out of any
+  // stale in-flight response for a short window, instead of trusting
+  // whichever fetch happens to resolve last.
+  const recentlyDeletedRef = useRef<{ jobs: Map<string, number>; customers: Map<string, number>; estimates: Map<string, number> }>({ jobs: new Map(), customers: new Map(), estimates: new Map() });
+  const RECENTLY_DELETED_TTL_MS = 2 * 60 * 1000;
+  const markRecentlyDeleted = useCallback((table: "jobs" | "customers" | "estimates", ids: string[]) => {
+    const m = recentlyDeletedRef.current[table];
+    const now = Date.now();
+    for (const [id, ts] of m) { if (now - ts > RECENTLY_DELETED_TTL_MS) m.delete(id); }
+    ids.forEach(id => m.set(id, now));
+  }, []);
+  // Undoing a delete restores the row — it must stop being treated as
+  // "recently deleted" or the next refetch would just filter the restore
+  // right back out for the rest of the TTL window.
+  const unmarkRecentlyDeleted = useCallback((table: "jobs" | "customers" | "estimates", ids: string[]) => {
+    const m = recentlyDeletedRef.current[table];
+    ids.forEach(id => m.delete(id));
+  }, []);
+  const filterRecentlyDeleted = (table: "jobs" | "customers" | "estimates", rows: any[]) => {
+    const m = recentlyDeletedRef.current[table];
+    if (m.size === 0) return rows;
+    const now = Date.now();
+    return rows.filter(r => {
+      const ts = m.get(r.id);
+      if (ts === undefined) return true;
+      if (now - ts > RECENTLY_DELETED_TTL_MS) { m.delete(r.id); return true; }
+      return false;
+    });
+  };
+
   // ── Undo / redo stacks ────────────────────────────────────────────────────
   // BUG FIX — pushUndo existed but nothing in the app ever called it (the
   // Undo button was permanently disabled), and Redo was a hardcoded-disabled
@@ -2229,7 +2272,7 @@ export function App() {
         setSupabaseDegraded(false);
       }
       if (Array.isArray(sbJobs) && sbJobs.length > 0) {
-        const normedJobs = sbJobs.map(normalizeJobRow);
+        const normedJobs = filterRecentlyDeleted("jobs", sbJobs.map(normalizeJobRow));
         // AUDIT — this [Hours] log was a one-time diagnostic for FIX 7
         // (Hours/Payroll tabs pulling real data), but refetchData runs every
         // 10s PLUS on every realtime jobs/customers/estimates change, so it
@@ -2245,19 +2288,21 @@ export function App() {
       }
       if (Array.isArray(sbCustomers) && sbCustomers.length > 0) {
         setCustomers(prev => {
-          const sbMap = new Map(sbCustomers.map((c: any) => [c.id, c]));
+          const filteredCustomers = filterRecentlyDeleted("customers", sbCustomers);
+          const sbMap = new Map(filteredCustomers.map((c: any) => [c.id, c]));
           const merged = prev.map(c => sbMap.has(c.id) ? { ...c, ...sbMap.get(c.id) } : c);
           const existingIds = new Set(prev.map(c => c.id));
-          const added = sbCustomers.filter((c: any) => !existingIds.has(c.id));
+          const added = filteredCustomers.filter((c: any) => !existingIds.has(c.id));
           return [...merged, ...added];
         });
       }
       if (Array.isArray(sbEstimates) && sbEstimates.length > 0) {
         setEstimates(prev => {
-          const sbMap = new Map(sbEstimates.map((e: any) => [e.id, e]));
+          const filteredEstimates = filterRecentlyDeleted("estimates", sbEstimates);
+          const sbMap = new Map(filteredEstimates.map((e: any) => [e.id, e]));
           const merged = prev.map(e => sbMap.has(e.id) ? { ...e, ...sbMap.get(e.id) } : e);
           const existingIds = new Set(prev.map(e => e.id));
-          const added = sbEstimates.filter((e: any) => !existingIds.has(e.id));
+          const added = filteredEstimates.filter((e: any) => !existingIds.has(e.id));
           return [...merged, ...added];
         });
       }
@@ -3957,10 +4002,10 @@ export function App() {
             <PageFade key={page} className={page === "alfred" || page === "inbox" ? "flex-1 min-h-0 flex flex-col" : ""}>
               <SafePage>
                 {page === "dashboard"      && <Dashboard jobs={jobs} setJobs={setJobs} customers={customers} estimates={estimates} setEstimates={setEstimates} automations={automations} stats={{ totalRev, activeJobs, pendingEst, closeRate, doneMonth }} goals={{ revenue: settings.monthlyRevenueGoal ?? 8000, jobCount: settings.monthlyJobsGoal ?? 20 }} vehicles={vehicles} maintenance={maintenance} chemicals={chemicals} settings={settings} setSettings={setSettings} onNav={setPage} toast={toast} weatherData={weatherData} weatherFetchError={weatherFetchError} inboxThreads={inboxThreads} employees={employees} crewFetchError={crewFetchError} reviews={reviews} onSendDailyBriefing={sendDailyBriefingNow} onViewJob={id => { setOpenJobId(id); setPage("jobs"); }} ownerId={crmUserId} />}
-                {page === "customers"      && <CustomersPage customers={customers} setCustomers={setCustomers} estimates={estimates} jobs={jobs} employees={employees} toast={toast} timeline={timeline} setTimeline={setTimeline} settings={settings} setSettings={setSettings} autoOpenNew={fabAutoOpenNew === "customers"} onAutoOpenNewConsumed={() => setFabAutoOpenNew(null)} highlightId={alfredHighlight?.type === "customer" ? alfredHighlight.id : null} pushUndo={pushUndo} />}
-                {page === "estimates"      && <EstimatesPage estimates={estimates} setEstimates={setEstimates} customers={customers} services={services} settings={settings} toast={toast} onPortal={id => setPortalEstId(id)} estimateTemplates={estimateTemplates} setEstimateTemplates={setEstimateTemplates} setJobs={setJobs} onNav={setPage} autoOpenNew={fabAutoOpenNew === "estimates"} onAutoOpenNewConsumed={() => { setFabAutoOpenNew(null); setEstimatePresetCustomerId(null); }} presetCustomerId={estimatePresetCustomerId || ""} ownerId={crmUserId} highlightId={alfredHighlight?.type === "estimate" ? alfredHighlight.id : null} pushUndo={pushUndo} />}
-                {page === "invoices"       && <InvoicesPage estimates={estimates} setEstimates={setEstimates} customers={customers} settings={settings} toast={toast} jobs={jobs} setJobs={setJobs} ownerId={crmUserId} highlightId={alfredHighlight?.type === "invoice" ? alfredHighlight.id : null} pushUndo={pushUndo} />}
-                {page === "jobs"           && <JobsPage jobs={jobs} setJobs={setJobs} customers={customers} setCustomers={setCustomers} employees={employees} estimates={estimates} setEstimates={setEstimates} settings={settings} setSettings={setSettings} toast={toast} posts={socialPosts} setPosts={setSocialPosts} setTimeline={setTimeline} initialDetailId={openJobId} onInitialDetailIdConsumed={() => setOpenJobId(null)} onPortal={id => setPortalEstId(id)} ownerId={crmUserId} autoOpenNew={fabAutoOpenNew === "jobs"} onAutoOpenNewConsumed={() => setFabAutoOpenNew(null)} highlightId={alfredHighlight?.type === "job" ? alfredHighlight.id : null} pushUndo={pushUndo} />}
+                {page === "customers"      && <CustomersPage customers={customers} setCustomers={setCustomers} estimates={estimates} jobs={jobs} employees={employees} toast={toast} timeline={timeline} setTimeline={setTimeline} settings={settings} setSettings={setSettings} autoOpenNew={fabAutoOpenNew === "customers"} onAutoOpenNewConsumed={() => setFabAutoOpenNew(null)} highlightId={alfredHighlight?.type === "customer" ? alfredHighlight.id : null} pushUndo={pushUndo} markRecentlyDeleted={markRecentlyDeleted} unmarkRecentlyDeleted={unmarkRecentlyDeleted} />}
+                {page === "estimates"      && <EstimatesPage estimates={estimates} setEstimates={setEstimates} customers={customers} services={services} settings={settings} toast={toast} onPortal={id => setPortalEstId(id)} estimateTemplates={estimateTemplates} setEstimateTemplates={setEstimateTemplates} setJobs={setJobs} onNav={setPage} autoOpenNew={fabAutoOpenNew === "estimates"} onAutoOpenNewConsumed={() => { setFabAutoOpenNew(null); setEstimatePresetCustomerId(null); }} presetCustomerId={estimatePresetCustomerId || ""} ownerId={crmUserId} highlightId={alfredHighlight?.type === "estimate" ? alfredHighlight.id : null} pushUndo={pushUndo} markRecentlyDeleted={markRecentlyDeleted} unmarkRecentlyDeleted={unmarkRecentlyDeleted} />}
+                {page === "invoices"       && <InvoicesPage estimates={estimates} setEstimates={setEstimates} customers={customers} settings={settings} toast={toast} jobs={jobs} setJobs={setJobs} ownerId={crmUserId} highlightId={alfredHighlight?.type === "invoice" ? alfredHighlight.id : null} pushUndo={pushUndo} markRecentlyDeleted={markRecentlyDeleted} unmarkRecentlyDeleted={unmarkRecentlyDeleted} />}
+                {page === "jobs"           && <JobsPage jobs={jobs} setJobs={setJobs} customers={customers} setCustomers={setCustomers} employees={employees} estimates={estimates} setEstimates={setEstimates} settings={settings} setSettings={setSettings} toast={toast} posts={socialPosts} setPosts={setSocialPosts} setTimeline={setTimeline} initialDetailId={openJobId} onInitialDetailIdConsumed={() => setOpenJobId(null)} onPortal={id => setPortalEstId(id)} ownerId={crmUserId} autoOpenNew={fabAutoOpenNew === "jobs"} onAutoOpenNewConsumed={() => setFabAutoOpenNew(null)} highlightId={alfredHighlight?.type === "job" ? alfredHighlight.id : null} pushUndo={pushUndo} markRecentlyDeleted={markRecentlyDeleted} unmarkRecentlyDeleted={unmarkRecentlyDeleted} />}
                 {page === "pipeline"       && <PipelinePage jobs={jobs} setJobs={setJobs} customers={customers} toast={toast} />}
                 {page === "calendar"       && <CalendarPage jobs={jobs} setJobs={setJobs} customers={customers} employees={employees} toast={toast} settings={settings} setSettings={setSettings} ownerId={crmUserId} />}
                 {page === "inbox"          && (managerBlocked("inbox") ? <RestrictedNotice label="the Inbox" /> : <InboxPage threads={inboxThreads} setThreads={setInboxThreads} customers={customers} setCustomers={setCustomers} settings={settings} toast={toast} ownerId={crmUserId} />)}
@@ -3968,7 +4013,7 @@ export function App() {
                 {page === "reviews"        && <ReviewsPage reviews={reviews} setReviews={setReviews} jobs={jobs} customers={customers} toast={toast} negativeAlerts={negativeAlerts} setNegativeAlerts={setNegativeAlerts} settings={settings} setSettings={setSettings} />}
                 {page === "automations"    && <AutomationsPage automations={automations} setAutomations={setAutomations} jobs={jobs} customers={customers} estimates={estimates} settings={settings} setSettings={setSettings} toast={toast} />}
                 {page === "social"         && <SocialPage posts={socialPosts} setPosts={setSocialPosts} toast={toast} settings={settings} jobs={jobs} ownerId={crmUserId} onNav={setPage} />}
-                {page === "intake"         && <LeadIntakePage customers={customers} setCustomers={setCustomers} estimates={estimates} setEstimates={setEstimates} services={services} jobs={jobs} settings={settings} setSettings={setSettings} toast={toast} onNav={setPage} onConvertToEstimate={(customerId: string) => { setEstimatePresetCustomerId(customerId); setFabAutoOpenNew("estimates"); setPage("estimates"); }} ownerId={crmUserId} />}
+                {page === "intake"         && <LeadIntakePage customers={customers} setCustomers={setCustomers} estimates={estimates} setEstimates={setEstimates} services={services} jobs={jobs} settings={settings} setSettings={setSettings} toast={toast} onNav={setPage} onConvertToEstimate={(customerId: string) => { setEstimatePresetCustomerId(customerId); setFabAutoOpenNew("estimates"); setPage("estimates"); }} ownerId={crmUserId} markRecentlyDeleted={markRecentlyDeleted} />}
                 {page === "alfred"         && (managerBlocked("alfred") ? <RestrictedNotice label="Alfred AI" /> : <AlfredPage conversations={alfredConversations} setConversations={setAlfredConversations} activeConvId={activeConvId} setActiveConvId={setActiveConvId} memory={alfredMemory} setMemory={setAlfredMemory} personality={personality} setPersonality={setPersonality} apiKey={settings.anthropicKey ?? settings.geminiKey ?? ""} openSettings={() => setSettingsOpen(true)} toast={toast} jobs={jobs} setJobs={setJobs} estimates={estimates} setEstimates={setEstimates} customers={customers} setCustomers={setCustomers} employees={employees} automations={automations} setAutomations={setAutomations} stats={{ totalRev, activeJobs, pendingEst, closeRate, doneMonth }} setWins={setWins} goals={goalsList} setGoals={setGoalsList} setSettings={setSettings} settings={settings} modelStatus={modelStatus} setModelStatus={setModelStatus} onNav={setPage} onSpotlight={queueAlfredSpotlight} expenses={expenses} setExpenses={setExpenses} chemicals={chemicals} ownerId={crmUserId} />)}
                 {page === "google"         && (managerBlocked("google") ? <RestrictedNotice label="Google Workspace" /> : <GoogleWorkspacePage settings={settings} setSettings={setSettings} googleData={googleData as any} setGoogleData={setGoogleData} customers={customers} setCustomers={setCustomers} jobs={jobs} toast={toast} onNav={setPage} />)}
                 {page === "employees"      && <EmployeesPage employees={employees} setEmployees={setEmployees} jobs={jobs} setJobs={setJobs} customers={customers} settings={settings} toast={toast} autoOpenManagerInvite={autoOpenManagerInvite} onAutoOpenManagerInviteConsumed={() => setAutoOpenManagerInvite(false)} initialView={employeesInitialView} onInitialViewConsumed={() => setEmployeesInitialView(undefined)} ownerId={crmUserId} />}
@@ -4031,6 +4076,7 @@ export function App() {
         setSettings={setSettings}
         jobs={jobs}
         setJobs={setJobs}
+        markRecentlyDeleted={markRecentlyDeleted}
         customers={customers}
         estimates={estimates}
         campaigns={campaigns}

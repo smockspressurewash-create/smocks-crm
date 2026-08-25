@@ -91,7 +91,7 @@ const isValidHttpsUrl = (value: string): boolean => {
   }
 };
 
-export function SettingsModal({ open, onClose, settings, setSettings, jobs = [], setJobs = (() => {}) as any, customers = [], estimates = [], campaigns = [], services, setServices, emailTemplates, setEmailTemplates, smsTemplates, setSmsTemplates, estimateTemplates = [], setEstimateTemplates = (() => {}) as any, modelStatus = {}, setModelStatus = (() => {}) as any, employees = [], toast, onSignOut, restrictToProfile = false, onAddManager }: { open?: any; onClose?: any; settings?: any; setSettings?: any; jobs?: any[]; setJobs?: any; customers?: any[]; estimates?: any[]; campaigns?: any[]; services?: any; setServices?: any; emailTemplates?: any; setEmailTemplates?: any; smsTemplates?: any; setSmsTemplates?: any; estimateTemplates?: any[]; setEstimateTemplates?: any; modelStatus?: any; setModelStatus?: any; employees?: any[]; toast?: any; onSignOut?: () => void; restrictToProfile?: boolean; onAddManager?: () => void }) {
+export function SettingsModal({ open, onClose, settings, setSettings, jobs = [], setJobs = (() => {}) as any, customers = [], estimates = [], campaigns = [], services, setServices, emailTemplates, setEmailTemplates, smsTemplates, setSmsTemplates, estimateTemplates = [], setEstimateTemplates = (() => {}) as any, modelStatus = {}, setModelStatus = (() => {}) as any, employees = [], toast, onSignOut, restrictToProfile = false, onAddManager, markRecentlyDeleted }: { open?: any; onClose?: any; settings?: any; setSettings?: any; jobs?: any[]; setJobs?: any; customers?: any[]; estimates?: any[]; campaigns?: any[]; services?: any; setServices?: any; emailTemplates?: any; setEmailTemplates?: any; smsTemplates?: any; setSmsTemplates?: any; estimateTemplates?: any[]; setEstimateTemplates?: any; modelStatus?: any; setModelStatus?: any; employees?: any[]; toast?: any; onSignOut?: () => void; restrictToProfile?: boolean; onAddManager?: () => void; markRecentlyDeleted?: (table: "jobs" | "customers" | "estimates", ids: string[]) => void }) {
   const [f, setF] = useState(settings);
   const [sec, setSec] = useState(restrictToProfile ? "profile" : "api");
   // Per-owner Stripe keys (Phase F, multi-tenant) — deliberately NOT part of
@@ -1979,6 +1979,7 @@ export function SettingsModal({ open, onClose, settings, setSettings, jobs = [],
                 const { error } = await (supabase as any).from("jobs").delete().in("id", ids);
                 if (error) { toast?.("Some jobs may not have deleted from the server — " + error.message, "red"); return; }
                 setJobs((prev: any[]) => prev.filter(j => !ids.includes(j.id)));
+                markRecentlyDeleted?.("jobs", ids);
                 toast?.(`Archived and deleted ${ids.length} job(s) ✓`, "green");
               }} className="w-full !text-xs">
                 <Download size={12} className="inline mr-1.5" />Export & Delete Jobs Older Than 30 Days

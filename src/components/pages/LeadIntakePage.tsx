@@ -78,7 +78,7 @@ import { ChemicalModal } from "../ui/ChemicalModal";
 import { WeeklyBusinessReview } from "../ui/WeeklyBusinessReview";
 import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 
-export function LeadIntakePage({ customers = [], setCustomers, estimates = [], setEstimates, services = [], jobs = [], settings = {} as AppSettings, setSettings, toast, onNav, onConvertToEstimate, ownerId = "" }: { customers?: any[]; setCustomers?: any; estimates?: any[]; setEstimates?: any; services?: any[]; jobs?: any[]; settings?: AppSettings; setSettings?: any; toast?: any; onNav?: any; onConvertToEstimate?: (customerId: string) => void; ownerId?: string }) {
+export function LeadIntakePage({ customers = [], setCustomers, estimates = [], setEstimates, services = [], jobs = [], settings = {} as AppSettings, setSettings, toast, onNav, onConvertToEstimate, ownerId = "", markRecentlyDeleted = (_table: "jobs" | "customers" | "estimates", _ids: string[]) => {} }: { customers?: any[]; setCustomers?: any; estimates?: any[]; setEstimates?: any; services?: any[]; jobs?: any[]; settings?: AppSettings; setSettings?: any; toast?: any; onNav?: any; onConvertToEstimate?: (customerId: string) => void; ownerId?: string; markRecentlyDeleted?: (table: "jobs" | "customers" | "estimates", ids: string[]) => void }) {
   const [submissions, setSubmissions] = usePersistent("smocks.intakeLeads", []);
   const [preview, setPreview] = useState(false);
   const [embedOpen, setEmbedOpen] = useState(false);
@@ -226,6 +226,7 @@ export function LeadIntakePage({ customers = [], setCustomers, estimates = [], s
   const deleteLead = (lead: any) => {
     if (!window.confirm(`Permanently delete lead "${lead.firstName} ${lead.lastName}"? This can't be undone.`)) return;
     setCustomers((prev: any[]) => prev.filter(c => c.id !== lead.id));
+    markRecentlyDeleted("customers", [lead.id]);
     (supabase as any).from("customers").delete().eq("id", lead.id)
       .then((result: any) => {
         if (result?.error) {

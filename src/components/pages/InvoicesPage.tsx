@@ -81,7 +81,7 @@ import { ChemicalModal } from "../ui/ChemicalModal";
 import { WeeklyBusinessReview } from "../ui/WeeklyBusinessReview";
 import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 
-export function InvoicesPage({ estimates = [], setEstimates, customers = [], settings = {} as AppSettings, toast, jobs = [], setJobs = (() => {}) as any, ownerId = "", highlightId = null, pushUndo = (_desc: string, _fn: () => void, _redoFn?: () => void) => {} }: { estimates?: any[]; setEstimates?: any; customers?: any[]; settings?: AppSettings; toast?: any; jobs?: any[]; setJobs?: any; ownerId?: string; highlightId?: string | null; pushUndo?: (desc: string, fn: () => void, redoFn?: () => void) => void }) {
+export function InvoicesPage({ estimates = [], setEstimates, customers = [], settings = {} as AppSettings, toast, jobs = [], setJobs = (() => {}) as any, ownerId = "", highlightId = null, pushUndo = (_desc: string, _fn: () => void, _redoFn?: () => void) => {}, markRecentlyDeleted = (_table: "jobs" | "customers" | "estimates", _ids: string[]) => {}, unmarkRecentlyDeleted = (_table: "jobs" | "customers" | "estimates", _ids: string[]) => {} }: { estimates?: any[]; setEstimates?: any; customers?: any[]; settings?: AppSettings; toast?: any; jobs?: any[]; setJobs?: any; ownerId?: string; highlightId?: string | null; pushUndo?: (desc: string, fn: () => void, redoFn?: () => void) => void; markRecentlyDeleted?: (table: "jobs" | "customers" | "estimates", ids: string[]) => void; unmarkRecentlyDeleted?: (table: "jobs" | "customers" | "estimates", ids: string[]) => void }) {
   // FEATURE — "Alfred spotlight": briefly glows + scrolls to the invoice
   // Alfred just sent, driven by App.tsx's spotlight queue.
   useEffect(() => {
@@ -429,14 +429,22 @@ export function InvoicesPage({ estimates = [], setEstimates, customers = [], set
   const deleteInvoice = (inv: any) => {
     if (!window.confirm(`Permanently delete invoice #${(inv.id || "").toUpperCase()}? This can't be undone.`)) return;
     setEstimates(estimates.filter(e => e.id !== inv.id));
+    // BUG FIX — "delete invoice, it comes back": refetchData()'s merge in
+    // App.tsx is additive-only, so a cross-device poll/realtime refresh that
+    // was already in flight when this delete fired could resurrect the row
+    // from its stale response. markRecentlyDeleted tells that merge to
+    // ignore this id for a couple minutes no matter what a stale fetch says.
+    markRecentlyDeleted("estimates", [inv.id]);
     setViewing(null);
     pushUndo(`Deleted invoice #${(inv.id || "").toUpperCase()}`, () => {
+      unmarkRecentlyDeleted("estimates", [inv.id]);
       setEstimates((prev: any[]) => [inv, ...prev]);
       (supabase as any).from("estimates").insert(inv).then((r: any) => {
         if (r?.error) toast("Restored locally, but failed to restore on server — " + r.error.message, "red");
       }).catch(() => {});
     }, () => {
       setEstimates((prev: any[]) => prev.filter((e: any) => e.id !== inv.id));
+      markRecentlyDeleted("estimates", [inv.id]);
       withTimeout((supabase as any).from("estimates").delete().eq("id", inv.id), 10000, "Invoice delete").then((r: any) => {
         if (r?.error) toast("Removed locally, but failed to remove on server — " + r.error.message, "red");
       }).catch(() => {});
@@ -512,6 +520,7 @@ export function InvoicesPage({ estimates = [], setEstimates, customers = [], set
     if (!window.confirm(`Permanently delete ${selected.length} invoice${selected.length !== 1 ? "s" : ""}? This can't be undone.`)) return;
     const ids = [...selected];
     setEstimates(estimates.filter(e => !ids.includes(e.id)));
+    markRecentlyDeleted("estimates", ids);
     setSelected([]);
     withTimeout((supabase as any).from("estimates").delete().in("id", ids), 10000, "Invoice bulk delete")
       .then((r: any) => { if (r?.error) toast?.("Deleted locally, but failed to delete from server — " + r.error.message, "red"); else toast?.(ids.length + " invoice(s) deleted"); })
