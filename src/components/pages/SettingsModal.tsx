@@ -22,7 +22,7 @@ import {
   ComposedChart, Legend
 } from "recharts";
 import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, compressImageFile, POLL_INTERVAL_OPTIONS, DEFAULT_POLL_INTERVAL_MS, backfillJobMediaToStorage, withTimeout } from "../../lib/utils";
-import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
+import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField, LegalTemplate } from "../../types";
 import { twilioSend, sendEmail, fetchBufferOrganizationId, fetchBufferChannels, checkA2pCampaignStatus, checkTwilioAccountStatus, type BufferChannel } from "../../lib/messaging";
 import { buildSocialAuthorizeUrl, type SocialPlatform } from "../../lib/socialOAuth";
 import { seedWeather } from "../../lib/weather";
@@ -103,6 +103,52 @@ export function SettingsModal({ open, onClose, settings, setSettings, jobs = [],
   useEffect(() => {
     if (open) setSec("profile");
   }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // FEATURE — Legal template library ("edit, add new, save, have multiple
+  // versions, choose a template for commercial vs residential"). Templates
+  // themselves live in f.legalTemplates; setting one "active" for a scope
+  // also writes its body into the legacy fields other parts of the app
+  // already read directly (privacyPolicy/termsOfService for the public
+  // /privacy /terms pages, termsAndConditionsResidential/Commercial for the
+  // job sign-off screen — see resolveTermsForJobType in lib/utils.ts) so no
+  // other file needs to know the template system exists.
+  const [legalEditor, setLegalEditor] = useState<{ open: boolean; category: "privacy" | "terms"; data: LegalTemplate | null }>({ open: false, category: "privacy", data: null });
+  const legalTemplates: LegalTemplate[] = f.legalTemplates || [];
+  const openNewLegalTemplate = (category: "privacy" | "terms") => {
+    setLegalEditor({ open: true, category, data: { id: uid(), category, name: "", appliesTo: category === "privacy" ? "both" : "residential", body: "", updatedAt: new Date().toISOString() } });
+  };
+  const saveLegalTemplate = (tpl: LegalTemplate) => {
+    if (!tpl.name.trim()) { toast?.("Give this template a name before saving", "red"); return; }
+    setF((p: any) => {
+      const list: LegalTemplate[] = p.legalTemplates || [];
+      const exists = list.some(t => t.id === tpl.id);
+      const next = exists ? list.map(t => t.id === tpl.id ? tpl : t) : [...list, tpl];
+      return { ...p, legalTemplates: next };
+    });
+    setLegalEditor({ open: false, category: tpl.category, data: null });
+    toast?.("Template saved — remember to hit Save at the bottom to sync it", "green");
+  };
+  const deleteLegalTemplate = (tpl: LegalTemplate) => {
+    if (!confirm(`Delete "${tpl.name}"? This can't be undone.`)) return;
+    setF((p: any) => ({
+      ...p,
+      legalTemplates: (p.legalTemplates || []).filter((t: LegalTemplate) => t.id !== tpl.id),
+      ...(p.activePrivacyTemplateId === tpl.id ? { activePrivacyTemplateId: "" } : {}),
+      ...(p.activeTermsResidentialTemplateId === tpl.id ? { activeTermsResidentialTemplateId: "" } : {}),
+      ...(p.activeTermsCommercialTemplateId === tpl.id ? { activeTermsCommercialTemplateId: "" } : {}),
+    }));
+  };
+  const duplicateLegalTemplate = (tpl: LegalTemplate) => {
+    setLegalEditor({ open: true, category: tpl.category, data: { ...tpl, id: uid(), name: tpl.name + " (copy)", updatedAt: new Date().toISOString() } });
+  };
+  const setActiveLegalTemplate = (tpl: LegalTemplate, scope: "privacy" | "residential" | "commercial") => {
+    setF((p: any) => {
+      if (scope === "privacy") return { ...p, activePrivacyTemplateId: tpl.id, privacyPolicy: tpl.body };
+      if (scope === "residential") return { ...p, activeTermsResidentialTemplateId: tpl.id, termsAndConditionsResidential: tpl.body, termsOfService: tpl.body };
+      return { ...p, activeTermsCommercialTemplateId: tpl.id, termsAndConditionsCommercial: tpl.body };
+    });
+    toast?.(`"${tpl.name}" set as the live ${scope} version`, "green");
+  };
   // Per-owner Stripe keys (Phase F, multi-tenant) — deliberately NOT part of
   // `f`/`settings` (that object syncs into app_settings.data, which every
   // session loads including unauthenticated customer portals — see the
@@ -507,13 +553,78 @@ export function SettingsModal({ open, onClose, settings, setSettings, jobs = [],
               {" "}·{" "}
               <a href={`${window.location.origin}${window.location.pathname}#/privacy?co=${encodeURIComponent(f.companyName || "Crew Boss")}`} target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:underline">/privacy</a>
             </div>
-            <Glass className="p-4">
-              <div className="font-semibold text-sm mb-2">Privacy Policy</div>
-              <GTxt rows={6} value={f.privacyPolicy || ""} placeholder="Leave blank to use the built-in default privacy policy shown on your public /privacy page." onChange={e => setF({ ...f, privacyPolicy: e.target.value })} className="!text-xs" />
-            </Glass>
-            <Glass className="p-4">
-              <div className="font-semibold text-sm mb-2">Terms of Service</div>
-              <GTxt rows={6} value={f.termsOfService || ""} placeholder="Leave blank to use the built-in default terms shown on your public /terms page." onChange={e => setF({ ...f, termsOfService: e.target.value })} className="!text-xs" />
+            {/* FEATURE — template library: multiple named, editable versions
+                per category, with one "live" version per scope. Terms of
+                Service supports a separate live version for Residential vs
+                Commercial jobs (picked automatically by the job's own Job
+                Type at customer sign-off — see resolveTermsForJobType). */}
+            {([
+              { category: "privacy" as const, label: "Privacy Policy", scopes: [{ key: "privacy" as const, label: "Live on /privacy", activeId: f.activePrivacyTemplateId }] },
+              { category: "terms" as const, label: "Terms of Service", scopes: [
+                { key: "residential" as const, label: "Live for Residential (also /terms)", activeId: f.activeTermsResidentialTemplateId },
+                { key: "commercial" as const, label: "Live for Commercial", activeId: f.activeTermsCommercialTemplateId },
+              ] },
+            ]).map(section => {
+              const items = legalTemplates.filter(t => t.category === section.category);
+              return (
+                <Glass key={section.category} className="p-4">
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="font-semibold text-sm">{section.label}</div>
+                    <GBtn variant="ghost" className="!text-[10px] !py-1" onClick={() => openNewLegalTemplate(section.category)}><Plus size={11} className="inline mr-1" />New Template</GBtn>
+                  </div>
+                  {items.length === 0 ? (
+                    <div className="text-[11px] text-white/40 text-center py-4 border border-dashed border-white/10 rounded-lg">No templates yet — the public page falls back to built-in default text until you add one.</div>
+                  ) : (
+                    <div className="space-y-1.5">
+                      {items.map(tpl => (
+                        <div key={tpl.id} className="p-2.5 bg-black/40 border border-white/5 rounded-lg">
+                          <div className="flex items-center justify-between gap-2 flex-wrap">
+                            <div className="min-w-0">
+                              <div className="text-xs font-medium truncate">{tpl.name}</div>
+                              <div className="text-[10px] text-white/40">
+                                {section.category === "terms" ? (tpl.appliesTo === "both" ? "Residential & Commercial" : tpl.appliesTo === "residential" ? "Residential" : "Commercial") : "General"}
+                                {" · "}{new Date(tpl.updatedAt).toLocaleDateString()}
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-1 flex-shrink-0">
+                              <button onClick={() => setLegalEditor({ open: true, category: section.category, data: tpl })} className="p-1.5 rounded hover:bg-white/10 text-white/50 hover:text-white transition" title="Edit"><Edit size={12} /></button>
+                              <button onClick={() => duplicateLegalTemplate(tpl)} className="p-1.5 rounded hover:bg-white/10 text-white/50 hover:text-white transition" title="Duplicate"><Copy size={12} /></button>
+                              <button onClick={() => deleteLegalTemplate(tpl)} className="p-1.5 rounded hover:bg-red-950/40 text-white/50 hover:text-red-400 transition" title="Delete"><Trash2 size={12} /></button>
+                            </div>
+                          </div>
+                          <div className="flex flex-wrap gap-1.5 mt-2">
+                            {section.scopes
+                              .filter(s => section.category === "privacy" || tpl.appliesTo === "both" || tpl.appliesTo === s.key)
+                              .map(s => {
+                                const isActive = s.activeId === tpl.id;
+                                return (
+                                  <button
+                                    key={s.key}
+                                    onClick={() => setActiveLegalTemplate(tpl, s.key)}
+                                    disabled={isActive}
+                                    className={"text-[9px] font-semibold px-2 py-1 rounded-full border transition " + (isActive ? "bg-green-700/40 border-green-600/50 text-green-300 cursor-default" : "bg-white/5 border-white/10 text-white/50 hover:text-white hover:border-white/30")}
+                                  >
+                                    {isActive ? "✓ " + s.label : "Set as " + s.label}
+                                  </button>
+                                );
+                              })}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </Glass>
+              );
+            })}
+            {/* Fallback text — used on the public pages only while no
+                template above has been set active for that scope yet. */}
+            <Glass className="p-4 !bg-black/20">
+              <div className="font-semibold text-sm mb-2 text-white/60">Fallback Text (no template active)</div>
+              <div className="text-[10px] text-white/40 mb-2">Only used if you haven't picked a live template above — once you do, its content takes over.</div>
+              <div className="text-[10px] text-white/40 uppercase tracking-wider mb-1">Privacy Policy</div>
+              <GTxt rows={3} value={f.privacyPolicy || ""} placeholder="Leave blank to use the built-in default privacy policy." onChange={e => setF({ ...f, privacyPolicy: e.target.value })} className="!text-xs" />
+              <div className="text-[10px] text-white/40 uppercase tracking-wider mb-1 mt-2">Terms of Service</div>
+              <GTxt rows={3} value={f.termsOfService || ""} placeholder="Leave blank to use the built-in default terms." onChange={e => setF({ ...f, termsOfService: e.target.value })} className="!text-xs" />
             </Glass>
             <Glass className="p-4">
               <div className="font-semibold text-sm mb-2">GDPR / Data Compliance</div>
@@ -692,18 +803,16 @@ export function SettingsModal({ open, onClose, settings, setSettings, jobs = [],
               <button onClick={() => setF({ ...f, autoMileageTrackingEnabled: f.autoMileageTrackingEnabled === false ? true : false })} className={"transition " + (f.autoMileageTrackingEnabled !== false ? "text-red-400" : "text-white/30")}>{f.autoMileageTrackingEnabled !== false ? <ToggleRight size={28} /> : <ToggleLeft size={28} />}</button>
             </div>
             <div><label className="text-xs text-white/60 mb-1 block flex items-center gap-1"><Truck size={10} />Default Travel Buffer <span className="text-white/30 font-normal">(minutes between jobs)</span></label><GInput type="number" min="0" step="5" value={f.defaultBufferMinutes ?? 30} onChange={e => setF({ ...f, defaultBufferMinutes: Number(e.target.value) || 0 })} placeholder="30" className="!text-xs" /><div className="text-[10px] text-white/30 mt-1">Jobs scheduled the same day get flagged on the Calendar if there isn't this much time between them</div></div>
-            <div>
-              <label className="text-xs text-white/60 mb-1 block flex items-center gap-1"><FileText size={10} />Terms & Conditions <span className="text-white/30 font-normal">(shown on the customer sign-off screen)</span></label>
-              {/* FEATURE — "different versions for different job types
-                  (commercial vs residential)." The job/estimate's own
-                  jobType picks between these two at sign-off time
-                  (EmployeePortal.tsx's signOffDisclaimer); termsAndConditions
-                  stays as the fallback for a jobType this doesn't cover. */}
-              <div className="text-[10px] text-white/40 uppercase tracking-wider mb-1">Residential</div>
-              <GTxt rows={4} value={f.termsAndConditionsResidential ?? f.termsAndConditions ?? ""} onChange={(e: any) => setF({ ...f, termsAndConditionsResidential: e.target.value })} placeholder="I confirm that all services have been completed to my satisfaction..." className="!text-xs" />
-              <div className="text-[10px] text-white/40 uppercase tracking-wider mb-1 mt-2">Commercial</div>
-              <GTxt rows={4} value={f.termsAndConditionsCommercial ?? ""} onChange={(e: any) => setF({ ...f, termsAndConditionsCommercial: e.target.value })} placeholder="Leave blank to use the Residential terms for commercial jobs too." className="!text-xs" />
-              <div className="text-[10px] text-white/30 mt-1">Use {"{{company}}"} to insert your company name. A job's own Job Type decides which version its customer sees and signs.</div>
+            {/* FEATURE — moved to a real multi-version template library
+                (Settings → Legal), so both residential and commercial Terms
+                of Service can have several saved drafts, not just one field
+                each. This card just points there instead of duplicating it. */}
+            <div className="flex items-center justify-between p-3 bg-black/40 border border-red-900/20 rounded-xl">
+              <div className="flex-1 min-w-0 pr-3">
+                <div className="text-sm font-medium flex items-center gap-1.5"><FileText size={12} />Terms & Conditions</div>
+                <div className="text-[10px] text-white/50 mt-0.5">Shown on the customer sign-off screen — manage residential/commercial versions and templates in Settings → Legal.</div>
+              </div>
+              <GBtn variant="ghost" className="!text-xs flex-shrink-0" onClick={() => setSec("legal")}><Shield size={12} className="inline mr-1.5" />Go to Legal →</GBtn>
             </div>
             <div className="flex items-center justify-between p-3 bg-black/40 border border-red-900/20 rounded-xl">
               <div className="flex-1 min-w-0 pr-3">
@@ -2118,6 +2227,37 @@ export function SettingsModal({ open, onClose, settings, setSettings, jobs = [],
         </div>
       </div>
     </div>
+    </Modal>
+
+    {/* Legal template editor — add/edit one named version of a Privacy
+        Policy or Terms of Service document. */}
+    <Modal open={legalEditor.open} onClose={() => setLegalEditor({ open: false, category: legalEditor.category, data: null })} title={legalEditor.data && legalTemplates.some(t => t.id === legalEditor.data?.id) ? "Edit Template" : "New Template"} maxW="max-w-2xl">
+      {legalEditor.data && (
+        <div className="space-y-3">
+          <div>
+            <label className="text-xs text-white/60 mb-1 block">Template Name</label>
+            <GInput value={legalEditor.data.name} onChange={(e: any) => setLegalEditor(s => ({ ...s, data: s.data ? { ...s.data, name: e.target.value } : s.data }))} placeholder={legalEditor.category === "privacy" ? "e.g. 2026 Privacy Policy" : "e.g. Commercial Terms — updated late fee"} />
+          </div>
+          {legalEditor.category === "terms" && (
+            <div>
+              <label className="text-xs text-white/60 mb-1 block">Applies To</label>
+              <GSel value={legalEditor.data.appliesTo} onChange={(e: any) => setLegalEditor(s => ({ ...s, data: s.data ? { ...s.data, appliesTo: e.target.value } : s.data }))}>
+                <option value="both" className="bg-black">Both Residential & Commercial</option>
+                <option value="residential" className="bg-black">Residential only</option>
+                <option value="commercial" className="bg-black">Commercial only</option>
+              </GSel>
+            </div>
+          )}
+          <div>
+            <label className="text-xs text-white/60 mb-1 block">Content</label>
+            <GTxt rows={12} value={legalEditor.data.body} onChange={(e: any) => setLegalEditor(s => ({ ...s, data: s.data ? { ...s.data, body: e.target.value } : s.data }))} placeholder="Use {{company}} to insert your company name." className="!text-xs" />
+          </div>
+          <div className="flex gap-2 justify-end pt-2">
+            <GBtn variant="ghost" onClick={() => setLegalEditor({ open: false, category: legalEditor.category, data: null })}>Cancel</GBtn>
+            <GBtn onClick={() => legalEditor.data && saveLegalTemplate({ ...legalEditor.data, updatedAt: new Date().toISOString() })}>Save Template</GBtn>
+          </div>
+        </div>
+      )}
     </Modal>
 
 </>

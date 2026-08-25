@@ -626,6 +626,19 @@ export interface AutomationStep {
   value?: string | number;
 }
 
+// FEATURE — one saved version of a legal document (Settings → Legal). An
+// owner can keep several (e.g. "2024 Terms", "2025 Terms — updated late
+// fee") and pick which is currently live, per category and — for Terms of
+// Service — per job type (residential vs commercial).
+export interface LegalTemplate {
+  id: string;
+  category: "privacy" | "terms";
+  name: string;
+  appliesTo: "residential" | "commercial" | "both";
+  body: string;
+  updatedAt: string;
+}
+
 export interface Automation {
   id: string;
   name: string;
@@ -921,7 +934,18 @@ export interface AppSettings {
   taxRate?: number;
   defaultDepositPct?: number;
   termsAndConditions?: string;
+  termsAndConditionsResidential?: string;
+  termsAndConditionsCommercial?: string;
   terms?: string;
+  privacyPolicy?: string;
+  termsOfService?: string;
+  // FEATURE — Legal template library (Settings → Legal): lets an owner keep
+  // multiple named, editable versions of Privacy Policy / Terms of Service
+  // and pick which one is "live," instead of one hardcoded field each.
+  legalTemplates?: LegalTemplate[];
+  activePrivacyTemplateId?: string;
+  activeTermsResidentialTemplateId?: string;
+  activeTermsCommercialTemplateId?: string;
   estimateValidDays?: number;
 
   // ITEM 2 — default travel/buffer time (minutes) inserted between

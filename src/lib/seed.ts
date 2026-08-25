@@ -222,6 +222,25 @@ export const seedServices: Service[] = [
   { id: "s14", name: "Paver Sealing",        basePrice: 599, unit: "job", taxable: true,  active: true, description: "Clean and seal paver patios, driveways, and walkways" },
   { id: "s15", name: "Dumpster Pad Cleaning", basePrice: 175, unit: "job", taxable: true,  active: true, description: "Degreasing and pressure cleaning of dumpster enclosure pads" },
   { id: "s16", name: "Pool Deck Wash",       basePrice: 199, unit: "job", taxable: true,  active: true, description: "Pool deck and surrounding concrete or paver cleaning" },
+  // FEATURE — expanded default catalog (owner request: "add more default
+  // services"), rounding out common pressure-washing offerings the
+  // original 16 didn't cover.
+  { id: "s17", name: "Solar Panel Cleaning", basePrice: 249, unit: "job", taxable: true,  active: true, description: "Deionized-water rinse to restore panel efficiency" },
+  { id: "s18", name: "Vinyl Siding Wash",    basePrice: 279, unit: "job", taxable: true,  active: true, description: "Low-pressure siding cleaning, mold and mildew removal" },
+  { id: "s19", name: "Brick / Stucco Wash",  basePrice: 329, unit: "job", taxable: true,  active: true, description: "Soft wash for brick, stucco, and stone exteriors" },
+  { id: "s20", name: "Awning / Canopy Cleaning", basePrice: 179, unit: "job", taxable: true,  active: true, description: "Fabric or metal awning and canopy cleaning" },
+  { id: "s21", name: "Retaining Wall Cleaning", basePrice: 199, unit: "job", taxable: true,  active: true, description: "Block or stone retaining wall pressure cleaning" },
+  { id: "s22", name: "Playground Equipment Cleaning", basePrice: 149, unit: "job", taxable: true,  active: true, description: "Sanitizing wash for play structures and equipment" },
+  { id: "s23", name: "Parking Lot Cleaning", basePrice: 899, unit: "job", taxable: true,  active: true, description: "Commercial parking lot sweep and pressure wash" },
+  { id: "s24", name: "Restaurant Hood / Exterior Vent Cleaning", basePrice: 349, unit: "job", taxable: true,  active: true, description: "Grease buildup removal from exterior exhaust vents" },
+  { id: "s25", name: "Boat Washing",         basePrice: 199, unit: "job", taxable: true,  active: true, description: "Hull and deck wash for boats" },
+  { id: "s26", name: "RV Washing",           basePrice: 179, unit: "job", taxable: true,  active: true, description: "Exterior wash for RVs and campers" },
+  { id: "s27", name: "Pool Cage / Screen Enclosure Cleaning", basePrice: 299, unit: "job", taxable: true,  active: true, description: "Soft wash for screened pool enclosures" },
+  { id: "s28", name: "Oil Stain Removal",    basePrice: 129, unit: "job", taxable: true,  active: true, description: "Targeted degreasing for driveway and garage oil stains" },
+  { id: "s29", name: "Chewing Gum Removal",  basePrice: 99,  unit: "job", taxable: true,  active: true, description: "Steam and pressure removal of embedded gum, sidewalks/entryways" },
+  { id: "s30", name: "Post-Construction Cleanup Wash", basePrice: 449, unit: "job", taxable: true,  active: true, description: "Removes dust, mortar splatter, and residue after construction" },
+  { id: "s31", name: "Mailbox / Post Cleaning", basePrice: 49,  unit: "job", taxable: true,  active: true, description: "Quick add-on cleaning for mailboxes and posts" },
+  { id: "s32", name: "Dryer Vent Cleaning",  basePrice: 129, unit: "job", taxable: true,  active: true, description: "Exterior dryer vent clearing to reduce fire risk" },
 ];
 
 // ─── Seed email templates ─────────────────────────────────────────────────────

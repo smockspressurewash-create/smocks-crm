@@ -978,6 +978,22 @@ export function App() {
   const [expenses,        setExpenses]        = usePersistent<Expense[]>("smocks.expenses", seedExpenses);
   const [chemicals,       setChemicals]       = usePersistent<Chemical[]>("smocks.chemicals", seedChemicals);
   const [services,        setServices]        = usePersistent<Service[]>("smocks.services", seedServices);
+  // FEATURE — "add more default services." seedServices only seeds a BRAND
+  // NEW account (usePersistent's default only applies when localStorage is
+  // still empty) — an existing owner's already-saved service list never
+  // picks up newly added catalog entries on its own. One-time backfill:
+  // append any seed service whose id isn't already present, so existing
+  // owners see the expanded catalog too without duplicating anything they
+  // already have (including ones they've since edited/renamed, since this
+  // matches by id, not name).
+  useEffect(() => {
+    setServices((prev: Service[]) => {
+      const existingIds = new Set((prev || []).map((s: any) => s.id));
+      const missing = seedServices.filter(s => !existingIds.has(s.id));
+      if (missing.length === 0) return prev;
+      return [...(prev || []), ...missing];
+    });
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
   const [campaigns,       setCampaigns]       = usePersistent<Campaign[]>("smocks.campaigns", []);
   const [automations,     setAutomations]     = usePersistent<Automation[]>("smocks.automations", seedAutomations);
   const [reviews,         setReviews]         = usePersistent<Review[]>("smocks.reviews", []);
