@@ -29,6 +29,14 @@ export function HiringPage({ settings = {} as AppSettings, setSettings, toast, o
   const [newPhaseName, setNewPhaseName] = useState("");
   const [applyLinkOpen, setApplyLinkOpen] = useState(false);
   const [dragId, setDragId] = useState<string | null>(null);
+  // FEATURE — custom application questions (#38): "owners can create custom
+  // forms with multiple-choice, fill-in-the-blank, file uploads." Stored on
+  // settings like hiringPhases already is; ApplyPage.tsx fetches them
+  // publicly via get_hiring_form_settings and renders them dynamically.
+  const [questionsModalOpen, setQuestionsModalOpen] = useState(false);
+  const questions: any[] = (settings as any).hiringQuestions || [];
+  const [questionDraft, setQuestionDraft] = useState<any[]>(questions);
+  const [candidateDetailOpen, setCandidateDetailOpen] = useState<any>(null);
 
   const fetchCandidates = async () => {
     try {
@@ -99,6 +107,14 @@ export function HiringPage({ settings = {} as AppSettings, setSettings, toast, o
 
   const applyUrl = `${window.location.origin}${window.location.pathname}#/apply?oid=${encodeURIComponent(ownerId)}&co=${encodeURIComponent((settings as any).companyName || "Crew Boss")}`;
 
+  const addQuestion = (type: "text" | "choice" | "file") => setQuestionDraft(prev => [...prev, { id: uid(), type, label: "", options: type === "choice" ? [""] : undefined }]);
+  const saveQuestions = () => {
+    const cleaned = questionDraft.map(q => ({ ...q, label: q.label.trim(), options: q.options?.map((o: string) => o.trim()).filter(Boolean) })).filter(q => q.label);
+    setSettings?.((s: any) => ({ ...s, hiringQuestions: cleaned }));
+    setQuestionsModalOpen(false);
+    toast?.("Application questions saved ✓", "green");
+  };
+
   return (
     <div className="space-y-5">
       <Glass className="p-5 !bg-gradient-to-br !from-blue-950/30 !to-black/60 !border-blue-700/30">
@@ -109,6 +125,7 @@ export function HiringPage({ settings = {} as AppSettings, setSettings, toast, o
           </div>
           <div className="flex items-center gap-2">
             <GBtn variant="ghost" onClick={() => setApplyLinkOpen(true)} className="!text-xs"><Copy size={12} className="inline mr-1" />Apply Link</GBtn>
+            <GBtn variant="ghost" onClick={() => { setQuestionDraft(questions); setQuestionsModalOpen(true); }} className="!text-xs"><Edit size={12} className="inline mr-1" />Application Questions</GBtn>
             <GBtn variant="ghost" onClick={() => { setPhaseDraft(phases); setPhaseModalOpen(true); }} className="!text-xs"><Edit size={12} className="inline mr-1" />Edit Phases</GBtn>
             <GBtn onClick={() => setModal({ open: true, data: emptyCand() })} className="!text-xs"><Plus size={12} className="inline mr-1" />Add Candidate</GBtn>
           </div>
@@ -139,6 +156,15 @@ export function HiringPage({ settings = {} as AppSettings, setSettings, toast, o
                       <div className="font-medium text-sm truncate">{c.firstName} {c.lastName}</div>
                       {c.source && <div className="text-[9px] text-white/30 mt-0.5">via {c.source}</div>}
                       {c.notes && <div className="text-[11px] text-white/50 mt-1 line-clamp-2">{c.notes}</div>}
+                      {/* FEATURE — resume/photo attachments (#37), visible
+                          right on the card instead of buried in an edit form. */}
+                      {(c.resumeUrl || c.photoUrl || (c.answers && Object.keys(c.answers).length > 0)) && (
+                        <div className="flex items-center gap-2 mt-1.5 flex-wrap">
+                          {c.resumeUrl && <a href={c.resumeUrl} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()} className="text-[9px] px-1.5 py-0.5 rounded-full bg-blue-950/40 text-blue-300 hover:bg-blue-900/50">📄 Resume</a>}
+                          {c.photoUrl && <a href={c.photoUrl} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()} className="text-[9px] px-1.5 py-0.5 rounded-full bg-purple-950/40 text-purple-300 hover:bg-purple-900/50">🖼️ Photo</a>}
+                          {c.answers && Object.keys(c.answers).length > 0 && <button onClick={() => setCandidateDetailOpen(c)} className="text-[9px] px-1.5 py-0.5 rounded-full bg-white/10 text-white/50 hover:text-white/80">📝 Answers</button>}
+                        </div>
+                      )}
                       <div className="flex gap-1 mt-2 pt-2 border-t border-white/5">
                         {c.phone && <button onClick={() => window.location.href = "tel:" + c.phone.replace(/\D/g, "")} className="flex-1 p-1 rounded hover:bg-green-900/30 text-white/50 hover:text-green-400 flex items-center justify-center"><Phone size={10} /></button>}
                         {c.email && <button onClick={() => window.location.href = "mailto:" + c.email} className="flex-1 p-1 rounded hover:bg-purple-900/30 text-white/50 hover:text-purple-400 flex items-center justify-center"><Mail size={10} /></button>}
@@ -214,6 +240,58 @@ export function HiringPage({ settings = {} as AppSettings, setSettings, toast, o
             <GBtn onClick={savePhases}>Save Phases</GBtn>
           </div>
         </div>
+      </Modal>
+
+      {/* Application questions editor (#38) */}
+      <Modal open={questionsModalOpen} onClose={() => setQuestionsModalOpen(false)} title="Application Questions">
+        <div className="space-y-3">
+          <div className="text-[11px] text-white/40">Shown on your Apply link below the standard fields. Applicants answer these when they apply.</div>
+          <div className="space-y-3">
+            {questionDraft.map((q, i) => (
+              <div key={q.id} className="p-3 bg-black/40 border border-white/10 rounded-xl space-y-2">
+                <div className="flex items-center gap-2">
+                  <GInput value={q.label} onChange={(e: any) => setQuestionDraft(prev => prev.map((x, idx) => idx === i ? { ...x, label: e.target.value } : x))} placeholder="Question text" className="!text-sm flex-1" />
+                  <Badge tone="gray">{q.type === "choice" ? "Multiple choice" : q.type === "file" ? "File upload" : "Text"}</Badge>
+                  <button onClick={() => setQuestionDraft(prev => prev.filter((_, idx) => idx !== i))} className="p-1.5 text-red-400/60 hover:text-red-400"><Trash2 size={14} /></button>
+                </div>
+                {q.type === "choice" && (
+                  <div className="space-y-1.5 pl-2">
+                    {(q.options || []).map((opt: string, oi: number) => (
+                      <div key={oi} className="flex items-center gap-2">
+                        <GInput value={opt} onChange={(e: any) => setQuestionDraft(prev => prev.map((x, idx) => idx === i ? { ...x, options: x.options.map((o: string, oidx: number) => oidx === oi ? e.target.value : o) } : x))} placeholder={`Option ${oi + 1}`} className="!text-xs flex-1" />
+                        <button onClick={() => setQuestionDraft(prev => prev.map((x, idx) => idx === i ? { ...x, options: x.options.filter((_: any, oidx: number) => oidx !== oi) } : x))} className="p-1 text-white/30 hover:text-red-400"><X size={12} /></button>
+                      </div>
+                    ))}
+                    <button onClick={() => setQuestionDraft(prev => prev.map((x, idx) => idx === i ? { ...x, options: [...(x.options || []), ""] } : x))} className="text-[10px] text-blue-400 hover:text-blue-300">+ Add option</button>
+                  </div>
+                )}
+              </div>
+            ))}
+            {questionDraft.length === 0 && <div className="text-center text-[11px] text-white/30 py-4">No custom questions yet</div>}
+          </div>
+          <div className="flex gap-2">
+            <GBtn variant="ghost" onClick={() => addQuestion("text")} className="!text-xs flex-1">+ Fill-in-the-blank</GBtn>
+            <GBtn variant="ghost" onClick={() => addQuestion("choice")} className="!text-xs flex-1">+ Multiple choice</GBtn>
+            <GBtn variant="ghost" onClick={() => addQuestion("file")} className="!text-xs flex-1">+ File upload</GBtn>
+          </div>
+          <div className="flex gap-2 justify-end pt-2 border-t border-white/10">
+            <GBtn variant="ghost" onClick={() => setQuestionsModalOpen(false)}>Cancel</GBtn>
+            <GBtn onClick={saveQuestions}>Save Questions</GBtn>
+          </div>
+        </div>
+      </Modal>
+
+      {/* Candidate answers detail */}
+      <Modal open={!!candidateDetailOpen} onClose={() => setCandidateDetailOpen(null)} title={candidateDetailOpen ? `${candidateDetailOpen.firstName} ${candidateDetailOpen.lastName || ""} — Answers` : "Answers"}>
+        {candidateDetailOpen && (
+          <div className="space-y-3">
+            {Object.entries(candidateDetailOpen.answers || {}).map(([qid, val]: [string, any]) => {
+              const q = questions.find(x => x.id === qid);
+              return <div key={qid}><div className="text-xs text-white/40 mb-0.5">{q?.label || qid}</div><div className="text-sm">{String(val) || "—"}</div></div>;
+            })}
+            {Object.keys(candidateDetailOpen.answers || {}).length === 0 && <div className="text-center text-white/30 text-sm py-4">No answers recorded</div>}
+          </div>
+        )}
       </Modal>
 
       {/* Apply link */}

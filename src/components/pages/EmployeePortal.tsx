@@ -24,7 +24,7 @@ import { InstallAppButton } from "../ui/InstallAppButton";
 import { SopModal } from "../ui/SopModal";
 import { chargeSavedPaymentMethod, sendPaymentReceipt, listCustomerPaymentMethods } from "../../lib/stripe";
 import { BarChart, Bar, LineChart, Line, XAxis, YAxis, ResponsiveContainer, Tooltip, CartesianGrid } from "recharts";
-import { fmt, uid, today, localDateStr, localDateKey, shiftDayStr, daysFromNow, computeJobRatingScore, setOAuthIntent, compressImageFile, getEffectiveRate, computeNextRecurringDate, weekdayLabels, normalizeJobRow, totalJobPhotoCount, mediaSrc, dataUrlToBlob, uploadJobMedia, checkVideoLimits, stripLegacyJobFields, reconcileCrewAfterAssign, getPollIntervalMs, getPayPeriodBounds, haversineMiles } from "../../lib/utils";
+import { fmt, uid, today, localDateStr, localDateKey, shiftDayStr, daysFromNow, computeJobRatingScore, setOAuthIntent, compressImageFile, getEffectiveRate, computeNextRecurringDate, weekdayLabels, normalizeJobRow, totalJobPhotoCount, mediaSrc, dataUrlToBlob, uploadJobMedia, checkVideoLimits, stripLegacyJobFields, reconcileCrewAfterAssign, getPollIntervalMs, getPayPeriodBounds, haversineMiles, resolveTermsForJobType } from "../../lib/utils";
 import { callModel, MODELS } from "../../lib/api";
 import { usePollGate } from "../../hooks/usePollGate";
 import { usePersistent } from "../../hooks/usePersistent";
@@ -5207,7 +5207,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
         onJobCompleted={(j: Job) => { recordJobRating(j); syncJobToCalendar(j, { completed: true, silent: true }); createRecurringJob(j); }}
         googleMapsKey={settings.googleMapsKey || settings.mapsKey}
         paidLunchBreaks={!!settings.paidLunchBreaks}
-        signOffDisclaimer={job.signOffTerms || settings.termsAndConditions || settings.terms || ""}
+        signOffDisclaimer={job.signOffTerms || resolveTermsForJobType(settings, job.jobType) || settings.terms || ""}
         settings={settings}
         setEstimates={setEstimates}
         setCustomers={setCustomers}

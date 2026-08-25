@@ -736,6 +736,17 @@ export const getEffectiveRate = (employee: any, job: any): number => {
 // resolve — e.g. a stuck Supabase internal navigator-lock, or a dead network
 // request) can never block a button's loading state forever. A normal
 // rejection from the wrapped promise still propagates to the caller as usual.
+// FEATURE — "different [terms] versions for different job types (commercial
+// vs residential)." Settings stores termsAndConditionsResidential/
+// termsAndConditionsCommercial; this is the one place that picks between
+// them so every consumer (customer sign-off, estimate default terms) agrees
+// on the same fallback chain instead of each reimplementing it slightly
+// differently.
+export const resolveTermsForJobType = (settings: any, jobType?: string): string => {
+  if (jobType === "commercial" && settings?.termsAndConditionsCommercial) return settings.termsAndConditionsCommercial;
+  return settings?.termsAndConditionsResidential || settings?.termsAndConditions || "";
+};
+
 export const withTimeout = <T,>(p: Promise<T>, ms: number, label: string): Promise<T> =>
   Promise.race([
     p,

@@ -225,11 +225,45 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
     // 0049_hiring_candidates.sql. Same public-write pattern as
     // submit_lead_form/submit_trashcan_signup below.
     if (action === "submit_job_application") {
-      const { ownerId, candidate } = body;
+      const { ownerId, candidate, resumeBase64, resumeFileName, resumeContentType, photoBase64, photoFileName, photoContentType } = body;
       if (!ownerId || !candidate) return json({ error: "Missing ownerId/candidate" }, 400);
-      const insert = await sb(serviceRoleKey, `candidates`, { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify({ ...candidate, owner_id: ownerId }) });
+      // FEATURE — resume/photo attachments on a job application. Uploaded
+      // here (service role) rather than client-side because customer-docs'
+      // storage RLS (migration 0055) is owner-scoped and an anonymous
+      // applicant has no session for current_owner_id() to resolve — same
+      // reasoning as the Alfred inbound-file staging path.
+      const uploadOne = async (b64: string, fileName: string, contentType: string): Promise<string | null> => {
+        try {
+          const bin = atob(b64);
+          const bytes = new Uint8Array(bin.length);
+          for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+          const path = `_hiring/${ownerId}/${crypto.randomUUID()}-${fileName || "file"}`;
+          const res = await fetch(`${SUPABASE_URL}/storage/v1/object/customer-docs/${path}`, {
+            method: "POST",
+            headers: { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}`, "Content-Type": contentType || "application/octet-stream" },
+            body: bytes,
+          });
+          if (!res.ok) return null;
+          return `${SUPABASE_URL}/storage/v1/object/public/customer-docs/${path}`;
+        } catch { return null; }
+      };
+      const extra: Record<string, string> = {};
+      if (resumeBase64) { const url = await uploadOne(resumeBase64, resumeFileName, resumeContentType); if (url) extra.resumeUrl = url; }
+      if (photoBase64) { const url = await uploadOne(photoBase64, photoFileName, photoContentType); if (url) extra.photoUrl = url; }
+      const insert = await sb(serviceRoleKey, `candidates`, { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify({ ...candidate, ...extra, owner_id: ownerId }) });
       if (!insert.ok) return json({ error: "Failed to submit application" }, 500);
       return json({ success: true });
+    }
+
+    // ── ApplyPage.tsx — fetch the owner's custom application questions
+    // (Settings → Hiring, HiringPage.tsx) before rendering the public form.
+    // Same narrow-projection pattern as get_trashcan_signup_settings.
+    if (action === "get_hiring_form_settings") {
+      const { ownerId } = body;
+      if (!ownerId) return json({ error: "Missing ownerId" }, 400);
+      const row = await sb(serviceRoleKey, `app_settings?owner_id=eq.${encodeURIComponent(ownerId)}&select=data`);
+      const data = Array.isArray(row.data) ? row.data[0]?.data : null;
+      return json({ companyName: data?.companyName || "", questions: Array.isArray(data?.hiringQuestions) ? data.hiringQuestions : [] });
     }
 
     // ── LeadFormPage.tsx (#/lead-form) submit — same class of bug as

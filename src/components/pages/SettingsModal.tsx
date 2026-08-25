@@ -685,8 +685,16 @@ export function SettingsModal({ open, onClose, settings, setSettings, jobs = [],
             <div><label className="text-xs text-white/60 mb-1 block flex items-center gap-1"><Truck size={10} />Default Travel Buffer <span className="text-white/30 font-normal">(minutes between jobs)</span></label><GInput type="number" min="0" step="5" value={f.defaultBufferMinutes ?? 30} onChange={e => setF({ ...f, defaultBufferMinutes: Number(e.target.value) || 0 })} placeholder="30" className="!text-xs" /><div className="text-[10px] text-white/30 mt-1">Jobs scheduled the same day get flagged on the Calendar if there isn't this much time between them</div></div>
             <div>
               <label className="text-xs text-white/60 mb-1 block flex items-center gap-1"><FileText size={10} />Terms & Conditions <span className="text-white/30 font-normal">(shown on the customer sign-off screen)</span></label>
-              <GTxt rows={5} value={f.termsAndConditions || ""} onChange={(e: any) => setF({ ...f, termsAndConditions: e.target.value })} placeholder="I confirm that all services have been completed to my satisfaction..." className="!text-xs" />
-              <div className="text-[10px] text-white/30 mt-1">Use {"{{company}}"} to insert your company name. Leave blank to use the default disclaimer.</div>
+              {/* FEATURE — "different versions for different job types
+                  (commercial vs residential)." The job/estimate's own
+                  jobType picks between these two at sign-off time
+                  (EmployeePortal.tsx's signOffDisclaimer); termsAndConditions
+                  stays as the fallback for a jobType this doesn't cover. */}
+              <div className="text-[10px] text-white/40 uppercase tracking-wider mb-1">Residential</div>
+              <GTxt rows={4} value={f.termsAndConditionsResidential ?? f.termsAndConditions ?? ""} onChange={(e: any) => setF({ ...f, termsAndConditionsResidential: e.target.value })} placeholder="I confirm that all services have been completed to my satisfaction..." className="!text-xs" />
+              <div className="text-[10px] text-white/40 uppercase tracking-wider mb-1 mt-2">Commercial</div>
+              <GTxt rows={4} value={f.termsAndConditionsCommercial ?? ""} onChange={(e: any) => setF({ ...f, termsAndConditionsCommercial: e.target.value })} placeholder="Leave blank to use the Residential terms for commercial jobs too." className="!text-xs" />
+              <div className="text-[10px] text-white/30 mt-1">Use {"{{company}}"} to insert your company name. A job's own Job Type decides which version its customer sees and signs.</div>
             </div>
             <div className="flex items-center justify-between p-3 bg-black/40 border border-red-900/20 rounded-xl">
               <div className="flex-1 min-w-0 pr-3">
