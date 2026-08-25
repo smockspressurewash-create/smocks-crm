@@ -95,42 +95,38 @@ export function MarketingStyles() {
         box-shadow: 0 12px 32px -12px rgba(220,38,38,0.35);
       }
 
-      @keyframes lp-sweep-move {
-        0% { transform: translateX(-30%) rotate(8deg); }
-        100% { transform: translateX(30%) rotate(8deg); }
+      /* Slow single-direction wave — "a red wave going from the left side
+         of the screen to the right." Two SVG copies placed side by side
+         (each 50% of the track width) and the whole track slides left by
+         exactly one copy's width, so it loops with no visible seam. Long,
+         even duration (28s) reads as a calm drift, not "moving fast." */
+      @keyframes lp-wave-drift {
+        0% { transform: translateX(0); }
+        100% { transform: translateX(-50%); }
       }
-      .lp-sweep {
-        background: linear-gradient(100deg, transparent 40%, rgba(220,38,38,0.06) 48%, rgba(248,113,113,0.1) 50%, rgba(220,38,38,0.06) 52%, transparent 60%);
-        animation: lp-sweep-move 9s ease-in-out infinite alternate;
-      }
+      .lp-wave-track { animation: lp-wave-drift 28s linear infinite; }
 
       @keyframes lp-marquee-scroll {
         0% { transform: translateX(0); }
         100% { transform: translateX(-50%); }
       }
-      .lp-marquee-track { animation: lp-marquee-scroll 26s linear infinite; }
+      .lp-marquee-track { animation: lp-marquee-scroll 32s linear infinite; }
       .lp-marquee:hover .lp-marquee-track { animation-play-state: paused; }
 
       @keyframes lp-pulse-dot {
-        0%, 100% { opacity: 0.4; transform: scale(0.85); }
-        50% { opacity: 1; transform: scale(1.15); }
+        0%, 100% { opacity: 0.5; transform: scale(0.92); }
+        50% { opacity: 1; transform: scale(1.08); }
       }
-      .lp-pulse-dot { animation: lp-pulse-dot 1.8s ease-in-out infinite; }
-
-      @keyframes lp-hero-glow-pulse-move {
-        0%, 100% { opacity: 0.6; transform: translate(-50%, -50%) scale(1); }
-        50% { opacity: 1; transform: translate(-50%, -50%) scale(1.15); }
-      }
-      .lp-hero-glow-pulse { animation: lp-hero-glow-pulse-move 4s ease-in-out infinite; }
+      .lp-pulse-dot { animation: lp-pulse-dot 2.4s ease-in-out infinite; }
 
       @keyframes lp-divider-sweep-move {
         0% { transform: translateX(-120%); }
         100% { transform: translateX(320%); }
       }
-      .lp-divider-sweep { animation: lp-divider-sweep-move 3.2s ease-in-out infinite; }
+      .lp-divider-sweep { animation: lp-divider-sweep-move 6s ease-in-out infinite; }
 
       @media (prefers-reduced-motion: reduce) {
-        .lp-blob, .lp-blob-slow, .lp-sweep, .lp-marquee-track, .lp-pulse-dot, .lp-hero-gradient, .lp-divider-sweep, .lp-hero-glow-pulse {
+        .lp-blob, .lp-blob-slow, .lp-wave-track, .lp-marquee-track, .lp-pulse-dot, .lp-hero-gradient, .lp-divider-sweep {
           animation: none !important;
         }
       }
@@ -138,136 +134,55 @@ export function MarketingStyles() {
   );
 }
 
+// BUG FIX (user report) — "way too crazy... don't know why the animation
+// is moving so fast." The original hero graphic was ~60 fast diagonal
+// particle streaks respawning continuously — read as noisy/chaotic
+// instead of premium. Replaced everywhere (not just the hero — this is now
+// part of the SHARED background every marketing page renders) with one
+// slow, single-direction red wave drifting left to right, plus the
+// existing soft blob glow toned down to match. Pure CSS transform loop
+// (two SVG copies back to back so the 26s cycle loops seamlessly) — no
+// per-frame JS, no canvas, nothing that can read as "fast."
 export function BackgroundBlobs() {
+  // BUG FIX — found while chasing "the wave isn't showing up at all" (and
+  // it turned out the original blob glow behind it had the exact same
+  // problem — confirmed by forcing the wave to lime-green at full opacity
+  // and still seeing nothing). -z-10 on a fixed full-page background only
+  // reliably stays BEHIND the rest of the page's content if the page's
+  // own root wrapper establishes its own stacking context — otherwise a
+  // negative z-index can escape upward and get compared against the
+  // wrong ancestor's background, hiding the whole layer. The real fix is
+  // each marketing page's root div getting `isolate` (see LandingPage.tsx
+  // etc.) — -z-10 here is correct AS LONG AS that's in place.
   return (
     <div className="fixed inset-0 pointer-events-none overflow-hidden -z-10">
-      <div className="lp-blob absolute -top-32 -left-24 w-96 h-96 rounded-full bg-red-700/20 blur-3xl" />
-      <div className="lp-blob-slow absolute top-1/3 -right-32 w-[28rem] h-[28rem] rounded-full bg-red-900/25 blur-3xl" />
-      <div className="lp-blob absolute bottom-0 left-1/4 w-80 h-80 rounded-full bg-red-800/15 blur-3xl" />
-      {/* FEATURE — "the landing page looks bad/basic, add moving animation
-          throughout." A slow diagonal light sweep across the whole page,
-          on top of the existing blob glow, so there's ambient motion behind
-          every section, not just the hero. Cheap (single gradient, GPU
-          transform only) and respects prefers-reduced-motion below. */}
-      <div className="lp-sweep absolute -inset-y-full -inset-x-1/2 w-[200%]" />
+      <div className="lp-blob absolute -top-32 -left-24 w-96 h-96 rounded-full bg-red-700/15 blur-3xl" />
+      <div className="lp-blob-slow absolute top-1/3 -right-32 w-[28rem] h-[28rem] rounded-full bg-red-900/20 blur-3xl" />
+      <div className="lp-blob absolute bottom-0 left-1/4 w-80 h-80 rounded-full bg-red-800/10 blur-3xl" />
+      <div className="lp-wave-track absolute bottom-0 left-0 w-[200%] h-[55vh] flex opacity-90">
+        <WaveSvg /><WaveSvg />
+      </div>
     </div>
   );
 }
 
-// ─── Animated hero graphic — a pressure-washer spray rendered as real
-// moving particle streaks (canvas, not a static image), grounded in the
-// actual subject instead of generic decorative blobs. Sits behind the hero
-// headline as its own bounded visual. Respects prefers-reduced-motion (skips
-// straight to a static single frame) and pauses via IntersectionObserver
-// when scrolled out of view so it never burns cycles for content further
-// down the page.
-export function HeroSprayCanvas({ className = "" }: { className?: string }) {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const wrapRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    const wrap = wrapRef.current;
-    if (!canvas || !wrap) return;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-
-    const reduceMotion = typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
-
-    type Streak = { x: number; y: number; len: number; speed: number; angle: number; width: number; hue: number; life: number };
-    let streaks: Streak[] = [];
-    let raf = 0;
-    let running = true;
-    let w = 0, h = 0, dpr = 1;
-
-    const spawn = (): Streak => {
-      const angle = (28 + Math.random() * 10) * (Math.PI / 180); // consistent downward-right spray angle
-      return {
-        x: -40 - Math.random() * 200,
-        y: Math.random() * h * 0.9,
-        len: 90 + Math.random() * 160,
-        speed: 8 + Math.random() * 11,
-        angle,
-        width: 2 + Math.random() * 3,
-        hue: Math.random() > 0.3 ? 0 : 355, // mostly hot red, some white-hot
-        life: 1,
-      };
-    };
-
-    const resize = () => {
-      const rect = wrap.getBoundingClientRect();
-      dpr = Math.min(window.devicePixelRatio || 1, 2);
-      w = rect.width; h = rect.height;
-      canvas.width = w * dpr; canvas.height = h * dpr;
-      canvas.style.width = w + "px"; canvas.style.height = h + "px";
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    };
-    resize();
-    const count = reduceMotion ? 0 : (w < 640 ? 30 : 58);
-    streaks = Array.from({ length: count }, spawn);
-
-    const drawStatic = () => {
-      // Reduced-motion fallback: a single soft radial glow, no animation loop at all.
-      ctx.clearRect(0, 0, w, h);
-      const g = ctx.createRadialGradient(w * 0.5, h * 0.35, 0, w * 0.5, h * 0.35, Math.max(w, h) * 0.5);
-      g.addColorStop(0, "rgba(220,38,38,0.18)");
-      g.addColorStop(1, "rgba(220,38,38,0)");
-      ctx.fillStyle = g;
-      ctx.fillRect(0, 0, w, h);
-    };
-
-    const draw = () => {
-      if (!running) return;
-      ctx.clearRect(0, 0, w, h);
-      for (const s of streaks) {
-        s.x += Math.cos(s.angle) * s.speed;
-        s.y += Math.sin(s.angle) * s.speed;
-        if (s.x > w + 80 || s.y > h + 80) { Object.assign(s, spawn()); continue; }
-        const x2 = s.x - Math.cos(s.angle) * s.len;
-        const y2 = s.y - Math.sin(s.angle) * s.len;
-        const grad = ctx.createLinearGradient(s.x, s.y, x2, y2);
-        grad.addColorStop(0, `hsla(${s.hue}, 95%, ${s.hue === 0 ? 58 : 75}%, 1)`);
-        grad.addColorStop(1, `hsla(${s.hue}, 95%, 50%, 0)`);
-        ctx.strokeStyle = grad;
-        ctx.lineWidth = s.width;
-        ctx.lineCap = "round";
-        ctx.beginPath();
-        ctx.moveTo(s.x, s.y);
-        ctx.lineTo(x2, y2);
-        ctx.stroke();
-      }
-      raf = requestAnimationFrame(draw);
-    };
-
-    if (reduceMotion) { drawStatic(); }
-    else { raf = requestAnimationFrame(draw); }
-
-    const obs = new IntersectionObserver(([entry]) => {
-      running = entry.isIntersecting && !reduceMotion;
-      if (running && !raf) raf = requestAnimationFrame(draw);
-    }, { threshold: 0 });
-    obs.observe(wrap);
-
-    const onResize = () => resize();
-    window.addEventListener("resize", onResize);
-    return () => {
-      running = false;
-      cancelAnimationFrame(raf);
-      window.removeEventListener("resize", onResize);
-      obs.disconnect();
-    };
-  }, []);
-
+// One copy of the wave shape — BackgroundBlobs renders two side by side
+// and slides the pair left, so the seam between them is never visible.
+function WaveSvg() {
   return (
-    // z-0 (not -z-10): an absolutely-positioned element with z-index:auto
-    // paints AFTER normal-flow siblings regardless of DOM order, and a
-    // negative z-index can just as easily sink BELOW an ancestor's own
-    // solid background depending on where the nearest stacking context
-    // lands — explicit z-0 here plus z-10 on the caller's text wrapper
-    // gives a real, direct, unambiguous comparison between the two.
-    <div ref={wrapRef} className={"absolute inset-0 pointer-events-none z-0 " + className}>
-      <canvas ref={canvasRef} />
-    </div>
+    <svg viewBox="0 0 1440 320" preserveAspectRatio="none" className="w-1/2 h-full flex-shrink-0">
+      <defs>
+        <linearGradient id="lp-wave-grad" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor="#ef4444" stopOpacity="0.5" />
+          <stop offset="55%" stopColor="#dc2626" stopOpacity="0.28" />
+          <stop offset="100%" stopColor="#7f1d1d" stopOpacity="0.08" />
+        </linearGradient>
+      </defs>
+      <path
+        fill="url(#lp-wave-grad)"
+        d="M0,192 C240,260 480,120 720,160 C960,200 1200,280 1440,208 L1440,320 L0,320 Z"
+      />
+    </svg>
   );
 }
 

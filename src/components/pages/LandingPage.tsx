@@ -6,7 +6,7 @@ import {
 } from "lucide-react";
 import {
   Reveal, MarketingStyles, BackgroundBlobs, MarketingNav, MarketingFooter,
-  MarketingPage, HeroSprayCanvas, MarketingMarquee, SectionDivider,
+  MarketingPage, MarketingMarquee, SectionDivider,
 } from "./MarketingShared";
 
 // ─── Public marketing / landing page for CrewBoss (this product) ──────────────
@@ -157,21 +157,19 @@ export function LandingPage({
     // min-h-screen, no overflow of its own) had literally nowhere for a
     // scroll to happen once its content exceeded one viewport — this div
     // must BE the scrolling pane itself, same as every other page's <main>.
-    <div className="h-dvh h-screen overflow-y-auto bg-black text-white overflow-x-hidden">
+    <div className="h-dvh h-screen overflow-y-auto bg-black text-white overflow-x-hidden isolate">
       <MarketingStyles />
       <BackgroundBlobs />
       <MarketingNav active="welcome" onNavigate={onNavigate} onGetStarted={onGetStarted} />
 
       {/* ── Hero ─────────────────────────────────────────────────────────────── */}
       <section className="relative px-4 md:px-6 pt-16 pb-20 md:pt-28 md:pb-32 max-w-5xl mx-auto text-center overflow-hidden">
-        {/* BUG FIX (user report) — "landing page looks bad/basic." The only
-            motion on the whole page used to be two blurred static-position
-            blobs and a one-time scroll-reveal. This is a real animated
-            graphic grounded in the actual product (a pressure-washer spray,
-            rendered as continuously moving particle streaks), not another
-            generic gradient blob. */}
-        <div className="lp-hero-glow-pulse absolute left-1/2 top-1/3 -translate-x-1/2 -translate-y-1/2 w-[36rem] h-[36rem] rounded-full bg-red-600/25 blur-[100px] z-0" />
-        <HeroSprayCanvas />
+        {/* BUG FIX (user report) — the first version of this fix ("moving red
+            animation graphic") was ~60 fast diagonal particle streaks, which
+            read as chaotic rather than premium. The calmer replacement (one
+            slow red wave drifting left to right) now lives in the shared
+            BackgroundBlobs — every marketing page gets it, not just this
+            hero — so there's nothing hero-specific to render here anymore. */}
         <div className="relative z-10">
         <Reveal>
           <div className="relative inline-flex items-center gap-2 px-3 py-1.5 rounded-full glass text-xs text-red-300 mb-6">
