@@ -4,7 +4,7 @@ import {
   Calendar, MessageSquare, Megaphone, Star, Zap, Share2, UserPlus,
   Bot, Database, Users2, Truck, DollarSign, FlaskConical, BarChart3,
   TrendingUp, PiggyBank, Wallet, Heart, Gift, Monitor, Tag,
-  Bell, Settings, X, Lock, Globe, ChevronLeft, ChevronRight, Plus, Undo2, Redo2, CheckCircle, Eye, EyeOff, Menu, AlertTriangle, Trash2, BookOpen, UserCheck
+  Bell, Settings, X, Lock, Globe, ChevronLeft, ChevronRight, Plus, Undo2, Redo2, CheckCircle, Eye, EyeOff, Menu, AlertTriangle, Trash2, BookOpen, UserCheck, Target
 } from "lucide-react";
 
 import { useGlobalStyles } from "./hooks/useGlobalStyles";
@@ -50,6 +50,7 @@ import { AnalyticsPage } from "./components/pages/AnalyticsPage";
 import { BudgetPage } from "./components/pages/BudgetPage";
 import { PersonalBudgetPage } from "./components/pages/PersonalBudgetPage";
 import { AccountabilityPage } from "./components/pages/AccountabilityPage";
+import { GoalsPage } from "./components/pages/GoalsPage";
 import { ReferralsPage } from "./components/pages/ReferralsPage";
 import { PromotionsPage } from "./components/pages/PromotionsPage";
 import { CrewView } from "./components/pages/CrewView";
@@ -176,6 +177,7 @@ const navGroups = [
   {
     label: "Personal",
     items: [
+      { id: "goals",          label: "Goals",          icon: Target   },
       { id: "accountability", label: "Accountability", icon: Heart    },
       { id: "google",         label: "Workspace",      icon: Database },
       { id: "portal",         label: "Team Portal",    icon: Monitor  },
@@ -533,7 +535,7 @@ export function App() {
     if (hash === "features") return "features";
     if (hash === "pricing") return "pricing";
     if (hash === "about") return "about";
-    const valid = ["dashboard","alfred","inbox","notifications","customers","estimates","invoices","pipeline","intake","jobs","calendar","crew","campaigns","reviews","automations","social","referrals","promotions","trashcans","sops","expenses","reports","analytics","budget","personal","accountability","employees","hiring","fleet","chemicals","google","portal","reset-password","client","referral","rate","welcome","login","features","pricing","about"];
+    const valid = ["dashboard","alfred","inbox","notifications","customers","estimates","invoices","pipeline","intake","jobs","calendar","crew","campaigns","reviews","automations","social","goals","referrals","promotions","trashcans","sops","expenses","reports","analytics","budget","personal","accountability","employees","hiring","fleet","chemicals","google","portal","reset-password","client","referral","rate","welcome","login","features","pricing","about"];
     return valid.includes(hash) ? hash : "dashboard";
   });
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -840,7 +842,7 @@ export function App() {
 
   // Listen for browser back/forward
   useEffect(() => {
-    const valid = ["dashboard","alfred","inbox","notifications","customers","estimates","invoices","pipeline","intake","jobs","calendar","crew","campaigns","reviews","automations","social","referrals","promotions","trashcans","sops","expenses","reports","analytics","budget","personal","accountability","employees","hiring","fleet","chemicals","google","portal","reset-password","client","referral","rate","lead-form","trash-cans","apply","terms","privacy","welcome","login","features","pricing","about"];
+    const valid = ["dashboard","alfred","inbox","notifications","customers","estimates","invoices","pipeline","intake","jobs","calendar","crew","campaigns","reviews","automations","social","goals","referrals","promotions","trashcans","sops","expenses","reports","analytics","budget","personal","accountability","employees","hiring","fleet","chemicals","google","portal","reset-password","client","referral","rate","lead-form","trash-cans","apply","terms","privacy","welcome","login","features","pricing","about"];
     const handler = () => {
       const hash = window.location.hash.replace(/^#\/?/, "").split("?")[0];
       if (hash === "portal" || hash.startsWith("portal/")) { setPage("portal"); return; }
@@ -1248,6 +1250,24 @@ export function App() {
             // quota problem). Only suggest the quota/paused explanation for
             // errors that actually look account-related; a timeout gets a
             // size-aware hint instead.
+            // BUG FIX — a small payload (nothing to shrink) used to give up
+            // after exactly ONE attempt and immediately notify, even though
+            // a 20s timeout on a 3KB upsert is very plausibly just a
+            // transient network blip that a plain retry would clear on its
+            // own. Try once more, unmodified, with a longer timeout, before
+            // actually telling the owner anything failed.
+            if (isTimeout) {
+              try {
+                const retryUpdatedAt = new Date().toISOString();
+                const rPlain: any = await saveSettingsToSupabase(settings, retryUpdatedAt, 30000);
+                if (!rPlain?.error) {
+                  settingsLastSavedAtRef.current = retryUpdatedAt;
+                  lastSyncedJsonRef.current = json;
+                  console.warn("[Settings Sync] plain retry succeeded after initial timeout — no notification needed");
+                  return;
+                }
+              } catch { /* fall through to the notification below */ }
+            }
             const hint = isSchemaErr
               ? " — run supabase/migrations/0011_owner_settings_and_alfred_schema_fixes.sql in the Supabase SQL editor"
               : isTimeout
@@ -1432,13 +1452,16 @@ export function App() {
   const NOTIFICATIONS_CAP = 300;
   // Settings-sync failures previously only fired a toast, which disappears
   // and is easy to miss — the Notifications tab is where the owner would
-  // expect to find it later. Throttled to once per 5 minutes so a bad
-  // connection retrying on every keystroke doesn't flood the list with
-  // duplicates of the same failure.
+  // expect to find it later. Throttled to once per 30 minutes (was 5 — a
+  // genuinely flaky connection still hit that every few minutes and read as
+  // "I keep getting this notification" even though the underlying save now
+  // also gets a real second attempt before this fires at all, see the plain
+  // retry added above) so a bad connection doesn't nag repeatedly in one
+  // sitting.
   const lastSettingsSyncNotifAtRef = useRef(0);
   const pushSettingsSyncNotification = (text: string) => {
     const now = Date.now();
-    if (now - lastSettingsSyncNotifAtRef.current < 5 * 60 * 1000) return;
+    if (now - lastSettingsSyncNotifAtRef.current < 30 * 60 * 1000) return;
     lastSettingsSyncNotifAtRef.current = now;
     setNotifications((prev: AppNotification[]) => [{ id: uid(), text, at: now, read: false, category: "system" as const, page: "dashboard" }, ...prev].slice(0, NOTIFICATIONS_CAP));
   };
@@ -1572,7 +1595,29 @@ export function App() {
       const cust = customers.find(x => x.id === j.customerId);
       const who = cust ? `${cust.firstName} ${cust.lastName}` : j.address;
       if (cur.status === "completed" && prev.status && prev.status !== "completed") events.push({ id: j.id + ":done", text: `✅ Job completed — ${who}`, at: Date.now() });
-      if (cur.arrivedAt && !prev.arrivedAt) { const text = `📍 Crew arrived at ${who}`; events.push({ id: j.id + ":arrived", text, at: Date.now() }); notifyDesktop(text); }
+      if (cur.arrivedAt && !prev.arrivedAt) {
+        // FEATURE — arrival is tracked once per JOB (not per crew member),
+        // so when a crew of several is assigned, one person tapping "I'm
+        // Here" correctly reflects the whole crew arriving together — but
+        // the notification used to say only "Crew arrived," never who, and
+        // never whether that was on-time or late against the scheduled time.
+        const crewNames = (Array.isArray(j.crew) ? j.crew : [])
+          .map((empId: string) => employees.find((e: any) => e.id === empId))
+          .filter(Boolean)
+          .map((e: any) => e.firstName || "Crew member");
+        const crewLabel = crewNames.length > 0 ? crewNames.join(" and ") : "Crew";
+        let timingLabel = "";
+        if (j.scheduledDate && j.scheduledTime) {
+          const scheduledMs = new Date(`${j.scheduledDate}T${j.scheduledTime}:00`).getTime();
+          if (!Number.isNaN(scheduledMs)) {
+            const diffMin = Math.round((cur.arrivedAt - scheduledMs) / 60000);
+            timingLabel = diffMin > 10 ? ` (${diffMin}m late)` : diffMin < -5 ? " (early)" : " (on time)";
+          }
+        }
+        const text = `📍 ${crewLabel} arrived at ${who}${timingLabel}`;
+        events.push({ id: j.id + ":arrived", text, at: Date.now() });
+        notifyDesktop(text);
+      }
       if (photoCount > (prev.photoCount ?? 0)) events.push({ id: j.id + ":photos:" + photoCount, text: `📸 ${photoCount - (prev.photoCount ?? 0)} new photo${photoCount - (prev.photoCount ?? 0) !== 1 ? "s" : ""} — ${who}`, at: Date.now() });
       if (signed && !prev.signed) events.push({ id: j.id + ":signed", text: `✍️ Got customer sign-off — ${who}`, at: Date.now() });
       if (issueCount > (prev.issueCount ?? 0)) {
@@ -1934,13 +1979,14 @@ export function App() {
   // Portal
   const [portalEstId, setPortalEstId] = useState<string | null>(null);
   const [openJobId, setOpenJobId] = useState<string | null>(null);
-  // FEATURE — "Client Demo" (renamed from the old "Portal" button, which
-  // only ever opened the latest approved estimate). Owner picks a real
-  // customer + which flow to test; each option opens the actual
-  // customer-facing surface for that flow with that customer's real data,
-  // rather than a separate fabricated demo.
+  // FEATURE — "Client Demo": generic test buttons that fire immediately
+  // (no picking a customer first), auto-picking real data behind the
+  // scenes where a flow needs some record to render against. Review and
+  // client-login flows render in-app via these flags instead of
+  // window.open()-ing a new tab.
   const [clientDemoOpen, setClientDemoOpen] = useState(false);
-  const [clientDemoCustomerId, setClientDemoCustomerId] = useState("");
+  const [clientDemoReviewOpen, setClientDemoReviewOpen] = useState(false);
+  const [clientDemoLoginOpen, setClientDemoLoginOpen] = useState(false);
 
   // MULTI-TENANT (Phase D) — public #/estimate/:id data. Once RLS is
   // owner_id-scoped, an anonymous visitor (or a customer with no `employees`
@@ -3011,24 +3057,39 @@ export function App() {
   // matching "I press sign out and nothing happens." Clearing local state
   // is what actually gets the user back to the login screen; it no longer
   // waits on (or gets blocked by) the network call succeeding.
+  // BUG FIX — "sign out is unresponsive on mobile." Two real gaps: (1) the
+  // button gave zero visible feedback while the 5s signOut timeout ran, so
+  // a tap that actually worked still LOOKED like nothing happened for up to
+  // 5 seconds on a slow mobile connection; (2) the hash was never reset, so
+  // if the owner signed out while on e.g. #/employees, the hashchange
+  // listener could re-navigate `page` back to that same authenticated route
+  // a beat later. try/finally guarantees local state always clears even if
+  // signOut itself throws synchronously for some reason.
+  const [signingOut, setSigningOut] = useState(false);
   const handleSignOut = async () => {
+    if (signingOut) return;
+    setSigningOut(true);
+    toast?.("Signing out…");
     try {
       await withTimeout(supabase.auth.signOut({ scope: "local" }), 5000, "Sign out");
     } catch (e: any) {
       console.warn("[SignOut] server sign-out failed/timed out — clearing local session anyway:", e?.message);
+    } finally {
+      setSettings((prev: any) => ({
+        ...prev,
+        googleConnected: false,
+        googleEmail: "",
+        googleProviderToken: "",
+        googleRefreshToken: "",
+      }));
+      setCrmUserEmail("");
+      setHasCrmSession(false);
+      setLastOwnerSessionFlag(false);
+      setProfileDropOpen(false);
+      setSidebarOpen(false);
+      window.location.hash = "";
+      setSigningOut(false);
     }
-    setSettings((prev: any) => ({
-      ...prev,
-      googleConnected: false,
-      googleEmail: "",
-      googleProviderToken: "",
-      googleRefreshToken: "",
-    }));
-    setCrmUserEmail("");
-    setHasCrmSession(false);
-    setLastOwnerSessionFlag(false);
-    setProfileDropOpen(false);
-    setSidebarOpen(false);
   };
 
   // No OAuth loading gate either — oauthProcessing still flips false once the
@@ -3896,7 +3957,7 @@ export function App() {
                 {page === "campaigns"      && <CampaignsPage campaigns={campaigns} setCampaigns={setCampaigns} customers={customers} estimates={estimates} jobs={jobs} settings={settings} setSettings={setSettings} inboxThreads={inboxThreads} setInboxThreads={setInboxThreads} automations={automations} setAutomations={setAutomations} toast={toast} />}
                 {page === "reviews"        && <ReviewsPage reviews={reviews} setReviews={setReviews} jobs={jobs} customers={customers} toast={toast} negativeAlerts={negativeAlerts} setNegativeAlerts={setNegativeAlerts} settings={settings} setSettings={setSettings} />}
                 {page === "automations"    && <AutomationsPage automations={automations} setAutomations={setAutomations} jobs={jobs} customers={customers} estimates={estimates} settings={settings} setSettings={setSettings} toast={toast} />}
-                {page === "social"         && <SocialPage posts={socialPosts} setPosts={setSocialPosts} toast={toast} settings={settings} />}
+                {page === "social"         && <SocialPage posts={socialPosts} setPosts={setSocialPosts} toast={toast} settings={settings} jobs={jobs} ownerId={crmUserId} onNav={setPage} />}
                 {page === "intake"         && <LeadIntakePage customers={customers} setCustomers={setCustomers} estimates={estimates} setEstimates={setEstimates} services={services} jobs={jobs} settings={settings} setSettings={setSettings} toast={toast} onNav={setPage} onConvertToEstimate={(customerId: string) => { setEstimatePresetCustomerId(customerId); setFabAutoOpenNew("estimates"); setPage("estimates"); }} ownerId={crmUserId} />}
                 {page === "alfred"         && (managerBlocked("alfred") ? <RestrictedNotice label="Alfred AI" /> : <AlfredPage conversations={alfredConversations} setConversations={setAlfredConversations} activeConvId={activeConvId} setActiveConvId={setActiveConvId} memory={alfredMemory} setMemory={setAlfredMemory} personality={personality} setPersonality={setPersonality} apiKey={settings.anthropicKey ?? settings.geminiKey ?? ""} openSettings={() => setSettingsOpen(true)} toast={toast} jobs={jobs} setJobs={setJobs} estimates={estimates} setEstimates={setEstimates} customers={customers} setCustomers={setCustomers} employees={employees} automations={automations} setAutomations={setAutomations} stats={{ totalRev, activeJobs, pendingEst, closeRate, doneMonth }} setWins={setWins} goals={goalsList} setGoals={setGoalsList} setSettings={setSettings} settings={settings} modelStatus={modelStatus} setModelStatus={setModelStatus} onNav={setPage} onSpotlight={queueAlfredSpotlight} expenses={expenses} setExpenses={setExpenses} chemicals={chemicals} ownerId={crmUserId} />)}
                 {page === "google"         && (managerBlocked("google") ? <RestrictedNotice label="Google Workspace" /> : <GoogleWorkspacePage settings={settings} setSettings={setSettings} googleData={googleData as any} setGoogleData={setGoogleData} customers={customers} setCustomers={setCustomers} jobs={jobs} toast={toast} onNav={setPage} />)}
@@ -3911,6 +3972,7 @@ export function App() {
                 {page === "budget"         && <BudgetPage jobs={jobs} estimates={estimates} expenses={expenses} settings={settings} toast={toast} />}
                 {page === "personal"       && <PersonalBudgetPage toast={toast} />}
                 {page === "accountability" && (managerBlocked("accountability") ? <RestrictedNotice label="Accountability Tools" /> : <AccountabilityPage entries={accountability} setEntries={setAccountability} goals={goalsList} setGoals={setGoalsList} wins={wins} setWins={setWins} toast={toast} settings={settings} ownerId={crmUserId} />)}
+                {page === "goals" && <GoalsPage goals={goalsList} setPage={setPage} />}
                 {page === "referrals"      && <ReferralsPage customers={customers} setCustomers={setCustomers} jobs={jobs} toast={toast} settings={settings} setSettings={setSettings} />}
                 {page === "promotions"     && <PromotionsPage promotions={promotions} setPromotions={setPromotions} customers={customers} services={services} settings={settings} toast={toast} />}
                 {page === "trashcans"      && <TrashCanPage jobs={jobs} setJobs={setJobs} customers={customers} settings={settings} setSettings={setSettings} toast={toast} ownerId={crmUserId} />}
@@ -3980,13 +4042,14 @@ export function App() {
       />
 
       {clientDemoOpen && (() => {
-        const demoCust = customers.find(c => c.id === clientDemoCustomerId) as any;
-        const custEstimates = demoCust ? estimates.filter(e => e.customerId === demoCust.id).sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || "")) : [];
-        const latestQuote = custEstimates.find(e => !(e as any).invoiced);
-        const latestUnpaidInvoice = custEstimates.find(e => (e as any).invoiced && !e.paidAt);
-        const latestInvoice = custEstimates.find(e => (e as any).invoiced);
-        const companyName = (settings as any)?.companyName || "Crew Boss";
-        const rateLink = demoCust ? `${window.location.origin}${window.location.pathname}#/rate?c=${encodeURIComponent(demoCust.id)}&n=${encodeURIComponent(demoCust.firstName)}&g=${encodeURIComponent((settings as any).googlePlaceId || "")}&rl=${encodeURIComponent((settings as any).googleReviewLink || "")}&co=${encodeURIComponent(companyName)}` : "";
+        // Auto-pick real records behind the scenes instead of making the
+        // owner choose a customer first — most recent open quote / unpaid
+        // invoice / any invoice, across ALL customers, sorted newest first.
+        const sortedEstimates = [...estimates].sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""));
+        const latestQuote = sortedEstimates.find(e => !(e as any).invoiced);
+        const latestUnpaidInvoice = sortedEstimates.find(e => (e as any).invoiced && !e.paidAt);
+        const latestInvoice = sortedEstimates.find(e => (e as any).invoiced);
+        const demoBtnClass = "w-full text-left px-3 py-2.5 rounded-xl bg-white/5 hover:bg-white/10 disabled:opacity-30 disabled:cursor-not-allowed text-sm text-white/80 flex items-center justify-between transition";
         return (
           <div className="fixed inset-0 z-[200] bg-black/80 backdrop-blur flex items-center justify-center p-4" onClick={() => setClientDemoOpen(false)}>
             <div className="w-full max-w-md bg-neutral-950 border border-white/10 rounded-2xl shadow-2xl overflow-hidden" onClick={e => e.stopPropagation()}>
@@ -3994,40 +4057,51 @@ export function App() {
                 <div className="font-bold text-white flex items-center gap-2"><Globe size={16} />Client Demo</div>
                 <button onClick={() => setClientDemoOpen(false)} className="p-1.5 rounded-lg hover:bg-white/15 text-white"><X size={16} /></button>
               </div>
-              <div className="p-4 space-y-3">
-                <div>
-                  <label className="text-[10px] text-white/50 uppercase tracking-wider mb-1 block">Test as customer</label>
-                  <select value={clientDemoCustomerId} onChange={e => setClientDemoCustomerId(e.target.value)} className="w-full bg-white/5 border border-white/15 rounded-xl px-3 py-2.5 text-sm text-white">
-                    <option value="">Select a customer…</option>
-                    {customers.map((c: any) => <option key={c.id} value={c.id}>{c.firstName} {c.lastName}</option>)}
-                  </select>
-                </div>
-                {demoCust && (
-                  <div className="space-y-2">
-                    <button disabled={!latestQuote} onClick={() => { setClientDemoOpen(false); setPortalEstId(latestQuote!.id); }} className="w-full text-left px-3 py-2.5 rounded-xl bg-white/5 hover:bg-white/10 disabled:opacity-30 disabled:cursor-not-allowed text-sm text-white/80 flex items-center justify-between">
-                      View / Sign a Quote {!latestQuote && <span className="text-[10px] text-white/30">no open quote</span>}
-                    </button>
-                    <button disabled={!latestUnpaidInvoice} onClick={() => { setClientDemoOpen(false); setPortalEstId(latestUnpaidInvoice!.id); }} className="w-full text-left px-3 py-2.5 rounded-xl bg-white/5 hover:bg-white/10 disabled:opacity-30 disabled:cursor-not-allowed text-sm text-white/80 flex items-center justify-between">
-                      Pay an Invoice {!latestUnpaidInvoice && <span className="text-[10px] text-white/30">no unpaid invoice</span>}
-                    </button>
-                    <button disabled={!latestInvoice} onClick={() => { setClientDemoOpen(false); setPortalEstId(latestInvoice!.id); }} className="w-full text-left px-3 py-2.5 rounded-xl bg-white/5 hover:bg-white/10 disabled:opacity-30 disabled:cursor-not-allowed text-sm text-white/80">
-                      View Invoice
-                    </button>
-                    <button disabled={!rateLink} onClick={() => window.open(rateLink, "_blank", "noopener,noreferrer")} className="w-full text-left px-3 py-2.5 rounded-xl bg-white/5 hover:bg-white/10 text-sm text-white/80">
-                      Leave a Review
-                    </button>
-                    <div className="p-3 rounded-xl bg-black/40 border border-white/10 text-[11px] text-white/50 space-y-1.5">
-                      <div className="font-semibold text-white/70">Full Client Portal (view all jobs, reschedule, pay)</div>
-                      <div>The full portal at <span className="text-blue-400">#/client</span> requires signing in as the customer — {demoCust.email ? <>log in with <span className="text-white/70">{demoCust.email}</span></> : "this customer has no email on file to log in with"}.</div>
-                      <button onClick={() => window.open(`${window.location.origin}${window.location.pathname}#/client`, "_blank", "noopener,noreferrer")} className="text-blue-400 hover:text-blue-300 underline">Open Client Login →</button>
-                    </div>
-                  </div>
-                )}
+              <div className="p-4 space-y-2">
+                <div className="text-[11px] text-white/40 mb-1">Preview any customer-facing flow instantly — real records are picked automatically.</div>
+                <button disabled={!latestQuote} onClick={() => { setClientDemoOpen(false); setPortalEstId(latestQuote!.id); }} className={demoBtnClass}>
+                  Test Viewing a Quote {!latestQuote && <span className="text-[10px] text-white/30">no open quote to preview</span>}
+                </button>
+                <button disabled={!latestUnpaidInvoice} onClick={() => { setClientDemoOpen(false); setPortalEstId(latestUnpaidInvoice!.id); }} className={demoBtnClass}>
+                  Test Paying an Invoice {!latestUnpaidInvoice && <span className="text-[10px] text-white/30">no unpaid invoice to preview</span>}
+                </button>
+                <button disabled={!latestInvoice} onClick={() => { setClientDemoOpen(false); setPortalEstId(latestInvoice!.id); }} className={demoBtnClass}>
+                  Test Viewing an Invoice {!latestInvoice && <span className="text-[10px] text-white/30">no invoice to preview</span>}
+                </button>
+                <button onClick={() => { setClientDemoOpen(false); setClientDemoReviewOpen(true); }} className={demoBtnClass}>
+                  Test Leaving a Review
+                </button>
+                <button onClick={() => { setClientDemoOpen(false); setClientDemoLoginOpen(true); }} className={demoBtnClass}>
+                  Test the Full Client Portal
+                </button>
               </div>
             </div>
           </div>
         );
       })()}
+
+      {/* Client Demo — Leave a Review, rendered in-app rather than a new
+          tab. CustomerReviewPage normally reads its params off #/rate's
+          hash; `overrides` feeds it generic demo values directly so we
+          don't have to touch window.location.hash (which would blow away
+          the CRM page underneath this overlay). */}
+      {clientDemoReviewOpen && (
+        <div className="fixed inset-0 z-[200] bg-black overflow-y-auto">
+          <button onClick={() => setClientDemoReviewOpen(false)} className="fixed top-4 right-4 z-[210] p-2 rounded-lg bg-white/10 hover:bg-white/20 text-white border border-white/15"><X size={18} /></button>
+          <CustomerReviewPage overrides={{ n: "there", co: (settings as any)?.companyName || "Crew Boss" }} />
+        </div>
+      )}
+
+      {/* Client Demo — full client portal login, rendered in-app rather
+          than a new tab. ClientAuthPortal manages its own real Supabase
+          auth session (no mock-session bypass exists), so this genuinely
+          tests the customer login flow against real data. */}
+      {clientDemoLoginOpen && (
+        <div className="fixed inset-0 z-[200] bg-black overflow-y-auto">
+          <button onClick={() => setClientDemoLoginOpen(false)} className="fixed top-4 right-4 z-[210] p-2 rounded-lg bg-white/10 hover:bg-white/20 text-white border border-white/15"><X size={18} /></button>
+          <ClientAuthPortal customers={customers} setCustomers={setCustomers} estimates={estimates} setEstimates={setEstimates} jobs={jobs} settings={settings} estimateTemplates={estimateTemplates} toast={toast} />
+        </div>
+      )}
 
       {/* Automation batch-approval gate — nothing an automation wants to send
           goes out until the owner explicitly approves it here. */}

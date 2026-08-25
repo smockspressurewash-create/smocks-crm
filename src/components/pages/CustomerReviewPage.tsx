@@ -19,11 +19,16 @@ function hashParam(key: string): string {
   return new URLSearchParams(q).get(key) || "";
 }
 
-export function CustomerReviewPage() {
-  const customerId = hashParam("c");
-  const firstName = decodeURIComponent(hashParam("n") || "there");
-  const googlePlaceId = hashParam("g");
-  const companyName = decodeURIComponent(hashParam("co") || "Crew Boss");
+// `overrides` lets the owner's in-app "Client Demo" modal (App.tsx) mount
+// this same public page inline without touching window.location.hash (which
+// would blow away the CRM's own hash-routed page underneath it) — falls
+// back to reading the real #/rate query params when not supplied.
+export function CustomerReviewPage({ overrides }: { overrides?: Partial<Record<"c" | "n" | "g" | "rl" | "co", string>> } = {}) {
+  const param = (key: "c" | "n" | "g" | "rl" | "co") => overrides?.[key] ?? hashParam(key);
+  const customerId = param("c");
+  const firstName = decodeURIComponent(param("n") || "there");
+  const googlePlaceId = param("g");
+  const companyName = decodeURIComponent(param("co") || "Crew Boss");
   // FIX 13 — this used to fall back to a hardcoded
   // "g.page/r/smocks-pressure-washing/review" link whenever no Place ID was
   // set, which sent every OTHER deployment's customers to a specific
@@ -32,7 +37,7 @@ export function CustomerReviewPage() {
   // Place-ID-constructed URL is a fallback for anyone who already set that
   // instead; if genuinely neither is configured, there's no Google link to
   // offer at all — better than sending customers somewhere wrong.
-  const googleReviewLink = decodeURIComponent(hashParam("rl") || "");
+  const googleReviewLink = decodeURIComponent(param("rl") || "");
   const googleUrl = googleReviewLink || (googlePlaceId ? `https://search.google.com/local/writereview?placeid=${googlePlaceId}` : "");
 
   const [step, setStep] = useState<"rate" | "happy" | "unhappy" | "done">("rate");

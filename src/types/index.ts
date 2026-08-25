@@ -736,6 +736,22 @@ export interface Goal {
   current: number;
   unit: string;
   deadline?: string;
+  // Runtime shape actually used by AccountabilityPage's checklist-style
+  // goals (goals prop there is untyped any[] — these mirror what's really
+  // stored so the Goal interface reflects reality, not just seedGoals'
+  // target/current shape).
+  text?: string;
+  done?: boolean;
+  createdAt?: string;
+  completedAt?: string | null;
+  // Owner-requested: "specify a goal by a certain time, and if the goal is
+  // met, increase a certain amount" — a reward tied to hitting the goal by
+  // its deadline. Mirrors RewardTier's free-text `reward` convention rather
+  // than inventing a new shape. metByDeadline is set once, the moment the
+  // goal is marked done, from whether that happened on/before `deadline`.
+  rewardAmount?: number;
+  rewardDescription?: string;
+  metByDeadline?: boolean;
 }
 
 export interface Win {

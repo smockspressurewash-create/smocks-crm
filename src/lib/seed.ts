@@ -214,6 +214,14 @@ export const seedServices: Service[] = [
   { id: "s6", name: "Fence Wash",            basePrice: 149, unit: "job", taxable: true,  active: true, description: "Privacy or picket fence cleaning" },
   { id: "s7", name: "Commercial Exterior",   basePrice: 799, unit: "job", taxable: true,  active: true, description: "Full commercial building exterior" },
   { id: "s8", name: "HOA Common Areas",      basePrice: 480, unit: "building", taxable: true, active: true, description: "HOA common area per building pricing" },
+  { id: "s9", name: "Sidewalk / Walkway Wash", basePrice: 99,  unit: "job", taxable: true,  active: true, description: "Concrete walkway and sidewalk pressure cleaning" },
+  { id: "s10", name: "Window Cleaning (Exterior Add-On)", basePrice: 129, unit: "job", taxable: true,  active: true, description: "Exterior window rinse add-on, typically bundled with a house wash" },
+  { id: "s11", name: "Fleet / Truck Washing", basePrice: 89,  unit: "vehicle", taxable: true,  active: true, description: "Commercial vehicle and fleet truck exterior washing" },
+  { id: "s12", name: "Graffiti Removal",     basePrice: 199, unit: "job", taxable: true,  active: true, description: "Pressure washing and chemical treatment to remove graffiti" },
+  { id: "s13", name: "Rust Stain Removal",   basePrice: 149, unit: "job", taxable: true,  active: true, description: "Specialty chemical treatment for rust and metal staining" },
+  { id: "s14", name: "Paver Sealing",        basePrice: 599, unit: "job", taxable: true,  active: true, description: "Clean and seal paver patios, driveways, and walkways" },
+  { id: "s15", name: "Dumpster Pad Cleaning", basePrice: 175, unit: "job", taxable: true,  active: true, description: "Degreasing and pressure cleaning of dumpster enclosure pads" },
+  { id: "s16", name: "Pool Deck Wash",       basePrice: 199, unit: "job", taxable: true,  active: true, description: "Pool deck and surrounding concrete or paver cleaning" },
 ];
 
 // ─── Seed email templates ─────────────────────────────────────────────────────

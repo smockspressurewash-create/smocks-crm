@@ -137,6 +137,9 @@ export function AccountabilityPage({ entries = [], setEntries, goals = [], setGo
   };
   const [f, setF] = useState<{ sleep: any; water: any; gymMinutes: any; meditationMinutes: any; steps: any; mood: any; notes: string; personalNotes?: string }>({ sleep: 7, water: 0, gymMinutes: 0, meditationMinutes: 0, steps: 0, mood: 3, notes: "" });
   const [gText, setGText] = useState("");
+  const [gDeadline, setGDeadline] = useState("");
+  const [gRewardAmount, setGRewardAmount] = useState("");
+  const [gRewardDesc, setGRewardDesc] = useState("");
   const [wText, setWText] = useState("");
 
   const tKey = today();
@@ -156,8 +159,13 @@ export function AccountabilityPage({ entries = [], setEntries, goals = [], setGo
 
   const addGoal = () => {
     if (!gText.trim()) return;
-    setGoals([...goals, { id: uid(), text: gText.trim(), category: "general", done: false, createdAt: tKey }]);
-    setGText("");
+    setGoals([...goals, {
+      id: uid(), text: gText.trim(), category: "general", done: false, createdAt: tKey,
+      deadline: gDeadline || undefined,
+      rewardAmount: gRewardAmount ? Number(gRewardAmount) : undefined,
+      rewardDescription: gRewardDesc.trim() || undefined,
+    }]);
+    setGText(""); setGDeadline(""); setGRewardAmount(""); setGRewardDesc("");
     toast("Goal added");
   };
 
@@ -420,7 +428,7 @@ export function AccountabilityPage({ entries = [], setEntries, goals = [], setGo
           })()}
 
           <Glass className="p-5">
-            <div className="flex gap-2 mb-3">
+            <div className="flex gap-2 mb-2">
               <GInput placeholder="Add a goal..." value={gText} onChange={e => setGText(e.target.value)} onKeyDown={e => e.key === "Enter" && addGoal()} className="flex-1" />
               <GSel value="" onChange={e => {}} className="!text-xs !w-32">
                 <option value="" className="bg-black">Category</option>
@@ -431,15 +439,49 @@ export function AccountabilityPage({ entries = [], setEntries, goals = [], setGo
               </GSel>
               <GBtn onClick={addGoal}><Plus size={14} /></GBtn>
             </div>
+            {/* FEATURE — deadline + reward: "specify a goal by a certain
+                time, and if the goal is met, increase a certain amount."
+                Both optional — a goal can still be a plain checklist item
+                with no deadline/reward, same as before. */}
+            <div className="flex gap-2 mb-3">
+              <div className="flex-1">
+                <label className="text-[10px] text-white/40 uppercase tracking-wider mb-1 block">Deadline (optional)</label>
+                <GDate value={gDeadline} onChange={(e: any) => setGDeadline(e.target.value)} />
+              </div>
+              <div className="w-28">
+                <label className="text-[10px] text-white/40 uppercase tracking-wider mb-1 block">Reward $</label>
+                <GInput type="number" placeholder="0" value={gRewardAmount} onChange={(e: any) => setGRewardAmount(e.target.value)} />
+              </div>
+              <div className="flex-1">
+                <label className="text-[10px] text-white/40 uppercase tracking-wider mb-1 block">Reward if met by deadline</label>
+                <GInput placeholder="e.g. $200 bonus, extra day off" value={gRewardDesc} onChange={(e: any) => setGRewardDesc(e.target.value)} />
+              </div>
+            </div>
             <div className="space-y-2">
               {goals.map(g => {
                 const catIcon = { revenue:"💰", fitness:"💪", learning:"📚", family:"👨‍👩‍👧" }[g.category] || "🎯";
-                return <div key={g.id} className={"flex items-center gap-3 p-3 rounded-xl border transition " + (g.done ? "bg-green-900/20 border-green-700/40" : "bg-white/5 border-white/10")}>
-                  <input type="checkbox" checked={g.done} onChange={() => setGoals(goals.map(x => x.id === g.id ? { ...x, done: !x.done, completedAt: !x.done ? today() : null } : x))} className="w-5 h-5 accent-red-600" />
+                const daysLeft = g.deadline ? Math.ceil((new Date(g.deadline + "T00:00:00").getTime() - new Date(tKey + "T00:00:00").getTime()) / 86400000) : null;
+                const overdue = !g.done && daysLeft !== null && daysLeft < 0;
+                const hasReward = !!(g.rewardAmount || g.rewardDescription);
+                return <div key={g.id} className={"flex items-center gap-3 p-3 rounded-xl border transition " + (g.done ? "bg-green-900/20 border-green-700/40" : overdue ? "bg-red-950/20 border-red-800/40" : "bg-white/5 border-white/10")}>
+                  <input type="checkbox" checked={g.done} onChange={() => setGoals(goals.map(x => {
+                    if (x.id !== g.id) return x;
+                    const nowDone = !x.done;
+                    const metByDeadline = nowDone ? (x.deadline ? tKey <= x.deadline : true) : x.metByDeadline;
+                    if (nowDone && metByDeadline && (x.rewardAmount || x.rewardDescription)) {
+                      toast?.(`🎉 Goal met by deadline — reward unlocked: ${x.rewardDescription || ("$" + x.rewardAmount)}`);
+                    }
+                    return { ...x, done: nowDone, completedAt: nowDone ? tKey : null, metByDeadline: nowDone ? metByDeadline : x.metByDeadline };
+                  }))} className="w-5 h-5 accent-red-600" />
                   <span className="text-sm">{catIcon}</span>
                   <div className="flex-1 min-w-0">
                     <div className={"text-sm " + (g.done ? "line-through text-white/40" : "")}>{g.text}</div>
-                    <div className="text-[10px] text-white/40">{g.done ? "✅ Completed " + (g.completedAt || "") : "Added " + g.createdAt}</div>
+                    <div className="text-[10px] text-white/40 flex flex-wrap items-center gap-x-2">
+                      <span>{g.done ? "✅ Completed " + (g.completedAt || "") : "Added " + g.createdAt}</span>
+                      {g.deadline && !g.done && <span className={overdue ? "text-red-400" : "text-white/40"}>{overdue ? `Overdue (was due ${g.deadline})` : `Due ${g.deadline} (${daysLeft}d left)`}</span>}
+                      {g.done && g.deadline && <span className={g.metByDeadline ? "text-green-400" : "text-amber-400"}>{g.metByDeadline ? "Hit deadline ✓" : "Completed after deadline"}</span>}
+                      {hasReward && <span className="text-yellow-400">🎁 {g.rewardDescription || ("$" + g.rewardAmount)}{g.done && !g.metByDeadline ? " (missed — deadline not met)" : ""}</span>}
+                    </div>
                   </div>
                   <button onClick={() => setGoals(goals.filter(x => x.id !== g.id))} className="p-1 text-white/40 hover:text-red-400"><Trash2 size={12} /></button>
                 </div>;

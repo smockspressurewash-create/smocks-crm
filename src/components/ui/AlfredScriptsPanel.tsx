@@ -27,21 +27,33 @@ interface SavedScript {
 }
 
 export function AlfredScriptsPanel({
-  open,
+  open = true,
   onClose,
   settings,
   jobs = [],
   ownerId = "",
   toast,
   onNav,
+  embedded = false,
+  onSendToSocial,
 }: {
-  open: boolean;
-  onClose: () => void;
+  open?: boolean;
+  onClose?: () => void;
   settings: AppSettings;
   jobs?: Job[];
   ownerId?: string;
   toast?: (msg: string, tone?: string) => void;
   onNav?: (page: string) => void;
+  // Relocated from Alfred's chat slide-over into a Social page tab — embedded
+  // renders the same generate/library/reminders/photos UI inline (no fixed
+  // backdrop/drawer, no close button) since SocialPage's own tab bar is now
+  // what shows/hides it.
+  embedded?: boolean;
+  // When mounted inside SocialPage itself, the old localStorage-handoff +
+  // onNav("social") round trip is a no-op (already on the page, and its
+  // prefill effect only runs on mount) — this lets the host page fill its
+  // own New Post form directly instead.
+  onSendToSocial?: (caption: string, photoUrl: string | null) => void;
 }) {
   const [tab, setTab] = useState<"generate" | "library" | "record" | "photos">("generate");
   const [category, setCategory] = useState("informational");
@@ -183,6 +195,11 @@ export function AlfredScriptsPanel({
 
   const sendToSocial = (caption: string) => {
     try {
+      if (onSendToSocial) {
+        onSendToSocial(caption, selectedPhoto?.url || null);
+        toast?.("Loaded into New Post — review and schedule ✓");
+        return;
+      }
       localStorage.setItem("smocks.socialPrefill", JSON.stringify({
         caption,
         photoUrl: selectedPhoto?.url || null,
@@ -190,7 +207,7 @@ export function AlfredScriptsPanel({
       }));
       toast?.("Sent to Social — opening New Post ✓");
       onNav?.("social");
-      onClose();
+      onClose?.();
     } catch (e: any) {
       toast?.("Couldn't hand off to Social — " + (e?.message || "unknown error"), "red");
     }
@@ -198,18 +215,18 @@ export function AlfredScriptsPanel({
 
   if (!open) return null;
 
-  return (
+  const body = (
     <>
-      <div className="fixed inset-0 bg-black/70 z-40" onClick={onClose} />
-      <div className="fixed right-0 top-0 bottom-0 w-full max-w-md bg-black/95 border-l border-red-900/40 z-50 flex flex-col backdrop-blur-xl">
-        <div className="p-4 border-b border-red-900/30 flex items-center gap-3 flex-shrink-0">
-          <div className="p-2 rounded-lg bg-orange-900/30"><Sparkles size={14} className="text-orange-400" /></div>
-          <div className="flex-1">
-            <div className="font-semibold text-sm">Content Scripts</div>
-            <div className="text-[10px] text-white/50">Viral ideas, scripts, and post-ready before/afters</div>
+        {!embedded && (
+          <div className="p-4 border-b border-red-900/30 flex items-center gap-3 flex-shrink-0">
+            <div className="p-2 rounded-lg bg-orange-900/30"><Sparkles size={14} className="text-orange-400" /></div>
+            <div className="flex-1">
+              <div className="font-semibold text-sm">Content Scripts</div>
+              <div className="text-[10px] text-white/50">Viral ideas, scripts, and post-ready before/afters</div>
+            </div>
+            <button onClick={onClose} className="p-2 rounded-lg hover:bg-white/5"><X size={14} /></button>
           </div>
-          <button onClick={onClose} className="p-2 rounded-lg hover:bg-white/5"><X size={14} /></button>
-        </div>
+        )}
 
         <div className="flex gap-1 p-2 border-b border-red-900/20 flex-shrink-0 flex-wrap">
           {[
@@ -250,6 +267,7 @@ export function AlfredScriptsPanel({
                 <div className="pt-2">
                   <div className="text-[10px] text-white/40 mb-2">{queue.length} to review</div>
                   <ScriptSwiper
+                    key={queue.length + ":" + queue[0].title}
                     title={queue[0].title}
                     category={queue[0].category}
                     categoryLabel={categoryMeta(queue[0].category).emoji + " " + categoryMeta(queue[0].category).label}
@@ -345,6 +363,18 @@ export function AlfredScriptsPanel({
             </div>
           )}
         </div>
+    </>
+  );
+
+  if (embedded) {
+    return <div className="w-full flex flex-col">{body}</div>;
+  }
+
+  return (
+    <>
+      <div className="fixed inset-0 bg-black/70 z-40" onClick={onClose} />
+      <div className="fixed right-0 top-0 bottom-0 w-full max-w-md bg-black/95 border-l border-red-900/40 z-50 flex flex-col backdrop-blur-xl">
+        {body}
       </div>
     </>
   );

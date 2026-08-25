@@ -3080,7 +3080,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
       } else {
         setMileageLogs(prev => [row, ...prev]);
         setMileageForm({ date: today(), from: "", to: "", miles: "", purpose: "" });
-        toast("Mileage logged ✓ — awaiting owner approval", "green");
+        toast("Mileage logged ✓", "green");
       }
     } catch (e: any) {
       toast("Couldn't save mileage — " + (e?.message || "unknown error"), "red");
@@ -5587,9 +5587,22 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                 : 0;
               const shiftSecs = Math.floor(netShiftHoursNow * 3600);
               const shiftHHMMSS = [Math.floor(shiftSecs / 3600), Math.floor((shiftSecs % 3600) / 60), shiftSecs % 60].map(n => String(n).padStart(2, "0")).join(":");
+              // BUG FIX — "I arrived at / completed an unscheduled job today,
+              // but End Day said I worked nothing." This only ever matched
+              // jobs whose scheduledDate literally equals today, which
+              // excludes any job with no scheduled date at all (booked/
+              // worked same-day) or one rescheduled away from today on
+              // paper but actually done today. Also count a job as "today"
+              // if it was actually arrived at or completed today, regardless
+              // of what its scheduledDate says.
+              const isTodayTs = (v: any): boolean => {
+                if (!v) return false;
+                const d = typeof v === "number" ? new Date(v) : new Date(String(v));
+                return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === today();
+              };
               const sendEndOfDaySummary = async (finalHours: number) => {
                 const todayStr = today();
-                const todaysJobs = myJobs.filter(j => j.scheduledDate === todayStr);
+                const todaysJobs = myJobs.filter(j => j.scheduledDate === todayStr || isTodayTs(j.completedAt) || isTodayTs(j.arrivedAt));
                 const completedToday = todaysJobs.filter(j => j.status === "completed");
                 const loggedHoursToday = Math.round(todaysJobs.reduce((s, j) => s + (Number(j.loggedHours) || 0), 0) * 100) / 100;
                 const hours = loggedHoursToday > 0 ? loggedHoursToday : finalHours;

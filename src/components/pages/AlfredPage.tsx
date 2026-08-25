@@ -80,7 +80,6 @@ import { AIModelsSection } from "../ui/AIModelsSection";
 import { ChemicalModal } from "../ui/ChemicalModal";
 import { WeeklyBusinessReview } from "../ui/WeeklyBusinessReview";
 import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
-import { AlfredScriptsPanel } from "../ui/AlfredScriptsPanel";
 
 // FIX 6 — `personalities` (lib/utils.ts) is an ARRAY keyed by each entry's
 // `id` field ("drillsergeant"/"butler"/"quietpro"/"savage"), not by array
@@ -106,7 +105,6 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
   const isMobile = useIsMobile();
   const [sidebarOpen, setSidebarOpen] = useState(() => !isMobile);
   const [memoryOpen, setMemoryOpen] = useState(false);
-  const [scriptsOpen, setScriptsOpen] = useState(false);
   const [convSearch, setConvSearch] = useState("");
   const [editingTitle, setEditingTitle] = useState(null);
   const [titleDraft, setTitleDraft] = useState("");
@@ -1939,6 +1937,26 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
             total_employees: employees.length
           };
         }
+        case "list_estimates": {
+          const wantStatus = (inputs.status || "pending").toLowerCase();
+          const matches = (e: any) => {
+            if (wantStatus === "all") return true;
+            if (wantStatus === "invoiced") return !!e.invoiced;
+            if (wantStatus === "pending") return e.status === "pending" && !e.invoiced;
+            if (wantStatus === "approved") return e.status === "approved" && !e.invoiced;
+            if (wantStatus === "rejected") return e.status === "rejected";
+            return true;
+          };
+          const rows = (estimates || []).filter(matches).sort((a: any, b: any) => (b.createdAt || "").localeCompare(a.createdAt || ""));
+          return {
+            status: wantStatus,
+            count: rows.length,
+            estimates: rows.slice(0, 25).map((e: any) => {
+              const c = customers.find((x: any) => x.id === e.customerId);
+              return { id: e.id, customer: c ? `${c.firstName} ${c.lastName}`.trim() : "Unknown customer", total: e.total, status: e.status, invoiced: !!e.invoiced, paid: !!e.paidAt, createdAt: e.createdAt };
+            }),
+          };
+        }
         case "text_supplier": {
           // FEATURE — scoped, sandboxed supplier outreach. Deliberately
           // text-only: this app has no vendor-payment infrastructure (no
@@ -2305,6 +2323,11 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
       name: "get_business_stats",
       description: "Get current live business KPIs.",
       input_schema: { type: "object", properties: {} }
+    },
+    {
+      name: "list_estimates",
+      description: "List actual quotes/estimates with customer names, amounts, and status — use whenever the owner asks what's pending, approved, declined, or invoiced, or asks about a specific customer's quote. get_business_stats only gives a total count, not which ones or who they're for; this gives the real list.",
+      input_schema: { type: "object", properties: { status: { type: "string", enum: ["pending", "approved", "rejected", "invoiced", "all"], description: "default 'pending'" } } }
     },
     {
       name: "text_supplier",
@@ -2836,10 +2859,6 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
             <span className="flex-1 text-left">Memory</span>
             <span className="text-[10px] text-white/40">{memory.length}</span>
           </button>
-          <button onClick={() => setScriptsOpen(true)} className="w-full flex items-center gap-2 px-2.5 py-2 rounded-lg hover:bg-white/5 text-xs text-white/70 hover:text-white transition">
-            <div className="p-1.5 rounded bg-orange-900/30"><Sparkles size={11} className="text-orange-400" /></div>
-            <span className="flex-1 text-left">Content Scripts</span>
-          </button>
           <div className="px-2.5 py-2">
             <div className="text-[10px] uppercase tracking-wider text-white/40 mb-1.5">Personality</div>
             <div className="grid grid-cols-2 gap-1">
@@ -2939,10 +2958,6 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
               </>}
             </div>;
           })()}
-
-          <button onClick={() => setScriptsOpen(true)} className="p-2 rounded-lg hover:bg-white/5 text-orange-400 flex-shrink-0" title="Content Scripts">
-            <Sparkles size={16} />
-          </button>
 
           <div className="relative flex-shrink-0">
             <button onClick={() => setMenuOpen(!menuOpen)} className="p-2 rounded-lg hover:bg-white/5 text-white/70" title="Menu">
@@ -3254,16 +3269,6 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           </div>
         </>;
       })()}
-
-      <AlfredScriptsPanel
-        open={scriptsOpen}
-        onClose={() => setScriptsOpen(false)}
-        settings={settings}
-        jobs={jobs}
-        ownerId={ownerId}
-        toast={toast}
-        onNav={onNav}
-      />
 
       {/* Delete confirmation */}
       <Modal open={!!confirmDelete} onClose={() => setConfirmDelete(null)} title="Delete conversation?">

@@ -34,11 +34,19 @@ export function ScriptSwiper({
   const reset = () => { startX.current = null; startY.current = null; setDragging(false); setDragX(0); };
 
   const commit = (dir: "left" | "right") => {
+    // touchend never flips `dragging` back off, so without this the CSS
+    // transition stays disabled ("transition: none" while dragging) and the
+    // card would teleport to translateX(±600) instead of flying off-screen.
+    setDragging(false);
     setExiting(dir);
     setDragX(dir === "right" ? 600 : -600);
     setTimeout(() => {
       if (dir === "right") onAccept(); else onDecline();
+      // Card isn't remounted between queue items (same tree position, no
+      // key), so leftover dragX/exiting state would otherwise carry over and
+      // the *next* card would render already flung off-screen.
       setExiting(null);
+      reset();
     }, 180);
   };
 

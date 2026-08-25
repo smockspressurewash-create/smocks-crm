@@ -77,10 +77,11 @@ import { AIModelsSection } from "../ui/AIModelsSection";
 import { ChemicalModal } from "../ui/ChemicalModal";
 import { WeeklyBusinessReview } from "../ui/WeeklyBusinessReview";
 import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
+import { AlfredScriptsPanel } from "../ui/AlfredScriptsPanel";
 
 const SOCIAL_HASHTAGS_DEFAULT = "#pressurewashing #softwash #yorkpa #homeimprovement #curb appeal";
 
-export function SocialPage({ posts = [], setPosts, toast, settings = {} as AppSettings }: { posts?: any[]; setPosts?: any; toast?: any; settings?: AppSettings }) {
+export function SocialPage({ posts = [], setPosts, toast, settings = {} as AppSettings, jobs = [], ownerId = "", onNav }: { posts?: any[]; setPosts?: any; toast?: any; settings?: AppSettings; jobs?: any[]; ownerId?: string; onNav?: (page: string) => void }) {
   const [modal, setModal] = useState(false);
   const [tab, setTab] = useState("scheduled");
   const initialForm = () => ({
@@ -409,9 +410,9 @@ export function SocialPage({ posts = [], setPosts, toast, settings = {} as AppSe
 
       {/* Tab bar */}
       <div className="flex gap-2 flex-wrap">
-        {["calendar", "scheduled", "published", "review_graphic", "bulk", "best_time"].map(t => (
+        {["calendar", "scheduled", "published", "content_ideas", "review_graphic", "bulk", "best_time"].map(t => (
           <button key={t} onClick={() => setTab(t)} className={"px-4 py-2 rounded-xl text-xs font-semibold capitalize border transition " + (tab === t ? "bg-red-900/40 border-red-500/50 text-white" : "bg-black/40 border-white/10 text-white/60 hover:text-white")}>
-            {t === "review_graphic" ? "⭐ Review Graphic" : t === "bulk" ? "📸 Bulk Upload" : t === "best_time" ? "⏰ Best Times" : t === "calendar" ? "📅 Calendar" : t + " (" + (t === "scheduled" ? scheduled.length : published.length) + ")"}
+            {t === "review_graphic" ? "⭐ Review Graphic" : t === "bulk" ? "📸 Bulk Upload" : t === "best_time" ? "⏰ Best Times" : t === "calendar" ? "📅 Calendar" : t === "content_ideas" ? "✨ Content Ideas" : t + " (" + (t === "scheduled" ? scheduled.length : published.length) + ")"}
           </button>
         ))}
       </div>
@@ -463,6 +464,21 @@ export function SocialPage({ posts = [], setPosts, toast, settings = {} as AppSe
           </Glass>
         </div>;
       })()}
+
+      {tab === "content_ideas" && (
+        <AlfredScriptsPanel
+          embedded
+          settings={settings}
+          jobs={jobs}
+          ownerId={ownerId}
+          toast={toast}
+          onNav={onNav}
+          onSendToSocial={(caption, photoUrl) => {
+            setF(prev => ({ ...prev, caption, _photoUrl: photoUrl }));
+            setModal(true);
+          }}
+        />
+      )}
 
       {tab === "review_graphic" && <ReviewToGraphic toast={toast} posts={posts} setPosts={setPosts} />}
 
