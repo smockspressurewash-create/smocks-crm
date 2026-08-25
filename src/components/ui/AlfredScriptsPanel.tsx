@@ -6,7 +6,7 @@
 // before/after photo picker off completed jobs that hands a caption + photo
 // off to SocialPage's New Post flow.
 import React, { useEffect, useState } from "react";
-import { X, Sparkles, Bot, Trash2, Bell, Image as ImageIcon, Send, Loader2 } from "lucide-react";
+import { X, Sparkles, Bot, Trash2, Bell, Image as ImageIcon, Send, Loader2, Edit } from "lucide-react";
 import { supabase } from "../../lib/supabase";
 import { uid, withTimeout } from "../../lib/utils";
 import { SCRIPT_CATEGORIES, categoryMeta, generateVideoScript, type GeneratedScript } from "../../lib/alfredScripts";
@@ -142,6 +142,31 @@ export function AlfredScriptsPanel({
       setQueue(prev => prev.slice(1));
       setSwiping(false);
     });
+  };
+
+  // FEATURE — "add the ability to add, import, save, edit, and delete their
+  // own ideas." Generate/save/delete already existed; this adds a manual
+  // entry point (type or paste your own script/idea — "import" in the
+  // sense of bringing in something written elsewhere) and editing a saved
+  // one in place, both writing to the exact same alfred_scripts table/RLS
+  // as the AI-generated path so they show up side by side in Saved.
+  const [manualDraft, setManualDraft] = useState<{ id: string; title: string; category: string; script_content: string } | null>(null);
+  const saveManual = async () => {
+    if (!manualDraft || !manualDraft.title.trim() || !manualDraft.script_content.trim()) { toast?.("Give it a title and some content first", "yellow"); return; }
+    if (!ownerId) { toast?.("No owner id — can't save to your account", "red"); return; }
+    const isNew = !library.some(s => s.id === manualDraft.id);
+    const row = { id: manualDraft.id, owner_id: ownerId, category: manualDraft.category, title: manualDraft.title.trim(), script_content: manualDraft.script_content.trim(), status: "saved", source: isNew ? "manual" : undefined };
+    try {
+      const res: any = isNew
+        ? await withTimeout((supabase as any).from("alfred_scripts").insert(row), 10000, "Save script")
+        : await withTimeout((supabase as any).from("alfred_scripts").update({ title: row.title, category: row.category, script_content: row.script_content }).eq("id", row.id).eq("owner_id", ownerId), 10000, "Update script");
+      if (res.error) throw res.error;
+      setLibrary(prev => isNew ? [{ ...row, source: "manual", photo_url: null, job_id: null, created_at: new Date().toISOString() } as SavedScript, ...prev] : prev.map(s => s.id === row.id ? { ...s, title: row.title, category: row.category, script_content: row.script_content } : s));
+      toast?.(isNew ? "Idea added ✓" : "Idea updated ✓");
+      setManualDraft(null);
+    } catch (e: any) {
+      toast?.("Save failed — " + (e?.message || "unknown error"), "red");
+    }
   };
 
   const deleteSaved = async (id: string) => {
@@ -288,10 +313,25 @@ export function AlfredScriptsPanel({
 
           {tab === "library" && (
             <div className="space-y-2">
+              {manualDraft ? (
+                <div className="p-3 bg-white/5 border border-orange-700/40 rounded-xl space-y-2">
+                  <input value={manualDraft.title} onChange={e => setManualDraft(d => d ? { ...d, title: e.target.value } : d)} placeholder="Title" className="w-full bg-black/40 border border-white/15 rounded-lg px-2.5 py-2 text-xs text-white placeholder-white/30" />
+                  <select value={manualDraft.category} onChange={e => setManualDraft(d => d ? { ...d, category: e.target.value } : d)} className="w-full bg-black/40 border border-white/15 rounded-lg px-2.5 py-2 text-xs text-white">
+                    {SCRIPT_CATEGORIES.map(c => <option key={c.key} value={c.key} className="bg-black">{c.emoji} {c.label}</option>)}
+                  </select>
+                  <textarea value={manualDraft.script_content} onChange={e => setManualDraft(d => d ? { ...d, script_content: e.target.value } : d)} rows={6} placeholder="Write or paste your idea/script here…" className="w-full bg-black/40 border border-white/15 rounded-lg px-2.5 py-2 text-xs text-white placeholder-white/30 resize-none font-mono" />
+                  <div className="flex gap-2 justify-end">
+                    <button onClick={() => setManualDraft(null)} className="px-3 py-2 rounded-lg text-xs text-white/50 hover:text-white transition">Cancel</button>
+                    <GBtn onClick={saveManual} className="!text-xs">Save</GBtn>
+                  </div>
+                </div>
+              ) : (
+                <button onClick={() => setManualDraft({ id: uid(), title: "", category: "informational", script_content: "" })} className="w-full py-2.5 rounded-xl border border-dashed border-white/15 text-xs text-white/50 hover:text-white hover:border-white/30 transition">+ Add Your Own Idea</button>
+              )}
               {library.length === 0 && (
                 <div className="text-center py-10 text-xs text-white/40">
                   <Bot size={26} className="mx-auto mb-2 opacity-30" />
-                  No saved scripts yet — swipe right (or hit Save) on one you like.
+                  No saved scripts yet — swipe right (or hit Save) on one you like, or add your own above.
                 </div>
               )}
               {library.map(s => (
@@ -301,7 +341,10 @@ export function AlfredScriptsPanel({
                       <div className="text-[9px] uppercase tracking-wider text-orange-400/70">{categoryMeta(s.category).label}</div>
                       <div className="text-xs font-semibold mt-0.5">{s.title}</div>
                     </div>
-                    <button onClick={() => deleteSaved(s.id)} className="opacity-0 group-hover:opacity-100 p-1 text-white/40 hover:text-red-400 transition flex-shrink-0"><Trash2 size={11} /></button>
+                    <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition flex-shrink-0">
+                      <button onClick={() => setManualDraft({ id: s.id, title: s.title, category: s.category, script_content: s.script_content })} className="p-1 text-white/40 hover:text-white"><Edit size={11} /></button>
+                      <button onClick={() => deleteSaved(s.id)} className="p-1 text-white/40 hover:text-red-400"><Trash2 size={11} /></button>
+                    </div>
                   </div>
                   <div className="text-[11px] text-white/60 whitespace-pre-wrap leading-relaxed mt-2 line-clamp-6">{s.script_content}</div>
                   <button onClick={() => sendToSocial(s.script_content)} className="mt-2 flex items-center gap-1 text-[10px] text-orange-300 hover:text-orange-200"><Send size={10} />Send to Social as caption</button>

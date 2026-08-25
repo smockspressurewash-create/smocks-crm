@@ -998,6 +998,22 @@ export function App() {
   const [automations,     setAutomations]     = usePersistent<Automation[]>("smocks.automations", seedAutomations);
   const [reviews,         setReviews]         = usePersistent<Review[]>("smocks.reviews", []);
   const [socialPosts,     setSocialPosts]     = usePersistent<SocialPost[]>("smocks.socialPosts", []);
+  // BUG FIX — "the social section shows posts I never made, marked
+  // published/scheduled with fake engagement numbers." This used to default
+  // to seedSocialPosts (3 fake posts, ids sp1/sp2/sp3) instead of an empty
+  // array — already fixed above, but any account that loaded this page
+  // before that fix still has those exact fake rows sitting in its real,
+  // persisted localStorage, indistinguishable from something the owner
+  // actually posted. One-time strip by their known fixed ids, safe to run
+  // on every load since a real post can never legitimately have one of
+  // these exact ids.
+  useEffect(() => {
+    setSocialPosts((prev: SocialPost[]) => {
+      const seedIds = new Set(["sp1", "sp2", "sp3"]);
+      const filtered = (prev || []).filter((p: any) => !seedIds.has(p.id));
+      return filtered.length === (prev || []).length ? prev : filtered;
+    });
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
   const [inboxThreads,    setInboxThreads]    = usePersistent<InboxThread[]>("smocks.inbox", []);
   const [accountability,  setAccountability]  = usePersistent<AccountabilityEntry[]>("smocks.accountability", []);
   const [goalsList,       setGoalsList]       = usePersistent<Goal[]>("smocks.goals", []);
@@ -3926,13 +3942,14 @@ export function App() {
             A plain reload or a fresh tab both start marketingPreview at
             false, so those still redirect a logged-in owner straight to
             the dashboard as expected — only this explicit click bypasses it. */}
-        {/* FEATURE — "make the logo even bigger, move it toward the middle
-            of the rectangle it's inside, filling the space more." Bumped
-            padding/size and switched to justify-center so it actually sits
-            centered in this header bar instead of pinned to the left edge;
-            the mobile-only close button is absolutely positioned so it
-            doesn't skew that centering. */}
-        <div className="relative p-7 border-b border-red-900/30 flex items-center justify-center">
+        {/* BUG FIX — "don't want the rectangle bigger, line it up with the
+            top bar, keep the text large." The top header bar (App.tsx's
+            <header>, right next to this one) uses `py-3` — this block's
+            padding is matched to that exact value so the two bars sit at
+            the same height/alignment, instead of independently guessed
+            padding that made this taller than its neighbor. Text size is
+            untouched — only the surrounding box shrank to fit it. */}
+        <div className="relative px-4 py-3 border-b border-red-900/30 flex items-center justify-center">
           <button
             onClick={() => { setMarketingPreview(true); window.location.hash = "/welcome"; setPage("welcome"); }}
             className="flex items-center text-left hover:opacity-80 transition"
