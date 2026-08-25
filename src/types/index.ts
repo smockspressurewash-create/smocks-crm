@@ -903,8 +903,6 @@ export interface AppSettings {
   googleTokenExpiresAt?: number;
 
   // Integrations
-  telegramBotToken?: string;
-  telegramChatId?: string;
   whatsappFrom?: string;
 
   // Notifications

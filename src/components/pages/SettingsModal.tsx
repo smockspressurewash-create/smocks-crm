@@ -483,46 +483,6 @@ export function SettingsModal({ open, onClose, settings, setSettings, jobs = [],
               <div className="text-[10px] text-white/40 mt-1">Get one at <a href="https://elevenlabs.io" target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:underline">elevenlabs.io</a></div>
             </div>
             <div>
-              <h4 className="font-semibold text-sm mb-2 flex items-center gap-2"><span className="text-blue-400">✈️</span>Telegram Bot</h4>
-              <div className="text-[11px] text-white/50 mb-3">Talk to Alfred via Telegram. Set up in 3 steps:</div>
-              <div className="space-y-2 mb-3">
-                {[
-                  { step: "1", text: "Open Telegram → search @BotFather → send /newbot", link: "https://t.me/BotFather" },
-                  { step: "2", text: "Get your bot token (looks like 123456:ABCxyz) and paste below" },
-                  { step: "3", text: "Message your bot → send /start → get your Chat ID from @userinfobot", link: "https://t.me/userinfobot" }
-                ].map(s => (
-                  <div key={s.step} className="flex items-start gap-2 text-[11px] text-white/60">
-                    <span className="w-5 h-5 rounded-full bg-blue-600/30 border border-blue-600/50 flex items-center justify-center text-[9px] font-bold text-blue-300 flex-shrink-0 mt-0.5">{s.step}</span>
-                    <span>{s.text}{s.link && <> · <a href={s.link} target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:underline">{s.link.replace("https://","")}</a></>}</span>
-                  </div>
-                ))}
-              </div>
-              <div className="space-y-2">
-                <GInput type="password" value={f.telegramToken || ""} onChange={e => setF({ ...f, telegramToken: e.target.value })} placeholder="123456789:ABCDEF..." />
-                <div>
-                  <label className="text-[10px] text-white/50 block mb-1">Your Telegram Chat ID</label>
-                  <GInput value={f.telegramChatId || ""} onChange={e => setF({ ...f, telegramChatId: e.target.value })} placeholder="Your numeric chat ID (e.g. 123456789)" className="!text-xs" />
-                </div>
-                {f.telegramToken && f.telegramChatId && (
-                  <button onClick={async () => {
-                    try {
-                      const res = await fetch("https://api.telegram.org/bot" + f.telegramToken + "/sendMessage", {
-                        method: "POST", headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({ chat_id: f.telegramChatId, text: "🤖 Alfred here. Telegram is connected to your Crew Boss CRM. Reply with any slash command. Alfred out." })
-                      });
-                      const d = await res.json();
-                      if (d.ok) toast("Telegram test message sent ✓"); else toast("Failed: " + d.description, "error");
-                    } catch (e) { toast(e.message, "error"); }
-                  }} className="w-full py-2 rounded-xl bg-blue-950/30 border border-blue-700/40 text-blue-300 text-xs hover:bg-blue-900/40 transition">
-                    📤 Send Test Message
-                  </button>
-                )}
-                <div className="text-[10px] text-white/30 p-2 bg-black/40 rounded-lg">
-                  <strong className="text-white/50">Webhook note:</strong> To receive incoming messages from Telegram, set your webhook URL to your backend: {f.googleBackendUrl ? f.googleBackendUrl + "/api/telegram" : "https://your-backend.railway.app/api/telegram"}
-                </div>
-              </div>
-            </div>
-            <div>
               <h4 className="font-semibold text-sm mb-2 flex items-center gap-2"><MapPin size={13} className="text-red-400" />Google Maps API Key</h4>
               <div className="text-[11px] text-white/50 mb-2">Powers address autocomplete and Street View thumbnails on jobs.</div>
               <GInput type="password" value={f.googleMapsKey || ""} onChange={e => setF({ ...f, googleMapsKey: e.target.value.trim() })} placeholder="AIza..." />
