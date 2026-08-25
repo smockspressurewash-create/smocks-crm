@@ -137,6 +137,22 @@ const TOOLS = [
       },
     },
   },
+  // FEATURE — owner-grantable, off by default (Employees → this employee →
+  // Permissions → "Message customers via Alfred", nested under Text
+  // Alfred). Scoped identical to the running-late tool above: only a
+  // customer on one of THIS employee's OWN current/upcoming jobs, never an
+  // arbitrary lookup — same "can only act on their own record" philosophy
+  // this whole agent follows, just extended to a custom message instead of
+  // the fixed running-late wording.
+  {
+    name: "text_my_customer",
+    description: "Send a custom SMS to a customer on one of YOUR OWN jobs (today or upcoming) — use for 'text [customer] and tell them [anything]'. Only works for a customer you're actually assigned to; won't work for anyone else's customer.",
+    input_schema: {
+      type: "object",
+      properties: { customerName: { type: "string" }, message: { type: "string" } },
+      required: ["customerName", "message"],
+    },
+  },
 ];
 
 const getEmployeeGoogleToken = async (ctx: Ctx, employee: any): Promise<string | null> => {
@@ -276,6 +292,25 @@ const executeTool = async (ctx: Ctx, employee: any, name: string, input: Record<
         }
         const sentCount = results.filter(r => r.sent).length;
         return { success: true, sentCount, totalTargeted: targets.length, results };
+      }
+      case "text_my_customer": {
+        if (!employee.permissions?.can_text_alfred_message_customers) {
+          return { error: "You don't have permission to message customers through Alfred — ask the owner to turn it on in Employees → Permissions." };
+        }
+        if (!input.customerName || !input.message) return { error: "customerName and message required" };
+        // Scope check: must be a customer on one of THIS employee's own
+        // current/upcoming jobs — same rule notify_upcoming_customers_
+        // running_late already enforces, just for an arbitrary message.
+        const rows = await sbGet(ctx, `jobs?select=customerId,customerName,status,scheduledDate,crew${ownerScope(ctx)}&limit=500`);
+        const mine = rows.filter((j: any) => Array.isArray(j.crew) && j.crew.includes(employee.id) && j.status !== "cancelled" && j.customerId);
+        const q = String(input.customerName).toLowerCase().trim();
+        const match = mine.find((j: any) => (j.customerName || "").toLowerCase() === q) || mine.find((j: any) => (j.customerName || "").toLowerCase().includes(q));
+        if (!match) return { error: `"${input.customerName}" isn't a customer on any of your own jobs — you can only message customers you're assigned to.` };
+        const cust = (await sbGet(ctx, `customers?id=eq.${encodeURIComponent(match.customerId)}&select=id,firstName,lastName,phone`))[0];
+        if (!cust?.phone) return { error: `No phone on file for ${match.customerName}.` };
+        const res = await sendCustomerSms(ctx, cust.phone, input.message, { name: `${cust.firstName || ""} ${cust.lastName || ""}`.trim(), customerId: cust.id });
+        if (!res.ok) return { error: res.error };
+        return { success: true, sentTo: match.customerName };
       }
       case "add_my_calendar_event": {
         const token = await getEmployeeGoogleToken(ctx, employee);

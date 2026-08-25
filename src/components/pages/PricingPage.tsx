@@ -93,6 +93,7 @@ export function PricingPage({
   onGetStarted: () => void;
   onNavigate: (page: MarketingPage) => void;
 }) {
+  const [billing, setBilling] = useState<"monthly" | "annual">("annual");
   return (
     // BUG FIX — see the identical fix + comment in LandingPage.tsx: this
     // div must be the scrolling pane itself since html/body/#root are
@@ -111,6 +112,13 @@ export function PricingPage({
 
       {/* ── Pricing cards ─────────────────────────────────────────────────── */}
       <section className="px-4 md:px-6 py-10 md:py-14 max-w-6xl mx-auto">
+        <div className="flex items-center justify-center gap-3 mb-8">
+          <button onClick={() => setBilling("monthly")} className={"px-4 py-2 rounded-xl text-sm font-semibold transition " + (billing === "monthly" ? "bg-white/10 text-white" : "text-white/40 hover:text-white/70")}>Monthly</button>
+          <button onClick={() => setBilling("annual")} className={"px-4 py-2 rounded-xl text-sm font-semibold transition flex items-center gap-2 " + (billing === "annual" ? "bg-white/10 text-white" : "text-white/40 hover:text-white/70")}>
+            Annual
+            <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-green-900/40 border border-green-600/40 text-green-300 font-bold">Save 20%</span>
+          </button>
+        </div>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-5 md:gap-6 items-stretch">
           {PLANS.map((plan, i) => (
             <Reveal key={plan.name} delay={i * 100}>
@@ -128,11 +136,14 @@ export function PricingPage({
                   </div>
                 )}
                 <div className="text-sm font-semibold text-white/70 mb-1">{plan.name}</div>
-                <div className="flex items-end gap-1 mb-2">
-                  <span className="text-3xl md:text-4xl font-black">{plan.price}</span>
-                  <span className="text-white/40 text-sm mb-1">{plan.period}</span>
+                <div className="flex items-end gap-1 mb-1">
+                  <span className="text-3xl md:text-4xl font-black">${billing === "annual" ? plan.priceAnnual : plan.priceMonthly}</span>
+                  <span className="text-white/40 text-sm mb-1">/mo</span>
                 </div>
-                <p className="text-white/45 text-xs md:text-sm mb-6">{plan.tagline}</p>
+                {billing === "annual" && (
+                  <div className="text-[11px] text-green-400 mb-1">Billed ${plan.priceAnnual * 12}/yr — vs ${plan.priceMonthly * 12}/yr monthly</div>
+                )}
+                <p className="text-white/45 text-xs md:text-sm mb-6 mt-1">{plan.tagline}</p>
 
                 <ul className="space-y-2.5 mb-8 flex-1">
                   {plan.features.map(feat => (

@@ -284,7 +284,7 @@ const ownerScope = (ctx: Ctx) => (ctx.ownerId ? `&owner_id=eq.${encodeURICompone
 // ─── Tool implementations ──────────────────────────────────────────────────
 
 const findCustomerByName = async (ctx: Ctx, name: string) => {
-  const rows = await sbGet(ctx, `customers?select=id,firstName,lastName,phone,email${ownerScope(ctx)}&limit=500`);
+  const rows = await sbGet(ctx, `customers?select=id,firstName,lastName,phone,email,documents,stripeCustomerId,savedPaymentMethodLabel${ownerScope(ctx)}&limit=500`);
   const q = name.toLowerCase().trim();
   return rows.find((c: any) => `${c.firstName || ""} ${c.lastName || ""}`.toLowerCase().trim() === q)
     || rows.find((c: any) => `${c.firstName || ""} ${c.lastName || ""}`.toLowerCase().includes(q));
@@ -326,7 +326,7 @@ export const sendAlfredSms = async (ctx: Ctx, toPhone: string, body: string): Pr
 // rendered as an unlabeled number in the Inbox instead of "Franco
 // Serenelli" etc. — unlike every OTHER outbound-SMS path in the app
 // (logOutboundSmsToInbox in lib/messaging.ts), which always had this.
-const sendSms = async (ctx: Ctx, toPhone: string, bodyRaw: string, isOwnerReply = false, contact?: { name?: string; customerId?: string }): Promise<{ ok: boolean; error?: string }> => {
+const sendSms = async (ctx: Ctx, toPhone: string, bodyRaw: string, isOwnerReply = false, contact?: { name?: string; customerId?: string }, mediaUrl?: string): Promise<{ ok: boolean; error?: string }> => {
   if (!ctx.twilioSid || !ctx.twilioToken || !ctx.twilioFrom) return { ok: false, error: "Twilio isn't configured for this account." };
   // BUG FIX — the model (Gemini especially) sometimes ignores the system
   // prompt's "no markdown" instruction and sends **bold**/`code`/bullet
@@ -337,6 +337,11 @@ const sendSms = async (ctx: Ctx, toPhone: string, bodyRaw: string, isOwnerReply 
   const body = stripMarkdownForSms(bodyRaw);
   const auth = `Basic ${btoa(`${ctx.twilioSid}:${ctx.twilioToken}`)}`;
   const params = new URLSearchParams({ To: toPhone, From: ctx.twilioFrom, Body: body });
+  // FEATURE — "text me the file for this client." Twilio sends a real MMS
+  // whenever MediaUrl is present — it fetches the file from that URL
+  // itself, so this just needs the document's already-public Supabase
+  // Storage URL (see get_customer_documents/text_me_document below).
+  if (mediaUrl) params.append("MediaUrl", mediaUrl);
   const res = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${ctx.twilioSid}/Messages.json`, {
     method: "POST",
     headers: { Authorization: auth, "Content-Type": "application/x-www-form-urlencoded" },
@@ -590,6 +595,33 @@ const TOOLS = [
     },
   },
   {
+    name: "get_customer_documents",
+    description: "List the files/documents on file for a customer (insurance, contracts, waivers, HOA forms, etc.) — use whenever the owner asks 'do we have the file/paperwork for X' or wants to know what's on file before texting one over.",
+    input_schema: {
+      type: "object",
+      properties: { customerName: { type: "string" } },
+      required: ["customerName"],
+    },
+  },
+  {
+    name: "text_me_document",
+    description: "Send a document already on file for a customer back to the OWNER's own phone as a real MMS attachment (e.g. 'text me the insurance form for the Millers'). Use get_customer_documents first if you don't already know the exact file name from this conversation.",
+    input_schema: {
+      type: "object",
+      properties: { customerName: { type: "string" }, documentName: { type: "string", description: "The exact or partial file name from get_customer_documents" } },
+      required: ["customerName", "documentName"],
+    },
+  },
+  {
+    name: "get_customer_card_info",
+    description: "Check whether a customer has a payment card on file and what's known about it. Only ever returns the card BRAND and LAST 4 DIGITS (e.g. 'Visa ····4242') — the full card number is never stored anywhere in this app (Stripe handles that directly, by design, for PCI compliance) and can never be retrieved by anyone, including you.",
+    input_schema: {
+      type: "object",
+      properties: { customerName: { type: "string" } },
+      required: ["customerName"],
+    },
+  },
+  {
     name: "create_estimate",
     description: "Create a new quote/estimate for a customer with one line item description and a total amount. Does NOT text it to the customer — call send_estimate after (or in the same reply) to actually deliver it. For 'send an invoice for $X' set invoiced true.",
     input_schema: {
@@ -619,6 +651,11 @@ const TOOLS = [
       properties: { provider: { type: "string", description: "e.g. 'claude', 'gpt-4o', 'gemini', 'groq', 'mistral', 'kimi'" } },
       required: ["provider"],
     },
+  },
+  {
+    name: "list_capabilities",
+    description: "Returns a real, current list of everything you (Alfred) can actually do over text — use this whenever the owner asks 'what can you do', 'what are your capabilities', or similar. Always call this instead of describing your abilities from memory, so the answer stays accurate as tools change.",
+    input_schema: { type: "object", properties: {} },
   },
   {
     name: "remember",
@@ -1154,6 +1191,39 @@ const executeTool = async (ctx: Ctx, name: string, input: Record<string, any>): 
           recentJobs: jobs.map((j: any) => ({ date: j.scheduledDate, status: j.status, amount: j.amount })),
         };
       }
+      case "get_customer_documents": {
+        const cust = await findCustomerByName(ctx, input.customerName);
+        if (!cust) return { error: `No customer found matching "${input.customerName}".` };
+        const docs = Array.isArray(cust.documents) ? cust.documents : [];
+        if (docs.length === 0) return { success: true, name: `${cust.firstName} ${cust.lastName}`.trim(), documents: [], note: "No documents on file for this customer." };
+        return {
+          success: true, name: `${cust.firstName} ${cust.lastName}`.trim(),
+          documents: docs.map((d: any) => ({ name: d.name, category: d.category, uploadedAt: d.uploadedAt, textable: !!d.url })),
+        };
+      }
+      case "text_me_document": {
+        if (!ctx.fromPhone) return { error: "Don't know which number to text back." };
+        const cust = await findCustomerByName(ctx, input.customerName);
+        if (!cust) return { error: `No customer found matching "${input.customerName}".` };
+        const docs = Array.isArray(cust.documents) ? cust.documents : [];
+        const q = String(input.documentName || "").toLowerCase().trim();
+        const doc = docs.find((d: any) => (d.name || "").toLowerCase() === q) || docs.find((d: any) => (d.name || "").toLowerCase().includes(q));
+        if (!doc) return { error: `No document matching "${input.documentName}" found for ${cust.firstName}. On file: ${docs.map((d: any) => d.name).join(", ") || "none"}.` };
+        if (!doc.url) return { error: `"${doc.name}" was uploaded before cloud sync and only exists on the device that added it — can't text it from here. Re-upload it in the customer's Document Vault to fix this for next time.` };
+        const res = await sendSms(ctx, ctx.fromPhone, `${doc.name} — ${cust.firstName} ${cust.lastName}`, true, undefined, doc.url);
+        if (!res.ok) return { error: res.error };
+        return { success: true, sent: doc.name };
+      }
+      case "get_customer_card_info": {
+        const cust = await findCustomerByName(ctx, input.customerName);
+        if (!cust) return { error: `No customer found matching "${input.customerName}".` };
+        if (!cust.stripeCustomerId) return { success: true, name: `${cust.firstName} ${cust.lastName}`.trim(), hasCardOnFile: false };
+        return {
+          success: true, name: `${cust.firstName} ${cust.lastName}`.trim(), hasCardOnFile: true,
+          cardOnFile: cust.savedPaymentMethodLabel || "A card is on file, but no brand/last-4 label was saved — check the customer's Payment Methods in the CRM for the exact card.",
+          note: "This is the brand/last-4 only — the full card number is never stored anywhere and can't be retrieved by anyone.",
+        };
+      }
       case "create_estimate": {
         const cust = await findCustomerByName(ctx, input.customerName);
         if (!cust) return { error: `No customer found matching "${input.customerName}".` };
@@ -1218,6 +1288,19 @@ const executeTool = async (ctx: Ctx, name: string, input: Record<string, any>): 
         });
         if (!patchRes.ok) return { error: "Couldn't save the switch — " + (await patchRes.text().catch(() => "")).slice(0, 200) };
         return { success: true, switchedTo: def.name, note: "Takes effect starting with the next message." };
+      }
+      case "list_capabilities": {
+        return {
+          success: true,
+          categories: {
+            "Talk to customers": "Text an existing customer, text ANY phone number directly (leads, applicants, personal contacts — not just customers), mass-text everyone or a tagged group, look up a customer's saved card on file (brand/last4/expiry only — never the full card number, that's never stored anywhere)",
+            "Run the business": "Create, reschedule, cancel jobs; reassign or request crew; create customers and estimates/invoices, then send them; add checklist items; check who's clocked in",
+            "Look things up": "Business stats and revenue, today's/upcoming schedule, overdue invoices, full job or customer detail, the weather, a customer's documents on file",
+            "Remember and follow up": "Save facts/notes for later, save standing 'from now on' preferences, schedule one-time or recurring follow-up texts to you",
+            "Admin": "Create a tracked promotion code, turn on auto review-request texting, approve/decline a reschedule a customer's own assistant proposed, switch which AI model I'm running on",
+          },
+          note: "Ask for anything in plain English — you don't need to name a tool.",
+        };
       }
       case "remember": {
         if (!input.fact) return { error: "fact required" };
@@ -1604,6 +1687,10 @@ CLARIFYING QUESTIONS: if a request is missing something a tool needs (which cust
 FOLLOWING UP LATER: you are not limited to replying only in this exact moment. If a task naturally needs a check-in later (e.g. "did the crew actually show up", "nudge me if Mike hasn't replied by 3", "nudge me if [job] isn't marked done by tonight"), use set_reminder to text yourself — meaning the owner — back at that time, resolving any relative time ("in 20 min", "by 3pm", "tonight") into an exact ISO datetime using the current date/time above. This is a real scheduled text, not just a note — use it whenever the owner asks to be followed up with, checked on, or reminded about something, even mid-conversation. For a standing "from now on, every day at X..." request, pass recurring: "daily" (or "weekly") on the same tool — it repeats indefinitely, not just once.
 
 CUSTOMER REQUESTS AWAITING YOU: some customers have Alfred auto-response turned on for texting directly with them — when one of them asks to reschedule, that Alfred (a separate, more restricted agent) proposes it to YOU here rather than committing to anything itself, and texts you the details. If the owner replies "yes"/"sure"/"that works" (or similar) without more context, and there's a recent proposal in this conversation, that's almost always what they're confirming — call list_pending_customer_requests to find it (don't assume which one from memory alone, always look it up) then approve_customer_request or decline_customer_request. These are the ONLY customer-initiated actions that need the owner's yes/no this way — everything else that customer-facing agent handles (pricing questions, appointment status) it answers on its own without involving you.
+
+CUSTOMER FILES AND CARDS: "do we have the file/paperwork for X" or "what's on file for X" → get_customer_documents. "Text me the [file] for X" → get_customer_documents first if you don't already know the exact name, then text_me_document — this sends a REAL MMS attachment straight to the owner's own phone, not a description of the file. "What's the card info for X" / "do they have a card on file" → get_customer_card_info — this ONLY ever returns brand + last 4 digits (e.g. "Visa ····4242"); the full card number is never stored anywhere in this app and cannot be retrieved by you or anyone else, so never imply you could get more than that.
+
+WHAT CAN YOU DO: if the owner asks what you can do / your capabilities / what you're able to help with, call list_capabilities and answer from that — don't describe your abilities from memory, since the real tool list is the source of truth.
 
 NEVER REFUSE TO SEND A MESSAGE: if text_customer comes back "No customer found matching..." because the person the owner named isn't in the CRM at all (a lead, a job applicant, a personal contact, anyone), do NOT just report that as a dead end. Ask for their phone number if you don't already have it, then call text_phone_number — it sends to any phone number directly, no customer record required. The owner has full authority to send any message to anyone through their own business number. The only reason to not send something is missing the actual phone number or the exact wording — ask for whichever is missing, then send it.
 

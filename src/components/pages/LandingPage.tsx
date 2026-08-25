@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useState } from "react";
 import {
   Calendar, Users2, FileText, CreditCard, MessageSquare,
   Bot, Smartphone, Trash2, Gift, Star, MapPin, Camera, CheckCircle,
@@ -95,14 +95,20 @@ const FEATURES: Array<{ icon: React.ElementType; title: string; desc: string }> 
 
 // ─── Pricing (illustrative) ──────────────────────────────────────────────────
 // NOTE: this app's data model has no real plan/tier/subscription/billing
-// concept (checked src/types/index.ts and App.tsx) — these three tiers are
-// clean, reasonable placeholder pricing for a small-business CRM, clearly
-// marked as such below, and are NOT wired to any real payment/signup flow.
-export const PLANS: Array<{ name: string; price: string; period: string; tagline: string; features: string[]; highlighted?: boolean }> = [
+// concept (checked src/types/index.ts and App.tsx) — these tiers are clean,
+// reasonable placeholder pricing for a small-business CRM, clearly marked as
+// such below, and are NOT wired to any real payment/signup flow.
+// BUG FIX (user report) — "make the pricing a bit cheaper, offer a discount
+// for annual." Lowered all three monthly prices and added a real annual
+// rate (~20% off, i.e. 2 months free) — priceMonthly is what's billed
+// monthly, priceAnnual is the effective per-month rate when billed
+// annually. See the billing-cycle toggle in LandingPage's pricing section
+// and PricingPage.tsx (both read this same array).
+export const PLANS: Array<{ name: string; priceMonthly: number; priceAnnual: number; tagline: string; features: string[]; highlighted?: boolean }> = [
   {
     name: "Solo",
-    price: "$39",
-    period: "/mo",
+    priceMonthly: 29,
+    priceAnnual: 23,
     tagline: "For an owner-operator running the show alone.",
     features: [
       "Unlimited jobs & customers",
@@ -114,8 +120,8 @@ export const PLANS: Array<{ name: string; price: string; period: string; tagline
   },
   {
     name: "Crew",
-    price: "$79",
-    period: "/mo",
+    priceMonthly: 59,
+    priceAnnual: 47,
     tagline: "For a business running an actual crew in the field.",
     features: [
       "Everything in Solo",
@@ -129,8 +135,8 @@ export const PLANS: Array<{ name: string; price: string; period: string; tagline
   },
   {
     name: "Growth",
-    price: "$149",
-    period: "/mo",
+    priceMonthly: 119,
+    priceAnnual: 95,
     tagline: "For multi-crew operations that want it all automated.",
     features: [
       "Everything in Crew",
@@ -149,6 +155,7 @@ export function LandingPage({
   onGetStarted: () => void;
   onNavigate: (page: MarketingPage) => void;
 }) {
+  const [billing, setBilling] = useState<"monthly" | "annual">("annual");
   return (
     // BUG FIX — index.css locks html/body/#root to a hard 100% height with
     // overflow:hidden (this app's whole architecture is "only specific
@@ -338,6 +345,17 @@ export function LandingPage({
           <p className="text-white/25 text-[11px] mt-2">Illustrative pricing — contact us for current rates.</p>
         </Reveal>
 
+        {/* Billing cycle toggle — annual defaults on since it's the better
+            deal and the whole point of adding it was to surface the
+            discount, not bury it behind a monthly-first default. */}
+        <div className="flex items-center justify-center gap-3 mb-10">
+          <button onClick={() => setBilling("monthly")} className={"px-4 py-2 rounded-xl text-sm font-semibold transition " + (billing === "monthly" ? "bg-white/10 text-white" : "text-white/40 hover:text-white/70")}>Monthly</button>
+          <button onClick={() => setBilling("annual")} className={"px-4 py-2 rounded-xl text-sm font-semibold transition flex items-center gap-2 " + (billing === "annual" ? "bg-white/10 text-white" : "text-white/40 hover:text-white/70")}>
+            Annual
+            <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-green-900/40 border border-green-600/40 text-green-300 font-bold">Save 20%</span>
+          </button>
+        </div>
+
         <div className="grid grid-cols-1 md:grid-cols-3 gap-5 md:gap-6 items-stretch">
           {PLANS.map((plan, i) => (
             <Reveal key={plan.name} delay={i * 100}>
@@ -355,11 +373,14 @@ export function LandingPage({
                   </div>
                 )}
                 <div className="text-sm font-semibold text-white/70 mb-1">{plan.name}</div>
-                <div className="flex items-end gap-1 mb-2">
-                  <span className="text-3xl md:text-4xl font-black">{plan.price}</span>
-                  <span className="text-white/40 text-sm mb-1">{plan.period}</span>
+                <div className="flex items-end gap-1 mb-1">
+                  <span className="text-3xl md:text-4xl font-black">${billing === "annual" ? plan.priceAnnual : plan.priceMonthly}</span>
+                  <span className="text-white/40 text-sm mb-1">/mo</span>
                 </div>
-                <p className="text-white/45 text-xs md:text-sm mb-6">{plan.tagline}</p>
+                {billing === "annual" && (
+                  <div className="text-[11px] text-green-400 mb-1">Billed ${plan.priceAnnual * 12}/yr — vs ${plan.priceMonthly * 12}/yr monthly</div>
+                )}
+                <p className="text-white/45 text-xs md:text-sm mb-6 mt-1">{plan.tagline}</p>
 
                 <ul className="space-y-2.5 mb-8 flex-1">
                   {plan.features.map(feat => (

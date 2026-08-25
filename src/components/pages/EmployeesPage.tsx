@@ -110,6 +110,11 @@ const PERMISSION_DEFS_EMP = [
   // existing portal permission being surfaced, so it shouldn't silently
   // turn on for anyone until the owner opts them in.
   { key: "can_text_alfred",        label: "Text Alfred",           desc: "Clock in/out, check hours, and manage their calendar by texting Alfred" },
+  // FEATURE — granular sub-permission, only meaningful (and only shown in
+  // the UI) once can_text_alfred is on. Off by default even then — messaging
+  // real customers is a bigger grant than the base clock-in/hours access,
+  // so it needs its own explicit opt-in rather than riding along for free.
+  { key: "can_text_alfred_message_customers", label: "Message customers via Alfred", desc: "Send a custom text to a customer on one of their own jobs, by asking Alfred", nestedUnder: "can_text_alfred" },
 ] as const;
 
 const DEFAULT_PERMS: Record<string, boolean> = {
@@ -117,7 +122,7 @@ const DEFAULT_PERMS: Record<string, boolean> = {
   can_complete_checklist: true, can_get_signoff: true,
   can_view_pay: true, can_view_calendar: true, can_add_notes: true,
   can_create_invoices: false, can_send_invoices: false, can_process_payments: false,
-  can_text_alfred: false,
+  can_text_alfred: false, can_text_alfred_message_customers: false,
 };
 
 // FIX 8 — CRM-side permissions for a "Manager" role employee (distinct from
@@ -1317,16 +1322,20 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setJobs
                     <button onClick={() => setInvitePerms(Object.fromEntries(PERMISSION_DEFS_EMP.map(d => [d.key, true])))} className="text-[10px] text-blue-400 hover:text-blue-300 transition">Select All</button>
                     <button onClick={() => setInvitePerms(Object.fromEntries(PERMISSION_DEFS_EMP.map(d => [d.key, false])))} className="text-[10px] text-red-400 hover:text-red-300 transition">Deselect All</button>
                   </div>
-                  {PERMISSION_DEFS_EMP.map(({ key, label, desc }) => (
-                    <label key={key} className="flex items-center gap-2 cursor-pointer py-1 group">
-                      <input type="checkbox" checked={!!invitePerms[key]} onChange={e => setInvitePerms(p => ({ ...p, [key]: e.target.checked }))}
-                        className="w-3.5 h-3.5 accent-red-600 flex-shrink-0" />
-                      <div>
-                        <div className="text-xs text-white/80 group-hover:text-white transition">{label}</div>
-                        <div className="text-[10px] text-white/40">{desc}</div>
-                      </div>
-                    </label>
-                  ))}
+                  {PERMISSION_DEFS_EMP.map((def) => {
+                    const nested = "nestedUnder" in def ? (def as any).nestedUnder as string : null;
+                    if (nested && !invitePerms[nested]) return null;
+                    return (
+                      <label key={def.key} className={"flex items-center gap-2 cursor-pointer py-1 group" + (nested ? " pl-5" : "")}>
+                        <input type="checkbox" checked={!!invitePerms[def.key]} onChange={e => setInvitePerms(p => ({ ...p, [def.key]: e.target.checked }))}
+                          className="w-3.5 h-3.5 accent-red-600 flex-shrink-0" />
+                        <div>
+                          <div className="text-xs text-white/80 group-hover:text-white transition">{def.label}</div>
+                          <div className="text-[10px] text-white/40">{def.desc}</div>
+                        </div>
+                      </label>
+                    );
+                  })}
                 </div>
               )}
             </div>
@@ -1698,16 +1707,21 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setJobs
                   <button onClick={() => setF((p: any) => ({ ...p, permissions: Object.fromEntries(PERMISSION_DEFS_EMP.map(d => [d.key, true])) }))} className="text-[10px] text-blue-400 hover:text-blue-300 transition">Select All</button>
                   <button onClick={() => setF((p: any) => ({ ...p, permissions: Object.fromEntries(PERMISSION_DEFS_EMP.map(d => [d.key, false])) }))} className="text-[10px] text-red-400 hover:text-red-300 transition">Deselect All</button>
                 </div>
-                {PERMISSION_DEFS_EMP.map(({ key, label, desc }) => (
-                  <label key={key} className="flex items-center gap-2 cursor-pointer py-1 group">
-                    <input type="checkbox" checked={!!(f.permissions || DEFAULT_PERMS)[key]} onChange={e => setF((p: any) => ({ ...p, permissions: { ...(p.permissions || DEFAULT_PERMS), [key]: e.target.checked } }))}
-                      className="w-3.5 h-3.5 accent-red-600 flex-shrink-0" />
-                    <div>
-                      <div className="text-xs text-white/80 group-hover:text-white transition">{label}</div>
-                      <div className="text-[10px] text-white/40">{desc}</div>
-                    </div>
-                  </label>
-                ))}
+                {PERMISSION_DEFS_EMP.map((def) => {
+                  const perms = f.permissions || DEFAULT_PERMS;
+                  const nested = "nestedUnder" in def ? (def as any).nestedUnder as string : null;
+                  if (nested && !perms[nested]) return null;
+                  return (
+                    <label key={def.key} className={"flex items-center gap-2 cursor-pointer py-1 group" + (nested ? " pl-5" : "")}>
+                      <input type="checkbox" checked={!!perms[def.key]} onChange={e => setF((p: any) => ({ ...p, permissions: { ...(p.permissions || DEFAULT_PERMS), [def.key]: e.target.checked } }))}
+                        className="w-3.5 h-3.5 accent-red-600 flex-shrink-0" />
+                      <div>
+                        <div className="text-xs text-white/80 group-hover:text-white transition">{def.label}</div>
+                        <div className="text-[10px] text-white/40">{def.desc}</div>
+                      </div>
+                    </label>
+                  );
+                })}
               </div>
             )}
           </div>
