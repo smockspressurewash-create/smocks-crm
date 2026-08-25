@@ -706,6 +706,14 @@ export function ClientAuthPortal({
                     </div>
                   </div>
                   <div className="text-xs text-white/40">{j.scheduledDate}{j.scheduledTime ? ` · ${j.scheduledTime}` : ""}</div>
+                  {/* FEATURE — "business name shows for each job, especially
+                      with multiple businesses." myJobs is already scoped to
+                      whichever business account is currently active, so this
+                      is unambiguous — but it's easy to lose track of which
+                      business you're viewing after switching or scrolling,
+                      so label it on every job explicitly rather than relying
+                      on the header alone. */}
+                  {(portalData?.accounts?.length || 0) > 1 && <div className="text-[10px] text-red-400/70 mt-0.5">{companyName}</div>}
 
                   {/* FEATURE — self-serve cancel/reschedule (owner opt-in,
                       settings.clientPortalCancelReschedule). Falls back to
@@ -761,6 +769,7 @@ export function ClientAuthPortal({
                     </div>
                   </div>
                   <div className="text-xs text-white/40">{j.scheduledDate}</div>
+                  {(portalData?.accounts?.length || 0) > 1 && <div className="text-[10px] text-red-400/70 mt-0.5">{companyName}</div>}
                   {(j.photos || []).length > 0 && (
                     <div className="flex gap-2 mt-2 overflow-x-auto">
                       {j.photos.map(p => <img key={p.id} src={mediaSrc(p.url, p.dataUrl)} alt="" className="w-16 h-16 rounded-lg object-cover border border-white/10 flex-shrink-0" />)}

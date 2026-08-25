@@ -50,28 +50,38 @@ export function ReferralLanding({ customers = [], setCustomers = (() => {}) as a
   const companyName = settings?.companyName || "Crew Boss";
   const refereeDiscount = Number((settings as any)?.referralSettings?.refereeDiscount) || 10;
 
-  const submit = () => {
+  const submit = async () => {
     if (!f.firstName.trim() || !(f.phone.trim() || f.email.trim())) { toast?.("Name and a phone or email are required", "red"); return; }
+    if (!referrer?.owner_id) { toast?.("This referral link couldn't be verified — please contact us directly instead.", "red"); return; }
     setBusy(true);
     const id = uid();
     const referralCode = (f.firstName.slice(0, 3) || "REF").toUpperCase() + id.slice(-4).toUpperCase();
-    setCustomers((prev: Customer[]) => [...prev, {
+    const newCustomer = {
       ...f, id, tags: [], totalSpent: 0, createdAt: today(), referralCode,
       leadSource: "Referral", referredBy: referrer?.id,
       utmSource: "referral_link", utmMedium: refCode || undefined, utmCampaign: "referral",
-      // Inherit the referrer's owner_id so this record lines up with whichever
-      // business it belongs to — see TODO below re: this write path.
-      ...(referrer?.owner_id ? { owner_id: referrer.owner_id } : {}),
-    } as Customer]);
-    // TODO(multitenant): this only updates local (localStorage-backed) state
-    // via setCustomers — there was never an actual Supabase insert here, even
-    // pre-RLS, so this signup silently never reached the `customers` table.
-    // Not something this pass introduced or was asked to fix, but worth
-    // flagging: an anonymous insert here will also need to satisfy the new
-    // owner_id-scoped WITH CHECK policy once it's wired up for real.
-    setBusy(false);
-    setSubmitted(true);
-    toast?.("Thanks! We'll be in touch to schedule your quote.", "green");
+    };
+    // BUG FIX — "referral codes don't work." This used to be local-state-only
+    // (setCustomers with no Supabase write at all) — the signup silently
+    // never reached the owner's real customers table. Routed through
+    // /api/public-data (service role) the same way the lead form and
+    // trash-can signup already are, since an anonymous visitor has no
+    // session for owner_id-scoped RLS to resolve.
+    try {
+      const res = await fetch("/api/public-data", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "submit_referral_signup", ownerId: referrer.owner_id, customer: newCustomer }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok || data?.error) throw new Error(data?.error || `Signup failed (${res.status})`);
+      setCustomers((prev: Customer[]) => [...prev, newCustomer as Customer]);
+      setSubmitted(true);
+      toast?.("Thanks! We'll be in touch to schedule your quote.", "green");
+    } catch (e: any) {
+      toast?.("Something went wrong submitting your info — please contact us directly instead. (" + (e?.message || "unknown error") + ")", "red");
+    } finally {
+      setBusy(false);
+    }
   };
 
   if (submitted) {

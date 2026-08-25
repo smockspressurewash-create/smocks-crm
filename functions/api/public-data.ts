@@ -322,6 +322,30 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
       return json({ customer });
     }
 
+    // BUG FIX — "referral codes don't work." ReferralLanding.tsx's own signup
+    // form used to ONLY call the local (React-state, localStorage-backed)
+    // setCustomers() — with no Supabase insert at all, even before RLS went
+    // owner_id-scoped. An anonymous referral signup never reached the
+    // `customers` table, so it silently vanished on refresh and never
+    // appeared anywhere in the owner's real CRM — same class of bug the
+    // lead-form/trash-can-signup fixes above already closed for their own
+    // public forms. Mirrors those: service-role insert, owner_id from the
+    // referrer's own record (resolved server-side via get_referral_customer,
+    // never trusted from the client), safe-column retry on the optional
+    // opt-in/Stripe fields a fresh deployment might not have yet.
+    if (action === "submit_referral_signup") {
+      const { ownerId, customer } = body;
+      if (!ownerId || !customer) return json({ error: "Missing ownerId/customer" }, 400);
+      const payload = { ...customer, owner_id: ownerId };
+      let insert = await sb(serviceRoleKey, `customers`, { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify(payload) });
+      if (!insert.ok) {
+        const { smsOptIn, smsOptInAt, stripeCustomerId, savedPaymentMethodId, savedPaymentMethodLabel, ...core } = payload;
+        insert = await sb(serviceRoleKey, `customers`, { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify(core) });
+      }
+      if (!insert.ok) return json({ error: "Failed to save referral signup" }, 500);
+      return json({ success: true });
+    }
+
     // ── CustomerReviewPage.tsx (#/rate) — resolves owner_id server-side
     // from the customerId already in the review link, so the link itself
     // doesn't need to change, and inserts with the service role (the public
