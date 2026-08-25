@@ -23,8 +23,8 @@ export function CrewBossMark({ className = "" }: { className?: string }) {
       </g>
       <circle cx="50" cy="26" r="8" fill="#ffffff" />
       <path d="M40 74 C40 54 44 48 50 48 C56 48 60 54 60 74 C60 82 56 85 50 85 C44 85 40 82 40 74 Z" fill="#ffffff" />
-      <text x="12" y="70" fontFamily="Arial, Helvetica, sans-serif" fontWeight={900} fontSize={43} fill="#ffffff" textAnchor="middle">C</text>
-      <text x="88" y="70" fontFamily="Arial, Helvetica, sans-serif" fontWeight={900} fontSize={43} fill="#ffffff" textAnchor="middle">B</text>
+      <text x="20" y="70" fontFamily="Arial, Helvetica, sans-serif" fontWeight={900} fontSize={43} fill="#ffffff" textAnchor="middle">C</text>
+      <text x="80" y="70" fontFamily="Arial, Helvetica, sans-serif" fontWeight={900} fontSize={43} fill="#ffffff" textAnchor="middle">B</text>
     </svg>
   );
 }
