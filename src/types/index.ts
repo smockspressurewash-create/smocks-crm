@@ -436,6 +436,7 @@ export interface Employee {
   hourlyRate: number;
   phone?: string;
   email?: string;
+  isNewHire?: boolean;
   startDate?: string;
   emergencyContact?: string;
   notes?: string;

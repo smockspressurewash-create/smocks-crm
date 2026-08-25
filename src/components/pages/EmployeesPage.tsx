@@ -87,7 +87,7 @@ import { ChemicalModal } from "../ui/ChemicalModal";
 import { WeeklyBusinessReview } from "../ui/WeeklyBusinessReview";
 import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 
-interface InviteRecord { code: string; firstName: string; lastName: string; email: string; role: string; hourlyRate: number; createdAt: string; used?: boolean; permissions?: Record<string, boolean>; }
+interface InviteRecord { code: string; firstName: string; lastName: string; email: string; phone?: string; role: string; hourlyRate: number; createdAt: string; used?: boolean; permissions?: Record<string, boolean>; isNewHire?: boolean; }
 
 const PERMISSION_DEFS_EMP = [
   { key: "can_view_jobs",          label: "View assigned jobs",    desc: "See their schedule" },
@@ -365,14 +365,24 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setJobs
   const isHoursAllTime = hoursRangeStart === ALL_TIME_START;
   const [f, setF] = useState<any>({ id: "", firstName: "", lastName: "", role: "Technician", status: "active", hourlyRate: 18, phone: "", email: "", startDate: today(), emergencyContact: "", notes: "", permissions: { ...DEFAULT_PERMS } });
   const [showPortalInfo, setShowPortalInfo] = useState(false);
+  // FEATURE — "one combined button instead of two." Invite Member / Add
+  // Employee used to be two separate toolbar buttons with no relationship to
+  // each other, which read as two competing ways to do the same thing. One
+  // button now opens this small chooser first; picking either option opens
+  // the existing (unchanged) invite or direct-add modal underneath — keeps
+  // both fully-working flows intact instead of risking a deep merge of two
+  // very different forms (one creates an invite code + pre-placeholder row,
+  // the other saves a real employee row directly).
+  const [addChooserOpen, setAddChooserOpen] = useState(false);
   const [inviteOpen, setInviteOpen] = useState(false);
   const [invites, setInvites] = usePersistent<InviteRecord[]>("smocks.invites", []);
-  const [inviteF, setInviteF] = useState({ firstName: "", lastName: "", email: "", role: "Technician", hourlyRate: 18 });
+  const [inviteF, setInviteF] = useState({ firstName: "", lastName: "", email: "", phone: "", role: "Technician", hourlyRate: 18, isNewHire: true });
   const [invitePerms, setInvitePerms] = useState<Record<string, boolean>>({ ...DEFAULT_PERMS });
   const [inviteManagerPerms, setInviteManagerPerms] = useState<Record<string, boolean>>({ ...DEFAULT_MANAGER_PERMS });
   const [showInvitePerms, setShowInvitePerms] = useState(false);
   const [showEditPerms, setShowEditPerms] = useState(false);
   const [inviteCreated, setInviteCreated] = useState<InviteRecord | null>(null);
+  const [resendingInvite, setResendingInvite] = useState<"email" | "sms" | null>(null);
   const portalUrl = window.location.origin + window.location.pathname + "#/portal";
   // FEATURE — new-hire onboarding packet. Template lives on
   // settings.onboardingTemplateItems (owner-editable in Settings → Templates
@@ -445,8 +455,9 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setJobs
       newEmployeeId = uid();
       const preCreated = {
         id: newEmployeeId, firstName: inv.firstName, lastName: inv.lastName, email: inv.email,
-        role: inv.role, hourlyRate: inv.hourlyRate, status: "active", phone: "",
+        role: inv.role, hourlyRate: inv.hourlyRate, status: "active", phone: inv.phone || "",
         startDate: today(), emergencyContact: "", notes: "Invited — account pending",
+        isNewHire: !!inv.isNewHire,
         permissions: invitePerms,
         managerPermissions: inv.role.toLowerCase().includes("manager") ? inviteManagerPerms : undefined,
         owner_id: ownerId,
@@ -497,7 +508,7 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setJobs
     if (!autoOpenManagerInvite) return;
     setInviteOpen(true);
     setInviteCreated(null);
-    setInviteF({ firstName: "", lastName: "", email: "", role: "Manager", hourlyRate: 18 });
+    setInviteF({ firstName: "", lastName: "", email: "", phone: "", role: "Manager", hourlyRate: 18, isNewHire: false });
     setInvitePerms({ ...DEFAULT_PERMS });
     setInviteManagerPerms({ ...DEFAULT_MANAGER_PERMS });
     setShowInvitePerms(false);
@@ -837,10 +848,7 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setJobs
           <button onClick={() => setShowPortalInfo(!showPortalInfo)} className="text-xs px-3 py-1.5 bg-black/40 border border-blue-700/40 text-blue-300 hover:bg-blue-950/30 rounded-xl transition flex items-center gap-1.5">
             <Globe size={12} />Team Portal
           </button>
-          <button onClick={() => { setInviteOpen(true); setInviteCreated(null); setInviteF({ firstName: "", lastName: "", email: "", role: "Technician", hourlyRate: 18 }); setInvitePerms({ ...DEFAULT_PERMS }); setInviteManagerPerms({ ...DEFAULT_MANAGER_PERMS }); setShowInvitePerms(false); setSendOnboardingPacket(true); }} className="text-xs px-3 py-1.5 bg-black/40 border border-green-700/40 text-green-300 hover:bg-green-950/30 rounded-xl transition flex items-center gap-1.5">
-            <UserCheck size={12} />Invite Member
-          </button>
-          <GBtn onClick={() => setModal({ open: true, data: null })}><Plus size={14} className="inline mr-1.5" />Add Employee</GBtn>
+          <GBtn onClick={() => setAddChooserOpen(true)}><Plus size={14} className="inline mr-1.5" />Add Team Member</GBtn>
         </div>
       </div>
 
@@ -1256,6 +1264,38 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setJobs
       )}
 
       {/* Invite modal */}
+      {/* Add Team Member chooser — the merged entry point for what used to be
+          two separate toolbar buttons (Invite Member / Add Employee). */}
+      <Modal open={addChooserOpen} onClose={() => setAddChooserOpen(false)} title="Add Team Member" maxW="max-w-sm">
+        <div className="space-y-2">
+          <button
+            onClick={() => {
+              setAddChooserOpen(false);
+              setInviteOpen(true); setInviteCreated(null);
+              setInviteF({ firstName: "", lastName: "", email: "", phone: "", role: "Technician", hourlyRate: 18, isNewHire: true });
+              setInvitePerms({ ...DEFAULT_PERMS }); setInviteManagerPerms({ ...DEFAULT_MANAGER_PERMS }); setShowInvitePerms(false); setSendOnboardingPacket(true);
+            }}
+            className="w-full text-left p-3.5 rounded-xl border border-green-700/40 bg-green-950/10 hover:bg-green-950/25 transition flex items-start gap-3"
+          >
+            <UserCheck size={18} className="text-green-400 flex-shrink-0 mt-0.5" />
+            <div>
+              <div className="text-sm font-semibold text-green-300">New Hire — Send Invite Link</div>
+              <div className="text-[11px] text-white/50 mt-0.5">They sign up themselves via a link (text or email), and go through onboarding — SOPs/checklist included if you've set one up.</div>
+            </div>
+          </button>
+          <button
+            onClick={() => { setAddChooserOpen(false); setModal({ open: true, data: null }); }}
+            className="w-full text-left p-3.5 rounded-xl border border-white/10 bg-black/30 hover:bg-white/5 transition flex items-start gap-3"
+          >
+            <Plus size={18} className="text-white/60 flex-shrink-0 mt-0.5" />
+            <div>
+              <div className="text-sm font-semibold">Already Working Here — Add Directly</div>
+              <div className="text-[11px] text-white/50 mt-0.5">For an existing employee — add their record to the CRM now, no invite link or self-signup needed.</div>
+            </div>
+          </button>
+        </div>
+      </Modal>
+
       <Modal open={inviteOpen} onClose={() => { setInviteOpen(false); setInviteCreated(null); }} title="Invite Team Member" maxW="max-w-md">
         {!inviteCreated ? (
           <div className="space-y-3">
@@ -1266,7 +1306,10 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setJobs
               <div><label className="text-xs text-white/60 mb-1 block">First name *</label><GInput value={inviteF.firstName} onChange={e => setInviteF(p => ({ ...p, firstName: e.target.value }))} /></div>
               <div><label className="text-xs text-white/60 mb-1 block">Last name</label><GInput value={inviteF.lastName} onChange={e => setInviteF(p => ({ ...p, lastName: e.target.value }))} /></div>
             </div>
-            <div><label className="text-xs text-white/60 mb-1 block">Work email *</label><GInput type="email" value={inviteF.email} onChange={e => setInviteF(p => ({ ...p, email: e.target.value }))} placeholder="employee@example.com" /></div>
+            <div className="grid grid-cols-2 gap-2">
+              <div><label className="text-xs text-white/60 mb-1 block">Work email *</label><GInput type="email" value={inviteF.email} onChange={e => setInviteF(p => ({ ...p, email: e.target.value }))} placeholder="employee@example.com" /></div>
+              <div><label className="text-xs text-white/60 mb-1 block">Phone <span className="text-white/30 font-normal">(to text the link)</span></label><GInput type="tel" value={inviteF.phone} onChange={e => setInviteF(p => ({ ...p, phone: e.target.value }))} placeholder="(717) 555-0100" /></div>
+            </div>
             <div className="grid grid-cols-2 gap-2">
               <div><label className="text-xs text-white/60 mb-1 block">Role</label>
                 <GSel value={inviteF.role} onChange={e => setInviteF(p => ({ ...p, role: e.target.value }))}>
@@ -1275,6 +1318,11 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setJobs
               </div>
               <div><label className="text-xs text-white/60 mb-1 block">Hourly Rate ($)</label><GInput type="number" step="0.5" value={inviteF.hourlyRate} onChange={e => setInviteF(p => ({ ...p, hourlyRate: Number(e.target.value) }))} /></div>
             </div>
+            <label className="flex items-center gap-2 cursor-pointer py-1.5 px-3 border border-white/10 rounded-xl bg-black/30">
+              <input type="checkbox" checked={inviteF.isNewHire} onChange={e => setInviteF(p => ({ ...p, isNewHire: e.target.checked }))}
+                className="w-3.5 h-3.5 accent-red-600 flex-shrink-0" />
+              <div className="text-xs text-white/80">This is a new hire <span className="text-white/40">(flags their record for onboarding tracking)</span></div>
+            </label>
             {/* FEATURE — new-hire onboarding packet. Only shown when the owner
                 has actually built a template (Settings → Templates →
                 Onboarding Packet); nothing to send otherwise. */}
@@ -1357,6 +1405,42 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setJobs
                 <button onClick={() => navigator.clipboard.writeText(inviteLink(inviteCreated.code))} className="px-3 py-2 bg-blue-900/40 border border-blue-700/40 text-blue-300 text-xs rounded-xl hover:bg-blue-800/40 transition flex items-center gap-1">
                   <Copy size={11} />Copy
                 </button>
+              </div>
+              {/* FEATURE — "add a link you can send via text or email." Email
+                  already auto-sends the moment the invite is created (see
+                  generateInvite); this adds a resend + a text option for the
+                  same link, using this employee's phone (if given above). */}
+              <div className="flex items-center gap-2 mt-2">
+                <button
+                  onClick={async () => {
+                    setResendingInvite("email");
+                    try {
+                      await sendEmail(settings, {
+                        to: inviteCreated.email,
+                        subject: `You've been invited to join ${settings?.companyName || "your company"} on CrewBoss`,
+                        body: `<p>Hi ${inviteCreated.firstName},</p><p>Click below to create your employee account.</p><p><a href="${inviteLink(inviteCreated.code)}" style="display:inline-block;padding:12px 24px;background:#dc2626;color:#fff;border-radius:8px;text-decoration:none;font-weight:600;">Create Your Account</a></p><p>Or paste this link in your browser:<br/><a href="${inviteLink(inviteCreated.code)}">${inviteLink(inviteCreated.code)}</a></p>`,
+                      });
+                      toast("Invite email sent ✓", "green");
+                    } catch (e: any) { toast("Couldn't send email — " + (e?.message || "unknown error"), "red"); }
+                    finally { setResendingInvite(null); }
+                  }}
+                  disabled={resendingInvite === "email"}
+                  className="flex-1 px-3 py-1.5 bg-black/40 border border-white/10 text-white/60 hover:text-white text-[11px] rounded-lg transition disabled:opacity-50"
+                >{resendingInvite === "email" ? "Sending…" : "✉ Resend Email"}</button>
+                <button
+                  onClick={async () => {
+                    if (!inviteCreated.phone) { toast("No phone number on file for this invite — add one and re-create it, or just copy the link", "yellow"); return; }
+                    if (!settings?.twilioSid) { toast("Connect Twilio in Settings to text invite links", "yellow"); return; }
+                    setResendingInvite("sms");
+                    try {
+                      await twilioSend(settings, inviteCreated.phone, `You've been invited to join ${settings?.companyName || "the team"}! Create your account: ${inviteLink(inviteCreated.code)}`);
+                      toast("Invite texted ✓", "green");
+                    } catch (e: any) { toast("Couldn't send text — " + (e?.message || "unknown error"), "red"); }
+                    finally { setResendingInvite(null); }
+                  }}
+                  disabled={resendingInvite === "sms"}
+                  className="flex-1 px-3 py-1.5 bg-black/40 border border-white/10 text-white/60 hover:text-white text-[11px] rounded-lg transition disabled:opacity-50"
+                >{resendingInvite === "sms" ? "Sending…" : "💬 Text Link"}</button>
               </div>
             </div>
             <Glass className="p-3 !bg-black/40">
