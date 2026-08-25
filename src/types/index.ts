@@ -466,6 +466,15 @@ export interface Employee {
   // FEATURE — photo/video release opt-out (employee-side). Mirrors
   // Customer.mediaOptOut. Data flag only for now — see that field's comment.
   mediaOptOut?: boolean;
+  // FEATURE — owner-set skills/strengths/weaknesses, visible on the
+  // employee's profile and used as a lightweight job-assignment hint (e.g.
+  // "doesn't like roofs" surfaces as a warning when assigned a roof-cleaning
+  // job). skills is a tag list matched loosely against job type/service
+  // names; strengths/weaknesses are free text since they're rarely a clean
+  // list ("great with difficult customers", "slow starter in the morning").
+  skills?: string[];
+  strengths?: string;
+  weaknesses?: string;
 }
 
 // ─── Vehicle / Fleet ──────────────────────────────────────────────────────────

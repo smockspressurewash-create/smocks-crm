@@ -85,8 +85,8 @@ import {
 } from "./lib/seed";
 import { seedWeather } from "./lib/weather";
 import { fetchRealWeather, deriveWeatherLocation } from "./lib/weather";
-import { fmt, uid, today, daysSince, daysFromNow, consumeOAuthIntent, getLastOwnerSessionFlag, setLastOwnerSessionFlag, getLastOwnerId, setLastOwnerId, buildChecklistFromServices, withTimeout, normalizeJobRow, totalJobPhotoCount, notifyDesktop, stripLegacyJobFields, getPollIntervalMs, purgeOldJobMedia, computeGoalProgress } from "./lib/utils";
-import { sendEmail, sendOwnerGmailOnly, emailShell, emailButton, buildTomorrowJobsEmailHtml, buildDailyBriefingEmailHtml, buildWeeklyOwnerDigestEmailHtml, setOptedOutPhones, setTestModeContacts } from "./lib/messaging";
+import { fmt, uid, today, daysSince, daysFromNow, consumeOAuthIntent, getLastOwnerSessionFlag, setLastOwnerSessionFlag, getLastOwnerId, setLastOwnerId, buildChecklistFromServices, withTimeout, normalizeJobRow, totalJobPhotoCount, notifyDesktop, stripLegacyJobFields, getPollIntervalMs, purgeOldJobMedia, computeGoalProgress, localDateKey } from "./lib/utils";
+import { sendEmail, sendOwnerGmailOnly, emailShell, emailButton, buildTomorrowJobsEmailHtml, buildWeeklyScheduleEmailHtml, buildDailyBriefingEmailHtml, buildWeeklyOwnerDigestEmailHtml, setOptedOutPhones, setTestModeContacts } from "./lib/messaging";
 import { exchangeSocialOAuthCode, type SocialPlatform } from "./lib/socialOAuth";
 import type {
   Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense,
@@ -120,16 +120,8 @@ const navGroups = [
     ],
   },
   {
-    label: "Sales",
-    items: [
-      { id: "customers",  label: "Customers",  icon: Users     },
-      { id: "estimates",  label: "Quotes",     icon: FileText  },
-      { id: "invoices",   label: "Invoices",   icon: Receipt   },
-      { id: "pipeline",   label: "Pipeline",   icon: GitBranch },
-      { id: "intake",     label: "Lead Intake",icon: UserPlus  },
-    ],
-  },
-  {
+    // FEATURE — sidebar reorg: "Jobs should be higher up" — moved Operations
+    // (Jobs/Calendar/Crew View/Trash Cans/SOPs) ahead of Sales, right after Main.
     label: "Operations",
     items: [
       { id: "jobs",       label: "Jobs",       icon: Briefcase  },
@@ -137,6 +129,16 @@ const navGroups = [
       { id: "crew",       label: "Crew View",  icon: Monitor    },
       { id: "trashcans",  label: "Trash Cans", icon: Trash2     },
       { id: "sops",       label: "SOPs",       icon: BookOpen   },
+    ],
+  },
+  {
+    label: "Sales",
+    items: [
+      { id: "customers",  label: "Customers",  icon: Users     },
+      { id: "estimates",  label: "Quotes",     icon: FileText  },
+      { id: "invoices",   label: "Invoices",   icon: Receipt   },
+      { id: "pipeline",   label: "Pipeline",   icon: GitBranch },
+      { id: "intake",     label: "Lead Intake",icon: UserPlus  },
     ],
   },
   {
@@ -3131,6 +3133,55 @@ export function App() {
     };
     checkAndSendTomorrowJobs();
     const interval = setInterval(checkAndSendTomorrowJobs, 60 * 60 * 1000);
+    return () => clearInterval(interval);
+  }, [jobs, employees, customers, settings]);
+
+  // FEATURE — "employees should see who else is working with them on each
+  // job. Weekly email with schedule, crew, and 'View your schedule' button."
+  // Same no-backend-cron pattern as the tomorrow's-jobs email above: checks
+  // once on load and hourly, fires once Sunday afternoon (so it's ready
+  // before the work week), deduped per calendar week via localStorage.
+  useEffect(() => {
+    const checkAndSendWeeklySchedule = async () => {
+      const now = new Date();
+      if (now.getDay() !== 0 || now.getHours() < 15) return; // Sunday, 3pm+
+      const weekKey = "smocks.weeklyScheduleSent." + localDateKey(now);
+      if (localStorage.getItem(weekKey)) return;
+      const weekDates = new Set(Array.from({ length: 7 }, (_, i) => daysFromNow(i + 1)));
+      const weekJobs = jobs.filter(j => weekDates.has(j.scheduledDate) && j.status !== "cancelled");
+      if (weekJobs.length === 0) { localStorage.setItem(weekKey, "1"); return; }
+      const byEmployee = new Map<string, typeof weekJobs>();
+      weekJobs.forEach(j => {
+        (j.crew || []).forEach((empId: any) => {
+          const id = typeof empId === "string" ? empId : empId?.id;
+          if (!id) return;
+          const list = byEmployee.get(id) || [];
+          list.push(j);
+          byEmployee.set(id, list);
+        });
+      });
+      const portalUrl = `${window.location.origin}${window.location.pathname}#/portal`;
+      for (const [empId, empJobs] of byEmployee) {
+        const emp = employees.find(e => e.id === empId);
+        if (!emp?.email) continue;
+        const jobsList = empJobs
+          .sort((a, b) => (a.scheduledDate + (a.scheduledTime || "")).localeCompare(b.scheduledDate + (b.scheduledTime || "")))
+          .map(j => {
+            const cust = customers.find(x => x.id === j.customerId);
+            const crewNames = (j.crew || [])
+              .map((c: any) => (typeof c === "string" ? c : c?.id))
+              .filter((id: string) => id && id !== empId)
+              .map((id: string) => { const e2 = employees.find(x => x.id === id); return e2 ? `${e2.firstName} ${e2.lastName}`.trim() : null; })
+              .filter(Boolean) as string[];
+            return { job: j, custName: cust ? `${cust.firstName} ${cust.lastName}` : "", crewNames };
+          });
+        const html = buildWeeklyScheduleEmailHtml(settings as any, emp.firstName, jobsList, portalUrl);
+        try { await sendEmail(settings as any, emp.email, "Your Week Ahead", html); } catch { /* best-effort */ }
+      }
+      localStorage.setItem(weekKey, "1");
+    };
+    checkAndSendWeeklySchedule();
+    const interval = setInterval(checkAndSendWeeklySchedule, 60 * 60 * 1000);
     return () => clearInterval(interval);
   }, [jobs, employees, customers, settings]);
 

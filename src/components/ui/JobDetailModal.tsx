@@ -1465,11 +1465,20 @@ ${job.notes ? `<div class="section"><h2>Job Notes</h2><p>${job.notes}</p></div>`
               // weekday-offs.
               const unavail = job.scheduledDate && isEmployeeUnavailable(e as any, job.scheduledDate);
               const requestOpen = requestOpenId === e.id;
+              // FEATURE — lightweight job-assignment hint from owner-set
+              // skills/weaknesses (e.g. "doesn't like roofs"). Just a loose
+              // substring match against the job's type/service text — a
+              // nudge for the owner to consider, never a hard block.
+              const jobContext = `${job.jobType || ""} ${(job as any).serviceCategory || ""} ${job.address || ""}`.toLowerCase();
+              const matchedSkill = (e.skills || []).find((s: string) => s.trim() && jobContext.includes(s.trim().toLowerCase()));
+              const weaknessHit = (e.weaknesses || "").split(/[,.;]/).map((w: string) => w.trim()).find((w: string) => w.length > 3 && jobContext.includes(w.toLowerCase()));
               return (
                 <div key={e.id} className={"rounded-lg border overflow-hidden " + (unavail ? "bg-yellow-950/10 border-yellow-700/30" : "bg-white/5 border-white/10")}>
                   <div className="flex items-center justify-between gap-2 px-2.5 py-1.5">
                     <span className={"text-xs flex items-center gap-1.5 " + (unavail ? "text-yellow-300" : "text-white/70")} title={unavail ? `⚠️ ${e.firstName} is unavailable on this day. Schedule anyway?` : undefined}>
                       {e.firstName} {e.lastName}{unavail ? " ⚠️" : ""}
+                      {matchedSkill && <span className="text-[9px] font-semibold px-1.5 py-0.5 rounded-full bg-green-950/50 text-green-300" title={`Skill on file: ${matchedSkill}`}>✓ {matchedSkill}</span>}
+                      {weaknessHit && <span className="text-[9px] font-semibold px-1.5 py-0.5 rounded-full bg-orange-950/50 text-orange-300" title={e.weaknesses}>⚠ may not be a fit</span>}
                       {jobRequestStatuses[e.id]?.status === "pending" && (
                         <span className="text-[9px] font-semibold px-1.5 py-0.5 rounded-full bg-yellow-950/50 text-yellow-300">Request pending</span>
                       )}

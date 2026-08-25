@@ -998,6 +998,31 @@ export const buildTomorrowJobsEmailHtml = (brand: string | Parameters<typeof ema
   return emailShell(brand, "Tomorrow's Jobs", body);
 };
 
+// FEATURE — weekly schedule email: "employees should see who else is
+// working with them on each job. Weekly email with schedule, crew, and
+// 'View your schedule' button." crewNames is pre-resolved by the caller
+// (App.tsx has the full employees list; this file doesn't) so this stays a
+// pure HTML builder like every other email-template function here.
+const weeklyJobCardHtml = (j: any, custName: string, crewNames: string[]): string => `
+  <div style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:12px;padding:14px;margin-bottom:10px">
+    <div style="font-weight:700;font-size:14px">${j.scheduledDate || ""}${j.scheduledTime ? " · " + j.scheduledTime : ""}</div>
+    <div style="font-size:13px;margin-top:2px">${j.address || ""}</div>
+    <div style="font-size:12px;color:rgba(255,255,255,0.5);margin-top:2px">${custName}</div>
+    ${crewNames.length > 0 ? `<div style="font-size:12px;color:rgba(255,255,255,0.6);margin-top:6px">👥 Working with: ${crewNames.join(", ")}</div>` : ""}
+  </div>`;
+
+export const buildWeeklyScheduleEmailHtml = (
+  brand: string | Parameters<typeof emailShell>[0],
+  empFirstName: string,
+  jobsList: Array<{ job: any; custName: string; crewNames: string[] }>,
+  portalUrl: string
+): string => {
+  const body = `<p style="font-size:14px;color:rgba(255,255,255,0.8)">Hi ${empFirstName}, here's your schedule for the week ahead:</p>` +
+    jobsList.map(({ job, custName, crewNames }) => weeklyJobCardHtml(job, custName, crewNames)).join("") +
+    emailButton("View Your Schedule", portalUrl);
+  return emailShell(brand, "Your Week Ahead", body);
+};
+
 // BUG FIX — the owner asked for "more information at the end of the day":
 // total revenue AND profit (not just revenue), a full per-job breakdown, and
 // clickable action buttons — this used to be 4 flat numbers with nothing to

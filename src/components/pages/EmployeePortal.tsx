@@ -330,12 +330,13 @@ const ARRIVAL_PROMPT_RADIUS_METERS = 150;
 // streamlined, mobile-optimized job view a field employee sees (sign-off,
 // checklist with photo upload, clock in/out — no admin fields) instead of
 // opening the full JobDetailModal for a job the OWNER is personally working.
-export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName = "the company", onComplete, perms: permsOverride, maxLunchMinutes = 30, onJobCompleted, googleMapsKey = "", paidLunchBreaks = false, signOffDisclaimer = "", settings = {} as AppSettings, setEstimates = (() => {}) as any, setCustomers = (() => {}) as any, nextJob = null, nextJobCustomer = null, laterJobsToday = [], onArrived, autoComplete = false, employeeName = "", employeeEmail = "", isPreview = false }: {
+export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName = "the company", onComplete, perms: permsOverride, maxLunchMinutes = 30, onJobCompleted, googleMapsKey = "", paidLunchBreaks = false, signOffDisclaimer = "", settings = {} as AppSettings, setEstimates = (() => {}) as any, setCustomers = (() => {}) as any, nextJob = null, nextJobCustomer = null, laterJobsToday = [], onArrived, autoComplete = false, employeeName = "", employeeEmail = "", isPreview = false, employees = [] as Employee[] }: {
   job: Job; customer?: Customer; onBack: () => void;
   onUpdateJob: (patch: Partial<Job>) => void | Promise<any>; toast: (msg: string, tone?: any) => void;
   companyName?: string; onComplete?: () => void; perms?: Record<string, boolean>; maxLunchMinutes?: number;
   onJobCompleted?: (job: Job) => void; googleMapsKey?: string; paidLunchBreaks?: boolean; signOffDisclaimer?: string;
   settings?: AppSettings; setEstimates?: any; setCustomers?: any; nextJob?: Job | null; nextJobCustomer?: Customer | null;
+  employees?: Employee[];
   // FEATURE (round 13, item 20) — every job scheduled later TODAY (after this
   // one), used by the Running Late cascade-notify prompt below.
   laterJobsToday?: Array<{ job: Job; customer: Customer | null }>;
@@ -1693,6 +1694,22 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
           {(job.status || "").replace("_", " ")}
         </div>
       </div>
+
+      {/* FEATURE — "employees should see who else is working with them on
+          each job." job.crew is a list of employee ids/entries; resolve
+          against the real employees list and show everyone but the viewer
+          themselves. */}
+      {(() => {
+        const crewIds = normalizeCrewArray(job.crew).map(crewEntryId);
+        const others = employees.filter((emp: any) => crewIds.includes(emp.id) && emp.email !== employeeEmail);
+        if (others.length === 0) return null;
+        return (
+          <div className="px-4 pt-3 flex items-center gap-2 text-xs text-white/50 flex-wrap">
+            <User size={13} className="text-white/30" />
+            Working with: {others.map((emp: any) => `${emp.firstName} ${emp.lastName}`.trim()).join(", ")}
+          </div>
+        );
+      })()}
 
       {/* FEATURE — proximity arrival prompt, shown once GPS lands within
           ARRIVAL_PROMPT_RADIUS_METERS of the job's lat/lng. Lightweight,
@@ -5197,6 +5214,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
         nextJob={nextJob}
         nextJobCustomer={nextJobCustomer}
         laterJobsToday={laterJobsToday}
+        employees={employees}
         onArrived={startDayShiftIfNeeded}
         autoComplete={pendingCompleteJobId === selectedJobId}
         employeeName={myEmployee ? `${myEmployee.firstName} ${myEmployee.lastName || ""}`.trim() : ""}

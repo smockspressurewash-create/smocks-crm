@@ -1455,6 +1455,22 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setJobs
           <div><label className="text-xs text-white/60 mb-1 block">Emergency Contact</label><GInput value={f.emergencyContact} onChange={e => setF({ ...f, emergencyContact: e.target.value })} placeholder="Name — (717) 555-0000" /></div>
           <div><label className="text-xs text-white/60 mb-1 block">Notes</label><GTxt rows={2} value={f.notes} onChange={e => setF({ ...f, notes: e.target.value })} /></div>
 
+          {/* FEATURE — skills/strengths/weaknesses, visible on the profile
+              and used as a lightweight job-assignment hint (see the warning
+              badge in the crew-assign picker on JobDetailModal/JobsPage). */}
+          <div>
+            <label className="text-xs text-white/60 mb-1 block">Skills (comma-separated — e.g. "roofs, gutters, commercial")</label>
+            <GInput
+              value={(f.skills || []).join(", ")}
+              onChange={e => setF({ ...f, skills: e.target.value.split(",").map((s: string) => s.trim()).filter(Boolean) })}
+              placeholder="roofs, gutters, commercial, soft wash"
+            />
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <div><label className="text-xs text-white/60 mb-1 block">Strengths</label><GTxt rows={2} value={f.strengths || ""} onChange={e => setF({ ...f, strengths: e.target.value })} placeholder="Great with difficult customers, fast on ladders" /></div>
+            <div><label className="text-xs text-white/60 mb-1 block">Weaknesses</label><GTxt rows={2} value={f.weaknesses || ""} onChange={e => setF({ ...f, weaknesses: e.target.value })} placeholder="Doesn't like roofs, slow starter in the morning" /></div>
+          </div>
+
           {/* FEATURE — photo/video release opt-out, employee side. Mirrors
               CustomerModal.tsx's client-side toggle; see LegalPages.tsx
               TermsPage's "Photos & Video" clause. Data flag only for now. */}
