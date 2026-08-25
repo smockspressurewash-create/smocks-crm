@@ -151,6 +151,7 @@ interface ResolvedOwnerSettings {
   owmKey: string;
   weatherLocation: string;
   companyAddress: string;
+  alfredVoiceReplies: "off" | "always" | "ask";
 }
 
 const shapeSettings = (row: any, data: any): ResolvedOwnerSettings => ({
@@ -187,6 +188,15 @@ const shapeSettings = (row: any, data: any): ResolvedOwnerSettings => ({
   owmKey: data?.owmKey || "",
   weatherLocation: data?.weatherLocation || "",
   companyAddress: data?.companyAddress || "",
+  // FEATURE — free voice-memo replies (Settings → Alfred → Voice Replies).
+  // "off" (default): always plain text. "always": every reply from Alfred
+  // over text goes out as a real voice memo (MMS audio) instead. "ask":
+  // stays text by default, but a reply is sent as a voice memo whenever
+  // the owner's OWN message that turn asked for one ("send that as a
+  // voice memo", "say it instead", etc. — see VOICE_REQUEST_PHRASES
+  // below). Uses Cloudflare Workers AI's free MeloTTS model — no
+  // ElevenLabs/paid API required, standard voice only (no cloning).
+  alfredVoiceReplies: (data?.alfredVoiceReplies === "always" || data?.alfredVoiceReplies === "ask") ? data.alfredVoiceReplies : "off",
 });
 
 const fetchAppSettings = async (env: Record<string, string>, toNumber: string): Promise<ResolvedOwnerSettings> => {
@@ -275,6 +285,54 @@ const transcribeViaWorkersAI = async (ai: any, audioBuf: ArrayBuffer): Promise<s
     return null;
   }
 };
+
+// FEATURE — free voice-memo replies. Cloudflare Workers AI's MeloTTS model
+// (same "AI" binding transcribeViaWorkersAI above already uses for the
+// opposite direction) is included in the free Workers AI tier — no
+// ElevenLabs key, no per-character cost, standard voice only (explicitly
+// what was asked for: "make it free, without requiring ElevenLabs...use a
+// standard voice instead of a cloned one"). Uploads the resulting audio to
+// a public Supabase Storage bucket (same pattern as customer documents)
+// since Twilio's MediaUrl needs a real fetchable URL, not raw bytes.
+const synthesizeSpeechViaWorkersAI = async (ai: any, text: string): Promise<ArrayBuffer | null> => {
+  if (!ai || !text.trim()) return null;
+  try {
+    const result: any = await ai.run("@cf/myshell-ai/melotts", { prompt: text.slice(0, 1000), lang: "en" });
+    // Workers AI TTS models return { audio: "<base64>" } (mp3).
+    const b64 = result?.audio;
+    if (!b64) return null;
+    const bin = atob(b64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return bytes.buffer;
+  } catch (e: any) {
+    console.warn("[TwilioSmsWebhook] Workers AI TTS failed:", e?.message);
+    return null;
+  }
+};
+
+const uploadVoiceMemo = async (serviceRoleKey: string, audioBuf: ArrayBuffer): Promise<string | null> => {
+  if (!serviceRoleKey) return null;
+  try {
+    const path = `${crypto.randomUUID()}.mp3`;
+    const res = await fetch(`${SUPABASE_URL}/storage/v1/object/alfred-voice/${path}`, {
+      method: "POST",
+      headers: { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}`, "Content-Type": "audio/mpeg" },
+      body: audioBuf,
+    });
+    if (!res.ok) { console.warn("[TwilioSmsWebhook] voice memo upload failed:", await res.text().catch(() => "")); return null; }
+    return `${SUPABASE_URL}/storage/v1/object/public/alfred-voice/${path}`;
+  } catch (e: any) {
+    console.warn("[TwilioSmsWebhook] voice memo upload threw:", e?.message);
+    return null;
+  }
+};
+
+// Loose phrase match for "ask" mode — deliberately generous (a false
+// negative just means the owner gets text instead of the voice memo they
+// asked for, which is a minor inconvenience; a false positive costs one
+// harmless extra TTS call) rather than requiring exact wording.
+const VOICE_REQUEST_PHRASES = /\b(voice memo|voice message|voice note|say (it|that)|read (it|that)( to me)?|as a voice|out loud)\b/i;
 
 const transcribeViaOpenAI = async (audioBuf: ArrayBuffer, openaiKey: string): Promise<string | null> => {
   if (!openaiKey) return null;
@@ -367,7 +425,7 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
     const isStop = STOP_WORDS.includes(body);
     const isStart = START_WORDS.includes(body);
     const resolved = await fetchAppSettings(context.env, params.To || "");
-    const { companyName, keyword, ownerId, myPhone, alfredExtraPhones, alfredExtraPhoneRoles, alfredSmsEnabled, twilioSid, twilioToken, twilioFrom, modelKeys, modelPriority, activeModel, openaiKey, googleProviderToken, googleRefreshToken, googleTokenExpiresAt, testModeEnabled, alfredAutoApproveReschedules, alfredPersonality, owmKey, weatherLocation, companyAddress } = resolved;
+    const { companyName, keyword, ownerId, myPhone, alfredExtraPhones, alfredExtraPhoneRoles, alfredSmsEnabled, twilioSid, twilioToken, twilioFrom, modelKeys, modelPriority, activeModel, openaiKey, googleProviderToken, googleRefreshToken, googleTokenExpiresAt, testModeEnabled, alfredAutoApproveReschedules, alfredPersonality, owmKey, weatherLocation, companyAddress, alfredVoiceReplies } = resolved;
     const isOptInKeyword = body === keyword;
     const isConfirm = CONFIRM_WORDS.includes(body);
 
@@ -510,7 +568,19 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
             }),
           90000,
           "Sorry, that took too long and I had to stop — try again, maybe as a couple of shorter texts instead of one big one."
-        ).then((reply) => sendAlfredSms(ctx, from, reply))
+        ).then(async (reply) => {
+          // FEATURE — free voice-memo replies. "always" mode voices every
+          // reply; "ask" mode only voices this one if the owner's OWN
+          // message (bodyRaw, before transcription-mangling) requested it.
+          const wantsVoice = alfredVoiceReplies === "always" || (alfredVoiceReplies === "ask" && VOICE_REQUEST_PHRASES.test(bodyRaw || ""));
+          if (wantsVoice) {
+            const audio = await synthesizeSpeechViaWorkersAI((context.env as any).AI, reply);
+            const mediaUrl = audio ? await uploadVoiceMemo(context.env.SUPABASE_SERVICE_ROLE_KEY, audio) : null;
+            if (mediaUrl) return sendAlfredSms(ctx, from, reply, mediaUrl);
+            console.warn("[TwilioSmsWebhook] voice memo requested but TTS/upload failed — falling back to plain text");
+          }
+          return sendAlfredSms(ctx, from, reply);
+        })
       );
       return twiml();
     }

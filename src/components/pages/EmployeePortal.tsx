@@ -14,6 +14,7 @@ import { GBtn } from "../ui/GBtn";
 import { GInput } from "../ui/GInput";
 import { GDate } from "../ui/GDate";
 import { GTxt } from "../ui/GTxt";
+import { GSel } from "../ui/GSel";
 import { BeforeAfterSlider } from "../ui/BeforeAfterSlider";
 import { loadMapsScript, AddressAutocomplete } from "../ui/AddressAutocomplete";
 import { LiveMap } from "../ui/LiveMap";
@@ -21,7 +22,7 @@ import { PropertyMapEmbed } from "../ui/PropertyMapEmbed";
 import { SaveCardModal } from "../ui/SaveCardModal";
 import { InstallAppButton } from "../ui/InstallAppButton";
 import { SopModal } from "../ui/SopModal";
-import { chargeSavedPaymentMethod, sendPaymentReceipt } from "../../lib/stripe";
+import { chargeSavedPaymentMethod, sendPaymentReceipt, listCustomerPaymentMethods } from "../../lib/stripe";
 import { BarChart, Bar, LineChart, Line, XAxis, YAxis, ResponsiveContainer, Tooltip, CartesianGrid } from "recharts";
 import { fmt, uid, today, localDateStr, localDateKey, shiftDayStr, daysFromNow, computeJobRatingScore, setOAuthIntent, compressImageFile, getEffectiveRate, computeNextRecurringDate, weekdayLabels, normalizeJobRow, totalJobPhotoCount, mediaSrc, dataUrlToBlob, uploadJobMedia, checkVideoLimits, stripLegacyJobFields, reconcileCrewAfterAssign, getPollIntervalMs, getPayPeriodBounds, haversineMiles } from "../../lib/utils";
 import { usePollGate } from "../../hooks/usePollGate";
@@ -346,6 +347,16 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
   const [chargingFee, setChargingFee] = useState(false);
   // ITEM 7 — on-site checkout: charging the job total to a card on file.
   const [chargingCardNow, setChargingCardNow] = useState(false);
+  // FEATURE — "employees should be able to add multiple cards, set a
+  // default, and charge in person." The charge button only ever used the
+  // single default card (customer.savedPaymentMethodId) with no way to
+  // pick a different one on file — this loads the customer's real card
+  // list from Stripe (same listCustomerPaymentMethods the owner's
+  // CustomerDetail.tsx already uses) so a picker can appear when there's
+  // more than one.
+  const [jobCards, setJobCards] = useState<{ id: string; brand?: string; last4?: string }[]>([]);
+  const [selectedCardId, setSelectedCardId] = useState<string>("");
+  const [cardsLoaded, setCardsLoaded] = useState(false);
   const [note, setNote] = useState("");
   const [delayNote, setDelayNote] = useState("");
   const [delayNoteOpen, setDelayNoteOpen] = useState(false);
@@ -373,6 +384,29 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
   const [signerName, setSignerName] = useState("");
   // "Complete Job" flow: review (checklist/sign-off status) → payment → summary
   const [completeStep, setCompleteStep] = useState<"" | "review" | "payment" | "method" | "tip" | "invoice" | "invoice-preview" | "summary">("");
+  // FEATURE — "employees should be able to add multiple cards, set a
+  // default, and charge in person." The charge button only ever used the
+  // single default card (customer.savedPaymentMethodId) with no way to
+  // pick a different one on file — this loads the customer's real card
+  // list from Stripe (same listCustomerPaymentMethods the owner's
+  // CustomerDetail.tsx already uses) so a picker can appear when there's
+  // more than one.
+  useEffect(() => {
+    if (completeStep !== "method" || !customer?.stripeCustomerId || cardsLoaded) return;
+    setCardsLoaded(true);
+    (async () => {
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        const token = session?.access_token;
+        if (!token) return;
+        const cards = await listCustomerPaymentMethods(token, customer.stripeCustomerId!);
+        setJobCards(cards);
+        setSelectedCardId(customer.savedPaymentMethodId && cards.some(c => c.id === customer.savedPaymentMethodId) ? customer.savedPaymentMethodId : (cards[0]?.id || ""));
+      } catch (e: any) {
+        console.warn("[JobCharge] failed to load card list, falling back to default only:", e?.message);
+      }
+    })();
+  }, [completeStep, customer?.stripeCustomerId, cardsLoaded]);
   const [paidChoice, setPaidChoice] = useState<"yes" | "no" | "">("");
   const [paymentMethod, setPaymentMethod] = useState("");
   const [sendingCompleteInvoice, setSendingCompleteInvoice] = useState(false);
@@ -1244,25 +1278,50 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
                   Card on File" further up this same job screen covers "enter
                   payment details in person." */}
               {effPerms.can_process_payments && customer?.savedPaymentMethodId && customer?.stripeCustomerId && !!settings?.stripePublishableKey && (
-                <button
-                  onClick={async () => {
-                    if (chargingCardNow) return;
-                    setChargingCardNow(true);
-                    try {
-                      await chargeSavedPaymentMethod(customer.stripeCustomerId!, customer.savedPaymentMethodId!, Math.round((Number(job.amount) || 0) * 100), "usd", `Job payment — ${job.address || ""}`);
-                      toast(`Charged ${fmt(job.amount)} to card on file ✓`, "green");
-                      setCompleteStep("tip");
-                    } catch (e: any) {
-                      toast("Charge failed: " + (e?.message || "unknown error"), "red");
-                    } finally {
-                      setChargingCardNow(false);
-                    }
-                  }}
-                  disabled={chargingCardNow}
-                  className="w-full py-3 rounded-xl border-2 border-emerald-600/50 bg-emerald-950/30 text-emerald-300 font-semibold hover:bg-emerald-900/40 transition flex items-center justify-center gap-1.5"
-                >
-                  <CreditCard size={14} />{chargingCardNow ? "Charging…" : `Charge ${fmt(job.amount)} to card on file (${customer.savedPaymentMethodLabel || "saved"})`}
-                </button>
+                <div className="space-y-2">
+                  {/* FEATURE — "employees should be able to add multiple
+                      cards[and] charge in person" — only shows a picker
+                      when there's actually more than one card, so the
+                      common single-card case stays exactly as simple as
+                      before. */}
+                  {jobCards.length > 1 && (
+                    <GSel value={selectedCardId} onChange={(e: any) => setSelectedCardId(e.target.value)} className="!text-sm">
+                      {jobCards.map(c => (
+                        <option key={c.id} value={c.id} className="bg-black">
+                          {c.brand || "Card"} ····{c.last4 || "----"}{c.id === customer.savedPaymentMethodId ? " (default)" : ""}
+                        </option>
+                      ))}
+                    </GSel>
+                  )}
+                  <button
+                    onClick={async () => {
+                      if (chargingCardNow) return;
+                      const chargeCardId = selectedCardId || customer.savedPaymentMethodId!;
+                      setChargingCardNow(true);
+                      try {
+                        // BUG FIX (Stripe audit) — this was the one charge call
+                        // site in this file NOT passing owner_id, unlike the
+                        // tip/trash-can-fee charges right below it. Without it
+                        // (and with no invoiceId either, since this is a raw
+                        // job charge), stripe-action.ts had nothing to resolve
+                        // the real business from and fell back to the
+                        // platform-wide key — the wrong Stripe account, or a
+                        // hard failure if no platform key is set at all.
+                        await chargeSavedPaymentMethod(customer.stripeCustomerId!, chargeCardId, Math.round((Number(job.amount) || 0) * 100), "usd", `Job payment — ${job.address || ""}`, undefined, (job as any).owner_id);
+                        toast(`Charged ${fmt(job.amount)} to card on file ✓`, "green");
+                        setCompleteStep("tip");
+                      } catch (e: any) {
+                        toast("Charge failed: " + (e?.message || "unknown error"), "red");
+                      } finally {
+                        setChargingCardNow(false);
+                      }
+                    }}
+                    disabled={chargingCardNow}
+                    className="w-full py-3 rounded-xl border-2 border-emerald-600/50 bg-emerald-950/30 text-emerald-300 font-semibold hover:bg-emerald-900/40 transition flex items-center justify-center gap-1.5"
+                  >
+                    <CreditCard size={14} />{chargingCardNow ? "Charging…" : `Charge ${fmt(job.amount)} to card on file${jobCards.length <= 1 ? ` (${customer.savedPaymentMethodLabel || "saved"})` : ""}`}
+                  </button>
+                </div>
               )}
               <div className="grid grid-cols-2 gap-2">
                 {["Cash", "Check", "Card", "Zelle", "Venmo", "Other"].map(m => (

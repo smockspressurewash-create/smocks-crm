@@ -216,6 +216,29 @@ export function AIModelsSection({ f, setF, modelStatus, setModelStatus, employee
                 </div>
               </div>
             )}
+            {/* FEATURE — "let owners toggle whether Alfred sends normal
+                text or voice memos." Free — Cloudflare Workers AI's
+                built-in TTS model, no ElevenLabs key, standard voice
+                (no cloning). "Ask" is the middle ground: stays text
+                unless that specific message asked for a voice memo
+                ("send that as a voice memo", "say it instead", etc). */}
+            {f.alfredSmsEnabled && (
+              <div className="mt-3 pt-3 border-t border-white/10">
+                <div className="text-[11px] font-semibold text-white/70 mb-1 flex items-center gap-1.5"><Volume2 size={12} />Voice replies over text</div>
+                <div className="text-[10px] text-white/40 mb-2">Free — no extra API key needed, standard voice (not a clone of yours).</div>
+                <div className="grid grid-cols-3 gap-1.5">
+                  {([
+                    { key: "off", label: "Text only" },
+                    { key: "ask", label: "Only if I ask" },
+                    { key: "always", label: "Always voice" },
+                  ] as const).map(opt => (
+                    <button key={opt.key} onClick={() => setF({ ...f, alfredVoiceReplies: opt.key })} className={"py-1.5 rounded-lg text-[11px] font-medium transition border " + ((f.alfredVoiceReplies || "off") === opt.key ? "bg-red-900/40 border-red-600/50 text-white" : "bg-white/5 border-white/10 text-white/50 hover:text-white/80")}>
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         </div>
       </Glass>

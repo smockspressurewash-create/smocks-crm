@@ -317,7 +317,7 @@ const findJob = async (ctx: Ctx, { jobId, customerName, dateHint }: { jobId?: st
 // keep showing that customer's own name, not "Alfred"). Every Alfred-sent
 // message still carries `via: "alfred"` regardless, so the Inbox can badge
 // it as "from Alfred" in ANY thread, customer or owner.
-export const sendAlfredSms = async (ctx: Ctx, toPhone: string, body: string): Promise<{ ok: boolean; error?: string }> => sendSms(ctx, toPhone, body, true);
+export const sendAlfredSms = async (ctx: Ctx, toPhone: string, body: string, mediaUrl?: string): Promise<{ ok: boolean; error?: string }> => sendSms(ctx, toPhone, body, true, undefined, mediaUrl);
 
 // `contact` — the real customer name/id behind toPhone, when the caller
 // already looked one up (nearly every non-owner send does). Without this,

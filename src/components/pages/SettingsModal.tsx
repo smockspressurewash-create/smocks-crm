@@ -361,7 +361,13 @@ export function SettingsModal({ open, onClose, settings, setSettings, jobs = [],
     : [
         { key: "profile", label: "My Profile", icon: User },
         { key: "api", label: "API Keys", icon: Key },
-        { key: "models", label: "AI Models", icon: Bot },
+        // BUG FIX (user report) — "I'm not seeing a settings section for
+        // Alfred; there should be a dedicated section." This tab already
+        // WAS Alfred's settings (model keys, text-Alfred toggle, phone
+        // numbers, and now voice replies) — it was just labeled "AI
+        // Models," which doesn't read as "the Alfred settings" to someone
+        // looking for it by name.
+        { key: "models", label: "Alfred", icon: Bot },
         { key: "company", label: "Company", icon: Settings },
         { key: "services", label: "Services", icon: Briefcase },
         { key: "goals", label: "Goals", icon: Target },
