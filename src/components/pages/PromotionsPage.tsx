@@ -27,6 +27,11 @@ export function PromotionsPage({ promotions = [], setPromotions = (() => {}) as 
   const [busy, setBusy] = useState(false);
 
   const companyName = settings?.companyName || "Crew Boss";
+  // BUG FIX — the claim/book link below used to point at #/customers, the
+  // owner CRM's own authenticated page. A customer clicking it hit a login
+  // wall instead of anything they could actually use. #/lead-form is the
+  // real public, no-login "request a quote" page (see LeadFormPage.tsx).
+  const claimLink = `${window.location.origin}${window.location.pathname}#/lead-form?co=${encodeURIComponent(companyName)}&ph=${encodeURIComponent((settings as any)?.companyPhone || "")}`;
 
   const matchAudience = (p: Promotion): Customer[] => {
     if (p.audience === "all") return customers;
@@ -49,13 +54,12 @@ export function PromotionsPage({ promotions = [], setPromotions = (() => {}) as 
       <p style="font-size:14px;color:#444">${p.description || `Enjoy ${discountLabel(p)} on your next service with ${companyName}!`}</p>
       <p style="font-size:12px;color:#888">Valid ${p.validFrom} through ${p.validTo}${p.usageLimit ? ` · Limited to ${p.usageLimit} uses` : ""}</p>
     `;
-    return emailShell(settings, p.name, body + emailButton("Claim This Offer", `${window.location.origin}${window.location.pathname}#/customers`));
+    return emailShell(settings, p.name, body + emailButton("Claim This Offer", claimLink));
   };
 
   const promoSms = (p: Promotion, cust: Customer) => {
     const line = p.description || `${discountLabel(p)} on your next service with ${companyName}`;
-    const link = `${window.location.origin}${window.location.pathname}#/customers`;
-    return `Hi ${cust.firstName}! ${line} — valid through ${p.validTo}. Book here: ${link} — ${companyName}`;
+    return `Hi ${cust.firstName}! ${line} — valid through ${p.validTo}. Book here: ${claimLink} — ${companyName}`;
   };
 
   const send = async (p: Promotion) => {

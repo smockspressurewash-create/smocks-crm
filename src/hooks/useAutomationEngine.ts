@@ -36,24 +36,24 @@ const SMS_TEMPLATES: Record<string, string> = {
   payment_overdue_3:    "Hi {{first_name}}, friendly reminder — your Crew Boss invoice for {{amount}} is due. Pay here: {{payment_link}}",
   payment_overdue_7:    "Hi {{first_name}}, your Crew Boss invoice for {{amount}} is now a week overdue. Pay here: {{payment_link}}",
   payment_overdue_14:   "Hi {{first_name}}, your invoice for {{amount}} is 2+ weeks overdue. Please pay at your earliest convenience: {{payment_link}} — Crew Boss",
-  maintenance_reminder: "Hi {{first_name}}, it's been 90 days since your last Crew Boss service — ready for a refresh? Reply BOOK or call (717) 555-0100.",
-  birthday:             "Hi {{first_name}}! Happy birthday 🎂 Enjoy 10% off your next service — code BDAY10. — Crew Boss",
-  seasonal_spring:      "Hi {{first_name}}, spring is here! Book your house or driveway soft wash this month and save 15% — reply BOOK. — Crew Boss",
-  seasonal_fall:        "Hi {{first_name}}, protect your home this fall — clogged gutters cause ice dams & water damage. Reply GUTTERS to book. — Crew Boss",
-  abandoned_estimate_1: "Hi {{first_name}}, just checking in on your Crew Boss estimate for {{amount}}. Any questions? Reply BOOK to schedule.",
-  abandoned_estimate_2: "Hi {{first_name}}, still thinking it over? Your Crew Boss estimate for {{amount}} is ready whenever you are — reply BOOK.",
-  abandoned_estimate_3: "Hi {{first_name}}, last check-in on your {{amount}} estimate — reply BOOK to schedule, or let us know if you have questions. — Crew Boss",
-  reengage:             "Hi {{first_name}}, it's been 6 months since your last Crew Boss service! Book now and save 10% — reply BOOK.",
-  referral_ask:         "Hi {{first_name}}, thanks for being a loyal Crew Boss customer! Know anyone who could use a wash? Refer them and you both save — reply REFER.",
-  referral_reward:      "Hi {{first_name}}, your referral just booked — you've earned ${{reward}} credit toward your next Crew Boss service! 🎉",
+  maintenance_reminder: "Hi {{first_name}}, it's been 90 days since your last Crew Boss service — ready for a refresh? Book here: {{booking_link}}",
+  birthday:             "Hi {{first_name}}! Happy birthday 🎂 Enjoy 10% off your next service — code BDAY10. Book here: {{booking_link}} — Crew Boss",
+  seasonal_spring:      "Hi {{first_name}}, spring is here! Book your house or driveway soft wash this month and save 15%: {{booking_link}} — Crew Boss",
+  seasonal_fall:        "Hi {{first_name}}, protect your home this fall — clogged gutters cause ice dams & water damage. Book here: {{booking_link}} — Crew Boss",
+  abandoned_estimate_1: "Hi {{first_name}}, just checking in on your Crew Boss estimate for {{amount}}. Any questions? View & approve here: {{payment_link}}",
+  abandoned_estimate_2: "Hi {{first_name}}, still thinking it over? Your Crew Boss estimate for {{amount}} is ready whenever you are: {{payment_link}}",
+  abandoned_estimate_3: "Hi {{first_name}}, last check-in on your {{amount}} estimate — view & approve here: {{payment_link}}, or let us know if you have questions. — Crew Boss",
+  reengage:             "Hi {{first_name}}, it's been 6 months since your last Crew Boss service! Book now and save 10%: {{booking_link}}",
+  referral_ask:         "Hi {{first_name}}, thanks for being a loyal Crew Boss customer! Know anyone who could use a wash? Refer them and you both save: {{referral_link}}",
+  referral_reward:      "Hi {{first_name}}, your referral just booked — you've earned ${{reward}} credit toward your next Crew Boss service! 🎉 {{booking_link}}",
   referral_booked:      "Hi {{first_name}}, your referral just booked their first Crew Boss service! Thank you for spreading the word 🎉",
-  anniversary:          "Hi {{first_name}}, happy anniversary with Crew Boss! Thanks for trusting us — enjoy 10% off your next service this month. Reply BOOK.",
-  estimate_declined:    "Hi {{first_name}}, no problem on passing for now — if the price was the sticking point, reply BUDGET and we'll see what we can do. Your quote for {{amount}} stays on file. — Crew Boss",
-  estimate_expired:     "Hi {{first_name}}, your Crew Boss quote for {{amount}} has expired. Want us to re-issue it at the same price? Reply YES: {{payment_link}}",
-  job_cancelled:        "Hi {{first_name}}, sorry we missed you! Want to get back on the schedule? Reply BOOK and we'll find a new time. — Crew Boss",
-  first_job_welcome:    "Hi {{first_name}}, thanks for your first job with Crew Boss! Save this number — text us anytime for a quote or to book your next service. — Will",
-  vip_thank_you:        "Hi {{first_name}}, you're one of our best customers — thank you! Enjoy 10% off your next Crew Boss service, on us. Reply BOOK. — Will",
-  recurring_due:        "Hi {{first_name}}, your recurring Crew Boss service is coming due. Want us to put you back on the schedule? Reply BOOK. — Crew Boss",
+  anniversary:          "Hi {{first_name}}, happy anniversary with Crew Boss! Thanks for trusting us — enjoy 10% off your next service this month: {{booking_link}}",
+  estimate_declined:    "Hi {{first_name}}, no problem on passing for now — if the price was the sticking point, reply BUDGET and we'll see what we can do. Your quote for {{amount}} stays on file, view it here: {{payment_link}} — Crew Boss",
+  estimate_expired:     "Hi {{first_name}}, your Crew Boss quote for {{amount}} has expired. Want us to re-issue it at the same price? View it here: {{payment_link}}",
+  job_cancelled:        "Hi {{first_name}}, sorry we missed you! Want to get back on the schedule? Book here: {{booking_link}} — Crew Boss",
+  first_job_welcome:    "Hi {{first_name}}, thanks for your first job with Crew Boss! Save this number — text us anytime, or book your next service here: {{booking_link}} — Will",
+  vip_thank_you:        "Hi {{first_name}}, you're one of our best customers — thank you! Enjoy 10% off your next Crew Boss service, on us. Book here: {{booking_link}} — Will",
+  recurring_due:        "Hi {{first_name}}, your recurring Crew Boss service is coming due. Want us to put you back on the schedule? Book here: {{booking_link}} — Crew Boss",
   owner_reschedule:     "Heads up {{first_name}} — {{customer_name}} requested a reschedule for the job at {{job_address}} on {{date}}. Note: {{reschedule_note}}",
   owner_unassigned:     "Heads up {{first_name}} — the job for {{customer_name}} at {{job_address}} on {{date}} still has nobody assigned to it.",
 };
@@ -433,6 +433,28 @@ export function useAutomationEngine({
   // inventing a second referral-link scheme.
   const referralLink = (c: Customer) =>
     `${window.location.origin}${window.location.pathname}#/referral?ref=${encodeURIComponent(c.referralCode || "")}`;
+  // Public self-serve quote request page (LeadFormPage.tsx) — the real
+  // destination behind every "reply BOOK" template (reengage, seasonal,
+  // maintenance, vip/anniversary/birthday, recurring_due, job_cancelled).
+  // Those previously asked the customer to text back a keyword with no
+  // actual link to click.
+  const bookingLink = (settings: AppSettings) =>
+    `${window.location.origin}${window.location.pathname}#/lead-form?co=${encodeURIComponent((settings as any).companyName ?? "Crew Boss")}&ph=${encodeURIComponent((settings as any).companyPhone ?? "")}`;
+  // Finds whatever link buildMessage already substituted into the message
+  // text and turns it into a real clickable button in the email, with a
+  // label matched to the destination so it reads as an action, not a
+  // generic "Click here."
+  const emailCta = (body: string): string => {
+    const m = body.match(/https?:\/\/\S+/);
+    if (!m) return "";
+    const url = m[0].replace(/[.,)]+$/, "");
+    let label = "View Details";
+    if (url.includes("#/estimate/")) label = "View & Approve Estimate";
+    else if (url.includes("#/rate")) label = "Leave a Review";
+    else if (url.includes("#/referral")) label = "Refer a Friend";
+    else if (url.includes("#/lead-form")) label = "Book Now";
+    return emailButton(label, url);
+  };
 
   // ── Owner/employee pseudo-recipients ──────────────────────────────────────
   // sendOne/buildMessage only know how to address a Candidate's `customer`
@@ -480,6 +502,11 @@ export function useAutomationEngine({
       // estimate is present on the candidate means every current and future
       // estimate-related automation gets a working link for free.
       payment_link: cand.estimate ? paymentLink(cand.estimate.id) : "",
+      // Same reasoning as payment_link above — default this for every send
+      // so any "reply BOOK"-style template gets a real clickable link for
+      // free instead of relying on each template author to remember it.
+      booking_link: bookingLink(settings),
+      referral_link: referralLink(cand.customer),
       reward: "",
       company_phone: (settings as any).companyPhone || (settings as any).twilioFrom || "",
       ...(spec.extraVars ? spec.extraVars(cand) : {}),
@@ -577,10 +604,13 @@ export function useAutomationEngine({
         // BUG FIX — "the email should have a nice-looking UI and a
         // follow-up button." emailShell already gives branded HTML; what
         // was missing was any actual button — a customer-facing automated
-        // email about an estimate previously rendered as plain text with no
-        // way to act on it. Any candidate carrying an estimate gets a real
-        // "View & Approve Estimate" button appended automatically.
-        const ctaHtml = cand.estimate ? emailButton("View & Approve Estimate", paymentLink(cand.estimate.id)) : "";
+        // email previously rendered as plain text with no way to act on it.
+        // Detecting the first link already embedded in the SMS/email body
+        // (payment_link / review_link / referral_link / booking_link are
+        // all defaulted in buildMessage's vars now) means every template —
+        // present and future — gets a real button for free instead of
+        // requiring category-specific branching here.
+        const ctaHtml = emailCta(body);
         await sendOwnerGmailOnly(settings as any, c.email, subject, emailShell(settings as any, subject, `<p>${body.replace(/\n/g, "<br/>")}</p>${ctaHtml}`));
         onSent();
         toast(`📧 ${auto.name} → ${c.firstName}`);
@@ -616,7 +646,8 @@ export function useAutomationEngine({
           console.warn(`[Automations] Twilio not configured — falling back to email for ${auto.name}`);
         }
         try {
-          await sendOwnerGmailOnly(settings as any, c.email, subject, emailShell(settings as any,subject, `<p>${body.replace(/\n/g, "<br/>")}</p>`));
+          const ctaHtml = emailCta(body);
+          await sendOwnerGmailOnly(settings as any, c.email, subject, emailShell(settings as any,subject, `<p>${body.replace(/\n/g, "<br/>")}</p>${ctaHtml}`));
           onSent();
           toast(`📧 ${auto.name} → ${c.firstName} (SMS unavailable — sent via email)`);
           return true;
