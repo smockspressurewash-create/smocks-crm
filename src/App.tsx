@@ -4155,7 +4155,14 @@ export function App() {
         // owner choose a customer first — most recent open quote / unpaid
         // invoice / any invoice, across ALL customers, sorted newest first.
         const sortedEstimates = [...estimates].sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""));
-        const latestQuote = sortedEstimates.find(e => !(e as any).invoiced);
+        // BUG FIX — picking any non-invoiced estimate regardless of status
+        // could grab one already signed/approved, and ClientPortal only
+        // shows the Review/Sign action when status is still "pending" — so
+        // an already-approved quote rendered a dead-end view with nothing
+        // to click, which read as "jumps straight to the end." Prefer a
+        // genuinely still-pending quote so the walkthrough has steps to
+        // actually walk through; falls back to any quote if none are pending.
+        const latestQuote = sortedEstimates.find(e => !(e as any).invoiced && (!e.status || e.status === "pending")) || sortedEstimates.find(e => !(e as any).invoiced);
         const latestUnpaidInvoice = sortedEstimates.find(e => (e as any).invoiced && !e.paidAt);
         const latestInvoice = sortedEstimates.find(e => (e as any).invoiced);
         const demoBtnClass = "w-full text-left px-3 py-2.5 rounded-xl bg-white/5 hover:bg-white/10 disabled:opacity-30 disabled:cursor-not-allowed text-sm text-white/80 flex items-center justify-between transition";
@@ -4197,7 +4204,7 @@ export function App() {
       {clientDemoReviewOpen && (
         <div className="fixed inset-0 z-[200] bg-black overflow-y-auto">
           <button onClick={() => setClientDemoReviewOpen(false)} className="fixed top-4 right-4 z-[210] p-2 rounded-lg bg-white/10 hover:bg-white/20 text-white border border-white/15"><X size={18} /></button>
-          <CustomerReviewPage overrides={{ n: "there", co: (settings as any)?.companyName || "Crew Boss" }} />
+          <CustomerReviewPage overrides={{ n: "there", co: (settings as any)?.companyName || "Crew Boss", rl: (settings as any)?.googleReviewLink || "", g: (settings as any)?.googlePlaceId || "" }} />
         </div>
       )}
 
@@ -4208,7 +4215,7 @@ export function App() {
       {clientDemoLoginOpen && (
         <div className="fixed inset-0 z-[200] bg-black overflow-y-auto">
           <button onClick={() => setClientDemoLoginOpen(false)} className="fixed top-4 right-4 z-[210] p-2 rounded-lg bg-white/10 hover:bg-white/20 text-white border border-white/15"><X size={18} /></button>
-          <ClientAuthPortal customers={customers} setCustomers={setCustomers} estimates={estimates} setEstimates={setEstimates} jobs={jobs} settings={settings} estimateTemplates={estimateTemplates} toast={toast} />
+          <ClientAuthPortal customers={customers} setCustomers={setCustomers} estimates={estimates} setEstimates={setEstimates} jobs={jobs} settings={settings} estimateTemplates={estimateTemplates} toast={toast} demoMode onExitDemo={() => setClientDemoLoginOpen(false)} />
         </div>
       )}
 

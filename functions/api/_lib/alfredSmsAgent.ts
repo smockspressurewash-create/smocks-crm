@@ -364,7 +364,10 @@ const sendSms = async (ctx: Ctx, toPhone: string, bodyRaw: string, isOwnerReply 
     // outgoing message the owner sent themselves, with no way to tell them
     // apart. `via: "alfred"` lets the UI badge it "Alfred" regardless of
     // which thread it lands in.
-    const msg = { id: crypto.randomUUID(), dir: "out", body, ts: Date.now(), via: "alfred" };
+    // BUG FIX — Alfred's own outbound voice-memo replies never logged their
+    // mediaUrl either, so even the reply half of the conversation showed as
+    // a blank/silent bubble in the owner's Inbox with nothing to play back.
+    const msg = { id: crypto.randomUUID(), dir: "out", body, ts: Date.now(), via: "alfred", ...(mediaUrl ? { mediaUrl, mediaType: "audio/mpeg" } : {}) };
     if (existing) {
       const patch: Record<string, unknown> = { messages: [...(existing.messages || []), msg], last_message_at: msg.ts, updated_at: new Date().toISOString() };
       // Backfill a real name/customer_id onto a thread that was previously

@@ -385,6 +385,25 @@ const uploadInboundMedia = async (serviceRoleKey: string, mediaBuf: ArrayBuffer,
   }
 };
 
+// BUG FIX — Twilio's own MediaUrl0 requires Basic Auth (twilioSid:twilioToken)
+// to fetch, so storing it directly on an inbox_threads message and pointing
+// an <audio>/<img> tag at it from the browser silently fails (no way to pass
+// Basic Auth via a plain src=). Downloads it once here (with the required
+// auth) and re-hosts it through uploadInboundMedia's public bucket, so the
+// Inbox can actually play/display it with a normal src=.
+const rehostInboundMediaForInbox = async (mediaUrl: string, contentType: string, twilioSid: string, twilioToken: string, serviceRoleKey: string, ownerId: string | null): Promise<string | null> => {
+  try {
+    const res = await fetch(mediaUrl, { headers: { Authorization: `Basic ${btoa(`${twilioSid}:${twilioToken}`)}` } });
+    if (!res.ok) return null;
+    const buf = await res.arrayBuffer();
+    const uploaded = await uploadInboundMedia(serviceRoleKey, buf, contentType, ownerId);
+    return uploaded?.url || null;
+  } catch (e: any) {
+    console.warn("[TwilioSmsWebhook] rehostInboundMediaForInbox failed:", e?.message);
+    return null;
+  }
+};
+
 // Falls back to the plain text body whenever there's no audio, no working
 // transcription path, or the transcription call itself fails — Alfred still
 // gets SOMETHING to respond to rather than the whole request silently dying.
@@ -574,7 +593,24 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
           const msgId = params.MessageSid || crypto.randomUUID();
           const alreadyHave = existingThread && (Array.isArray(existingThread.messages) ? existingThread.messages : []).some((m: any) => m?.id === msgId);
           if (alreadyHave) return;
-          const newMsg = { id: msgId, sid: params.MessageSid || null, dir: "in", body: bodyRaw, ts: Date.now() };
+          // BUG FIX — a voice-memo MMS (or a photo/PDF) has an empty Body,
+          // never carried any media reference into the logged message at
+          // all — the Inbox showed a literal blank entry with nothing to
+          // tap, silently dropping the actual attachment. Re-hosted through
+          // rehostInboundMediaForInbox (Twilio's MediaUrl0 needs Basic Auth
+          // to fetch, which a plain <audio src=> can't do) so InboxPage.tsx
+          // can actually play/display it.
+          const inNumMedia = Number(params.NumMedia || "0");
+          const inMediaType = inNumMedia > 0 ? (params.MediaContentType0 || "") : "";
+          const inMediaUrl = inNumMedia > 0 && params.MediaUrl0
+            ? await rehostInboundMediaForInbox(params.MediaUrl0, inMediaType, twilioSid, twilioToken, context.env.SUPABASE_SERVICE_ROLE_KEY, ownerId)
+            : null;
+          const newMsg = {
+            id: msgId, sid: params.MessageSid || null, dir: "in",
+            body: bodyRaw || (inMediaUrl ? (inMediaType.startsWith("audio/") ? "[voice memo]" : inMediaType.startsWith("image/") ? "[photo]" : "[attachment]") : ""),
+            ts: Date.now(),
+            ...(inMediaUrl ? { mediaUrl: inMediaUrl, mediaType: inMediaType } : {}),
+          };
           if (existingThread) {
             await fetch(`${SUPABASE_URL}/rest/v1/inbox_threads?id=eq.${encodeURIComponent(existingThread.id)}`, {
               method: "PATCH", headers: { ...authHeaders, "Content-Type": "application/json", Prefer: "return=minimal" },
@@ -775,7 +811,20 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
       // message — Date.now() here vs. Twilio's own DateSent on the poll
       // side — so a body+ts dedup check could never reliably catch this).
       const msgId = params.MessageSid || crypto.randomUUID();
-      const newMsg = { id: msgId, sid: params.MessageSid || null, dir: "in", body: bodyRaw, ts: Date.now() };
+      // BUG FIX — see rehostInboundMediaForInbox's comment above: a
+      // voice-memo/photo/PDF MMS logged with an empty body and no media
+      // reference showed as a literal blank message in the Inbox.
+      const inNumMedia2 = Number(params.NumMedia || "0");
+      const inMediaType2 = inNumMedia2 > 0 ? (params.MediaContentType0 || "") : "";
+      const inMediaUrl2 = inNumMedia2 > 0 && params.MediaUrl0
+        ? await rehostInboundMediaForInbox(params.MediaUrl0, inMediaType2, twilioSid, twilioToken, context.env.SUPABASE_SERVICE_ROLE_KEY, ownerId)
+        : null;
+      const newMsg = {
+        id: msgId, sid: params.MessageSid || null, dir: "in",
+        body: bodyRaw || (inMediaUrl2 ? (inMediaType2.startsWith("audio/") ? "[voice memo]" : inMediaType2.startsWith("image/") ? "[photo]" : "[attachment]") : ""),
+        ts: Date.now(),
+        ...(inMediaUrl2 ? { mediaUrl: inMediaUrl2, mediaType: inMediaType2 } : {}),
+      };
       const alreadyHave = existingThread && (Array.isArray(existingThread.messages) ? existingThread.messages : []).some((m: any) => m?.id === msgId);
       if (alreadyHave) {
         console.log("[TwilioSmsWebhook] message", msgId, "already recorded — skipping duplicate insert");

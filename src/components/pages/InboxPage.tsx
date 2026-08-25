@@ -1117,6 +1117,21 @@ export function InboxPage({ threads = [], setThreads, customers = [], setCustome
                     </div>
                   )}
                   <div className={"px-4 py-2.5 rounded-2xl text-sm whitespace-pre-wrap select-text " + (isOut ? "bg-gradient-to-br from-red-600 to-red-800 text-white rounded-br-sm" : "bg-black/50 border border-red-900/30 text-white/90 rounded-bl-sm")}>
+                    {/* BUG FIX — a voice memo/photo/PDF sent to/from this
+                        thread used to log with an empty body and no media
+                        reference at all, showing as a blank bubble with
+                        nothing to interact with. */}
+                    {(m as any).mediaUrl && (m as any).mediaType?.startsWith("audio/") && (
+                      <audio controls preload="none" src={(m as any).mediaUrl} className="max-w-full mb-1" style={{ height: 32 }} />
+                    )}
+                    {(m as any).mediaUrl && (m as any).mediaType?.startsWith("image/") && (
+                      <a href={(m as any).mediaUrl} target="_blank" rel="noopener noreferrer">
+                        <img src={(m as any).mediaUrl} alt="attachment" className="max-w-full rounded-lg mb-1" style={{ maxHeight: 220 }} />
+                      </a>
+                    )}
+                    {(m as any).mediaUrl && !(m as any).mediaType?.startsWith("audio/") && !(m as any).mediaType?.startsWith("image/") && (
+                      <a href={(m as any).mediaUrl} target="_blank" rel="noopener noreferrer" className="underline text-blue-300 block mb-1">📎 View attachment</a>
+                    )}
                     {m.body}
                   </div>
                   <div className={"text-[9px] mt-1 flex items-center gap-1 " + (isOut ? "justify-end text-white/40" : "text-white/30")}>

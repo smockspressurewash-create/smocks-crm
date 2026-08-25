@@ -24,10 +24,22 @@ export function ClientAuthPortal({
   customers = [], setCustomers = (() => {}) as any,
   estimates = [], setEstimates = (() => {}) as any,
   jobs = [], settings = {} as AppSettings, estimateTemplates = [], toast = (() => {}) as any,
+  demoMode = false, onExitDemo = () => {},
 }: {
   customers?: Customer[]; setCustomers?: any;
   estimates?: Estimate[]; setEstimates?: any;
   jobs?: Job[]; settings?: AppSettings; estimateTemplates?: any[]; toast?: any;
+  // FEATURE — App.tsx's "Test the Full Client Portal" demo renders this
+  // component INLINE inside the owner's own already-authenticated tab, which
+  // shares the same Supabase client singleton as the owner's real session.
+  // Without demoMode, this component's own real session check (below) finds
+  // the OWNER'S session, and BUG 10's staff-bounce effect immediately
+  // hash-redirects back to the dashboard — which is exactly why the demo
+  // button looked like it "did nothing." demoMode skips the real auth/
+  // session machinery entirely and renders the logged-in portal UI directly
+  // from real jobs/estimates/customers already in memory, and reroutes Sign
+  // Out to just closing the demo instead of actually signing the owner out.
+  demoMode?: boolean; onExitDemo?: () => void;
 }) {
   const [session, setSession] = useState<any>(null);
   const [checked, setChecked] = useState(false);
@@ -191,6 +203,7 @@ export function ClientAuthPortal({
   };
 
   useEffect(() => {
+    if (demoMode) { setChecked(true); return; }
     (async () => {
       const { data } = await supabase.auth.getSession();
       setSession(data.session || null);
@@ -198,17 +211,37 @@ export function ClientAuthPortal({
     })();
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, s) => setSession(s));
     return () => subscription.unsubscribe();
-  }, []);
+  }, [demoMode]);
 
   // Fetch (or re-fetch, e.g. right after signup/login flips `session`) the
   // customer's own portal data whenever a session becomes available.
   useEffect(() => {
+    if (demoMode) return;
     if (session?.user?.email) fetchPortalData();
     else setPortalData(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [session?.user?.id]);
+  }, [session?.user?.id, demoMode]);
 
-  const active = portalData?.accounts?.[activeIdx] || null;
+  // demoMode builds its "logged in" account straight from the real
+  // jobs/estimates/customers already loaded in the owner's CRM session,
+  // instead of the real get_customer_portal_data fetch (which resolves the
+  // caller's OWN customer record — the owner isn't a customer, so that call
+  // would just come back empty). Picks whichever customer actually has data
+  // to show, so the walkthrough isn't just an empty shell.
+  const demoAccount: PortalAccount | null = (() => {
+    if (!demoMode) return null;
+    const withData = [...customers].sort((a: any, b: any) => (b.createdAt || "").localeCompare(a.createdAt || ""));
+    const pick = withData.find(c => estimates.some(e => e.customerId === c.id) || jobs.some(j => j.customerId === c.id)) || withData[0];
+    if (!pick) return null;
+    return {
+      customer: pick,
+      jobs: jobs.filter(j => j.customerId === pick.id),
+      estimates: estimates.filter(e => e.customerId === pick.id),
+      settings: { stripePublishableKey: (settings as any)?.stripePublishableKey, stripeAccountId: (settings as any)?.stripeAccountId, companyName: (settings as any)?.companyName },
+    };
+  })();
+
+  const active = demoMode ? demoAccount : (portalData?.accounts?.[activeIdx] || null);
   const cust = active?.customer || null;
 
   // Real brand/last4 for the saved-card display below (closes the TODO left
@@ -250,7 +283,7 @@ export function ClientAuthPortal({
   // configured email, or a row in the employees table) and bounce them to the
   // main app instead of showing the customer setup screen.
   useEffect(() => {
-    if (!checked || !session?.user?.email || cust) return;
+    if (demoMode || !checked || !session?.user?.email || cust) return;
     const email = session.user.email.toLowerCase();
     const ownerEmail = ((settings as any)?.myEmail || (settings as any)?.companyEmail || "").toLowerCase();
     if (ownerEmail && email === ownerEmail) {
@@ -294,7 +327,13 @@ export function ClientAuthPortal({
     }
   };
 
-  const signOut = async () => { await supabase.auth.signOut({ scope: "local" }); setSession(null); };
+  const signOut = async () => {
+    // GUARD — this shares the same Supabase client as the owner's real CRM
+    // session; in demoMode a real signOut would sign the OWNER out. Just
+    // close the demo overlay instead.
+    if (demoMode) { onExitDemo(); return; }
+    await supabase.auth.signOut({ scope: "local" }); setSession(null);
+  };
 
   const handleForgotPassword = async () => {
     setAuthError("");
@@ -321,12 +360,24 @@ export function ClientAuthPortal({
   // logged in; the prop/generic fallback only matters pre-login.
   const companyName = active?.settings?.companyName || settings?.companyName || "Crew Boss";
 
-  if (!checked || (session?.user?.email && portalData === null)) {
+  if (!demoMode && (!checked || (session?.user?.email && portalData === null))) {
     return <div className="min-h-screen bg-black flex items-center justify-center text-white/40 text-sm">Loading…</div>;
   }
 
+  if (demoMode && !demoAccount) {
+    return (
+      <div className="min-h-screen bg-black flex items-center justify-center p-4 text-center">
+        <div className="max-w-sm space-y-3">
+          <div className="text-white/60 font-semibold">No customer with jobs or quotes yet to preview</div>
+          <div className="text-sm text-white/40">Create a customer with at least one quote or job, then try this demo again.</div>
+          <GBtn onClick={onExitDemo}>Close</GBtn>
+        </div>
+      </div>
+    );
+  }
+
   // ── Logged out — login / signup form ──────────────────────────────────────
-  if (!session) {
+  if (!demoMode && !session) {
     return (
       <div className="min-h-screen bg-black flex items-center justify-center p-4">
         <div className="w-full max-w-sm space-y-5">

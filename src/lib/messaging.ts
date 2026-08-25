@@ -503,12 +503,14 @@ const encodeMimeSubject = (subject: string): string => {
 // BUG FIX — outgoing owner emails had no display name on the From header at
 // all (just the bare Gmail address), so recipients saw whatever profile name
 // happens to be set on the connected Google account — which could be
-// anything (a personal name, an old business name, etc.), not the brand
-// name this app should present consistently. Explicitly the PLATFORM brand
-// ("Crew Boss"), not settings.companyName (the owner's own pressure-washing
-// business name) — the owner asked for this specifically, so the sender
-// name is stable and correct regardless of what's configured in Settings →
-// Company or which Google account happens to be connected.
+// anything (a personal name, an old business name, etc.), not a name the
+// customer recognizes. This used to hardcode the PLATFORM brand ("Crew
+// Boss") here regardless of Settings → Company — a customer receiving a
+// review request or invoice email from "Crew Boss" instead of the actual
+// business they hired (e.g. "Smock's Pressure Washing") read as broken/
+// confusing, and the owner asked for this fixed. Callers now pass the
+// owner's real companyName; this constant is only the fallback for a
+// deployment that hasn't set one yet.
 export const EMAIL_FROM_NAME = "Crew Boss";
 
 // Builds a proper `"Name" <email>` header; the quoted-string name is
@@ -849,7 +851,7 @@ export const sendOwnerGmailOnly = async (
     // row (see setStoredGoogleToken) so every device — not just this one —
     // has the current token for its next send.
     onTokenRefreshed: (token, expiresAt) => setStoredGoogleToken(token, expiresAt, email),
-    fromName: EMAIL_FROM_NAME,
+    fromName: (settings as any)?.companyName || EMAIL_FROM_NAME,
   });
 };
 
@@ -915,7 +917,7 @@ export const sendEmail = async (
     tokenExpiresAt,
     backendUrl: settings.googleBackendUrl,
     onTokenRefreshed: (token, expiresAt) => setStoredGoogleToken(token, expiresAt, email),
-    fromName: EMAIL_FROM_NAME,
+    fromName: (settings as any)?.companyName || EMAIL_FROM_NAME,
   });
 };
 
