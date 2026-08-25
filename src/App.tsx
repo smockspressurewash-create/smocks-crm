@@ -800,6 +800,16 @@ export function App() {
     if (window.location.hash.includes("invite=")) return;
     if (window.location.hash.includes("type=recovery")) return;
     if (page === "estimate") return; // keep the #/estimate/ID the link carried — don't strip the id
+    // BUG FIX — "lead intake form colors don't apply" (and, unreported but
+    // same root cause, company name/phone also silently reverting to
+    // defaults). This effect rewrote the hash to a bare "/lead-form" the
+    // instant the page loaded, wiping every query param — oid/co/ph/bg/btn/
+    // text — before the page's own hashParam() reads could matter on
+    // re-render. Same bug applies to every other public link-based landing
+    // page that carries its own query params: #/rate (c/n/g/rl/co),
+    // #/trash-cans (co/ph/cost/min/freq/pk), #/apply (oid/co), #/referral
+    // (ref). "estimate" above already got this exact fix; these were missed.
+    if (["lead-form", "rate", "trash-cans", "apply", "referral"].includes(page)) return;
     window.location.hash = "/" + page;
   }, [page]);
 
