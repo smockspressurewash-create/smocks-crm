@@ -160,19 +160,26 @@ export interface StripePaymentIntent {
   id: string;
   client_secret: string;
   status: string;
+  // Only present when `saveCard` was requested and the server could resolve
+  // a real customer to attach the card to (requires invoiceId — see
+  // stripe-action.ts's resolveInvoiceCustomerForSave).
+  stripeCustomerId?: string;
+  crmCustomerId?: string;
 }
 
 export const createPaymentIntent = async (
   amountCents: number,
   currency: string,
   description: string,
-  metadata?: Record<string, string>
+  metadata?: Record<string, string>,
+  saveCard?: boolean
 ): Promise<StripePaymentIntent> =>
   stripeAction("create_payment_intent", {
     amountCents,
     currency,
     description,
     invoiceId: metadata?.invoiceId,
+    saveCard: !!saveCard,
   });
 
 export const retrievePaymentIntent = async (id: string): Promise<StripePaymentIntent> =>

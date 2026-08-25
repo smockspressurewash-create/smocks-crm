@@ -11,7 +11,7 @@ import { GBtn } from "./GBtn";
 // client_secret, and confirms payment in-place without leaving the page.
 export function StripePaymentModal({
   open, onClose, publishableKey, stripeAccountId, amount, currency = "usd", description = "",
-  onSuccess, invoiceId,
+  onSuccess, invoiceId, allowSaveCard = false,
 }: {
   open: boolean; onClose: () => void;
   publishableKey: string;
@@ -19,10 +19,24 @@ export function StripePaymentModal({
   // comment. Undefined/omitted is a safe no-op for a legacy manual-key owner.
   stripeAccountId?: string;
   amount: number; currency?: string; description?: string;
-  onSuccess: (paymentIntentId: string) => void; invoiceId?: string;
+  // savedCard is only populated when allowSaveCard was on, the customer
+  // checked the box, AND the server could resolve a real customer to save
+  // it against (requires invoiceId) — the caller persists it (see
+  // ClientAuthPortal.tsx's client_save_card_link usage).
+  onSuccess: (paymentIntentId: string, savedCard?: { stripeCustomerId: string; paymentMethodId: string; label: string }) => void;
+  invoiceId?: string;
+  // FEATURE — "when customers add new cards, they are automatically saved
+  // when the box is checked." Only meaningful (and only rendered) when
+  // invoiceId is present, since saving requires a real, server-resolved
+  // customer identity — see stripe-action.ts's resolveInvoiceCustomerForSave.
+  // Defaults OFF: the box itself defaults unchecked too, so saving a card
+  // is always an explicit, affirmative customer choice, never assumed.
+  allowSaveCard?: boolean;
 }) {
   const [status, setStatus] = useState<"loading" | "ready" | "processing" | "success" | "error">("loading");
   const [error, setError] = useState("");
+  const [saveCard, setSaveCard] = useState(false);
+  const resolvedStripeCustomerRef = useRef<string>("");
   const stripeRef = useRef<any>(null);
   const elementsRef = useRef<any>(null);
   const intentIdRef = useRef<string>("");
@@ -57,10 +71,11 @@ export function StripePaymentModal({
         // functions/api/stripe-action.ts also re-derives the real amount from
         // the invoice itself when invoiceId is present, ignoring whatever
         // amount this client claims.
-        const intent = await createPaymentIntent(Math.round(amount * 100), currency, description, invoiceId ? { invoiceId } : undefined);
+        const intent = await createPaymentIntent(Math.round(amount * 100), currency, description, invoiceId ? { invoiceId } : undefined, allowSaveCard && saveCard);
         if (cancelled) return;
         intentIdRef.current = intent.id;
         clientSecretRef.current = intent.client_secret;
+        resolvedStripeCustomerRef.current = intent.stripeCustomerId || "";
         const stripe = await loadStripeJs(publishableKey, stripeAccountId);
         if (cancelled) return;
         stripeRef.current = stripe;
@@ -101,7 +116,11 @@ export function StripePaymentModal({
               if (actionErr) { setError(actionErr.message || "Payment failed"); setStatus("ready"); return; }
             }
             setStatus("success");
-            onSuccess(intentIdRef.current);
+            onSuccess(intentIdRef.current, saveCard && resolvedStripeCustomerRef.current ? {
+              stripeCustomerId: resolvedStripeCustomerRef.current,
+              paymentMethodId: ev.paymentMethod.id,
+              label: ev.paymentMethod.card ? `${ev.paymentMethod.card.brand} ····${ev.paymentMethod.card.last4}` : "Saved card",
+            } : undefined);
           });
         }
         setStatus("ready");
@@ -110,13 +129,14 @@ export function StripePaymentModal({
       }
     })();
     return () => { cancelled = true; };
-  }, [open, publishableKey, stripeAccountId, amount, currency, description, invoiceId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, publishableKey, stripeAccountId, amount, currency, description, invoiceId, allowSaveCard && saveCard]);
 
   const confirmPayment = async () => {
     if (!stripeRef.current || !elementsRef.current) return;
     setStatus("processing");
     setError("");
-    const { error: confirmError } = await stripeRef.current.confirmPayment({
+    const { error: confirmError, paymentIntent } = await stripeRef.current.confirmPayment({
       elements: elementsRef.current,
       redirect: "if_required",
     });
@@ -126,7 +146,12 @@ export function StripePaymentModal({
       return;
     }
     setStatus("success");
-    onSuccess(intentIdRef.current);
+    const pmId = typeof paymentIntent?.payment_method === "string" ? paymentIntent.payment_method : paymentIntent?.payment_method?.id;
+    onSuccess(intentIdRef.current, saveCard && resolvedStripeCustomerRef.current && pmId ? {
+      stripeCustomerId: resolvedStripeCustomerRef.current,
+      paymentMethodId: pmId,
+      label: "Saved card",
+    } : undefined);
   };
 
   return (
@@ -155,6 +180,20 @@ export function StripePaymentModal({
               </div>
             )}
             <div ref={mountRef} className={status === "loading" || status === "error" ? "hidden" : ""} />
+            {allowSaveCard && invoiceId && (status === "ready" || status === "processing") && (
+              <label className="flex items-start gap-2 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={saveCard}
+                  onChange={e => setSaveCard(e.target.checked)}
+                  disabled={status === "processing"}
+                  className="mt-0.5 w-4 h-4 accent-red-500 cursor-pointer flex-shrink-0"
+                />
+                <span className="text-xs text-white/60 leading-snug">
+                  Save this card for future payments — securely stored by Stripe, your full card number is never sent to or stored by us.
+                </span>
+              </label>
+            )}
             {(status === "ready" || status === "processing") && (
               <GBtn onClick={confirmPayment} disabled={status === "processing"} className="w-full !justify-center !py-3">
                 <CreditCard size={16} />{status === "processing" ? "Processing…" : `Pay $${amount.toFixed(2)}`}

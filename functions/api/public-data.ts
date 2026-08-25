@@ -453,6 +453,42 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
       return json({ success: true, customer: Array.isArray(insert.data) ? insert.data[0] : insert.data });
     }
 
+    // ── ClientAuthPortal.tsx — persists a saved card's link back onto the
+    // customer's own row. BUG FIX: SaveCardModal's onSaved callback here
+    // used to only update local React state (setCustomers/patchCust) with
+    // no Supabase write at all — the card really did get saved on Stripe's
+    // side, but the CRM lost the connection back to it on next page load,
+    // so a saved card never actually persisted for a customer-portal user
+    // (as opposed to the owner-side CustomerDetail.tsx flow, which already
+    // wrote directly to Supabase with its own authenticated session).
+    // Customer identity is resolved from their own verified session email,
+    // exactly like client_cancel_job/client_reschedule_job below — never a
+    // client-claimed customerId.
+    if (action === "client_save_card_link") {
+      const { stripeCustomerId, paymentMethodId, label, consentAt, setAsDefault } = body;
+      if (!stripeCustomerId || !paymentMethodId) return json({ error: "Missing stripeCustomerId/paymentMethodId" }, 400);
+      const accessToken = (context.request.headers.get("authorization") || "").replace(/^Bearer\s+/i, "");
+      const email = await resolveCallerEmail(accessToken, anonKey);
+      if (!email) return json({ error: "Not signed in" }, 401);
+      const custRow = await sb(serviceRoleKey, `customers?email=ilike.${encodeURIComponent(email)}&select=id,savedPaymentMethodId`);
+      const customer = Array.isArray(custRow.data) ? custRow.data[0] : null;
+      if (!customer) return json({ error: "No customer record found for this account." }, 404);
+
+      const patch: Record<string, any> = { stripeCustomerId, cardConsentAt: consentAt || new Date().toISOString() };
+      // First card ever saved (or an explicit "make default") becomes the
+      // default charge target — same rule ClientAuthPortal's client-side
+      // isFirstCard logic already used, just now actually durable.
+      if (setAsDefault || !customer.savedPaymentMethodId) {
+        patch.savedPaymentMethodId = paymentMethodId;
+        patch.savedPaymentMethodLabel = label || "";
+      }
+      const upd = await sb(serviceRoleKey, `customers?id=eq.${encodeURIComponent(customer.id)}`, {
+        method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify(patch),
+      });
+      if (!upd.ok) return json({ error: "Failed to save card to your account." }, 500);
+      return json({ success: true });
+    }
+
     // ── ClientAuthPortal.tsx — self-serve cancel/reschedule. Owner-gated:
     // OFF by default (settings.clientPortalCancelReschedule must be
     // explicitly true) and a reason is mandatory either way — a bare

@@ -873,8 +873,28 @@ export function ClientAuthPortal({
         amount={payingInv?.total || 0}
         description={`${companyName} — Invoice #${payingInv?.id || ""}`}
         invoiceId={payingInv?.id}
-        onSuccess={(paymentIntentId) => {
+        allowSaveCard
+        onSuccess={(paymentIntentId, savedCard) => {
           const invId = payingInv?.id;
+          if (savedCard) {
+            const isFirstCard = myCards.length === 0;
+            const patch: any = { stripeCustomerId: savedCard.stripeCustomerId, cardConsentAt: new Date().toISOString() };
+            if (isFirstCard) { patch.savedPaymentMethodId = savedCard.paymentMethodId; patch.savedPaymentMethodLabel = savedCard.label; }
+            setCustomers((prev: Customer[]) => prev.map(c => c.id === cust.id ? { ...c, ...patch } : c));
+            patchCust(patch);
+            (async () => {
+              try {
+                const { data: sessData } = await supabase.auth.getSession();
+                const token = sessData.session?.access_token;
+                await fetch("/api/public-data", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+                  body: JSON.stringify({ action: "client_save_card_link", ...savedCard, consentAt: patch.cardConsentAt, setAsDefault: isFirstCard }),
+                });
+                refreshMyCards();
+              } catch (e: any) { console.warn("[Payment] card save-on-file sync failed:", e?.message); }
+            })();
+          }
           // Global `estimates` prop is owner_id-scoped/empty for this
           // customer session now — this page renders from portalData, so
           // update that instead. Still call setEstimates too in case it's
@@ -905,7 +925,7 @@ export function ClientAuthPortal({
         name={`${cust.firstName} ${cust.lastName}`}
         existingStripeCustomerId={cust.stripeCustomerId}
         isRecurringClient={!!cust.recurringPayment?.enabled || jobs.some(j => j.customerId === cust.id && j.isRecurring)}
-        onSaved={(stripeCustomerId, paymentMethodId, label, consentAt) => {
+        onSaved={async (stripeCustomerId, paymentMethodId, label, consentAt) => {
           // First card ever saved becomes the default automatically; a
           // second/third card just joins the list (myCards) without
           // disturbing whichever one is already the default — the customer
@@ -915,9 +935,27 @@ export function ClientAuthPortal({
           if (isFirstCard) { patch.savedPaymentMethodId = paymentMethodId; patch.savedPaymentMethodLabel = label; }
           setCustomers((prev: Customer[]) => prev.map(c => c.id === cust.id ? { ...c, ...patch } : c));
           patchCust(patch);
-          toast?.("Card saved ✓", "green");
           setShowSaveCard(false);
           refreshMyCards();
+          // BUG FIX — this used to only update local React state, with no
+          // Supabase write at all. The card really did get saved on
+          // Stripe's side, but the CRM never durably linked it to this
+          // customer's row, so it silently disappeared again on next
+          // login/page refresh even though the toast said "Card saved ✓."
+          try {
+            const { data: sessData } = await supabase.auth.getSession();
+            const token = sessData.session?.access_token;
+            const res = await fetch("/api/public-data", {
+              method: "POST",
+              headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+              body: JSON.stringify({ action: "client_save_card_link", stripeCustomerId, paymentMethodId, label, consentAt: patch.cardConsentAt, setAsDefault: isFirstCard }),
+            });
+            const data = await res.json().catch(() => null);
+            if (!res.ok || data?.error) { toast?.("Card saved, but didn't sync — it may not appear next time you log in (" + (data?.error || "sync failed") + ")", "yellow"); return; }
+            toast?.("Card saved ✓", "green");
+          } catch (e: any) {
+            toast?.("Card saved, but didn't sync — it may not appear next time you log in", "yellow");
+          }
         }}
       />
 

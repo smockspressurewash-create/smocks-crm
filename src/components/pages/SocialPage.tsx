@@ -572,11 +572,35 @@ export function SocialPage({ posts = [], setPosts, toast, settings = {} as AppSe
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="text-xs text-white/60 mb-1 block">Platforms <span className="text-white/30">(pick one or more)</span></label>
+              {/* BUG FIX — "connecting Buffer doesn't give me an option to
+                  post specifically with Buffer." Buffer WAS already being
+                  used automatically behind each individual platform toggle
+                  (publishOnePlatform above), but there was no way to just
+                  say "post to everything I've connected in Buffer" without
+                  manually clicking every platform button one at a time and
+                  hoping each one had a Buffer channel wired up. This picks
+                  every platform that actually has a connected Buffer
+                  channel in one tap. */}
+              {(() => {
+                const bufferPlatforms = Object.keys(platformMeta).filter(k => !!settings.bufferChannelIds?.[k]);
+                if (bufferPlatforms.length === 0) return null;
+                const allSelected = bufferPlatforms.every(k => f.platforms.includes(k));
+                return (
+                  <button
+                    type="button"
+                    onClick={() => setF(prev => ({ ...prev, platforms: allSelected ? prev.platforms.filter(p => !bufferPlatforms.includes(p)) : Array.from(new Set([...prev.platforms, ...bufferPlatforms])) }))}
+                    className={"w-full mb-1.5 flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl border text-xs font-semibold transition " + (allSelected ? "bg-blue-900/40 border-blue-500/50 text-blue-200" : "bg-blue-950/20 border-blue-700/40 text-blue-300 hover:bg-blue-900/30")}
+                  >
+                    <Zap size={12} />{allSelected ? "All Buffer channels selected" : `Post via Buffer to all ${bufferPlatforms.length} connected channel${bufferPlatforms.length > 1 ? "s" : ""}`}
+                  </button>
+                );
+              })()}
               <div className="grid grid-cols-1 gap-1">
                 {Object.entries(platformMeta).map(([k, m]: [string, any]) => {
                   const active = f.platforms.includes(k);
+                  const viaBuffer = !!settings.bufferChannelIds?.[k];
                   return <button key={k} type="button" onClick={() => togglePlatform(k)} className={"flex items-center justify-between gap-2 px-3 py-2 rounded-xl border text-xs transition " + (active ? "bg-gradient-to-r " + m.color + " border-white/30 text-white" : "bg-black/40 border-white/10 text-white/60 hover:text-white")}>
-                    <span>{m.icon} {m.label}</span>
+                    <span>{m.icon} {m.label}{viaBuffer && <span className="ml-1.5 text-[9px] opacity-70">via Buffer</span>}</span>
                     {active && <CheckCircle size={12} />}
                   </button>;
                 })}

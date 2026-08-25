@@ -132,6 +132,32 @@ const getInvoiceAmountCents = async (invoiceId: string): Promise<number> => {
   return Math.round(total * 100);
 };
 
+// SAVE-CARD SUPPORT — "save this card" during a real invoice payment needs
+// the PaymentIntent to carry a real Stripe `customer` + setup_future_usage
+// at CREATION time (Stripe attaches the payment method to that customer
+// automatically on successful confirmation; it can't be bolted on
+// afterward). The customer identity is derived from the invoice itself —
+// never a client-claimed customerId — same "never trust the caller" rule
+// getInvoiceAmountCents already follows for amount.
+const resolveInvoiceCustomerForSave = async (
+  invoiceId: string,
+  serviceRoleKey: string
+): Promise<{ crmCustomerId: string; stripeCustomerId?: string; email?: string; name?: string } | null> => {
+  const estRes = await fetch(`${SUPABASE_URL}/rest/v1/estimates?id=eq.${encodeURIComponent(invoiceId)}&select=customerId`, {
+    headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}` },
+  });
+  const estRows = await estRes.json().catch(() => []);
+  const crmCustomerId = Array.isArray(estRows) ? estRows[0]?.customerId : null;
+  if (!crmCustomerId || !serviceRoleKey) return null;
+  const custRes = await fetch(`${SUPABASE_URL}/rest/v1/customers?id=eq.${encodeURIComponent(crmCustomerId)}&select=email,firstName,lastName,stripeCustomerId`, {
+    headers: { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}` },
+  });
+  const custRows = await custRes.json().catch(() => []);
+  const cust = Array.isArray(custRows) ? custRows[0] : null;
+  if (!cust) return null;
+  return { crmCustomerId, stripeCustomerId: cust.stripeCustomerId || undefined, email: cust.email || undefined, name: [cust.firstName, cust.lastName].filter(Boolean).join(" ") || undefined };
+};
+
 export const onRequestPost = async (context: { request: Request; env: Record<string, string> }) => {
   const platformSecretKey = context.env.STRIPE_SECRET_KEY;
   // BUG FIX — a Connect-mode owner (no manual keys of their own) had NO
@@ -459,8 +485,35 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
           "automatic_payment_methods[enabled]": "true",
         };
         if (body.invoiceId) params["metadata[invoiceId]"] = body.invoiceId;
+        // FEATURE — "save this card" checkbox during a real invoice payment
+        // (StripePaymentModal). Stripe requires `customer` +
+        // setup_future_usage to be set at PaymentIntent CREATION time, not
+        // bolted on after — so this resolves the paying customer from the
+        // invoice itself (never trusts a client-claimed customerId, same
+        // rule the amount check above already follows) and reuses their
+        // existing Stripe customer if one's on file, or lets Stripe create
+        // one implicitly via the `customer` param on confirmation.
+        let resolvedCrmCustomerId: string | undefined;
+        let resolvedStripeCustomerId: string | undefined;
+        if (body.saveCard && body.invoiceId && serviceRoleKey) {
+          const info = await resolveInvoiceCustomerForSave(body.invoiceId, serviceRoleKey);
+          if (info) {
+            resolvedCrmCustomerId = info.crmCustomerId;
+            if (info.stripeCustomerId) {
+              resolvedStripeCustomerId = info.stripeCustomerId;
+            } else {
+              const created = await stripeFetch(secretKey, "POST", "customers", { email: info.email || "", name: info.name || "" }, stripeAccount);
+              resolvedStripeCustomerId = created.id;
+            }
+            params.customer = resolvedStripeCustomerId;
+            params["setup_future_usage"] = "off_session";
+          }
+        }
         const intent = await stripeFetch(secretKey, "POST", "payment_intents", params, stripeAccount);
-        return json({ id: intent.id, client_secret: intent.client_secret, status: intent.status });
+        return json({
+          id: intent.id, client_secret: intent.client_secret, status: intent.status,
+          ...(resolvedStripeCustomerId ? { stripeCustomerId: resolvedStripeCustomerId, crmCustomerId: resolvedCrmCustomerId } : {}),
+        });
       }
       case "retrieve_payment_intent": {
         if (!body.id) throw new Error("Missing id");
