@@ -246,7 +246,7 @@ export function BudgetPage({ jobs = [], estimates = [], expenses = [], settings 
 
   const [budgetTab, setBudgetTab] = useState("overview"); // overview | spreadsheet | tax
 
-  // Will's real budget categories (matching his Google Sheet structure)
+  // Your real budget categories (matching his Google Sheet structure)
   const willBudgetCategories = {
     income: [
       { key: "pressure_washing", label: "Pressure Washing Revenue", icon: "💧" },
@@ -273,7 +273,7 @@ export function BudgetPage({ jobs = [], estimates = [], expenses = [], settings 
     ]
   };
 
-  // Map actual expenses to Will's categories
+  // Map actual expenses to Your categories
   const mapToWillCategory = (expCategory = "") => {
     const c = expCategory.toLowerCase();
     if (c.includes("fuel") || c.includes("gas")) return "fuel";
@@ -316,7 +316,7 @@ export function BudgetPage({ jobs = [], estimates = [], expenses = [], settings 
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
           <h2 className="font-bold text-lg flex items-center gap-2"><PieIcon size={18} className="text-red-400" />Budget & Taxes</h2>
-          <div className="text-xs text-white/50 mt-0.5">P&L overview · tax deduction planning · Will's budget</div>
+          <div className="text-xs text-white/50 mt-0.5">P&L overview · tax deduction planning · Your budget</div>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
           <TimeframeSelector value={timeframe} onChange={setTimeframe} options={["30d","90d","6m","1y","all"]} />
@@ -326,12 +326,12 @@ export function BudgetPage({ jobs = [], estimates = [], expenses = [], settings 
 
       {/* Tab switcher */}
       <div className="flex gap-2">
-        {[["overview","📊 Overview"],["spreadsheet","📋 Will's Budget"],["tax","🧾 Tax Report"]].map(([k,l]) => (
+        {[["overview","📊 Overview"],["spreadsheet","📋 Your Budget"],["tax","🧾 Tax Report"]].map(([k,l]) => (
           <button key={k} onClick={() => setBudgetTab(k)} className={"px-4 py-2 rounded-xl text-xs font-semibold border transition " + (budgetTab === k ? "bg-red-900/40 border-red-500/50 text-white" : "bg-black/40 border-red-900/30 text-white/60 hover:text-white")}>{l}</button>
         ))}
       </div>
 
-      {/* SPREADSHEET VIEW — Will's real budget categories */}
+      {/* SPREADSHEET VIEW — Your real budget categories */}
       {budgetTab === "spreadsheet" && <div className="space-y-4">
         <Glass className="p-5 !bg-gradient-to-br !from-blue-950/20 !to-black/60 !border-blue-700/30">
           <div className="flex items-center justify-between mb-1">

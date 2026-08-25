@@ -31,6 +31,7 @@ import { createCalendarEvent, updateCalendarEvent, deleteCalendarEvent, fetchDri
 import { usePersistent } from "../../hooks/usePersistent";
 import { usePersistentRaw } from "../../hooks/usePersistentRaw";
 import { Glass } from "../ui/Glass";
+import { ImportDataModal } from "../ui/ImportDataModal";
 import { GBtn } from "../ui/GBtn";
 import { GInput } from "../ui/GInput";
 import { GDate } from "../ui/GDate";
@@ -531,6 +532,44 @@ export function CustomersPage({ customers = [], setCustomers, estimates = [], jo
     e.target.value = "";
   };
 
+  // FEATURE — "allow importing customers via Google Sheets, PDFs, or CSV
+  // files, sort/map fields automatically." The file-picker CSV path above
+  // already did the field-mapping; ImportDataModal adds the Google Sheets
+  // link and pasted-text (covers copy-pasted PDF text) paths on top of the
+  // exact same mapping, reused here as fieldMap so all three sources land
+  // on identical Customer records.
+  const [sheetsImportOpen, setSheetsImportOpen] = useState(false);
+  const customerImportFieldMap = {
+    firstName: ["firstname", "first_name", "first name", "fname", "given name"],
+    lastName: ["lastname", "last_name", "last name", "lname", "surname", "family name"],
+    email: ["email", "email address", "e-mail"],
+    phone: ["phone", "phonenumber", "phone_number", "phone number", "mobile", "cell"],
+    address: ["address", "street", "street address", "property address", "location"],
+    notes: ["notes", "note", "comments", "description"],
+    leadSource: ["leadsource", "lead_source", "lead source", "source", "how found"],
+    tags: ["tags", "tag", "customer type", "type"],
+    totalSpent: ["totalspent", "total_spent", "total spent", "revenue", "ltv"],
+    sqFootage: ["sqfootage", "sq_footage", "sqft", "square feet", "sq ft"],
+    gateCode: ["gatecode", "gate_code", "gate code", "access code"],
+  };
+  const handleSheetsImport = (rows: Record<string, string>[]) => {
+    const imported = rows.map(raw => ({
+      id: uid(),
+      firstName: raw.firstName || "", lastName: raw.lastName || "", email: raw.email || "", phone: raw.phone || "",
+      address: raw.address || "", notes: raw.notes || "", leadSource: raw.leadSource || "",
+      tags: raw.tags ? [raw.tags] : [],
+      totalSpent: Number((raw.totalSpent || "").replace(/[^0-9.]/g, "")) || 0,
+      sqFootage: raw.sqFootage || "", gateCode: raw.gateCode || "",
+      createdAt: today(), pipelineStage: "lead",
+    })).filter(c => c.firstName || c.lastName);
+    if (imported.length === 0) { toast("No valid rows found — need at least a First/Last Name column", "red"); return; }
+    const existing = new Set(customers.map(c => c.email?.toLowerCase()).filter(Boolean));
+    const fresh = imported.filter(c => !c.email || !existing.has(c.email.toLowerCase()));
+    const dupes = imported.length - fresh.length;
+    setCustomers(prev => [...prev, ...fresh]);
+    toast("✅ Imported " + fresh.length + " customers" + (dupes > 0 ? " · " + dupes + " duplicates skipped" : ""));
+  };
+
   const quickAction = (kind, c) => {
     if (kind === "call" && c.phone) { window.location.href = "tel:" + c.phone.replace(/\D/g, ""); return; }
     if (kind === "text" && c.phone) { window.location.href = "sms:" + c.phone.replace(/\D/g, ""); return; }
@@ -577,7 +616,8 @@ export function CustomersPage({ customers = [], setCustomers, estimates = [], jo
           </div>
           <div className="flex gap-2 flex-wrap">
             <input ref={fileRef} type="file" accept=".csv" onChange={importCSV} className="hidden" />
-            <GBtn variant="ghost" onClick={() => fileRef.current?.click()}><Download size={14} className="inline mr-1.5 rotate-180" />Import</GBtn>
+            <GBtn variant="ghost" onClick={() => fileRef.current?.click()}><Download size={14} className="inline mr-1.5 rotate-180" />Import CSV</GBtn>
+            <GBtn variant="ghost" onClick={() => setSheetsImportOpen(true)}><Download size={14} className="inline mr-1.5 rotate-180" />Sheets / Paste</GBtn>
             <GBtn variant="ghost" onClick={exportCSV}><Download size={14} className="inline mr-1.5" />Export</GBtn>
             <GBtn variant={mergeMode ? "danger" : "ghost"} onClick={() => { setMergeMode(!mergeMode); setMergePair([]); }}><UserCheck size={14} className="inline mr-1.5" />{mergeMode ? "Cancel Merge" : "Merge"}</GBtn>
             <GBtn variant={bulkMode ? "danger" : "ghost"} onClick={() => { setBulkMode(!bulkMode); setBulkSelected([]); }}><CheckSquare size={14} className="inline mr-1.5" />{bulkMode ? "Cancel Select" : "Select"}</GBtn>
@@ -894,6 +934,7 @@ export function CustomersPage({ customers = [], setCustomers, estimates = [], jo
       </Glass>
 
       <CustomerModal open={modal.open} onClose={() => setModal({ open: false, data: null })} data={modal.data} onSave={save} mapsKey={settings.googleMapsKey || (settings as any).mapsKey || ""} customers={customers} />
+      <ImportDataModal open={sheetsImportOpen} onClose={() => setSheetsImportOpen(false)} title="Import Customers" fieldMap={customerImportFieldMap} onImport={handleSheetsImport} toast={toast} />
       <CustomerDetail customer={detail} onClose={() => setDetail(null)} onDelete={deleteCustomer} onEdit={(cust: any) => { setDetail(null); setModal({ open: true, data: cust }); }} estimates={estimates} jobs={jobs} employees={employees} timeline={timeline} setTimeline={setTimeline} settings={settings} toast={toast} setCustomers={setCustomers} />
       </>}
     </div>

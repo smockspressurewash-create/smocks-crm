@@ -31,6 +31,7 @@ import { usePersistent } from "../../hooks/usePersistent";
 import { usePersistentRaw } from "../../hooks/usePersistentRaw";
 import { supabase } from "../../lib/supabase";
 import { Glass } from "../ui/Glass";
+import { ImportDataModal } from "../ui/ImportDataModal";
 import { GBtn } from "../ui/GBtn";
 import { GInput } from "../ui/GInput";
 import { GDate } from "../ui/GDate";
@@ -78,7 +79,7 @@ import { ChemicalModal } from "../ui/ChemicalModal";
 import { WeeklyBusinessReview } from "../ui/WeeklyBusinessReview";
 import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 
-export function ExpensesPage({ expenses = [], setExpenses }) {
+export function ExpensesPage({ expenses = [], setExpenses, toast = (() => {}) as any }) {
   const [modal, setModal] = useState({ open: false, data: null });
   const [filterCat, setFilterCat] = useState("all");
   const [timeframe, setTimeframe] = useState("30d");
@@ -143,6 +144,33 @@ export function ExpensesPage({ expenses = [], setExpenses }) {
   };
   const del = id => { if (confirm("Delete expense?")) setExpenses(prev => prev.filter(e => e.id !== id)); };
 
+  // FEATURE — "make budget personalized to each owner, allow importing from
+  // Google Sheets, PDF, or CSV." Same shared ImportDataModal CustomersPage
+  // uses; the fieldMap here matches Expense's own shape instead.
+  const [importOpen, setImportOpen] = useState(false);
+  const expenseImportFieldMap = {
+    date: ["date", "transaction date", "expense date"],
+    description: ["description", "memo", "details", "item"],
+    amount: ["amount", "cost", "total", "price"],
+    category: ["category", "type", "expense category"],
+    vendor: ["vendor", "payee", "merchant", "paid to"],
+  };
+  const handleExpenseImport = (rows: Record<string, string>[]) => {
+    const imported = rows.map(raw => ({
+      id: uid(),
+      date: raw.date || today(),
+      description: raw.description || "Imported expense",
+      amount: Number((raw.amount || "").replace(/[^0-9.-]/g, "")) || 0,
+      category: raw.category || "Supplies",
+      vendor: raw.vendor || "",
+      isCash: false,
+      taxDeductible: true,
+    })).filter(e => e.amount > 0);
+    if (imported.length === 0) { toast("No valid rows found — need at least an Amount column", "red"); return; }
+    setExpenses(prev => [...imported, ...prev]);
+    toast(`✅ Imported ${imported.length} expense(s)`, "green");
+  };
+
   const saveMileage = () => {
     if (!mf.to.trim() || !mf.miles) return;
     const miles = Number(mf.miles) * (mf.roundTrip ? 2 : 1);
@@ -178,9 +206,11 @@ export function ExpensesPage({ expenses = [], setExpenses }) {
         <div className="flex items-center gap-2">
           <TimeframeSelector value={timeframe} onChange={setTimeframe} options={["7d","30d","90d","6m","1y","all"]} compact />
           <GBtn variant="ghost" onClick={exportPDF} className="!text-xs"><Download size={12} className="inline mr-1" />Export PDF</GBtn>
+          {tab === "expenses" && <GBtn variant="ghost" onClick={() => setImportOpen(true)} className="!text-xs"><Download size={12} className="inline mr-1 rotate-180" />Import</GBtn>}
           {tab === "expenses" ? <GBtn onClick={openAdd} className="!text-xs"><Plus size={12} className="inline mr-1" />Add Expense</GBtn> : <GBtn onClick={() => setMileModal(true)} className="!text-xs"><Plus size={12} className="inline mr-1" />Log Miles</GBtn>}
         </div>
       </div>
+      <ImportDataModal open={importOpen} onClose={() => setImportOpen(false)} title="Import Expenses" fieldMap={expenseImportFieldMap} onImport={handleExpenseImport} toast={toast} />
 
       {tab === "expenses" && <>
         {/* KPIs */}
