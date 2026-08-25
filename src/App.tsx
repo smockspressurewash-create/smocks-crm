@@ -2134,6 +2134,7 @@ export function App() {
   // client-login flows render in-app via these flags instead of
   // window.open()-ing a new tab.
   const [clientDemoOpen, setClientDemoOpen] = useState(false);
+  const [demoQuoteTypeMenuOpen, setDemoQuoteTypeMenuOpen] = useState(false);
   const [clientDemoReviewOpen, setClientDemoReviewOpen] = useState(false);
   const [clientDemoLoginOpen, setClientDemoLoginOpen] = useState(false);
 
@@ -3917,15 +3918,21 @@ export function App() {
             A plain reload or a fresh tab both start marketingPreview at
             false, so those still redirect a logged-in owner straight to
             the dashboard as expected — only this explicit click bypasses it. */}
-        <div className="p-4 border-b border-red-900/30 flex items-center justify-between">
+        {/* FEATURE — "make the logo even bigger, move it toward the middle
+            of the rectangle it's inside, filling the space more." Bumped
+            padding/size and switched to justify-center so it actually sits
+            centered in this header bar instead of pinned to the left edge;
+            the mobile-only close button is absolutely positioned so it
+            doesn't skew that centering. */}
+        <div className="relative p-6 border-b border-red-900/30 flex items-center justify-center">
           <button
             onClick={() => { setMarketingPreview(true); window.location.hash = "/welcome"; setPage("welcome"); }}
             className="flex items-center text-left hover:opacity-80 transition"
             title="View landing page"
           >
-            <div className="font-extrabold text-2xl leading-tight tracking-tight">Crew<span className="text-red-500">Boss</span></div>
+            <div className="font-extrabold text-3xl leading-tight tracking-tight">Crew<span className="text-red-500">Boss</span></div>
           </button>
-          <button onClick={() => setSidebarOpen(false)} className="md:hidden text-white/40 hover:text-white p-1"><X size={16} /></button>
+          <button onClick={() => setSidebarOpen(false)} className="md:hidden absolute right-4 top-1/2 -translate-y-1/2 text-white/40 hover:text-white p-1"><X size={16} /></button>
         </div>
 
         {/* Nav */}
@@ -4280,6 +4287,21 @@ export function App() {
         // genuinely still-pending quote so the walkthrough has steps to
         // actually walk through; falls back to any quote if none are pending.
         const latestQuote = sortedEstimates.find(e => !(e as any).invoiced && (!e.status || e.status === "pending")) || sortedEstimates.find(e => !(e as any).invoiced);
+        // FEATURE — "different options: a package quote, an options quote,
+        // or a normal quote." Same "prefer pending, else any" logic as
+        // latestQuote above, just narrowed to a specific estimateType so
+        // the owner can actually preview each layout instead of only ever
+        // landing on whichever type the most recent real quote happens to be.
+        const quoteByType = (t: "standard" | "package" | "options") => {
+          const matchesType = (e: any) => t === "standard" ? (!e.estimateType || e.estimateType === "standard") : e.estimateType === t;
+          return sortedEstimates.find(e => !(e as any).invoiced && matchesType(e) && (!e.status || e.status === "pending"))
+            || sortedEstimates.find(e => !(e as any).invoiced && matchesType(e));
+        };
+        const quoteTypeOptions: { key: "standard" | "package" | "options"; label: string }[] = [
+          { key: "standard", label: "Normal Quote" },
+          { key: "package", label: "Package Quote" },
+          { key: "options", label: "Options Quote" },
+        ];
         // Same reasoning as latestQuote above — prefer an invoice that
         // genuinely still has something to pay (not already paid in full,
         // not declined) so the payment walkthrough has a real balance due
@@ -4297,9 +4319,22 @@ export function App() {
               </div>
               <div className="p-4 space-y-2">
                 <div className="text-[11px] text-white/40 mb-1">Preview any customer-facing flow instantly — real records are picked automatically.</div>
-                <button disabled={!latestQuote} onClick={() => { setClientDemoOpen(false); setPortalEstId(latestQuote!.id); }} className={demoBtnClass}>
+                <button disabled={!latestQuote} onClick={() => setDemoQuoteTypeMenuOpen(o => !o)} className={demoBtnClass}>
                   Test Viewing a Quote {!latestQuote && <span className="text-[10px] text-white/30">no open quote to preview</span>}
+                  {latestQuote && <ChevronRight size={13} className={"text-white/30 transition-transform " + (demoQuoteTypeMenuOpen ? "rotate-90" : "")} />}
                 </button>
+                {demoQuoteTypeMenuOpen && latestQuote && (
+                  <div className="pl-2 space-y-1.5 border-l-2 border-red-700/30 ml-1.5">
+                    {quoteTypeOptions.map(opt => {
+                      const match = quoteByType(opt.key);
+                      return (
+                        <button key={opt.key} disabled={!match} onClick={() => { setClientDemoOpen(false); setDemoQuoteTypeMenuOpen(false); setPortalEstId(match!.id); }} className={demoBtnClass + " !text-xs"}>
+                          {opt.label} {!match && <span className="text-[10px] text-white/30">none yet</span>}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
                 <button disabled={!latestUnpaidInvoice} onClick={() => { setClientDemoOpen(false); setPortalEstId(latestUnpaidInvoice!.id); }} className={demoBtnClass}>
                   Test Paying an Invoice {!latestUnpaidInvoice && <span className="text-[10px] text-white/30">no unpaid invoice to preview</span>}
                 </button>
@@ -4345,9 +4380,23 @@ export function App() {
           auth session (no mock-session bypass exists), so this genuinely
           tests the customer login flow against real data. */}
       {clientDemoLoginOpen && (
-        <div className="fixed inset-0 z-[200] bg-black overflow-y-auto">
-          <button onClick={() => setClientDemoLoginOpen(false)} className="fixed top-4 right-4 z-[210] p-2 rounded-lg bg-white/10 hover:bg-white/20 text-white border border-white/15"><X size={18} /></button>
-          <ClientAuthPortal customers={customers} setCustomers={setCustomers} estimates={estimates} setEstimates={setEstimates} jobs={jobs} settings={settings} estimateTemplates={estimateTemplates} toast={toast} demoMode onExitDemo={() => setClientDemoLoginOpen(false)} />
+        // BUG FIX — "the full client portal should be a pop-up, not cover
+        // the whole screen." ClientAuthPortal is the real customer-facing
+        // page (min-h-screen, full layout by design for its actual #/client
+        // route) — rather than rewriting its internals for a second
+        // "embedded" mode, this contains it in a bounded, blurred-backdrop
+        // card like every other demo popup. ClientAuthPortal's own
+        // min-h-screen still measures against the viewport, so it can be
+        // taller than the card — the card scrolls internally to show all of
+        // it, same as scrolling a phone screen, instead of taking over the
+        // whole browser window.
+        <div className="fixed inset-0 z-[200] bg-black/80 backdrop-blur flex items-center justify-center p-2 sm:p-6" onClick={() => setClientDemoLoginOpen(false)}>
+          <div className="relative w-full max-w-md h-full sm:h-[88vh] bg-black border border-white/10 rounded-2xl shadow-2xl overflow-hidden" onClick={e => e.stopPropagation()}>
+            <button onClick={() => setClientDemoLoginOpen(false)} className="absolute top-3 right-3 z-[210] p-2 rounded-lg bg-white/10 hover:bg-white/20 text-white border border-white/15"><X size={16} /></button>
+            <div className="h-full overflow-y-auto">
+              <ClientAuthPortal customers={customers} setCustomers={setCustomers} estimates={estimates} setEstimates={setEstimates} jobs={jobs} settings={settings} estimateTemplates={estimateTemplates} toast={toast} demoMode onExitDemo={() => setClientDemoLoginOpen(false)} />
+            </div>
+          </div>
         </div>
       )}
 

@@ -1,24 +1,14 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
-  <defs>
-    <linearGradient id="cb-g" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#ef4444"/>
-      <stop offset="100%" stop-color="#7f1d1d"/>
-    </linearGradient>
-  </defs>
-  <rect width="100" height="100" rx="22" fill="url(#cb-g)"/>
-  <!-- Person redesigned narrower and arms shortened to hang at the sides
-       instead of reaching out toward the letters — every earlier version
-       that had the arms/hands touch or reach for the letters kept reading
-       as "the letters are touching the person" no matter how the letters
-       themselves were repositioned. Verified via a rendered screenshot
-       (against the true SVG bounds) that there is real, visible clearance
-       between the person and both letters, and that neither letter clips. -->
-  <g stroke="#ffffff" stroke-width="6" stroke-linecap="round" fill="none">
-    <path d="M43 58 L37 76"/>
-    <path d="M57 58 L63 76"/>
-  </g>
-  <circle cx="50" cy="26" r="8" fill="#ffffff"/>
-  <path d="M40 74 C40 54 44 48 50 48 C56 48 60 54 60 74 C60 82 56 85 50 85 C44 85 40 82 40 74 Z" fill="#ffffff"/>
-  <text x="20" y="70" font-family="Arial, Helvetica, sans-serif" font-weight="900" font-size="43" fill="#ffffff" text-anchor="middle">C</text>
-  <text x="80" y="70" font-family="Arial, Helvetica, sans-serif" font-weight="900" font-size="43" fill="#ffffff" text-anchor="middle">B</text>
+  <!-- BUG FIX — "the download app logo doesn't fit fully; the corners are
+       cut off." The old design (a small person silhouette + narrow letters)
+       had almost no clearance from the icon edges, so OS-applied icon masks
+       (rounded square on iOS, circle/squircle on Android adaptive icons)
+       clipped it. Replaced per explicit request: solid black background,
+       plain white "C" + red "B", same font stack as the in-app "CrewBoss"
+       wordmark (index.css's base font-family) instead of a generic font,
+       both letters kept well clear of every edge so any OS mask shape
+       still shows the whole mark. -->
+  <rect width="100" height="100" rx="20" fill="#000000"/>
+  <text x="32" y="68" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-weight="800" font-size="48" fill="#ffffff" text-anchor="middle">C</text>
+  <text x="68" y="68" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-weight="800" font-size="48" fill="#dc2626" text-anchor="middle">B</text>
 </svg>

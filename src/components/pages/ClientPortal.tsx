@@ -426,16 +426,26 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
             rounded-2xl (Modal.tsx) already clips this to the right shape at
             rest; keeping rounded-t-2xl here looked wrong once the header
             sticks mid-scroll below that clipped edge. */}
-        <div className={"px-6 py-4 sticky top-0 z-20 " + (headerColor ? "" : "bg-gradient-to-r from-red-600 to-red-800")} style={headerColor ? { background: headerColor } : undefined}>
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2.5">
-              {tpl?.logoUrl && <img src={tpl.logoUrl} alt="" className="w-9 h-9 rounded-lg object-contain bg-white/90 p-1" />}
-              <div>
-                <div className="text-white font-bold text-lg">{tpl?.headerText || companyName}</div>
-                <div className="text-red-200 text-xs">{companyPhone} · York, PA</div>
+        {/* BUG FIX — "the red banner partially covers the progress bar
+            (1/2/3/4)." A long company name + phone/address on one side and
+            "My Account"/invoice # on the other had no truncation or wrap
+            safety — on a narrow (mobile) viewport this could grow the
+            header taller than expected between renders, so its `sticky`
+            box ended up overlapping the very next element (the step
+            indicator) instead of sitting cleanly above it. min-w-0/truncate
+            keeps the header a single predictable height regardless of how
+            long the company name is; flex-shrink-0 keeps the right side
+            from ever being squeezed into wrapping either. */}
+        <div className={"px-4 sm:px-6 py-3 sm:py-4 sticky top-0 z-20 " + (headerColor ? "" : "bg-gradient-to-r from-red-600 to-red-800")} style={headerColor ? { background: headerColor } : undefined}>
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2 sm:gap-2.5 min-w-0">
+              {tpl?.logoUrl && <img src={tpl.logoUrl} alt="" className="w-8 h-8 sm:w-9 sm:h-9 rounded-lg object-contain bg-white/90 p-1 flex-shrink-0" />}
+              <div className="min-w-0">
+                <div className="text-white font-bold text-base sm:text-lg truncate">{tpl?.headerText || companyName}</div>
+                <div className="text-red-200 text-[11px] sm:text-xs truncate">{companyPhone} · York, PA</div>
               </div>
             </div>
-            <div className="text-right text-white/80 text-xs">
+            <div className="text-right text-white/80 text-xs flex-shrink-0">
               {showAccount ? (
                 <button onClick={() => setShowAccount(false)} className="font-bold text-sm flex items-center gap-1 ml-auto"><ChevronLeft size={12} />Back</button>
               ) : (
@@ -490,7 +500,7 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
         ) : (
         <>
         {/* Step indicator */}
-        <div className="flex items-center px-6 py-3 bg-black/20 border-b border-red-900/20 gap-2">
+        <div className="flex items-center px-4 sm:px-6 py-3 bg-black/20 border-b border-red-900/20 gap-1.5 sm:gap-2 overflow-x-auto">
           {["view","sign","payment","done"].map((s, i) => (
             <div key={s} className="flex items-center gap-2">
               <div className={"w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-bold transition-all " + (step === s ? "bg-red-600 text-white" : ["done","payment","sign","view"].indexOf(step) < ["done","payment","sign","view"].indexOf(s) ? "bg-white/10 text-white/40" : "bg-green-600/40 text-green-300")}>

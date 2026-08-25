@@ -445,8 +445,9 @@ export function InvoicesPage({ estimates = [], setEstimates, customers = [], set
     }, () => {
       setEstimates((prev: any[]) => prev.filter((e: any) => e.id !== inv.id));
       markRecentlyDeleted("estimates", [inv.id]);
-      withTimeout((supabase as any).from("estimates").delete().eq("id", inv.id), 10000, "Invoice delete").then((r: any) => {
+      withTimeout((supabase as any).from("estimates").delete().eq("id", inv.id).select("id"), 10000, "Invoice delete").then((r: any) => {
         if (r?.error) toast("Removed locally, but failed to remove on server — " + r.error.message, "red");
+        else if (!Array.isArray(r?.data) || r.data.length === 0) toast("Removed locally, but the server didn't confirm — it may reappear", "red");
       }).catch(() => {});
     });
     // BUG FIX — this delete had no timeout, so a hung request (dropped
@@ -454,8 +455,19 @@ export function InvoicesPage({ estimates = [], setEstimates, customers = [], set
     // error toast either — the next 3s poll then silently restored the row
     // from the server since the delete never actually landed, reading to
     // the owner as "I deleted it, but on reload it's back."
-    withTimeout((supabase as any).from("estimates").delete().eq("id", inv.id), 10000, "Invoice delete")
-      .then((result: any) => { if (result?.error) toast("Deleted locally, but failed to delete from server — " + result.error.message, "red"); else toast("Invoice deleted"); })
+    // BUG FIX — "deleted locally, but failed to sync." Without .select(),
+    // Supabase's delete() reports SUCCESS (no error) even when RLS/a stale
+    // owner_id silently matched ZERO rows server-side — the classic
+    // 0-row-silent-RLS-block pattern (CLAUDE.md). That read as a real,
+    // reported sync failure with no useful reason, and the row would then
+    // reappear on the next cross-device refresh. .select("id") lets a 0-row
+    // response be caught and reported as the real failure it is.
+    withTimeout((supabase as any).from("estimates").delete().eq("id", inv.id).select("id"), 10000, "Invoice delete")
+      .then((result: any) => {
+        if (result?.error) { toast("Deleted locally, but failed to delete from server — " + result.error.message, "red"); return; }
+        if (!Array.isArray(result?.data) || result.data.length === 0) { toast("Deleted locally, but the server didn't confirm the delete — it may reappear. Try again or refresh to check.", "red"); return; }
+        toast("Invoice deleted");
+      })
       .catch((e: any) => toast("Deleted locally, but failed to delete from server — " + (e?.message || ""), "red"));
   };
   const sendReminder = async inv => {
@@ -522,8 +534,13 @@ export function InvoicesPage({ estimates = [], setEstimates, customers = [], set
     setEstimates(estimates.filter(e => !ids.includes(e.id)));
     markRecentlyDeleted("estimates", ids);
     setSelected([]);
-    withTimeout((supabase as any).from("estimates").delete().in("id", ids), 10000, "Invoice bulk delete")
-      .then((r: any) => { if (r?.error) toast?.("Deleted locally, but failed to delete from server — " + r.error.message, "red"); else toast?.(ids.length + " invoice(s) deleted"); })
+    withTimeout((supabase as any).from("estimates").delete().in("id", ids).select("id"), 10000, "Invoice bulk delete")
+      .then((r: any) => {
+        if (r?.error) { toast?.("Deleted locally, but failed to delete from server — " + r.error.message, "red"); return; }
+        const deletedCount = Array.isArray(r?.data) ? r.data.length : 0;
+        if (deletedCount < ids.length) { toast?.(`Deleted locally, but only ${deletedCount}/${ids.length} confirmed on the server — some may reappear. Try again or refresh to check.`, "red"); return; }
+        toast?.(ids.length + " invoice(s) deleted");
+      })
       .catch((e: any) => toast?.("Deleted locally, but failed to delete from server — " + (e?.message || ""), "red"));
   };
 

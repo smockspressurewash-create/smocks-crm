@@ -900,7 +900,7 @@ export function ClientAuthPortal({
               ) : (
                 <div className="text-xs text-white/40 mb-2">No cards saved yet.</div>
               )}
-              <button onClick={() => setShowSaveCard(true)} disabled={!active?.settings?.stripePublishableKey} className="w-full py-2.5 rounded-xl bg-white/10 hover:bg-white/15 text-sm flex items-center justify-center gap-2 disabled:opacity-40"><CreditCard size={14} />{myCards.length > 0 ? "Add Another Card" : "Save a Card"}</button>
+              <button onClick={() => setShowSaveCard(true)} disabled={!active?.settings?.stripePublishableKey} className="w-full py-2.5 rounded-xl bg-white/10 hover:bg-white/15 text-sm flex items-center justify-center gap-2 disabled:opacity-40"><CreditCard size={14} />+ Add New Card</button>
               {!active?.settings?.stripePublishableKey && <div className="text-[10px] text-white/30 mt-2">{companyName} hasn't connected online payments yet.</div>}
             </Glass>
 

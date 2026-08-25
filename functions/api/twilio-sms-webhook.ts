@@ -299,7 +299,8 @@ const transcribeViaWorkersAI = async (ai: any, audioBuf: ArrayBuffer): Promise<s
 // a public Supabase Storage bucket (same pattern as customer documents)
 // since Twilio's MediaUrl needs a real fetchable URL, not raw bytes.
 const synthesizeSpeechViaWorkersAI = async (ai: any, text: string): Promise<ArrayBuffer | null> => {
-  if (!ai || !text.trim()) return null;
+  if (!ai) { console.warn("[TwilioSmsWebhook] voice reply requested but no Workers AI binding is configured — add an `AI` binding to this Cloudflare Pages project (Settings → Functions → Bindings) to enable free TTS voice replies."); return null; }
+  if (!text.trim()) return null;
   try {
     const result: any = await ai.run("@cf/myshell-ai/melotts", { prompt: text.slice(0, 1000), lang: "en" });
     // Workers AI TTS models return { audio: "<base64>" } (mp3).
@@ -706,7 +707,16 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
           // proven text path first makes total silence structurally
           // impossible regardless of what the free TTS/MMS step does.
           const textRes = await sendAlfredSms(ctx, from, reply);
-          const wantsVoice = alfredVoiceReplies === "always" || (alfredVoiceReplies === "ask" && VOICE_REQUEST_PHRASES.test(bodyRaw || ""));
+          // BUG FIX — "I send Alfred a voice memo and never get one back."
+          // "ask" mode tested VOICE_REQUEST_PHRASES against bodyRaw — but a
+          // real inbound voice memo has an EMPTY Body (Twilio sends the
+          // audio only via MediaUrl0, no text), so this could never match
+          // for the exact case it's supposed to catch. Sending voice is
+          // itself the clearest possible signal the owner wants voice back
+          // — treat an inbound audio MMS as satisfying "ask" mode directly,
+          // in addition to (still) checking for an explicit typed phrase.
+          const isInboundVoiceMemo = Number(params.NumMedia || "0") > 0 && (params.MediaContentType0 || "").startsWith("audio/");
+          const wantsVoice = alfredVoiceReplies === "always" || (alfredVoiceReplies === "ask" && (isInboundVoiceMemo || VOICE_REQUEST_PHRASES.test(bodyRaw || "")));
           if (wantsVoice) {
             try {
               const mediaUrl = await withDeadline((async () => {

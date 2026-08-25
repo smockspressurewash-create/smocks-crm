@@ -8,7 +8,7 @@ import { GSel } from "../ui/GSel";
 import { Modal } from "../ui/Modal";
 import { Badge } from "../ui/Badge";
 import { supabase } from "../../lib/supabase";
-import { uid } from "../../lib/utils";
+import { uid, withTimeout } from "../../lib/utils";
 import { useIsMobile } from "../../hooks/useIsMobile";
 import type { AppSettings } from "../../types";
 
@@ -40,7 +40,13 @@ export function HiringPage({ settings = {} as AppSettings, setSettings, toast, o
 
   const fetchCandidates = async () => {
     try {
-      const { data, error } = await (supabase as any).from("candidates").select("*").order("sortOrder", { ascending: true });
+      // BUG FIX — "the hiring board just says 'Loading candidates' forever."
+      // No timeout on this fetch meant a hung request (missing candidates
+      // table, RLS misconfig, dead connection) left `loading` stuck true
+      // permanently — the finally-block never ran because the await never
+      // settled. withTimeout guarantees this resolves (or its catch below
+      // fires) within 10s no matter what.
+      const { data, error }: any = await withTimeout((supabase as any).from("candidates").select("*").order("sortOrder", { ascending: true }), 10000, "Fetch candidates");
       if (!error && Array.isArray(data)) setCandidates(data);
       else if (error) console.warn("[Hiring] fetch failed:", error.message);
     } catch (e: any) {
