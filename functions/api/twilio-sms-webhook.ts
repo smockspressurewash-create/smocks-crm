@@ -361,12 +361,17 @@ const transcribeViaOpenAI = async (audioBuf: ArrayBuffer, openaiKey: string): Pr
 // their Document Vault exactly like a file the owner uploaded from the
 // browser, no special-casing needed anywhere else in the app.
 const DOCS_BUCKET = "customer-docs";
-const uploadInboundMedia = async (serviceRoleKey: string, mediaBuf: ArrayBuffer, contentType: string): Promise<{ url: string; fileName: string } | null> => {
+const uploadInboundMedia = async (serviceRoleKey: string, mediaBuf: ArrayBuffer, contentType: string, ownerId: string | null): Promise<{ url: string; fileName: string } | null> => {
   if (!serviceRoleKey) return null;
   try {
     const ext = contentType.split("/")[1]?.split(";")[0] || "bin";
     const fileName = `alfred-inbound-${Date.now()}.${ext}`;
-    const path = `_alfred-inbound/${crypto.randomUUID()}-${fileName}`;
+    // Owner-id-prefixed path — required by the storage RLS policy scoping
+    // this staging folder per business (see the storage security
+    // migration). This write goes through the service role key, which
+    // bypasses RLS regardless — the prefix is defense-in-depth /
+    // consistency with the browser-side upload path, not load-bearing here.
+    const path = `_alfred-inbound/${ownerId || "unknown"}/${crypto.randomUUID()}-${fileName}`;
     const res = await fetch(`${SUPABASE_URL}/storage/v1/object/${DOCS_BUCKET}/${path}`, {
       method: "POST",
       headers: { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}`, "Content-Type": contentType || "application/octet-stream" },
@@ -383,7 +388,7 @@ const uploadInboundMedia = async (serviceRoleKey: string, mediaBuf: ArrayBuffer,
 // Falls back to the plain text body whenever there's no audio, no working
 // transcription path, or the transcription call itself fails — Alfred still
 // gets SOMETHING to respond to rather than the whole request silently dying.
-const resolveIncomingText = async (params: Record<string, string>, bodyRaw: string, twilioSid: string, twilioToken: string, openaiKey: string, workersAi: any, serviceRoleKey?: string): Promise<string> => {
+const resolveIncomingText = async (params: Record<string, string>, bodyRaw: string, twilioSid: string, twilioToken: string, openaiKey: string, workersAi: any, serviceRoleKey?: string, ownerId?: string | null): Promise<string> => {
   const numMedia = Number(params.NumMedia || "0");
   if (numMedia <= 0) return bodyRaw;
   const contentType = params.MediaContentType0 || "";
@@ -396,7 +401,7 @@ const resolveIncomingText = async (params: Record<string, string>, bodyRaw: stri
       const mediaRes = await fetch(mediaUrl, { headers: { Authorization: `Basic ${btoa(`${twilioSid}:${twilioToken}`)}` } });
       if (!mediaRes.ok) throw new Error(`Twilio media fetch failed (${mediaRes.status})`);
       const buf = await mediaRes.arrayBuffer();
-      const uploaded = await uploadInboundMedia(serviceRoleKey, buf, contentType);
+      const uploaded = await uploadInboundMedia(serviceRoleKey, buf, contentType, ownerId ?? null);
       if (!uploaded) return bodyRaw || "[sent a file, but it couldn't be saved — try again]";
       console.log("[TwilioSmsWebhook] inbound file uploaded:", uploaded.url);
       // Deliberately NOT prefixed "[sent a" — isTranscriptionFailureNote()
@@ -609,7 +614,7 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
 
       context.waitUntil(
         withDeadline(
-          resolveIncomingText(params, bodyRaw, twilioSid, twilioToken, openaiKey, (context.env as any).AI, context.env.SUPABASE_SERVICE_ROLE_KEY)
+          resolveIncomingText(params, bodyRaw, twilioSid, twilioToken, openaiKey, (context.env as any).AI, context.env.SUPABASE_SERVICE_ROLE_KEY, ownerId)
             .then((text) => isTranscriptionFailureNote(text) ? text : runAlfredSmsAgent(ctx, modelKeys, modelPriority, activeModel, from, text))
             .catch((e: any) => {
               console.error("[TwilioSmsWebhook] Alfred SMS agent failed:", e?.message);
@@ -621,15 +626,18 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
           // FEATURE — free voice-memo replies. "always" mode voices every
           // reply; "ask" mode only voices this one if the owner's OWN
           // message (bodyRaw, before transcription-mangling) requested it.
-          // BUG FIX — this whole block used to run with NO time bound of its
-          // own, outside the 90s withDeadline race above. If Workers AI's
-          // TTS call hung (cold start, transient issue), the background
-          // waitUntil task could get killed by Cloudflare's own execution
-          // ceiling before ever reaching sendAlfredSms — root cause of
-          // "voice mode on, sent a voice memo, got NO reply at all" (not
-          // even a text fallback). Wrapped in its own short deadline + a
-          // catch-all so a TTS failure can NEVER prevent SOME reply from
-          // going out.
+          // BUG FIX (2nd report — still silent after the first fix) —
+          // restructured from "wait for TTS, THEN decide what to send" to
+          // "send the real text reply FIRST, unconditionally, then attempt
+          // a voice memo as a separate best-effort follow-up." The earlier
+          // version made voice a REPLACEMENT for text, so it stayed
+          // possible for total silence if TTS hung/failed in a way that
+          // slipped past every guard, or if Twilio itself rejected the MMS
+          // send (unsupported codec, size limit — a failure that was never
+          // checked at all before). Sending the guaranteed, fast, already-
+          // proven text path first makes total silence structurally
+          // impossible regardless of what the free TTS/MMS step does.
+          const textRes = await sendAlfredSms(ctx, from, reply);
           const wantsVoice = alfredVoiceReplies === "always" || (alfredVoiceReplies === "ask" && VOICE_REQUEST_PHRASES.test(bodyRaw || ""));
           if (wantsVoice) {
             try {
@@ -637,13 +645,20 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
                 const audio = await synthesizeSpeechViaWorkersAI((context.env as any).AI, reply);
                 return audio ? await uploadVoiceMemo(context.env.SUPABASE_SERVICE_ROLE_KEY, audio) : null;
               })(), 20000, null as string | null);
-              if (mediaUrl) return sendAlfredSms(ctx, from, reply, mediaUrl);
-              console.warn("[TwilioSmsWebhook] voice memo requested but TTS/upload failed or timed out — falling back to plain text");
+              if (mediaUrl) {
+                // Empty body — the text reply already went out above; this
+                // follow-up is audio-only so the owner isn't sent the same
+                // text twice.
+                const voiceRes = await sendAlfredSms(ctx, from, "🔊", mediaUrl);
+                if (!voiceRes.ok) console.warn("[TwilioSmsWebhook] voice memo MMS follow-up failed:", voiceRes.error);
+              } else {
+                console.warn("[TwilioSmsWebhook] voice memo requested but TTS/upload failed or timed out — text reply already sent");
+              }
             } catch (e: any) {
-              console.warn("[TwilioSmsWebhook] voice memo synthesis threw — falling back to plain text:", e?.message);
+              console.warn("[TwilioSmsWebhook] voice memo synthesis threw (text reply already sent):", e?.message);
             }
           }
-          return sendAlfredSms(ctx, from, reply);
+          return textRes;
         }).catch((e: any) => {
           console.error("[TwilioSmsWebhook] failed to deliver Alfred reply at all:", e?.message);
           return sendAlfredSms(ctx, from, "Sorry, something went wrong sending my reply — try again.").catch(() => {});
@@ -675,7 +690,7 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
         const empCtx = { authHeaders, ownerId, companyName, twilioSid, twilioToken, twilioFrom, origin: new URL(context.request.url).origin, owmKey, weatherLocation, companyAddress, env: context.env as Record<string, string> };
         context.waitUntil((async () => {
           try {
-            const text = await resolveIncomingText(params, bodyRaw, twilioSid, twilioToken, openaiKey, (context.env as any).AI, context.env.SUPABASE_SERVICE_ROLE_KEY);
+            const text = await resolveIncomingText(params, bodyRaw, twilioSid, twilioToken, openaiKey, (context.env as any).AI, context.env.SUPABASE_SERVICE_ROLE_KEY, ownerId);
             let reply: string;
             if (isTranscriptionFailureNote(text)) {
               reply = text;
@@ -797,7 +812,7 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
     if (!isStop && !isStart && !isOptInKeyword && !isConfirm && match?.alfredAutoRespond) {
       const custCtx = { authHeaders, ownerId, companyName, twilioSid, twilioToken, twilioFrom, ownerPhone: myPhone, autoApproveReschedules: alfredAutoApproveReschedules };
       context.waitUntil(
-        resolveIncomingText(params, bodyRaw, twilioSid, twilioToken, openaiKey, (context.env as any).AI, context.env.SUPABASE_SERVICE_ROLE_KEY)
+        resolveIncomingText(params, bodyRaw, twilioSid, twilioToken, openaiKey, (context.env as any).AI, context.env.SUPABASE_SERVICE_ROLE_KEY, ownerId)
           .then((text) => isTranscriptionFailureNote(text)
             // A customer should never see an internal setup detail like
             // "add the AI binding in Cloudflare" — keep it generic, unlike

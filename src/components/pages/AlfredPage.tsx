@@ -3296,7 +3296,10 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
                     // no file is available rather than blocking the chat.
                     (async () => {
                       try {
-                        const path = `_alfred-inbound/${uid()}-${file.name}`;
+                        // Owner-id-prefixed path — required by the storage
+                        // RLS policy scoping this staging folder per
+                        // business (see the storage security migration).
+                        const path = `_alfred-inbound/${ownerId}/${uid()}-${file.name}`;
                         const { error: upErr } = await (supabase as any).storage.from("customer-docs").upload(path, file, { contentType: file.type || "application/octet-stream", upsert: true });
                         if (upErr) { console.warn("[Alfred] file upload for attach-to-customer failed:", upErr.message); return; }
                         const { data: pub } = (supabase as any).storage.from("customer-docs").getPublicUrl(path);
