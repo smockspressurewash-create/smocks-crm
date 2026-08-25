@@ -646,6 +646,31 @@ const TOOLS = [
     description: "Send a real email to a chemical/equipment supplier's email address. Same rules as text_supplier — outreach only, always confirm the exact subject+message first.",
     input_schema: { type: "object", properties: { itemName: { type: "string" }, supplierName: { type: "string" }, subject: { type: "string" }, message: { type: "string" } }, required: ["itemName", "subject", "message"] },
   },
+  {
+    name: "get_trash_can_status",
+    description: "Get a quick status summary of the Trash Can Cleaning service line — active customers and any jobs with an inconvenience fee waiting to be charged.",
+    input_schema: { type: "object", properties: {} },
+  },
+  {
+    name: "list_sops",
+    description: "List the SOP/instruction documents on file.",
+    input_schema: { type: "object", properties: {} },
+  },
+  {
+    name: "create_sop",
+    description: "Create a new SOP/instruction document, visible to all employees in the portal.",
+    input_schema: { type: "object", properties: { title: { type: "string" }, content: { type: "string" }, frequency: { type: "string", enum: ["daily", "monthly", "general"] } }, required: ["title", "content"] },
+  },
+  {
+    name: "list_campaigns",
+    description: "List marketing campaigns and their status.",
+    input_schema: { type: "object", properties: {} },
+  },
+  {
+    name: "list_social_posts",
+    description: "List recent/scheduled social media posts.",
+    input_schema: { type: "object", properties: {} },
+  },
   // FEATURE — "text a photo or PDF to Alfred and say 'upload this to this
   // client'." When the owner sends a photo/PDF, resolveIncomingText (see
   // twilio-sms-webhook.ts) has already uploaded it and handed you a message
@@ -1371,6 +1396,40 @@ const executeTool = async (ctx: Ctx, name: string, input: Record<string, any>): 
         const res = await sendGmailFromCtx(ctx, supplier.email, input.subject, `<p>${String(input.message).replace(/\n/g, "<br/>")}</p>`);
         if (!res.ok) return { error: res.error };
         return { success: true, supplier: supplier.name, email: supplier.email, sent: input.message };
+      }
+      // FEATURE — cross-channel parity with the in-app chat's SOP/campaign/
+      // social/trash-can tools (AlfredPage.tsx). log_expense/list_expenses
+      // are NOT ported here — expenses (like chemicals used to be) are
+      // still localStorage-only, never reaching Supabase, so text-Alfred
+      // (server-side) genuinely has no way to read or write them yet. That's
+      // a real, separate gap (same class of fix chemicals got this round),
+      // not something this tool list can work around.
+      case "get_trash_can_status": {
+        const trashJobs = await sbGet(ctx, `jobs?select=id,status,serviceCategory,inconvenienceFeePendingConfirmation${ownerScope(ctx)}&limit=1000`);
+        const relevant = trashJobs.filter((j: any) => j.serviceCategory === "trash_can" || j.serviceCategory === "trashcan");
+        const active = relevant.filter((j: any) => j.status !== "cancelled");
+        const pendingFees = relevant.filter((j: any) => j.inconvenienceFeePendingConfirmation);
+        return { success: true, activeCustomers: active.length, jobsWithPendingFees: pendingFees.length };
+      }
+      case "list_sops": {
+        const rows = await sbGet(ctx, `sop_documents?select=id,title,frequency,kind${ownerScope(ctx)}`);
+        return { success: true, count: rows.length, sops: rows.map((s: any) => ({ id: s.id, title: s.title, frequency: s.frequency, kind: s.kind })) };
+      }
+      case "create_sop": {
+        if (!input.title?.trim() || !input.content?.trim()) return { error: "title and content are required." };
+        const row = { id: crypto.randomUUID(), title: input.title, kind: "markdown", content: input.content, frequency: input.frequency || "general", assignedEmployeeIds: [], checklist: [] };
+        const res = await sbWrite(ctx, "sop_documents", "POST", row);
+        if (!res.ok) return { error: res.error };
+        return { success: true, id: row.id, title: row.title };
+      }
+      case "list_campaigns": {
+        const rows = await sbGet(ctx, `campaigns?select=id,name,status,channel${ownerScope(ctx)}`);
+        return { success: true, count: rows.length, campaigns: rows.map((c: any) => ({ id: c.id, name: c.name, status: c.status, channel: c.channel })) };
+      }
+      case "list_social_posts": {
+        const rows = await sbGet(ctx, `social_posts?select=id,caption,status,scheduledAt${ownerScope(ctx)}&order=scheduledAt.desc&limit=20`);
+        if (rows.length === 0) return { success: true, count: 0, posts: [], note: "No scheduled posts, or social posts aren't cloud-synced on this deployment yet." };
+        return { success: true, count: rows.length, posts: rows.map((p: any) => ({ id: p.id, caption: (p.caption || "").slice(0, 80), status: p.status, scheduledAt: p.scheduledAt })) };
       }
       case "attach_file_to_customer": {
         if (!input.fileUrl) return { error: "fileUrl required" };
