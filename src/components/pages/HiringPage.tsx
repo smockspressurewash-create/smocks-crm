@@ -13,6 +13,18 @@ import { useIsMobile } from "../../hooks/useIsMobile";
 import type { AppSettings } from "../../types";
 
 const DEFAULT_PHASES = ["Applied", "Interview", "Offer", "Hired"];
+// FEATURE — "it should have a default application you can edit." The
+// public Apply form (ApplyPage.tsx) used to start completely blank until an
+// owner built questions from scratch — most never would, so almost no
+// applicant ever saw a custom question at all. A sensible starting set,
+// editable/removable the same way any owner-added question already is (same
+// settings.hiringQuestions array, same editor).
+const DEFAULT_HIRING_QUESTIONS = [
+  { id: "dq1", type: "text" as const, label: "Do you have reliable transportation?" },
+  { id: "dq2", type: "choice" as const, label: "Do you have prior pressure-washing or field-service experience?", options: ["Yes", "No"] },
+  { id: "dq3", type: "choice" as const, label: "What's your availability?", options: ["Full-time", "Part-time", "Weekends only"] },
+  { id: "dq4", type: "text" as const, label: "Why do you want to work with us?" },
+];
 
 // Real Supabase-backed Kanban board for job candidates (see migration
 // 0049_hiring_candidates.sql). Phases are owner-editable and stored on
@@ -34,7 +46,7 @@ export function HiringPage({ settings = {} as AppSettings, setSettings, toast, o
   // settings like hiringPhases already is; ApplyPage.tsx fetches them
   // publicly via get_hiring_form_settings and renders them dynamically.
   const [questionsModalOpen, setQuestionsModalOpen] = useState(false);
-  const questions: any[] = (settings as any).hiringQuestions || [];
+  const questions: any[] = (settings as any).hiringQuestions?.length ? (settings as any).hiringQuestions : DEFAULT_HIRING_QUESTIONS;
   const [questionDraft, setQuestionDraft] = useState<any[]>(questions);
   const [candidateDetailOpen, setCandidateDetailOpen] = useState<any>(null);
 

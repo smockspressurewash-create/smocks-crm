@@ -263,7 +263,17 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
       if (!ownerId) return json({ error: "Missing ownerId" }, 400);
       const row = await sb(serviceRoleKey, `app_settings?owner_id=eq.${encodeURIComponent(ownerId)}&select=data`);
       const data = Array.isArray(row.data) ? row.data[0]?.data : null;
-      return json({ companyName: data?.companyName || "", questions: Array.isArray(data?.hiringQuestions) ? data.hiringQuestions : [] });
+      // FEATURE — mirrors HiringPage.tsx's DEFAULT_HIRING_QUESTIONS so a
+      // business that's never touched Application Questions still shows a
+      // real starting form on their public Apply link, not a blank one.
+      const defaultQuestions = [
+        { id: "dq1", type: "text", label: "Do you have reliable transportation?" },
+        { id: "dq2", type: "choice", label: "Do you have prior pressure-washing or field-service experience?", options: ["Yes", "No"] },
+        { id: "dq3", type: "choice", label: "What's your availability?", options: ["Full-time", "Part-time", "Weekends only"] },
+        { id: "dq4", type: "text", label: "Why do you want to work with us?" },
+      ];
+      const questions = Array.isArray(data?.hiringQuestions) && data.hiringQuestions.length > 0 ? data.hiringQuestions : defaultQuestions;
+      return json({ companyName: data?.companyName || "", questions });
     }
 
     // ── LeadFormPage.tsx (#/lead-form) submit — same class of bug as
