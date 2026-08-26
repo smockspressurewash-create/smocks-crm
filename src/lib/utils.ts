@@ -1066,6 +1066,49 @@ export const makeMediaThumbnail = (url: string, mediaType: "image" | "video"): P
     }
   });
 
+// FEATURE — "make sure taxes are correct for the owner's state." State BASE
+// sales tax rates (as of this writing) — a real, defensible starting point
+// per state, NOT a full jurisdiction-accurate calculation. Actual charged
+// tax often also includes county/city add-ons on top of this, and whether
+// a SERVICE (vs. tangible goods) is taxable at all varies by state and
+// isn't captured here either — this is intentionally presented in Settings
+// as a starting suggestion the owner can verify/adjust, not an authoritative
+// final number (that would need a real tax API like TaxJar/Avalara, which
+// this app doesn't integrate).
+export const US_STATE_BASE_TAX_RATES: Record<string, number> = {
+  AL: 4, AK: 0, AZ: 5.6, AR: 6.5, CA: 7.25, CO: 2.9, CT: 6.35, DE: 0, FL: 6, GA: 4,
+  HI: 4, ID: 6, IL: 6.25, IN: 7, IA: 6, KS: 6.5, KY: 6, LA: 4.45, ME: 5.5, MD: 6,
+  MA: 6.25, MI: 6, MN: 6.875, MS: 7, MO: 4.225, MT: 0, NE: 5.5, NV: 6.85, NH: 0,
+  NJ: 6.625, NM: 4.875, NY: 4, NC: 4.75, ND: 5, OH: 5.75, OK: 4.5, OR: 0, PA: 6,
+  RI: 7, SC: 6, SD: 4.2, TN: 7, TX: 6.25, UT: 4.85, VT: 6, VA: 5.3, WA: 6.5,
+  WV: 6, WI: 5, WY: 4, DC: 6,
+};
+const US_STATE_NAME_TO_CODE: Record<string, string> = {
+  alabama: "AL", alaska: "AK", arizona: "AZ", arkansas: "AR", california: "CA", colorado: "CO",
+  connecticut: "CT", delaware: "DE", florida: "FL", georgia: "GA", hawaii: "HI", idaho: "ID",
+  illinois: "IL", indiana: "IN", iowa: "IA", kansas: "KS", kentucky: "KY", louisiana: "LA",
+  maine: "ME", maryland: "MD", massachusetts: "MA", michigan: "MI", minnesota: "MN",
+  mississippi: "MS", missouri: "MO", montana: "MT", nebraska: "NE", nevada: "NV",
+  "new hampshire": "NH", "new jersey": "NJ", "new mexico": "NM", "new york": "NY",
+  "north carolina": "NC", "north dakota": "ND", ohio: "OH", oklahoma: "OK", oregon: "OR",
+  pennsylvania: "PA", "rhode island": "RI", "south carolina": "SC", "south dakota": "SD",
+  tennessee: "TN", texas: "TX", utah: "UT", vermont: "VT", virginia: "VA", washington: "WA",
+  "west virginia": "WV", wisconsin: "WI", wyoming: "WY", "district of columbia": "DC",
+};
+// Parses a free-text business address ("412 Oak Ridge Ln, York PA 17403")
+// into a 2-letter state code — same comma-split + trailing-segment
+// approach lib/weather.ts's deriveWeatherLocation already uses for this
+// address format, reused here rather than duplicated with different logic.
+export const guessStateCodeFromAddress = (address: string): string | null => {
+  const parts = (address || "").split(",").map(s => s.trim()).filter(Boolean);
+  if (parts.length === 0) return null;
+  const last = parts[parts.length - 1];
+  const codeMatch = last.match(/\b([A-Z]{2})\b/);
+  if (codeMatch && US_STATE_BASE_TAX_RATES[codeMatch[1]] !== undefined) return codeMatch[1];
+  const nameOnly = last.replace(/\d+/g, "").trim().toLowerCase();
+  return US_STATE_NAME_TO_CODE[nameOnly] || null;
+};
+
 export const deleteJobMediaByUrl = async (urls: (string | undefined | null)[]): Promise<void> => {
   const paths = urls.filter((u): u is string => !!u).map(jobMediaPathFromUrl).filter((p): p is string => !!p);
   if (paths.length === 0) return;

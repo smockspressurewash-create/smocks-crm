@@ -21,7 +21,7 @@ import {
   Tooltip, ResponsiveContainer, Area, AreaChart, LineChart, Line,
   ComposedChart, Legend
 } from "recharts";
-import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, compressImageFile, POLL_INTERVAL_OPTIONS, DEFAULT_POLL_INTERVAL_MS, backfillJobMediaToStorage, withTimeout } from "../../lib/utils";
+import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, compressImageFile, POLL_INTERVAL_OPTIONS, DEFAULT_POLL_INTERVAL_MS, backfillJobMediaToStorage, withTimeout, guessStateCodeFromAddress, US_STATE_BASE_TAX_RATES } from "../../lib/utils";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField, LegalTemplate } from "../../types";
 import { twilioSend, sendEmail, fetchBufferOrganizationId, fetchBufferChannels, checkA2pCampaignStatus, checkTwilioAccountStatus, type BufferChannel } from "../../lib/messaging";
 import { buildSocialAuthorizeUrl, type SocialPlatform } from "../../lib/socialOAuth";
@@ -1035,7 +1035,34 @@ export function SettingsModal({ open, onClose, settings, setSettings, jobs = [],
             <div><label className="text-xs text-white/60 mb-1 block">Customer Acquisition Goal <span className="text-white/30">(new customers/mo)</span></label><GInput type="number" value={f.customerAcquisitionGoal || ""} onChange={e => setF({ ...f, customerAcquisitionGoal: e.target.value })} placeholder="10" /></div>
             <div><label className="text-xs text-white/60 mb-1 block">Avg Job Value Goal ($)</label><GInput type="number" value={f.avgJobValueGoal || ""} onChange={e => setF({ ...f, avgJobValueGoal: e.target.value })} placeholder="350" /></div>
             <div><label className="text-xs text-white/60 mb-1 block">Review Rating Goal <span className="text-white/30">(out of 5)</span></label><GInput type="number" step="0.1" min="1" max="5" value={f.reviewRatingGoal || ""} onChange={e => setF({ ...f, reviewRatingGoal: e.target.value })} placeholder="4.8" /></div>
-            <div><label className="text-xs text-white/60 mb-1 block">Tax Rate (%)</label><GInput type="number" step="0.01" value={f.taxRate} onChange={e => setF({ ...f, taxRate: e.target.value })} /></div>
+            <div>
+              <label className="text-xs text-white/60 mb-1 block">Tax Rate (%)</label>
+              <div className="flex gap-2">
+                <GInput type="number" step="0.01" value={f.taxRate} onChange={e => setF({ ...f, taxRate: e.target.value })} className="flex-1" />
+                {/* FEATURE — "make sure taxes are correct for the owner's
+                    state." Suggests, never silently overwrites — the owner
+                    may have already set a deliberately different rate
+                    (county add-on, service-tax-exempt state, etc.). */}
+                {(() => {
+                  const stateCode = guessStateCodeFromAddress(f.companyAddress || "");
+                  const suggested = stateCode ? US_STATE_BASE_TAX_RATES[stateCode] : null;
+                  if (suggested === null || suggested === undefined) return null;
+                  return (
+                    <GBtn variant="ghost" className="!text-xs !py-1.5 !px-3 flex-shrink-0" onClick={() => { setF({ ...f, taxRate: suggested }); toast?.(`Set to ${stateCode}'s base rate (${suggested}%)`, "green"); }}>
+                      Use {stateCode} rate ({suggested}%)
+                    </GBtn>
+                  );
+                })()}
+              </div>
+              <div className="text-[10px] text-white/30 mt-1">
+                {(() => {
+                  const stateCode = guessStateCodeFromAddress(f.companyAddress || "");
+                  return stateCode
+                    ? `Suggestion above is ${stateCode}'s base state rate — county/city add-ons and whether services are taxable at all vary, so double-check with your accountant.`
+                    : `Set your Company Address above to get a state tax rate suggestion.`;
+                })()}
+              </div>
+            </div>
           </div>}
 
           {sec === "templates" && <div className="space-y-4">

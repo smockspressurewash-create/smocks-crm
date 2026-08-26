@@ -199,13 +199,24 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
     : e?.estimateType === "options"
     ? effectiveLineItems.reduce((s: number, li: any) => s + Number(li.quantity) * Number(li.unitPrice), 0)
     : (e?.subtotal ?? e?.total ?? 0);
+  // BUG FIX — "it doesn't show why the price goes up — needs to show
+  // that's because of taxes." Package/Options estimates baked tax straight
+  // into effectiveTotal with zero visible breakdown — the customer saw a
+  // running total that silently included tax with no line explaining it,
+  // unlike the Standard type's own totals box further down. Exposing the
+  // discount/tax amounts here (not just the final number) lets the totals
+  // display below show the same Subtotal/Discount/Tax/Total breakdown for
+  // every estimate type, not just Standard.
+  const effectiveTaxRate = Number((settings as any)?.taxRate) || 0;
+  const effectiveDiscountsTotal = e?.estimateType === "package" || e?.estimateType === "options"
+    ? computeDiscountsTotal(e?.discounts, effectiveSubtotal) + Number(e?.discount || 0)
+    : Number(e?.discount || 0);
+  const effectiveAfterDiscount = Math.max(0, effectiveSubtotal - effectiveDiscountsTotal);
+  const effectiveTax = e?.estimateType === "package" || e?.estimateType === "options"
+    ? Math.round(effectiveAfterDiscount * (effectiveTaxRate / 100) * 100) / 100
+    : Number(e?.tax || 0);
   const effectiveTotal = e?.estimateType === "package" || e?.estimateType === "options"
-    ? (() => {
-        const discountsTotal = computeDiscountsTotal(e?.discounts, effectiveSubtotal) + Number(e?.discount || 0);
-        const afterDisc = Math.max(0, effectiveSubtotal - discountsTotal);
-        const taxRate = Number((settings as any)?.taxRate) || 6;
-        return Math.round((afterDisc + afterDisc * (taxRate / 100)) * 100) / 100;
-      })()
+    ? Math.round((effectiveAfterDiscount + effectiveTax) * 100) / 100
     : (e?.total || 0);
   useEffect(() => {
     if (!e?.id) return;
@@ -620,7 +631,7 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
                         </div>
                       );
                     })}
-                    <div className="text-xs text-white/40 text-right">Running total: <span className="text-white font-semibold">{fmt(effectiveTotal)}</span></div>
+                    <div className="text-xs text-white/40 text-right">Running total (incl. tax): <span className="text-white font-semibold">{fmt(effectiveTotal)}</span></div>
                   </div>
                 )}
 
@@ -647,11 +658,14 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
               </div>
               <Glass className="p-4 !bg-black/60">
                 <div className="space-y-1 text-sm">
-                  {(!e.estimateType || e.estimateType === "standard") && <>
-                    <div className="flex justify-between text-white/70"><span>Subtotal</span><span>{fmt(e.subtotal)}</span></div>
-                    {e.discount > 0 && <div className="flex justify-between text-green-400"><span>Discount</span><span>− {fmt(e.discount)}</span></div>}
-                    <div className="flex justify-between text-white/70"><span>Tax</span><span>{fmt(e.tax)}</span></div>
-                  </>}
+                  {/* BUG FIX — every estimate type now shows the real
+                      Subtotal → Discount → Tax → Total breakdown, not just
+                      Standard — so a Package/Options total that's higher
+                      than the visible line items is always explained by a
+                      real tax line, never a silent jump. */}
+                  <div className="flex justify-between text-white/70"><span>Subtotal</span><span>{fmt(effectiveSubtotal)}</span></div>
+                  {effectiveDiscountsTotal > 0 && <div className="flex justify-between text-green-400"><span>Discount</span><span>− {fmt(effectiveDiscountsTotal)}</span></div>}
+                  <div className="flex justify-between text-white/70"><span>Tax{effectiveTaxRate > 0 ? ` (${effectiveTaxRate}%)` : ""}</span><span>{fmt(effectiveTax)}</span></div>
                   <div className="flex justify-between font-bold text-base pt-2 border-t border-red-900/30"><span>Total</span><span className="text-red-400 text-xl">{fmt(effectiveTotal)}</span></div>
                 </div>
               </Glass>
@@ -707,14 +721,21 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
             </div>
           )}
 
-          {/* STEP: Declined confirmation */}
+          {/* STEP: Declined confirmation.
+              BUG FIX — "it should not just dead-end — let them look at it
+              again." This used to be a static screen with no way back —
+              a customer who declined by mistake, or changed their mind,
+              had no path except contacting the company directly. */}
           {step === "declined" && (
-            <div className="text-center py-10 space-y-3">
+            <div className="text-center py-10 space-y-4">
               <div className="w-16 h-16 rounded-full bg-red-950/40 border border-red-700/50 flex items-center justify-center mx-auto">
                 <span className="text-2xl">✕</span>
               </div>
               <div className="text-lg font-bold text-white">Estimate declined</div>
-              <div className="text-sm text-white/50 max-w-xs mx-auto">We've let {settings?.companyName || "the company"} know. Reach out any time if you'd like to revisit this.</div>
+              <div className="text-sm text-white/50 max-w-xs mx-auto">We've let {settings?.companyName || "the company"} know. Changed your mind?</div>
+              <button onClick={() => setStep("view")} className="text-sm text-red-400 hover:text-red-300 font-semibold underline underline-offset-4">
+                ← Look at it again
+              </button>
             </div>
           )}
 
@@ -820,7 +841,15 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
                 </div>
               </Glass>
 
-              {/* Legal disclaimer / T&Cs — gates the Pay button below. */}
+              {/* Legal disclaimer / T&Cs — gates EVERY way of accepting
+                  this estimate below (pay-now buttons AND the pay-later
+                  button). BUG FIX — "customers should have to accept
+                  terms and conditions for quotes" — this used to only
+                  gate the pay-now buttons; the "sign now, pay later"
+                  button further down had no such gate at all, so a
+                  customer could accept the estimate without ever agreeing
+                  to anything. Wording now covers both cases instead of
+                  only making sense for an immediate charge. */}
               <label className="flex items-start gap-2.5 p-3 rounded-xl bg-white/5 border border-white/10 cursor-pointer">
                 <input
                   type="checkbox"
@@ -829,7 +858,10 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
                   className="mt-0.5 flex-shrink-0"
                 />
                 <span className="text-[13px] text-white/70 leading-relaxed">
-                  I authorize {companyName} to charge {fmt(totalWithTip)} to my payment method today{payType === "deposit" ? `, with the remaining balance of ${fmt(depositBalanceAmt)} due after service is completed` : ""}. I understand this charge is non-refundable once service has been rendered, and that {companyName} may retain job photos/videos as service records for up to {(settings as any)?.mediaRetentionDays || 30} days. If I provided a phone number, I may receive text updates about this service (message/data rates may apply — reply STOP at any time to opt out, HELP for help; see {companyName}'s{" "}
+                  {(!hasRemainingBalance && !e?.invoiced && !isDepositMandatory)
+                    ? <>I accept this estimate for {fmt(effectiveTotal)}{payType === "deposit" || payType === "full" ? ` and, if I choose to pay now, authorize ${companyName} to charge my payment method today` : ""}. </>
+                    : <>I authorize {companyName} to charge {fmt(totalWithTip)} to my payment method today{payType === "deposit" ? `, with the remaining balance of ${fmt(depositBalanceAmt)} due after service is completed` : ""}. </>}
+                  I understand any charge is non-refundable once service has been rendered, and that {companyName} may retain job photos/videos as service records for up to {(settings as any)?.mediaRetentionDays || 30} days. If I provided a phone number, I may receive text updates about this service (message/data rates may apply — reply STOP at any time to opt out, HELP for help; see {companyName}'s{" "}
                   <a href={"#/terms?co=" + encodeURIComponent(companyName)} target="_blank" rel="noopener noreferrer" className="underline text-red-300">Terms</a> and{" "}
                   <a href={"#/privacy?co=" + encodeURIComponent(companyName)} target="_blank" rel="noopener noreferrer" className="underline text-red-300">Privacy Policy</a>)
                   {e?.terms ? <> — see full terms below.</> : "."}
@@ -929,9 +961,12 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
                   looking unresponsive on a slow connection, which wasn't
                   handled before. */}
               {!hasRemainingBalance && !e?.invoiced && !isDepositMandatory && (
-                <button onClick={() => { if (!payLaterBusy) { setPayLaterBusy(true); Promise.resolve(handleApprove(undefined, "later")).finally(() => setPayLaterBusy(false)); } }} disabled={payLaterBusy} className="w-full py-3 rounded-xl border border-white/15 text-white/70 hover:text-white hover:bg-white/5 transition text-sm font-medium disabled:opacity-50">
-                  {payLaterBusy ? "Signing…" : "Pay in Full After Service — just sign for now"}
-                </button>
+                <>
+                  <button onClick={() => { if (!payLaterBusy) { setPayLaterBusy(true); Promise.resolve(handleApprove(undefined, "later")).finally(() => setPayLaterBusy(false)); } }} disabled={payLaterBusy || !agreedToPaymentTerms} className="w-full py-3 rounded-xl border border-white/15 text-white/70 hover:text-white hover:bg-white/5 transition text-sm font-medium disabled:opacity-40 disabled:cursor-not-allowed">
+                    {payLaterBusy ? "Signing…" : "Pay in Full After Service — just sign for now"}
+                  </button>
+                  {!agreedToPaymentTerms && <div className="text-center text-[10px] text-yellow-400/80">Check the box above to accept</div>}
+                </>
               )}
               <GBtn variant="ghost" onClick={() => setStep("sign")} className="w-full">← Back to signature</GBtn>
 
