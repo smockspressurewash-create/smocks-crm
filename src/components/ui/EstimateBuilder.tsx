@@ -361,15 +361,13 @@ export function EstimateBuilder({ open, onClose, customers = [], services = [], 
 
         <div className={estimateType === "package" ? "hidden" : ""}>
           <div className="flex items-center justify-between mb-2">
-            <label className="text-xs text-white/60">{estimateType === "options" ? "Line items (customers can toggle optional ones)" : "Line items"}</label>
+            <label className="text-xs text-white/60">{estimateType === "options" ? "Line items (every item is customer-toggleable by default — check \"req\" to lock one in)" : "Line items"}</label>
             <div className="flex items-center gap-2">
-              {/* FEATURE — "if it's an options package, ensure everything is
-                  optional." Each item's optional flag defaults off and has
-                  to be checked one at a time — easy to forget one and end up
-                  with a "package" the customer can't actually customize.
-                  One click flags every current line item at once. */}
-              {estimateType === "options" && items.length > 0 && (
-                <button onClick={() => setItems((items as any[]).map(i => ({ ...i, optional: true })))} className="text-[10px] text-blue-400 hover:text-blue-300 flex items-center gap-1">Make all optional</button>
+              {/* Every item defaults to toggleable now (see the "req"
+                  checkbox below) — this clears any items marked required
+                  back to that default in one click. */}
+              {estimateType === "options" && items.some((i: any) => i.optional === false) && (
+                <button onClick={() => setItems((items as any[]).map(i => ({ ...i, optional: undefined })))} className="text-[10px] text-blue-400 hover:text-blue-300 flex items-center gap-1">Make all toggleable</button>
               )}
               <button onClick={() => setSavingTemplate(!savingTemplate)} className="text-[10px] text-purple-400 hover:text-purple-300 flex items-center gap-1"><Save size={10} />Save as template</button>
               <button onClick={() => setItems([...items, { id: uid(), description: "", quantity: 1, unitPrice: 0 }])} className="text-xs text-red-400 hover:text-red-300 flex items-center gap-1"><Plus size={12} /> Add</button>
@@ -399,10 +397,19 @@ export function EstimateBuilder({ open, onClose, customers = [], services = [], 
                       )}
                     </div>
                     <div className="col-span-3 md:col-span-1 flex items-center justify-end gap-0.5">
+                      {/* BUG FIX — "options quote logic doesn't make sense,
+                          some items can't be toggled." Every item in an
+                          Options quote is customer-toggleable BY DEFAULT
+                          now (that's what choosing "Options" as the
+                          estimate type means) — this checkbox is the rare
+                          exception: mark ONE item required/locked instead
+                          of opting each item INTO being toggleable one at
+                          a time (the old, easy-to-forget default that left
+                          most real quotes with unclickable items). */}
                       {estimateType === "options" && (
-                        <label title="Optional item — customer can toggle" className="flex items-center gap-0.5 cursor-pointer mr-1">
-                          <input type="checkbox" checked={!!it.optional} onChange={e => setItems((items as any[]).map(i => i.id === it.id ? { ...i, optional: e.target.checked } : i))} className="w-3 h-3 accent-blue-500" />
-                          <span className="text-[9px] text-blue-400">opt</span>
+                        <label title="Required — customer can't remove this item" className="flex items-center gap-0.5 cursor-pointer mr-1">
+                          <input type="checkbox" checked={it.optional === false} onChange={e => setItems((items as any[]).map(i => i.id === it.id ? { ...i, optional: e.target.checked ? false : undefined } : i))} className="w-3 h-3 accent-blue-500" />
+                          <span className="text-[9px] text-blue-400">req</span>
                         </label>
                       )}
                       <button onClick={() => toggleExpand(it.id)} title="Notes & photo" className={"p-1.5 rounded-lg transition " + (isExpanded ? "bg-white/10 text-white" : "text-white/30 hover:text-white hover:bg-white/5")}>

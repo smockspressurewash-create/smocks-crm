@@ -203,7 +203,13 @@ export function ExpensesPage({ expenses = [], setExpenses, toast = (() => {}) as
         <div className="flex gap-1 bg-black/40 border border-red-900/30 rounded-xl p-1">
           {["expenses","mileage"].map(t => <button key={t} onClick={() => setTab(t)} className={"px-3 py-1.5 rounded-lg text-xs font-semibold capitalize transition " + (tab === t ? "bg-gradient-to-r from-red-600 to-red-800 text-white" : "text-white/50 hover:text-white")}>{t === "expenses" ? "💸 Expenses" : "🚗 Mileage"}</button>)}
         </div>
-        <div className="flex items-center gap-2">
+        {/* BUG FIX — "the import button and other elements are partially
+            cut off on mobile." Four controls in one row with no wrap of
+            their own — the outer header row could wrap around this whole
+            group, but nothing let the group wrap internally, so on a
+            narrow screen the tail end just ran off-viewport instead of
+            dropping to a second line. */}
+        <div className="flex items-center gap-2 flex-wrap">
           <TimeframeSelector value={timeframe} onChange={setTimeframe} options={["7d","30d","90d","6m","1y","all"]} compact />
           <GBtn variant="ghost" onClick={exportPDF} className="!text-xs"><Download size={12} className="inline mr-1" />Export PDF</GBtn>
           {tab === "expenses" && <GBtn variant="ghost" onClick={() => setImportOpen(true)} className="!text-xs"><Download size={12} className="inline mr-1 rotate-180" />Import</GBtn>}

@@ -80,7 +80,10 @@ import { WeeklyBusinessReview } from "../ui/WeeklyBusinessReview";
 import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 
 export function CalendarPage({ jobs = [], setJobs, customers = [], employees = [], toast, settings = {} as AppSettings, setSettings, ownerId = "" }: { jobs?: any[]; setJobs?: any; customers?: any[]; employees?: any[]; toast?: any; settings?: AppSettings; setSettings?: any; ownerId?: string }) {
-  const [view, setView] = useState(() => typeof window !== "undefined" && window.innerWidth < 768 ? "agenda" : "month");
+  // BUG FIX — "the calendar should open to month view by default; it
+  // shouldn't open to agenda." This used to default to agenda on any
+  // narrow/mobile viewport — always start on month now, on every device.
+  const [view, setView] = useState("month");
   const [off, setOff] = useState(0);
   const [dragId, setDragId] = useState(null);
   // FIX 15 — mobile touch drag-and-drop. HTML5's native draggable/onDragStart

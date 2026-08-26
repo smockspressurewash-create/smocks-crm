@@ -728,8 +728,18 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
           );
           let tok = empRow?.google_token;
           const validTok = tok && empRow?.google_token_expires_at && new Date(empRow.google_token_expires_at).getTime() > Date.now();
-          if (tok && !validTok && empRow?.google_refresh_token && settings?.googleBackendUrl) {
-            const refreshed = await refreshEmpGoogleToken(settings.googleBackendUrl, empRow.google_refresh_token);
+          // BUG FIX — "jobs aren't syncing to Google Calendar for employees
+          // or owners." This required settings.googleBackendUrl to even
+          // ATTEMPT a token refresh — but that field is a leftover from an
+          // old separate-backend architecture this app doesn't use anymore
+          // (see refreshEmpGoogleToken's own same-origin /api/google-refresh
+          // fallback, which works fine with no backendUrl at all). Almost no
+          // deployment has googleBackendUrl set, so this skipped the refresh
+          // entirely for basically everyone — an access token expires after
+          // ~1hr, so any sync attempt after that point silently fell through
+          // to "not connected" even though the employee genuinely was.
+          if (tok && !validTok && empRow?.google_refresh_token) {
+            const refreshed = await refreshEmpGoogleToken(settings?.googleBackendUrl, empRow.google_refresh_token);
             if (refreshed?.token) {
               tok = refreshed.token;
               (supabase as any).from("employees").update({ google_token: refreshed.token, google_token_expires_at: new Date(refreshed.expiresAt).toISOString() }).eq("id", emp.id).catch(() => {});

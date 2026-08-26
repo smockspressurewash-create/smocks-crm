@@ -152,7 +152,11 @@ export function ChemicalsPage({ chemicals = [], setChemicals, toast = () => {}, 
 
   return (
     <div className="space-y-4">
-      <div className="grid grid-cols-4 gap-3">
+      {/* BUG FIX — "the top boxes are too smushed together on mobile." Fixed
+          4-column grid regardless of screen width forced every Stat card
+          to a tiny sliver on a phone — 2 columns below the sm breakpoint,
+          same as the equivalent stat rows elsewhere in this app. */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
         <Stat icon={FlaskConical} label="SKUs" value={chemicals.length} />
         <Stat icon={Wrench} label="Equipment" value={equipmentCount} />
         <Stat icon={AlertTriangle} label="Low Stock" value={low.length} />

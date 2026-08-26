@@ -12,6 +12,7 @@
 //     helpful explanation instead of nothing, since a silently-missing
 //     button reads as broken even when there's a good reason for it.
 import React, { useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 import { Download, CheckCircle } from "lucide-react";
 
 let deferredPrompt: any = null;
@@ -92,7 +93,16 @@ export function InstallAppButton({ className = "", label = "Install App", labelC
         <span className={labelClassName}>{installing ? "Installing…" : label}</span>
       </button>
 
-      {helpModal && (
+      {/* BUG FIX — "the download button does not fit in the middle of the
+          screen." This modal used to render as a plain nested div, fixed-
+          positioned inside whatever ancestor happened to contain the
+          button (the app header) — a `position: fixed` element's
+          containing block becomes any transformed/filtered ancestor
+          instead of the real viewport, so it was centering inside that
+          ancestor's small box, not the screen. Portal it straight to
+          document.body, same escape hatch Modal.tsx already uses for
+          every other full-screen overlay in this app. */}
+      {helpModal && createPortal(
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-6 bg-black/70" onClick={() => setHelpModal(null)}>
           <div className="bg-neutral-950 border border-white/10 rounded-2xl p-5 max-w-sm text-sm text-white space-y-3" onClick={e => e.stopPropagation()}>
             {helpModal === "ios" && (
@@ -121,7 +131,8 @@ export function InstallAppButton({ className = "", label = "Install App", labelC
             )}
             <button onClick={() => setHelpModal(null)} className="w-full py-2 rounded-xl bg-white/10 hover:bg-white/20 text-xs font-semibold">Got it</button>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
     </>
   );

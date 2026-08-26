@@ -145,6 +145,18 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
     toast("Job permanently deleted");
   };
   const [detailId, setDetailId] = useState(null);
+  // BUG FIX — "jobs aren't syncing to Google Calendar for owners." The
+  // owner's manual "☁ Sync" button inside JobDetailModal reads a `gToken`
+  // prop that this page never actually passed — it silently defaulted to
+  // "" every time, so the button always failed with "Add a scheduled date
+  // first" regardless of whether Google was connected or the date was set.
+  // Resolve (and proactively refresh) a real token whenever the detail
+  // modal is opened.
+  const [gToken, setGToken] = useState("");
+  useEffect(() => {
+    if (!detailId) return;
+    getFreshOwnerGoogleToken(settings as any, (token: string) => setGToken(token)).then((token: string | null) => { if (token) setGToken(token); });
+  }, [detailId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Deep-link into a specific job's detail — e.g. from Dashboard's Live Team
   // View "View" button, which navigates here with a target job already known.
@@ -1584,7 +1596,7 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
         {filtered.length === 0 && <div className="md:col-span-2 text-center py-12 text-white/40">No {tabs[tab].toLowerCase()} jobs</div>}
       </div>}
 
-      <JobDetailModal jobId={detailId} job={jobs.find(j => j.id === detailId)} onClose={() => setDetailId(null)} customers={customers} employees={employees} updateJob={updateJob} toast={toast} settings={settings} setSettings={setSettings} estimates={estimates} setEstimates={setEstimates} onPortal={onPortal} ownerId={ownerId} />
+      <JobDetailModal jobId={detailId} job={jobs.find(j => j.id === detailId)} onClose={() => setDetailId(null)} customers={customers} employees={employees} updateJob={updateJob} toast={toast} gToken={gToken} settings={settings} setSettings={setSettings} estimates={estimates} setEstimates={setEstimates} onPortal={onPortal} ownerId={ownerId} />
 
       <Modal open={!!cancelModal} onClose={() => setCancelModal(null)} title="Cancel Job">
         <div className="space-y-3">

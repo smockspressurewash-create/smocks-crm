@@ -531,11 +531,14 @@ export interface ChemicalSupplier {
   name: string;
   phone?: string;
   email?: string;
+  website?: string;
   notes?: string;
 }
 
 export interface Chemical {
   id: string;
+  maintenanceContactName?: string;
+  maintenanceContactPhone?: string;
   name: string;
   itemType?: "chemical" | "equipment";
   brand?: string;

@@ -107,13 +107,31 @@ export function ChemicalModal({ open, onClose, data, onSave }) {
               </div>
               <div className="flex items-center gap-2">
                 <GInput type="email" value={s.email || ""} onChange={e => updateSupplier(s.id, { email: e.target.value })} placeholder="Email (optional)" className="flex-1" />
+                {/* FEATURE — "no way to add links for where you buy stuff." */}
+                <GInput type="url" value={s.website || ""} onChange={e => updateSupplier(s.id, { website: e.target.value })} placeholder="Website / order link (optional)" className="flex-1" />
+              </div>
+              <div className="flex items-center gap-2">
                 <GInput value={s.notes || ""} onChange={e => updateSupplier(s.id, { notes: e.target.value })} placeholder="Notes — account #, lead time, etc." className="flex-1" />
               </div>
+              {s.website && <a href={/^https?:\/\//i.test(s.website) ? s.website : "https://" + s.website} target="_blank" rel="noopener noreferrer" className="text-[10px] text-blue-400 hover:text-blue-300">↗ Open order link</a>}
             </div>
           ))}
         </div>
         {(f.suppliers || []).length > 0 && <div className="text-[10px] text-white/30 mt-1.5">Alfred can text or email any supplier here about stock, pricing, or availability — just ask.</div>}
       </div>
+      {/* FEATURE — "no way to add ... maintenance people." A dedicated
+          maintenance contact, distinct from a chemical/parts supplier —
+          only relevant for equipment items (a hose reel or surface cleaner
+          needs a repair contact, not a chemical vendor). */}
+      {f.itemType === "equipment" && (
+        <div>
+          <label className="text-xs text-white/60 mb-1 block">Maintenance Contact</label>
+          <div className="grid grid-cols-2 gap-2">
+            <GInput value={f.maintenanceContactName || ""} onChange={e => setF({ ...f, maintenanceContactName: e.target.value })} placeholder="Name / company" />
+            <GInput type="tel" value={f.maintenanceContactPhone || ""} onChange={e => setF({ ...f, maintenanceContactPhone: e.target.value })} placeholder="Phone" />
+          </div>
+        </div>
+      )}
       <div><label className="text-xs text-white/60 mb-1 block">Notes</label><GTxt value={f.notes || ""} onChange={e => setF({ ...f, notes: e.target.value })} rows={2} placeholder="Nozzle size, hookup type, storage instructions, anything worth remembering" /></div>
       <div className="flex gap-2 justify-end pt-3"><GBtn variant="ghost" onClick={onClose}>Cancel</GBtn><GBtn onClick={() => { if (!f.name) return; const clean = { ...f, stock: Number(f.stock), reorderLevel: Number(f.reorderLevel), unitCost: Number(f.unitCost), suppliers: (f.suppliers || []).filter((s: any) => s.name.trim()) }; onSave(data ? { ...data, ...clean } : clean); }}>{data ? "Save" : "Add"}</GBtn></div>
     </div>

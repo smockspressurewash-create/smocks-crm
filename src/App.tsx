@@ -4050,11 +4050,17 @@ export function App() {
               full client portal, reschedule a job) against a real customer's
               real data, picked from a modal instead of always jumping to
               whatever estimate happens to be newest. */}
+          {/* BUG FIX — "I don't see the button for testing the client demo"
+              on mobile. This was `hidden md:flex`, deliberately removed on
+              any screen narrower than md — icon-only on small screens
+              (matching InstallAppButton's own responsive pattern right
+              below) instead of fully gone. */}
           <button
             onClick={() => setClientDemoOpen(true)}
-            className="hidden md:flex items-center gap-1.5 px-3 py-1.5 bg-black/40 border border-red-900/30 rounded-xl text-xs text-white/50 hover:text-white hover:border-red-600/50 transition"
+            title="Client Demo"
+            className="flex items-center gap-1.5 px-2 sm:px-3 py-1.5 bg-black/40 border border-red-900/30 rounded-xl text-xs text-white/50 hover:text-white hover:border-red-600/50 transition flex-shrink-0"
           >
-            <Globe size={13} />Client Demo
+            <Globe size={13} /><span className="hidden sm:inline">Client Demo</span>
           </button>
           {/* PWA — always-visible install button (see InstallAppButton.tsx —
               it explains itself instead of disappearing when there's
@@ -4199,7 +4205,14 @@ export function App() {
             scrolled past it. Giving Inbox the same flex-column/no-padding
             treatment as Alfred (own flex-1 fills exactly what's left, no
             vh guess) fixes it the same way. */}
-        <main className={"flex-1 min-h-0 pb-16 md:pb-0 " + (page === "alfred" || page === "inbox" ? "flex flex-col overflow-hidden" : "overflow-y-auto")}>
+        {/* BUG FIX — "sections are cut off partially on mobile scroll." The
+            mobile bottom nav is `env(safe-area-inset-bottom)` TALLER than
+            its base height on notched/gesture-bar phones — this fixed
+            `pb-16` never accounted for that extra inset, so the last chunk
+            of scrollable content (the tail of Upcoming/Recent Activity, on
+            Dashboard) sat partly behind the nav bar on exactly those
+            devices. Matches the nav bar's own safe-area padding. */}
+        <main className={"flex-1 min-h-0 pb-[calc(4rem+env(safe-area-inset-bottom))] md:pb-0 " + (page === "alfred" || page === "inbox" ? "flex flex-col overflow-hidden" : "overflow-y-auto")}>
           <div className={page === "alfred" || page === "inbox" ? "flex-1 flex flex-col min-h-0 p-2 md:p-3" : "px-3 py-4 md:p-6 max-w-[1600px] mx-auto"}>
             <PageFade key={page} className={page === "alfred" || page === "inbox" ? "flex-1 min-h-0 flex flex-col" : ""}>
               <SafePage>

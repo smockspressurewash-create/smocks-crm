@@ -624,7 +624,15 @@ export function AutomationsPage({ automations = [], setAutomations, jobs = [], c
       <Modal open={templatesOpen} onClose={() => setTemplatesOpen(false)} title="Workflow Templates" maxW="max-w-4xl">
         <div className="space-y-3">
           <div className="text-xs text-white/60">Click any template to open it in the workflow builder. Customize it, then save.</div>
-          <div className="grid md:grid-cols-2 gap-3 max-h-[60vh] overflow-y-auto pr-1">
+          {/* BUG FIX — "automation templates can't be moved on mobile and
+              don't fit the screen." This grid had its OWN max-height +
+              scroll on top of the Modal's own scrollable body — two nested
+              touch-scroll containers fighting over the same swipe gesture
+              is a classic mobile bug (the browser can only give the
+              gesture to one of them, and which one "wins" is inconsistent
+              across devices, often reading as "stuck"/unscrollable).
+              Letting the Modal's single outer scroll handle all of it. */}
+          <div className="grid md:grid-cols-2 gap-3">
             {(AUTOMATION_TEMPLATES as any[]).map(tpl => (
               <button key={tpl.id} onClick={() => {
                 const cloned = { name: tpl.name, category: tpl.category, icon: tpl.icon, description: tpl.description, steps: tpl.steps.map(s => ({ ...s, id: uid() })), trigger: tpl.steps[0]?.label || "", action: tpl.steps.find(s => s.type === "action")?.label || "" };

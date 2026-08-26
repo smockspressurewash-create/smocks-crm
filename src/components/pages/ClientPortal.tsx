@@ -551,23 +551,39 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
                   </div>
                 ))}
 
-                {/* OPTIONS type — checkboxes */}
+                {/* OPTIONS type — checkboxes.
+                    BUG FIX — "you made some checkmarks uncheckable — it
+                    doesn't allow you to select or deselect one of the
+                    option service offers, which doesn't make sense." Root
+                    cause: toggling required li.optional === true on EVERY
+                    individual line item, on top of the estimate already
+                    being type "options" — a real quote easily has items
+                    the owner never explicitly flagged (it's a separate,
+                    easy-to-forget checkbox in EstimateBuilder), and those
+                    silently rendered as a bare, unclickable placeholder box
+                    with no toggle at all. If the owner chose "Options" as
+                    the estimate type, every item in it should be
+                    selectable by default — that's what "Options" means.
+                    li.optional === false is now the rare explicit opt-OUT
+                    for a genuinely mandatory line (e.g. a required base
+                    service), not the default gate on everything else. */}
                 {e.estimateType === "options" && (
                   <div className="space-y-2">
                     {(e.lineItems || []).map((li: any) => {
-                      const enabled = enabledItems[li.id] !== false;
+                      const locked = li.optional === false;
+                      const enabled = locked || enabledItems[li.id] !== false;
                       return (
-                        <div key={li.id} onClick={() => li.optional && setEnabledItems(p => ({ ...p, [li.id]: !enabled }))} className={"p-3 rounded-xl border transition " + (li.optional ? "cursor-pointer " : "") + (enabled ? "bg-black/40 border-red-900/20" : "bg-black/20 border-white/5 opacity-60")}>
+                        <div key={li.id} onClick={() => !locked && setEnabledItems(p => ({ ...p, [li.id]: !enabled }))} className={"p-3 rounded-xl border transition " + (locked ? "" : "cursor-pointer ") + (enabled ? "bg-black/40 border-red-900/20" : "bg-black/20 border-white/5 opacity-60")}>
                           <div className="flex items-start justify-between gap-3">
                             <div className="flex items-start gap-2 flex-1 min-w-0">
-                              {li.optional ? (
+                              {!locked ? (
                                 <div className={"w-4 h-4 rounded border-2 flex items-center justify-center flex-shrink-0 mt-0.5 " + (enabled ? "border-red-500 bg-red-500" : "border-white/30")}>
                                   {enabled && <CheckCircle size={10} className="text-white" />}
                                 </div>
                               ) : <div className="w-4 h-4 mt-0.5 flex-shrink-0" />}
                               <div className="flex-1 min-w-0">
                                 <div className="font-medium text-sm">{li.description}</div>
-                                {li.optional && <div className="text-[10px] text-blue-400/70 mt-0.5">Optional — tap to toggle</div>}
+                                {!locked ? <div className="text-[10px] text-blue-400/70 mt-0.5">Optional — tap to toggle</div> : <div className="text-[10px] text-white/30 mt-0.5">Required</div>}
                                 {li.notes && !li.notesInternal && <div className="text-xs text-white/60 mt-1 italic">{li.notes}</div>}
                               </div>
                             </div>
