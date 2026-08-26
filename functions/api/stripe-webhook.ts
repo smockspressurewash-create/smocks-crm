@@ -16,16 +16,14 @@
 // 3. Stripe shows the signing secret ("whsec_...") when you create the
 //    endpoint — that's the value for STRIPE_WEBHOOK_SECRET.
 //
-// Supabase's URL + anon key are the same public values already embedded in
-// the client bundle (src/lib/supabase.ts) — safe to reuse here since this
-// project's RLS policies are already permissive (FOR ALL USING (true), see
-// CLAUDE.md — single-owner app, not multi-tenant), so this doesn't grant the
-// webhook any access the client doesn't already have. What it DOES add is
-// that a payment can now only be marked paid by someone holding Stripe's
-// webhook signing secret, not by anyone with browser devtools open.
+// Writes here require SUPABASE_SERVICE_ROLE_KEY (see logPaymentEvent below)
+// — `estimates` has owner_id-scoped RLS (migration 0033), and this webhook
+// has no Supabase Auth session at all (Stripe calls it directly), so the
+// anon key cannot read or write it. The HMAC signature check above is this
+// endpoint's real authorization boundary: once that passes, the
+// service-role key is what actually lets it record a real payment.
 
 const SUPABASE_URL = "https://boaqaihymgmrhnjtiqrs.supabase.co";
-const SUPABASE_ANON_KEY = "sb_publishable_8aEa3wsYJ7ghVPcGbtHymw_ugj0aEfm";
 
 // Stripe's signature scheme: header is "t=<timestamp>,v1=<hex hmac>[,v0=...]".
 // The signed payload is "<timestamp>.<raw body>", HMAC-SHA256'd with the
@@ -56,49 +54,69 @@ const verifyStripeSignature = async (payload: string, sigHeader: string, secret:
   return diff === 0;
 };
 
-// AUDIT (round 12) — every write now goes through this one helper: reads the
-// invoice's current paymentLog, appends the new event, and PATCHes both the
-// log and whatever status fields this event type implies. paymentFailedAt/
-// refundedAt/disputedAt are what App.tsx's existing owner-notification diff
-// effect watches (same mechanism paidAt/clientViewedAt already use), so a
-// webhook event surfaces as a toast/bell/email without this function needing
-// its own email-sending logic (which would mean re-implementing Gmail OAuth
-// token handling here — the notification path already exists client-side).
+// CRITICAL SECURITY/CORRECTNESS FIX — this webhook is the ONLY
+// server-side-verified place an invoice ever gets marked paid (see the
+// header comment above), but it was still reading/writing `estimates`
+// with the ANON key. `estimates` has since moved to owner_id-scoped RLS
+// (owner_id = current_owner_id(), see migration 0033 / CLAUDE.md) —
+// current_owner_id() resolves via auth.uid(), and this webhook has NO
+// Supabase Auth session at all (Stripe calls it directly, no JWT). That
+// means every read here was silently returning ZERO rows (so a real
+// existing paymentLog got quietly discarded — data loss) and every write
+// was matching ZERO rows (PostgREST reports 200/204 on an RLS-filtered
+// 0-row UPDATE — no error, no retry from Stripe, and the invoice was
+// simply never actually marked paid). This webhook's real authorization
+// boundary is the HMAC signature check above, not a Supabase session — so
+// once that passes, it must use the service-role key to actually read and
+// write, the same trust model stripe-action.ts already uses for every
+// service-role-gated action.
 const logPaymentEvent = async (
   invoiceId: string,
   entry: { type: "paid" | "failed" | "refunded" | "disputed"; amount?: number; stripePaymentIntentId?: string; note?: string },
-  statusPatch: Record<string, unknown>
+  statusPatch: Record<string, unknown>,
+  serviceRoleKey: string
 ): Promise<boolean> => {
+  if (!serviceRoleKey) {
+    console.error("[StripeWebhook] SUPABASE_SERVICE_ROLE_KEY not configured — cannot write invoice status under owner-scoped RLS. Add it in the Cloudflare Pages dashboard.");
+    return false;
+  }
+  const authHeaders = { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}` };
   const getRes = await fetch(`${SUPABASE_URL}/rest/v1/estimates?id=eq.${encodeURIComponent(invoiceId)}&select=paymentLog`, {
-    headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}` },
+    headers: authHeaders,
   });
   const rows = await getRes.json().catch(() => []);
   const existingLog = Array.isArray(rows) && Array.isArray(rows[0]?.paymentLog) ? rows[0].paymentLog : [];
   const newLog = [...existingLog, { id: crypto.randomUUID(), at: new Date().toISOString(), ...entry }];
 
-  const res = await fetch(`${SUPABASE_URL}/rest/v1/estimates?id=eq.${encodeURIComponent(invoiceId)}`, {
+  // .select("id") + explicit 0-row check — same reasoning as every other
+  // owner_id-scoped write in this app (CLAUDE.md): PostgREST does not
+  // error on an RLS-filtered 0-row UPDATE, so this must be checked
+  // explicitly or a real failure here reads as a silent success.
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/estimates?id=eq.${encodeURIComponent(invoiceId)}&select=id`, {
     method: "PATCH",
-    headers: {
-      apikey: SUPABASE_ANON_KEY,
-      Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
-      "Content-Type": "application/json",
-      Prefer: "return=minimal",
-    },
+    headers: { ...authHeaders, "Content-Type": "application/json", Prefer: "return=representation" },
     body: JSON.stringify({ ...statusPatch, paymentLog: newLog }),
   });
   if (!res.ok) {
     const errText = await res.text().catch(() => "");
     console.error("[StripeWebhook] Supabase update failed:", res.status, errText);
+    return false;
   }
-  return res.ok;
+  const updated = await res.json().catch(() => []);
+  if (!Array.isArray(updated) || updated.length === 0) {
+    console.error("[StripeWebhook] update matched 0 rows for invoice", invoiceId, "— invoice not found or owner_id mismatch");
+    return false;
+  }
+  return true;
 };
 
-const markInvoicePaid = (invoiceId: string, paymentIntentId: string, amount?: number): Promise<boolean> => {
+const markInvoicePaid = (invoiceId: string, paymentIntentId: string, serviceRoleKey: string, amount?: number): Promise<boolean> => {
   const paidAt = new Date().toISOString().slice(0, 10);
   return logPaymentEvent(
     invoiceId,
     { type: "paid", amount, stripePaymentIntentId: paymentIntentId, note: "Paid via Stripe" },
-    { paidAt, stripePaymentStatus: "paid", stripePaymentIntentId: paymentIntentId }
+    { paidAt, stripePaymentStatus: "paid", stripePaymentIntentId: paymentIntentId },
+    serviceRoleKey
   );
 };
 
@@ -160,6 +178,7 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
     });
   }
 
+  const serviceRoleKey = context.env.SUPABASE_SERVICE_ROLE_KEY || "";
   try {
     let ok = true;
 
@@ -168,12 +187,12 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
       const invoiceId = session.metadata?.invoiceId || session.client_reference_id;
       const paymentIntentId = session.payment_intent || session.id;
       if (invoiceId && session.payment_status === "paid") {
-        ok = await markInvoicePaid(invoiceId, paymentIntentId || "", (session.amount_total || 0) / 100);
+        ok = await markInvoicePaid(invoiceId, paymentIntentId || "", serviceRoleKey, (session.amount_total || 0) / 100);
       }
     } else if (event.type === "payment_intent.succeeded") {
       const intent = event.data?.object || {};
       const invoiceId = intent.metadata?.invoiceId;
-      if (invoiceId) ok = await markInvoicePaid(invoiceId, intent.id, (intent.amount || 0) / 100);
+      if (invoiceId) ok = await markInvoicePaid(invoiceId, intent.id, serviceRoleKey, (intent.amount || 0) / 100);
     } else if (event.type === "payment_intent.payment_failed") {
       // AUDIT (round 12) — previously unhandled entirely: a declined card
       // meant Stripe knew, but this app never did — no log, no owner
@@ -188,7 +207,8 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
         ok = await logPaymentEvent(
           invoiceId,
           { type: "failed", amount: (intent.amount || 0) / 100, stripePaymentIntentId: intent.id, note: reason },
-          { paymentFailedAt: new Date().toISOString() }
+          { paymentFailedAt: new Date().toISOString() },
+          serviceRoleKey
         );
       }
     } else if (event.type === "charge.refunded") {
@@ -203,7 +223,8 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
         ok = await logPaymentEvent(
           invoiceId,
           { type: "refunded", amount: (charge.amount_refunded || 0) / 100, stripePaymentIntentId: paymentIntentId, note: "Refunded via Stripe" },
-          { refundedAt: new Date().toISOString().slice(0, 10), stripePaymentStatus: "refunded", paidAt: null }
+          { refundedAt: new Date().toISOString().slice(0, 10), stripePaymentStatus: "refunded", paidAt: null },
+          serviceRoleKey
         );
       }
     } else if (event.type === "charge.dispute.created") {
@@ -218,7 +239,8 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
         ok = await logPaymentEvent(
           invoiceId,
           { type: "disputed", amount: (dispute.amount || 0) / 100, stripePaymentIntentId: paymentIntentId, note: dispute.reason || "Dispute opened" },
-          { disputedAt: new Date().toISOString() }
+          { disputedAt: new Date().toISOString() },
+          serviceRoleKey
         );
       } else {
         console.warn("[StripeWebhook] dispute.created with no invoiceId on the charge metadata — check the Stripe dashboard directly:", paymentIntentId);

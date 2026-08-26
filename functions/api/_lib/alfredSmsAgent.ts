@@ -366,12 +366,24 @@ const sendSms = async (ctx: Ctx, toPhone: string, bodyRaw: string, isOwnerReply 
   try {
     const threads = await sbGet(ctx, `inbox_threads?channel=eq.sms&select=id,contact_phone,contact_name,customer_id,messages${ownerScope(ctx)}`);
     const digits = normalizePhoneDigits(toPhone);
-    // Owner replies consolidate into ONE thread regardless of WHICH of the
-    // owner's authorized phones this particular message involves — see
-    // ownerAuthorizedPhones on Ctx.
-    const existing = isOwnerReply && ctx.ownerAuthorizedPhones?.length
+    // BUG FIX — "outgoing messages from Alfred aren't showing" for a
+    // specific owner number. The old owner-reply consolidation matched
+    // ANY thread whose contact_phone was ONE of the owner's authorized
+    // phones, with no preference for the phone actually being replied to
+    // right now — .find() just returns whichever authorized-phone thread
+    // happens to come back first from Postgres. With more than one
+    // authorized phone on file (myPhone + alfredExtraPhones), every
+    // outgoing reply silently piled onto whichever thread existed FIRST
+    // (e.g. an old testing number), while the inbound side (a separate,
+    // simpler exact-match lookup) kept logging correctly under the real
+    // current number — exactly the one-sided "only my texts show, no
+    // replies" symptom. An exact match on the number actually being
+    // texted must always win; only fall back to "any authorized-phone
+    // thread" when there's truly no thread yet for this specific number.
+    const exactMatch = threads.find((t: any) => normalizePhoneDigits(t.contact_phone) === digits);
+    const existing = exactMatch || (isOwnerReply && ctx.ownerAuthorizedPhones?.length
       ? threads.find((t: any) => ctx.ownerAuthorizedPhones!.includes(normalizePhoneDigits(t.contact_phone)))
-      : threads.find((t: any) => normalizePhoneDigits(t.contact_phone) === digits);
+      : undefined);
     // BUG FIX — was always `dir: "out"` with no marker at all, so a reply
     // Alfred sent to the OWNER looked in the Inbox exactly like a normal
     // outgoing message the owner sent themselves, with no way to tell them

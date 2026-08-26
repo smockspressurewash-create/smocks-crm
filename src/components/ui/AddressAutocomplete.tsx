@@ -97,7 +97,7 @@ function matchKnownAddresses(q: string, knownAddresses: string[]): string[] {
 // (Cloud Console 403) surfaces as a specific, actionable banner instead of a
 // silent console warning.
 export function AddressAutocomplete({
-  value = "",
+  value: rawValue = "",
   onChange,
   onPlaceSelect,
   placeholder = "Start typing an address...",
@@ -105,7 +105,7 @@ export function AddressAutocomplete({
   className = "",
   knownAddresses = [],
 }: {
-  value?: string;
+  value?: string | null;
   onChange: (v: string) => void;
   onPlaceSelect?: (place: PlaceResult) => void;
   placeholder?: string;
@@ -113,6 +113,14 @@ export function AddressAutocomplete({
   className?: string;
   knownAddresses?: string[];
 }) {
+  // BUG FIX — "Cannot read properties of null (reading 'trim')" crashed the
+  // whole customer-edit modal. A default parameter (`value = ""`) only
+  // kicks in for `undefined`, NOT `null` — and `f.address` coming straight
+  // off a Supabase row can genuinely be null (e.g. a customer saved before
+  // an address was ever entered), so `value` here was null despite the
+  // default, and every direct value.trim() below threw. Coercing here
+  // protects every call site at once, not just the one that crashed.
+  const value = rawValue || "";
   const [open, setOpen] = useState(false);
   // Local CRM matches — instant, synchronous, always available fallback.
   const localMatches = value.trim().length >= 2 ? matchKnownAddresses(value, knownAddresses) : [];

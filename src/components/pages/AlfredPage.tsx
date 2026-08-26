@@ -828,6 +828,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           if (settings?.twilioSid) {
             try {
               await twilioSend(settings, matchedCustomer.phone, offerMsg);
+              logOutboundSmsToInbox({ contactName: `${matchedCustomer.firstName} ${matchedCustomer.lastName}`, contactPhone: matchedCustomer.phone, customerId: matchedCustomer.id, body: offerMsg }).catch(() => {});
               return "📅 Scheduling: " + matchedCustomer.firstName + " " + matchedCustomer.lastName + "\n\nSent slot options to " + matchedCustomer.phone + ":\n\n" + slotsText + "\n\nWaiting for their reply. When they pick, use /schedule confirm [date] to book. Alfred out.";
             } catch (e) {
               return "Found customer but SMS failed: " + e.message + "\n\nSlot options:\n" + slotsText + "\n\nManually text: " + matchedCustomer.phone;
@@ -1010,6 +1011,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
         if (settings.twilioSid && rc.phone) {
           try {
             await twilioSend(settings, rc.phone, clientMsg);
+            logOutboundSmsToInbox({ contactName: `${rc.firstName} ${rc.lastName}`, contactPhone: rc.phone, customerId: rc.id, body: clientMsg }).catch(() => {});
             // Schedule a follow-up note (conceptual - in production would set a delayed webhook)
             const followUpMsg = "⚠️ RESCHEDULE PENDING: " + rc.firstName + " " + rc.lastName + " was texted about rescheduling their " + (rjob.scheduledDate || "") + " job. Follow up if no response in 24h. Address: " + rjob.address;
             if (settings.myPhone) setTimeout(() => twilioSend(settings, settings.myPhone, followUpMsg).catch(() => {}), 24 * 60 * 60 * 1000); // reminder after 24h

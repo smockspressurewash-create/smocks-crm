@@ -77,7 +77,7 @@ export function CustomerModal({ open, onClose, data, onSave, mapsKey = "", custo
         </div>
         <div><label className="text-xs text-white/60 mb-1 block">Email</label><GInput type="email" value={f.email} onChange={e => setF({ ...f, email: e.target.value })} /></div>
         <div><label className="text-xs text-white/60 mb-1 block">Phone</label><GInput value={f.phone} onChange={e => setF({ ...f, phone: formatPhoneInput(e.target.value) })} placeholder="(717) 555-0100" /></div>
-        <div><label className="text-xs text-white/60 mb-1 block">Address</label><AddressAutocomplete value={f.address} onChange={v => setF({ ...f, address: v })} onPlaceSelect={place => setF(p => ({ ...p, address: place.street, city: place.city, state: place.state, zip: place.zip }))} mapsKey={mapsKey} placeholder="412 Oak Ridge Ln, York PA" knownAddresses={customers.map((c: any) => c.address).filter(Boolean)} /></div>
+        <div><label className="text-xs text-white/60 mb-1 block">Address</label><AddressAutocomplete value={f.address || ""} onChange={v => setF({ ...f, address: v || "" })} onPlaceSelect={place => setF(p => ({ ...p, address: place.street || "", city: place.city || "", state: place.state || "", zip: place.zip || "" }))} mapsKey={mapsKey} placeholder="412 Oak Ridge Ln, York PA" knownAddresses={customers.map((c: any) => c.address).filter(Boolean)} /></div>
 
         <div className="grid grid-cols-2 gap-3">
           <div>
@@ -186,7 +186,7 @@ export function CustomerModal({ open, onClose, data, onSave, mapsKey = "", custo
                   </GSel>
                 </div>
               </div>
-              <div><label className="text-[10px] text-white/50 mb-0.5 block">Street *</label><AddressAutocomplete value={addrForm.street} onChange={v => setAddrForm(p => ({ ...p, street: v }))} onPlaceSelect={place => setAddrForm(p => ({ ...p, street: place.street, city: place.city, state: place.state, zip: place.zip }))} mapsKey={mapsKey} placeholder="456 Pine St" knownAddresses={customers.map((c: any) => c.address).filter(Boolean)} /></div>
+              <div><label className="text-[10px] text-white/50 mb-0.5 block">Street *</label><AddressAutocomplete value={addrForm.street || ""} onChange={v => setAddrForm(p => ({ ...p, street: v || "" }))} onPlaceSelect={place => setAddrForm(p => ({ ...p, street: place.street || "", city: place.city || "", state: place.state || "", zip: place.zip || "" }))} mapsKey={mapsKey} placeholder="456 Pine St" knownAddresses={customers.map((c: any) => c.address).filter(Boolean)} /></div>
               <div className="grid grid-cols-3 gap-2">
                 <div><label className="text-[10px] text-white/50 mb-0.5 block">City</label><GInput value={addrForm.city || ""} onChange={e => setAddrForm(p => ({ ...p, city: e.target.value }))} className="!text-xs" /></div>
                 <div><label className="text-[10px] text-white/50 mb-0.5 block">State</label><GInput value={addrForm.state || ""} onChange={e => setAddrForm(p => ({ ...p, state: e.target.value }))} className="!text-xs" /></div>
@@ -194,7 +194,7 @@ export function CustomerModal({ open, onClose, data, onSave, mapsKey = "", custo
               </div>
               <div><label className="text-[10px] text-white/50 mb-0.5 block">Sq Footage</label><GInput type="number" value={addrForm.sqFootage || ""} onChange={e => setAddrForm(p => ({ ...p, sqFootage: e.target.value ? Number(e.target.value) : undefined }))} placeholder="2400" className="!text-xs" /></div>
               <div><label className="text-[10px] text-white/50 mb-0.5 block">Notes</label><GInput value={addrForm.notes || ""} onChange={e => setAddrForm(p => ({ ...p, notes: e.target.value }))} placeholder="Gate code, access notes…" className="!text-xs" /></div>
-              <GBtn disabled={!addrForm.street.trim()} onClick={() => { setF(p => ({ ...p, addresses: [...(p.addresses || []), { ...addrForm, id: addrForm.id || uid() }] })); setAddAddr(false); }} className="!text-xs !py-1.5 w-full">Save Address</GBtn>
+              <GBtn disabled={!(addrForm.street || "").trim()} onClick={() => { setF(p => ({ ...p, addresses: [...(p.addresses || []), { ...addrForm, id: addrForm.id || uid() }] })); setAddAddr(false); }} className="!text-xs !py-1.5 w-full">Save Address</GBtn>
             </div>
           )}
         </div>
