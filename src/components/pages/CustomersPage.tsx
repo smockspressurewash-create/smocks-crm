@@ -32,6 +32,7 @@ import { usePersistent } from "../../hooks/usePersistent";
 import { usePersistentRaw } from "../../hooks/usePersistentRaw";
 import { Glass } from "../ui/Glass";
 import { ImportDataModal } from "../ui/ImportDataModal";
+import { ImportStripeCustomersModal } from "../ui/ImportStripeCustomersModal";
 import { GBtn } from "../ui/GBtn";
 import { GInput } from "../ui/GInput";
 import { GDate } from "../ui/GDate";
@@ -539,6 +540,7 @@ export function CustomersPage({ customers = [], setCustomers, estimates = [], jo
   // exact same mapping, reused here as fieldMap so all three sources land
   // on identical Customer records.
   const [sheetsImportOpen, setSheetsImportOpen] = useState(false);
+  const [stripeImportOpen, setStripeImportOpen] = useState(false);
   const customerImportFieldMap = {
     firstName: ["firstname", "first_name", "first name", "fname", "given name"],
     lastName: ["lastname", "last_name", "last name", "lname", "surname", "family name"],
@@ -618,6 +620,7 @@ export function CustomersPage({ customers = [], setCustomers, estimates = [], jo
             <input ref={fileRef} type="file" accept=".csv" onChange={importCSV} className="hidden" />
             <GBtn variant="ghost" onClick={() => fileRef.current?.click()}><Download size={14} className="inline mr-1.5 rotate-180" />Import CSV</GBtn>
             <GBtn variant="ghost" onClick={() => setSheetsImportOpen(true)}><Download size={14} className="inline mr-1.5 rotate-180" />Sheets / Paste</GBtn>
+            <GBtn variant="ghost" onClick={() => setStripeImportOpen(true)}><CreditCard size={14} className="inline mr-1.5" />Import from Stripe</GBtn>
             <GBtn variant="ghost" onClick={exportCSV}><Download size={14} className="inline mr-1.5" />Export</GBtn>
             <GBtn variant={mergeMode ? "danger" : "ghost"} onClick={() => { setMergeMode(!mergeMode); setMergePair([]); }}><UserCheck size={14} className="inline mr-1.5" />{mergeMode ? "Cancel Merge" : "Merge"}</GBtn>
             <GBtn variant={bulkMode ? "danger" : "ghost"} onClick={() => { setBulkMode(!bulkMode); setBulkSelected([]); }}><CheckSquare size={14} className="inline mr-1.5" />{bulkMode ? "Cancel Select" : "Select"}</GBtn>
@@ -935,6 +938,7 @@ export function CustomersPage({ customers = [], setCustomers, estimates = [], jo
 
       <CustomerModal open={modal.open} onClose={() => setModal({ open: false, data: null })} data={modal.data} onSave={save} mapsKey={settings.googleMapsKey || (settings as any).mapsKey || ""} customers={customers} />
       <ImportDataModal open={sheetsImportOpen} onClose={() => setSheetsImportOpen(false)} title="Import Customers" fieldMap={customerImportFieldMap} onImport={handleSheetsImport} toast={toast} />
+      <ImportStripeCustomersModal open={stripeImportOpen} onClose={() => setStripeImportOpen(false)} customers={customers} setCustomers={setCustomers} toast={toast} />
       <CustomerDetail customer={detail} onClose={() => setDetail(null)} onDelete={deleteCustomer} onEdit={(cust: any) => { setDetail(null); setModal({ open: true, data: cust }); }} estimates={estimates} jobs={jobs} employees={employees} timeline={timeline} setTimeline={setTimeline} settings={settings} toast={toast} setCustomers={setCustomers} onOpenEstimate={(estId: string, label?: string) => {
         setDetail(null);
         const est = estimates.find((e: any) => e.id === estId);

@@ -140,6 +140,17 @@ export const detachPaymentMethod = async (accessToken: string, paymentMethodId: 
   await stripeAction("detach_payment_method", { paymentMethodId }, accessToken);
 };
 
+// FEATURE — "prioritize importing existing Stripe customers/cards." See
+// ImportStripeCustomersModal.tsx — lists real Stripe customers (name/email/
+// phone only; actual card details load per-customer via
+// listCustomerPaymentMethods above only once the owner picks one to link,
+// so this stays fast even with a large Stripe customer list).
+export interface StripeCustomerListItem { id: string; name: string; email: string; phone: string; created: number }
+export const listStripeCustomers = async (accessToken: string, startingAfter?: string): Promise<{ customers: StripeCustomerListItem[]; hasMore: boolean }> => {
+  const data = await stripeAction("list_stripe_customers", startingAfter ? { startingAfter } : {}, accessToken);
+  return { customers: data.customers || [], hasMore: !!data.hasMore };
+};
+
 // ─── Customer-facing "card on file" display (ClientAuthPortal.tsx) ────────
 // Customer sessions are a separate Supabase auth realm from owner/employee
 // ones and can't use listCustomerPaymentMethods above (that's gated to

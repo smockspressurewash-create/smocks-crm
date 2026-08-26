@@ -254,6 +254,33 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
       return json({ success: true });
     }
 
+    // FEATURE — "prioritize importing existing Stripe customers/cards."
+    // Owner-CRM-only, same auth pattern as list_payment_methods right below
+    // (never a client-claimed ownerId — always resolved from the caller's
+    // own session token). Lists real Stripe customers so the owner can
+    // link them to (or create) CRM customer records — see
+    // ImportStripeCustomersModal.tsx. Returns whether each Stripe customer
+    // has at least one card on file (a cheap has_more probe, not the full
+    // card details — those load per-customer via list_payment_methods only
+    // once the owner actually picks one to import, so this stays fast even
+    // with a large Stripe customer list).
+    if (action === "list_stripe_customers") {
+      const serviceRoleKey = context.env.SUPABASE_SERVICE_ROLE_KEY;
+      const accessToken = (context.request.headers.get("authorization") || "").replace(/^Bearer\s+/i, "");
+      const callerOwnerId = serviceRoleKey ? await resolveCallerOwnerId(accessToken) : null;
+      if (serviceRoleKey && !callerOwnerId) {
+        return new Response(JSON.stringify({ error: "Not signed in." }), { status: 401, headers: { "Content-Type": "application/json" } });
+      }
+      const acct = callerOwnerId && serviceRoleKey ? await getOwnerStripeAccount(callerOwnerId, serviceRoleKey) : null;
+      const secretKey = acct?.secretKey || platformSecretKey;
+      const stripeAccount = acct?.stripeAccountId;
+      if (!secretKey) return new Response(JSON.stringify({ error: "Stripe isn't configured for this business yet." }), { status: 500, headers: { "Content-Type": "application/json" } });
+      const startingAfter = body.startingAfter ? `&starting_after=${encodeURIComponent(body.startingAfter)}` : "";
+      const custRes = await stripeFetch(secretKey, "GET", `customers?limit=100${startingAfter}`, undefined, stripeAccount);
+      const customersOut = (custRes.data || []).map((c: any) => ({ id: c.id, name: c.name || "", email: c.email || "", phone: c.phone || "", created: c.created }));
+      return json({ customers: customersOut, hasMore: !!custRes.has_more });
+    }
+
     // list_payment_methods / detach_payment_method — owner-CRM-only actions
     // exposing/manipulating a customer's stored cards. Same auth-token
     // requirement as save_owner_keys above (never a client-claimed
