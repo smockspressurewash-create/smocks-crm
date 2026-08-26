@@ -149,10 +149,8 @@ export const MODELS: Record<string, ModelDef> = {
     contextWindow: 32000,
     color: "from-green-500 to-emerald-700",
     needsKey: true,
-    // Sample code didn't show tools/function-calling usage — leaving off
-    // until confirmed, so Alfred's failover skips it for tool-using turns
-    // rather than risk a model that silently ignores tool definitions.
-    supportsTools: false,
+    // Confirmed via NVIDIA's own model spec page: "Function Calling: Supported".
+    supportsTools: true,
     keyUrl: "https://build.nvidia.com/meta/muse-glimmer-30b",
     apiLabel: "NVIDIA API Key",
     free: true,
