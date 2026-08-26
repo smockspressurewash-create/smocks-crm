@@ -415,11 +415,10 @@ export const logOutboundSmsToInbox = async (
   opts: { contactName: string; contactPhone: string; customerId?: string | null; body: string }
 ): Promise<void> => {
   try {
-    const normPhone = (p: string) => (p || "").replace(/\D/g, "");
     const { data, error } = await (supabase as any).from("inbox_threads").select("*").eq("channel", "sms");
     if (error) { console.warn("[Inbox Sync] inbox_threads unavailable — run the inbox_threads SQL:", error.message); return; }
     const rows: any[] = Array.isArray(data) ? data : [];
-    const existing = rows.find(r => normPhone(r.contact_phone) === normPhone(opts.contactPhone) && normPhone(opts.contactPhone));
+    const existing = rows.find(r => normalizePhoneDigits(r.contact_phone) === normalizePhoneDigits(opts.contactPhone) && normalizePhoneDigits(opts.contactPhone));
     const newMsg: InboxSyncMessage = { id: uid(), dir: "out", body: opts.body, ts: Date.now(), status: "sent" };
     if (existing) {
       // BUG FIX — "some conversations aren't showing Alfred's responses" /

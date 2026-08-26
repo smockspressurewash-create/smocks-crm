@@ -20,7 +20,7 @@ import {
   Tooltip, ResponsiveContainer, Area, AreaChart, LineChart, Line,
   ComposedChart, Legend
 } from "recharts";
-import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE } from "../../lib/utils";
+import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, normalizePhoneDigits } from "../../lib/utils";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
 import { twilioSend, sendEmail, pollTwilioIncoming, getFreshOwnerGoogleToken } from "../../lib/messaging";
 import { supabase, getStoredGoogleConnection, setStoredGoogleToken } from "../../lib/supabase";
@@ -217,10 +217,61 @@ export function InboxPage({ threads = [], setThreads, customers = [], setCustome
     unread: !!r.unread,
     messages: dedupeMessages(Array.isArray(r.messages) ? r.messages : []),
   });
+  // ONE-TIME CLEANUP — merges any pre-existing duplicate sms threads left
+  // over from the phone-normalization mismatch fixed above (see
+  // normalizePhoneDigits in lib/utils.ts). Threads created via the Twilio
+  // webhook (11-digit contact_phone) vs. threads created/matched
+  // client-side (10-digit, no leading "1") for the SAME real number never
+  // compared equal, so the same conversation silently split into two rows —
+  // one accumulating Alfred's replies (badged), one not. Runs once per
+  // session load, combines every duplicate group's messages into a single
+  // canonical row (deduped, sorted by ts), and deletes the rest.
+  const dedupeRanRef = useRef(false);
+  const mergeDuplicateInboxThreads = async () => {
+    if (dedupeRanRef.current) return;
+    dedupeRanRef.current = true;
+    try {
+      const { data, error } = await (supabase as any).from("inbox_threads").select("*").eq("channel", "sms");
+      if (error || !Array.isArray(data) || data.length < 2) return;
+      const groups = new Map<string, any[]>();
+      for (const row of data) {
+        const digits = normalizePhoneDigits(row.contact_phone);
+        if (!digits) continue;
+        if (!groups.has(digits)) groups.set(digits, []);
+        groups.get(digits)!.push(row);
+      }
+      for (const rows of groups.values()) {
+        if (rows.length < 2) continue;
+        console.log("[Inbox] merging", rows.length, "duplicate threads for the same number:", rows.map(r => r.id));
+        const looksLikeRawNumber = (name: string, phone: string) => !name || normalizePhoneDigits(name) === normalizePhoneDigits(phone);
+        const canonical = rows.find(r => !looksLikeRawNumber(r.contact_name, r.contact_phone))
+          || [...rows].sort((a, b) => (b.messages?.length || 0) - (a.messages?.length || 0))[0];
+        const others = rows.filter(r => r.id !== canonical.id);
+        const allMessages = dedupeMessages(rows.flatMap(r => Array.isArray(r.messages) ? r.messages : [])).sort((a: any, b: any) => (a.ts || 0) - (b.ts || 0));
+        const bestName = rows.find(r => !looksLikeRawNumber(r.contact_name, r.contact_phone))?.contact_name || canonical.contact_name;
+        const bestCustomerId = rows.find(r => r.customer_id)?.customer_id || null;
+        const anyUnread = rows.some(r => r.unread);
+        await (supabase as any).from("inbox_threads").update({
+          contact_name: bestName,
+          customer_id: bestCustomerId,
+          messages: allMessages,
+          unread: anyUnread,
+          last_message_at: allMessages[allMessages.length - 1]?.ts || canonical.last_message_at,
+          updated_at: new Date().toISOString(),
+        }).eq("id", canonical.id);
+        for (const other of others) {
+          await (supabase as any).from("inbox_threads").delete().eq("id", other.id);
+        }
+      }
+    } catch (e: any) {
+      console.warn("[Inbox] duplicate-thread merge failed:", e?.message);
+    }
+  };
   useEffect(() => {
     let cancelled = false;
     const loadInboxThreads = async () => {
       try {
+        await mergeDuplicateInboxThreads();
         const { data, error } = await (supabase as any).from("inbox_threads").select("*").eq("channel", "sms");
         if (error) { console.warn("[Inbox] inbox_threads fetch failed — run the inbox_threads SQL:", error.message); return; }
         if (cancelled || !Array.isArray(data)) return;
@@ -368,7 +419,7 @@ export function InboxPage({ threads = [], setThreads, customers = [], setCustome
             incoming.forEach(msg => {
               if (msg.sid && knownSids.has(msg.sid)) return; // already recorded (likely by the webhook) — skip entirely
               const phone = msg.from;
-              const customer = customersRef.current.find(c => c.phone?.replace(/\D/g, "") === phone.replace(/\D/g, ""));
+              const customer = customersRef.current.find(c => normalizePhoneDigits(c.phone) === normalizePhoneDigits(phone));
               const newMsg = { id: msg.sid || uid(), sid: msg.sid || null, dir: "in", body: msg.body, ts: msg.dateSent ? new Date(msg.dateSent).getTime() : Date.now() };
 
               // Handle STOP/UNSTOP opt-out keywords (Twilio compliance).
@@ -410,7 +461,7 @@ export function InboxPage({ threads = [], setThreads, customers = [], setCustome
                 if (msg.sid) markSidNotified(msg.sid);
               }
 
-              const existingThread = updated.find(t => t.channel === "sms" && t.contactPhone?.replace(/\D/g, "") === phone.replace(/\D/g, ""));
+              const existingThread = updated.find(t => t.channel === "sms" && normalizePhoneDigits(t.contactPhone) === normalizePhoneDigits(phone));
               if (existingThread) {
                 // Belt-and-suspenders against the stale-closure duplicate bug
                 // above: never append a message that's identical (dir/body/ts)
@@ -655,7 +706,7 @@ export function InboxPage({ threads = [], setThreads, customers = [], setCustome
     // you already had a conversation with silently forked it into a second,
     // disconnected thread instead of continuing the real one.
     let existing = newDraft.channel === "sms"
-      ? threads.find(t => t.channel === "sms" && t.contactPhone && newDraft.phone && t.contactPhone.replace(/\D/g, "") === newDraft.phone.replace(/\D/g, ""))
+      ? threads.find(t => t.channel === "sms" && t.contactPhone && newDraft.phone && normalizePhoneDigits(t.contactPhone) === normalizePhoneDigits(newDraft.phone))
       : threads.find(t => t.channel === "email" && t.contactEmail && newDraft.email && t.contactEmail.toLowerCase() === newDraft.email.toLowerCase());
     // ISSUE 1 (round 8) — the local `threads` state above only knows about
     // conversations already loaded into this session. If Twilio's inbound
@@ -671,9 +722,9 @@ export function InboxPage({ threads = [], setThreads, customers = [], setCustome
     // directly by phone before deciding to create a new row.
     if (!existing && newDraft.channel === "sms" && newDraft.phone) {
       try {
-        const digits = newDraft.phone.replace(/\D/g, "");
+        const digits = normalizePhoneDigits(newDraft.phone);
         const { data } = await (supabase as any).from("inbox_threads").select("*").eq("channel", "sms");
-        const serverMatch = Array.isArray(data) ? data.find((r: any) => (r.contact_phone || "").replace(/\D/g, "") === digits && digits) : null;
+        const serverMatch = Array.isArray(data) ? data.find((r: any) => normalizePhoneDigits(r.contact_phone) === digits && digits) : null;
         if (serverMatch) existing = normalizeInboxThread(serverMatch);
       } catch (e: any) {
         console.warn("[Inbox] startNew server thread lookup failed, creating new thread:", e?.message);
@@ -889,7 +940,7 @@ export function InboxPage({ threads = [], setThreads, customers = [], setCustome
   const findCustomer = (t: any) => {
     if (t.customerId) return customers.find(c => c.id === t.customerId);
     if (t.contactEmail) return customers.find(c => c.email && c.email.toLowerCase() === t.contactEmail.toLowerCase());
-    if (t.contactPhone) return customers.find(c => c.phone && c.phone.replace(/\D/g, "") === t.contactPhone.replace(/\D/g, ""));
+    if (t.contactPhone) return customers.find(c => c.phone && normalizePhoneDigits(c.phone) === normalizePhoneDigits(t.contactPhone));
     return null;
   };
   const dateRangeCutoff = (() => {

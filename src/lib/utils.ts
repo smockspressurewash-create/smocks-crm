@@ -175,6 +175,25 @@ export const toE164 = (raw: string): string => {
   return "";
 };
 
+// BUG FIX — SMS Inbox showing two separate conversations for the same real
+// phone number, one carrying Alfred's replies (badged "from Alfred") and one
+// not. Root cause: every phone-matching call site in this app used plain
+// `.replace(/\D/g, "")`, but Twilio's inbound `From`/`To` always arrive
+// E.164 with the US country code ("+17175550100" -> "17175550100", 11
+// digits), while a number typed into a form or stored on a customer record
+// is normally the bare 10-digit local number ("7175550100") — those two
+// never compared equal, so a thread created from a Twilio webhook event and
+// a thread created/matched client-side (compose, backfill, outbound SMS
+// logging) for the exact same number silently diverged into two rows.
+// twilio-sms-webhook.ts already had the fix (strip a leading "1" off an
+// 11-digit result) — this is that exact same function, shared so every
+// client-side phone comparison (InboxPage.tsx, lib/messaging.ts) uses
+// identical normalization to what the server writes.
+export const normalizePhoneDigits = (p: string | null | undefined): string => {
+  const d = (p || "").replace(/\D/g, "");
+  return d.length === 11 && d.startsWith("1") ? d.slice(1) : d;
+};
+
 // Live-format a US phone number as the user types, e.g. "(717) 555-0100" —
 // purely cosmetic for input fields; toE164 above is what actually matters
 // for sending. Keeps a leading "+" (international entry) untouched.

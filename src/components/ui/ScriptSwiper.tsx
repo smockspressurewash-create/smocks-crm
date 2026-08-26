@@ -3,7 +3,7 @@
 // (pointer/touch delta tracking) but adds drag-follow + rotation feedback
 // and a real commit threshold, since this card needs a decisive accept/
 // decline gesture rather than SwipeableCard's small direction hint.
-import React, { useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { X, Heart } from "lucide-react";
 
 const THRESHOLD = 100;
@@ -30,16 +30,29 @@ export function ScriptSwiper({
   const [dragX, setDragX] = useState(0);
   const [dragging, setDragging] = useState(false);
   const [exiting, setExiting] = useState<"left" | "right" | null>(null);
+  const cardRef = useRef<HTMLDivElement | null>(null);
+  // Use refs (not state) for the values the native, non-passive touchmove
+  // listener below reads — that listener is attached once and its closure
+  // would otherwise see stale dragX/exiting/busy from whichever render was
+  // active when the effect last ran.
+  const dragXRef = useRef(0);
+  const draggingRef = useRef(false);
+  const busyRef = useRef(busy);
+  const exitingRef = useRef(exiting);
+  busyRef.current = busy;
+  exitingRef.current = exiting;
 
-  const reset = () => { startX.current = null; startY.current = null; setDragging(false); setDragX(0); };
+  const setDragXBoth = (v: number) => { dragXRef.current = v; setDragX(v); };
+  const reset = () => { startX.current = null; startY.current = null; draggingRef.current = false; setDragging(false); setDragXBoth(0); };
 
   const commit = (dir: "left" | "right") => {
     // touchend never flips `dragging` back off, so without this the CSS
     // transition stays disabled ("transition: none" while dragging) and the
     // card would teleport to translateX(±600) instead of flying off-screen.
+    draggingRef.current = false;
     setDragging(false);
     setExiting(dir);
-    setDragX(dir === "right" ? 600 : -600);
+    setDragXBoth(dir === "right" ? 600 : -600);
     setTimeout(() => {
       if (dir === "right") onAccept(); else onDecline();
       // Card isn't remounted between queue items (same tree position, no
@@ -50,25 +63,58 @@ export function ScriptSwiper({
     }, 180);
   };
 
-  const onTouchStart = (e: React.TouchEvent) => {
-    if (busy || exiting) return;
-    startX.current = e.touches[0].clientX;
-    startY.current = e.touches[0].clientY;
-    setDragging(true);
-  };
-  const onTouchMove = (e: React.TouchEvent) => {
-    if (startX.current === null || busy || exiting) return;
-    const dx = e.touches[0].clientX - startX.current;
-    const dy = Math.abs(e.touches[0].clientY - (startY.current ?? 0));
-    if (dy > 90) return; // vertical scroll intent — don't fight it
-    setDragX(dx);
-  };
-  const onTouchEnd = () => {
-    if (busy || exiting) return;
-    if (dragX > THRESHOLD) commit("right");
-    else if (dragX < -THRESHOLD) commit("left");
-    else reset();
-  };
+  // BUG FIX — "swipe isn't working on mobile." This card lives inside a
+  // vertically-scrollable ancestor (AlfredScriptsPanel's tab body). React
+  // attaches touch listeners as PASSIVE by default, which means a JSX
+  // onTouchMove can never call preventDefault() — so once a real device's
+  // gesture recognizer decided this touch might be a vertical page scroll
+  // (any tiny diagonal jitter at the very start of a real finger swipe is
+  // enough), the ancestor's native scroll took over the gesture and this
+  // card's onTouchMove either stopped firing or never got to react in time,
+  // even though touch-action: pan-y correctly told the browser JS should own
+  // horizontal movement in principle. Attaching a NON-passive touchmove
+  // listener directly via addEventListener lets us call preventDefault() the
+  // moment horizontal intent is clear, which actually claims the gesture
+  // instead of just hoping the ancestor doesn't take it first.
+  useEffect(() => {
+    const el = cardRef.current;
+    if (!el) return;
+    const onStart = (e: TouchEvent) => {
+      if (busyRef.current || exitingRef.current) return;
+      startX.current = e.touches[0].clientX;
+      startY.current = e.touches[0].clientY;
+      draggingRef.current = true;
+      setDragging(true);
+    };
+    const onMove = (e: TouchEvent) => {
+      if (startX.current === null || busyRef.current || exitingRef.current) return;
+      const dx = e.touches[0].clientX - startX.current;
+      const dy = Math.abs(e.touches[0].clientY - (startY.current ?? 0));
+      if (dy > 90 && dy > Math.abs(dx)) return; // clear vertical scroll intent — don't fight it
+      // Horizontal (or ambiguous-but-not-clearly-vertical) movement: this is
+      // our gesture now — prevent the ancestor's vertical scroll from also
+      // claiming it mid-drag.
+      if (Math.abs(dx) > 8) e.preventDefault();
+      setDragXBoth(dx);
+    };
+    const onEnd = () => {
+      if (busyRef.current || exitingRef.current) return;
+      if (dragXRef.current > THRESHOLD) commit("right");
+      else if (dragXRef.current < -THRESHOLD) commit("left");
+      else reset();
+    };
+    el.addEventListener("touchstart", onStart, { passive: true });
+    el.addEventListener("touchmove", onMove, { passive: false });
+    el.addEventListener("touchend", onEnd, { passive: true });
+    el.addEventListener("touchcancel", onEnd, { passive: true });
+    return () => {
+      el.removeEventListener("touchstart", onStart);
+      el.removeEventListener("touchmove", onMove);
+      el.removeEventListener("touchend", onEnd);
+      el.removeEventListener("touchcancel", onEnd);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const rotation = dragX / 16;
   const acceptGlow = Math.min(1, Math.max(0, dragX / THRESHOLD));
@@ -77,9 +123,7 @@ export function ScriptSwiper({
   return (
     <div className="w-full select-none">
       <div
-        onTouchStart={onTouchStart}
-        onTouchMove={onTouchMove}
-        onTouchEnd={onTouchEnd}
+        ref={cardRef}
         style={{
           transform: `translateX(${dragX}px) rotate(${rotation}deg)`,
           transition: dragging ? "none" : "transform 0.22s cubic-bezier(0.16,1,0.3,1)",

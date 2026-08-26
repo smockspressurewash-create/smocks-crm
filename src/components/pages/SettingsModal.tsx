@@ -1669,17 +1669,20 @@ export function SettingsModal({ open, onClose, settings, setSettings, jobs = [],
               </div>
             </Glass>
 
-            {/* FEATURE — "switch between each one easily." One toggle picks
-                which provider customer-facing payment pages actually use;
-                both stay configured underneath so switching back is instant. */}
-            {(stripeStatus?.connected || stripeStatus?.hasSecretKey || squareStatus?.connected) && (
+            {/* FEATURE — "owners can use both Square and Stripe... both
+                should work." Both are fully real, independent processors
+                (never a mock/sandbox-only stub — the "Mode" toggle in each
+                section above just picks which real Square/Stripe API host
+                is used, sandbox for testing, production for real charges).
+                No exclusive "default" anymore: connect one or both, and
+                every customer-facing payment page (ClientPortal.tsx) shows
+                a Pay button for each processor that's actually connected —
+                the customer picks whichever one they'd rather use when both
+                are available. */}
+            {(stripeStatus?.connected || stripeStatus?.hasSecretKey) && squareStatus?.connected && (
               <Glass className="p-4 !bg-black/30">
-                <div className="font-semibold text-sm mb-2">Default Payment Provider</div>
-                <div className="text-xs text-white/50 mb-3">Which one customers actually pay through. Switch anytime — nothing about your saved keys changes.</div>
-                <div className="grid grid-cols-2 gap-2">
-                  <button type="button" onClick={() => setF({ ...f, paymentProvider: "stripe" })} disabled={!stripeStatus?.connected && !stripeStatus?.hasSecretKey} className={"py-2.5 rounded-xl text-sm font-semibold border transition disabled:opacity-30 disabled:cursor-not-allowed " + ((f.paymentProvider || "stripe") === "stripe" ? "bg-purple-900/30 border-purple-600/50 text-purple-300" : "bg-white/5 border-white/10 text-white/50")}>Stripe</button>
-                  <button type="button" onClick={() => setF({ ...f, paymentProvider: "square" })} disabled={!squareStatus?.connected} className={"py-2.5 rounded-xl text-sm font-semibold border transition disabled:opacity-30 disabled:cursor-not-allowed " + (f.paymentProvider === "square" ? "bg-blue-900/30 border-blue-600/50 text-blue-300" : "bg-white/5 border-white/10 text-white/50")}>Square</button>
-                </div>
+                <div className="font-semibold text-sm mb-1 flex items-center gap-1.5"><CheckCircle size={13} className="text-green-400" />Both processors connected</div>
+                <div className="text-xs text-white/50">Customers will see a "Pay with Stripe" AND a "Pay with Square" button on every quote/invoice — they pick whichever they'd rather use. Nothing forces one or the other.</div>
               </Glass>
             )}
 

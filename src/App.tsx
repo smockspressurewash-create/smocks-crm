@@ -3959,14 +3959,20 @@ export function App() {
             A plain reload or a fresh tab both start marketingPreview at
             false, so those still redirect a logged-in owner straight to
             the dashboard as expected — only this explicit click bypasses it. */}
-        {/* BUG FIX — "don't want the rectangle bigger, line it up with the
-            top bar, keep the text large." The top header bar (App.tsx's
-            <header>, right next to this one) uses `py-3` — this block's
-            padding is matched to that exact value so the two bars sit at
-            the same height/alignment, instead of independently guessed
-            padding that made this taller than its neighbor. Text size is
-            untouched — only the surrounding box shrank to fit it. */}
-        <div className="relative px-4 py-3 border-b border-red-900/30 flex items-center justify-center">
+        {/* BUG FIX — "the box with the logo still isn't aligned with the top
+            bar, it sits slightly lower." Matching `py-3` on both this box and
+            <header> (previous fix, see below) wasn't actually enough: this
+            box's content is a text-4xl heading (its own font line-height
+            drives the row's total height), while <header>'s content is a mix
+            of icons/buttons of various sizes — those two rows resolve to
+            DIFFERENT auto-heights even with identical padding, so their
+            content ends up centered within boxes of different total height
+            and visibly doesn't line up. Pinning BOTH this box and <header> to
+            the exact same explicit height (h-[60px], not just matching
+            padding) makes the row heights byte-identical regardless of what
+            font/icon metrics either one's content happens to have — items-
+            center then centers each side's content within truly equal boxes. */}
+        <div className="relative h-[60px] px-4 border-b border-red-900/30 flex items-center justify-center">
           <button
             onClick={() => { setMarketingPreview(true); window.location.hash = "/welcome"; setPage("welcome"); }}
             className="flex items-center text-left hover:opacity-80 transition"
@@ -4032,7 +4038,7 @@ export function App() {
             the header/profile avatar/notifications bell pinned to the top
             of whatever DOES end up scrolling instead of disappearing off
             screen with it. */}
-        <header className="sticky top-0 flex items-center gap-2 px-4 py-3 border-b border-red-900/30 bg-black/80 backdrop-blur flex-shrink-0 relative z-40">
+        <header className="sticky top-0 h-[60px] flex items-center gap-2 px-4 border-b border-red-900/30 bg-black/80 backdrop-blur flex-shrink-0 relative z-40">
           <button onClick={() => setSidebarOpen(true)} className="md:hidden p-2.5 -ml-1 text-white/50 hover:text-white min-w-[44px] min-h-[44px] flex items-center justify-center">
             <Menu size={22} />
           </button>

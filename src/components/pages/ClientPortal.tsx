@@ -109,10 +109,16 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
   // preview, regardless of whether `settings` already carries it.
   const [squareConfig, setSquareConfig] = useState<{ connected: boolean; applicationId?: string; locationId?: string; mode?: "sandbox" | "production" } | null>(null);
   useEffect(() => {
+    // FEATURE — "owners can use both Square and Stripe." Previously only
+    // fetched Square's public config when paymentProvider === "square",
+    // which made the two providers mutually exclusive by construction — an
+    // owner with BOTH connected could never actually let a customer pay with
+    // either. Always check Square's status; the payment button block below
+    // now offers whichever provider(s) are actually connected, not just one.
     const ownerId = (e as any)?.owner_id || (e as any)?.ownerId;
-    if (!ownerId || (settings as any)?.paymentProvider !== "square") return;
+    if (!ownerId) return;
     getPublicSquareConfig(ownerId).then(setSquareConfig).catch(() => setSquareConfig(null));
-  }, [(e as any)?.owner_id, (e as any)?.ownerId, (settings as any)?.paymentProvider]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [(e as any)?.owner_id, (e as any)?.ownerId]); // eslint-disable-line react-hooks/exhaustive-deps
   const [step, setStep] = useState("view"); // view | sign | payment | done | declined
   const [declining, setDeclining] = useState(false);
   const [declineReason, setDeclineReason] = useState("");
@@ -827,16 +833,20 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
                 </span>
               </label>
 
-              {/* FEATURE — "switch between Stripe and Square easily." The
-                  owner's paymentProvider choice (Settings → Integrations)
-                  decides which button/modal renders here — both share the
-                  exact same lock-in-selection + invoiceId/tipCents security
-                  model (see lockAndOpenPayment below), just a different
-                  processor underneath. */}
+              {/* FEATURE — "owners can use both Square and Stripe... both
+                  should work for all that we want." Both providers are
+                  fully independent and both real (no mock/sandbox-only
+                  path) — an owner can connect either or both. When both are
+                  connected, the customer picks which one to pay with; when
+                  only one is connected, that one shows as the single Pay
+                  button, same as before. Both share the exact same
+                  lock-in-selection + invoiceId/tipCents server-side amount
+                  verification (see lockAndOpenPayment below) regardless of
+                  which processor is chosen. */}
               {(() => {
-                const useSquare = (settings as any)?.paymentProvider === "square";
-                const configured = useSquare ? !!(squareConfig?.connected) : !!settings?.stripePublishableKey;
-                const lockAndOpenPayment = async () => {
+                const stripeConfigured = !!settings?.stripePublishableKey;
+                const squareConfigured = !!squareConfig?.connected;
+                const lockAndOpenPayment = async (provider: "stripe" | "square") => {
                   if (String(e.id).startsWith("demo-")) { window.alert("This is a preview — no real payment is processed here."); return; }
                   // BUG FIX — "payment security in general, not just
                   // packages." Every charge is now verified server-side
@@ -861,29 +871,34 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
                     }
                     setLockingInSelection(false);
                   }
-                  if (useSquare) setShowSquareModal(true); else setShowStripeModal(true);
+                  if (provider === "square") setShowSquareModal(true); else setShowStripeModal(true);
                 };
-                if (!configured) {
+                if (!stripeConfigured && !squareConfigured) {
                   return (
                     <div className="p-4 rounded-xl bg-white/5 border border-white/10 text-center space-y-2">
                       <CreditCard size={20} className="mx-auto text-white/30" />
                       <div className="text-sm text-white/60">Online payments aren't set up yet.</div>
-                      <div className="text-xs text-white/40">{companyName} hasn't connected {useSquare ? "Square" : "Stripe"} — contact us directly to arrange payment.</div>
+                      <div className="text-xs text-white/40">{companyName} hasn't connected a payment processor — contact us directly to arrange payment.</div>
                     </div>
                   );
                 }
+                const payBtn = (provider: "stripe" | "square") => (
+                  <button
+                    key={provider}
+                    onClick={() => lockAndOpenPayment(provider)}
+                    disabled={!agreedToPaymentTerms || lockingInSelection}
+                    className={"w-full py-4 text-white font-bold rounded-xl shadow-lg transition-all flex items-center justify-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed " + (provider === "square" ? "bg-gradient-to-r from-[#006AFF] to-[#0052CC] hover:from-[#1a7bff] hover:to-[#0060e6]" : "bg-gradient-to-r from-[#635BFF] to-[#4F46E5] hover:from-[#7C74FF] hover:to-[#6056F5]")}
+                  >
+                    <CreditCard size={18} />
+                    {lockingInSelection ? "Verifying…" : `Pay ${fmt(totalWithTip)} · Powered by ${provider === "square" ? "Square" : "Stripe"}`}
+                  </button>
+                );
                 return (
                   <div className="space-y-2">
-                    <button
-                      onClick={lockAndOpenPayment}
-                      disabled={!agreedToPaymentTerms || lockingInSelection}
-                      className={"w-full py-4 text-white font-bold rounded-xl shadow-lg transition-all flex items-center justify-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed " + (useSquare ? "bg-gradient-to-r from-[#006AFF] to-[#0052CC] hover:from-[#1a7bff] hover:to-[#0060e6]" : "bg-gradient-to-r from-[#635BFF] to-[#4F46E5] hover:from-[#7C74FF] hover:to-[#6056F5]")}
-                    >
-                      <CreditCard size={18} />
-                      {lockingInSelection ? "Verifying…" : `Pay ${fmt(totalWithTip)} · Powered by ${useSquare ? "Square" : "Stripe"}`}
-                    </button>
+                    {stripeConfigured && payBtn("stripe")}
+                    {squareConfigured && payBtn("square")}
                     {!agreedToPaymentTerms && <div className="text-center text-[10px] text-yellow-400/80">Check the box above to enable payment</div>}
-                    <div className="text-center text-[10px] text-white/30">🔒 Your payment is secured by {useSquare ? "Square" : "Stripe"} · 256-bit SSL</div>
+                    <div className="text-center text-[10px] text-white/30">🔒 Your payment is secured by {stripeConfigured && squareConfigured ? "Stripe/Square" : squareConfigured ? "Square" : "Stripe"} · 256-bit SSL</div>
                   </div>
                 );
               })()}
