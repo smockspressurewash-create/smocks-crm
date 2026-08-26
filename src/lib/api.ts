@@ -96,11 +96,18 @@ export const MODELS: Record<string, ModelDef> = {
     keyUrl: "https://console.mistral.ai/api-keys/",
     apiLabel: "Mistral API Key",
   },
+  // BUG FIX — "Kimi K2.6 gives a 404, and now it's gone from NVIDIA's
+  // catalog entirely." Confirmed directly from NVIDIA's own build.nvidia.com
+  // sample code (copied verbatim by the owner) — swapped for DeepSeek V4
+  // Flash, a real current free model on their platform. Kept the same `id`
+  // ("nvidia_kimi") so an owner who already had this slot in their saved
+  // modelPriority doesn't need to re-add it — only what it actually points
+  // at changed.
   nvidia_kimi: {
     id: "nvidia_kimi",
-    modelId: "moonshotai/kimi-k2.6",
-    name: "Kimi K2.6",
-    label: "Kimi K2.6 (NVIDIA — Free)",
+    modelId: "deepseek-ai/deepseek-v4-flash-0731",
+    name: "DeepSeek V4 Flash",
+    label: "DeepSeek V4 Flash (NVIDIA — Free)",
     provider: "nvidia",
     endpoint: "https://integrate.api.nvidia.com/v1/chat/completions",
     maxTokens: 16384,
@@ -108,7 +115,7 @@ export const MODELS: Record<string, ModelDef> = {
     color: "from-green-500 to-emerald-700",
     needsKey: true,
     supportsTools: true,
-    keyUrl: "https://build.nvidia.com/moonshotai/kimi-k2.6",
+    keyUrl: "https://build.nvidia.com/deepseek-ai/deepseek-v4-flash-0731",
     apiLabel: "NVIDIA API Key",
     free: true,
   },
