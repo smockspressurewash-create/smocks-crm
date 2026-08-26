@@ -55,8 +55,21 @@ export type EditorClip = {
   // Transition applied BETWEEN this clip and the next one (ignored on the
   // last clip) — an id from captionStyles.ts's TRANSITION_EFFECTS.
   transitionToNext?: string;
+  // FEATURE — "flip videos at different degrees, it should snap at
+  // certain angles." Snapped to 90° multiples (0/90/180/270) — a clean,
+  // lossless-shape rotation via ffmpeg's transpose filter, the same
+  // increments CapCut's own rotate control snaps to. flipH mirrors
+  // horizontally (selfie/mirrored-camera footage).
+  rotation?: 0 | 90 | 180 | 270;
+  flipH?: boolean;
 };
-export type EditorCaption = { id: string; text: string; startSec: number; endSec: number; styleId: string };
+export type EditorCaption = {
+  id: string; text: string; startSec: number; endSec: number; styleId: string;
+  // FEATURE — "move the text around." Normalized 0-1 position overriding
+  // the style's default top/center/bottom placement when set — null/
+  // undefined keeps using the style's own position.
+  xPct?: number; yPct?: number;
+};
 
 // Escapes text for safe embedding inside an ffmpeg filtergraph string —
 // drawtext's `text=` value is itself inside a filter string that's already
@@ -65,7 +78,19 @@ export type EditorCaption = { id: string; text: string; startSec: number; endSec
 const escapeDrawtext = (s: string): string =>
   s.replace(/\\/g, "\\\\").replace(/:/g, "\\:").replace(/'/g, "\u2019").replace(/%/g, "\\%");
 
-const NORMALIZED_HEIGHT = 1280; // portrait 9:16 target, matches short-form video norms
+// FEATURE — "make it so you can change the frame size, like 9:16, etc."
+// Real output dimensions per aspect ratio, matching common short-form/
+// square/landscape norms. scale+crop (not just scale) is the standard
+// "reframe to fill" technique — scales up until the target box is fully
+// covered, then crops the overflow, so a landscape source clip cut down to
+// 9:16 doesn't end up letterboxed with black bars.
+export type AspectRatio = "9:16" | "1:1" | "16:9";
+export const ASPECT_DIMENSIONS: Record<AspectRatio, { w: number; h: number }> = {
+  "9:16": { w: 720, h: 1280 },
+  "1:1": { w: 1080, h: 1080 },
+  "16:9": { w: 1280, h: 720 },
+};
+export const ASPECT_RATIOS: AspectRatio[] = ["9:16", "1:1", "16:9"];
 
 // Detects silence in a clip's audio track (ffmpeg's silencedetect filter),
 // used for the "Auto-Cut Silence" button. Returns ranges in seconds.
@@ -103,6 +128,23 @@ export const readVideoDuration = (file: File): Promise<number> =>
     v.onerror = () => { URL.revokeObjectURL(url); resolve(0); };
     v.src = url;
   });
+
+// Extracts a trimmed clip's audio as a small mp3 — used to send to
+// transcribe-audio.ts for auto-captions. Kept separate from the main
+// export pipeline (doesn't touch normalized-clip state) so it can run any
+// time the owner presses "Auto-Captions," independent of rendering.
+export const extractAudioForTranscription = async (clip: EditorClip): Promise<Blob> => {
+  const ff = await loadFfmpeg();
+  const inName = "transcribe-in-" + clip.id.replace(/[^a-z0-9]/gi, "");
+  const outName = "transcribe-out-" + clip.id.replace(/[^a-z0-9]/gi, "") + ".mp3";
+  await ff.writeFile(inName, await fetchFile(clip.file));
+  const dur = Math.max(0.1, clip.endSec - clip.startSec);
+  await ff.exec(["-ss", String(clip.startSec), "-i", inName, "-t", String(dur), "-vn", "-acodec", "libmp3lame", "-ar", "16000", "-ac", "1", "-b:a", "64k", outName]);
+  const data = await ff.readFile(outName);
+  await ff.deleteFile(inName).catch(() => {});
+  await ff.deleteFile(outName).catch(() => {});
+  return new Blob([data as any], { type: "audio/mpeg" });
+};
 
 export type RenderProgress = (phase: string, pct: number) => void;
 
@@ -151,11 +193,13 @@ const animatedYOffset = (animation: string, startSec: number): string => {
 export const renderFinalVideo = async (
   clips: EditorClip[],
   captions: EditorCaption[],
-  onProgress?: RenderProgress
+  onProgress?: RenderProgress,
+  aspectRatio: AspectRatio = "9:16"
 ): Promise<Blob> => {
   if (clips.length === 0) throw new Error("Add at least one clip first");
   onProgress?.("Loading video engine", 5);
   const ff = await loadFfmpeg(msg => onProgress?.(msg, 5));
+  const { w: targetW, h: targetH } = ASPECT_DIMENSIONS[aspectRatio];
 
   const normalizedNames: string[] = [];
   const normalizedDurations: number[] = [];
@@ -166,13 +210,26 @@ export const renderFinalVideo = async (
     const outName = `clip-norm-${i}.mp4`;
     await ff.writeFile(inName, await fetchFile(c.file));
     const dur = Math.max(0.1, c.endSec - c.startSec);
+    // Reframe to fill the target box exactly (scale up to cover, then
+    // crop the overflow) rather than a plain scale — a plain scale to a
+    // different aspect ratio than the source either distorts or
+    // letterboxes; this is the standard "reframe" technique CapCut and
+    // every other short-form editor uses. Rotation (90° multiples, via
+    // transpose) and horizontal flip are applied BEFORE the reframe so
+    // they affect the actual visible frame, not just get cropped oddly.
+    const filters: string[] = [];
+    if (c.rotation === 90) filters.push("transpose=1");
+    else if (c.rotation === 180) filters.push("transpose=1,transpose=1");
+    else if (c.rotation === 270) filters.push("transpose=2");
+    if (c.flipH) filters.push("hflip");
+    filters.push(`scale=${targetW}:${targetH}:force_original_aspect_ratio=increase`, `crop=${targetW}:${targetH}`, "fps=30");
     await ff.exec([
       "-ss", String(c.startSec), "-i", inName, "-t", String(dur),
-      // Normalize: scale to a shared height (preserve aspect via -2 width),
-      // even dimensions (libx264 requires them), constant 30fps, real
-      // audio track even if the source clip is silent (concat/xfade both
-      // need every segment to have the same stream layout).
-      "-vf", `scale=-2:${NORMALIZED_HEIGHT},fps=30`,
+      // Even dimensions (libx264 requires them — targetW/H above are
+      // already even) and a real audio track even if the source clip is
+      // silent (concat/xfade both need every segment to have the same
+      // stream layout).
+      "-vf", filters.join(","),
       "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
       "-c:a", "aac", "-ar", "44100", "-ac", "2",
       "-movflags", "+faststart",
@@ -238,7 +295,12 @@ export const renderFinalVideo = async (
       const style = getCaptionStyle(cap.styleId);
       const fontFile = await ensureFont(ff, style);
       const text = escapeDrawtext(style.uppercase ? cap.text.toUpperCase() : cap.text);
-      const baseY = style.position === "top" ? "h*0.12" : style.position === "center" ? "(h-text_h)/2" : "h*0.82";
+      // FEATURE — "move the text around." A caption with an explicit
+      // xPct/yPct (dragged in the preview, see VideoEditorModal.tsx)
+      // overrides the style's default top/center/bottom placement;
+      // otherwise falls back to the style's own position exactly as before.
+      const baseY = cap.yPct !== undefined ? `h*${cap.yPct.toFixed(4)}-text_h/2` : style.position === "top" ? "h*0.12" : style.position === "center" ? "(h-text_h)/2" : "h*0.82";
+      const baseX = cap.xPct !== undefined ? `w*${cap.xPct.toFixed(4)}-text_w/2` : "(w-text_w)/2";
       const yOffset = animatedYOffset(style.animation, cap.startSec);
       const y = `${baseY}${yOffset}`;
       const boxParts = style.background
@@ -248,7 +310,7 @@ export const renderFinalVideo = async (
       const alphaExpr = animatedAlphaExpr(style.animation, cap.startSec, cap.endSec);
       drawtextFilters.push(
         `drawtext=fontfile=${fontFile}:text='${text}':fontcolor=${style.color}:fontsize=h*0.055` +
-        `:x=(w-text_w)/2:y=${y}${strokeParts}${boxParts}` +
+        `:x=${baseX}:y=${y}${strokeParts}${boxParts}` +
         `:enable='between(t,${cap.startSec},${cap.endSec})':alpha='${alphaExpr}'`
       );
     }

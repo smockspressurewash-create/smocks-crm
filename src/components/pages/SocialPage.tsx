@@ -145,7 +145,19 @@ export function SocialPage({ posts = [], setPosts, toast, settings = {} as AppSe
   // (ffmpeg.wasm's rendered MP4); this uploads it the exact same way the
   // plain file-upload path above does, so the rest of the posting flow
   // (Buffer/Meta send, etc.) can't tell the difference.
-  const onVideoExported = async (blob: Blob) => {
+  // draftOnly — "edit videos, but save them and not post them" (Video
+  // Editor's "Save as a draft" checkbox). Saves straight into the
+  // scheduled/drafts list as status:"draft" instead of pre-filling the
+  // post composer — the owner can come back and actually post it whenever
+  // they're ready, without it ever going out on its own.
+  const onVideoExported = async (blob: Blob, draftOnly?: boolean) => {
+    if (draftOnly) {
+      const url = await uploadJobMedia(blob, `social/${uid()}.mp4`, "video/mp4");
+      if (!url) { toast?.("Rendered, but upload to storage failed — try again", "red"); return; }
+      setPosts((prev: any[]) => [{ id: uid(), platform: f.platforms[0] || "instagram", type: "before_after", caption: "", mediaUrl: url, mediaType: "video", status: "draft", likes: 0, shares: 0, comments: 0, reach: 0 }, ...prev]);
+      toast?.("Video saved as a draft ✓ — find it in your posts list", "green");
+      return;
+    }
     setF(prev => ({ ...(prev as any), _uploadingMedia: true }));
     const url = await uploadJobMedia(blob, `social/${uid()}.mp4`, "video/mp4");
     if (url) {
@@ -485,8 +497,13 @@ export function SocialPage({ posts = [], setPosts, toast, settings = {} as AppSe
 
   const allScheduled = posts.filter((p: any) => p.status === "scheduled");
   const allPublished = posts.filter((p: any) => p.status === "published");
+  // FEATURE — "edit videos, but save them and not post them." A draft
+  // never goes out on its own — it just sits here until the owner opens
+  // it and actually publishes/schedules it themselves.
+  const allDrafts = posts.filter((p: any) => p.status === "draft");
   const scheduled = platformFilter === "all" ? allScheduled : allScheduled.filter((p: any) => p.platform === platformFilter);
   const published = platformFilter === "all" ? allPublished : allPublished.filter((p: any) => p.platform === platformFilter);
+  const drafts = platformFilter === "all" ? allDrafts : allDrafts.filter((p: any) => p.platform === platformFilter);
 
   const platformColors = {
     instagram: "bg-gradient-to-r from-pink-600 to-purple-700",
@@ -562,9 +579,9 @@ export function SocialPage({ posts = [], setPosts, toast, settings = {} as AppSe
 
       {/* Tab bar */}
       <div className="flex gap-2 flex-wrap">
-        {["calendar", "scheduled", "published", "content_ideas", "review_graphic", "bulk", "best_time"].map(t => (
+        {["calendar", "scheduled", "drafts", "published", "content_ideas", "review_graphic", "bulk", "best_time"].map(t => (
           <button key={t} onClick={() => setTab(t)} className={"px-4 py-2 rounded-xl text-xs font-semibold capitalize border transition " + (tab === t ? "bg-red-900/40 border-red-500/50 text-white" : "bg-black/40 border-white/10 text-white/60 hover:text-white")}>
-            {t === "review_graphic" ? "⭐ Review Graphic" : t === "bulk" ? "📸 Bulk Upload" : t === "best_time" ? "⏰ Best Times" : t === "calendar" ? "📅 Calendar" : t === "content_ideas" ? "✨ Content Ideas" : t + " (" + (t === "scheduled" ? scheduled.length : published.length) + ")"}
+            {t === "review_graphic" ? "⭐ Review Graphic" : t === "bulk" ? "📸 Bulk Upload" : t === "best_time" ? "⏰ Best Times" : t === "calendar" ? "📅 Calendar" : t === "content_ideas" ? "✨ Content Ideas" : t === "drafts" ? `🎬 Drafts (${drafts.length})` : t + " (" + (t === "scheduled" ? scheduled.length : published.length) + ")"}
           </button>
         ))}
       </div>
@@ -664,6 +681,35 @@ export function SocialPage({ posts = [], setPosts, toast, settings = {} as AppSe
                 ? <div className="flex-1 text-center text-[10px] text-green-300 bg-green-950/20 border border-green-800/30 rounded-lg py-1.5">Scheduled via Buffer — publishes automatically</div>
                 : <GBtn onClick={() => publishScheduled(p.id)} className="flex-1 !text-xs !py-1.5"><Send size={10} className="inline mr-1" />Publish Now</GBtn>}
               <button onClick={() => del(p.id)} className="px-2.5 py-1.5 rounded-lg border bg-white/5 border-white/10 text-white/60 hover:text-red-400 text-xs opacity-0 group-hover:opacity-100 transition"><Trash2 size={12} /></button>
+            </div>
+          </Glass>;
+        })}
+      </div>}
+
+      {tab === "drafts" && <div className="grid md:grid-cols-2 gap-4">
+        {drafts.length === 0 && <div className="md:col-span-2 text-center py-16 text-white/40">
+          <Clapperboard size={40} className="mx-auto mb-3 opacity-30 anim-float" />
+          <div className="text-sm font-medium">No drafts saved</div>
+          <div className="text-xs mt-1">Videos saved from the editor without posting show up here</div>
+        </div>}
+        {drafts.map((p: any) => {
+          const meta = platformMeta[p.platform] || platformMeta.instagram;
+          return <Glass key={p.id} className="p-4">
+            <div className="flex items-center justify-between mb-3">
+              <div className={"px-2.5 py-1 rounded-lg text-[10px] uppercase font-bold text-white bg-gradient-to-r " + (meta.color || "from-gray-600 to-gray-800")}>{meta.icon} {meta.label}</div>
+              <Badge tone="gray">draft</Badge>
+            </div>
+            {p.mediaUrl && (p.mediaType === "video"
+              ? <video src={p.mediaUrl} className="w-full h-40 object-cover rounded-xl mb-3 bg-black" muted controls />
+              : <img src={p.mediaUrl} alt="" className="w-full h-40 object-cover rounded-xl mb-3" />)}
+            <div className="flex gap-2 pt-3 border-t border-white/5">
+              <GBtn onClick={() => {
+                setF(prev => ({ ...prev, _photoUrl: p.mediaUrl, _mediaType: p.mediaType, platforms: p.platform ? [p.platform] : prev.platforms }));
+                setPosts((prevPosts: any[]) => prevPosts.filter((x: any) => x.id !== p.id));
+                setModal(true);
+                toast?.("Draft loaded — write a caption and post or schedule it ✓");
+              }} className="flex-1 !text-xs !py-1.5"><Send size={10} className="inline mr-1" />Edit &amp; Post</GBtn>
+              <button onClick={() => del(p.id)} className="px-2.5 py-1.5 rounded-lg border bg-white/5 border-white/10 text-white/60 hover:text-red-400 text-xs"><Trash2 size={12} /></button>
             </div>
           </Glass>;
         })}

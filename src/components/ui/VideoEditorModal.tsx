@@ -7,13 +7,13 @@
 // functions/api/video-autoedit.ts) — kept fully separate from the free
 // path so nothing here silently starts costing money without the owner
 // explicitly opting in with their own account.
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Modal } from "./Modal";
 import { GBtn } from "./GBtn";
-import { Plus, Trash2, ChevronUp, ChevronDown, Wand2, Scissors, Type, Upload, Sparkles } from "lucide-react";
+import { Plus, Trash2, ChevronUp, ChevronDown, Wand2, Scissors, Type, Upload, Sparkles, RotateCw, FlipHorizontal, Captions, Save } from "lucide-react";
 import { uid, uploadJobMedia } from "../../lib/utils";
 import { CAPTION_STYLES, CAPTION_GOOGLE_FONTS_HREF, captionStyleToCss, getCaptionStyle, TRANSITION_EFFECTS } from "../../lib/captionStyles";
-import { readVideoDuration, detectSilence, renderFinalVideo, type EditorClip, type EditorCaption } from "../../lib/videoEditor";
+import { readVideoDuration, detectSilence, renderFinalVideo, extractAudioForTranscription, ASPECT_RATIOS, type AspectRatio, type EditorClip, type EditorCaption } from "../../lib/videoEditor";
 
 export function VideoEditorModal({ open, onClose, onExported, toast, settings }: {
   open: boolean;
@@ -21,7 +21,9 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings }:
   // Hands back the finished video as a Blob + a suggested filename — the
   // caller (SocialPage.tsx) owns uploading it to Storage and wiring it
   // into the post form, same as any other media attach path there.
-  onExported: (blob: Blob) => void;
+  // draftOnly — "save without posting" (see saveAsDraftOnly below): the
+  // caller should just stash the rendered video, not open the post composer.
+  onExported: (blob: Blob, draftOnly?: boolean) => void;
   toast?: (msg: string, tone?: any) => void;
   settings?: any;
 }) {
@@ -35,11 +37,47 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings }:
   const [detectingSilence, setDetectingSilence] = useState(false);
   const [silenceRanges, setSilenceRanges] = useState<{ clipId: string; start: number; end: number }[]>([]);
   const [autoEditing, setAutoEditing] = useState(false);
+  // FEATURE — "change the frame size, like 9:16, etc."
+  const [aspectRatio, setAspectRatio] = useState<AspectRatio>("9:16");
+  // FEATURE — "can it automatically create captions?"
+  const [transcribing, setTranscribing] = useState(false);
+  // FEATURE — "move the text around." Which caption (if any) is currently
+  // being repositioned by tapping/clicking the preview.
+  const [positioningCaptionId, setPositioningCaptionId] = useState<string | null>(null);
+  // FEATURE — "make it so you can edit videos, but save them and not post
+  // them." Whether the export button should hand the result to the post
+  // composer (default) or just save it aside as a draft.
+  const [saveAsDraftOnly, setSaveAsDraftOnly] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const previewBoxRef = useRef<HTMLDivElement>(null);
 
   const activeClip = clips.find(c => c.id === activeClipId) || clips[0] || null;
   const hasApiKey = !!(settings?.videoAutoEditApiKey);
+
+  // BUG FIX — "when I try to slice or trim a clip it doesn't let me play
+  // it, it's rough." URL.createObjectURL(activeClip.file) was called
+  // INLINE in the video's src prop — every re-render (typing in a trim
+  // number field, editing a caption, anything) created a BRAND NEW blob
+  // URL, and React swapping the <video>'s src to a new (even though
+  // functionally identical) URL forces the browser to reload the video
+  // from scratch, killing playback position/state every time. One stable
+  // URL per clip, created once and reused across re-renders, and revoked
+  // when that clip is actually removed (not on every render) — fixes both
+  // the playback reset and a real blob-URL memory leak.
+  const clipUrlCacheRef = useRef<Map<string, string>>(new Map());
+  useEffect(() => {
+    const cache = clipUrlCacheRef.current;
+    const liveIds = new Set(clips.map(c => c.id));
+    for (const [id, url] of cache) {
+      if (!liveIds.has(id)) { URL.revokeObjectURL(url); cache.delete(id); }
+    }
+    for (const c of clips) {
+      if (!cache.has(c.id)) cache.set(c.id, URL.createObjectURL(c.file));
+    }
+  }, [clips]);
+  useEffect(() => () => { clipUrlCacheRef.current.forEach(url => URL.revokeObjectURL(url)); }, []);
+  const activeClipUrl = activeClip ? clipUrlCacheRef.current.get(activeClip.id) : undefined;
 
   useEffect(() => {
     if (!activeClipId && clips.length > 0) setActiveClipId(clips[0].id);
@@ -104,6 +142,42 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings }:
     setCaptions(prev => [...prev, { id: uid(), text: "New caption", startSec: Math.max(0, start), endSec: Math.min(activeClip.durationSec, start + 2.5), styleId: CAPTION_STYLES[0].id }]);
   };
 
+  // FEATURE — "can it automatically create captions?" Transcribes the
+  // active clip's trimmed audio (OpenAI Whisper, via the owner's own
+  // OpenAI key already set up for Alfred if they have one — no separate
+  // signup needed) and turns each returned segment into a real, editable
+  // caption with real timing — offset by however much timeline the clips
+  // BEFORE this one already take up, so the timing lines up with the
+  // assembled final video, not just this one clip in isolation.
+  const runAutoCaptions = async () => {
+    if (!activeClip) { toast?.("Add a clip first", "red"); return; }
+    const apiKey = settings?.modelKeys?.openai;
+    if (!apiKey) { toast?.("Add an OpenAI API key in Settings → AI Models to use auto-captions (or just type captions manually below — free, no key needed)", "yellow"); return; }
+    setTranscribing(true);
+    try {
+      const audioBlob = await extractAudioForTranscription(activeClip);
+      const form = new FormData();
+      form.append("audio", audioBlob, "audio.mp3");
+      form.append("apiKey", apiKey);
+      const res = await fetch("/api/transcribe-audio", { method: "POST", body: form });
+      const data = await res.json();
+      if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
+      const segments: { text: string; start: number; end: number }[] = data.segments || [];
+      if (segments.length === 0) { toast?.("No speech detected in this clip", "yellow"); return; }
+      const clipIndex = clips.findIndex(c => c.id === activeClip.id);
+      const offsetSec = clips.slice(0, clipIndex).reduce((s, c) => s + Math.max(0, c.endSec - c.startSec), 0);
+      const newCaptions: EditorCaption[] = segments.map(seg => ({
+        id: uid(), text: seg.text, startSec: offsetSec + seg.start, endSec: offsetSec + seg.end, styleId: CAPTION_STYLES[0].id,
+      }));
+      setCaptions(prev => [...prev, ...newCaptions]);
+      toast?.(`Added ${newCaptions.length} caption${newCaptions.length > 1 ? "s" : ""} from the transcript ✓ — edit any that need fixing`, "green");
+    } catch (e: any) {
+      toast?.("Auto-captions failed — " + (e?.message || "unknown error"), "red");
+    } finally {
+      setTranscribing(false);
+    }
+  };
+
   const updateCaption = (id: string, patch: Partial<EditorCaption>) => setCaptions(prev => prev.map(c => c.id === id ? { ...c, ...patch } : c));
   const removeCaption = (id: string) => setCaptions(prev => prev.filter(c => c.id !== id));
 
@@ -116,9 +190,9 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings }:
     setRenderPhase("Starting…");
     setRenderPct(0);
     try {
-      const blob = await renderFinalVideo(clips, captions, (phase, pct) => { setRenderPhase(phase); setRenderPct(pct); });
-      onExported(blob);
-      toast?.("Video rendered ✓", "green");
+      const blob = await renderFinalVideo(clips, captions, (phase, pct) => { setRenderPhase(phase); setRenderPct(pct); }, aspectRatio);
+      onExported(blob, saveAsDraftOnly);
+      toast?.(saveAsDraftOnly ? "Video saved as a draft ✓" : "Video rendered ✓", "green");
       onClose();
     } catch (e: any) {
       console.error("[VideoEditor] export failed:", e);
@@ -208,17 +282,40 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings }:
         </div>
       ) : (
         <div className="space-y-5">
+          {/* FEATURE — "change the frame size, like 9:16, etc." Real output
+              dimensions, not just a preview affectation — see
+              ASPECT_DIMENSIONS in videoEditor.ts, which renderFinalVideo
+              actually reframes (scale+crop) every clip to match. */}
+          <div className="flex items-center justify-center gap-1.5">
+            {ASPECT_RATIOS.map(ar => (
+              <button key={ar} onClick={() => setAspectRatio(ar)} className={"px-3 py-1.5 rounded-lg text-xs font-semibold border transition " + (aspectRatio === ar ? "border-red-500/50 bg-red-950/30 text-red-300" : "border-white/10 text-white/50 hover:text-white")}>
+                {ar}
+              </button>
+            ))}
+          </div>
+
           {/* Preview — taller on narrow/mobile viewports (more of the
               screen is naturally available in portrait) than the old fixed
               360px cap, which left a cramped preview on phones. */}
-          <div className="relative rounded-xl overflow-hidden bg-black aspect-[9/16] max-h-[60vh] sm:max-h-[360px] mx-auto">
+          <div
+            ref={previewBoxRef}
+            onClick={e => {
+              if (!positioningCaptionId || !previewBoxRef.current) return;
+              const rect = previewBoxRef.current.getBoundingClientRect();
+              const xPct = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
+              const yPct = Math.min(1, Math.max(0, (e.clientY - rect.top) / rect.height));
+              updateCaption(positioningCaptionId, { xPct, yPct });
+            }}
+            className={"relative rounded-xl overflow-hidden bg-black max-h-[60vh] sm:max-h-[360px] mx-auto " + (positioningCaptionId ? "cursor-crosshair ring-2 ring-red-500" : "") + " " + (aspectRatio === "9:16" ? "aspect-[9/16]" : aspectRatio === "1:1" ? "aspect-square" : "aspect-video")}
+          >
             {activeClip ? (
               <video
                 ref={videoRef}
                 key={activeClip.id}
-                src={URL.createObjectURL(activeClip.file)}
-                controls
+                src={activeClipUrl}
+                controls={!positioningCaptionId}
                 className="w-full h-full object-contain"
+                style={{ transform: `${activeClip.rotation ? `rotate(${activeClip.rotation}deg)` : ""} ${activeClip.flipH ? "scaleX(-1)" : ""}`.trim() || undefined }}
                 onTimeUpdate={e => setPreviewTime((e.target as HTMLVideoElement).currentTime)}
               />
             ) : (
@@ -227,10 +324,14 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings }:
             {activeCaption && activeCaptionStyle && (
               <div
                 className="absolute left-0 right-0 flex justify-center px-4 pointer-events-none text-center"
-                style={{
-                  top: activeCaptionStyle.position === "top" ? "10%" : activeCaptionStyle.position === "center" ? "45%" : undefined,
-                  bottom: activeCaptionStyle.position === "bottom" ? "8%" : undefined,
-                }}
+                style={
+                  activeCaption.xPct !== undefined && activeCaption.yPct !== undefined
+                    ? { left: `${activeCaption.xPct * 100}%`, top: `${activeCaption.yPct * 100}%`, right: "auto", transform: "translate(-50%, -50%)", width: "90%" }
+                    : {
+                        top: activeCaptionStyle.position === "top" ? "10%" : activeCaptionStyle.position === "center" ? "45%" : undefined,
+                        bottom: activeCaptionStyle.position === "bottom" ? "8%" : undefined,
+                      }
+                }
               >
                 <span
                   key={activeCaption.id}
@@ -238,7 +339,13 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings }:
                 >{activeCaption.text}</span>
               </div>
             )}
+            {positioningCaptionId && (
+              <div className="absolute inset-x-0 bottom-2 text-center text-[10px] text-white bg-black/70 py-1 pointer-events-none">Tap anywhere to place this caption</div>
+            )}
           </div>
+          {positioningCaptionId && (
+            <button onClick={() => setPositioningCaptionId(null)} className="w-full text-center text-xs text-red-400 hover:text-red-300 font-semibold -mt-3">Done positioning</button>
+          )}
 
           {/* Clips */}
           <div>
@@ -257,6 +364,11 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings }:
                     <div key={c.id} className={"p-2.5 rounded-xl border transition " + (activeClipId === c.id ? "bg-red-950/20 border-red-700/40" : "bg-white/5 border-white/10")}>
                       <div className="flex items-center gap-1">
                         <button onClick={() => setActiveClipId(c.id)} className="flex-1 text-left text-xs font-medium text-white truncate py-2">{i + 1}. {c.file.name}</button>
+                        {/* FEATURE — "flip videos at different degrees, it
+                            should snap at certain angles." Snaps through
+                            0→90→180→270→0 — clean, lossless-shape rotation. */}
+                        <button onClick={() => updateClip(c.id, { rotation: (((c.rotation || 0) + 90) % 360) as any })} title="Rotate 90°" className={"ve-tap " + ((c.rotation || 0) !== 0 ? "text-red-400" : "text-white/40 hover:text-white")}><RotateCw size={16} /></button>
+                        <button onClick={() => updateClip(c.id, { flipH: !c.flipH })} title="Flip horizontal" className={"ve-tap " + (c.flipH ? "text-red-400" : "text-white/40 hover:text-white")}><FlipHorizontal size={16} /></button>
                         <button onClick={() => moveClip(c.id, -1)} disabled={i === 0} className="ve-tap text-white/40 hover:text-white disabled:opacity-20"><ChevronUp size={16} /></button>
                         <button onClick={() => moveClip(c.id, 1)} disabled={i === clips.length - 1} className="ve-tap text-white/40 hover:text-white disabled:opacity-20"><ChevronDown size={16} /></button>
                         <button onClick={() => removeClip(c.id)} className="ve-tap text-red-400/60 hover:text-red-400"><Trash2 size={16} /></button>
@@ -328,10 +440,16 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings }:
               </div>
             )}
             {activeClip && (
-              <button onClick={runAutoCut} disabled={detectingSilence}
-                className="mt-2 w-full flex items-center justify-center gap-1.5 py-2 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-white/60 text-xs font-semibold transition disabled:opacity-40">
-                <Wand2 size={12} />{detectingSilence ? "Analyzing audio…" : "Auto-Cut Silence (selected clip)"}
-              </button>
+              <div className="mt-2 grid grid-cols-2 gap-1.5">
+                <button onClick={runAutoCut} disabled={detectingSilence}
+                  className="flex items-center justify-center gap-1.5 py-2 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-white/60 text-xs font-semibold transition disabled:opacity-40">
+                  <Wand2 size={12} />{detectingSilence ? "Analyzing…" : "Auto-Cut Silence"}
+                </button>
+                <button onClick={runAutoCaptions} disabled={transcribing}
+                  className="flex items-center justify-center gap-1.5 py-2 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-white/60 text-xs font-semibold transition disabled:opacity-40">
+                  <Captions size={12} />{transcribing ? "Transcribing…" : "Auto-Captions"}
+                </button>
+              </div>
             )}
           </div>
 
@@ -358,9 +476,22 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings }:
                       <span>to</span>
                       <input type="number" min={0} step={0.1} value={cap.endSec.toFixed(1)} onChange={e => updateCaption(cap.id, { endSec: Number(e.target.value) || 0 })} className="ve-input w-16 bg-black/30 border border-white/10 rounded px-1 py-1.5 text-white" />
                       <span>s</span>
-                      <select value={cap.styleId} onChange={e => updateCaption(cap.id, { styleId: e.target.value })} className="ve-select ml-auto bg-black/30 border border-white/10 rounded px-1.5 py-1.5 text-white">
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <select value={cap.styleId} onChange={e => updateCaption(cap.id, { styleId: e.target.value })} className="ve-select flex-1 bg-black/30 border border-white/10 rounded px-1.5 py-1.5 text-white">
                         {CAPTION_STYLES.map(s => <option key={s.id} value={s.id} className="bg-black">{s.name}</option>)}
                       </select>
+                      {/* FEATURE — "move the text around." Tap, then tap
+                          anywhere on the preview above to place it there —
+                          a real per-caption override (see xPct/yPct), not
+                          just the style's default top/center/bottom. */}
+                      <button onClick={() => { setActiveClipId(activeClipId); setPreviewTime(cap.startSec); setPositioningCaptionId(cap.id); }}
+                        className={"text-[11px] font-semibold px-2 py-1.5 rounded-lg border flex-shrink-0 " + (cap.xPct !== undefined ? "border-red-500/50 bg-red-950/30 text-red-300" : "border-white/10 text-white/50 hover:text-white")}>
+                        Position
+                      </button>
+                      {cap.xPct !== undefined && (
+                        <button onClick={() => updateCaption(cap.id, { xPct: undefined, yPct: undefined })} className="text-[10px] text-white/30 hover:text-white/60 flex-shrink-0">Reset</button>
+                      )}
                     </div>
                   </div>
                 ))}
@@ -388,8 +519,13 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings }:
             </div>
           )}
 
+          {/* FEATURE — "edit videos, but save them and not post them." */}
+          <label className="flex items-center gap-2 text-xs text-white/60 cursor-pointer justify-center">
+            <input type="checkbox" checked={saveAsDraftOnly} onChange={e => setSaveAsDraftOnly(e.target.checked)} className="accent-red-600" />
+            Save as a draft — don't open the post composer
+          </label>
           <GBtn onClick={doExport} disabled={clips.length === 0} className="w-full !justify-center !py-3">
-            Render & Use This Video
+            {saveAsDraftOnly ? "Render & Save Draft" : "Render & Use This Video"}
           </GBtn>
         </div>
       )}
