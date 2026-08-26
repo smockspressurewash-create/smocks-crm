@@ -25,7 +25,7 @@ import { PushOptInPrompt } from "../ui/PushOptInPrompt";
 import { SopModal } from "../ui/SopModal";
 import { chargeSavedPaymentMethod, sendPaymentReceipt, listCustomerPaymentMethods } from "../../lib/stripe";
 import { BarChart, Bar, LineChart, Line, XAxis, YAxis, ResponsiveContainer, Tooltip, CartesianGrid } from "recharts";
-import { fmt, uid, today, localDateStr, localDateKey, shiftDayStr, daysFromNow, computeJobRatingScore, setOAuthIntent, compressImageFile, getEffectiveRate, computeNextRecurringDate, weekdayLabels, normalizeJobRow, totalJobPhotoCount, mediaSrc, dataUrlToBlob, uploadJobMedia, checkVideoLimits, stripLegacyJobFields, reconcileCrewAfterAssign, getPollIntervalMs, getPayPeriodBounds, haversineMiles, resolveTermsForJobType, buildJobCalendarDescription } from "../../lib/utils";
+import { fmt, uid, today, localDateStr, localDateKey, shiftDayStr, daysFromNow, computeJobRatingScore, setOAuthIntent, compressImageFile, getEffectiveRate, computeNextRecurringDate, weekdayLabels, normalizeJobRow, totalJobPhotoCount, mediaSrc, dataUrlToBlob, uploadJobMedia, checkVideoLimits, stripLegacyJobFields, reconcileCrewAfterAssign, getPollIntervalMs, getPayPeriodBounds, haversineMiles, resolveTermsForJobType, buildJobCalendarDescription, haptic } from "../../lib/utils";
 import { callModel, MODELS } from "../../lib/api";
 import { usePollGate } from "../../hooks/usePollGate";
 import { usePersistent } from "../../hooks/usePersistent";
@@ -190,6 +190,7 @@ function PortalChecklistSection({ jobId, title, emoji, items, onUpdate, allowPho
     if (disabled) return;
     const item = items.find(it => it.id === id);
     if (item && !isMine(item)) { toast(`This item is assigned to ${crewOptions.find(c => c.id === item.assignedTo)?.name || "another crew member"}`, "yellow"); return; }
+    haptic(10);
     onUpdate(items.map(it => it.id === id ? { ...it, done: !it.done } : it));
   };
   const updateNotes = (id: string, notes: string) => onUpdate(items.map(it => it.id === id ? { ...it, notes } : it));
@@ -591,6 +592,7 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
     // owner's own Time Tracking control in this modal reads) was never
     // set — arriving didn't actually start the job clock.
     onUpdateJob({ arrivedAt: Date.now(), status: job.status === "scheduled" ? "in_progress" : job.status, ...(job.clockInAt ? {} : { clockInAt: Date.now() }) });
+    haptic(20);
     toast("Marked as arrived ✓ — owner notified");
     onArrived?.();
     const arrivalMsg = `Hi ${customer?.firstName || "there"}, your CrewBoss technician has arrived and is getting started!`;
@@ -783,6 +785,7 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
         console.error("[PhotoSync] — error:", result.error.message);
         toast("Photo saved locally, but failed to sync — " + result.error.message, "red");
       } else {
+        haptic(15);
         toast(type === "before" ? "Before photo added ✓" : "After photo added ✓", "green");
       }
     } catch (e: any) {
@@ -1353,6 +1356,7 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
         console.error("[Complete Job] — error:", result.error.message || result.error);
         toast("Completed locally, but the server didn't confirm — " + (result.error.message || "check connection"), "red");
       } else {
+        haptic([15, 60, 15]);
         toast("✅ Job completed successfully", "green");
       }
     } catch (e: any) {
@@ -6479,6 +6483,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
               };
               const toggleDay = async () => {
                 if (!empId) return;
+                haptic(20);
                 const endingDay = !!dayClockInAt;
                 // FIX 2 — Resuming after an earlier End-My-Day must never reset the
                 // visible timer to 0:00. Backdate the new dayClockInAt by whatever
