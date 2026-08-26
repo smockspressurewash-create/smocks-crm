@@ -1111,7 +1111,8 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
     create_customer: "add_customers", attach_file_to_customer: "add_customers",
     schedule_job: "schedule_jobs",
     reschedule_job: "modify_jobs", cancel_job: "modify_jobs", update_job_priority: "modify_jobs", add_checklist_item: "modify_jobs",
-    assign_employee: "manage_crew", request_employee: "manage_crew",
+    assign_employee: "manage_crew", request_employee: "manage_crew", respond_to_job_request: "manage_crew",
+    approve_customer_request: "manage_crew", decline_customer_request: "manage_crew",
     create_estimate: "create_quotes", create_invoice: "create_quotes",
     send_estimate: "send_quotes",
     send_reminder: "message_customers", text_phone_number: "message_customers",
@@ -2193,6 +2194,91 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
             return { error: "Request failed: " + (e?.message || String(e)) };
           }
         }
+        // FEATURE — parity pass with text-Alfred (alfredSmsAgent.ts), which
+        // already had these 5 job-request/customer-request tools; the
+        // in-app chat had no way to see or act on pending requests at all,
+        // only to CREATE new ones via request_employee.
+        case "list_job_requests": {
+          const { data: rows } = await (supabase as any).from("job_requests").select("id,employee_id,job_id,message,status").eq("owner_id", ownerId).eq("status", "pending").limit(50);
+          if (!rows || rows.length === 0) return { success: true, requests: [], summary: "No pending job requests." };
+          return {
+            success: true,
+            requests: rows.map((r: any) => {
+              const emp = employees.find((e: any) => e.id === r.employee_id);
+              const job = jobs.find((j: any) => j.id === r.job_id);
+              const c = job ? customers.find((x: any) => x.id === job.customerId) : null;
+              return { id: r.id, employee: emp ? `${emp.firstName} ${emp.lastName}` : r.employee_id, job: job ? `${c ? c.firstName + " " + c.lastName : "?"} (${job.scheduledDate})` : r.job_id, message: r.message };
+            }),
+          };
+        }
+        case "respond_to_job_request": {
+          if (!inputs.requestId || inputs.approve === undefined) return { error: "requestId and approve required" };
+          const patch: any = { status: inputs.approve ? "approved" : "denied", responded_at: new Date().toISOString() };
+          if (!inputs.approve && inputs.reason) patch.denial_reason = inputs.reason;
+          const { error: respErr } = await (supabase as any).from("job_requests").update(patch).eq("id", inputs.requestId);
+          if (respErr) return { error: "Couldn't update the request — " + respErr.message };
+          if (inputs.approve) {
+            const { data: reqRow } = await (supabase as any).from("job_requests").select("employee_id,job_id").eq("id", inputs.requestId).maybeSingle();
+            if (reqRow?.job_id && reqRow?.employee_id) {
+              const j = jobs.find((x: any) => x.id === reqRow.job_id);
+              const crew = Array.from(new Set([...(j?.crew || []), reqRow.employee_id]));
+              await (supabase as any).from("jobs").update({ crew }).eq("id", reqRow.job_id);
+              setJobs((prev: any[]) => prev.map((x: any) => x.id === reqRow.job_id ? { ...x, crew } : x));
+            }
+          }
+          toast("Job request " + (inputs.approve ? "approved" : "denied"));
+          return { success: true, status: inputs.approve ? "approved" : "denied" };
+        }
+        case "list_pending_customer_requests": {
+          const { data: rows } = await (supabase as any).from("alfred_pending_actions").select("id,customer_id,job_id,kind,proposed,created_at").eq("owner_id", ownerId).eq("status", "pending").order("created_at", { ascending: false }).limit(25);
+          if (!rows || rows.length === 0) return { success: true, requests: [], summary: "Nothing pending." };
+          return {
+            success: true,
+            requests: rows.map((r: any) => {
+              const c = customers.find((x: any) => x.id === r.customer_id);
+              return { requestId: r.id, customer: c ? `${c.firstName} ${c.lastName}`.trim() : "Unknown", kind: r.kind, proposed: r.proposed, createdAt: r.created_at };
+            }),
+          };
+        }
+        case "approve_customer_request": {
+          if (!inputs.requestId) return { error: "requestId required" };
+          const { data: row } = await (supabase as any).from("alfred_pending_actions").select("id,customer_id,job_id,kind,proposed,customer_phone,status").eq("id", inputs.requestId).maybeSingle();
+          if (!row) return { error: "Request not found." };
+          if (row.status !== "pending") return { error: `That request was already ${row.status}.` };
+          if (row.kind === "reschedule") {
+            const patch: any = { scheduledDate: row.proposed.toDate };
+            if (row.proposed.toTime) patch.scheduledTime = row.proposed.toTime;
+            const { error: moveErr } = await (supabase as any).from("jobs").update(patch).eq("id", row.job_id);
+            if (moveErr) return { error: "Couldn't move the job — " + moveErr.message };
+            setJobs((prev: any[]) => prev.map((x: any) => x.id === row.job_id ? { ...x, ...patch } : x));
+          }
+          await (supabase as any).from("alfred_pending_actions").update({ status: "approved", resolved_at: new Date().toISOString() }).eq("id", row.id);
+          const custRow = customers.find((x: any) => x.id === row.customer_id);
+          const confirmMsg = `Hi ${custRow?.firstName || ""}, you're all set — we've moved your appointment to ${row.proposed.toDate}${row.proposed.toTime ? " at " + row.proposed.toTime : ""}. See you then!`;
+          let notifyWarning: string | undefined;
+          try {
+            await twilioSend(settings, row.customer_phone, confirmMsg);
+            logOutboundSmsToInbox({ contactName: `${custRow?.firstName || ""} ${custRow?.lastName || ""}`.trim(), contactPhone: row.customer_phone, customerId: row.customer_id, body: confirmMsg }).catch(() => {});
+          } catch (e: any) { notifyWarning = "Approved, but couldn't text the customer — " + (e?.message || String(e)); }
+          toast("Customer request approved");
+          return { success: true, ...(notifyWarning ? { notifyWarning } : {}) };
+        }
+        case "decline_customer_request": {
+          if (!inputs.requestId) return { error: "requestId required" };
+          const { data: row } = await (supabase as any).from("alfred_pending_actions").select("id,customer_id,customer_phone,status").eq("id", inputs.requestId).maybeSingle();
+          if (!row) return { error: "Request not found." };
+          if (row.status !== "pending") return { error: `That request was already ${row.status}.` };
+          await (supabase as any).from("alfred_pending_actions").update({ status: "declined", resolved_at: new Date().toISOString() }).eq("id", row.id);
+          const custRow = customers.find((x: any) => x.id === row.customer_id);
+          const declineMsg = `Hi ${custRow?.firstName || ""}, unfortunately that time doesn't work${inputs.reason ? ` (${inputs.reason})` : ""} — give us a call/text and we'll find something that does.`;
+          let notifyWarning: string | undefined;
+          try {
+            await twilioSend(settings, row.customer_phone, declineMsg);
+            logOutboundSmsToInbox({ contactName: `${custRow?.firstName || ""} ${custRow?.lastName || ""}`.trim(), contactPhone: row.customer_phone, customerId: row.customer_id, body: declineMsg }).catch(() => {});
+          } catch (e: any) { notifyWarning = "Declined, but couldn't text the customer — " + (e?.message || String(e)); }
+          toast("Customer request declined");
+          return { success: true, ...(notifyWarning ? { notifyWarning } : {}) };
+        }
         case "send_reminder": {
           // CRITICAL (Alfred functionality audit) — this used to look up
           // ONLY by customerId (no name fallback, unlike every other tool
@@ -2844,6 +2930,31 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
       name: "request_employee",
       description: "Send a job request to an employee — they must accept or decline before being added to the crew.",
       input_schema: { type: "object", properties: { jobId: { type: "string" }, employeeId: { type: "string" }, employeeName: { type: "string", description: "Full name like 'Jake Smith' as alternative to employeeId" }, message: { type: "string" } }, required: ["jobId"] }
+    },
+    {
+      name: "list_job_requests",
+      description: "List pending job requests from employees (an employee asked to be assigned/take on a job and is waiting on approval).",
+      input_schema: { type: "object", properties: {} }
+    },
+    {
+      name: "respond_to_job_request",
+      description: "Approve or deny a pending employee job request. Use list_job_requests first to find its id.",
+      input_schema: { type: "object", properties: { requestId: { type: "string" }, approve: { type: "boolean" }, reason: { type: "string", description: "optional, mainly useful when denying" } }, required: ["requestId", "approve"] }
+    },
+    {
+      name: "list_pending_customer_requests",
+      description: "List customer requests awaiting your yes/no (e.g. reschedule proposals Alfred set up after a customer texted in about it).",
+      input_schema: { type: "object", properties: {} }
+    },
+    {
+      name: "approve_customer_request",
+      description: "Approve a pending customer request — actually performs the action (e.g. moves the job) and texts the customer to confirm. Use list_pending_customer_requests first if you don't already have the requestId.",
+      input_schema: { type: "object", properties: { requestId: { type: "string" } }, required: ["requestId"] }
+    },
+    {
+      name: "decline_customer_request",
+      description: "Decline a pending customer request and text the customer that it doesn't work, optionally with a reason.",
+      input_schema: { type: "object", properties: { requestId: { type: "string" }, reason: { type: "string" } }, required: ["requestId"] }
     },
     {
       name: "send_reminder",
