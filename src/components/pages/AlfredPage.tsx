@@ -3090,7 +3090,19 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
       const nonToolCapable = viableModelsAll.filter(mid => !MODELS_MAP[mid]?.supportsTools);
       let viableModels = [...toolCapable, ...nonToolCapable];
       const explicitFirst = priority[0];
-      if (explicitFirst && viableModelsAll.includes(explicitFirst) && viableModels[0] !== explicitFirst) {
+      // BUG FIX — a non-tool-capable explicit pick (e.g. OpenRouter's free
+      // tier) jumping the queue "worked" a little TOO well: with the
+      // no-tools system prompt fix, it now honestly replies "I can't do
+      // that with this model, try switching" instead of faking success —
+      // which is a clean, valid response, so the chain stopped right there
+      // and never even tried Gemini/NVIDIA, which actually could have done
+      // it. The owner's explicit pick should still lead when it's
+      // tool-capable, or when it's genuinely the only option — but when
+      // real tool-capable models are also available, they get first crack
+      // at ACTUALLY doing the task; the explicit non-tool pick becomes the
+      // fallback (still tried, just not blocking a real attempt first).
+      const explicitIsToolCapable = !!MODELS_MAP[explicitFirst]?.supportsTools;
+      if (explicitFirst && viableModelsAll.includes(explicitFirst) && viableModels[0] !== explicitFirst && (explicitIsToolCapable || toolCapable.length === 0)) {
         viableModels = [explicitFirst, ...viableModels.filter(mid => mid !== explicitFirst)];
       }
       if (viableModels.length === 0) {
