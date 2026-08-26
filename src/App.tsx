@@ -892,12 +892,42 @@ export function App() {
   // whichever fetch happens to resolve last.
   const recentlyDeletedRef = useRef<{ jobs: Map<string, number>; customers: Map<string, number>; estimates: Map<string, number>; chemicals: Map<string, number> }>({ jobs: new Map(), customers: new Map(), estimates: new Map(), chemicals: new Map() });
   const RECENTLY_DELETED_TTL_MS = 2 * 60 * 1000;
+  // BUG FIX — invoices/customers STILL came back after delete despite the
+  // guards above and the syncedEstimateIdsRef guard on the 30s autosave.
+  // Root cause found: `estimates`/`customers` are `usePersistent` — seeded
+  // straight from THIS BROWSER's localStorage on mount, before any server
+  // fetch happens — and syncLocalToSupabase() (a separate, mount-only,
+  // `[]`-deps effect below) immediately upserts that entire local snapshot
+  // back to Supabase to give offline-created rows a head start. If this
+  // browser/tab's localStorage still has a row that was deleted from ANOTHER
+  // device (or an earlier session on this same device, closed before it
+  // could re-sync), that one-time push resurrects it — and it does this on
+  // EVERY reload, forever, since a stale localStorage copy never expires on
+  // its own. None of the in-memory guards above survive a closed tab/reload.
+  // Fix: persist deleted ids to localStorage too (a small tombstone list),
+  // so a stale snapshot from days/weeks ago still gets filtered before that
+  // very first push, not just within the current tab's session.
+  const TOMBSTONE_MAX = 500;
+  const persistTombstones = useCallback((table: "estimates" | "customers", ids: string[]) => {
+    if (ids.length === 0) return;
+    try {
+      const key = `smocks.deleted.${table}`;
+      const existing: string[] = JSON.parse(localStorage.getItem(key) || "[]");
+      const merged = Array.from(new Set([...existing, ...ids])).slice(-TOMBSTONE_MAX);
+      localStorage.setItem(key, JSON.stringify(merged));
+    } catch { /* localStorage unavailable — in-memory guards still apply */ }
+  }, []);
+  const readTombstones = (table: "estimates" | "customers"): Set<string> => {
+    try { return new Set(JSON.parse(localStorage.getItem(`smocks.deleted.${table}`) || "[]")); }
+    catch { return new Set(); }
+  };
   const markRecentlyDeleted = useCallback((table: "jobs" | "customers" | "estimates" | "chemicals", ids: string[]) => {
     const m = recentlyDeletedRef.current[table];
     const now = Date.now();
     for (const [id, ts] of m) { if (now - ts > RECENTLY_DELETED_TTL_MS) m.delete(id); }
     ids.forEach(id => m.set(id, now));
-  }, []);
+    if (table === "estimates" || table === "customers") persistTombstones(table, ids);
+  }, [persistTombstones]);
   // Undoing a delete restores the row — it must stop being treated as
   // "recently deleted" or the next refetch would just filter the restore
   // right back out for the rest of the TTL window.
@@ -2775,8 +2805,15 @@ export function App() {
   // without waiting up to 30s for the auto-save interval to fire.
   useEffect(() => {
     const syncLocalToSupabase = async () => {
-      await upsertCustomersSafely(customers, "Initial customer sync");
-      const storedEst = estimates;
+      // See persistTombstones' comment above — this is a one-time push of
+      // whatever localStorage has, straight on mount, before any server
+      // fetch. Without filtering out ids this browser has tombstoned, a
+      // stale local copy of a since-deleted row gets pushed right back.
+      const deletedCustIds = readTombstones("customers");
+      const deletedEstIds = readTombstones("estimates");
+      const safeLocalCustomers = deletedCustIds.size === 0 ? customers : customers.filter((c: any) => !deletedCustIds.has(c.id));
+      await upsertCustomersSafely(safeLocalCustomers, "Initial customer sync");
+      const storedEst = deletedEstIds.size === 0 ? estimates : estimates.filter((e: any) => !deletedEstIds.has(e.id));
       if (storedEst.length > 0) {
         try {
           const { error } = await (supabase as any).from("estimates").upsert(storedEst.map((e: any) => ({ ...e, owner_id: crmUserId })), { onConflict: "id" });
