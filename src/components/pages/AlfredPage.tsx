@@ -190,6 +190,22 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
   // conversation" apart from "edited an existing one" and save the new one
   // immediately instead of waiting out the debounce.
   const knownConvIdsRef = useRef<Set<string>>(new Set());
+  // BUG FIX — "schedule_job (and other tool calls) sometimes take forever
+  // or time out with no request even reaching Supabase." Root cause: the
+  // debounced save effect below used to re-upsert EVERY conversation in the
+  // list on every fire, not just the one that changed — with several saved
+  // conversations, and this effect re-running on every tool-call round
+  // during a multi-step Alfred request (conversations state updates each
+  // round), that's a burst of a dozen+ concurrent full-message-history
+  // writes to alfred_conversations firing at the exact moment a real,
+  // time-sensitive write (like scheduling a job) also needs a connection —
+  // confirmed via Supabase's own logs: the job insert never even reached
+  // the edge, and the console showed a wall of "conversation saved"
+  // entries for conversations that hadn't actually changed. Track a cheap
+  // fingerprint per conversation and only save the ones that differ from
+  // what was last actually saved.
+  const lastSavedConvFingerprintRef = useRef<Map<string, string>>(new Map());
+  const convFingerprint = (c: any) => `${c.messages?.length || 0}:${c.updatedAt || ""}:${c.title || ""}`;
   // Tracks conversations the user deleted locally so the poll merge doesn't
   // bring them back if the Supabase DELETE is still in-flight or slow.
   const deletedConvIdsRef = useRef<Set<string>>(new Set());
@@ -376,6 +392,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
     return new Date().toISOString();
   };
   const upsertConversation = (c: any) => {
+    const fingerprint = convFingerprint(c);
     (supabase as any).from("alfred_conversations").upsert({
       id: c.id, owner_id: ownerId, title: c.title, messages: c.messages,
       created_at: toIsoTimestamp(c.createdAt), updated_at: toIsoTimestamp(c.updatedAt),
@@ -391,7 +408,10 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
         // loaded" log. SQL to check directly in Supabase SQL Editor:
         //   select id, owner_id, title, updated_at from alfred_conversations
         //   where owner_id = '<ownerId>' order by updated_at desc;
-        else console.log("[Verify] Alfred conversation saved to Supabase — id:", c.id, "· owner_id:", ownerId, "· title:", c.title);
+        else {
+          lastSavedConvFingerprintRef.current.set(c.id, fingerprint);
+          console.log("[Verify] Alfred conversation saved to Supabase — id:", c.id, "· owner_id:", ownerId, "· title:", c.title);
+        }
       })
       .catch((e: any) => console.warn("[Alfred Sync] save threw for", c.id, ":", e?.message));
   };
@@ -409,7 +429,9 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
     });
     clearTimeout(alfredConvsSaveTimerRef.current);
     alfredConvsSaveTimerRef.current = setTimeout(() => {
-      (conversations || []).forEach((c: any) => upsertConversation(c));
+      (conversations || []).forEach((c: any) => {
+        if (lastSavedConvFingerprintRef.current.get(c.id) !== convFingerprint(c)) upsertConversation(c);
+      });
     }, 1200);
     return () => clearTimeout(alfredConvsSaveTimerRef.current);
   }, [conversations, ownerId, alfredConvsLoaded]); // eslint-disable-line react-hooks/exhaustive-deps
