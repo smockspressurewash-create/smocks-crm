@@ -20,7 +20,7 @@ import {
   Tooltip, ResponsiveContainer, Area, AreaChart, LineChart, Line,
   ComposedChart, Legend
 } from "recharts";
-import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, weekdayLabels, computeNextRecurringDate, isEmployeeUnavailable, computeDiscountsTotal, equipmentList, requiredChemicalsList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, compressImageFile, getEffectiveRate, mediaSrc, dataUrlToBlob, uploadJobMedia, reconcileCrewAfterAssign, insertJobRequestSafely, checkVideoLimits, buildJobCalendarDescription } from "../../lib/utils";
+import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, weekdayLabels, computeNextRecurringDate, isEmployeeUnavailable, computeDiscountsTotal, equipmentList, requiredChemicalsList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, compressImageFile, getEffectiveRate, mediaSrc, dataUrlToBlob, uploadJobMedia, reconcileCrewAfterAssign, insertJobRequestSafely, checkVideoLimits, buildJobCalendarDescription, buildChecklistFromServices } from "../../lib/utils";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField, JobChecklistItem, ChecklistPhoto, JobVideo, JobSignOff } from "../../types";
 import { twilioSend, sendEmail, sendViaGmail, sendOwnerGmailOnly, emailShell, emailButton, logOutboundSmsToInbox } from "../../lib/messaging";
 import { sendPushNotification } from "../../lib/push";
@@ -1231,6 +1231,18 @@ ${job.notes ? `<div class="section"><h2>Job Notes</h2><p>${job.notes}</p></div>`
                       onClick={() => {
                         const current: string[] = job.serviceIds || [];
                         const next = selected ? current.filter(id => id !== s.id) : [...current, s.id];
+                        if (!selected) {
+                          const newItems = buildChecklistFromServices([{ serviceId: s.id }], services);
+                          if (newItems.length > 0) {
+                            const existingLabels = new Set((job.preChecklist || []).map((c: any) => (c.label || "").trim().toLowerCase()));
+                            const toAdd = newItems.filter(it => !existingLabels.has(it.label.trim().toLowerCase()));
+                            if (toAdd.length > 0) {
+                              updateJob(jobId, { serviceIds: next, preChecklist: [...(job.preChecklist || []), ...toAdd] });
+                              toast?.(`Added ${toAdd.length} checklist item${toAdd.length > 1 ? "s" : ""} from ${s.name} ✓`);
+                              return;
+                            }
+                          }
+                        }
                         updateJob(jobId, { serviceIds: next });
                       }}
                       className={"px-2.5 py-1 rounded-full text-xs border transition " + (selected ? "bg-red-900/40 border-red-600/50 text-red-200" : "bg-white/5 border-white/10 text-white/50 hover:text-white/80")}
