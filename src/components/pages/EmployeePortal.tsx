@@ -4156,7 +4156,17 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     // the jobs-fetch poll below runs every 3s and merges Supabase's row straight
     // over local state, so anything not yet saved can get silently reverted by
     // the very next poll tick.
-    return (supabase as any).from("jobs").update(patch).eq("id", jobId)
+    // BUG FIX — "photo saved locally but failed to sync," "pre-job
+    // checklist sync timed out." Both go through THIS shared write path,
+    // which had no timeout/retry of its own — a single slow or dropped
+    // connection (routine at a job site on spotty cell signal) permanently
+    // failed the whole save with no second attempt, unlike every other
+    // write path in this app (schedule_job's insert, etc.) which already
+    // retries once before giving up. One retry after a real timeout, not
+    // just the column-mismatch retry that already existed below.
+    const attempt = () => withTimeout<any>((supabase as any).from("jobs").update(patch).eq("id", jobId), 20000, "Job save");
+    return attempt()
+      .catch((e: any) => { console.warn("[updateJob] first attempt failed/timed out — retrying once:", e?.message); return attempt().catch((e2: any) => ({ error: e2 })); })
       .then(async (result: any) => {
         if (result?.error) {
           console.warn("[updateJob] full patch failed:", result.error.message, "— retrying core fields only");
