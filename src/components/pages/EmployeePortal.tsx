@@ -373,7 +373,7 @@ const ARRIVAL_PROMPT_RADIUS_METERS = 150;
 // streamlined, mobile-optimized job view a field employee sees (sign-off,
 // checklist with photo upload, clock in/out — no admin fields) instead of
 // opening the full JobDetailModal for a job the OWNER is personally working.
-export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName = "the company", onComplete, perms: permsOverride, maxLunchMinutes = 30, onJobCompleted, googleMapsKey = "", paidLunchBreaks = false, signOffDisclaimer = "", settings = {} as AppSettings, setEstimates = (() => {}) as any, setCustomers = (() => {}) as any, nextJob = null, nextJobCustomer = null, laterJobsToday = [], onArrived, autoComplete = false, employeeName = "", employeeEmail = "", isPreview = false, employees = [] as Employee[], chemicals = [] as any[] }: {
+export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName = "the company", onComplete, perms: permsOverride, maxLunchMinutes = 30, onJobCompleted, googleMapsKey = "", paidLunchBreaks = false, signOffDisclaimer = "", settings = {} as AppSettings, setEstimates = (() => {}) as any, setCustomers = (() => {}) as any, nextJob = null, nextJobCustomer = null, laterJobsToday = [], onArrived, autoComplete = false, employeeName = "", employeeEmail = "", isPreview = false, employees = [] as Employee[], chemicals = [] as any[], busyDates = [] as string[] }: {
   job: Job; customer?: Customer; onBack: () => void;
   onUpdateJob: (patch: Partial<Job>) => void | Promise<any>; toast: (msg: string, tone?: any) => void;
   companyName?: string; onComplete?: () => void; perms?: Record<string, boolean>; maxLunchMinutes?: number;
@@ -388,6 +388,11 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
   // one), used by the Running Late cascade-notify prompt below.
   laterJobsToday?: Array<{ job: Job; customer: Customer | null }>;
   onArrived?: () => void; autoComplete?: boolean; employeeName?: string; employeeEmail?: string; isPreview?: boolean;
+  // FEATURE — "reschedule a partially-completed job" date picker highlights
+  // days this employee is already scheduled elsewhere, as a lightweight
+  // stand-in for "view the calendar" without pulling the full jobs array
+  // into this component.
+  busyDates?: string[];
 }) {
   const effPerms = { ...DEFAULT_PERMISSIONS, ...(permsOverride || {}) };
   const [addCardOpen, setAddCardOpen] = useState(false);
@@ -429,6 +434,21 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
   const [reportProblemOpen, setReportProblemOpen] = useState(false);
   const [reportProblemText, setReportProblemText] = useState("");
   const [sendingReportProblem, setSendingReportProblem] = useState(false);
+  // FEATURE — "mark a job not-completed/partially-complete, e.g. ran out of
+  // chemicals at 90%, with a reason, optional customer message, and a
+  // reschedule date." Mirrors the Report Problem pattern above: logs to
+  // commLog (visible to the owner everywhere job activity already shows),
+  // pushes the job back to "scheduled" on the new date, and optionally
+  // notifies the customer — all with the same toast-success/toast-failure
+  // convention as every other send action in this file.
+  const [rescheduleOpen, setRescheduleOpen] = useState(false);
+  const [rescheduleReason, setRescheduleReason] = useState("");
+  const [rescheduleReasonNote, setRescheduleReasonNote] = useState("");
+  const [rescheduleDate, setRescheduleDate] = useState("");
+  const [rescheduleNotifyCustomer, setRescheduleNotifyCustomer] = useState(true);
+  const [rescheduleChannel, setRescheduleChannel] = useState<"sms" | "email">(customer?.phone ? "sms" : "email");
+  const [sendingReschedule, setSendingReschedule] = useState(false);
+  const RESCHEDULE_REASONS = ["Ran out of chemicals/supplies", "Equipment issue", "Weather", "Customer not home / access issue", "Ran out of time", "Other"];
   const [, forceTick] = useState(0);
   const [showSignOff, setShowSignOff] = useState(false);
   // Tracks whether Sign-Off was opened from mid-way through the Complete Job
@@ -757,6 +777,65 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
       toast("Saved locally, but failed to sync — " + (e?.message || "unknown error"), "red");
     } finally {
       setSendingReportProblem(false);
+    }
+  };
+
+  const sendReschedule = async () => {
+    if (!rescheduleReason) { toast("Pick a reason first", "red"); return; }
+    if (!rescheduleDate) { toast("Pick a reschedule date first", "red"); return; }
+    setSendingReschedule(true);
+    const reasonText = rescheduleReason === "Other" && rescheduleReasonNote.trim() ? rescheduleReasonNote.trim() : rescheduleReason;
+    const note = `⏸️ NOT COMPLETED by ${employeeName || "crew"} — ${reasonText}. Rescheduled to ${rescheduleDate}.`;
+    try {
+      const result = await withTimeout(Promise.resolve(onUpdateJob({
+        status: "scheduled",
+        scheduledDate: rescheduleDate,
+        commLog: [...(job.commLog || []), { id: uid(), type: "note" as const, date: today(), note }],
+      })), 15000, "Reschedule save");
+      if (result?.error) {
+        console.error("[Reschedule] — error:", result.error.message);
+        toast("Saved locally, but failed to sync — " + result.error.message, "red");
+        return;
+      }
+      let msgSent = false;
+      let msgError = "";
+      if (rescheduleNotifyCustomer) {
+        const niceDate = new Date(rescheduleDate + "T12:00:00").toLocaleDateString([], { weekday: "long", month: "short", day: "numeric" });
+        const custMsg = `Hi ${customer?.firstName || "there"}, we weren't able to finish today's service (${reasonText.toLowerCase()}) and have rescheduled you for ${niceDate}. Sorry for the inconvenience — we'll take care of it then!`;
+        try {
+          if (rescheduleChannel === "sms") {
+            if (!customer?.phone) throw new Error("No phone on file for this customer.");
+            await withTimeout(twilioSend(settings as any, customer.phone, custMsg), 15000, "Reschedule SMS");
+            logOutboundSmsToInbox({ contactName: `${customer?.firstName} ${customer?.lastName}`, contactPhone: customer.phone, customerId: customer?.id, body: custMsg }).catch(() => {});
+          } else {
+            if (!customer?.email) throw new Error("No email on file for this customer.");
+            const html = emailShell(settings, "Job Rescheduled", `<p>${custMsg}</p>`);
+            await withTimeout(sendOwnerGmailOnly(settings as any, customer.email, "Your service has been rescheduled", html), 15000, "Reschedule email");
+          }
+          msgSent = true;
+        } catch (e: any) {
+          msgError = e?.message || "unknown error";
+          console.warn("[Reschedule] customer notify failed:", msgError);
+        }
+      }
+      haptic(15);
+      if (!rescheduleNotifyCustomer) {
+        toast(`Job rescheduled to ${rescheduleDate} ✓`, "green");
+      } else if (msgSent) {
+        toast(`Job rescheduled to ${rescheduleDate} — customer notified ✓`, "green");
+      } else {
+        toast(`Job rescheduled, but the customer message failed — ${msgError}`, "red");
+      }
+      setRescheduleOpen(false);
+      setRescheduleReason("");
+      setRescheduleReasonNote("");
+      setRescheduleDate("");
+      onBack();
+    } catch (e: any) {
+      console.error("[Reschedule] — error:", e?.message || e);
+      toast("Saved locally, but failed to sync — " + (e?.message || "unknown error"), "red");
+    } finally {
+      setSendingReschedule(false);
     }
   };
 
@@ -2348,6 +2427,65 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
             ) : (
               <button onClick={() => setReportProblemOpen(true)} className="w-full flex items-center justify-center gap-1.5 py-1.5 text-xs text-red-300 hover:text-red-200 transition">
                 <AlertTriangle size={12} />Report Problem
+              </button>
+            )}
+          </Glass>
+        )}
+
+        {/* FEATURE — "mark not completed / partially complete (e.g. ran out
+            of chemicals at 90%) with a reason, optionally message the
+            customer, and pick a reschedule day." */}
+        {job.status !== "completed" && job.status !== "cancelled" && (
+          <Glass className="p-3 !bg-orange-950/15 !border-orange-700/30">
+            {rescheduleOpen ? (
+              <div className="space-y-3">
+                <div className="text-xs font-semibold text-orange-300">Can't Finish — Reschedule</div>
+                <select value={rescheduleReason} onChange={e => setRescheduleReason(e.target.value)}
+                  className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-orange-700/60">
+                  <option value="" className="bg-black">Why couldn't the job finish?</option>
+                  {RESCHEDULE_REASONS.map(r => <option key={r} value={r} className="bg-black">{r}</option>)}
+                </select>
+                {rescheduleReason === "Other" && (
+                  <input value={rescheduleReasonNote} onChange={e => setRescheduleReasonNote(e.target.value)} placeholder="Describe the reason..."
+                    className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-xs text-white placeholder-white/30 focus:outline-none focus:border-orange-700/60" />
+                )}
+                <div>
+                  <label className="text-[10px] text-white/40 uppercase tracking-wider block mb-1">Reschedule to</label>
+                  <input type="date" value={rescheduleDate} min={today()} onChange={e => setRescheduleDate(e.target.value)}
+                    className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-orange-700/60" />
+                  {rescheduleDate && busyDates.includes(rescheduleDate) && (
+                    <div className="text-[10px] text-orange-300/80 mt-1">⚠ You already have another job scheduled that day.</div>
+                  )}
+                </div>
+                <label className="flex items-center gap-2 text-xs text-white/70 cursor-pointer">
+                  <input type="checkbox" checked={rescheduleNotifyCustomer} onChange={e => setRescheduleNotifyCustomer(e.target.checked)} className="accent-orange-600" />
+                  Message the customer about the new date
+                </label>
+                {rescheduleNotifyCustomer && (
+                  <div className="flex gap-1.5">
+                    <button onClick={() => setRescheduleChannel("sms")} disabled={!customer?.phone}
+                      className={"flex-1 py-1.5 rounded-lg text-[11px] font-semibold transition disabled:opacity-30 " + (rescheduleChannel === "sms" ? "bg-orange-700/40 border border-orange-500/60 text-orange-200" : "bg-white/5 border border-white/10 text-white/50")}>
+                      Text
+                    </button>
+                    <button onClick={() => setRescheduleChannel("email")} disabled={!customer?.email}
+                      className={"flex-1 py-1.5 rounded-lg text-[11px] font-semibold transition disabled:opacity-30 " + (rescheduleChannel === "email" ? "bg-orange-700/40 border border-orange-500/60 text-orange-200" : "bg-white/5 border border-white/10 text-white/50")}>
+                      Email
+                    </button>
+                  </div>
+                )}
+                <div className="flex gap-2">
+                  <button
+                    disabled={sendingReschedule}
+                    onClick={sendReschedule}
+                    className="flex-1 py-2 rounded-lg bg-gradient-to-r from-orange-600 to-orange-800 border border-orange-500/60 text-white text-xs font-bold disabled:opacity-40 transition">
+                    {sendingReschedule ? "Saving…" : "Save & Reschedule"}
+                  </button>
+                  <button onClick={() => { setRescheduleOpen(false); setRescheduleReason(""); setRescheduleReasonNote(""); setRescheduleDate(""); }} className="text-[11px] text-white/30 hover:text-white/60 px-2">Cancel</button>
+                </div>
+              </div>
+            ) : (
+              <button onClick={() => setRescheduleOpen(true)} className="w-full flex items-center justify-center gap-1.5 py-1.5 text-xs text-orange-300 hover:text-orange-200 transition">
+                <Calendar size={12} />Can't Finish / Reschedule
               </button>
             )}
           </Glass>
@@ -5661,6 +5799,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
         autoComplete={pendingCompleteJobId === selectedJobId}
         employeeName={myEmployee ? `${myEmployee.firstName} ${myEmployee.lastName || ""}`.trim() : ""}
         employeeEmail={empSession?.user?.email || (myEmployee as any)?.email || ""}
+        busyDates={myJobs.filter(j => j.status !== "cancelled" && j.status !== "completed" && j.id !== job.id).map(j => j.scheduledDate).filter(Boolean)}
       />
     );
   }
