@@ -187,19 +187,33 @@ export const MODELS: Record<string, ModelDef> = {
     apiLabel: "NVIDIA API Key",
     free: true,
   },
-  // BUG FIX — REMOVED. OpenRouter's free tier has no real function/tool
-  // calling — Alfred's entire point is taking real actions (schedule jobs,
-  // search customers, send messages), so a model that can only fake a tool
-  // call as text was never actually usable for what this app needs, no
-  // matter how many detection/failover patches wrapped around it. Per the
-  // owner's explicit call: every selectable model must be able to do
-  // everything Alfred does, not just chat. Left out entirely rather than
-  // kept-but-hidden so it can never end up in modelPriority/switch_ai_model
-  // again. (The OPENROUTER_FREE_FALLBACKS/getOpenRouterFreeModels helpers
-  // and the "openrouter" provider branch further below are now unreachable
-  // dead code — left in place since callModel's shared retry/proxy logic
-  // for every OTHER provider runs through the same function and isn't
-  // worth the risk of restructuring just to delete a few dozen dead lines.)
+  // BUG FIX — re-added. Originally removed because the hardcoded model
+  // (Llama 3.3 70B free) had no real tool-calling, and the whole point of
+  // adding it was to give owners a second free provider so hitting
+  // Gemini's daily quota doesn't block Alfred entirely. Turns out that was
+  // a bad default model, not a platform limitation — OpenRouter's live
+  // catalog (fetched directly, not guessed) currently has 18 different free
+  // models that genuinely declare tool-calling support in their own
+  // supported_parameters. GLM 5.2 is one of the strongest of those free
+  // tool-capable models right now. getOpenRouterFreeModels() (below) keeps
+  // this current automatically by re-checking the live catalog for BOTH
+  // free pricing AND tool support — not just free pricing like before.
+  openrouter: {
+    id: "openrouter",
+    modelId: "z-ai/glm-5.2:free",
+    name: "OpenRouter",
+    label: "OpenRouter (GLM 5.2 — Free, tool-capable)",
+    provider: "openrouter",
+    endpoint: "https://openrouter.ai/api/v1/chat/completions",
+    maxTokens: 4096,
+    contextWindow: 131072,
+    color: "from-violet-500 to-purple-700",
+    needsKey: true,
+    supportsTools: true,
+    keyUrl: "https://openrouter.ai/keys",
+    apiLabel: "OpenRouter API Key",
+    free: true,
+  },
 };
 
 // ISSUE 19 — OpenRouter's free-tier catalog rotates/deprecates models often
@@ -208,12 +222,21 @@ export const MODELS: Record<string, ModelDef> = {
 // before ever reaching a usable model. This fallback list gives callModel's
 // OpenRouter branch other free slugs to retry against on a 404 instead of
 // failing outright — keep the primary modelId above first in this list.
+// BUG FIX — every single slug in the old version of this list (Llama 3.3/
+// 3.1, Mistral 7B, Qwen 2.5 72B, Gemma 2 9B) has been fully REMOVED from
+// OpenRouter's catalog since it was written, not just deprecated — none of
+// them appear in a live /models fetch at all anymore. Refreshed against a
+// live fetch (see getOpenRouterFreeModels below) to models actually free
+// AND actually tool-capable (declare "tools" in supported_parameters) right
+// now — this is what was silently missing before: the old code filtered on
+// free pricing only, never checked tool support, so it could serve a free
+// model that could never have called a tool no matter what.
 export const OPENROUTER_FREE_FALLBACKS = [
-  "meta-llama/llama-3.3-70b-instruct:free",
-  "meta-llama/llama-3.1-8b-instruct:free",
-  "mistralai/mistral-7b-instruct:free",
-  "qwen/qwen-2.5-72b-instruct:free",
-  "google/gemma-2-9b-it:free",
+  "z-ai/glm-5.2:free",
+  "minimax/minimax-m3:free",
+  "google/gemma-4-31b-it:free",
+  "nvidia/nemotron-3-super-120b-a12b:free",
+  "nvidia/nemotron-3.5-lightning:free",
 ];
 
 // BUG FIX — "check that OpenRouter API keys work for Alfred": every single
@@ -224,9 +247,12 @@ export const OPENROUTER_FREE_FALLBACKS = [
 // publishes its full model catalog at a public, unauthenticated, CORS-open
 // endpoint specifically so integrations can do this instead of guessing —
 // fetch it once per session, filter to models that are actually free right
-// now (prompt AND completion pricing both "0"), and try those FIRST, with
-// the static list above only as a last-resort fallback if that fetch
-// itself fails (offline, OpenRouter's own outage, etc.).
+// now (prompt AND completion pricing both "0") AND actually declare tool-
+// calling support, and try those FIRST, with the static list above only as
+// a last-resort fallback if that fetch itself fails (offline, OpenRouter's
+// own outage, etc.). Filtering on tool support too (not just free pricing)
+// is the fix for OpenRouter being re-added at all — see MODELS.openrouter's
+// comment for why it was removed and then brought back this way.
 let openRouterFreeModelsCache: string[] | null = null;
 let openRouterFreeModelsFetchedAt = 0;
 const OPENROUTER_CATALOG_TTL_MS = 30 * 60 * 1000;
@@ -237,16 +263,17 @@ const getOpenRouterFreeModels = async (): Promise<string[]> => {
   try {
     const res = await fetch("https://openrouter.ai/api/v1/models");
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const json = await res.json() as { data?: Array<{ id: string; pricing?: { prompt?: string; completion?: string } }> };
+    const json = await res.json() as { data?: Array<{ id: string; pricing?: { prompt?: string; completion?: string }; supported_parameters?: string[] }> };
     const free = (json.data || [])
       .filter(m => m.pricing?.prompt === "0" && m.pricing?.completion === "0")
+      .filter(m => (m.supported_parameters || []).includes("tools") || (m.supported_parameters || []).includes("tool_choice"))
       .map(m => m.id);
     if (free.length > 0) {
       openRouterFreeModelsCache = free;
       openRouterFreeModelsFetchedAt = Date.now();
       return free;
     }
-    throw new Error("OpenRouter returned no free models");
+    throw new Error("OpenRouter returned no free tool-capable models");
   } catch (e: any) {
     console.warn("[OpenRouter] live free-model catalog fetch failed, using static fallback list:", e?.message);
     return [];
