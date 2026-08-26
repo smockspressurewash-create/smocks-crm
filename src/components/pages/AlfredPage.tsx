@@ -3160,15 +3160,19 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
             // `name(args)`. The same model also fakes calls as
             // `search_customers → query: "..."`, `Calling search_customers...`,
             // etc. — there's no fixed shape a model like this settles on. The
-            // one reliable signal: this model has no real tool-calling
-            // (toolsForModel is undefined), so ANY short response that
-            // starts with one of Alfred's actual tool names is it narrating
-            // a fake call, never a real final answer to the owner.
+            // most reliable signal: ANY short response that starts with one
+            // of Alfred's actual tool names is it narrating a fake call,
+            // never a real final answer to the owner. Not gated to
+            // `!toolsForModel` — a model marked supportsTools:true whose
+            // provider integration turns out not to actually honor tool
+            // calls (a bad flag, a schema mismatch, a provider-side quirk)
+            // would otherwise hit this exact failure silently too. This is
+            // a safety net for every provider, not just known non-tool ones.
             const trimmedResultText = (result.text || "").trim();
-            const fakesToolCall = !toolsForModel && trimmedResultText.length > 0 && trimmedResultText.length < 300 &&
+            const fakesToolCall = trimmedResultText.length > 0 && trimmedResultText.length < 300 &&
               toolDefinitions.some((td: any) => new RegExp(`(^|[\\s\`*"'([]) ?${td.name}\\b`, "i").test(trimmedResultText));
             if (fakesToolCall) {
-              throw new Error(`${MODELS_MAP[mid]?.name || mid} doesn't support tool/function calling and tried to fake a tool call as text instead of acting.`);
+              throw new Error(`${MODELS_MAP[mid]?.name || mid} tried to fake a tool call as text instead of actually acting.`);
             }
             // BUG FIX — a completely empty response (no text, no tool call,
             // just a clean end_turn) also got accepted as "success," and the

@@ -487,6 +487,15 @@ const TOOLS = [
     },
   },
   {
+    name: "request_employee",
+    description: "Send a job request to an employee for them to accept/decline (rather than directly assigning them). Identify the job by customerName or jobId.",
+    input_schema: {
+      type: "object",
+      properties: { jobId: { type: "string" }, customerName: { type: "string" }, employeeName: { type: "string" }, message: { type: "string" } },
+      required: ["employeeName"],
+    },
+  },
+  {
     name: "create_customer",
     description: "Create a new customer record.",
     input_schema: {
@@ -621,6 +630,15 @@ const TOOLS = [
     },
   },
   {
+    name: "search_customers",
+    description: "Search customers by name, email, or address fragment — use this to find a customer (or confirm one exists) before referencing them, especially when the exact full name isn't known.",
+    input_schema: {
+      type: "object",
+      properties: { query: { type: "string", description: "Search text (name, email, or address fragment)" } },
+      required: ["query"],
+    },
+  },
+  {
     name: "get_customer_details",
     description: "Look up a customer's contact info, total spent, and recent job history by name.",
     input_schema: {
@@ -742,6 +760,38 @@ const TOOLS = [
       type: "object",
       properties: { customerName: { type: "string" } },
       required: ["customerName"],
+    },
+  },
+  {
+    name: "create_invoice",
+    description: "Create a new invoice (payment due now, not a quote) for a customer, with one or more line items. Does NOT text it to the customer — call send_estimate after (or in the same reply) with the returned invoiceId to actually deliver it.",
+    input_schema: {
+      type: "object",
+      properties: {
+        customerName: { type: "string" },
+        description: { type: "string", description: "Single line item description, if not using lineItems" },
+        amount: { type: "number", description: "Single line item total, if not using lineItems" },
+        lineItems: { type: "array", items: { type: "object", properties: { description: { type: "string" }, quantity: { type: "number" }, unitPrice: { type: "number" } } }, description: "Use instead of description/amount for multiple line items" },
+        notes: { type: "string" },
+      },
+      required: ["customerName"],
+    },
+  },
+  {
+    name: "list_estimates",
+    description: "List quotes/estimates/invoices, optionally filtered by status.",
+    input_schema: {
+      type: "object",
+      properties: { status: { type: "string", description: "'pending' (default), 'approved', 'rejected', 'invoiced', or 'all'" } },
+    },
+  },
+  {
+    name: "send_email_via_gmail",
+    description: "Send an email via the owner's connected Gmail account. Only works if Google is connected in Settings with Gmail scope enabled.",
+    input_schema: {
+      type: "object",
+      properties: { to: { type: "string" }, subject: { type: "string" }, body: { type: "string" } },
+      required: ["to", "subject", "body"],
     },
   },
   {
@@ -1040,12 +1090,13 @@ const SMS_TOOL_CAPABILITY: Record<string, string> = {
   create_customer: "add_customers", attach_file_to_customer: "add_customers",
   schedule_job: "schedule_jobs",
   reschedule_job: "modify_jobs", cancel_job: "modify_jobs", update_job_priority: "modify_jobs", add_checklist_item: "modify_jobs",
-  assign_employee: "manage_crew", respond_to_job_request: "manage_crew", approve_customer_request: "manage_crew", decline_customer_request: "manage_crew",
-  create_estimate: "create_quotes",
+  assign_employee: "manage_crew", request_employee: "manage_crew", respond_to_job_request: "manage_crew", approve_customer_request: "manage_crew", decline_customer_request: "manage_crew",
+  create_estimate: "create_quotes", create_invoice: "create_quotes",
   send_estimate: "send_quotes", send_invoice: "send_quotes",
   notify_all_customers: "mass_messaging",
   text_customer: "message_customers", text_phone_number: "message_customers",
   text_supplier: "message_suppliers", email_supplier: "message_suppliers", contact_general_supplier: "message_suppliers",
+  send_email_via_gmail: "send_email",
   text_me_document: "send_files", send_me_files: "send_files",
   create_promotion: "automations", enable_review_request_automation: "automations",
   create_sop: "sops",
@@ -1393,6 +1444,14 @@ const executeTool = async (ctx: Ctx, name: string, input: Record<string, any>): 
         if (!res.ok) return { error: (await res.text().catch(() => "")).slice(0, 200) };
         return { success: true, jobId: job.id, priority: input.priority };
       }
+      case "search_customers": {
+        const q = String(input.query || "").toLowerCase();
+        const rows = await sbGet(ctx, `customers?select=id,firstName,lastName,email,phone,address,totalSpent,notes${ownerScope(ctx)}&limit=1000`);
+        const results = rows.filter((c: any) => `${c.firstName} ${c.lastName} ${c.email || ""} ${c.address || ""}`.toLowerCase().includes(q)).slice(0, 10).map((c: any) => ({
+          id: c.id, name: `${c.firstName} ${c.lastName}`.trim(), email: c.email, phone: c.phone, address: c.address, totalSpent: c.totalSpent, notes: c.notes,
+        }));
+        return { success: true, count: results.length, customers: results };
+      }
       case "get_customer_details": {
         const cust = await findCustomerByName(ctx, input.customerName);
         if (!cust) return { error: `No customer found matching "${input.customerName}".` };
@@ -1599,6 +1658,65 @@ const executeTool = async (ctx: Ctx, name: string, input: Record<string, any>): 
           cardOnFile: cust.savedPaymentMethodLabel || "A card is on file, but no brand/last-4 label was saved — check the customer's Payment Methods in the CRM for the exact card.",
           note: "This is the brand/last-4 only — the full card number is never stored anywhere and can't be retrieved by anyone.",
         };
+      }
+      case "create_invoice": {
+        const cust = await findCustomerByName(ctx, input.customerName);
+        if (!cust) return { error: `No customer found matching "${input.customerName}".` };
+        if (!input.amount && !(Array.isArray(input.lineItems) && input.lineItems.length)) return { error: "amount or lineItems required" };
+        const items = (Array.isArray(input.lineItems) && input.lineItems.length)
+          ? input.lineItems.map((li: any) => ({ id: crypto.randomUUID(), description: li.description, quantity: li.quantity || 1, unitPrice: li.unitPrice || 0 }))
+          : [{ id: crypto.randomUUID(), description: input.description || "Service", quantity: 1, unitPrice: Number(input.amount) || 0 }];
+        const subtotal = items.reduce((s: number, i: any) => s + i.quantity * i.unitPrice, 0);
+        // Ctx doesn't carry the owner's configured tax rate (a text-Alfred-
+        // only gap vs. the in-app version, which reads settings.taxRate
+        // directly) — 6% matches this app's own default fallback elsewhere.
+        const tax = subtotal * 0.06;
+        const total = subtotal + tax;
+        const row = {
+          id: crypto.randomUUID(), customerId: cust.id, lineItems: items, subtotal, discount: 0, depositRequired: 0, tax, total,
+          status: "approved", createdAt: today(), validUntil: today(), viewed: false, viewedAt: null,
+          terms: "Payment due upon receipt.", notes: input.notes || "", invoiced: true, invoicedAt: today(),
+        };
+        const res = await sbWrite(ctx, "estimates", "POST", row);
+        if (!res.ok) return { error: res.error };
+        return { success: true, invoiceId: row.id, customer: `${cust.firstName} ${cust.lastName}`.trim(), total };
+      }
+      case "request_employee": {
+        const job = await findJob(ctx, { jobId: input.jobId, customerName: input.customerName });
+        if (!job) return { error: "Couldn't find that job." };
+        const emp = await findEmployeeByName(ctx, input.employeeName);
+        if (!emp) return { error: `No employee found matching "${input.employeeName}".` };
+        const res = await sbWrite(ctx, "job_requests", "POST", { job_id: job.id, employee_id: emp.id, status: "pending", message: input.message || null });
+        if (!res.ok) return { error: res.error };
+        return { success: true, jobId: job.id, employee: `${emp.firstName} ${emp.lastName}`, status: "pending — awaiting the employee's response" };
+      }
+      case "list_estimates": {
+        const wantStatus = (input.status || "pending").toLowerCase();
+        const rows = await sbGet(ctx, `estimates?select=id,customerId,total,status,invoiced,paidAt,createdAt${ownerScope(ctx)}&limit=200`);
+        const matches = (e: any) => {
+          if (wantStatus === "all") return true;
+          if (wantStatus === "invoiced") return !!e.invoiced;
+          if (wantStatus === "pending") return e.status === "pending" && !e.invoiced;
+          if (wantStatus === "approved") return e.status === "approved" && !e.invoiced;
+          if (wantStatus === "rejected") return e.status === "rejected";
+          return true;
+        };
+        const filtered = rows.filter(matches).sort((a: any, b: any) => (b.createdAt || "").localeCompare(a.createdAt || ""));
+        const custIds = Array.from(new Set(filtered.slice(0, 25).map((e: any) => e.customerId).filter(Boolean)));
+        const custs = custIds.length ? await sbGet(ctx, `customers?id=in.(${custIds.map(id => encodeURIComponent(id)).join(",")})&select=id,firstName,lastName`) : [];
+        return {
+          success: true, status: wantStatus, count: filtered.length,
+          estimates: filtered.slice(0, 25).map((e: any) => {
+            const c = custs.find((x: any) => x.id === e.customerId);
+            return { id: e.id, customer: c ? `${c.firstName} ${c.lastName}`.trim() : "Unknown customer", total: e.total, status: e.status, invoiced: !!e.invoiced, paid: !!e.paidAt, createdAt: e.createdAt };
+          }),
+        };
+      }
+      case "send_email_via_gmail": {
+        if (!input.to || !input.subject || !input.body) return { error: "to, subject, body required" };
+        const res = await sendGmailFromCtx(ctx, input.to, input.subject, `<p>${String(input.body).replace(/\n/g, "<br/>")}</p>`);
+        if (!res.ok) return { error: res.error || "Gmail send failed — is Google connected in Settings → Integrations?" };
+        return { success: true, sent: true, to: input.to, subject: input.subject };
       }
       case "create_estimate": {
         const cust = await findCustomerByName(ctx, input.customerName);
