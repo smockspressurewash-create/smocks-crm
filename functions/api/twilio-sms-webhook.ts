@@ -157,6 +157,10 @@ interface ResolvedOwnerSettings {
   // → Capabilities), same map AlfredPage.tsx's in-app chat enforces —
   // threaded through here so text-Alfred honors the exact same choices.
   alfredCapabilities: Record<string, boolean>;
+  // FEATURE — vacation/out-of-office mode set via Alfred's set_vacation_mode
+  // tool (in-app or text) — threaded through here so text-Alfred sees it
+  // proactively in its system prompt, same pattern as alfredCapabilities.
+  vacationMode?: { active: boolean; startDate?: string; endDate?: string; autonomyLevel?: string; checkInFrequency?: string; notes?: string };
 }
 
 const shapeSettings = (row: any, data: any): ResolvedOwnerSettings => ({
@@ -218,6 +222,7 @@ const shapeSettings = (row: any, data: any): ResolvedOwnerSettings => ({
   // explicit opt-in.
   alfredVoiceReplies: (data?.alfredVoiceReplies === "always" || data?.alfredVoiceReplies === "off") ? data.alfredVoiceReplies : "ask",
   alfredCapabilities: (data?.alfredCapabilities && typeof data.alfredCapabilities === "object") ? data.alfredCapabilities : {},
+  vacationMode: (data?.vacationMode && typeof data.vacationMode === "object") ? data.vacationMode : undefined,
 });
 
 const fetchAppSettings = async (env: Record<string, string>, toNumber: string): Promise<ResolvedOwnerSettings> => {
@@ -520,7 +525,7 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
     const isStop = STOP_WORDS.includes(body);
     const isStart = START_WORDS.includes(body);
     const resolved = await fetchAppSettings(context.env, params.To || "");
-    const { companyName, keyword, ownerId, myPhone, alfredExtraPhones, alfredExtraPhoneRoles, alfredSmsEnabled, twilioSid, twilioToken, twilioFrom, modelKeys, modelPriority, activeModel, openaiKey, googleProviderToken, googleRefreshToken, googleTokenExpiresAt, testModeEnabled, alfredAutoApproveReschedules, alfredPersonality, owmKey, weatherLocation, companyAddress, alfredVoiceReplies, myEmail, alfredCapabilities } = resolved;
+    const { companyName, keyword, ownerId, myPhone, alfredExtraPhones, alfredExtraPhoneRoles, alfredSmsEnabled, twilioSid, twilioToken, twilioFrom, modelKeys, modelPriority, activeModel, openaiKey, googleProviderToken, googleRefreshToken, googleTokenExpiresAt, testModeEnabled, alfredAutoApproveReschedules, alfredPersonality, owmKey, weatherLocation, companyAddress, alfredVoiceReplies, myEmail, alfredCapabilities, vacationMode } = resolved;
     const isOptInKeyword = body === keyword;
     const isConfirm = CONFIRM_WORDS.includes(body);
 
@@ -619,7 +624,7 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
       }
     }
     if (alfredSmsEnabled && authorizedPhones.includes(fromDigits) && !assignedEmployeeId && !preResolvedEmployee) {
-      const ctx = { authHeaders, ownerId, companyName, twilioSid, twilioToken, twilioFrom, origin: new URL(context.request.url).origin, fromPhone: from, googleProviderToken, googleRefreshToken, googleTokenExpiresAt, testModeEnabled, ownerAuthorizedPhones: authorizedPhones, alfredPersonality, owmKey, weatherLocation, companyAddress, myEmail, alfredCapabilities, env: context.env as Record<string, string> };
+      const ctx = { authHeaders, ownerId, companyName, twilioSid, twilioToken, twilioFrom, origin: new URL(context.request.url).origin, fromPhone: from, googleProviderToken, googleRefreshToken, googleTokenExpiresAt, testModeEnabled, ownerAuthorizedPhones: authorizedPhones, alfredPersonality, owmKey, weatherLocation, companyAddress, myEmail, alfredCapabilities, vacationMode, env: context.env as Record<string, string> };
       // BUG FIX — this branch never logged the OWNER's own inbound text to
       // inbox_threads at all (only to alfred_sms_threads, which the Inbox
       // UI never reads) — sendAlfredSms below only logs Alfred's OUTGOING

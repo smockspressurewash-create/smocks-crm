@@ -202,6 +202,10 @@ type Ctx = {
   // Owner-controlled Alfred capability gates (Settings → Alfred →
   // Capabilities) — same map/enforcement as the in-app chat.
   alfredCapabilities?: Record<string, boolean>;
+  // Owner-set vacation/out-of-office mode (Alfred's set_vacation_mode tool,
+  // in-app or via text) — read here so text-Alfred can see it proactively in
+  // its system prompt without a tool round-trip, same as alfredCapabilities.
+  vacationMode?: { active: boolean; startDate?: string; endDate?: string; autonomyLevel?: string; checkInFrequency?: string; notes?: string };
   // Same Testing Mode gate lib/messaging.ts's twilioSend already enforces
   // client-side (settings.testModeEnabled) — this file sends via raw fetch
   // (it runs server-side, not through that wrapper), so bulk sends need
@@ -792,6 +796,27 @@ const TOOLS = [
     },
   },
   {
+    name: "set_vacation_mode",
+    description: "Turn on (or update/turn off) vacation/out-of-office mode. Use whenever the owner texts that they're going on vacation, taking time off, or will be unreachable. NEVER guess the details — ask the owner, one or two questions at a time over text, until you have: how long they'll be out (startDate/endDate), how they want you to handle incoming work while they're gone (autonomyLevel), and how often — if at all — they want you to text them a status update during that window (checkInFrequency). Once you have those, confirm the plan back in one short text, then call this tool. To turn vacation mode off early, call with active: false.",
+    input_schema: {
+      type: "object",
+      properties: {
+        active: { type: "boolean", description: "true to turn vacation mode on, false to end it early" },
+        startDate: { type: "string", description: "YYYY-MM-DD, first day out" },
+        endDate: { type: "string", description: "YYYY-MM-DD, last day out (day they're back)" },
+        autonomyLevel: { type: "string", enum: ["manage_everything", "ask_first", "hold_everything"], description: "manage_everything = you can handle scheduling/messaging/automations on the owner's behalf without asking; ask_first = prepare things but wait for the owner's OK before anything goes out; hold_everything = do nothing proactive, just take messages, until the owner is back" },
+        checkInFrequency: { type: "string", enum: ["none", "daily", "every_few_days", "urgent_only"], description: "How often to text the owner a status update while they're out. urgent_only = only for things that truly can't wait." },
+        notes: { type: "string", description: "Freeform notes on what the owner wants handled or avoided while out, in their own words" },
+      },
+      required: ["active"],
+    },
+  },
+  {
+    name: "get_vacation_status",
+    description: "Check whether vacation/out-of-office mode is currently active and what its settings are. Use before deciding how autonomously to act, or if the owner asks 'am I still in vacation mode'.",
+    input_schema: { type: "object", properties: {} },
+  },
+  {
     name: "set_reminder",
     description: "Schedule a text reminder to be sent back to the owner at a specific future time — use for 'remind me to X at/in/on Y', or 'from now on, every day at Y, do/tell me X' (pass recurring). Resolve the due time to an exact ISO 8601 datetime yourself (you're told today's date and time in the system prompt) before calling this — never pass a vague phrase. Requires an external cron pinger to actually fire (Settings → AI Models explains the one-time setup) — mention that if the owner seems unaware.",
     input_schema: {
@@ -992,7 +1017,7 @@ const SMS_TOOL_CAPABILITY: Record<string, string> = {
   schedule_job: "jobs", reschedule_job: "jobs", cancel_job: "jobs", add_checklist_item: "jobs", assign_employee: "jobs", update_job_priority: "jobs", respond_to_job_request: "jobs", approve_customer_request: "jobs", decline_customer_request: "jobs",
   create_estimate: "estimates", send_estimate: "estimates", send_invoice: "estimates",
   notify_all_customers: "messaging", text_customer: "messaging", text_phone_number: "messaging", text_supplier: "messaging", email_supplier: "messaging", text_me_document: "messaging", send_me_files: "messaging",
-  create_promotion: "automations", enable_review_request_automation: "automations", create_sop: "automations",
+  create_promotion: "automations", enable_review_request_automation: "automations", create_sop: "automations", set_vacation_mode: "automations",
   create_calendar_event: "calendar", update_calendar_event: "calendar", delete_calendar_event: "calendar",
 };
 
@@ -1636,6 +1661,46 @@ const executeTool = async (ctx: Ctx, name: string, input: Record<string, any>): 
         }
         return { success: true, saved: input.instruction };
       }
+      case "set_vacation_mode": {
+        const rows = await sbGet(ctx, `app_settings?select=owner_id,data${ownerScope(ctx)}&limit=1`);
+        const row = rows[0];
+        if (!row?.owner_id) return { error: "Couldn't find your settings to update." };
+        if (input.active === false) {
+          const patch = { ...row.data, vacationMode: { ...(row.data?.vacationMode || {}), active: false } };
+          const res = await fetch(`${SUPABASE_URL}/rest/v1/app_settings?owner_id=eq.${encodeURIComponent(row.owner_id)}`, {
+            method: "PATCH", headers: { ...ctx.authHeaders, "Content-Type": "application/json", Prefer: "return=minimal" },
+            body: JSON.stringify({ data: patch }),
+          });
+          if (!res.ok) return { error: "Couldn't save — " + (await res.text().catch(() => "")).slice(0, 200) };
+          return { success: true, active: false };
+        }
+        if (!input.startDate || !input.endDate) return { error: "startDate and endDate are required to turn vacation mode on — ask the owner for their exact dates before calling this." };
+        if (!input.autonomyLevel) return { error: "autonomyLevel is required — ask the owner how they want you to handle things while they're out." };
+        if (!input.checkInFrequency) return { error: "checkInFrequency is required — ask the owner how often, if at all, they want a status text while they're out." };
+        const vac = {
+          active: true,
+          startDate: input.startDate,
+          endDate: input.endDate,
+          autonomyLevel: input.autonomyLevel,
+          checkInFrequency: input.checkInFrequency,
+          notes: input.notes || "",
+          setAt: new Date().toISOString(),
+        };
+        const patch = { ...row.data, vacationMode: vac };
+        const res = await fetch(`${SUPABASE_URL}/rest/v1/app_settings?owner_id=eq.${encodeURIComponent(row.owner_id)}`, {
+          method: "PATCH", headers: { ...ctx.authHeaders, "Content-Type": "application/json", Prefer: "return=minimal" },
+          body: JSON.stringify({ data: patch }),
+        });
+        if (!res.ok) return { error: "Couldn't save — " + (await res.text().catch(() => "")).slice(0, 200) };
+        return { success: true, ...vac };
+      }
+      case "get_vacation_status": {
+        const vac = ctx.vacationMode as any;
+        if (!vac?.active) return { success: true, active: false };
+        const todayStr = today();
+        const isCurrentlyOut = todayStr >= vac.startDate && todayStr <= vac.endDate;
+        return { success: true, active: true, isCurrentlyOut, ...vac };
+      }
       case "set_reminder": {
         if (!input.message || !input.dueAtIso) return { error: "message and dueAtIso required" };
         const dueAt = new Date(input.dueAtIso);
@@ -1951,6 +2016,8 @@ export const runAlfredSmsAgent = async (
   const systemPrompt = `You are Alfred, the AI assistant for ${ctx.companyName}, a pressure-washing business — texting back and forth with the OWNER over SMS while they're away from the CRM. ${personalityClause} The current date/time is ${nowLocal} (UTC). Use tools aggressively to actually read and modify the CRM — never just describe what you'd do. Keep replies SHORT (this is a text message, 1-3 sentences per item, no markdown) — the personality above shapes TONE, not length; still fit within that limit. If a tool result has an "error" field, tell the owner exactly what went wrong — do not claim success, and do not guess or describe an action vaguely if you're not certain the tool actually returned "success": true. When you finish an action, confirm plainly what happened.${preferencesBlock}
 
 STANDING PREFERENCES: when the owner says something like "from now on...", "always...", "don't ask me about... anymore", or "call me...", that's a persistent instruction, not just for this one reply — call set_standing_preference to save it (it'll be listed above automatically in every future conversation from then on). Don't wait to be asked twice.
+
+VACATION MODE: when the owner says they're going on vacation, taking time off, or will be unreachable, DO NOT guess the details — walk them through it one or two questions at a time over text (how long/what dates, how they want you to handle things while they're out, how often to check in with them) and only call set_vacation_mode once you actually have their answers, then confirm the plan back in one short text. ${ctx.vacationMode?.active ? `VACATION MODE IS CURRENTLY ${(today() >= (ctx.vacationMode.startDate || "") && today() <= (ctx.vacationMode.endDate || "")) ? "ACTIVE" : "SCHEDULED"} — out ${ctx.vacationMode.startDate} to ${ctx.vacationMode.endDate}, autonomy: ${ctx.vacationMode.autonomyLevel}, check-ins: ${ctx.vacationMode.checkInFrequency}${ctx.vacationMode.notes ? ", notes: " + ctx.vacationMode.notes : ""}. Let this shape how proactively you act right now — if autonomyLevel is ask_first or hold_everything, don't send/commit things on the owner's behalf without checking first, even if you normally would.` : `Vacation mode is currently off.`}
 
 MULTI-PART REQUESTS: when a single text asks for several distinct things ("who's working, AND create this customer, AND quote them, AND text it"), treat each as its own tool call and report EACH ONE'S real outcome by name in your reply — don't roll them into one vague summary line, and never describe a step as done unless its own tool result actually said so. If one step's tool result is an "error", say exactly which step failed and why, but still report the outcome of every OTHER step you did complete — don't let one failure make the whole reply vague about what did or didn't happen.
 

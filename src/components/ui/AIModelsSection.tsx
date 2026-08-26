@@ -13,7 +13,7 @@ import {
   Globe, Share2, Trophy, ExternalLink, Workflow, ToggleLeft, ToggleRight,
   Navigation, TrendingDown, PieChart as PieIcon, Package, Wrench,
   CheckSquare, Route, Users2, Layers, ArrowRight, BarChart2, Filter,
-  Paperclip, ImageIcon, FileImage, MoreVertical, Mic, Upload, Link, Lock, User
+  Paperclip, ImageIcon, FileImage, MoreVertical, Mic, Upload, Link, Lock, User, Palmtree
 } from "lucide-react";
 import {
   BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid,
@@ -55,6 +55,7 @@ export function AIModelsSection({ f, setF, modelStatus, setModelStatus, employee
   // surfaces immediately with the provider's own real error text, not a guess.
   const [testResult, setTestResult] = useState<Record<string, { ok: boolean; msg: string } | undefined>>({});
   const [testing, setTesting] = useState<Record<string, boolean>>({});
+  const [vacEditing, setVacEditing] = useState(false);
   const testConnection = async (mid: string) => {
     setTesting(t => ({ ...t, [mid]: true }));
     setTestResult(r => ({ ...r, [mid]: undefined }));
@@ -284,6 +285,88 @@ export function AIModelsSection({ f, setF, modelStatus, setModelStatus, employee
             );
           })}
         </div>
+      </Glass>
+
+      {/* FEATURE — vacation/out-of-office mode. Alfred itself sets this via
+          the set_vacation_mode tool (in-app chat or text — "I'm heading out
+          next week", it asks the follow-up questions and calls the tool),
+          but it's also editable directly here for owners who'd rather just
+          fill in a form. Same f.vacationMode field either way — one source
+          of truth, read by App.tsx's check-in cadence and injected into
+          Alfred's system prompt (chat + SMS) so it actually changes
+          behavior, not just a label. */}
+      <Glass className="p-4">
+        <div className="flex items-center justify-between mb-1">
+          <div className="font-semibold text-sm flex items-center gap-1.5"><Palmtree size={13} />Vacation Mode</div>
+          {f.vacationMode?.active && (
+            <span className="text-[10px] px-2 py-0.5 rounded-full bg-green-900/30 border border-green-600/40 text-green-300 font-medium">
+              {today() >= (f.vacationMode.startDate || "") && today() <= (f.vacationMode.endDate || "") ? "Active now" : "Scheduled"}
+            </span>
+          )}
+        </div>
+        <div className="text-[10px] text-white/40 mb-2">Tell Alfred in chat or by text that you're going on vacation and it'll ask what it needs to know — or set it directly here.</div>
+
+        {f.vacationMode?.active && !vacEditing ? (
+          <div className="p-3 rounded-lg bg-black/30 border border-white/10 space-y-1.5">
+            <div className="text-xs text-white/80">Out {f.vacationMode.startDate} → {f.vacationMode.endDate}</div>
+            <div className="text-[10px] text-white/50">Autonomy: <span className="text-white/70">{{ manage_everything: "Alfred manages everything", ask_first: "Alfred asks first", hold_everything: "Alfred holds everything" }[f.vacationMode.autonomyLevel] || f.vacationMode.autonomyLevel}</span></div>
+            <div className="text-[10px] text-white/50">Check-ins: <span className="text-white/70">{{ none: "None", daily: "Daily", every_few_days: "Every few days", urgent_only: "Urgent only" }[f.vacationMode.checkInFrequency] || f.vacationMode.checkInFrequency}</span></div>
+            {f.vacationMode.notes && <div className="text-[10px] text-white/50">Notes: <span className="text-white/70">{f.vacationMode.notes}</span></div>}
+            <div className="flex items-center gap-2 pt-1">
+              <button onClick={() => setVacEditing(true)} className="text-[10px] text-blue-400 hover:text-blue-300">Edit</button>
+              <span className="text-white/20">·</span>
+              <button onClick={() => { setF({ ...f, vacationMode: { ...f.vacationMode, active: false } }); toast?.("Vacation mode turned off"); }} className="text-[10px] text-red-400 hover:text-red-300">Turn off</button>
+            </div>
+          </div>
+        ) : (
+          <div className="p-3 rounded-lg bg-black/30 border border-white/10 space-y-2">
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <label className="text-[9px] text-white/40 block mb-0.5">Start date</label>
+                <input type="date" value={f.vacationMode?.startDate || ""} onChange={e => setF({ ...f, vacationMode: { ...(f.vacationMode || {}), startDate: e.target.value } })} className="w-full bg-black/40 border border-white/10 rounded-lg px-2 py-1.5 text-xs" />
+              </div>
+              <div>
+                <label className="text-[9px] text-white/40 block mb-0.5">End date</label>
+                <input type="date" value={f.vacationMode?.endDate || ""} onChange={e => setF({ ...f, vacationMode: { ...(f.vacationMode || {}), endDate: e.target.value } })} className="w-full bg-black/40 border border-white/10 rounded-lg px-2 py-1.5 text-xs" />
+              </div>
+            </div>
+            <div>
+              <label className="text-[9px] text-white/40 block mb-0.5">While you're out, Alfred should…</label>
+              <select value={f.vacationMode?.autonomyLevel || "ask_first"} onChange={e => setF({ ...f, vacationMode: { ...(f.vacationMode || {}), autonomyLevel: e.target.value } })} className="w-full bg-black/40 border border-white/10 rounded-lg px-2 py-1.5 text-xs">
+                <option value="manage_everything">Manage everything on its own</option>
+                <option value="ask_first">Prepare things, ask before sending</option>
+                <option value="hold_everything">Just take messages, do nothing proactive</option>
+              </select>
+            </div>
+            <div>
+              <label className="text-[9px] text-white/40 block mb-0.5">Message me…</label>
+              <select value={f.vacationMode?.checkInFrequency || "daily"} onChange={e => setF({ ...f, vacationMode: { ...(f.vacationMode || {}), checkInFrequency: e.target.value } })} className="w-full bg-black/40 border border-white/10 rounded-lg px-2 py-1.5 text-xs">
+                <option value="none">Not at all</option>
+                <option value="daily">Daily</option>
+                <option value="every_few_days">Every few days</option>
+                <option value="urgent_only">Only if urgent</option>
+              </select>
+            </div>
+            <div>
+              <label className="text-[9px] text-white/40 block mb-0.5">Notes for Alfred (optional)</label>
+              <textarea value={f.vacationMode?.notes || ""} onChange={e => setF({ ...f, vacationMode: { ...(f.vacationMode || {}), notes: e.target.value } })} rows={2} placeholder="e.g. don't book anything past the 14th, my brother Dave covers emergencies at 555-0100" className="w-full bg-black/40 border border-white/10 rounded-lg px-2 py-1.5 text-xs resize-none" />
+            </div>
+            <div className="flex items-center gap-2 pt-1">
+              <button
+                onClick={() => {
+                  if (!f.vacationMode?.startDate || !f.vacationMode?.endDate) { toast?.("Set a start and end date first", "red"); return; }
+                  setF({ ...f, vacationMode: { active: true, startDate: f.vacationMode.startDate, endDate: f.vacationMode.endDate, autonomyLevel: f.vacationMode.autonomyLevel || "ask_first", checkInFrequency: f.vacationMode.checkInFrequency || "daily", notes: f.vacationMode.notes || "", setAt: new Date().toISOString() } });
+                  setVacEditing(false);
+                  toast?.("Vacation mode set ✓");
+                }}
+                className="text-[10px] px-2.5 py-1 rounded-lg bg-green-700/40 border border-green-600/40 text-green-300 hover:bg-green-700/60"
+              >
+                {f.vacationMode?.active ? "Save changes" : "Turn on vacation mode"}
+              </button>
+              {vacEditing && <button onClick={() => setVacEditing(false)} className="text-[10px] text-white/40 hover:text-white/60">Cancel</button>}
+            </div>
+          </div>
+        )}
       </Glass>
 
       {/* Active model picker */}

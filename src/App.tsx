@@ -1931,6 +1931,23 @@ export function App() {
       const hour = new Date().getHours();
       if (hour < 8 || hour > 20) { console.log("[AlfredCheckin] skipped — outside 8am-8pm window"); return; }
 
+      // VACATION MODE — a check-in during an active vacation window should
+      // respect the owner's own stated preference (set via Alfred's
+      // set_vacation_mode tool) instead of firing at the normal cadence
+      // regardless of "how often do you want me to message you."
+      const vac = (settingsRef.current as any)?.vacationMode;
+      if (vac?.active && todayStr >= vac.startDate && todayStr <= vac.endDate) {
+        if (vac.checkInFrequency === "none" || vac.checkInFrequency === "urgent_only") {
+          console.log("[AlfredCheckin] skipped — vacation mode, checkInFrequency:", vac.checkInFrequency);
+          return;
+        }
+        if (vac.checkInFrequency === "every_few_days") {
+          const daysSinceLast = lastAt ? (Date.now() - lastAt) / 86400000 : Infinity;
+          if (daysSinceLast < 3) { console.log("[AlfredCheckin] skipped — vacation mode, every_few_days gap not met"); return; }
+        }
+        if (countToday >= 1) { console.log("[AlfredCheckin] skipped — vacation mode, already checked in today"); return; }
+      }
+
       const todaysJobs = jobsRef.current.filter(j => j.scheduledDate === todayStr);
       const scheduledCount = todaysJobs.filter(j => j.status === "scheduled").length;
       const inProgressCount = todaysJobs.filter(j => j.status === "in_progress").length;

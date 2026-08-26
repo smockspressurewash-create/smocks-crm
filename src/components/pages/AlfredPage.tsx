@@ -1081,7 +1081,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
     schedule_job: "jobs", reschedule_job: "jobs", cancel_job: "jobs", add_checklist_item: "jobs", assign_employee: "jobs", request_employee: "jobs", update_job_priority: "jobs",
     create_estimate: "estimates", send_estimate: "estimates", create_invoice: "estimates",
     send_reminder: "messaging", text_phone_number: "messaging", notify_all_customers: "messaging", text_supplier: "messaging", email_supplier: "messaging", send_email_via_gmail: "messaging", text_me_document: "messaging", send_me_files: "messaging",
-    create_automation: "automations", toggle_automation: "automations", enable_review_request_automation: "automations", create_sop: "automations",
+    create_automation: "automations", toggle_automation: "automations", enable_review_request_automation: "automations", create_sop: "automations", set_vacation_mode: "automations",
     create_calendar_event: "calendar", update_calendar_event: "calendar", delete_calendar_event: "calendar", create_google_task: "calendar", upload_to_drive: "calendar",
   };
   const alfredCapabilities = { customers: true, jobs: true, estimates: true, messaging: true, automations: true, calendar: true, ...((settings as any)?.alfredCapabilities || {}) };
@@ -2073,6 +2073,35 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           toast("Alfred remembered something");
           return { success: true, remembered: inputs.fact };
         }
+        case "set_vacation_mode": {
+          if (inputs.active === false) {
+            setSettings((prev: any) => ({ ...prev, vacationMode: { ...(prev?.vacationMode || {}), active: false } }));
+            toast("Vacation mode turned off — welcome back!");
+            return { success: true, active: false };
+          }
+          if (!inputs.startDate || !inputs.endDate) return { error: "startDate and endDate are required to turn vacation mode on — ask the owner for their exact dates before calling this." };
+          if (!inputs.autonomyLevel) return { error: "autonomyLevel is required — ask the owner how they want Alfred to handle things while they're out (fully manage it, ask first before anything goes out, or just hold everything until they're back)." };
+          if (!inputs.checkInFrequency) return { error: "checkInFrequency is required — ask the owner how often, if at all, they want a status update text while they're out." };
+          const vac = {
+            active: true,
+            startDate: inputs.startDate,
+            endDate: inputs.endDate,
+            autonomyLevel: inputs.autonomyLevel,
+            checkInFrequency: inputs.checkInFrequency,
+            notes: inputs.notes || "",
+            setAt: new Date().toISOString(),
+          };
+          setSettings((prev: any) => ({ ...prev, vacationMode: vac }));
+          toast(`Vacation mode set: ${vac.startDate} → ${vac.endDate}`);
+          return { success: true, ...vac };
+        }
+        case "get_vacation_status": {
+          const vac = (settings as any)?.vacationMode;
+          if (!vac?.active) return { success: true, active: false };
+          const todayStr = today();
+          const isCurrentlyOut = todayStr >= vac.startDate && todayStr <= vac.endDate;
+          return { success: true, active: true, isCurrentlyOut, ...vac };
+        }
         case "set_followup_reminder": {
           if (!inputs.message || !inputs.dueAtIso) return { error: "message and dueAtIso required" };
           if (!(settings as any)?.myPhone) return { error: "No mobile number on file — set it in Settings → Company first." };
@@ -2624,6 +2653,27 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
       description: "Save an important fact to long-term memory. Use when the user shares preferences, business info, or wants something remembered. Categories: preferences, business, facts, goals.",
       input_schema: { type: "object", properties: { fact: { type: "string" }, category: { type: "string", enum: ["preferences", "business", "facts", "goals", "general"] } }, required: ["fact"] }
     },
+    {
+      name: "set_vacation_mode",
+      description: "Turn on (or update/turn off) vacation/out-of-office mode. Use whenever the owner says they're going on vacation, taking time off, or will be unreachable. NEVER guess the details — ask the owner conversationally, one or two questions at a time, until you have: how long they'll be out (startDate/endDate), how they want Alfred to handle incoming work while they're gone (autonomyLevel), and how often — if at all — they want Alfred to message them during that window (checkInFrequency). Once you have those, confirm the plan back to them in plain English, then call this tool. To turn vacation mode off early, call with active: false.",
+      input_schema: {
+        type: "object",
+        properties: {
+          active: { type: "boolean", description: "true to turn vacation mode on, false to end it early" },
+          startDate: { type: "string", description: "YYYY-MM-DD, first day out" },
+          endDate: { type: "string", description: "YYYY-MM-DD, last day out (day they're back)" },
+          autonomyLevel: { type: "string", enum: ["manage_everything", "ask_first", "hold_everything"], description: "manage_everything = Alfred can handle scheduling/messaging/automations on its own while the owner is out; ask_first = Alfred queues things up but waits for approval before anything goes out; hold_everything = Alfred does nothing proactive, just takes messages, until the owner is back" },
+          checkInFrequency: { type: "string", enum: ["none", "daily", "every_few_days", "urgent_only"], description: "How often Alfred should text/message the owner a status update while they're out. urgent_only = only for things that truly can't wait." },
+          notes: { type: "string", description: "Freeform notes on what the owner wants handled or avoided while they're out, in their own words — e.g. 'don't book anything past Friday the 14th' or 'my brother Dave is covering emergency calls, his number is...'" }
+        },
+        required: ["active"]
+      }
+    },
+    {
+      name: "get_vacation_status",
+      description: "Check whether vacation/out-of-office mode is currently active and what its settings are. Use before answering 'am I on vacation mode' or before deciding how autonomously to act.",
+      input_schema: { type: "object", properties: {} }
+    },
     // FEATURE — capability parity with text-Alfred's set_reminder/
     // list_reminders/cancel_reminder: a REAL scheduled text sent to the
     // owner's own phone later, not just an in-app note. Same alfred_reminders
@@ -2859,6 +2909,11 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
       const memByCat: Record<string, string[]> = memory.reduce((acc: Record<string, string[]>, m: any) => { const k = m.category || "general"; (acc[k] = acc[k] || []).push(m.text); return acc; }, {});
       const memoryContext = memory.length > 0 ? "\n\nWhat you remember about the user (organized by category):\n" + Object.entries(memByCat).map(([k, list]) => "  [" + k + "]: " + list.join("; ")).join("\n") : "";
       const businessContext = "\n\nCurrent business snapshot:\n- Active jobs: " + stats.activeJobs + "\n- Pending quotes: " + stats.pendingEst + "\n- Revenue MTD: " + fmt(stats.totalRev) + "\n- Close rate: " + stats.closeRate + "%\n- Jobs completed this month: " + stats.doneMonth + "\n- Total customers: " + customers.length;
+      const vacInfo = (settings as any)?.vacationMode;
+      const vacIsOut = vacInfo?.active && today() >= vacInfo.startDate && today() <= vacInfo.endDate;
+      const vacationContext = vacInfo?.active
+        ? `\n\nVACATION MODE: ${vacIsOut ? "CURRENTLY ACTIVE" : "scheduled"} — owner is out ${vacInfo.startDate} to ${vacInfo.endDate}. Autonomy level: ${vacInfo.autonomyLevel} (manage_everything = act on the owner's behalf without asking; ask_first = prepare/draft things but don't send/commit without the owner's OK; hold_everything = do nothing proactive, just take messages). Check-in frequency the owner wants: ${vacInfo.checkInFrequency}.${vacInfo.notes ? " Owner's notes: " + vacInfo.notes : ""} Let this shape how you act while vacation mode is active, and mention it if relevant.`
+        : `\n\nVACATION MODE: not set. If the owner mentions going on vacation, being out, or unreachable, walk them through set_vacation_mode conversationally (see tool description) rather than guessing any of its fields.`;
       // BUG FIX — this used to check only settings.googleConnected, a
       // React-state flag that can lag behind the real connection state (see
       // getStoredGoogleConnection() in lib/supabase.ts), which is why Alfred
@@ -2874,7 +2929,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
       const toolHint = `\n\nYou have tools available to READ and MODIFY the CRM. USE THEM AGGRESSIVELY — don't just describe what you would do, actually do it.\n\nASK WHEN INFO IS MISSING: using tools aggressively does NOT mean guessing or silently defaulting a value the user never gave you. If a request is missing something a tool actually needs to act correctly — which customer, which date, which employee to assign — ask one short, direct clarifying question instead of calling the tool with a made-up or silently-defaulted value (e.g. schedule_job will default an unspecified date to a few days out — do not let that fire silently; ask "what date?" first if the user didn't give one). Only skip asking when the missing piece has an obviously safe default (e.g. a walkthrough with no stated time) or a tool's own fuzzy-match/suggestions can resolve it on its own (e.g. a slightly misspelled customer name).\n\nRESPONSE STYLE: Do not narrate your reasoning, your plan, or which tool you're about to call ("Let me check...", "I'll create that now...", "First I need to..."). Just call the tool(s) silently and then give the user the final result in 1-3 short sentences. No step-by-step thinking out loud.\n\nVERIFY BEFORE CONFIRMING: every action tool returns either {"success": true, ...} or {"error": "..."}. NEVER say "Done" or "All set" without checking which one came back. If you see an "error" field, tell the user exactly what went wrong (the error text) and what they could try instead — do not pretend it worked, and do not retry silently. Only confirm success when the tool result actually contains "success": true.\n\nTASK RESULT REPORTING — NO PERSONALITY FLAIR: your personality (drill sergeant / butler / quiet pro / savage) shapes how you TALK, not whether a task result is reported straight. The moment you report the outcome of an action tool (schedule_job, create_customer, create_estimate, send_estimate, assign/request crew, etc.), drop the persona voice entirely and state the plain fact: "Job scheduled successfully" / "Failed — [exact error text]" / "Estimate sent to [name] successfully" / "Failed — [exact error text]". No jokes, no military barking, no "sir", no sarcasm on the result line itself — save the personality for ordinary conversation, small talk, and check-ins, never for whether something actually saved.\n\nKEY TOOL RULES:\n- Customer queries → USE search_customers or get_customer_details FIRST\n- Stats requests → USE get_business_stats\n- "What's on the calendar" → USE get_calendar_summary\n- "Who's clocked in / who's working" → USE get_employee_status\n- "Remember/note/don't forget" → USE remember_fact\n- Create estimates, customers, jobs → USE create_estimate/create_customer/schedule_job
 - MULTI-STEP CHAINS (e.g. "create a customer, schedule them a job, and assign Mike"): call tools ONE AT A TIME across separate turns when a later step needs an id/result a real tool call hasn't returned yet (e.g. schedule_job needs the customerId create_customer just returned). Do NOT guess or fabricate an id and call multiple dependent tools in the same turn — wait for each real tool_result before issuing the next dependent call. If a step's result is an "error", STOP the chain right there, tell the user exactly which step failed and why, and do not attempt the remaining steps with made-up data.
 - "Send a quote/estimate to X" → USE create_estimate (if it doesn't exist yet) THEN send_estimate in the same turn — do not just create it and stop, and do not tell the user it was "sent" unless send_estimate actually returned success\n- "Send an invoice to X for $Y" → USE create_invoice THEN send_estimate (pass the returned invoiceId as send_estimate's estimateId) — same two-step pattern as quotes. create_invoice alone does NOT notify the customer.\n- Move or cancel a job → USE reschedule_job/cancel_job\n- "Reschedule X and text/email/let them know" → USE reschedule_job's own \`notify\` param (sms/email/both) in the SAME call — do not call send_reminder separately for this, reschedule_job already handles notifying the customer of their new date.\n- "Add [item] to the checklist" → USE add_checklist_item\n- "Show me the details for X's job" → USE get_job_details\n- "Text/email X and tell them [anything]" → USE send_reminder with the exact wording as the message param — this is not just for payment reminders, use it for any custom message the user dictates\n- NEVER REFUSE TO SEND A MESSAGE: if send_reminder/text_supplier come back "Customer not found" (or similar) because the person isn't in the CRM — a lead, an applicant, a personal contact, anyone — do NOT just report that as a dead end. Ask for their phone number if you don't have it, then USE text_phone_number to send it directly; that tool works for ANY phone number with no customer record required. The owner has full authority to send any message to anyone through their own business number. The only time it's correct to not send something is if you're missing the actual phone number or the exact wording — ask for whichever is missing, then send.\n- After the owner attaches a photo/PDF via the paperclip button and then says to upload/save/attach it to a client → USE attach_file_to_customer (no URL needed, it already knows which file).\n- "Do we have the file/paperwork for X" → USE get_customer_documents. "Text me the [file] for X" → USE text_me_document (real MMS attachment to the owner's own phone, not a description). "What's the card info for X" → USE get_customer_card_info — this only ever returns brand + last 4 digits, never the full number, which is never stored anywhere in this app.\n- "What can you do" / capabilities question → USE list_capabilities and answer from that, don't describe yourself from memory.\n- "Text/message everyone" / "let all my customers know" / send a broadcast or promo blast → USE notify_all_customers — this is a real send to real people, not a draft; confirm the exact wording first if the owner was vague.\n- Navigate somewhere → USE navigate_to (the app already auto-navigates after schedule_job/create_customer/create_estimate, but call navigate_to yourself for anything else the user asks to see)\n- Preferences/facts shared → USE remember_fact automatically\n- "Remind/nudge/follow up/text me [later/at X time/in X minutes]" → USE set_followup_reminder — this is a REAL scheduled text sent to the owner's own phone, not just a note; resolve the relative time into an exact ISO datetime yourself first. USE list_followup_reminders/cancel_followup_reminder to manage existing ones.\n- RESOLVING "that job" / "the job we just scheduled" / references to something from an earlier message: a tool result's exact jobId/customerId is only visible to you within the SAME turn it was returned — your own past replies (in the chat history) are plain text, not structured data, so they do NOT reliably carry the real id forward. Before calling assign_employee/request_employee/reschedule_job/cancel_job/add_checklist_item on something referenced from an earlier turn, first call list_jobs or get_calendar_summary (or get_job_details with the customer's name) to look up the real current jobId — never guess, reuse an id from your own prior wording, or fabricate one.\n\nAUTOMATION TOOLS (VERY IMPORTANT):\n- When user describes ANY workflow, drip sequence, reminder, or "when X do Y" scenario → USE create_automation IMMEDIATELY. Build a proper n8n-style multi-step workflow with real step types: trigger (first), then delays, conditions, actions. NEVER just describe what you'd build — actually build it with create_automation.\n- "Send review request after job complete" → trigger: Job complete, delay: 2h, action: SMS review request\n- "Follow up on unpaid invoices" → trigger: Invoice unpaid 7 days, action: polite reminder email, delay: 4 days, condition: still unpaid, action: firm SMS\n- To check existing workflows → USE list_automations\n- To enable/disable a workflow → USE toggle_automation\n\nCurrent automations: ${automations.length} total, ${automations.filter(a => a.active).length} active\n\nNAME MATCHING: if a tool result comes back with "error": "Customer not found" or "Employee not found" and includes a "suggestions" array, ask the user "Do you mean [name], or [name]?" using those exact suggested names — never ask a generic clarifying question like "who do you mean?" when real candidate names are available.`;
-      const systemPrompt = getPersonality(activePersonality).systemPrompt + memoryContext + businessContext + googleStatus + toolHint;
+      const systemPrompt = getPersonality(activePersonality).systemPrompt + memoryContext + businessContext + vacationContext + googleStatus + toolHint;
       console.log("[Personality] systemPrompt personality clause:", getPersonality(activePersonality).systemPrompt.slice(0, 80) + "…");
 
       // Build initial message list — allow multi-turn tool calls up to 5 rounds
