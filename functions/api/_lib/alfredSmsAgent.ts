@@ -2154,16 +2154,30 @@ const executeTool = async (ctx: Ctx, name: string, input: Record<string, any>): 
 
 // ─── Conversation persistence ──────────────────────────────────────────────
 
-const loadThread = async (ctx: Ctx, phone: string): Promise<Array<{ role: string; content: string }>> => {
+// BUG FIX — "do you remember what we talked about yesterday?" should get
+// a real yes/no, not a guess. Two gaps caused this to fail: (1) stored
+// messages carried no timestamp at all, so even when yesterday's exchange
+// WAS still in the window, the model had no way to know it was yesterday
+// rather than five minutes ago; (2) the window was a hard last-16-messages
+// cutoff with nothing beyond it — a chatty day easily pushes yesterday's
+// whole conversation out entirely. ts is now stored per message (used to
+// render a real relative-time label injected into what the model sees —
+// see withTimeLabels below) and the window is wider (40, still bounded so
+// prompts don't balloon) with recall() as the explicit fallback for
+// anything older, called out in the system prompt.
+const THREAD_WINDOW = 40;
+type ThreadMsg = { role: string; content: string; ts?: number };
+
+const loadThread = async (ctx: Ctx, phone: string): Promise<ThreadMsg[]> => {
   if (!ctx.ownerId) return [];
   const rows = await sbGet(ctx, `alfred_sms_threads?owner_id=eq.${encodeURIComponent(ctx.ownerId)}&phone=eq.${encodeURIComponent(phone)}&select=messages&limit=1`);
   const msgs = rows[0]?.messages;
-  return Array.isArray(msgs) ? msgs.slice(-16) : [];
+  return Array.isArray(msgs) ? msgs.slice(-THREAD_WINDOW) : [];
 };
 
-const saveThread = async (ctx: Ctx, phone: string, messages: Array<{ role: string; content: string }>) => {
+const saveThread = async (ctx: Ctx, phone: string, messages: ThreadMsg[]) => {
   if (!ctx.ownerId) return;
-  const trimmed = messages.slice(-16);
+  const trimmed = messages.slice(-THREAD_WINDOW);
   const res = await fetch(`${SUPABASE_URL}/rest/v1/alfred_sms_threads?owner_id=eq.${encodeURIComponent(ctx.ownerId)}&phone=eq.${encodeURIComponent(phone)}`, {
     method: "PATCH", headers: { ...ctx.authHeaders, "Content-Type": "application/json", Prefer: "return=representation" },
     body: JSON.stringify({ messages: trimmed, updated_at: new Date().toISOString() }),
@@ -2173,6 +2187,29 @@ const saveThread = async (ctx: Ctx, phone: string, messages: Array<{ role: strin
     await sbWrite(ctx, "alfred_sms_threads", "POST", { owner_id: ctx.ownerId, phone, messages: trimmed, updated_at: new Date().toISOString() });
   }
 };
+
+// Renders a real relative-day label ("Today 2:14 PM" / "Yesterday 9:02 AM"
+// / "Mon Aug 24") in front of each stored message's content before it goes
+// to the model — the stored content itself is left untouched (this is
+// display-only, applied fresh each time history is loaded) so re-labeling
+// logic changes don't require a data migration.
+const relativeDayLabel = (ts: number): string => {
+  const d = new Date(ts);
+  const now = new Date();
+  const dayMs = 86400000;
+  const startOfDay = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+  const diffDays = Math.round((startOfDay(now) - startOfDay(d)) / dayMs);
+  const time = d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  if (diffDays === 0) return `Today ${time}`;
+  if (diffDays === 1) return `Yesterday ${time}`;
+  if (diffDays > 1 && diffDays < 7) return `${d.toLocaleDateString([], { weekday: "long" })} ${time}`;
+  return `${d.toLocaleDateString([], { month: "short", day: "numeric" })} ${time}`;
+};
+const withTimeLabels = (msgs: ThreadMsg[]): Array<{ role: string; content: string }> =>
+  msgs.map(m => ({
+    role: m.role,
+    content: (m.role === "user" && m.ts) ? `[${relativeDayLabel(m.ts)}] ${m.content}` : m.content,
+  }));
 
 // BUG FIX — the timeout/round-cap fallback used to log raw tool names
 // verbatim ("get_calendar_summary: done"), which read as garbled/one-word
@@ -2223,7 +2260,7 @@ export const runAlfredSmsAgent = async (
   }
 
   const history = await loadThread(ctx, fromPhone);
-  const messages = [...history, { role: "user", content: incomingText }];
+  const messages: ThreadMsg[] = [...history, { role: "user", content: incomingText, ts: Date.now() }];
 
   // Auto-inject standing "from now on" preferences (set_standing_preference)
   // into every conversation, instead of relying on the model to remember to
@@ -2250,6 +2287,8 @@ VACATION MODE: when the owner says they're going on vacation, taking time off, o
 MULTI-PART REQUESTS: when a single text asks for several distinct things ("who's working, AND create this customer, AND quote them, AND text it"), treat each as its own tool call and report EACH ONE'S real outcome by name in your reply — don't roll them into one vague summary line, and never describe a step as done unless its own tool result actually said so. If one step's tool result is an "error", say exactly which step failed and why, but still report the outcome of every OTHER step you did complete — don't let one failure make the whole reply vague about what did or didn't happen.
 
 CLARIFYING QUESTIONS: if a request is missing something a tool needs (which customer, which date, which job when there are several matches), ask ONE short, specific question instead of guessing — then stop and wait for their reply. The full conversation history is remembered, so when they answer, pick up exactly where you left off and finish the original request; don't make them repeat themselves.
+
+CONVERSATION MEMORY — this matters, get it right: every one of the owner's own messages below is prefixed with a real timestamp like "[Yesterday 2:14 PM]" or "[Monday 9:02 AM]" — that's ACTUAL when they sent it, not a guess. When asked something like "do you remember what we talked about yesterday" or "what did I ask you earlier", look at those real timestamps and answer from what's actually there — say specifically what it was, don't just say "yes I remember" with no content, and don't say "no" if it's genuinely visible above. If the conversation shown to you doesn't go back far enough to cover what they're asking about (nothing here is from that day), call recall first — the answer may be saved there from a previous session — before telling them you don't have it. Never claim to remember something you can't actually verify from either the visible history or a recall() result.
 
 FOLLOWING UP LATER: you are not limited to replying only in this exact moment. If a task naturally needs a check-in later (e.g. "did the crew actually show up", "nudge me if Mike hasn't replied by 3", "nudge me if [job] isn't marked done by tonight"), use set_reminder to text yourself — meaning the owner — back at that time, resolving any relative time ("in 20 min", "by 3pm", "tonight") into an exact ISO datetime using the current date/time above. This is a real scheduled text, not just a note — use it whenever the owner asks to be followed up with, checked on, or reminded about something, even mid-conversation. For a standing "from now on, every day at X..." request, pass recurring: "daily" (or "weekly") on the same tool — it repeats indefinitely, not just once.
 
@@ -2299,7 +2338,10 @@ CRITICAL — NEVER INVENT A CUSTOMER: only call create_customer with a name the 
     const def = SMS_MODELS[modelKey];
     let rounds = 0;
     let localFinal = "";
-    let convMessages: Array<{ role: string; content: any }> = [...messages];
+    // Time-labeled for the model (see withTimeLabels) — `messages` itself
+    // (with real ts) is what actually gets persisted via saveThread below,
+    // so the label text is never what's stored, only ever what's shown.
+    let convMessages: Array<{ role: string; content: any }> = withTimeLabels(messages);
     let modelFailed = false;
 
     // BUG FIX — this was capped at 4 rounds total, including the FINAL
@@ -2375,6 +2417,6 @@ CRITICAL — NEVER INVENT A CUSTOMER: only call create_customer with a name the 
       finalText = "Done.";
     }
   }
-  await saveThread(ctx, fromPhone, [...messages, { role: "assistant", content: finalText }]);
+  await saveThread(ctx, fromPhone, [...messages, { role: "assistant", content: finalText, ts: Date.now() }]);
   return finalText;
 };
