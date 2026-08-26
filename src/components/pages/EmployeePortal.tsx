@@ -8134,38 +8134,14 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                   );
                 })()}
 
-                <div className="text-xs text-white/50 uppercase tracking-wider font-semibold mb-2">Pay Period History</div>
-                <div className="space-y-2">
-                  {periods.map((p, i) => (
-                    <Glass key={i} className={"p-4 " + (i === 0 ? "!bg-green-950/20 !border-green-700/30" : "!bg-black/40")}>
-                      <div className="flex items-center justify-between mb-2">
-                        <div>
-                          <div className={"text-sm font-semibold " + (i === 0 ? "text-green-300" : "text-white/70")}>{p.label}</div>
-                          {i > 0 && <div className="text-[10px] text-white/30">{p.start} — {p.end}</div>}
-                        </div>
-                        <div className="text-right">
-                          <div className={"text-lg font-black " + (i === 0 ? "text-green-400" : "text-white/70")}>{fmt(p.pay)}</div>
-                          <div className="text-[10px] text-white/40">estimated</div>
-                        </div>
-                      </div>
-                      <div className="flex gap-4 text-xs text-white/50">
-                        <span><span className="font-semibold text-white/70">{p.hours}h</span> logged</span>
-                        <span><span className="font-semibold text-white/70">{p.jobs}</span> completed</span>
-                      </div>
-                      {i === 0 && p.hours > 0 && (
-                        <div className="mt-2">
-                          <div className="flex justify-between text-[10px] text-white/40 mb-1">
-                            <span>Progress</span>
-                            <span>{p.hours}h / 80h typical</span>
-                          </div>
-                          <div className="h-1.5 rounded-full bg-white/10 overflow-hidden">
-                            <div className="h-full bg-green-500 rounded-full" style={{ width: Math.min(100, p.hours / 80 * 100) + "%" }} />
-                          </div>
-                        </div>
-                      )}
-                    </Glass>
-                  ))}
-                </div>
+                {/* BUG FIX — "clean up the pay tab, so much unnecessary and
+                    duplicate content." This "Pay Period History" list used
+                    to repeat every period's label/hours/pay/jobs count —
+                    the exact same data the Outstanding Balance section
+                    above already shows for every period (plus its paid/
+                    unpaid status and expandable per-job breakdown, which
+                    this list didn't even have). Strictly a subset; removed
+                    rather than kept as a second, less-informative copy. */}
 
                 {/* Tax Center */}
                 <Glass className="p-4 !bg-black/40">
