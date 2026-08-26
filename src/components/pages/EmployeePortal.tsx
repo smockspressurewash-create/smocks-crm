@@ -3003,6 +3003,18 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     if (match) setRequestId(match[1]);
   }, []);
 
+  // FEATURE — "a clickable link that can take you to the CRM to view the
+  // job in the employee portal." The Google Calendar event this app creates
+  // links here (#/portal?job=UUID) — opens straight into that job's detail
+  // view instead of just the generic portal home. Waits for `jobs` to
+  // actually load (not just empSession) since selecting an id before the
+  // real job list has arrived would silently no-op.
+  useEffect(() => {
+    const hash = capturedHashRef.current;
+    const match = hash.match(/[?&]job=([a-f0-9-]{36})/i);
+    if (match && jobs.some(j => j.id === match[1])) setSelectedJobId(match[1]);
+  }, [jobs]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const myEmployee = empSession
     ? (employees.find(e => (e as any).user_id === empSession.user.id) ||
        employees.find(e => e.email?.toLowerCase() === empSession.user.email?.toLowerCase()) ||
@@ -3323,8 +3335,12 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     if (Array.isArray(av) && av.length > 0) setAvailability(av);
     const rdo = (myEmployee as any).recurringDaysOff;
     if (Array.isArray(rdo) && rdo.length > 0) setRecurringDaysOff(rdo);
-    if ((myEmployee as any).autoSyncCalendar === false) setAutoSyncCalendar(false);
-  }, [(myEmployee as any)?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+    // Explicit both directions (was previously only ever set to false, never
+    // back to true) so a value that legitimately changed server-side — e.g.
+    // synced from another of this employee's own sessions/devices — is
+    // reflected here too, not just on this one component's first mount.
+    setAutoSyncCalendar((myEmployee as any).autoSyncCalendar !== false);
+  }, [(myEmployee as any)?.id, (myEmployee as any)?.autoSyncCalendar]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Load this employee's own mileage log history on login/employee switch.
   useEffect(() => {
@@ -4584,13 +4600,28 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     } catch { /* ignore */ }
   }, [empSession?.user?.id]);
 
+  // BUG FIX — "I checked the auto-sync box and it didn't stay/persist/save."
+  // This wrote to Supabase but never checked the result and swallowed any
+  // error completely (`catch { /* ignore */ }`) — the exact silent-fail
+  // pattern CLAUDE.md flags as a repeated regression. Local state flipped
+  // immediately regardless of whether the write actually succeeded, so a
+  // failed save looked identical to a working one until the next reload
+  // quietly reverted it with zero explanation. Now checks the real response,
+  // reverts the toggle and tells the owner exactly why on failure, confirms
+  // on success — same toast-on-every-action rule as every other button here.
   const toggleAutoSyncCalendar = async () => {
     const next = !autoSyncCalendar;
     setAutoSyncCalendar(next);
+    const empId = (myEmployee as any)?.id;
+    if (!empId) { toast?.("Couldn't save — no employee record found.", "red"); setAutoSyncCalendar(!next); return; }
     try {
-      const empId = (myEmployee as any)?.id;
-      if (empId) await (supabase as any).from("employees").update({ autoSyncCalendar: next }).eq("id", empId);
-    } catch { /* ignore */ }
+      const { error } = await (supabase as any).from("employees").update({ autoSyncCalendar: next }).eq("id", empId);
+      if (error) throw error;
+      toast?.(next ? "Jobs will now auto-add to your Google Calendar ✓" : "Auto-sync to Google Calendar turned off ✓", "green");
+    } catch (e: any) {
+      setAutoSyncCalendar(!next);
+      toast?.("Couldn't save that setting — " + (e?.message || "unknown error"), "red");
+    }
   };
 
   const toggleAvailability = async (dateStr: string) => {

@@ -24,6 +24,27 @@ export const loadSquareJs = (): Promise<any> => {
   return squareSdkPromise;
 };
 
+// BUG FIX — "I pressed Save and it just says stuck at saving." This (and the
+// two owner-Settings calls below) used a bare fetch() with NO timeout at
+// all, unlike stripeAction's own 20s AbortController — a hung Cloudflare
+// Function request (cold start, dropped connection) meant this promise
+// simply never resolved OR rejected, so the calling button's `finally`
+// never ran and it was stuck on "Saving…" forever with no way out short of
+// reloading the page. Every call in this file now goes through one fetch
+// helper with a real timeout, matching stripeAction's treatment exactly.
+const fetchWithTimeout = async (url: string, init: RequestInit, ms = 20000): Promise<Response> => {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), ms);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } catch (e: any) {
+    if (e?.name === "AbortError") throw new Error("Square request timed out — check your connection and try again.");
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
+};
+
 const squareAction = async (action: string, body: Record<string, unknown>): Promise<any> => {
   let authHeader: string | undefined;
   try {
@@ -31,7 +52,7 @@ const squareAction = async (action: string, body: Record<string, unknown>): Prom
     const { data: { session } } = await supabase.auth.getSession();
     if (session?.access_token) authHeader = `Bearer ${session.access_token}`;
   } catch { /* anonymous customer — no session, fine for public actions */ }
-  const res = await fetch("/api/square-action", {
+  const res = await fetchWithTimeout("/api/square-action", {
     method: "POST",
     headers: { "Content-Type": "application/json", ...(authHeader ? { Authorization: authHeader } : {}) },
     body: JSON.stringify({ action, ...body }),
@@ -65,14 +86,14 @@ export const refundSquarePayment = (paymentId: string, amountCents?: number, inv
 
 // Owner-authenticated Settings actions.
 export const getOwnerSquareStatus = (accessToken: string) =>
-  fetch("/api/square-action", {
+  fetchWithTimeout("/api/square-action", {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${accessToken}` },
     body: JSON.stringify({ action: "get_owner_square_status" }),
   }).then(r => r.json());
 
 export const saveOwnerSquareKeys = (accessToken: string, opts: { squareAccessToken?: string; squareLocationId?: string; squareApplicationId?: string; mode?: "sandbox" | "production" }) =>
-  fetch("/api/square-action", {
+  fetchWithTimeout("/api/square-action", {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${accessToken}` },
     body: JSON.stringify({ action: "save_owner_square_keys", ...opts }),

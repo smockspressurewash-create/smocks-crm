@@ -685,6 +685,7 @@ const publicSettingsSubset = (data: Record<string, any>) => ({
   // customer-facing payment page should actually use — safe to expose
   // (just a string, "stripe"|"square", no secret involved).
   paymentProvider: data.paymentProvider || "stripe",
+  paymentProviderPreference: data.paymentProviderPreference || "both",
 });
 
 const json = (data: any, status = 200) => new Response(JSON.stringify(data), { status, headers: { "Content-Type": "application/json" } });

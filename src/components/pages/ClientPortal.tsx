@@ -848,8 +848,14 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
                   verification (see lockAndOpenPayment below) regardless of
                   which processor is chosen. */}
               {(() => {
-                const stripeConfigured = !!settings?.stripePublishableKey;
-                const squareConfigured = !!squareConfig?.connected;
+                // FEATURE — "if I have Stripe and Square connected, I can
+                // select which one to use." Owner's Settings preference
+                // (defaults to "both" — nothing changes for an owner who's
+                // never touched it) narrows which button(s) actually render
+                // here, without touching either processor's own connection.
+                const providerPref = (settings as any)?.paymentProviderPreference || "both";
+                const stripeConfigured = !!settings?.stripePublishableKey && providerPref !== "square";
+                const squareConfigured = !!squareConfig?.connected && providerPref !== "stripe";
                 const lockAndOpenPayment = async (provider: "stripe" | "square") => {
                   if (String(e.id).startsWith("demo-")) { window.alert("This is a preview — no real payment is processed here."); return; }
                   // BUG FIX — "payment security in general, not just

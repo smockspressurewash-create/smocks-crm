@@ -20,7 +20,7 @@ import {
   Tooltip, ResponsiveContainer, Area, AreaChart, LineChart, Line,
   ComposedChart, Legend
 } from "recharts";
-import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, weekdayLabels, computeNextRecurringDate, describeRecurringSchedule, isEmployeeUnavailable, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, withTimeout, getEffectiveRate, totalJobPhotoCount, stripLegacyJobFields, insertClientIdRowWithRetry, insertJobRequestSafely } from "../../lib/utils";
+import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, weekdayLabels, computeNextRecurringDate, describeRecurringSchedule, isEmployeeUnavailable, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, withTimeout, getEffectiveRate, totalJobPhotoCount, stripLegacyJobFields, insertClientIdRowWithRetry, insertJobRequestSafely, buildJobCalendarDescription } from "../../lib/utils";
 const weatherRisk = (_dateStr: string): {icon: string; level: string; reason: string} | null => null;
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
 import { twilioSend, sendEmail, emailShell, emailButton, getFreshOwnerGoogleToken, logOutboundSmsToInbox } from "../../lib/messaging";
@@ -1004,7 +1004,7 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
                     start: startDt.toISOString(),
                     end: endDt.toISOString(),
                     location: job.address || "",
-                    description: job.notes || "",
+                    description: buildJobCalendarDescription(job, c, `${window.location.origin}${window.location.pathname}#/jobs?open=${encodeURIComponent(job.id)}`),
                   });
                 }).then(eventId => {
                   if (eventId) setJobs(prev => prev.map(j => j.id === job.id ? { ...j, googleEventId: eventId } : j));

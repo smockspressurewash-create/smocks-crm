@@ -194,6 +194,32 @@ export const normalizePhoneDigits = (p: string | null | undefined): string => {
   return d.length === 11 && d.startsWith("1") ? d.slice(1) : d;
 };
 
+// FEATURE — "when it adds a job to Google Calendar, it should show the
+// address, client name, client phone number, and a clickable link back to
+// the CRM." Google Calendar's own `location` field already carries the
+// address (separate API field, not part of this description) — this builds
+// everything else as the event's description/notes body. `portalPath` picks
+// which app the link opens into: "#/portal?job=" for an employee (their own
+// job detail view — see EmployeePortal.tsx's job= deep-link handling) or a
+// plain job id anchor for the owner CRM. Shared by every job->Calendar sync
+// call site (JobsPage.tsx, JobDetailModal.tsx) so all of them stay
+// consistent instead of drifting apart one at a time.
+export const buildJobCalendarDescription = (
+  job: { id: string; notes?: string },
+  customer: { firstName?: string; lastName?: string; phone?: string } | null | undefined,
+  portalPath: string
+): string => {
+  const lines: string[] = [];
+  if (customer) {
+    const name = `${customer.firstName || ""} ${customer.lastName || ""}`.trim();
+    if (name) lines.push(`Client: ${name}`);
+    if (customer.phone) lines.push(`Phone: ${customer.phone}`);
+  }
+  if (job.notes) lines.push("", job.notes);
+  lines.push("", `View job in CrewBoss: ${portalPath}`);
+  return lines.join("\n");
+};
+
 // Live-format a US phone number as the user types, e.g. "(717) 555-0100" —
 // purely cosmetic for input fields; toE164 above is what actually matters
 // for sending. Keeps a leading "+" (international entry) untouched.

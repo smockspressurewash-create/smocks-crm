@@ -20,7 +20,7 @@ import {
   Tooltip, ResponsiveContainer, Area, AreaChart, LineChart, Line,
   ComposedChart, Legend
 } from "recharts";
-import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, weekdayLabels, computeNextRecurringDate, isEmployeeUnavailable, computeDiscountsTotal, equipmentList, requiredChemicalsList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, compressImageFile, getEffectiveRate, mediaSrc, dataUrlToBlob, uploadJobMedia, reconcileCrewAfterAssign, insertJobRequestSafely, checkVideoLimits } from "../../lib/utils";
+import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, weekdayLabels, computeNextRecurringDate, isEmployeeUnavailable, computeDiscountsTotal, equipmentList, requiredChemicalsList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, compressImageFile, getEffectiveRate, mediaSrc, dataUrlToBlob, uploadJobMedia, reconcileCrewAfterAssign, insertJobRequestSafely, checkVideoLimits, buildJobCalendarDescription } from "../../lib/utils";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField, JobChecklistItem, ChecklistPhoto, JobVideo, JobSignOff } from "../../types";
 import { twilioSend, sendEmail, sendViaGmail, sendOwnerGmailOnly, emailShell, emailButton, logOutboundSmsToInbox } from "../../lib/messaging";
 import { sendPushNotification } from "../../lib/push";
@@ -768,7 +768,7 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
             // Race against a hard timeout so a hung token-refresh/API call can never
             // block this flow — 10s is generous for a real network round trip.
             const evId = await Promise.race([
-              createGCalEventApi(tok, { title: `CrewBoss Job: ${custName}`, start: startDt.toISOString(), end: endDt.toISOString(), location: job.address, description: job.notes || "" }),
+              createGCalEventApi(tok, { title: `CrewBoss Job: ${custName}`, start: startDt.toISOString(), end: endDt.toISOString(), location: job.address, description: buildJobCalendarDescription(job, cust, `${window.location.origin}${window.location.pathname}#/portal?job=${encodeURIComponent(job.id)}`) }),
               new Promise<never>((_, reject) => setTimeout(() => reject(new Error("Google Calendar sync timed out")), 10000)),
             ]);
             updateJob(jobId, { googleEventId: evId });
@@ -963,11 +963,12 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
       const customer = customers.find((x: any) => x.id === job.customerId);
       const calCoName = settings?.companyName || "Crew Boss";
       const title = customer ? `${customer.firstName} ${customer.lastName} — ${calCoName} Service` : `${calCoName} Service`;
+      const description = buildJobCalendarDescription(job, customer, `${window.location.origin}${window.location.pathname}#/jobs?open=${encodeURIComponent(job.id)}`);
       if (job.googleEventId) {
-        await updateGCalEventApi(gToken, job.googleEventId, { title, start: startDt.toISOString(), end: endDt.toISOString(), location: job.address, description: job.notes || "" });
+        await updateGCalEventApi(gToken, job.googleEventId, { title, start: startDt.toISOString(), end: endDt.toISOString(), location: job.address, description });
         toast("Google Calendar event updated ✓");
       } else {
-        const evId = await createGCalEventApi(gToken, { title, start: startDt.toISOString(), end: endDt.toISOString(), location: job.address, description: job.notes || "" });
+        const evId = await createGCalEventApi(gToken, { title, start: startDt.toISOString(), end: endDt.toISOString(), location: job.address, description });
         updateJob(jobId, { googleEventId: evId });
         toast("Synced to Google Calendar ✓");
       }
