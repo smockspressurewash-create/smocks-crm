@@ -23,6 +23,7 @@ import { GlobalSearch } from "./components/ui/GlobalSearch";
 // ─── Pages ────────────────────────────────────────────────────────────────────
 import { Dashboard } from "./components/pages/Dashboard";
 import { CockpitPage } from "./components/pages/CockpitPage";
+import { FeedbackPage } from "./components/pages/FeedbackPage";
 import { CustomersPage } from "./components/pages/CustomersPage";
 import { CustomerModal } from "./components/ui/CustomerModal";
 import { SopModal } from "./components/ui/SopModal";
@@ -539,7 +540,7 @@ export function App() {
     if (hash === "features") return "features";
     if (hash === "pricing") return "pricing";
     if (hash === "about") return "about";
-    const valid = ["dashboard","alfred","inbox","notifications","customers","estimates","invoices","pipeline","intake","jobs","calendar","crew","campaigns","reviews","automations","social","goals","referrals","promotions","trashcans","sops","expenses","reports","analytics","budget","personal","accountability","employees","hiring","fleet","chemicals","google","portal","reset-password","client","referral","rate","welcome","login","features","pricing","about","cockpit"];
+    const valid = ["dashboard","alfred","inbox","notifications","customers","estimates","invoices","pipeline","intake","jobs","calendar","crew","campaigns","reviews","automations","social","goals","referrals","promotions","trashcans","sops","expenses","reports","analytics","budget","personal","accountability","employees","hiring","fleet","chemicals","google","portal","reset-password","client","referral","rate","welcome","login","features","pricing","about","cockpit","feedback","roadmap"];
     return valid.includes(hash) ? hash : "dashboard";
   });
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -856,7 +857,7 @@ export function App() {
 
   // Listen for browser back/forward
   useEffect(() => {
-    const valid = ["dashboard","alfred","inbox","notifications","customers","estimates","invoices","pipeline","intake","jobs","calendar","crew","campaigns","reviews","automations","social","goals","referrals","promotions","trashcans","sops","expenses","reports","analytics","budget","personal","accountability","employees","hiring","fleet","chemicals","google","portal","reset-password","client","referral","rate","lead-form","trash-cans","apply","terms","privacy","welcome","login","features","pricing","about","cockpit"];
+    const valid = ["dashboard","alfred","inbox","notifications","customers","estimates","invoices","pipeline","intake","jobs","calendar","crew","campaigns","reviews","automations","social","goals","referrals","promotions","trashcans","sops","expenses","reports","analytics","budget","personal","accountability","employees","hiring","fleet","chemicals","google","portal","reset-password","client","referral","rate","lead-form","trash-cans","apply","terms","privacy","welcome","login","features","pricing","about","cockpit","feedback","roadmap"];
     const handler = () => {
       const hash = window.location.hash.replace(/^#\/?/, "").split("?")[0];
       if (hash === "portal" || hash.startsWith("portal/")) { setPage("portal"); return; }
@@ -3793,6 +3794,23 @@ export function App() {
   if (page === "about" && (marketingPreview || (!empSession && !hasCrmSession))) {
     return <>{previewBar}<AboutPage onGetStarted={() => navigateMarketing("login")} onNavigate={navigateMarketing} /></>;
   }
+  // FEATURE — public roadmap (logged-out visitors) — read-only, only shows
+  // items the admin has actually scheduled/shipped, no submit/vote (that
+  // needs a real CrewBoss account — see the in-app "Feedback" nav item).
+  if (page === "roadmap" && (marketingPreview || (!empSession && !hasCrmSession))) {
+    return (
+      <>
+        {previewBar}
+        <div className="min-h-screen bg-black text-white">
+          <div className="sticky top-0 z-40 backdrop-blur-md bg-black/60 border-b border-white/10 px-4 py-3 flex items-center justify-between">
+            <button onClick={() => navigateMarketing("welcome")} className="font-bold text-lg tracking-tight">Crew<span className="text-red-500">Boss</span></button>
+            <button onClick={() => navigateMarketing("login")} className="px-4 py-2 rounded-lg bg-gradient-to-br from-red-600 to-red-800 text-sm font-semibold">Start Free Trial</button>
+          </div>
+          <FeedbackPage publicMode />
+        </div>
+      </>
+    );
+  }
 
   // No top-level loading gate — render immediately with whatever's already
   // in localStorage (jobs/customers/settings load synchronously via
@@ -4199,9 +4217,14 @@ export function App() {
   // (not managers, not any other owner account this deployment might ever
   // have) since it's a direct line to the developer, not a CRM feature.
   const isCockpitOwner = crmUserEmail?.toLowerCase() === "smockspressurewash@gmail.com";
+  // FEATURE — public feedback/roadmap board, visible to every signed-in
+  // CrewBoss owner (any business, not just this one) — a real "Feedback"
+  // nav item, not gated like Alfred Cockpit above (that one's a private
+  // line to the developer; this is the product's own public board).
+  const navGroupsWithFeedback = navGroups.map(g => g.label === "Main" ? { ...g, items: [...g.items, { id: "feedback", label: "Feedback", icon: MessageSquare }] } : g);
   const visibleNavGroups = (isCockpitOwner
-    ? [...navGroups, { label: "Developer", items: [{ id: "cockpit", label: "Alfred Cockpit", icon: LayoutGrid }] }]
-    : navGroups
+    ? [...navGroupsWithFeedback, { label: "Developer", items: [{ id: "cockpit", label: "Alfred Cockpit", icon: LayoutGrid }] }]
+    : navGroupsWithFeedback
   )
     .map(g => ({ ...g, items: g.items.filter(item => !managerBlocked(item.id)) }))
     .filter(g => g.items.length > 0);
@@ -4525,6 +4548,7 @@ export function App() {
             <PageFade key={page} className={page === "alfred" || page === "inbox" ? "flex-1 min-h-0 flex flex-col" : ""}>
               <SafePage>
                 {page === "cockpit" && isCockpitOwner && <CockpitPage ownerId={crmUserId} toast={toast} />}
+                {page === "feedback" && <FeedbackPage userEmail={crmUserEmail} userName={(settings as any)?.ownerName || (settings as any)?.companyName} isAdmin={isCockpitOwner} toast={toast} />}
                 {page === "dashboard"      && <Dashboard jobs={jobs} setJobs={setJobs} customers={customers} estimates={estimates} setEstimates={setEstimates} automations={automations} stats={{ totalRev, activeJobs, pendingEst, closeRate, doneMonth }} goals={{ revenue: settings.monthlyRevenueGoal ?? 8000, jobCount: settings.monthlyJobsGoal ?? 20 }} vehicles={vehicles} maintenance={maintenance} chemicals={chemicals} settings={settings} setSettings={setSettings} onNav={setPage} toast={toast} weatherData={weatherData} weatherFetchError={weatherFetchError} inboxThreads={inboxThreads} employees={employees} crewFetchError={crewFetchError} reviews={reviews} onSendDailyBriefing={sendDailyBriefingNow} onViewJob={id => { setOpenJobId(id); setPage("jobs"); }} ownerId={crmUserId} />}
                 {page === "customers"      && <CustomersPage customers={customers} setCustomers={setCustomers} estimates={estimates} jobs={jobs} employees={employees} toast={toast} timeline={timeline} setTimeline={setTimeline} settings={settings} setSettings={setSettings} autoOpenNew={fabAutoOpenNew === "customers"} onAutoOpenNewConsumed={() => setFabAutoOpenNew(null)} highlightId={alfredHighlight?.type === "customer" ? alfredHighlight.id : null} pushUndo={pushUndo} markRecentlyDeleted={markRecentlyDeleted} unmarkRecentlyDeleted={unmarkRecentlyDeleted} onSpotlight={queueAlfredSpotlight} />}
                 {page === "estimates"      && <EstimatesPage estimates={estimates} setEstimates={setEstimates} customers={customers} services={services} settings={settings} toast={toast} onPortal={id => setPortalEstId(id)} estimateTemplates={estimateTemplates} setEstimateTemplates={setEstimateTemplates} setJobs={setJobs} onNav={setPage} autoOpenNew={fabAutoOpenNew === "estimates"} onAutoOpenNewConsumed={() => { setFabAutoOpenNew(null); setEstimatePresetCustomerId(null); }} presetCustomerId={estimatePresetCustomerId || ""} ownerId={crmUserId} highlightId={alfredHighlight?.type === "estimate" ? alfredHighlight.id : null} pushUndo={pushUndo} markRecentlyDeleted={markRecentlyDeleted} unmarkRecentlyDeleted={unmarkRecentlyDeleted} />}
