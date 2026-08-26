@@ -20,7 +20,7 @@ import {
   Tooltip, ResponsiveContainer, Area, AreaChart, LineChart, Line,
   ComposedChart, Legend
 } from "recharts";
-import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE } from "../../lib/utils";
+import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, uploadJobMedia } from "../../lib/utils";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
 import { twilioSend, sendEmail, postToBuffer, fetchBufferPostAnalytics } from "../../lib/messaging";
 import { postToFacebookPage, postToLinkedIn } from "../../lib/socialOAuth";
@@ -93,7 +93,9 @@ export function SocialPage({ posts = [], setPosts, toast, settings = {} as AppSe
     scheduledTime: "09:00",
     hashtags: SOCIAL_HASHTAGS_DEFAULT,
     _imageData: null as any,
-    _photoUrl: null as any
+    _photoUrl: null as any,
+    _mediaType: "image" as "image" | "video",
+    _uploadingMedia: false,
   });
   const [f, setF] = useState(initialForm);
   const [generating, setGenerating] = useState(false);
@@ -189,9 +191,9 @@ export function SocialPage({ posts = [], setPosts, toast, settings = {} as AppSe
   // token (Facebook/LinkedIn), then Instagram/TikTok app bridges, then a
   // generic Web Share/clipboard fallback so every platform — not just
   // Instagram/TikTok — gets a real action instead of a no-op "Published" toast.
-  const publishOnePlatform = async (platform: string, caption: string, scheduledAt?: Date): Promise<{ bufferPostId?: string; method: string }> => {
+  const publishOnePlatform = async (platform: string, caption: string, scheduledAt?: Date, mediaUrl?: string | null, mediaType?: "image" | "video"): Promise<{ bufferPostId?: string; method: string }> => {
     if (settings.bufferApiKey && settings.bufferChannelIds?.[platform]) {
-      const bufferPostId = await postToBuffer(settings, platform, caption, scheduledAt);
+      const bufferPostId = await postToBuffer(settings, platform, caption, scheduledAt, mediaUrl || undefined, mediaType);
       toast(`${scheduledAt ? "Scheduled" : "Posted"} to ${platformMeta[platform]?.label || platform} via Buffer ✓`, "green");
       return { bufferPostId: bufferPostId || undefined, method: "buffer" };
     }
@@ -253,9 +255,10 @@ export function SocialPage({ posts = [], setPosts, toast, settings = {} as AppSe
     let anyFailed = false;
     for (const platform of f.platforms) {
       try {
-        const result = await publishOnePlatform(platform, fullCaption, scheduledAt);
+        const result = await publishOnePlatform(platform, fullCaption, scheduledAt, f._photoUrl, (f as any)._mediaType || "image");
         created.push({
           id: uid(), platform, type: f.type, caption: fullCaption, hashtags: f.hashtags, _imageData: f._imageData,
+          mediaUrl: f._photoUrl || undefined, mediaType: (f as any)._mediaType || undefined,
           status: isSchedule ? "scheduled" : "published",
           scheduledFor: isSchedule ? f.scheduledFor : undefined,
           scheduledTime: isSchedule ? f.scheduledTime : undefined,
@@ -503,6 +506,9 @@ export function SocialPage({ posts = [], setPosts, toast, settings = {} as AppSe
               </div>
               <div className="text-xs text-white/50 flex items-center gap-1"><Clock size={10} />{p.scheduledFor}{p.scheduledTime ? " @ " + p.scheduledTime : ""}</div>
             </div>
+            {p.mediaUrl && (p.mediaType === "video"
+              ? <video src={p.mediaUrl} className="w-full h-40 object-cover rounded-xl mb-3 bg-black" muted controls />
+              : <img src={p.mediaUrl} alt="" className="w-full h-40 object-cover rounded-xl mb-3" />)}
             <div className="text-sm text-white/80 whitespace-pre-wrap mb-3 line-clamp-5 leading-relaxed">{p.caption}</div>
             <div className="flex gap-2 pt-3 border-t border-white/5">
               {viaBuffer
@@ -530,6 +536,9 @@ export function SocialPage({ posts = [], setPosts, toast, settings = {} as AppSe
                 <button onClick={() => del(p.id)} className="text-white/20 hover:text-red-400 transition"><X size={12} /></button>
               </div>
             </div>
+            {p.mediaUrl && (p.mediaType === "video"
+              ? <video src={p.mediaUrl} className="w-full h-40 object-cover rounded-xl mb-3 bg-black" muted controls />
+              : <img src={p.mediaUrl} alt="" className="w-full h-40 object-cover rounded-xl mb-3" />)}
             <div className="text-sm text-white/70 line-clamp-3 mb-3">{p.caption}</div>
             {/* Live post link — only rendered when Buffer actually reported a
                 real externalLink for this post; never fabricated. */}
@@ -664,13 +673,45 @@ export function SocialPage({ posts = [], setPosts, toast, settings = {} as AppSe
               </div>}
             </div>
           </div>
-          {f._photoUrl && (
-            <div className="flex items-center gap-2 p-2 bg-red-950/20 border border-red-800/40 rounded-xl">
-              <img src={f._photoUrl} alt="From Alfred" className="w-12 h-12 rounded-lg object-cover flex-shrink-0" />
-              <div className="text-[10px] text-red-300 flex-1">Before/after photo from Alfred — attach it on the platform when you post.</div>
-              <button onClick={() => setF(prev => ({ ...prev, _photoUrl: null }))} className="text-white/40 hover:text-white flex-shrink-0"><X size={12} /></button>
-            </div>
-          )}
+          {/* FEATURE — "there's no option to upload photos and videos, and
+              no preview when you upload." This used to only ever populate
+              from Alfred's own script-handoff, with no general upload
+              button at all. Real upload (photo or video), a real preview
+              once it's up, and this is what actually gets attached to the
+              Buffer post below (see postToBuffer's mediaUrl param). */}
+          <div>
+            <label className="text-xs text-white/60 mb-1 block">Photo / Video (optional)</label>
+            {f._photoUrl ? (
+              <div className="flex items-center gap-2 p-2 bg-red-950/20 border border-red-800/40 rounded-xl">
+                {f._mediaType === "video" ? (
+                  <video src={f._photoUrl} className="w-16 h-16 rounded-lg object-cover flex-shrink-0 bg-black" muted controls />
+                ) : (
+                  <img src={f._photoUrl} alt="Post media" className="w-16 h-16 rounded-lg object-cover flex-shrink-0" />
+                )}
+                <div className="text-[10px] text-red-300 flex-1">{f._mediaType === "video" ? "Video" : "Photo"} attached — will be included when this posts.</div>
+                <button onClick={() => setF(prev => ({ ...prev, _photoUrl: null }))} className="text-white/40 hover:text-white flex-shrink-0"><X size={12} /></button>
+              </div>
+            ) : (
+              <label className={"flex items-center justify-center gap-2 py-3 rounded-xl border-2 border-dashed text-xs cursor-pointer transition " + ((f as any)._uploadingMedia ? "border-white/10 text-white/30" : "border-white/15 text-white/50 hover:border-red-500/40 hover:text-white")}>
+                <input type="file" accept="image/*,video/*" className="hidden" disabled={(f as any)._uploadingMedia} onChange={async e => {
+                  const file = e.target.files?.[0];
+                  if (!file) return;
+                  const isVideo = file.type.startsWith("video/");
+                  setF(prev => ({ ...(prev as any), _uploadingMedia: true }));
+                  const ext = file.name.split(".").pop() || (isVideo ? "mp4" : "jpg");
+                  const url = await uploadJobMedia(file, `social/${uid()}.${ext}`, file.type);
+                  if (url) {
+                    setF(prev => ({ ...(prev as any), _photoUrl: url, _mediaType: isVideo ? "video" : "image", _uploadingMedia: false }));
+                    toast("Media uploaded ✓");
+                  } else {
+                    setF(prev => ({ ...(prev as any), _uploadingMedia: false }));
+                    toast("Upload failed — try again", "red");
+                  }
+                }} />
+                {(f as any)._uploadingMedia ? <>Uploading…</> : <><Upload size={12} />Upload a photo or video</>}
+              </label>
+            )}
+          </div>
           <div>
             <div className="flex items-center justify-between mb-1">
               <label className="text-xs text-white/60">Caption</label>

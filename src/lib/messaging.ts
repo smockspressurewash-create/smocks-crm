@@ -107,32 +107,65 @@ export const fetchBufferChannels = async (apiKey: string, organizationId: string
 // Buffer's next open queue slot instead of the specific date/time picked in
 // the UI. Buffer's schema wants mode `customScheduled` (not `addToQueue`)
 // paired with a `dueAt` ISO datetime to honor an exact time.
+// FEATURE — "there's no option to publish or push a video or post with
+// Buffer, nor an option to upload photos and videos." mediaUrl is a
+// publicly-fetchable URL (Supabase Storage, same pattern job/checklist
+// photos already use — see uploadJobMedia) for a photo OR video; Buffer's
+// createPost accepts a `media` input referencing an already-hosted URL, it
+// doesn't take a raw file upload. If Buffer rejects the media field (a
+// schema mismatch this hasn't been live-verified against for every account
+// type) this retries text-only rather than failing the whole post outright
+// — a caption that goes out without its photo is far better than nothing
+// going out at all.
 export const postToBuffer = async (
   settings: BufferSettings,
   platform: string,
   text: string,
-  scheduledAt?: Date
+  scheduledAt?: Date,
+  mediaUrl?: string,
+  mediaType?: "image" | "video"
 ): Promise<string> => {
   const { bufferApiKey, bufferChannelIds } = settings;
   const channelId = bufferChannelIds?.[platform];
   if (!bufferApiKey || !channelId) {
     throw new Error("Buffer not connected for this platform — add an API key and pick a channel in Settings.");
   }
-  const data = await bufferGraphQL<{ createPost: { __typename: string; message?: string; post?: { id: string } } }>(
+  const baseVars = {
+    text, channelId,
+    schedulingType: scheduledAt ? "automatic" : "notification",
+    mode: scheduledAt ? "customScheduled" : "shareNow",
+    dueAt: scheduledAt ? scheduledAt.toISOString() : null,
+  };
+  const runCreate = async (withMedia: boolean) => bufferGraphQL<{ createPost: { __typename: string; message?: string; post?: { id: string } } }>(
     bufferApiKey,
-    `mutation CreatePost($text: String!, $channelId: ChannelId!, $schedulingType: PostSchedulingTypeInput!, $mode: PostCreationModeInput!, $dueAt: DateTime) {
-      createPost(input: { text: $text, channelId: $channelId, schedulingType: $schedulingType, mode: $mode, dueAt: $dueAt }) {
-        ... on PostActionSuccess { post { id } }
-        ... on MutationError { message }
-      }
-    }`,
-    {
-      text, channelId,
-      schedulingType: scheduledAt ? "automatic" : "notification",
-      mode: scheduledAt ? "customScheduled" : "shareNow",
-      dueAt: scheduledAt ? scheduledAt.toISOString() : null,
-    }
+    withMedia
+      ? `mutation CreatePost($text: String!, $channelId: ChannelId!, $schedulingType: PostSchedulingTypeInput!, $mode: PostCreationModeInput!, $dueAt: DateTime, $media: PostMediaInput) {
+          createPost(input: { text: $text, channelId: $channelId, schedulingType: $schedulingType, mode: $mode, dueAt: $dueAt, media: $media }) {
+            ... on PostActionSuccess { post { id } }
+            ... on MutationError { message }
+          }
+        }`
+      : `mutation CreatePost($text: String!, $channelId: ChannelId!, $schedulingType: PostSchedulingTypeInput!, $mode: PostCreationModeInput!, $dueAt: DateTime) {
+          createPost(input: { text: $text, channelId: $channelId, schedulingType: $schedulingType, mode: $mode, dueAt: $dueAt }) {
+            ... on PostActionSuccess { post { id } }
+            ... on MutationError { message }
+          }
+        }`,
+    withMedia
+      ? { ...baseVars, media: mediaType === "video" ? { video: { url: mediaUrl } } : { photos: [{ url: mediaUrl }] } }
+      : baseVars
   );
+  let data;
+  if (mediaUrl) {
+    try {
+      data = await runCreate(true);
+    } catch (e: any) {
+      console.warn("[Buffer] post with media failed, retrying text-only:", e?.message);
+      data = await runCreate(false);
+    }
+  } else {
+    data = await runCreate(false);
+  }
   if (data?.createPost?.message) throw new Error(data.createPost.message);
   return data?.createPost?.post?.id || "";
 };

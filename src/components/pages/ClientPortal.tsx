@@ -38,6 +38,8 @@ import { GSel } from "../ui/GSel";
 import { GTxt } from "../ui/GTxt";
 import { Modal } from "../ui/Modal";
 import { StripePaymentModal } from "../ui/StripePaymentModal";
+import { SquarePaymentModal } from "../ui/SquarePaymentModal";
+import { getPublicSquareConfig } from "../../lib/square";
 import { Badge } from "../ui/Badge";
 import { Stat } from "../ui/Stat";
 import { PBar } from "../ui/PBar";
@@ -98,7 +100,19 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
   const [showAccount, setShowAccount] = useState(false);
   const [payType, setPayType] = useState("full");
   const [showStripeModal, setShowStripeModal] = useState(false);
+  const [showSquareModal, setShowSquareModal] = useState(false);
   const [lockingInSelection, setLockingInSelection] = useState(false);
+  // FEATURE — "switch between Stripe and Square easily." Fetches Square's
+  // public config (application/location id — safe to expose, same trust
+  // level as Stripe's publishable key) directly by owner id so this works
+  // both from the public #/estimate/:id route and the owner's in-app
+  // preview, regardless of whether `settings` already carries it.
+  const [squareConfig, setSquareConfig] = useState<{ connected: boolean; applicationId?: string; locationId?: string; mode?: "sandbox" | "production" } | null>(null);
+  useEffect(() => {
+    const ownerId = (e as any)?.owner_id || (e as any)?.ownerId;
+    if (!ownerId || (settings as any)?.paymentProvider !== "square") return;
+    getPublicSquareConfig(ownerId).then(setSquareConfig).catch(() => setSquareConfig(null));
+  }, [(e as any)?.owner_id, (e as any)?.ownerId, (settings as any)?.paymentProvider]); // eslint-disable-line react-hooks/exhaustive-deps
   const [step, setStep] = useState("view"); // view | sign | payment | done | declined
   const [declining, setDeclining] = useState(false);
   const [declineReason, setDeclineReason] = useState("");
@@ -813,66 +827,66 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
                 </span>
               </label>
 
-              {/* Stripe payment — real Payment Element if keys are configured, otherwise a connect prompt.
-                  BUG FIX (round 13) — this used to also require settings.stripeSecretKeyEnc, a field the
-                  round-12 Stripe security fix stopped writing entirely (the secret key now lives only in
-                  a Cloudflare env var, never in settings). That left this condition permanently false for
-                  every owner post-fix, so the real Stripe pay button never showed — only the "not set up
-                  yet" fallback — even with Stripe fully connected. Publishable key is the only client-side
-                  signal of "connected" now. */}
-              {settings?.stripePublishableKey ? (
-                <div className="space-y-2">
-                  <button
-                    onClick={async () => {
-                      // Synthetic demo quotes (id prefixed "demo-", see the
-                      // Client Demo picker) were never written to Supabase —
-                      // there's no real invoice row for Stripe to charge
-                      // against or verify an amount from.
-                      if (String(e.id).startsWith("demo-")) { window.alert("This is a preview — no real payment is processed here."); return; }
-                      // BUG FIX — "payment security in general, not just
-                      // packages." This used to just open the Stripe modal
-                      // with a client-computed amount, trusted directly —
-                      // the server now verifies every charge against the
-                      // estimate's own stored total (see invoiceId below).
-                      // For Package/Options, that stored total only matches
-                      // reality once this selection is locked in server-side
-                      // first — the server recomputes it from the estimate's
-                      // OWN real line items/packages, never a client-claimed
-                      // price.
-                      if (e.estimateType === "package" || e.estimateType === "options") {
-                        setLockingInSelection(true);
-                        try {
-                          const res = await fetch("/api/public-data", {
-                            method: "POST", headers: { "Content-Type": "application/json" },
-                            body: JSON.stringify({ action: "lock_in_estimate_selection", id: e.id, selectedPackageId: selectedPkgId, enabledItemIds: effectiveLineItems.map((li: any) => li.id) }),
-                          });
-                          const data = await res.json().catch(() => null);
-                          if (!res.ok || data?.error) throw new Error(data?.error || "Couldn't verify your selection");
-                        } catch (err: any) {
-                          setLockingInSelection(false);
-                          window.alert("Couldn't confirm your selection before payment — " + (err?.message || "please try again") + ".");
-                          return;
-                        }
-                        setLockingInSelection(false);
-                      }
-                      setShowStripeModal(true);
-                    }}
-                    disabled={!agreedToPaymentTerms || lockingInSelection}
-                    className="w-full py-4 bg-gradient-to-r from-[#635BFF] to-[#4F46E5] text-white font-bold rounded-xl shadow-lg hover:from-[#7C74FF] hover:to-[#6056F5] transition-all flex items-center justify-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:from-[#635BFF] disabled:hover:to-[#4F46E5]"
-                  >
-                    <CreditCard size={18} />
-                    {lockingInSelection ? "Verifying…" : `Pay ${fmt(totalWithTip)} · Powered by Stripe`}
-                  </button>
-                  {!agreedToPaymentTerms && <div className="text-center text-[10px] text-yellow-400/80">Check the box above to enable payment</div>}
-                  <div className="text-center text-[10px] text-white/30">🔒 Your payment is secured by Stripe · 256-bit SSL</div>
-                </div>
-              ) : (
-                <div className="p-4 rounded-xl bg-white/5 border border-white/10 text-center space-y-2">
-                  <CreditCard size={20} className="mx-auto text-white/30" />
-                  <div className="text-sm text-white/60">Online payments aren't set up yet.</div>
-                  <div className="text-xs text-white/40">{companyName} hasn't connected Stripe — contact us directly to arrange payment.</div>
-                </div>
-              )}
+              {/* FEATURE — "switch between Stripe and Square easily." The
+                  owner's paymentProvider choice (Settings → Integrations)
+                  decides which button/modal renders here — both share the
+                  exact same lock-in-selection + invoiceId/tipCents security
+                  model (see lockAndOpenPayment below), just a different
+                  processor underneath. */}
+              {(() => {
+                const useSquare = (settings as any)?.paymentProvider === "square";
+                const configured = useSquare ? !!(squareConfig?.connected) : !!settings?.stripePublishableKey;
+                const lockAndOpenPayment = async () => {
+                  if (String(e.id).startsWith("demo-")) { window.alert("This is a preview — no real payment is processed here."); return; }
+                  // BUG FIX — "payment security in general, not just
+                  // packages." Every charge is now verified server-side
+                  // against the estimate's own stored total — for
+                  // Package/Options that only matches reality once this
+                  // selection is locked in server-side first (recomputed
+                  // from the estimate's OWN real line items, never a
+                  // client-claimed price).
+                  if (e.estimateType === "package" || e.estimateType === "options") {
+                    setLockingInSelection(true);
+                    try {
+                      const res = await fetch("/api/public-data", {
+                        method: "POST", headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ action: "lock_in_estimate_selection", id: e.id, selectedPackageId: selectedPkgId, enabledItemIds: effectiveLineItems.map((li: any) => li.id) }),
+                      });
+                      const data = await res.json().catch(() => null);
+                      if (!res.ok || data?.error) throw new Error(data?.error || "Couldn't verify your selection");
+                    } catch (err: any) {
+                      setLockingInSelection(false);
+                      window.alert("Couldn't confirm your selection before payment — " + (err?.message || "please try again") + ".");
+                      return;
+                    }
+                    setLockingInSelection(false);
+                  }
+                  if (useSquare) setShowSquareModal(true); else setShowStripeModal(true);
+                };
+                if (!configured) {
+                  return (
+                    <div className="p-4 rounded-xl bg-white/5 border border-white/10 text-center space-y-2">
+                      <CreditCard size={20} className="mx-auto text-white/30" />
+                      <div className="text-sm text-white/60">Online payments aren't set up yet.</div>
+                      <div className="text-xs text-white/40">{companyName} hasn't connected {useSquare ? "Square" : "Stripe"} — contact us directly to arrange payment.</div>
+                    </div>
+                  );
+                }
+                return (
+                  <div className="space-y-2">
+                    <button
+                      onClick={lockAndOpenPayment}
+                      disabled={!agreedToPaymentTerms || lockingInSelection}
+                      className={"w-full py-4 text-white font-bold rounded-xl shadow-lg transition-all flex items-center justify-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed " + (useSquare ? "bg-gradient-to-r from-[#006AFF] to-[#0052CC] hover:from-[#1a7bff] hover:to-[#0060e6]" : "bg-gradient-to-r from-[#635BFF] to-[#4F46E5] hover:from-[#7C74FF] hover:to-[#6056F5]")}
+                    >
+                      <CreditCard size={18} />
+                      {lockingInSelection ? "Verifying…" : `Pay ${fmt(totalWithTip)} · Powered by ${useSquare ? "Square" : "Stripe"}`}
+                    </button>
+                    {!agreedToPaymentTerms && <div className="text-center text-[10px] text-yellow-400/80">Check the box above to enable payment</div>}
+                    <div className="text-center text-[10px] text-white/30">🔒 Your payment is secured by {useSquare ? "Square" : "Stripe"} · 256-bit SSL</div>
+                  </div>
+                );
+              })()}
               {/* WORDING FIX (round 13, item 3) — relabeled to match the
                   "Pay a Deposit Now" / "Pay in Full Now" pair above: this is
                   the true third option, zero dollars today, full amount
@@ -911,6 +925,18 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
                 tipCents={Math.round((Number(tip) || 0) * 100)}
                 description={`${companyName} — ${e?.lineItems?.[0]?.description || "Estimate"} #${e?.id || ""}`}
                 onSuccess={(paymentIntentId) => { setShowStripeModal(false); handleApprove(paymentIntentId); }}
+              />
+              <SquarePaymentModal
+                open={showSquareModal}
+                onClose={() => setShowSquareModal(false)}
+                applicationId={squareConfig?.applicationId || ""}
+                locationId={squareConfig?.locationId || ""}
+                mode={squareConfig?.mode || "sandbox"}
+                amount={totalWithTip}
+                invoiceId={e?.id}
+                tipCents={Math.round((Number(tip) || 0) * 100)}
+                description={`${companyName} — ${e?.lineItems?.[0]?.description || "Estimate"} #${e?.id || ""}`}
+                onSuccess={(paymentId) => { setShowSquareModal(false); handleApprove(paymentId); }}
               />
             </div>
           )}

@@ -681,6 +681,10 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
 const publicSettingsSubset = (data: Record<string, any>) => ({
   companyName: data.companyName, companyPhone: data.companyPhone, companyLogo: data.companyLogo,
   stripePublishableKey: data.stripePublishableKey, primaryColor: data.primaryColor,
+  // FEATURE — "switch between Stripe and Square easily." Which provider a
+  // customer-facing payment page should actually use — safe to expose
+  // (just a string, "stripe"|"square", no secret involved).
+  paymentProvider: data.paymentProvider || "stripe",
 });
 
 const json = (data: any, status = 200) => new Response(JSON.stringify(data), { status, headers: { "Content-Type": "application/json" } });

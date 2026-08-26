@@ -194,6 +194,58 @@ export function SettingsModal({ open, onClose, settings, setSettings, jobs = [],
       }
     })();
   }, [open]);
+
+  // FEATURE — Square as an alternative to Stripe ("give another option for
+  // users to connect payments... switch between each one easily"). Same
+  // load/save shape as the Stripe block above, own service-role-only table
+  // (owner_square_accounts, migration 0064) via functions/api/square-action.ts.
+  const [squareStatus, setSquareStatus] = useState<{ connected: boolean; hasAccessToken: boolean; locationId: string; applicationId: string; mode: string } | null>(null);
+  const [squareStatusLoading, setSquareStatusLoading] = useState(false);
+  const [squareAccessTokenInput, setSquareAccessTokenInput] = useState("");
+  const [squareSaving, setSquareSaving] = useState(false);
+  useEffect(() => {
+    if (!open) return;
+    (async () => {
+      setSquareStatusLoading(true);
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        const token = session?.access_token;
+        if (!token) return;
+        const { getOwnerSquareStatus } = await import("../../lib/square");
+        const status = await getOwnerSquareStatus(token);
+        if (!status?.error) setSquareStatus(status);
+      } catch (e: any) {
+        console.error("[Square] get_owner_square_status failed:", e?.message);
+      } finally {
+        setSquareStatusLoading(false);
+      }
+    })();
+  }, [open]);
+  const saveSquareKeys = async () => {
+    setSquareSaving(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const token = session?.access_token;
+      if (!token) throw new Error("Not signed in");
+      const { saveOwnerSquareKeys, getOwnerSquareStatus } = await import("../../lib/square");
+      const result = await saveOwnerSquareKeys(token, {
+        squareAccessToken: squareAccessTokenInput || undefined,
+        squareLocationId: f.squareLocationId,
+        squareApplicationId: f.squareApplicationId,
+        mode: f.squareMode === "production" ? "production" : "sandbox",
+      });
+      if (result?.error) throw new Error(result.error);
+      setSquareAccessTokenInput("");
+      const status = await getOwnerSquareStatus(token);
+      if (!status?.error) setSquareStatus(status);
+      toast?.("Square settings saved ✓", "green");
+    } catch (e: any) {
+      toast?.("Couldn't save Square settings — " + (e?.message || "unknown error"), "red");
+    } finally {
+      setSquareSaving(false);
+    }
+  };
+
   const saveStripeKeys = async () => {
     setStripeSaving(true);
     try {
@@ -1562,6 +1614,74 @@ export function SettingsModal({ open, onClose, settings, setSettings, jobs = [],
                 </button>
               </div>
             </Glass>
+
+            {/* FEATURE — Square, an alternative to Stripe ("give another
+                option for users to connect payments... free on our end...
+                accepts many payment methods... switch between each one
+                easily"). Same secret-never-in-synced-settings rule Stripe's
+                own comment above explains — the Access Token only ever
+                goes through save_owner_square_keys, straight into the
+                service-role-only owner_square_accounts table. */}
+            <Glass className="p-4 !bg-black/40">
+              <div className="flex items-center justify-between mb-2">
+                <div className="flex items-center gap-2"><CreditCard size={14} className="text-[#006AFF]" /><div className="font-semibold text-sm">Square</div></div>
+                <Badge tone={squareStatus?.connected ? "green" : squareStatus?.hasAccessToken ? "yellow" : "gray"}>
+                  {squareStatus?.connected ? "Connected" : squareStatus?.hasAccessToken ? "Missing Location ID" : "Not Connected"}
+                </Badge>
+              </div>
+              <div className="text-xs text-white/60 mb-3">An alternative to Stripe — same real payments, your own Square account, free to set up. Use whichever one you prefer as your default below.</div>
+
+              {!squareStatus?.connected && (
+                <div className="p-3 bg-black/60 rounded-xl border border-white/5 text-[10px] text-white/60 space-y-1.5 mb-3">
+                  <div className="font-semibold text-white/70 text-xs">How to get your keys</div>
+                  <div>1. No Square account yet? <a href="https://squareup.com/signup" target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:text-blue-300 underline">Create one free</a>.</div>
+                  <div>2. Go to <a href="https://developer.squareup.com/apps" target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:text-blue-300 underline">Square Developer Dashboard</a> → create (or open) an app.</div>
+                  <div>3. Copy the <b>Application ID</b> and (Sandbox or Production) <b>Access Token</b> shown there, and the <b>Location ID</b> from the Locations tab, into the fields below.</div>
+                  <div>4. Start in Sandbox mode to test with fake cards — switch to Production once you're ready for real payments.</div>
+                </div>
+              )}
+
+              <div className="space-y-2.5">
+                <div>
+                  <label className="text-[10px] text-white/50 uppercase tracking-wider mb-1 block">Mode</label>
+                  <div className="flex gap-2">
+                    <button type="button" onClick={() => setF({ ...f, squareMode: "sandbox" })} className={"flex-1 py-1.5 rounded-lg text-xs font-semibold border transition " + ((f.squareMode || "sandbox") === "sandbox" ? "bg-yellow-900/30 border-yellow-600/50 text-yellow-300" : "bg-white/5 border-white/10 text-white/50")}>Sandbox (test)</button>
+                    <button type="button" onClick={() => setF({ ...f, squareMode: "production" })} className={"flex-1 py-1.5 rounded-lg text-xs font-semibold border transition " + (f.squareMode === "production" ? "bg-green-900/30 border-green-600/50 text-green-300" : "bg-white/5 border-white/10 text-white/50")}>Production (live)</button>
+                  </div>
+                </div>
+                <div>
+                  <label className="text-[10px] text-white/50 uppercase tracking-wider mb-1 block">Application ID</label>
+                  <GInput placeholder="sandbox-sq0idb-… or sq0idp-…" value={f.squareApplicationId || ""} onChange={e => setF({ ...f, squareApplicationId: e.target.value })} className="!text-xs font-mono" />
+                  <div className="text-[10px] text-white/30 mt-1">Safe to store here — this id is meant to be public.</div>
+                </div>
+                <div>
+                  <label className="text-[10px] text-white/50 uppercase tracking-wider mb-1 block">Location ID</label>
+                  <GInput placeholder="e.g. L1JC53TFB7XWS" value={f.squareLocationId || ""} onChange={e => setF({ ...f, squareLocationId: e.target.value })} className="!text-xs font-mono" />
+                </div>
+                <div>
+                  <label className="text-[10px] text-white/50 uppercase tracking-wider mb-1 block">Access Token {squareStatus?.hasAccessToken && <span className="text-green-400 normal-case">· a token is already saved</span>}</label>
+                  <GInput type="password" placeholder={squareStatus?.hasAccessToken ? "•••••••••••••••• (leave blank to keep current token)" : "EAAA… "} value={squareAccessTokenInput} onChange={e => setSquareAccessTokenInput(e.target.value)} className="!text-xs font-mono" />
+                  <div className="text-[10px] text-white/30 mt-1">Stored server-side only — never sent to customers' browsers, never visible again once saved.</div>
+                </div>
+                <GBtn onClick={saveSquareKeys} disabled={squareSaving} className="!text-xs w-full">
+                  {squareSaving ? "Saving…" : "Save Square Settings"}
+                </GBtn>
+              </div>
+            </Glass>
+
+            {/* FEATURE — "switch between each one easily." One toggle picks
+                which provider customer-facing payment pages actually use;
+                both stay configured underneath so switching back is instant. */}
+            {(stripeStatus?.connected || stripeStatus?.hasSecretKey || squareStatus?.connected) && (
+              <Glass className="p-4 !bg-black/30">
+                <div className="font-semibold text-sm mb-2">Default Payment Provider</div>
+                <div className="text-xs text-white/50 mb-3">Which one customers actually pay through. Switch anytime — nothing about your saved keys changes.</div>
+                <div className="grid grid-cols-2 gap-2">
+                  <button type="button" onClick={() => setF({ ...f, paymentProvider: "stripe" })} disabled={!stripeStatus?.connected && !stripeStatus?.hasSecretKey} className={"py-2.5 rounded-xl text-sm font-semibold border transition disabled:opacity-30 disabled:cursor-not-allowed " + ((f.paymentProvider || "stripe") === "stripe" ? "bg-purple-900/30 border-purple-600/50 text-purple-300" : "bg-white/5 border-white/10 text-white/50")}>Stripe</button>
+                  <button type="button" onClick={() => setF({ ...f, paymentProvider: "square" })} disabled={!squareStatus?.connected} className={"py-2.5 rounded-xl text-sm font-semibold border transition disabled:opacity-30 disabled:cursor-not-allowed " + (f.paymentProvider === "square" ? "bg-blue-900/30 border-blue-600/50 text-blue-300" : "bg-white/5 border-white/10 text-white/50")}>Square</button>
+                </div>
+              </Glass>
+            )}
 
             {/* Twilio */}
             <Glass className={"p-4 " + (f.twilioSid && f.twilioToken && f.twilioFrom ? "!bg-gradient-to-br !from-green-950/20 !to-black/60 !border-green-700/30" : "!bg-black/40")}>
