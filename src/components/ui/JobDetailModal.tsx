@@ -1771,12 +1771,28 @@ ${job.notes ? `<div class="section"><h2>Job Notes</h2><p>${job.notes}</p></div>`
             <div className="text-xs text-white/50">{(job.photos || []).length} photo{(job.photos || []).length !== 1 ? "s" : ""}</div>
           </div>
 
-          {/* Before/After comparison slider */}
+          {/* Before/After comparison slider(s) — BUG FIX: "it matched the
+              wrong photo to the wrong photo." Paired by pairIndex (the Nth
+              before with the Nth after) instead of just grabbing whichever
+              before/after happened to be first in the array, so multiple
+              before/after pairs on the same job (different areas of the
+              property) each render as their own correctly-matched slider. */}
           {(() => {
-            const beforePhoto = (job.photos || []).find(p => p.type === "before" && (p.url || p.dataUrl));
-            const afterPhoto = (job.photos || []).find(p => p.type === "after" && (p.url || p.dataUrl));
-            if (!beforePhoto || !afterPhoto) return null;
-            return <BeforeAfterSlider before={mediaSrc(beforePhoto.url, beforePhoto.dataUrl)} after={mediaSrc(afterPhoto.url, afterPhoto.dataUrl)} />;
+            const befores = (job.photos || []).filter(p => p.type === "before" && (p.url || p.dataUrl));
+            const afters = (job.photos || []).filter(p => p.type === "after" && (p.url || p.dataUrl));
+            if (befores.length === 0 || afters.length === 0) return null;
+            const count = Math.max(befores.length, afters.length);
+            const pairs: { before?: any; after?: any }[] = [];
+            for (let i = 0; i < count; i++) {
+              const b = befores.find((p: any) => (p.pairIndex ?? befores.indexOf(p)) === i) || befores[i];
+              const a = afters.find((p: any) => (p.pairIndex ?? afters.indexOf(p)) === i) || afters[i];
+              if (b && a) pairs.push({ before: b, after: a });
+            }
+            return pairs.map((pair, i) => (
+              <div key={i} className={i > 0 ? "mt-2" : ""}>
+                <BeforeAfterSlider before={mediaSrc(pair.before.url, pair.before.dataUrl)} after={mediaSrc(pair.after.url, pair.after.dataUrl)} />
+              </div>
+            ));
           })()}
 
           {(job.photos || []).length > 0 && <div className="grid grid-cols-3 gap-2 mb-2 mt-2">

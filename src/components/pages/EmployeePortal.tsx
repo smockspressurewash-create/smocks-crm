@@ -579,7 +579,12 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
   // happen the instant it's marked: SMS if a phone's on file, otherwise
   // email, silently skipped only if neither exists.
   const markArrived = async () => {
-    onUpdateJob({ arrivedAt: Date.now(), status: job.status === "scheduled" ? "in_progress" : job.status });
+    // BUG FIX — "if an employee says they arrived it should automatically
+    // clock them in." arrivedAt was recorded but the job's own per-job
+    // clockInAt (distinct from the whole-day shift timer, and what the
+    // owner's own Time Tracking control in this modal reads) was never
+    // set — arriving didn't actually start the job clock.
+    onUpdateJob({ arrivedAt: Date.now(), status: job.status === "scheduled" ? "in_progress" : job.status, ...(job.clockInAt ? {} : { clockInAt: Date.now() }) });
     toast("Marked as arrived ✓ — owner notified");
     onArrived?.();
     const arrivalMsg = `Hi ${customer?.firstName || "there"}, your CrewBoss technician has arrived and is getting started!`;
@@ -751,7 +756,17 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
     const id = uid();
     const caption = (type === "before" ? "Before" : "After") + " — " + today();
     const url = await uploadJobMedia(dataUrlToBlob(dataUrl), `${job.id}/photo-${id}.jpg`, "image/jpeg");
-    const newPhoto = url ? { id, type, caption, url, uploadedAt: today() } : { id, type, caption, dataUrl, uploadedAt: today() };
+    // BUG FIX — "it matched the wrong photo to the wrong photo. Is there a
+    // way we can link a before and after for each photo?" The slider used
+    // to just grab the FIRST "before" and FIRST "after" in the whole
+    // photos array with no pairing at all — with more than one before/
+    // after pair on a job (different areas of the same property), that
+    // silently mismatched whichever ones happened to be first. pairIndex
+    // links the Nth "before" taken to the Nth "after" taken, so multiple
+    // real pairs render as multiple correctly-matched sliders instead of
+    // one wrong one.
+    const pairIndex = (job.photos || []).filter((p: any) => p.type === type).length;
+    const newPhoto = url ? { id, type, pairIndex, caption, url, uploadedAt: today() } : { id, type, pairIndex, caption, dataUrl, uploadedAt: today() };
     const nextPhotos = [...(job.photos || []), newPhoto];
     try {
       const result = await withTimeout(Promise.resolve(onUpdateJob({ photos: nextPhotos })), 15000, "Photo upload");
@@ -1128,8 +1143,25 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
     setSigMode(m); setSignerName(""); sigClear();
   };
 
-  const beforePhoto = (job.photos || []).find(p => p.type === "before" && (p.url || p.dataUrl));
-  const afterPhoto = (job.photos || []).find(p => p.type === "after" && (p.url || p.dataUrl));
+  // BUG FIX — see addPhoto's comment: pair the Nth "before" with the Nth
+  // "after" by pairIndex (older photos taken before this fix existed
+  // fall back to array order via index, same effective behavior they had
+  // before) instead of always grabbing whichever before/after happens to
+  // be first in the array regardless of which areas they're actually of.
+  const photoPairs: { before?: any; after?: any }[] = (() => {
+    const befores = (job.photos || []).filter((p: any) => p.type === "before" && (p.url || p.dataUrl));
+    const afters = (job.photos || []).filter((p: any) => p.type === "after" && (p.url || p.dataUrl));
+    const count = Math.max(befores.length, afters.length);
+    const pairs: { before?: any; after?: any }[] = [];
+    for (let i = 0; i < count; i++) {
+      const b = befores.find((p: any) => (p.pairIndex ?? befores.indexOf(p)) === i) || befores[i];
+      const a = afters.find((p: any) => (p.pairIndex ?? afters.indexOf(p)) === i) || afters[i];
+      if (b || a) pairs.push({ before: b, after: a });
+    }
+    return pairs;
+  })();
+  const beforePhoto = photoPairs[0]?.before;
+  const afterPhoto = photoPairs[0]?.after;
 
   const preItems = job.preChecklist?.length ? job.preChecklist : PRE_DEFAULTS;
   const durItems = job.duringChecklist?.length ? job.duringChecklist : DURING_DEFAULTS;
@@ -1336,18 +1368,23 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
             )}
           </Glass>
 
-          {/* Before / After photos */}
-          {(beforePhoto || afterPhoto) && (
-            <Glass className="p-4 !bg-black/40">
-              <div className="text-xs text-white/50 uppercase tracking-wider mb-2 font-semibold">Before / After</div>
-              {beforePhoto && afterPhoto ? (
-                <BeforeAfterSlider before={mediaSrc(beforePhoto.url, beforePhoto.dataUrl)} after={mediaSrc(afterPhoto.url, afterPhoto.dataUrl)} />
-              ) : (
-                <div className="grid grid-cols-2 gap-2">
-                  {beforePhoto && <div className="rounded-xl overflow-hidden aspect-video"><img src={mediaSrc(beforePhoto.url, beforePhoto.dataUrl)} alt="Before" className="w-full h-full object-cover" /></div>}
-                  {afterPhoto && <div className="rounded-xl overflow-hidden aspect-video"><img src={mediaSrc(afterPhoto.url, afterPhoto.dataUrl)} alt="After" className="w-full h-full object-cover" /></div>}
+          {/* Before / After photos — one slider per correctly-matched pair
+              (see photoPairs above), not just the first before/after found. */}
+          {photoPairs.length > 0 && (
+            <Glass className="p-4 !bg-black/40 space-y-3">
+              <div className="text-xs text-white/50 uppercase tracking-wider font-semibold">Before / After{photoPairs.length > 1 ? ` (${photoPairs.length})` : ""}</div>
+              {photoPairs.map((pair, i) => (
+                <div key={i}>
+                  {pair.before && pair.after ? (
+                    <BeforeAfterSlider before={mediaSrc(pair.before.url, pair.before.dataUrl)} after={mediaSrc(pair.after.url, pair.after.dataUrl)} />
+                  ) : (
+                    <div className="grid grid-cols-2 gap-2">
+                      {pair.before && <div className="rounded-xl overflow-hidden aspect-video"><img src={mediaSrc(pair.before.url, pair.before.dataUrl)} alt="Before" className="w-full h-full object-cover" /></div>}
+                      {pair.after && <div className="rounded-xl overflow-hidden aspect-video"><img src={mediaSrc(pair.after.url, pair.after.dataUrl)} alt="After" className="w-full h-full object-cover" /></div>}
+                    </div>
+                  )}
                 </div>
-              )}
+              ))}
             </Glass>
           )}
 
@@ -5692,13 +5729,28 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
       }
     };
 
-    const arriveCard = (e: React.MouseEvent) => {
+    const arriveCard = async (e: React.MouseEvent) => {
       e.stopPropagation();
-      updateJob(job.id, { arrivedAt: Date.now(), status: job.status === "scheduled" ? "in_progress" : job.status });
+      // Same fixes as JobDetailView's markArrived: auto clock-in on
+      // arrival, and actually notify the customer (this only ever emailed
+      // the owner before).
+      updateJob(job.id, { arrivedAt: Date.now(), status: job.status === "scheduled" ? "in_progress" : job.status, ...(job.clockInAt ? {} : { clockInAt: Date.now() }) });
       toast("Marked as arrived ✓ — owner notified");
       const cust = customers.find(c => c.id === job.customerId);
       notifyOwnerArrival?.(job, cust);
       startDayShiftIfNeeded();
+      const arrivalMsg = `Hi ${cust?.firstName || "there"}, your CrewBoss technician has arrived and is getting started!`;
+      try {
+        if (cust?.phone) {
+          await twilioSend(settings as any, cust.phone, arrivalMsg);
+          logOutboundSmsToInbox({ contactName: `${cust.firstName} ${cust.lastName}`, contactPhone: cust.phone, customerId: cust.id, body: arrivalMsg }).catch(() => {});
+        } else if (cust?.email) {
+          const html = emailShell(settings, "We've Arrived", `<p>${arrivalMsg}</p>`);
+          await sendOwnerGmailOnly(settings as any, cust.email, "Your technician has arrived", html);
+        }
+      } catch (e2: any) {
+        console.warn("[Arrival] customer notify failed:", e2?.message);
+      }
     };
 
     const isNextUp = job.id === completionNotif?.nextJobId;
