@@ -215,7 +215,7 @@ const withTimeout = <T,>(p: Promise<T>, ms: number, label: string): Promise<T> =
     new Promise<T>((_, reject) => setTimeout(() => reject(new Error(label + " timed out")), ms)),
   ]);
 
-export function JobDetailModal({ jobId, job, onClose, customers = [], employees = [], updateJob, toast, gToken = "", settings = {} as any, setSettings, estimates = [], setEstimates = (() => {}) as any, onPortal = (_id: string) => {}, ownerId = "" }: { jobId: any; job: any; onClose: any; customers?: any[]; employees?: any[]; updateJob: any; toast: any; gToken?: string; settings?: any; setSettings?: any; estimates?: any[]; setEstimates?: any; onPortal?: (id: string) => void; ownerId?: string }) {
+export function JobDetailModal({ jobId, job, onClose, customers = [], employees = [], updateJob, toast, gToken = "", settings = {} as any, setSettings, estimates = [], setEstimates = (() => {}) as any, onPortal = (_id: string) => {}, ownerId = "", services = [] as any[] }: { jobId: any; job: any; onClose: any; customers?: any[]; employees?: any[]; updateJob: any; toast: any; gToken?: string; settings?: any; setSettings?: any; estimates?: any[]; setEstimates?: any; onPortal?: (id: string) => void; ownerId?: string; services?: any[] }) {
   const [commNote, setCommNote] = useState("");
   const [sendingInvoice, setSendingInvoice] = useState(false);
   // FEATURE — owner in-person checkout: manual card entry via Stripe
@@ -1199,6 +1199,61 @@ ${job.notes ? `<div class="section"><h2>Job Notes</h2><p>${job.notes}</p></div>`
               <option value="commercial" className="bg-black">Commercial</option>
             </GSel>
           </div>
+        </div>
+
+        {/* FEATURE — "when scheduling or editing a job, you should be able
+            to edit the service items — change the price, change if it's a
+            house wash or roof wash, or add-on additional services." Jobs
+            previously had no editable price or service selection at all
+            (only estimates did) — amount was a flat number set once at
+            creation, and there was no concept of "which service(s)" beyond
+            the residential/commercial Job Type above. Price stays directly
+            editable by hand; the service checklist is an optional helper
+            that sums the Settings → Service Catalog prices for whichever
+            services are checked, for owners who'd rather build the price
+            from services than type a number. */}
+        <div className="p-3 rounded-xl border border-white/10 bg-black/20 space-y-2.5">
+          <div className="flex items-center justify-between gap-3">
+            <label className="text-xs text-white/60 flex-shrink-0">Price</label>
+            <div className="flex items-center gap-2">
+              <GInput type="number" step="0.01" value={job.amount ?? ""} onChange={e => updateJob(jobId, { amount: Number(e.target.value) || 0 })} placeholder="0.00" className="!w-32 !text-right" />
+            </div>
+          </div>
+          {services.length > 0 && (
+            <div>
+              <div className="text-[10px] text-white/40 uppercase tracking-wider font-semibold mb-1.5">Services (optional — check to add on, then Recalculate)</div>
+              <div className="flex flex-wrap gap-1.5 mb-2">
+                {services.map((s: any) => {
+                  const selected = (job.serviceIds || []).includes(s.id);
+                  return (
+                    <button
+                      key={s.id}
+                      onClick={() => {
+                        const current: string[] = job.serviceIds || [];
+                        const next = selected ? current.filter(id => id !== s.id) : [...current, s.id];
+                        updateJob(jobId, { serviceIds: next });
+                      }}
+                      className={"px-2.5 py-1 rounded-full text-xs border transition " + (selected ? "bg-red-900/40 border-red-600/50 text-red-200" : "bg-white/5 border-white/10 text-white/50 hover:text-white/80")}
+                    >
+                      {s.name} · {fmt(s.basePrice || 0)}
+                    </button>
+                  );
+                })}
+              </div>
+              {(job.serviceIds || []).length > 0 && (
+                <button
+                  onClick={() => {
+                    const total = (job.serviceIds || []).reduce((sum: number, id: string) => sum + (services.find((s: any) => s.id === id)?.basePrice || 0), 0);
+                    updateJob(jobId, { amount: total });
+                    toast?.("Price recalculated from selected services ✓");
+                  }}
+                  className="text-[11px] text-red-400 hover:text-red-300"
+                >
+                  Recalculate price from selected services →
+                </button>
+              )}
+            </div>
+          )}
         </div>
 
         {/* FEATURE 3 — customizable recurring schedule. recurringMode picks
