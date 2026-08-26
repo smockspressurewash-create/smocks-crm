@@ -499,7 +499,17 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
 
     switch (action) {
       case "create_payment_intent": {
-        const amountCents = body.invoiceId ? await getInvoiceAmountCents(body.invoiceId, serviceRoleKey) : Math.round(Number(body.amountCents) || 0);
+        // BUG FIX — "payment security in general." The invoiceId-verified
+        // amount ignored any tip entirely, which meant a customer paying
+        // with a tip could ONLY be trusted for the raw client-supplied
+        // amount (tip included) — the one payment path in this app that
+        // still fully trusted the client. A tip only ever ADDS to what's
+        // charged (never a way to underpay), so it's safe to accept
+        // separately and add it on top of the server-verified base — the
+        // base itself is still never client-controlled when invoiceId is
+        // given.
+        const tipCents = Math.max(0, Math.round(Number(body.tipCents) || 0));
+        const amountCents = (body.invoiceId ? await getInvoiceAmountCents(body.invoiceId, serviceRoleKey) : Math.round(Number(body.amountCents) || 0)) + tipCents;
         if (amountCents <= 0) throw new Error("Invalid amount");
         const params: Record<string, string> = {
           amount: String(amountCents),

@@ -11,13 +11,18 @@ import { GBtn } from "./GBtn";
 // client_secret, and confirms payment in-place without leaving the page.
 export function StripePaymentModal({
   open, onClose, publishableKey, stripeAccountId, amount, currency = "usd", description = "",
-  onSuccess, invoiceId, allowSaveCard = false,
+  onSuccess, invoiceId, allowSaveCard = false, tipCents = 0,
 }: {
   open: boolean; onClose: () => void;
   publishableKey: string;
   // Required for a Stripe Connect owner — see lib/stripe.ts's loadStripeJs
   // comment. Undefined/omitted is a safe no-op for a legacy manual-key owner.
   stripeAccountId?: string;
+  // Display-only total (what the UI shows, the Payment Request Button's own
+  // total). When invoiceId is set, the REAL charge amount is always
+  // server-verified from the invoice's own stored total + tipCents below —
+  // this `amount` is never trusted for the actual charge in that case, only
+  // used for what's shown on screen before the customer confirms.
   amount: number; currency?: string; description?: string;
   // savedCard is only populated when allowSaveCard was on, the customer
   // checked the box, AND the server could resolve a real customer to save
@@ -32,6 +37,13 @@ export function StripePaymentModal({
   // Defaults OFF: the box itself defaults unchecked too, so saving a card
   // is always an explicit, affirmative customer choice, never assumed.
   allowSaveCard?: boolean;
+  // BUG FIX — "payment security in general." When invoiceId is present the
+  // server ignores the client `amount` entirely and charges the invoice's
+  // own stored total instead — which used to silently strip any tip the
+  // customer added. A tip only ever adds to the charge (never a way to
+  // underpay), so it's accepted separately here and added to the verified
+  // base amount server-side (see stripe-action.ts's create_payment_intent).
+  tipCents?: number;
 }) {
   const [status, setStatus] = useState<"loading" | "ready" | "processing" | "success" | "error">("loading");
   const [error, setError] = useState("");
@@ -71,7 +83,7 @@ export function StripePaymentModal({
         // functions/api/stripe-action.ts also re-derives the real amount from
         // the invoice itself when invoiceId is present, ignoring whatever
         // amount this client claims.
-        const intent = await createPaymentIntent(Math.round(amount * 100), currency, description, invoiceId ? { invoiceId } : undefined, allowSaveCard && saveCard);
+        const intent = await createPaymentIntent(Math.round(amount * 100), currency, description, invoiceId ? { invoiceId } : undefined, allowSaveCard && saveCard, Math.round(tipCents));
         if (cancelled) return;
         intentIdRef.current = intent.id;
         clientSecretRef.current = intent.client_secret;

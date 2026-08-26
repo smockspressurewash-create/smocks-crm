@@ -121,6 +121,52 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
       return json({ success: true });
     }
 
+    // ── ClientPortal.tsx — "payment security in general, not just
+    // packages." A Package/Options estimate's real charge amount depends on
+    // which package the customer picked / which optional items they left
+    // checked — that choice happens entirely client-side, and the estimate's
+    // OWN stored `total` (what stripe-action.ts's getInvoiceAmountCents
+    // verifies against) is still whatever it was when the owner first saved
+    // it, not the customer's live selection. Recomputes the total SERVER-
+    // SIDE from the estimate's own stored line items/packages (a client can
+    // only pick WHICH of the owner's own real ids are included — never
+    // supply its own price) and persists it, so the invoiceId-based Stripe
+    // charge right after this call is verified against the customer's
+    // actual selection, not a stale or client-claimed number. Must be
+    // called (and awaited) immediately before opening the payment modal.
+    if (action === "lock_in_estimate_selection") {
+      const { id, selectedPackageId, enabledItemIds } = body;
+      if (!id) return json({ error: "Missing id" }, 400);
+      const estRes = await sb(serviceRoleKey, `estimates?id=eq.${encodeURIComponent(id)}&select=*`);
+      const est = Array.isArray(estRes.data) ? estRes.data[0] : null;
+      if (!est) return json({ error: "Not found" }, 404);
+      const settingsRow = est.owner_id ? await sb(serviceRoleKey, `app_settings?owner_id=eq.${encodeURIComponent(est.owner_id)}&select=data`) : null;
+      const taxRate = Number((Array.isArray(settingsRow?.data) ? settingsRow.data[0]?.data?.taxRate : null)) || 6;
+      let subtotal = 0;
+      if (est.estimateType === "package") {
+        const pkg = (est.packages || []).find((p: any) => p.id === selectedPackageId);
+        if (!pkg) return json({ error: "Selected package not found on this estimate" }, 400);
+        subtotal = Number(pkg.subtotal) || (pkg.lineItems || []).reduce((s: number, li: any) => s + Number(li.quantity) * Number(li.unitPrice), 0);
+      } else if (est.estimateType === "options") {
+        const ids = new Set(Array.isArray(enabledItemIds) ? enabledItemIds : []);
+        subtotal = (est.lineItems || [])
+          .filter((li: any) => li.optional === false || ids.has(li.id))
+          .reduce((s: number, li: any) => s + Number(li.quantity) * Number(li.unitPrice), 0);
+      } else {
+        return json({ error: "This estimate type doesn't need selection lock-in" }, 400);
+      }
+      const discountsTotal = (Array.isArray(est.discounts) ? est.discounts.reduce((s: number, d: any) => s + (d.type === "percent" ? subtotal * (Number(d.value) || 0) / 100 : Number(d.value) || 0), 0) : 0) + (Number(est.discount) || 0);
+      const afterDisc = Math.max(0, subtotal - discountsTotal);
+      const tax = Math.round(afterDisc * (taxRate / 100) * 100) / 100;
+      const total = Math.round((afterDisc + tax) * 100) / 100;
+      const upd = await sb(serviceRoleKey, `estimates?id=eq.${encodeURIComponent(id)}`, {
+        method: "PATCH", headers: { Prefer: "return=minimal" },
+        body: JSON.stringify({ subtotal: Math.round(subtotal * 100) / 100, tax, total }),
+      });
+      if (!upd.ok) return json({ error: "Failed to lock in selection" }, 500);
+      return json({ success: true, total });
+    }
+
     // ── ClientPortal.tsx (via App.tsx's #/estimate/:id route) — the actual
     // accept/sign/pay action. Bounded to a fixed, narrow set of fields (never
     // arbitrary columns) and matched by estimate id (the same unguessable

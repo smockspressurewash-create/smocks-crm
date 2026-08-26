@@ -98,6 +98,7 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
   const [showAccount, setShowAccount] = useState(false);
   const [payType, setPayType] = useState("full");
   const [showStripeModal, setShowStripeModal] = useState(false);
+  const [lockingInSelection, setLockingInSelection] = useState(false);
   const [step, setStep] = useState("view"); // view | sign | payment | done | declined
   const [declining, setDeclining] = useState(false);
   const [declineReason, setDeclineReason] = useState("");
@@ -822,19 +823,45 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
               {settings?.stripePublishableKey ? (
                 <div className="space-y-2">
                   <button
-                    onClick={() => {
+                    onClick={async () => {
                       // Synthetic demo quotes (id prefixed "demo-", see the
                       // Client Demo picker) were never written to Supabase —
                       // there's no real invoice row for Stripe to charge
                       // against or verify an amount from.
                       if (String(e.id).startsWith("demo-")) { window.alert("This is a preview — no real payment is processed here."); return; }
+                      // BUG FIX — "payment security in general, not just
+                      // packages." This used to just open the Stripe modal
+                      // with a client-computed amount, trusted directly —
+                      // the server now verifies every charge against the
+                      // estimate's own stored total (see invoiceId below).
+                      // For Package/Options, that stored total only matches
+                      // reality once this selection is locked in server-side
+                      // first — the server recomputes it from the estimate's
+                      // OWN real line items/packages, never a client-claimed
+                      // price.
+                      if (e.estimateType === "package" || e.estimateType === "options") {
+                        setLockingInSelection(true);
+                        try {
+                          const res = await fetch("/api/public-data", {
+                            method: "POST", headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({ action: "lock_in_estimate_selection", id: e.id, selectedPackageId: selectedPkgId, enabledItemIds: effectiveLineItems.map((li: any) => li.id) }),
+                          });
+                          const data = await res.json().catch(() => null);
+                          if (!res.ok || data?.error) throw new Error(data?.error || "Couldn't verify your selection");
+                        } catch (err: any) {
+                          setLockingInSelection(false);
+                          window.alert("Couldn't confirm your selection before payment — " + (err?.message || "please try again") + ".");
+                          return;
+                        }
+                        setLockingInSelection(false);
+                      }
                       setShowStripeModal(true);
                     }}
-                    disabled={!agreedToPaymentTerms}
+                    disabled={!agreedToPaymentTerms || lockingInSelection}
                     className="w-full py-4 bg-gradient-to-r from-[#635BFF] to-[#4F46E5] text-white font-bold rounded-xl shadow-lg hover:from-[#7C74FF] hover:to-[#6056F5] transition-all flex items-center justify-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:from-[#635BFF] disabled:hover:to-[#4F46E5]"
                   >
                     <CreditCard size={18} />
-                    Pay {fmt(totalWithTip)} · Powered by Stripe
+                    {lockingInSelection ? "Verifying…" : `Pay ${fmt(totalWithTip)} · Powered by Stripe`}
                   </button>
                   {!agreedToPaymentTerms && <div className="text-center text-[10px] text-yellow-400/80">Check the box above to enable payment</div>}
                   <div className="text-center text-[10px] text-white/30">🔒 Your payment is secured by Stripe · 256-bit SSL</div>
@@ -863,24 +890,25 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
               )}
               <GBtn variant="ghost" onClick={() => setStep("sign")} className="w-full">← Back to signature</GBtn>
 
-              {/* NOTE (round 12 audit) — no invoiceId passed here deliberately:
-                  this flow can include a customer-chosen tip on top of the
-                  estimate's stored total, so the server-side amount
-                  verification in functions/api/stripe-action.ts (which
-                  overrides the amount with the invoice's own `total` when an
-                  invoiceId IS given) would silently strip the tip. This is
-                  the one payment path that still trusts the client's amount —
-                  a real but much lower-severity residual gap than the secret-
-                  key exposure this round fixed; worth a dedicated follow-up
-                  (e.g. validating amount >= estimate.total server-side
-                  instead of an exact match) if tampering here becomes a
-                  concern. */}
+              {/* BUG FIX (round following "payment security in general, not
+                  just packages") — this used to pass NO invoiceId at all,
+                  so the server trusted totalWithTip directly for every
+                  estimate type, not just Package/Options — the one payment
+                  path in this whole app that still fully trusted a client-
+                  computed amount. Now always passes invoiceId (the server
+                  verifies the base charge against the estimate's own
+                  stored total — locked in fresh for Package/Options right
+                  before this modal opens, see the Pay button's onClick
+                  above) and sends the tip as a separate, additive amount
+                  so it can't be used to strip the base price down. */}
               <StripePaymentModal
                 open={showStripeModal}
                 onClose={() => setShowStripeModal(false)}
                 publishableKey={settings?.stripePublishableKey || ""}
                 stripeAccountId={(settings as any)?.stripeAccountId}
                 amount={totalWithTip}
+                invoiceId={e?.id}
+                tipCents={Math.round((Number(tip) || 0) * 100)}
                 description={`${companyName} — ${e?.lineItems?.[0]?.description || "Estimate"} #${e?.id || ""}`}
                 onSuccess={(paymentIntentId) => { setShowStripeModal(false); handleApprove(paymentIntentId); }}
               />
