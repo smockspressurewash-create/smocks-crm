@@ -3750,6 +3750,25 @@ export function App() {
     setTimeout(() => setPage("dashboard"), 0);
   }
 
+  // BUG FIX — "briefly see the login page for a few seconds even though
+  // I'm logged in." #/portal lands on this branch immediately from the URL
+  // hash, before the async session bootstrap (supabase.auth.getSession())
+  // has actually resolved — empSession is still its initial `null` at that
+  // point regardless of whether a real session exists, so EmployeePortal
+  // mounted and rendered its logged-out login screen for however long that
+  // resolution took, then swapped to the real portal once setEmpSession
+  // fired. sessionChecked already exists and flips true the moment that
+  // resolution completes either way — it just was never actually read
+  // anywhere. Hold on a lightweight loading state instead of mounting the
+  // portal at all until we genuinely know one way or the other.
+  if (page === "portal" && !empSession && !sessionChecked) {
+    return (
+      <div className="min-h-screen bg-black flex items-center justify-center text-white/50 text-sm p-4 text-center">
+        Loading…
+      </div>
+    );
+  }
+
   // ── Employee portal — takes over when an employee is authenticated ────────
   if (empSession || page === "portal") {
     // CRITICAL FIX (Running Late / OTW — and every other action in the

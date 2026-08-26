@@ -4570,14 +4570,25 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   // complete one (updates the existing event so it reflects the outcome, or
   // creates one if none exists yet). Silently no-ops if they haven't
   // connected Google, their token has expired, or auto-sync is off.
+  const syncingJobIdsRef = useRef<Set<string>>(new Set());
   const syncJobToCalendar = async (job: Job | undefined, opts: { completed?: boolean; silent?: boolean } = {}) => {
     if (!job || !job.scheduledDate || !empSession?.user?.id) return;
     // Auto-sync defaults to on (matches the prior always-sync behavior) but the
     // employee can turn it off in the Google tab — when off, they add jobs to
     // their calendar manually via the per-job "Add to Google Calendar" button.
     if (!autoSyncCalendar) return;
+    // BUG FIX — "make sure it doesn't accidentally create duplicates."
+    // Real risk once the backfill pass (below) exists alongside the
+    // reactive triggers (accepting a job request, completing a job): two
+    // calls for the SAME job can overlap — e.g. the hourly backfill is
+    // mid-flight for a job right as the employee accepts a request for
+    // that same job. Both would read "no event yet" before either write
+    // lands and both create one, leaving a duplicate. One in-flight guard
+    // per job id, regardless of which trigger fired, closes that race.
+    if (syncingJobIdsRef.current.has(job.id)) return;
+    syncingJobIdsRef.current.add(job.id);
     const empToken = await getValidEmpGoogleToken(empSession.user.id, settings?.googleBackendUrl);
-    if (!empToken) return;
+    if (!empToken) { syncingJobIdsRef.current.delete(job.id); return; }
     try {
       const timeStr = job.scheduledTime || "09:00";
       const startDt = new Date(`${job.scheduledDate}T${timeStr}:00`);
@@ -4620,6 +4631,8 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
       }
     } catch (e) {
       console.warn("Employee calendar sync failed:", e);
+    } finally {
+      syncingJobIdsRef.current.delete(job.id);
     }
   };
   const syncAcceptedJobToCalendar = (job: Job | undefined) => syncJobToCalendar(job);
