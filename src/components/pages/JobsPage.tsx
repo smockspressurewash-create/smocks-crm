@@ -261,7 +261,12 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
   // real tab, always visible, matching the other four.
   const tabs = { unscheduled: "Unscheduled", scheduled: "Scheduled", in_progress: "In Progress", completed: "Completed", cancelled: "Cancelled" };
   const prioOrder = { urgent: 0, high: 1, normal: 2, low: 3 };
-  const isUnscheduled = (j: any) => !j.scheduledDate && j.status !== "completed" && j.status !== "cancelled";
+  // FEATURE — "jobs that need to be rescheduled should also show up in the
+  // unscheduled jobs section," even ones a crew member already picked a new
+  // date for from the field (EmployeePortal.tsx's Can't Finish/Reschedule) —
+  // needsReschedule stays true until the owner confirms/clears it below, so
+  // these don't just blend into the normal Scheduled list unnoticed.
+  const isUnscheduled = (j: any) => (!j.scheduledDate || j.needsReschedule) && j.status !== "completed" && j.status !== "cancelled";
   const filtered = jobs
     .filter(j => tab === "unscheduled" ? isUnscheduled(j) : j.status === tab)
     .filter(j => prioFilter === "all" || (j.priority || "normal") === prioFilter)
@@ -370,9 +375,20 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
     // Writing the full patch here closes that gap; the specific blocks below
     // still run for their extra side effects (toasts, crew-write verification,
     // job_requests sync) — the writes overlap harmlessly.
-    (supabase as any).from("jobs").update(patch).eq("id", jid)
-      .then((result: any) => { if (result?.error) console.warn("[updateJob] full patch failed:", result.error.message); })
-      .catch((e: any) => console.warn("[updateJob] full patch threw:", e?.message));
+    // BUG FIX — "changes for a job were not saved" with zero error toast.
+    // This general write only ever checked result?.error and never showed
+    // a toast on failure at all — and (per CLAUDE.md's owner_id-scoped RLS)
+    // an UPDATE that matches ZERO rows server-side still comes back with
+    // no error (PostgREST 204), so a silently-RLS-blocked write looked
+    // completely indistinguishable from a real save. .select("id") lets a
+    // 0-row response be told apart from a genuine success, and both cases
+    // now surface a real toast, matching every other write path in the app.
+    (supabase as any).from("jobs").update(patch).eq("id", jid).select("id")
+      .then((result: any) => {
+        if (result?.error) { console.warn("[updateJob] full patch failed:", result.error.message); toast?.("Failed to save job changes — " + result.error.message, "red"); }
+        else if (!result?.data || result.data.length === 0) { console.warn("[updateJob] full patch matched 0 rows — likely blocked by permissions"); toast?.("Couldn't save — the server rejected the change", "red"); }
+      })
+      .catch((e: any) => { console.warn("[updateJob] full patch threw:", e?.message); toast?.("Failed to save job changes — " + (e?.message || "unknown error"), "red"); });
     // Crew assignment must reach Supabase immediately — the employee portal
     // polls Supabase directly, and waiting for the 30s auto-save interval in
     // App.tsx means an assignment can sit invisible to the employee that long.
@@ -1194,12 +1210,15 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
                   <div key={j.id} data-job-id={j.id} className={"p-3 rounded-xl bg-black/30 border border-purple-700/30" + (highlightId === j.id ? " ring-2 ring-red-500 shadow-[0_0_25px_rgba(239,68,68,0.65)]" : "")}>
                     <div className="flex items-center justify-between gap-3">
                       <div className="min-w-0 flex-1">
-                        <div className="text-sm font-medium truncate">{c ? `${c.firstName} ${c.lastName}` : j.address}</div>
-                        <div className="text-xs text-white/40 truncate">{j.address} · {fmt(j.amount)}{j.notes ? ` · ${j.notes}` : ""}</div>
+                        <div className="text-sm font-medium truncate flex items-center gap-1.5">
+                          {c ? `${c.firstName} ${c.lastName}` : j.address}
+                          {j.needsReschedule && <Badge tone="yellow">Needs Reschedule</Badge>}
+                        </div>
+                        <div className="text-xs text-white/40 truncate">{j.address} · {fmt(j.amount)}{j.notes ? ` · ${j.notes}` : ""}{j.needsReschedule && j.scheduledDate ? ` · crew picked ${j.scheduledDate}` : ""}</div>
                       </div>
                       {!isScheduling && (
-                        <GBtn onClick={() => { setSchedulingJobId(j.id); setScheduleDate(today()); setScheduleTime(""); }} className="!text-xs !py-1.5 flex-shrink-0">
-                          <Calendar size={12} className="inline mr-1" />Schedule
+                        <GBtn onClick={() => { setSchedulingJobId(j.id); setScheduleDate(j.scheduledDate || today()); setScheduleTime(j.scheduledTime || ""); }} className="!text-xs !py-1.5 flex-shrink-0">
+                          <Calendar size={12} className="inline mr-1" />{j.needsReschedule ? "Confirm Date" : "Schedule"}
                         </GBtn>
                       )}
                     </div>
@@ -1216,7 +1235,7 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
                         <GBtn
                           disabled={!scheduleDate}
                           onClick={() => {
-                            updateJob(j.id, { scheduledDate: scheduleDate, scheduledTime: scheduleTime, tags: (j.tags || []).filter((t: string) => t !== "Needs Scheduling") });
+                            updateJob(j.id, { scheduledDate: scheduleDate, scheduledTime: scheduleTime, needsReschedule: false, tags: (j.tags || []).filter((t: string) => t !== "Needs Scheduling") });
                             toast(`Scheduled for ${scheduleDate}${scheduleTime ? " at " + scheduleTime : ""} ✓`, "green");
                             setSchedulingJobId(null);
                           }}

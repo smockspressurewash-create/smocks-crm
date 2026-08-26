@@ -782,14 +782,25 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
 
   const sendReschedule = async () => {
     if (!rescheduleReason) { toast("Pick a reason first", "red"); return; }
-    if (!rescheduleDate) { toast("Pick a reschedule date first", "red"); return; }
+    // FEATURE — "let me press Finish to mark a job not-finished WITHOUT
+    // picking a reschedule date — it should show up in Unscheduled." A date
+    // is now optional: no date clears scheduledDate entirely (which is what
+    // already qualifies a job for the owner's Unscheduled tab), a picked
+    // date sets it as before. Either way needsReschedule is set so the
+    // owner's Unscheduled tab surfaces it — including the picked-a-date
+    // case, per explicit request, until the owner clears it by confirming
+    // a real schedule.
+    const hasDate = !!rescheduleDate;
     setSendingReschedule(true);
     const reasonText = rescheduleReason === "Other" && rescheduleReasonNote.trim() ? rescheduleReasonNote.trim() : rescheduleReason;
-    const note = `⏸️ NOT COMPLETED by ${employeeName || "crew"} — ${reasonText}. Rescheduled to ${rescheduleDate}.`;
+    const note = hasDate
+      ? `⏸️ NOT COMPLETED by ${employeeName || "crew"} — ${reasonText}. Rescheduled to ${rescheduleDate}.`
+      : `⏸️ NOT COMPLETED by ${employeeName || "crew"} — ${reasonText}. Needs a new date — moved to Unscheduled.`;
     try {
       const result = await withTimeout(Promise.resolve(onUpdateJob({
         status: "scheduled",
-        scheduledDate: rescheduleDate,
+        scheduledDate: hasDate ? rescheduleDate : "",
+        needsReschedule: true,
         commLog: [...(job.commLog || []), { id: uid(), type: "note" as const, date: today(), note }],
       })), 15000, "Reschedule save");
       if (result?.error) {
@@ -800,8 +811,9 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
       let msgSent = false;
       let msgError = "";
       if (rescheduleNotifyCustomer) {
-        const niceDate = new Date(rescheduleDate + "T12:00:00").toLocaleDateString([], { weekday: "long", month: "short", day: "numeric" });
-        const custMsg = `Hi ${customer?.firstName || "there"}, we weren't able to finish today's service (${reasonText.toLowerCase()}) and have rescheduled you for ${niceDate}. Sorry for the inconvenience — we'll take care of it then!`;
+        const custMsg = hasDate
+          ? `Hi ${customer?.firstName || "there"}, we weren't able to finish today's service (${reasonText.toLowerCase()}) and have rescheduled you for ${new Date(rescheduleDate + "T12:00:00").toLocaleDateString([], { weekday: "long", month: "short", day: "numeric" })}. Sorry for the inconvenience — we'll take care of it then!`
+          : `Hi ${customer?.firstName || "there"}, we weren't able to finish today's service (${reasonText.toLowerCase()}). We'll reach out shortly to get you rescheduled. Sorry for the inconvenience!`;
         try {
           if (rescheduleChannel === "sms") {
             if (!customer?.phone) throw new Error("No phone on file for this customer.");
@@ -819,12 +831,13 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
         }
       }
       haptic(15);
+      const baseMsg = hasDate ? `Job rescheduled to ${rescheduleDate}` : "Job marked not finished — moved to Unscheduled";
       if (!rescheduleNotifyCustomer) {
-        toast(`Job rescheduled to ${rescheduleDate} ✓`, "green");
+        toast(`${baseMsg} ✓`, "green");
       } else if (msgSent) {
-        toast(`Job rescheduled to ${rescheduleDate} — customer notified ✓`, "green");
+        toast(`${baseMsg} — customer notified ✓`, "green");
       } else {
-        toast(`Job rescheduled, but the customer message failed — ${msgError}`, "red");
+        toast(`${baseMsg}, but the customer message failed — ${msgError}`, "red");
       }
       setRescheduleOpen(false);
       setRescheduleReason("");
@@ -1957,11 +1970,11 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
               </Glass>
               {nextJob && (
                 <Glass className="p-4 !bg-blue-950/15 !border-blue-700/30">
-                  <div className="text-xs text-blue-400/80 uppercase tracking-wider mb-2 font-semibold">Next Job</div>
+                  <div className="text-xs text-blue-400/80 uppercase tracking-wider mb-2 font-semibold">Up Next</div>
                   <div className="text-sm font-medium">{nextJobCustomer ? `${nextJobCustomer.firstName} ${nextJobCustomer.lastName}` : nextJob.address}</div>
                   <div className="text-xs text-white/40 mt-0.5">{nextJob.address}{nextJob.scheduledTime ? ` · ${nextJob.scheduledTime}` : ""}</div>
                   <a href={`https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(nextJob.address || "")}&travelmode=driving`} target="_blank" rel="noreferrer" className="mt-3 w-full flex items-center justify-center gap-2 py-2.5 rounded-xl bg-blue-900/30 hover:bg-blue-800/40 border border-blue-700/30 text-blue-300 text-sm font-semibold transition">
-                    <Navigation size={14} />Directions to Next Job
+                    <Navigation size={14} />Get Directions
                   </a>
                 </Glass>
               )}
@@ -2450,16 +2463,19 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
                     className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-xs text-white placeholder-white/30 focus:outline-none focus:border-orange-700/60" />
                 )}
                 <div>
-                  <label className="text-[10px] text-white/40 uppercase tracking-wider block mb-1">Reschedule to</label>
+                  <label className="text-[10px] text-white/40 uppercase tracking-wider block mb-1">Reschedule to (optional)</label>
                   <input type="date" value={rescheduleDate} min={today()} onChange={e => setRescheduleDate(e.target.value)}
                     className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-orange-700/60" />
                   {rescheduleDate && busyDates.includes(rescheduleDate) && (
                     <div className="text-[10px] text-orange-300/80 mt-1">⚠ You already have another job scheduled that day.</div>
                   )}
+                  {!rescheduleDate && (
+                    <div className="text-[10px] text-white/40 mt-1">No date? Press Finish — this job moves to the owner's Unscheduled list to pick a day later.</div>
+                  )}
                 </div>
                 <label className="flex items-center gap-2 text-xs text-white/70 cursor-pointer">
                   <input type="checkbox" checked={rescheduleNotifyCustomer} onChange={e => setRescheduleNotifyCustomer(e.target.checked)} className="accent-orange-600" />
-                  Message the customer about the new date
+                  Message the customer
                 </label>
                 {rescheduleNotifyCustomer && (
                   <div className="flex gap-1.5">
@@ -2478,7 +2494,7 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
                     disabled={sendingReschedule}
                     onClick={sendReschedule}
                     className="flex-1 py-2 rounded-lg bg-gradient-to-r from-orange-600 to-orange-800 border border-orange-500/60 text-white text-xs font-bold disabled:opacity-40 transition">
-                    {sendingReschedule ? "Saving…" : "Save & Reschedule"}
+                    {sendingReschedule ? "Saving…" : rescheduleDate ? "Save & Reschedule" : "Finish (no date yet)"}
                   </button>
                   <button onClick={() => { setRescheduleOpen(false); setRescheduleReason(""); setRescheduleReasonNote(""); setRescheduleDate(""); }} className="text-[11px] text-white/30 hover:text-white/60 px-2">Cancel</button>
                 </div>
@@ -3703,15 +3719,21 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
       const result = await (supabase as any)
         .from("employees")
         .update({ dayClockInAt: nextVal, dayLunchStartAt: null, dayPausedMinutes: 0 })
-        .eq("id", empId);
+        .eq("id", empId)
+        .select("id");
       if (result?.error) {
         console.warn("Auto-start shift failed:", result.error.message);
+        setOptimisticDayClockInAt(undefined);
+      } else if (!result?.data || result.data.length === 0) {
+        console.warn("Auto-start shift — update matched 0 rows (blocked by permissions?)");
+        setOptimisticDayClockInAt(undefined);
       } else {
         refetchEmployees?.();
         toast(alreadyWorkedTodayHours > 0 ? "Shift resumed ✓" : "Shift started automatically ✓");
       }
     } catch (e: any) {
       console.warn("Auto-start shift failed:", e?.message);
+      setOptimisticDayClockInAt(undefined);
     }
   };
 
@@ -4433,7 +4455,13 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     // write path in this app (schedule_job's insert, etc.) which already
     // retries once before giving up. One retry after a real timeout, not
     // just the column-mismatch retry that already existed below.
-    const attempt = () => withTimeout<any>((supabase as any).from("jobs").update(patch).eq("id", jobId), 20000, "Job save");
+    // BUG FIX — "the changes for a job were not saved" with no error shown.
+    // PostgREST returns success/no-error on an UPDATE that matched ZERO
+    // rows (RLS's owner_id-scoped policy silently filtering it out) —
+    // .select("id") lets that be told apart from a real success so callers
+    // (e.g. the Reschedule flow) don't report "saved ✓" for a write that
+    // silently did nothing.
+    const attempt = () => withTimeout<any>((supabase as any).from("jobs").update(patch).eq("id", jobId).select("id"), 20000, "Job save");
     return attempt()
       .catch((e: any) => { console.warn("[updateJob] first attempt failed/timed out — retrying once:", e?.message); return attempt().catch((e2: any) => ({ error: e2 })); })
       .then(async (result: any) => {
@@ -4442,12 +4470,17 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
           const core: any = {};
           CORE_JOB_COLUMNS.forEach(k => { if ((patch as any)[k] !== undefined) core[k] = (patch as any)[k]; });
           if (Object.keys(core).length > 0) {
-            const retry = await (supabase as any).from("jobs").update(core).eq("id", jobId);
+            const retry = await (supabase as any).from("jobs").update(core).eq("id", jobId).select("id");
             if (retry?.error) { console.error("[updateJob] core retry failed:", retry.error.message); return retry; }
+            if (!retry?.data || retry.data.length === 0) { console.error("[updateJob] core retry matched 0 rows — blocked by permissions"); return { error: { message: "Update rejected by the server (permissions)" } }; }
             console.log("[FIXHOURS] core-columns retry succeeded — status/hours/pay synced to Supabase despite full-patch rejection:", Object.keys(core));
             return retry;
           }
           return result;
+        }
+        if (!result?.data || result.data.length === 0) {
+          console.error("[updateJob] matched 0 rows — blocked by permissions for job", jobId);
+          return { error: { message: "Update rejected by the server (permissions)" } };
         }
         return result;
       })
@@ -6387,20 +6420,17 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
 
           {/* Today tab */}
           {tab === "today" && <>
-            {/* Welcome header + top-of-page Route button (FEATURE 2) */}
-            <div className="pb-1 flex items-start justify-between gap-2">
-              <div>
-                <div className="text-xl font-bold text-white">Welcome, {myEmployee.firstName}!</div>
-                <div className="text-sm text-white/50 mt-0.5">
-                  {new Date().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" })}
-                </div>
+            {/* Welcome header. BUG FIX — "there are two buttons labeled
+                Routes; there should be only one." This header shortcut and
+                the "Today's Route" card further down both called the exact
+                same optimizeRoute — removed this one since the card below
+                also shows the resulting distance/duration, which this
+                bare button never did. */}
+            <div className="pb-1">
+              <div className="text-xl font-bold text-white">Welcome, {myEmployee.firstName}!</div>
+              <div className="text-sm text-white/50 mt-0.5">
+                {new Date().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" })}
               </div>
-              {todayJobs.filter(j => j.status !== "completed" && j.address).length >= 1 && (
-                <button onClick={optimizeRoute} disabled={routeLoading}
-                  className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-blue-950/40 hover:bg-blue-900/50 border border-blue-700/40 text-blue-300 text-xs font-semibold transition disabled:opacity-40 flex-shrink-0">
-                  <Route size={13} />{routeLoading ? "Routing…" : "Route"}
-                </button>
-              )}
             </div>
 
             {/* Next 3 Jobs — compact glance-and-go mini-itinerary so seeing
@@ -6419,7 +6449,14 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                 <Glass className="p-4 !bg-black/30">
                   <div className="flex items-center gap-2 mb-3">
                     <List size={14} className="text-red-400" />
-                    <div className="text-sm font-bold text-white">Next {upNext3.length === 1 ? "Job" : `${upNext3.length} Jobs`}</div>
+                    {/* BUG FIX — "it shows Next Job and Today's Jobs — should
+                        just say Today's Jobs, not Next Job." This mini-list
+                        can include jobs beyond today (up to 3 upcoming), so
+                        it can't honestly share the "Today's Jobs" title with
+                        the full same-day section below — "Up Next" avoids
+                        the flagged "Next Job" wording without claiming to be
+                        the same list. */}
+                    <div className="text-sm font-bold text-white">Up Next</div>
                   </div>
                   <div className="space-y-2">
                     {upNext3.map(j => {
@@ -6701,8 +6738,18 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                 const patch: any = endingDay
                   ? { dayClockInAt: null, dayLunchStartAt: null, dayPausedMinutes: 0, lastShiftHours: finalHours, lastShiftDate: shiftDayStr() }
                   : { dayClockInAt: nextVal, dayLunchStartAt: null, dayPausedMinutes: 0 };
+                // BUG FIX — "End My Day doesn't save; hours are still running
+                // when I come back." PostgREST returns 204/no-error on an
+                // UPDATE that matched ZERO rows (e.g. RLS's owner_id-scoped
+                // policy silently filtering the row out) — the old code only
+                // checked result.error, so a write that silently did NOTHING
+                // still showed "Shift ended ✓" and the optimistic UI briefly
+                // showed 0:00, then reverted once refetchEmployees() pulled
+                // back the real (unchanged) row. .select("id") forces
+                // PostgREST to return the actually-affected rows so an
+                // empty array can be told apart from a real success.
                 try {
-                  let result = await (supabase as any).from("employees").update(patch).eq("id", empId);
+                  let result = await (supabase as any).from("employees").update(patch).eq("id", empId).select("id");
                   if (result?.error) {
                     // Retry with ONLY the shift-timer columns from migration 0002 —
                     // a missing lastShiftHours/lastShiftDate column must not stop
@@ -6711,7 +6758,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                     const core = endingDay
                       ? { dayClockInAt: null, dayLunchStartAt: null, dayPausedMinutes: 0 }
                       : { dayClockInAt: nextVal, dayLunchStartAt: null, dayPausedMinutes: 0 };
-                    result = await (supabase as any).from("employees").update(core).eq("id", empId);
+                    result = await (supabase as any).from("employees").update(core).eq("id", empId).select("id");
                   }
                   if (result?.error) {
                     // Even dayLunchStartAt/dayPausedMinutes (migration 0002) may be
@@ -6719,11 +6766,16 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                     // oldest/most foundational column) so the owner's Live Team View
                     // at least sees the shift, even if pause/lunch tracking can't save.
                     console.warn("[HoursSync] core patch also failed:", result.error.message, "— retrying dayClockInAt only. Run supabase/migrations/0001 and 0002 in the Supabase SQL editor.");
-                    result = await (supabase as any).from("employees").update({ dayClockInAt: nextVal }).eq("id", empId);
+                    result = await (supabase as any).from("employees").update({ dayClockInAt: nextVal }).eq("id", empId).select("id");
                   }
                   if (result?.error) {
                     console.error("[HoursSync] — error:", result.error.message);
                     toast("Saved locally, but couldn't sync to the server: " + result.error.message, "red");
+                    setOptimisticDayClockInAt(undefined);
+                  } else if (!result?.data || result.data.length === 0) {
+                    console.error("[HoursSync] — update matched 0 rows (blocked by permissions?) for employee", empId);
+                    toast("Couldn't save — the server rejected the change (permissions). Contact the owner.", "red");
+                    setOptimisticDayClockInAt(undefined);
                   } else {
                     refetchEmployees?.();
                     toast(endingDay ? `Shift ended · Total ${totalLabel} logged, summary emailed` : "Day started — owner can see you're on shift");
@@ -6731,6 +6783,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                 } catch (e: any) {
                   console.error("[HoursSync] — error:", e?.message || e);
                   toast("Saved locally, but couldn't sync to the server: " + (e?.message || "unknown error"), "red");
+                  setOptimisticDayClockInAt(undefined);
                 }
               };
               const toggleLunchPause = async (isLunch?: boolean) => {
@@ -7197,45 +7250,50 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
               </div>
             )}
 
-            {/* Today's jobs */}
-            <div>
-              <div className="text-xs text-white/50 uppercase tracking-wider font-semibold mb-3 flex items-center gap-2">
-                <span>Today's Jobs</span>
-                <span className="px-2 py-0.5 rounded-full bg-white/10 text-white/60">{todayJobs.length}</span>
-              </div>
-              {todayJobs.length > 0 && (() => {
-                const completedCount = todayJobs.filter(j => j.status === "completed").length;
-                const pct = Math.round((completedCount / todayJobs.length) * 100);
-                return (
-                  <div className="mb-3">
-                    <div className="flex items-center justify-between text-xs text-white/50 mb-1.5">
-                      <span>{completedCount} of {todayJobs.length} jobs completed</span>
-                      <span className="font-semibold text-white/70">{pct}%</span>
-                    </div>
-                    <div className="h-2 rounded-full bg-white/10 overflow-hidden">
-                      <div className="h-full bg-gradient-to-r from-green-500 to-green-400 transition-all" style={{ width: `${pct}%` }} />
-                    </div>
+            {/* Today's jobs.
+                BUG FIX — "when they have three jobs it shows 'blank out of
+                blank jobs completed.' After completing the first job, the
+                Today tab should show the two remaining jobs; after the
+                second, the last remaining job." The list itself now only
+                shows what's still left to do today — a completed job
+                dropping off the list IS the progress indicator, so the
+                confusing "X of Y" counter line is gone; the badge counts
+                what's remaining, not the original total. */}
+            {(() => {
+              const remainingTodayJobs = todayJobs.filter(j => j.status !== "completed");
+              const completedCount = todayJobs.length - remainingTodayJobs.length;
+              return (
+                <div>
+                  <div className="text-xs text-white/50 uppercase tracking-wider font-semibold mb-3 flex items-center gap-2">
+                    <span>Today's Jobs</span>
+                    <span className="px-2 py-0.5 rounded-full bg-white/10 text-white/60">{remainingTodayJobs.length} left</span>
+                    {completedCount > 0 && <span className="px-2 py-0.5 rounded-full bg-green-900/30 text-green-400">{completedCount} done</span>}
                   </div>
-                );
-              })()}
-              {todayJobs.length === 0 ? (
-                <div className="text-center py-10 text-white/30 space-y-2">
-                  <CheckCircle size={32} className="mx-auto opacity-30" />
-                  <div className="font-semibold text-white/40">No jobs scheduled for today</div>
-                  <div className="text-xs leading-relaxed text-white/30">
-                    {myJobs.length > 0 ? (
-                      <>You have {myJobs.filter(j => j.scheduledDate > todayStr && j.status !== "cancelled").length} upcoming job{myJobs.filter(j => j.scheduledDate > todayStr && j.status !== "cancelled").length !== 1 ? "s" : ""} — tap <span className="font-semibold text-white/50">All Jobs</span> to view them.</>
-                    ) : (
-                      <>No jobs are assigned to you yet. Your manager will send them here when scheduled.</>
-                    )}
-                  </div>
+                  {todayJobs.length === 0 ? (
+                    <div className="text-center py-10 text-white/30 space-y-2">
+                      <CheckCircle size={32} className="mx-auto opacity-30" />
+                      <div className="font-semibold text-white/40">No jobs scheduled for today</div>
+                      <div className="text-xs leading-relaxed text-white/30">
+                        {myJobs.length > 0 ? (
+                          <>You have {myJobs.filter(j => j.scheduledDate > todayStr && j.status !== "cancelled").length} upcoming job{myJobs.filter(j => j.scheduledDate > todayStr && j.status !== "cancelled").length !== 1 ? "s" : ""} — tap <span className="font-semibold text-white/50">All Jobs</span> to view them.</>
+                        ) : (
+                          <>No jobs are assigned to you yet. Your manager will send them here when scheduled.</>
+                        )}
+                      </div>
+                    </div>
+                  ) : remainingTodayJobs.length === 0 ? (
+                    <div className="text-center py-10 text-green-400/60 space-y-2">
+                      <CheckCircle size={32} className="mx-auto" />
+                      <div className="font-semibold">All {todayJobs.length} of today's jobs are done 🎉</div>
+                    </div>
+                  ) : (
+                    <div className="space-y-2">
+                      {remainingTodayJobs.map(j => <JobCard key={j.id} job={j} />)}
+                    </div>
+                  )}
                 </div>
-              ) : (
-                <div className="space-y-2">
-                  {todayJobs.map(j => <JobCard key={j.id} job={j} />)}
-                </div>
-              )}
-            </div>
+              );
+            })()}
 
             {/* Upcoming this week */}
             {weekJobs.filter(j => j.scheduledDate > todayStr).length > 0 && (

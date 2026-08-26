@@ -2901,11 +2901,42 @@ export function App() {
       // whatever localStorage has, straight on mount, before any server
       // fetch. Without filtering out ids this browser has tombstoned, a
       // stale local copy of a since-deleted row gets pushed right back.
+      //
+      // BUG FIX — "invoices keep coming back, this has been a persisting
+      // problem." Tombstones (above) only protect the DEVICE that actually
+      // performed the delete — a SECOND device/browser (phone left signed
+      // in, a different tab that hasn't reloaded since) has no tombstone
+      // for that id in its own localStorage at all. On its next reload,
+      // this mount-time push ran unconditionally, immediately resurrecting
+      // the row before any live check ever ran — the exact cross-device
+      // "delete it, and it's back" loop that survived every earlier guard
+      // here, since all of those only ever activated on later cycles, not
+      // this very first push. Now mirrors the 30s interval's real fix:
+      // fetch the live id set first, and only push a local-only row (one
+      // NOT confirmed to still exist server-side) if it's genuinely recent
+      // (created in the last 30 minutes) — a real offline-created row is
+      // always this fresh; a stale cached copy of a since-deleted row from
+      // another device essentially never is.
+      const RECENT_MS = 30 * 60 * 1000;
+      const isRecent = (row: any) => { const t = Date.parse(row?.createdAt || ""); return !Number.isNaN(t) && Date.now() - t < RECENT_MS; };
+      let liveEstIds: Set<string> | null = null;
+      let liveCustIds: Set<string> | null = null;
+      try {
+        const [{ data: estRows }, { data: custRows }] = await Promise.all([
+          (supabase as any).from("estimates").select("id").eq("owner_id", crmUserId),
+          (supabase as any).from("customers").select("id").eq("owner_id", crmUserId),
+        ]);
+        if (Array.isArray(estRows)) liveEstIds = new Set(estRows.map((r: any) => r.id));
+        if (Array.isArray(custRows)) liveCustIds = new Set(custRows.map((r: any) => r.id));
+      } catch (err: any) { console.warn("Initial sync — live id check failed, skipping local push entirely this load:", err?.message); }
+      // Live check itself failing is the same "can't tell new from deleted"
+      // situation as a missing id set — skip the push rather than guess.
+      if (!liveEstIds || !liveCustIds) return;
       const deletedCustIds = readTombstones("customers");
       const deletedEstIds = readTombstones("estimates");
-      const safeLocalCustomers = deletedCustIds.size === 0 ? customers : customers.filter((c: any) => !deletedCustIds.has(c.id));
+      const safeLocalCustomers = customers.filter((c: any) => !deletedCustIds.has(c.id) && (liveCustIds!.has(c.id) || isRecent(c)));
       await upsertCustomersSafely(safeLocalCustomers, "Initial customer sync");
-      const storedEst = deletedEstIds.size === 0 ? estimates : estimates.filter((e: any) => !deletedEstIds.has(e.id));
+      const storedEst = estimates.filter((e: any) => !deletedEstIds.has(e.id) && (liveEstIds!.has(e.id) || isRecent(e)));
       if (storedEst.length > 0) {
         try {
           const { error } = await (supabase as any).from("estimates").upsert(storedEst.map((e: any) => ({ ...e, owner_id: crmUserId })), { onConflict: "id" });
@@ -3216,6 +3247,20 @@ export function App() {
               setPage("portal");
               setOauthProcessing(false);
               persistEmployeeGoogleToken(session);
+              // BUG FIX — "employees receive notifications like 'Fred checked
+              // in,' which they shouldn't get." hasCrmSession's initial state
+              // is OPTIMISTICALLY seeded from a stale "was an owner logged in
+              // on this device before" localStorage flag (see
+              // getLastOwnerSessionFlag above) — this employee branch never
+              // explicitly cleared it, so on any device that had ever also
+              // had the owner logged in (or the flag was simply stale from a
+              // prior session), every hasCrmSession-gated effect (crew
+              // activity toasts/desktop notifications, invoice-activity
+              // diffing, etc.) kept running in the background on the
+              // EMPLOYEE'S OWN session, firing owner-only notifications at
+              // them. An employee session must always force this false.
+              setHasCrmSession(false);
+              setLastOwnerSessionFlag(false);
               // BUG FIX — this branch returned without ever setting crmUserId,
               // the tenant id refetchEmployees()/refetchData() and the
               // realtime subscription (both further down, both filtered by
@@ -3288,6 +3333,13 @@ export function App() {
           // is the initial-page-load path (runs once on first mount) and
           // had the identical gap.
           if (initOwnerId) { setCrmUserId(initOwnerId); setLastOwnerId(initOwnerId); }
+          // BUG FIX — same stale-flag issue as the onAuthStateChange employee
+          // branch: hasCrmSession's optimistic initial state must be forced
+          // false for a real employee session, or a stale "owner was
+          // logged in on this device before" flag lets every CRM-only
+          // effect (crew-activity notifications, etc.) keep running here.
+          setHasCrmSession(false);
+          setLastOwnerSessionFlag(false);
         } else {
           if (initial) { setHasCrmSession(true); setLastOwnerSessionFlag(true); }
           else { setHasCrmSession(false); setLastOwnerSessionFlag(false); }

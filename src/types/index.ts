@@ -352,6 +352,11 @@ export interface Job {
   status: "scheduled" | "in_progress" | "completed" | "cancelled";
   scheduledDate: string;
   scheduledTime?: string;
+  // Set by the field portal's "Can't Finish / Reschedule" flow (with or
+  // without a picked date) so the owner's Unscheduled tab surfaces it until
+  // the owner confirms a real schedule, per explicit request that even a
+  // job with a crew-picked date should stay flagged there.
+  needsReschedule?: boolean;
   duration?: number;
   estimatedDuration?: number;
   priority: "low" | "normal" | "high" | "urgent";
