@@ -3,6 +3,7 @@ import ReactDOM from "react-dom/client";
 import { App } from "./App";
 import { supabase } from "./lib/supabase";
 import { ErrorBoundary } from "./components/ui/ErrorBoundary";
+import { installGlobalHaptics } from "./lib/haptics";
 import "./index.css";
 
 // AUDIT 1 — the only ErrorBoundary in the app previously lived INSIDE App.tsx
@@ -40,6 +41,13 @@ if ("serviceWorker" in navigator) {
     navigator.serviceWorker.register("/sw.js").catch(err => console.warn("[PWA] service worker registration failed:", err?.message));
   });
 }
+
+// Haptic feedback on every tap, app-wide — one listener here covers the
+// owner CRM, employee portal, and client portal alike (all mount under this
+// single root). Real ticks on Android; a harmless no-op on iOS (see
+// lib/haptics.ts's comment — that's a WebKit platform limitation, not
+// something fixable here).
+installGlobalHaptics();
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>

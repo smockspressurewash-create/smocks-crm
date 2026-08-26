@@ -909,6 +909,24 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
         });
         if (!postRes.ok) console.error("[TwilioSmsWebhook] inbox_threads POST failed (" + postRes.status + "):", await postRes.text().catch(() => ""));
       }
+      // FEATURE — real push notification for a new inbound text, same event
+      // the Inbox realtime subscription already surfaces while the tab's
+      // open — this is what shows up on the owner's phone lock screen when
+      // it isn't. Fire-and-forget within this same background task; never
+      // lets a push failure affect the actual SMS/Inbox logging above.
+      if (ownerId && !alreadyHave) {
+        const pushContactLabel = match ? `${match.firstName || ""} ${match.lastName || ""}`.trim() || from : from;
+        fetch(`${new URL(context.request.url).origin}/api/send-push`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            ownerId,
+            title: `New text from ${pushContactLabel}`,
+            body: newMsg.body || "New message",
+            url: "/#/inbox", tag: "inbox-" + msgId,
+          }),
+        }).catch(() => {});
+      }
     } catch (e: any) {
       console.error("[TwilioSmsWebhook] failed to persist inbound message to inbox_threads:", e?.message);
       // Non-fatal — the client-side poll is still a fallback for this.

@@ -65,6 +65,7 @@ import { HiringPage } from "./components/pages/HiringPage";
 import { TermsPage, PrivacyPolicyPage } from "./components/pages/LegalPages";
 import { LandingPage } from "./components/pages/LandingPage";
 import { InstallAppButton } from "./components/ui/InstallAppButton";
+import { PushNotificationButton } from "./components/ui/PushNotificationButton";
 import { FeaturesPage } from "./components/pages/FeaturesPage";
 import { PricingPage } from "./components/pages/PricingPage";
 import { AboutPage } from "./components/pages/AboutPage";
@@ -4093,6 +4094,7 @@ export function App() {
               that's too wide here doesn't just look cramped, it can shove
               later items past the visible edge entirely. */}
           <InstallAppButton className="!flex flex-shrink-0 !px-2 sm:!px-3" label="Install App" labelClassName="hidden sm:inline" />
+          {crmUserId && <PushNotificationButton ownerId={crmUserId} className="!flex flex-shrink-0 !px-2 sm:!px-3" label="Notify Me" labelClassName="hidden sm:inline" />}
           {/* Notifications */}
           <div className="relative">
           <button onClick={() => setNotifOpen(!notifOpen)} className="relative p-2 text-white/60 hover:text-white">

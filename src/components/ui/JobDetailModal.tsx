@@ -23,6 +23,7 @@ import {
 import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, weekdayLabels, computeNextRecurringDate, isEmployeeUnavailable, computeDiscountsTotal, equipmentList, requiredChemicalsList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, compressImageFile, getEffectiveRate, mediaSrc, dataUrlToBlob, uploadJobMedia, reconcileCrewAfterAssign, insertJobRequestSafely, checkVideoLimits } from "../../lib/utils";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField, JobChecklistItem, ChecklistPhoto, JobVideo, JobSignOff } from "../../types";
 import { twilioSend, sendEmail, sendViaGmail, sendOwnerGmailOnly, emailShell, emailButton, logOutboundSmsToInbox } from "../../lib/messaging";
+import { sendPushNotification } from "../../lib/push";
 import { seedWeather } from "../../lib/weather";
 import { seedCustomers, seedEstimates, seedJobs, seedEmployees, seedVehicles, seedExpenses, seedChemicals, seedServices, seedAutomations, seedEmailTemplates, seedSmsTemplates, seedRewardTiers, seedReferrals, seedMaintenance, campaignTemplates, seedSocialPosts, seedTimeline, seedGoals, seedReminders, seedAccountabilityEntries, seedMileage, seedLeadSrc, STEP_TYPES, AUTOMATION_TEMPLATES } from "../../lib/seed";
 import { callModel, MODELS } from "../../lib/api";
@@ -417,6 +418,17 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
             () => `You've Been Assigned — ${job.scheduledDate || job.address}`,
             () => emailShell(settings,"You've Been Assigned", `<p>Hi ${emp.firstName},</p><p>You've been assigned to a job:</p><ul><li><b>Date:</b> ${job.scheduledDate}${job.scheduledTime ? " at " + job.scheduledTime : ""}</li><li><b>Address:</b> ${job.address}</li>${cust ? `<li><b>Customer:</b> ${cust.firstName} ${cust.lastName}</li>` : ""}</ul><p>This job is already on your schedule — no action needed.</p>`)
           ).then((sent: number) => { if (sent > 0) toast?.(`Notified ${emp.firstName} ✓`, "green"); }).catch((e: any) => console.warn("[EditCrewAssign] notify email failed (non-fatal):", e?.message));
+        }
+        if (emp) {
+          // FEATURE — real push notification, same event email already
+          // covers. Fire-and-forget, never blocks/breaks the assignment
+          // itself if it fails (see sendPushNotification's own comment).
+          sendPushNotification({
+            ownerId, employeeId: emp.id,
+            title: "You've been assigned a job",
+            body: `${job.scheduledDate || ""}${job.scheduledTime ? " at " + job.scheduledTime : ""} — ${job.address || ""}`.trim(),
+            url: "/#/portal", tag: "job-assigned-" + jobId,
+          });
         }
       }
     } catch (e: any) {

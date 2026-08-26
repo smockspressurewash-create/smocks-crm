@@ -21,6 +21,7 @@ import { LiveMap } from "../ui/LiveMap";
 import { PropertyMapEmbed } from "../ui/PropertyMapEmbed";
 import { SaveCardModal } from "../ui/SaveCardModal";
 import { InstallAppButton } from "../ui/InstallAppButton";
+import { PushNotificationButton } from "../ui/PushNotificationButton";
 import { SopModal } from "../ui/SopModal";
 import { chargeSavedPaymentMethod, sendPaymentReceipt, listCustomerPaymentMethods } from "../../lib/stripe";
 import { BarChart, Bar, LineChart, Line, XAxis, YAxis, ResponsiveContainer, Tooltip, CartesianGrid } from "recharts";
@@ -5577,21 +5578,22 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     <div className="h-dvh h-screen overflow-hidden bg-black text-white flex flex-col">
       {/* Header */}
       <header className="sticky top-0 z-20 bg-black/95 border-b border-red-900/30 px-4 py-3 flex items-center gap-3 flex-shrink-0">
-        {/* BRANDING FIX — this hardcoded the CrewBoss product name/mark in
-            the crew's own day-to-day header, instead of the actual employer
-            (the pressure-washing business) they work for — matches the
-            login-screen fix above: owner's real logo/company name when set,
-            generic mark as fallback for a business that hasn't uploaded one
-            yet. */}
+        {/* BRANDING FIX (reverted) — a previous round swapped this for the
+            owner's own business name/logo, on the theory that the crew's
+            day-to-day header should show their employer's brand. The owner
+            corrected that: this top-left badge is the CrewBoss PRODUCT
+            wordmark, same as the owner CRM's own sidebar logo (App.tsx —
+            "Crew" + red "Boss", font-extrabold), not the business's name —
+            the employee portal is still part of the CrewBoss product chrome,
+            just like the owner's own app shell. The business's own
+            logo/name still shows correctly everywhere it actually matters:
+            the login screen right below this, customer-facing pages, and
+            emails. */}
         <div className="flex items-center gap-2 flex-1 min-w-0">
-          {(settings as any)?.logoUrl ? (
-            <img src={(settings as any).logoUrl} alt={settings.companyName || "Company logo"} className="w-8 h-8 rounded-xl object-contain flex-shrink-0 bg-white/5" />
-          ) : (
-            <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-red-600 to-red-900 flex items-center justify-center flex-shrink-0 shadow-lg shadow-red-900/40">
-              <CrewBossMark className="w-[18px] h-[18px]" />
-            </div>
-          )}
-          <span className="font-bold text-sm text-white tracking-tight truncate">{settings.companyName || "CrewBoss"}</span>
+          <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-red-600 to-red-900 flex items-center justify-center flex-shrink-0 shadow-lg shadow-red-900/40">
+            <CrewBossMark className="w-[18px] h-[18px]" />
+          </div>
+          <span className="font-extrabold text-base text-white tracking-tight truncate">Crew<span className="text-red-500">Boss</span></span>
         </div>
         {/* Employee info + actions */}
         <div className="flex items-center gap-2.5">
@@ -5638,6 +5640,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
               here instead (still renders something in every browser state —
               see InstallAppButton.tsx). */}
           <InstallAppButton className="!p-2 !gap-0 !bg-transparent !border-0 !text-white/40 hover:!text-white hover:!bg-white/10 !rounded-xl flex-shrink-0" label="" />
+          {(myEmployee as any)?.owner_id && <PushNotificationButton ownerId={(myEmployee as any).owner_id} employeeId={myEmployee.id} className="!p-2 !gap-0 !bg-transparent !border-0 !text-white/40 hover:!text-white hover:!bg-white/10 !rounded-xl flex-shrink-0" label="" />}
           <div className="w-8 h-8 rounded-full bg-gradient-to-br from-red-700/60 to-red-900/60 border border-red-700/30 flex items-center justify-center text-xs font-bold flex-shrink-0">
             {myEmployee.firstName?.[0] || "?"}{myEmployee.lastName?.[0] || ""}
           </div>
