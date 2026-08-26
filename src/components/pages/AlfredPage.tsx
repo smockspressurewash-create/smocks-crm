@@ -1738,6 +1738,16 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
                     location: newJ.address, notes: newJ.notes,
                   }),
                 }).catch(() => {});
+                // BUG FIX — this inline assignment path (crew named directly
+                // in the schedule_job call) never sent the "You've Been
+                // Assigned" email the standalone assign_employee tool
+                // already sends — same reason the calendar push was missing
+                // above. Same template as assign_employee for consistency.
+                if (emp.email) {
+                  const portalLink = `${window.location.origin}${window.location.pathname}#/portal`;
+                  const html = emailShell(settings, "Job Assignment", `<p>Hi ${emp.firstName},</p><p>You've been assigned to a job:</p><ul><li><b>Date:</b> ${newJ.scheduledDate}${newJ.scheduledTime ? " at " + newJ.scheduledTime : ""}</li><li><b>Address:</b> ${newJ.address}</li><li><b>Customer:</b> ${c.firstName} ${c.lastName}</li></ul>` + emailButton("Open Crew Portal", portalLink));
+                  sendEmail(settings, { to: emp.email, subject: `You've Been Assigned — ${newJ.scheduledDate}`, body: html }).catch(() => {});
+                }
               }
             }
           }
@@ -2449,7 +2459,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           if (!supplier) return { error: `No supplier named "${inputs.supplierName}" on "${item.name}" with an email on file. Suppliers: ${suppliers.map((s: any) => s.name).join(", ")}` };
           if (!inputs.subject?.trim() || !inputs.message?.trim()) return { error: "subject and message are required — the exact email to send." };
           try {
-            await withTimeout(sendEmail(settings as any, { to: supplier.email, subject: inputs.subject, body: `<p>${String(inputs.message).replace(/\n/g, "<br/>")}</p>` }), 15000, "Supplier email");
+            await withTimeout(sendEmail(settings as any, { to: supplier.email, subject: inputs.subject, body: emailShell(settings, inputs.subject, `<p>${String(inputs.message).replace(/\n/g, "<br/>")}</p>`) }), 15000, "Supplier email");
           } catch (e: any) {
             return { error: "Failed to send — " + (e?.message || "unknown error") };
           }
@@ -2488,7 +2498,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           if (inputs.channel === "email") {
             if (!supplier.email) return { error: `${supplier.name} has no email on file.` };
             if (!inputs.subject?.trim() || !inputs.message?.trim()) return { error: "subject and message are required." };
-            try { await withTimeout(sendEmail(settings as any, { to: supplier.email, subject: inputs.subject, body: `<p>${String(inputs.message).replace(/\n/g, "<br/>")}</p>` }), 15000, "Supplier email"); }
+            try { await withTimeout(sendEmail(settings as any, { to: supplier.email, subject: inputs.subject, body: emailShell(settings, inputs.subject, `<p>${String(inputs.message).replace(/\n/g, "<br/>")}</p>`) }), 15000, "Supplier email"); }
             catch (e: any) { return { error: "Failed to send — " + (e?.message || "unknown error") }; }
             toast("Alfred emailed " + supplier.name);
             return { success: true, supplier: supplier.name, email: supplier.email, sent: inputs.message };

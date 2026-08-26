@@ -22,7 +22,7 @@ import {
 } from "recharts";
 import { fmt, uid, today, localDateStr, shiftDayStr, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, getEffectiveRate, weekdayLabels, countDaysOffInRange, getPayPeriodBounds } from "../../lib/utils";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
-import { twilioSend, sendEmail } from "../../lib/messaging";
+import { twilioSend, sendEmail, emailShell, emailButton } from "../../lib/messaging";
 import { supabase } from "../../lib/supabase";
 // BLOCKER 2/14 (mobile round 9) — crewIncludesEmployee is the same robust
 // crew-matching helper the employee portal already uses (tolerates object-
@@ -481,7 +481,12 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setJobs
       await sendEmail(settings, {
         to: inviteF.email,
         subject: `You've been invited to join ${companyName} on CrewBoss`,
-        body: `<p>Hi ${inviteF.firstName},</p><p>${ownerName} has invited you to join <strong>${companyName}</strong> on CrewBoss. Click the link below to create your employee account and access your schedule, pay, and job details.</p><p><a href="${link}" style="display:inline-block;padding:12px 24px;background:#dc2626;color:#fff;border-radius:8px;text-decoration:none;font-weight:600;">Create Your Account</a></p><p>Or paste this link in your browser:<br/><a href="${link}">${link}</a></p><p style="color:#888;font-size:12px;">This invite was sent by ${companyName} using CrewBoss.</p>`,
+        // BUG FIX — "make sure the UI for all emails looks good" — this was
+        // one of a small handful sent as bare inline HTML with no
+        // emailShell wrapper (no logo/header, inconsistent with every
+        // other transactional email in the app). Same shell + button
+        // component the rest of the app uses.
+        body: emailShell(settings, "You're Invited", `<p>Hi ${inviteF.firstName},</p><p>${ownerName} has invited you to join <strong>${companyName}</strong> on CrewBoss. Click below to create your employee account and access your schedule, pay, and job details.</p>` + emailButton("Create Your Account", link) + `<p style="font-size:12px;color:#888;">Or paste this link in your browser:<br/><a href="${link}">${link}</a></p>`),
       });
       toast(`Invite email sent to ${inviteF.email} ✓`, "green");
     } catch {
@@ -1418,7 +1423,7 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setJobs
                       await sendEmail(settings, {
                         to: inviteCreated.email,
                         subject: `You've been invited to join ${settings?.companyName || "your company"} on CrewBoss`,
-                        body: `<p>Hi ${inviteCreated.firstName},</p><p>Click below to create your employee account.</p><p><a href="${inviteLink(inviteCreated.code)}" style="display:inline-block;padding:12px 24px;background:#dc2626;color:#fff;border-radius:8px;text-decoration:none;font-weight:600;">Create Your Account</a></p><p>Or paste this link in your browser:<br/><a href="${inviteLink(inviteCreated.code)}">${inviteLink(inviteCreated.code)}</a></p>`,
+                        body: emailShell(settings, "You're Invited", `<p>Hi ${inviteCreated.firstName},</p><p>Click below to create your employee account.</p>` + emailButton("Create Your Account", inviteLink(inviteCreated.code)) + `<p style="font-size:12px;color:#888;">Or paste this link in your browser:<br/><a href="${inviteLink(inviteCreated.code)}">${inviteLink(inviteCreated.code)}</a></p>`),
                       });
                       toast("Invite email sent ✓", "green");
                     } catch (e: any) { toast("Couldn't send email — " + (e?.message || "unknown error"), "red"); }

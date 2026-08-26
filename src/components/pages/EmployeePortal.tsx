@@ -3998,10 +3998,17 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
         const hoursAway = (startDt - now) / 3600000;
         if (hoursAway > 0 && hoursAway <= 24) {
           console.log("[GoogleConnect] Employee job reminder — using EMPLOYEE's own Gmail account:", empToken!.email, "(never the owner's)");
+          // BUG FIX — "the UI for the reminder does not look good." This was
+          // the one email in the whole app sent as a bare, unstyled <p> with
+          // no emailShell wrapper — every other email (Running Late, On My
+          // Way, Invoice, Job Completed, etc.) uses it. Same branded shell
+          // + a button back to the portal, matching the rest of the app.
+          const portalLink = `${window.location.origin}${window.location.pathname}#/portal?job=${encodeURIComponent(j.id)}`;
+          const reminderHtml = emailShell(settings, "Job Tomorrow", `<p>Hi ${myEmployee.firstName},</p><p>Reminder — you have a job coming up:</p><ul><li><b>Address:</b> ${j.address}</li><li><b>Date:</b> ${j.scheduledDate}${j.scheduledTime ? " at " + j.scheduledTime : ""}</li></ul>` + emailButton("Open Crew Portal", portalLink));
           sendViaGmail(
             empToken!.token, empToken!.email, empToken!.email,
             `Reminder: Job Tomorrow — ${j.address}`,
-            `<p>Reminder: you have a job at <strong>${j.address}</strong> on ${j.scheduledDate}${j.scheduledTime ? " at " + j.scheduledTime : ""}.</p>`
+            reminderHtml
           ).then(() => {
             reminded.push(j.id);
             try { localStorage.setItem(remindedKey, JSON.stringify(reminded)); } catch { /* ignore */ }
