@@ -3131,6 +3131,19 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
               maxTokens: 1500
             }), 25000, MODELS_MAP[mid]?.name || mid);
             console.log("[AlfredModel] round", rounds, "model:", mid, "stopReason:", result.stopReason, "toolUses:", (result.toolUses || []).map((tu: any) => tu.name), "textPreview:", (result.text || "").slice(0, 120));
+            // BUG FIX — a non-tool-capable model (e.g. OpenRouter's free
+            // tier) has no `tools` param sent, but the system prompt still
+            // describes every tool by name — so instead of a real function
+            // call it just prints text that LOOKS like one, e.g.
+            // `search_customers(query="...")`, with a clean end_turn. That
+            // used to be accepted as a legit final answer, silently failing
+            // the actual request (nothing gets scheduled/searched) while
+            // looking successful. Detect the fake-call shape and fail this
+            // model over to the next one instead of returning it to the
+            // owner as if Alfred actually did something.
+            if (!toolsForModel && /^[a-zA-Z_][a-zA-Z0-9_]{2,40}\s*\(.*\)\s*\.?$/.test((result.text || "").trim())) {
+              throw new Error(`${MODELS_MAP[mid]?.name || mid} doesn't support tool/function calling and tried to fake a tool call as text instead of acting.`);
+            }
             if (result.text) localFinal = result.text;
             if (result.toolUses.length > 0 && result.stopReason === "tool_use" && toolsForModel) {
               localConv.push({ role: "assistant", content: result.raw });
