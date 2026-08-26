@@ -670,6 +670,20 @@ const TOOLS = [
     input_schema: { type: "object", properties: { itemName: { type: "string" }, supplierName: { type: "string" }, subject: { type: "string" }, message: { type: "string" } }, required: ["itemName", "subject", "message"] },
   },
   {
+    name: "contact_general_supplier",
+    description: "Look up, text, or email a GENERAL supplier — a mechanic, main shop, or vendor not tied to any specific chemical/equipment item (see the General Suppliers list in Chemicals & Equipment). Omit message/channel to just look up their contact info. Outreach only — never places an order or moves money.",
+    input_schema: {
+      type: "object",
+      properties: {
+        supplierName: { type: "string", description: "Full or partial name of the supplier to look up" },
+        channel: { type: "string", enum: ["text", "email"], description: "Omit to just look up contact info without sending anything" },
+        subject: { type: "string", description: "Required if channel is email" },
+        message: { type: "string", description: "The exact message to send — required if channel is set" },
+      },
+      required: ["supplierName"],
+    },
+  },
+  {
     name: "get_trash_can_status",
     description: "Get a quick status summary of the Trash Can Cleaning service line — active customers and any jobs with an inconvenience fee waiting to be charged.",
     input_schema: { type: "object", properties: {} },
@@ -1025,7 +1039,7 @@ const SMS_TOOL_CAPABILITY: Record<string, string> = {
   send_estimate: "send_quotes", send_invoice: "send_quotes",
   notify_all_customers: "mass_messaging",
   text_customer: "message_customers", text_phone_number: "message_customers",
-  text_supplier: "message_suppliers", email_supplier: "message_suppliers",
+  text_supplier: "message_suppliers", email_supplier: "message_suppliers", contact_general_supplier: "message_suppliers",
   text_me_document: "send_files", send_me_files: "send_files",
   create_promotion: "automations", enable_review_request_automation: "automations",
   create_sop: "sops",
@@ -1486,6 +1500,31 @@ const executeTool = async (ctx: Ctx, name: string, input: Record<string, any>): 
         const res = await sendGmailFromCtx(ctx, supplier.email, input.subject, `<p>${String(input.message).replace(/\n/g, "<br/>")}</p>`);
         if (!res.ok) return { error: res.error };
         return { success: true, supplier: supplier.name, email: supplier.email, sent: input.message };
+      }
+      case "contact_general_supplier": {
+        const suppliers = await sbGet(ctx, `general_suppliers?select=*${ownerScope(ctx)}&limit=200`);
+        const q = String(input.supplierName || "").toLowerCase().trim();
+        const supplier = suppliers.find((s: any) => (s.name || "").toLowerCase().trim() === q)
+          || suppliers.find((s: any) => (s.name || "").toLowerCase().includes(q));
+        if (!supplier) return { error: `No general supplier found matching "${input.supplierName}". On file: ${suppliers.map((s: any) => s.name).join(", ") || "none yet"}.` };
+        if (!input.channel) {
+          return { success: true, name: supplier.name, category: supplier.category, phone: supplier.phone, email: supplier.email, address: supplier.address, website: supplier.website, notes: supplier.notes };
+        }
+        if (input.channel === "text") {
+          if (!supplier.phone) return { error: `${supplier.name} has no phone number on file.` };
+          if (!input.message?.trim()) return { error: "message is required — the exact SMS text to send." };
+          const res = await sendSms(ctx, supplier.phone, input.message, false, { name: supplier.name });
+          if (!res.ok) return { error: res.error };
+          return { success: true, supplier: supplier.name, phone: supplier.phone, sent: input.message };
+        }
+        if (input.channel === "email") {
+          if (!supplier.email) return { error: `${supplier.name} has no email on file.` };
+          if (!input.subject?.trim() || !input.message?.trim()) return { error: "subject and message are required — the exact email to send." };
+          const res = await sendGmailFromCtx(ctx, supplier.email, input.subject, `<p>${String(input.message).replace(/\n/g, "<br/>")}</p>`);
+          if (!res.ok) return { error: res.error };
+          return { success: true, supplier: supplier.name, email: supplier.email, sent: input.message };
+        }
+        return { error: "channel must be 'text' or 'email'" };
       }
       // FEATURE — cross-channel parity with the in-app chat's SOP/campaign/
       // social/trash-can tools (AlfredPage.tsx). log_expense/list_expenses

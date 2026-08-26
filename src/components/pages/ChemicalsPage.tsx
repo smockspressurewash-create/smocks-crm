@@ -110,6 +110,41 @@ export function ChemicalsPage({ chemicals = [], setChemicals, toast = () => {}, 
       if (r?.error) toast("Stock updated locally, but failed to sync — " + r.error.message, "red");
     }).catch(() => {});
   };
+  // FEATURE — "add general suppliers — a main mechanic or main shop — by
+  // entering their phone, address, and other details, and Alfred should be
+  // able to access that information." Distinct from the per-chemical
+  // supplier list above: a general contact isn't tied to any one item, so
+  // it lives in its own table (migration 0068) and its own section here —
+  // no need to open/create a chemical just to record a shop's info.
+  const [generalSuppliers, setGeneralSuppliers] = useState<any[]>([]);
+  const [supplierModal, setSupplierModal] = useState<{ open: boolean; data: any | null }>({ open: false, data: null });
+  const [supplierForm, setSupplierForm] = useState<any>({ name: "", category: "", phone: "", email: "", address: "", website: "", notes: "" });
+  useEffect(() => {
+    if (!ownerId) return;
+    (supabase as any).from("general_suppliers").select("*").eq("owner_id", ownerId).order("name")
+      .then((r: any) => { if (!r?.error && Array.isArray(r?.data)) setGeneralSuppliers(r.data); })
+      .catch(() => {});
+  }, [ownerId]);
+  const openSupplierModal = (data: any | null) => {
+    setSupplierForm(data ? { ...data } : { name: "", category: "", phone: "", email: "", address: "", website: "", notes: "" });
+    setSupplierModal({ open: true, data });
+  };
+  const saveSupplier = async () => {
+    if (!supplierForm.name?.trim()) { toast("Name is required", "red"); return; }
+    const record = { ...supplierForm, id: supplierForm.id || uid(), owner_id: ownerId, updated_at: new Date().toISOString() };
+    const res = await (supabase as any).from("general_suppliers").upsert(record, { onConflict: "id" });
+    if (res?.error) { toast("Failed to save — " + res.error.message, "red"); return; }
+    setGeneralSuppliers(prev => supplierForm.id ? prev.map(s => s.id === record.id ? record : s) : [...prev, record]);
+    setSupplierModal({ open: false, data: null });
+    toast("Supplier saved ✓", "green");
+  };
+  const deleteSupplier = async (id: string) => {
+    if (!window.confirm("Remove this supplier?")) return;
+    setGeneralSuppliers(prev => prev.filter(s => s.id !== id));
+    const res = await (supabase as any).from("general_suppliers").delete().eq("id", id);
+    if (res?.error) toast("Removed locally, but failed to remove on server — " + res.error.message, "red");
+  };
+
   const removeChemical = (id: string) => {
     setChemicals(chemicals.filter(c => c.id !== id));
     markRecentlyDeleted("chemicals", [id]);
@@ -193,6 +228,35 @@ export function ChemicalsPage({ chemicals = [], setChemicals, toast = () => {}, 
           </div>
         </div>
       </Glass>}
+      {/* FEATURE — general suppliers (mechanic, main shop) not tied to any
+          one chemical/equipment item. Alfred can text/email these too — see
+          the contact_general_supplier tool in alfredSmsAgent.ts. */}
+      <Glass className="p-4 !bg-black/40">
+        <div className="flex items-center justify-between mb-3">
+          <div className="text-xs text-white/50 uppercase tracking-wider flex items-center gap-1.5"><Truck size={11} />General Suppliers</div>
+          <GBtn onClick={() => openSupplierModal(null)} className="!py-1.5 !px-3 !text-xs"><Plus size={12} className="inline mr-1" />Add Supplier</GBtn>
+        </div>
+        {generalSuppliers.length === 0 ? (
+          <div className="text-xs text-white/30 italic py-2 text-center">No general suppliers yet — a mechanic, main shop, or vendor not tied to a specific item.</div>
+        ) : (
+          <div className="grid sm:grid-cols-2 gap-2">
+            {generalSuppliers.map(s => (
+              <div key={s.id} className="p-2.5 rounded-xl bg-white/5 border border-white/10 flex items-start justify-between gap-2">
+                <div className="min-w-0 flex-1 text-xs">
+                  <div className="font-medium text-white truncate">{s.name}{s.category ? <span className="text-white/40 font-normal"> · {s.category}</span> : ""}</div>
+                  {s.phone && <a href={"tel:" + s.phone.replace(/[^\d+]/g, "")} className="flex items-center gap-1 text-red-400 hover:text-red-300 mt-0.5"><Phone size={9} />{s.phone}</a>}
+                  {s.email && <div className="flex items-center gap-1 text-white/50 mt-0.5"><Mail size={9} />{s.email}</div>}
+                  {s.address && <div className="flex items-center gap-1 text-white/40 mt-0.5"><MapPin size={9} />{s.address}</div>}
+                </div>
+                <div className="flex items-center gap-1 flex-shrink-0">
+                  <button onClick={() => openSupplierModal(s)} className="p-1.5 rounded-lg hover:bg-white/10 text-white/40 hover:text-white transition"><Edit size={12} /></button>
+                  <button onClick={() => deleteSupplier(s.id)} className="p-1.5 rounded-lg hover:bg-red-950/30 text-white/40 hover:text-red-400 transition"><Trash2 size={12} /></button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </Glass>
       <div className="flex justify-end"><GBtn onClick={() => setModal({ open: true, data: null })}><Plus size={14} className="inline mr-1.5" />Add</GBtn></div>
       <Glass className="overflow-hidden">
         <table className="w-full text-sm">
@@ -240,6 +304,20 @@ export function ChemicalsPage({ chemicals = [], setChemicals, toast = () => {}, 
         </table>
       </Glass>
       <ChemicalModal open={modal.open} onClose={() => setModal({ open: false, data: null })} data={modal.data} onSave={save} />
+      <Modal open={supplierModal.open} onClose={() => setSupplierModal({ open: false, data: null })} title={supplierModal.data ? "Edit Supplier" : "New Supplier"} maxW="max-w-md">
+        <div className="space-y-3">
+          <div><label className="text-xs text-white/60 mb-1 block">Name *</label><GInput value={supplierForm.name} onChange={(e: any) => setSupplierForm({ ...supplierForm, name: e.target.value })} placeholder="e.g. Joe's Auto Repair" /></div>
+          <div><label className="text-xs text-white/60 mb-1 block">Category</label><GInput value={supplierForm.category} onChange={(e: any) => setSupplierForm({ ...supplierForm, category: e.target.value })} placeholder="e.g. Mechanic, Main Shop, Parts" /></div>
+          <div className="grid grid-cols-2 gap-3">
+            <div><label className="text-xs text-white/60 mb-1 block">Phone</label><GInput type="tel" value={supplierForm.phone} onChange={(e: any) => setSupplierForm({ ...supplierForm, phone: e.target.value })} /></div>
+            <div><label className="text-xs text-white/60 mb-1 block">Email</label><GInput type="email" value={supplierForm.email} onChange={(e: any) => setSupplierForm({ ...supplierForm, email: e.target.value })} /></div>
+          </div>
+          <div><label className="text-xs text-white/60 mb-1 block">Address</label><GInput value={supplierForm.address} onChange={(e: any) => setSupplierForm({ ...supplierForm, address: e.target.value })} /></div>
+          <div><label className="text-xs text-white/60 mb-1 block">Website</label><GInput type="url" value={supplierForm.website} onChange={(e: any) => setSupplierForm({ ...supplierForm, website: e.target.value })} /></div>
+          <div><label className="text-xs text-white/60 mb-1 block">Notes</label><GTxt rows={2} value={supplierForm.notes} onChange={(e: any) => setSupplierForm({ ...supplierForm, notes: e.target.value })} placeholder="Account #, hours, anything worth remembering" /></div>
+          <div className="flex gap-2 justify-end pt-2"><GBtn variant="ghost" onClick={() => setSupplierModal({ open: false, data: null })}>Cancel</GBtn><GBtn onClick={saveSupplier}>Save</GBtn></div>
+        </div>
+      </Modal>
     </div>
   );
 }

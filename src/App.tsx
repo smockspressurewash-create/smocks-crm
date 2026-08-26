@@ -905,6 +905,25 @@ export function App() {
     const m = recentlyDeletedRef.current[table];
     ids.forEach(id => m.delete(id));
   }, []);
+  // BUG FIX — "delete an invoice, it comes back." Root cause: the 30s bulk
+  // auto-save interval further below blindly re-upserts this ENTIRE
+  // in-memory `estimates`/`customers` array to Supabase every cycle, with
+  // zero awareness of deletes that happened on a DIFFERENT tab/device in
+  // the meantime. A second open session (e.g. phone left open while also
+  // using desktop) whose own copy hasn't caught up yet — background-tab
+  // timer throttling routinely delays its regular poll — would still have
+  // the "deleted" row in ITS `estimates` state, and its own 30s autosave
+  // firing re-inserts that row right back into the database. The next
+  // poll on the ORIGINAL tab then picks that resurrected row back up,
+  // often well after the 2-minute recentlyDeleted TTL has already expired
+  // (a real-world "check back later and it's back" gap). These refs track
+  // which ids each tab has actually CONFIRMED exist server-side (populated
+  // by refetchData below) so the autosave can tell "known to exist, safe
+  // to re-save" apart from "never confirmed — could be a legit new local
+  // row, or could be one this tab doesn't know was deleted elsewhere."
+  const syncedEstimateIdsRef = useRef<Set<string>>(new Set());
+  const syncedCustomerIdsRef = useRef<Set<string>>(new Set());
+
   const filterRecentlyDeleted = (table: "jobs" | "customers" | "estimates" | "chemicals", rows: any[]) => {
     const m = recentlyDeletedRef.current[table];
     if (m.size === 0) return rows;
@@ -2438,6 +2457,9 @@ export function App() {
         });
       }
       if (Array.isArray(sbCustomers) && sbCustomers.length > 0) {
+        // See syncedCustomerIdsRef's comment above — every id the server
+        // actually returns is confirmed to exist there right now.
+        sbCustomers.forEach((c: any) => syncedCustomerIdsRef.current.add(c.id));
         setCustomers(prev => {
           const filteredCustomers = filterRecentlyDeleted("customers", sbCustomers);
           const sbMap = new Map(filteredCustomers.map((c: any) => [c.id, c]));
@@ -2448,6 +2470,8 @@ export function App() {
         });
       }
       if (Array.isArray(sbEstimates) && sbEstimates.length > 0) {
+        // See syncedEstimateIdsRef's comment above.
+        sbEstimates.forEach((e: any) => syncedEstimateIdsRef.current.add(e.id));
         setEstimates(prev => {
           const filteredEstimates = filterRecentlyDeleted("estimates", sbEstimates);
           const sbMap = new Map(filteredEstimates.map((e: any) => [e.id, e]));
@@ -2677,7 +2701,7 @@ export function App() {
     try {
       const withOwner = list.map((c: any) => ({ ...c, owner_id: crmUserId }));
       const { error } = await (supabase as any).from("customers").upsert(withOwner, { onConflict: "id" });
-      if (!error) return;
+      if (!error) { list.forEach((c: any) => syncedCustomerIdsRef.current.add(c.id)); return; }
       console.warn(`${label} failed:`, error.message, "— retrying without", CUSTOMER_OPTIONAL_NEWER_FIELDS.join("/"));
       const coreList = withOwner.map((c: any) => {
         const copy = { ...c };
@@ -2693,11 +2717,30 @@ export function App() {
 
   useEffect(() => {
     const interval = setInterval(async () => {
-      await upsertCustomersSafely(customers, "Customer auto-save");
-      if (estimates.length > 0) {
+      // BUG FIX — "delete an invoice/customer, it comes back." See
+      // syncedEstimateIdsRef/syncedCustomerIdsRef's comment above — never
+      // blindly re-push a row this tab previously confirmed existed on the
+      // server but no longer does (deleted, here or on another device).
+      // Only rows the server still actually has, or rows this tab has
+      // NEVER confirmed synced before (a genuinely new local row), go out.
+      let estimateSafeIds: Set<string> | null = null;
+      let customerSafeIds: Set<string> | null = null;
+      try {
+        const [{ data: liveEstIds }, { data: liveCustIds }] = await Promise.all([
+          (supabase as any).from("estimates").select("id").eq("owner_id", crmUserId),
+          (supabase as any).from("customers").select("id").eq("owner_id", crmUserId),
+        ]);
+        if (Array.isArray(liveEstIds)) estimateSafeIds = new Set(liveEstIds.map((r: any) => r.id));
+        if (Array.isArray(liveCustIds)) customerSafeIds = new Set(liveCustIds.map((r: any) => r.id));
+      } catch (err: any) { console.warn("Auto-save id check failed — skipping resurrection guard this cycle:", err?.message); }
+      const safeCustomers = !customerSafeIds ? customers : customers.filter((c: any) => customerSafeIds!.has(c.id) || !syncedCustomerIdsRef.current.has(c.id));
+      await upsertCustomersSafely(safeCustomers, "Customer auto-save");
+      const safeEstimates = !estimateSafeIds ? estimates : estimates.filter((e: any) => estimateSafeIds!.has(e.id) || !syncedEstimateIdsRef.current.has(e.id));
+      if (safeEstimates.length > 0) {
         try {
-          const { error } = await (supabase as any).from("estimates").upsert(estimates.map((e: any) => ({ ...e, owner_id: crmUserId })), { onConflict: "id" });
+          const { error } = await (supabase as any).from("estimates").upsert(safeEstimates.map((e: any) => ({ ...e, owner_id: crmUserId })), { onConflict: "id" });
           if (error) console.warn("Estimate auto-save failed:", error.message);
+          else safeEstimates.forEach((e: any) => syncedEstimateIdsRef.current.add(e.id));
         } catch (err: any) { console.warn("Estimate auto-save failed:", err?.message); }
       }
       // FEATURE — Chemicals & Equipment used to never reach Supabase at all

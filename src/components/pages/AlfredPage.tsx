@@ -1094,7 +1094,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
     send_estimate: "send_quotes",
     send_reminder: "message_customers", text_phone_number: "message_customers",
     notify_all_customers: "mass_messaging",
-    text_supplier: "message_suppliers", email_supplier: "message_suppliers",
+    text_supplier: "message_suppliers", email_supplier: "message_suppliers", contact_general_supplier: "message_suppliers",
     send_email_via_gmail: "send_email",
     text_me_document: "send_files", send_me_files: "send_files",
     create_automation: "automations", toggle_automation: "automations", enable_review_request_automation: "automations",
@@ -2248,6 +2248,42 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           toast("Alfred emailed " + (supplier.name || "supplier") + " re: " + item.name);
           return { success: true, supplier: supplier.name, email: supplier.email, sent: inputs.message };
         }
+        // FEATURE — "add general suppliers — a mechanic, main shop — and
+        // Alfred should be able to access that info." Distinct from
+        // text_supplier/email_supplier above (which need a chemical/
+        // equipment item name): looks up the standalone general_suppliers
+        // table (migration 0068, ChemicalsPage.tsx's own new section) by
+        // name instead. Fetched live rather than via a prop since this
+        // table isn't part of the app's normal in-memory state.
+        case "contact_general_supplier": {
+          const res = await (supabase as any).from("general_suppliers").select("*").eq("owner_id", ownerId || "");
+          const suppliers = Array.isArray(res?.data) ? res.data : [];
+          const q = String(inputs.supplierName || "").toLowerCase().trim();
+          const supplier = suppliers.find((s: any) => (s.name || "").toLowerCase().trim() === q)
+            || suppliers.find((s: any) => (s.name || "").toLowerCase().includes(q));
+          if (!supplier) return { error: `No general supplier found matching "${inputs.supplierName}". On file: ${suppliers.map((s: any) => s.name).join(", ") || "none yet"}.` };
+          if (!inputs.channel) {
+            return { success: true, name: supplier.name, category: supplier.category, phone: supplier.phone, email: supplier.email, address: supplier.address, website: supplier.website, notes: supplier.notes };
+          }
+          if (inputs.channel === "text") {
+            if (!supplier.phone) return { error: `${supplier.name} has no phone number on file.` };
+            if (!inputs.message?.trim()) return { error: "message is required — the exact SMS text to send." };
+            try { await withTimeout(twilioSend(settings as any, supplier.phone, inputs.message), 15000, "Supplier SMS"); }
+            catch (e: any) { return { error: "Failed to send — " + (e?.message || "unknown error") }; }
+            logOutboundSmsToInbox({ contactName: supplier.name || "Supplier", contactPhone: supplier.phone, body: inputs.message }).catch(() => {});
+            toast("Alfred texted " + supplier.name);
+            return { success: true, supplier: supplier.name, phone: supplier.phone, sent: inputs.message };
+          }
+          if (inputs.channel === "email") {
+            if (!supplier.email) return { error: `${supplier.name} has no email on file.` };
+            if (!inputs.subject?.trim() || !inputs.message?.trim()) return { error: "subject and message are required." };
+            try { await withTimeout(sendEmail(settings as any, { to: supplier.email, subject: inputs.subject, body: `<p>${String(inputs.message).replace(/\n/g, "<br/>")}</p>` }), 15000, "Supplier email"); }
+            catch (e: any) { return { error: "Failed to send — " + (e?.message || "unknown error") }; }
+            toast("Alfred emailed " + supplier.name);
+            return { success: true, supplier: supplier.name, email: supplier.email, sent: inputs.message };
+          }
+          return { error: "channel must be 'text' or 'email'" };
+        }
         // FEATURE — "check stock, suggest reorder" (read-only — never places
         // an order on its own; ordering still only ever happens via
         // text_supplier/email_supplier, which require the owner to have
@@ -2760,6 +2796,11 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
       name: "check_stock",
       description: "Check current stock levels against reorder thresholds for chemicals/equipment — use whenever the owner asks what's running low or needs reordering. Read-only; never places an order on its own.",
       input_schema: { type: "object", properties: { itemName: { type: "string", description: "Optional — check one specific item; omit to check everything" } } }
+    },
+    {
+      name: "contact_general_supplier",
+      description: "Look up, text, or email a GENERAL supplier — a mechanic, main shop, or vendor not tied to any specific chemical/equipment item (see the General Suppliers list in Chemicals & Equipment). Omit channel to just look up their contact info. Outreach only — never places an order or moves money.",
+      input_schema: { type: "object", properties: { supplierName: { type: "string" }, channel: { type: "string", enum: ["text", "email"], description: "Omit to just look up contact info" }, subject: { type: "string" }, message: { type: "string" } }, required: ["supplierName"] }
     },
     {
       name: "log_expense",
