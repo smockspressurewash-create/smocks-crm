@@ -2639,6 +2639,20 @@ export function App() {
           "crew", "crewAssignedAt", "clockInAt", "lunchStartAt", "lunchMinutes", "lunchExceeded", "pipelineStage", "photos", "videos",
           "preChecklist", "duringChecklist", "postChecklist", "checklist", "signOff", "scheduledTime", "commLog",
           "equipmentChecked", "notes",
+          // BUG FIX — "Auto-save skipped — jobs table is missing column(s)"
+          // every 30s, every job, whole batch: crewGoogleEventIds is
+          // `NOT NULL DEFAULT '{}'::jsonb` — fine when a row's INSERT/UPDATE
+          // simply omits the key (the default applies), but PostgREST's
+          // bulk upsert builds ONE statement from the UNION of every key
+          // present across the whole array. The instant ANY single job in
+          // local state had this key (e.g. freshly fetched from Supabase,
+          // which always returns it), every OTHER job in the same batch —
+          // which never had this key locally — got it sent as an explicit
+          // JSON `null` to fill the column, violating NOT NULL and 400ing
+          // the entire batch, not just that one job. No code here writes
+          // this field directly (it's calendar-sync-derived), so it's safe
+          // to strip like crew/crewAssignedAt above rather than normalize.
+          "crewGoogleEventIds",
         ] as const;
         const safeJobs = jobs.map(j => {
           const copy: any = stripLegacyJobFields(j);

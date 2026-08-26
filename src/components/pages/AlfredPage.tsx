@@ -1149,6 +1149,47 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
     return out;
   })();
 
+  // BUG FIX — "assign employee to the job I just scheduled" (in the SAME
+  // Alfred turn) failed with "Job not found" even though schedule_job had
+  // just verified the row exists in Supabase. Root cause: schedule_job's
+  // setJobs(prev => [...prev, newJ]) only SCHEDULES a React state update —
+  // it doesn't take effect until the next render, but every case handler in
+  // this same executeTool closure keeps reading the `jobs` variable
+  // captured at THIS render, which is still the array from before the new
+  // job existed. Every later round in the same multi-tool-call turn (a
+  // fresh microtask, same render) sees the identical stale `jobs`. A direct
+  // Supabase fallback closes this for good — it's also correct for the
+  // more general case (a job created moments ago on another device/tab
+  // whose poll hasn't landed yet), not just the same-turn case.
+  const findJobFresh = async (opts: { jobId?: string; customerName?: string }): Promise<any> => {
+    if (opts.jobId) {
+      const local = jobs.find((x: any) => x.id === opts.jobId);
+      if (local) return local;
+      try {
+        const { data } = await withTimeout<any>(
+          (supabase as any).from("jobs").select("*").eq("id", opts.jobId).maybeSingle(),
+          8000, "Fresh job lookup"
+        );
+        if (data) return data;
+      } catch { /* fall through to customerName below, or the caller's not-found handling */ }
+    }
+    if (opts.customerName) {
+      const cust = customers.find((x: any) => (x.firstName + " " + x.lastName).trim().toLowerCase() === opts.customerName!.trim().toLowerCase());
+      if (!cust) return null;
+      const localMatch = jobs.filter((x: any) => x.customerId === cust.id && x.status !== "cancelled")
+        .sort((a: any, b: any) => (b.scheduledDate || "").localeCompare(a.scheduledDate || ""))[0];
+      if (localMatch) return localMatch;
+      try {
+        const { data } = await withTimeout<any>(
+          (supabase as any).from("jobs").select("*").eq("customerId", cust.id).neq("status", "cancelled").order("createdAt", { ascending: false }).limit(1).maybeSingle(),
+          8000, "Fresh job lookup"
+        );
+        if (data) return data;
+      } catch { /* nothing found either way */ }
+    }
+    return null;
+  };
+
   const executeTool = async (name, inputs) => {
     const __t0 = Date.now();
     console.log("[AlfredTool] → call:", name, "input:", inputs);
@@ -1708,7 +1749,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           };
         }
         case "update_job_priority": {
-          const j = jobs.find(x => x.id === inputs.jobId);
+          const j = await findJobFresh({ jobId: inputs.jobId, customerName: inputs.customerName });
           if (!j) return { error: "Job not found" };
           const { error: prioErr } = await withTimeoutRetry<any>(
             () => (supabase as any).from("jobs").update({ priority: inputs.priority }).eq("id", inputs.jobId),
@@ -1721,7 +1762,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           return { success: true, jobId: inputs.jobId, newPriority: inputs.priority };
         }
         case "reschedule_job": {
-          const j = jobs.find(x => x.id === inputs.jobId);
+          const j = await findJobFresh({ jobId: inputs.jobId, customerName: inputs.customerName });
           if (!j) return { error: "Job not found" };
           if (!inputs.date) return { error: "date is required" };
           // CRITICAL (Alfred functionality audit) — this ONLY called
@@ -1772,7 +1813,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           return { success: true, jobId: inputs.jobId, newDate: inputs.date, newTime: inputs.time || j.scheduledTime, ...(notifyWarning ? { notifyWarning } : {}) };
         }
         case "cancel_job": {
-          const j = jobs.find(x => x.id === inputs.jobId);
+          const j = await findJobFresh({ jobId: inputs.jobId, customerName: inputs.customerName });
           if (!j) return { error: "Job not found" };
           // CRITICAL (Alfred functionality audit) — same bug as
           // reschedule_job above: local-only setJobs(), no Supabase write,
@@ -1815,9 +1856,8 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
         // enough to actually answer a "what's going on with this job"
         // question (address, crew, checklist progress, photos, payment).
         case "get_job_details": {
-          let j: any = inputs.jobId ? jobs.find(x => x.id === inputs.jobId) : null;
           let matchedCustomer: any = null;
-          if (!j && inputs.customerName) {
+          if (inputs.customerName) {
             matchedCustomer = customers.find(x => (x.firstName + " " + x.lastName).trim().toLowerCase() === (inputs.customerName || "").trim().toLowerCase());
             if (!matchedCustomer) {
               const suggestions = suggestNames(inputs.customerName, customers, x => `${x.firstName} ${x.lastName}`);
@@ -1825,10 +1865,8 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
                 ? { error: "Customer not found", suggestions, instruction: "Ask the user 'Do you mean " + suggestions.join(", or ") + "?' — do not ask a generic follow-up question." }
                 : { error: "Customer not found" };
             }
-            const cJobs = jobs.filter(x => x.customerId === matchedCustomer.id && x.status !== "cancelled")
-              .sort((a, b) => (b.scheduledDate || "").localeCompare(a.scheduledDate || ""));
-            j = cJobs[0] || null;
           }
+          const j: any = await findJobFresh({ jobId: inputs.jobId, customerName: inputs.customerName });
           if (!j) return { error: "Job not found — provide jobId, or a customerName with a job on file." };
           const jc = matchedCustomer || customers.find(x => x.id === j.customerId);
           const crewNames = (j.crew || []).map((id: string) => { const e = employees.find((x: any) => x.id === id); return e ? e.firstName + " " + e.lastName : id; });
@@ -1850,7 +1888,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
         // which is only ever read for historical record-keeping, never shown
         // as an interactive list to employees.
         case "add_checklist_item": {
-          const j = jobs.find(x => x.id === inputs.jobId);
+          const j = await findJobFresh({ jobId: inputs.jobId, customerName: inputs.customerName });
           if (!j) return { error: "Job not found" };
           if (!inputs.item) return { error: "item text required" };
           const phase = inputs.phase === "during" ? "duringChecklist" : inputs.phase === "post" ? "postChecklist" : "preChecklist";
@@ -2004,7 +2042,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           return { count: list.length, employees: list };
         }
         case "assign_employee": {
-          const j = jobs.find(x => x.id === inputs.jobId);
+          const j = await findJobFresh({ jobId: inputs.jobId, customerName: inputs.customerName });
           if (!j) return { error: "Job not found" };
           const emp = employees.find(e => e.id === inputs.employeeId || (e.firstName + " " + e.lastName).trim().toLowerCase() === (inputs.employeeName || "").trim().toLowerCase());
           if (!emp) {
@@ -2063,7 +2101,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           return { success: true, jobId: j.id, employeeId: emp.id, employee: emp.firstName + " " + emp.lastName };
         }
         case "request_employee": {
-          const j = jobs.find(x => x.id === inputs.jobId);
+          const j = await findJobFresh({ jobId: inputs.jobId, customerName: inputs.customerName });
           if (!j) return { error: "Job not found" };
           const emp = employees.find(e => e.id === inputs.employeeId || (e.firstName + " " + e.lastName).trim().toLowerCase() === (inputs.employeeName || "").trim().toLowerCase());
           if (!emp) {
