@@ -3144,6 +3144,15 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
             if (!toolsForModel && /^[a-zA-Z_][a-zA-Z0-9_]{2,40}\s*\(.*\)\s*\.?$/.test((result.text || "").trim())) {
               throw new Error(`${MODELS_MAP[mid]?.name || mid} doesn't support tool/function calling and tried to fake a tool call as text instead of acting.`);
             }
+            // BUG FIX — a completely empty response (no text, no tool call,
+            // just a clean end_turn) also got accepted as "success," and the
+            // UI's `if (!finalText) finalText = "Done."` fallback then showed
+            // the owner a cheerful "Done." even though nothing happened at
+            // all. An empty non-answer is never a valid final response —
+            // fail it over to the next model instead of pretending it is one.
+            if (result.stopReason !== "tool_use" && result.toolUses.length === 0 && !(result.text || "").trim()) {
+              throw new Error(`${MODELS_MAP[mid]?.name || mid} returned an empty response.`);
+            }
             if (result.text) localFinal = result.text;
             if (result.toolUses.length > 0 && result.stopReason === "tool_use" && toolsForModel) {
               localConv.push({ role: "assistant", content: result.raw });
