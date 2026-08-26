@@ -985,6 +985,9 @@ export interface AppSettings {
   // Integrations misc
   bufferTime?: number;
   bufferApiKey?: string;
+  // Optional — unlocks "Auto-Edit with AI" in the Social video editor
+  // (Shotstack); the free ffmpeg.wasm editor works fully without this.
+  videoAutoEditApiKey?: string;
   bufferOrganizationId?: string;
   bufferChannelIds?: Record<string, string>;
   googleCalendarColor?: boolean;

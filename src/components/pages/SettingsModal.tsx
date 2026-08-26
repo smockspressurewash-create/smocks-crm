@@ -14,7 +14,7 @@ import {
   Navigation, TrendingDown, PieChart as PieIcon, Package, Wrench,
   CheckSquare, Route, Users2, Layers, ArrowRight, BarChart2, Filter,
   Paperclip, ImageIcon, FileImage, MoreVertical, Mic, Upload, Link, Lock, User,
-  CalendarClock
+  CalendarClock, Clapperboard
 } from "lucide-react";
 import {
   BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid,
@@ -1987,6 +1987,22 @@ export function SettingsModal({ open, onClose, settings, setSettings, jobs = [],
                   <div className="text-[10px] text-white/40">Channels connected previously — click "Find Channels" again to change them.</div>
                 )}
               </div>
+            </Glass>
+
+            {/* FEATURE — optional "Auto-Edit with AI" in the Social section's
+                video editor. Entirely optional and separate from the free
+                built-in editor (ffmpeg.wasm, runs in-browser at no cost) —
+                this only does anything once the owner pastes their own
+                Shotstack key, so nothing bills anyone but the owner. */}
+            <Glass className="p-4 !bg-black/40">
+              <div className="flex items-center justify-between mb-3">
+                <div className="flex items-center gap-2"><Clapperboard size={16} className="text-purple-400" /><div className="font-semibold text-sm">Video Auto-Edit (optional)</div></div>
+                <Badge tone={f.videoAutoEditApiKey ? "green" : "gray"}>{f.videoAutoEditApiKey ? "Connected" : "Not set"}</Badge>
+              </div>
+              <div className="text-xs text-white/60 mb-3">
+                The Social page's video editor already lets you manually trim clips, auto-cut silence, and add captions for free — no key needed. Adding a <a href="https://shotstack.io" target="_blank" rel="noopener noreferrer" className="text-purple-400 hover:text-purple-300">Shotstack</a> API key here unlocks an optional "Auto-Edit with AI" button that assembles the edit automatically on their servers — billed to your own Shotstack account, not bundled with this app.
+              </div>
+              <GInput type="password" value={f.videoAutoEditApiKey || ""} onChange={e => setF({ ...f, videoAutoEditApiKey: e.target.value.trim() })} placeholder="Shotstack API key" className="!text-xs" />
             </Glass>
 
             {/* Direct platform OAuth — fallback for accounts not on Buffer */}

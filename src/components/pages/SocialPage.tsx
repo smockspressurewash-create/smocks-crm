@@ -13,7 +13,7 @@ import {
   Globe, Share2, Trophy, ExternalLink, Workflow, ToggleLeft, ToggleRight,
   Navigation, TrendingDown, PieChart as PieIcon, Package, Wrench,
   CheckSquare, Route, Users2, Layers, ArrowRight, BarChart2, Filter,
-  Paperclip, ImageIcon, FileImage, MoreVertical, Mic, Upload, Link, Lock, User
+  Paperclip, ImageIcon, FileImage, MoreVertical, Mic, Upload, Link, Lock, User, Clapperboard
 } from "lucide-react";
 import {
   BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid,
@@ -44,6 +44,7 @@ import { PageFade } from "../ui/PageFade";
 import { TimeframeSelector } from "../ui/TimeframeSelector";
 import { AddressAutocomplete } from "../ui/AddressAutocomplete";
 import { BeforeAfterSlider } from "../ui/BeforeAfterSlider";
+import { VideoEditorModal } from "../ui/VideoEditorModal";
 import { CustomerModal } from "../ui/CustomerModal";
 import { CustomerDetail } from "../ui/CustomerDetail";
 import { CustomerAnalytics } from "../ui/CustomerAnalytics";
@@ -139,6 +140,22 @@ export function SocialPage({ posts = [], setPosts, toast, settings = {} as AppSe
   // ready content — this pulls them in directly instead of making the
   // owner re-upload a photo they already took.
   const [jobPhotoPickerOpen, setJobPhotoPickerOpen] = useState(false);
+  const [videoEditorOpen, setVideoEditorOpen] = useState(false);
+  // FEATURE — CapCut-style video editor's export hands back a raw Blob
+  // (ffmpeg.wasm's rendered MP4); this uploads it the exact same way the
+  // plain file-upload path above does, so the rest of the posting flow
+  // (Buffer/Meta send, etc.) can't tell the difference.
+  const onVideoExported = async (blob: Blob) => {
+    setF(prev => ({ ...(prev as any), _uploadingMedia: true }));
+    const url = await uploadJobMedia(blob, `social/${uid()}.mp4`, "video/mp4");
+    if (url) {
+      setF(prev => ({ ...(prev as any), _photoUrl: url, _mediaType: "video", _uploadingMedia: false }));
+      toast?.("Edited video attached ✓", "green");
+    } else {
+      setF(prev => ({ ...(prev as any), _uploadingMedia: false }));
+      toast?.("Rendered, but upload to storage failed — try again", "red");
+    }
+  };
   const [pickingJobPhoto, setPickingJobPhoto] = useState(false);
   const jobsWithPhotoPairs = jobs
     .map((j: any) => {
@@ -826,6 +843,9 @@ export function SocialPage({ posts = [], setPosts, toast, settings = {} as AppSe
                 {(f as any)._uploadingMedia ? <>Uploading…</> : <><Upload size={12} />Upload a photo or video</>}
               </label>
             )}
+            <button onClick={() => setVideoEditorOpen(true)} className="mt-1.5 w-full flex items-center justify-center gap-1.5 py-2 rounded-lg bg-purple-950/20 hover:bg-purple-900/30 border border-purple-700/30 text-purple-300 text-[11px] font-semibold transition">
+              <Clapperboard size={12} />Open Video Editor — trim clips, auto-cut, add captions
+            </button>
           </div>
           <div>
             <div className="flex items-center justify-between mb-1">
@@ -948,6 +968,8 @@ export function SocialPage({ posts = [], setPosts, toast, settings = {} as AppSe
           </div>
         </div>
       </Modal>
+
+      <VideoEditorModal open={videoEditorOpen} onClose={() => setVideoEditorOpen(false)} onExported={onVideoExported} toast={toast} settings={settings} />
 
       {/* FEATURE — job before/after photo picker (see jobsWithPhotoPairs above) */}
       <Modal open={jobPhotoPickerOpen} onClose={() => setJobPhotoPickerOpen(false)} title="Use a Job's Before/After Photo" maxW="max-w-lg">
