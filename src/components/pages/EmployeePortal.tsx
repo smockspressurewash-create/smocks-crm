@@ -4595,15 +4595,27 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
       const portalLink = `${window.location.origin}${window.location.pathname}#/portal?job=${encodeURIComponent(job.id)}`;
       const description = buildJobCalendarDescription(job, cust, portalLink, "View job in Crew Portal");
       const title = `${opts.completed ? "✓ " : ""}CrewBoss Job: ${custName}${opts.completed ? " (Completed)" : ""}`;
-      if (job.googleEventId) {
-        await updateGCalEvent(empToken!.token, job.googleEventId, { title, location: job.address, description });
+      // BUG FIX — this read/wrote job.googleEventId, the OWNER's OWN
+      // calendar-event tracking field (see JobsPage.tsx/AlfredPage.tsx's
+      // owner sync). An employee syncing to THEIR OWN calendar would
+      // overwrite that field with the employee's event id, corrupting the
+      // owner's own calendar link — and if the owner had already synced
+      // first, this code would wrongly treat the OWNER's event id as "I
+      // (the employee) already have an event," skip creating one, and never
+      // sync at all. crewGoogleEventIds (jsonb, keyed by employee id — same
+      // column the server-side employeeCalendarSync.ts already uses when
+      // the OWNER assigns crew) is the correct, employee-specific tracker.
+      const myEventId = (job as any).crewGoogleEventIds?.[myEmployee.id];
+      if (myEventId) {
+        await updateGCalEvent(empToken!.token, myEventId, { title, location: job.address, description });
         if (!opts.silent) toast("📅 Google Calendar event updated");
       } else {
         const evId = await createGCalEvent(empToken!.token, {
           title, start: startDt.toISOString(), end: endDt.toISOString(), location: job.address, description,
         });
-        setJobs(prev => prev.map(j => j.id === job.id ? { ...j, googleEventId: evId } : j));
-        (supabase as any).from("jobs").update({ googleEventId: evId }).eq("id", job.id).catch(() => {});
+        const nextMap = { ...((job as any).crewGoogleEventIds || {}), [myEmployee.id]: evId };
+        setJobs(prev => prev.map(j => j.id === job.id ? { ...j, crewGoogleEventIds: nextMap } as any : j));
+        (supabase as any).from("jobs").update({ crewGoogleEventIds: nextMap }).eq("id", job.id).catch(() => {});
         if (!opts.silent) toast("📅 Added to your Google Calendar");
       }
     } catch (e) {
@@ -4611,6 +4623,33 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     }
   };
   const syncAcceptedJobToCalendar = (job: Job | undefined) => syncJobToCalendar(job);
+
+  // BUG FIX — "it never auto-added the job offer created for me onto my
+  // calendar... I'm talking about past jobs too, not just the new ones."
+  // syncJobToCalendar only ever ran reactively (accepting a job REQUEST, or
+  // completing a job) — a job the owner assigned directly (not via the
+  // request/accept flow) never triggered any client-side sync at all, and
+  // there was no catch-up pass for jobs assigned before this ever worked.
+  // Same pattern as the 24h reminder effect above: runs once on load and
+  // hourly while the portal stays open, and syncs every one of my upcoming
+  // (not completed/cancelled) jobs that doesn't already have a synced event
+  // for me — naturally a no-op after the first pass since a synced job
+  // gets a crewGoogleEventIds entry and won't match again.
+  useEffect(() => {
+    if (!myEmployee || !autoSyncCalendar || !empSession?.user?.id) return;
+    const backfill = async () => {
+      const empToken = await getValidEmpGoogleToken(empSession.user.id, settings?.googleBackendUrl);
+      if (!empToken) return;
+      for (const j of myJobs) {
+        if (!j.scheduledDate || j.status === "completed" || j.status === "cancelled") continue;
+        if ((j as any).crewGoogleEventIds?.[myEmployee.id]) continue;
+        await syncJobToCalendar(j, { silent: true });
+      }
+    };
+    backfill();
+    const h = setInterval(backfill, 60 * 60 * 1000);
+    return () => clearInterval(h);
+  }, [myEmployee?.id, autoSyncCalendar, myJobs.length]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleAcceptRequest = async () => {
     if (!requestData || !myEmployee || respondingToRequest) return;
