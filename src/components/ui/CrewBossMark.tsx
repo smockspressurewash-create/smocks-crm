@@ -7,24 +7,23 @@ import React from "react";
 // is a separate static asset (can't reference a React component) but should
 // stay visually identical.
 //
-// This layout (person narrower, arms hanging at the sides instead of
-// reaching toward the letters) was chosen after actually rendering
-// candidates with Playwright and inspecting the pixels — every earlier
-// version where the arms/hands reached for the letters kept reading as "the
-// letters are touching the person" regardless of how the letters themselves
-// were sized/positioned. Verified clearance from the person on both sides
-// and zero clipping against the SVG's own bounds before finalizing.
+// BUG FIX — "fix the logo on the landing page." The previous design (a
+// small person silhouette — head, body, legs — with "C"/"B" letters woven
+// around it) was detailed enough that it needed real screen real estate to
+// read as anything but a blob; every actual usage of this component renders
+// it at 16–20px (nav badges, sidebar, login screens), the exact same size
+// class that caused favicon.svg to need this identical simplification
+// already (see that file's own BUG FIX comment — "doesn't fit fully,
+// corners are cut off"). This never got applied here, so the mark still
+// looked broken specifically where the icon was small enough to matter,
+// including the landing page's nav. Matches favicon.svg's simple "C"+"B"
+// wordmark exactly so the brand mark is now genuinely identical everywhere,
+// not just intended to be.
 export function CrewBossMark({ className = "" }: { className?: string }) {
   return (
-    <svg viewBox="0 0 100 100" className={className} fill="none">
-      <g stroke="#ffffff" strokeWidth={6} strokeLinecap="round">
-        <path d="M43 58 L37 76" />
-        <path d="M57 58 L63 76" />
-      </g>
-      <circle cx="50" cy="26" r="8" fill="#ffffff" />
-      <path d="M40 74 C40 54 44 48 50 48 C56 48 60 54 60 74 C60 82 56 85 50 85 C44 85 40 82 40 74 Z" fill="#ffffff" />
-      <text x="20" y="70" fontFamily="Arial, Helvetica, sans-serif" fontWeight={900} fontSize={43} fill="#ffffff" textAnchor="middle">C</text>
-      <text x="80" y="70" fontFamily="Arial, Helvetica, sans-serif" fontWeight={900} fontSize={43} fill="#ffffff" textAnchor="middle">B</text>
+    <svg viewBox="0 0 100 100" className={className}>
+      <text x="32" y="68" fontFamily="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" fontWeight={800} fontSize={48} fill="#ffffff" textAnchor="middle">C</text>
+      <text x="68" y="68" fontFamily="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" fontWeight={800} fontSize={48} fill="#dc2626" textAnchor="middle">B</text>
     </svg>
   );
 }

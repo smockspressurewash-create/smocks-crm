@@ -6707,27 +6707,12 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
               })}
             </div>
 
-            {/* Quick actions */}
-            {(() => {
-              const quickJob = activeClockJob || todayJobs[0] || upNextJob;
-              const goToQuickJob = () => { if (quickJob) { setSelectedJobId(quickJob.id); setTab("jobs"); } };
-              return (
-                <div className="flex gap-2">
-                  <button onClick={goToQuickJob} disabled={!quickJob}
-                    className="flex-1 flex items-center justify-center gap-1.5 py-2.5 rounded-full bg-green-900/30 hover:bg-green-800/40 border border-green-700/30 text-green-300 text-xs font-semibold transition disabled:opacity-30">
-                    <Play size={12} />Start Job
-                  </button>
-                  <button onClick={goToQuickJob} disabled={!quickJob}
-                    className="flex-1 flex items-center justify-center gap-1.5 py-2.5 rounded-full bg-blue-900/30 hover:bg-blue-800/40 border border-blue-700/30 text-blue-300 text-xs font-semibold transition disabled:opacity-30">
-                    <Camera size={12} />Upload Photo
-                  </button>
-                  <button onClick={goToQuickJob} disabled={!quickJob}
-                    className="flex-1 flex items-center justify-center gap-1.5 py-2.5 rounded-full bg-purple-900/30 hover:bg-purple-800/40 border border-purple-700/30 text-purple-300 text-xs font-semibold transition disabled:opacity-30">
-                    <PenLine size={12} />Get Signature
-                  </button>
-                </div>
-              );
-            })()}
+            {/* BUG FIX — "get rid of the start job, upload photo and get
+                signature buttons on the dashboard for employee portal
+                because they can do that individually inside of the job."
+                These 3 buttons never did anything themselves — all three
+                just navigated to the same job's detail view, where the
+                real actions already live. Removed as pure redundancy. */}
 
             {/* Route optimization for today's jobs */}
             {todayJobs.filter(j => j.status !== "completed" && j.address).length >= 1 && (
@@ -6782,7 +6767,6 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
             {/* Incoming job requests */}
             {(() => {
               const pending = incomingRequests.filter(r => r.status === "pending");
-              const responded = incomingRequests.filter(r => r.status !== "pending").slice(0, 3);
               if (incomingLoading) return null;
               if (incomingRequests.length === 0) return null;
               return (
@@ -6843,23 +6827,6 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                         </div>
                       );
                     })}
-                    {responded.length > 0 && (
-                      <div>
-                        <div className="text-[10px] text-white/30 uppercase tracking-wider font-semibold mb-1.5 mt-3">Responded</div>
-                        <div className="space-y-1.5">
-                          {responded.map(req => {
-                            const reqJob = jobs.find(j => j.id === req.job_id);
-                            return (
-                              <div key={req.id} className="flex items-center gap-2 px-3 py-2 rounded-xl bg-white/3 border border-white/5">
-                                <div className={"w-1.5 h-1.5 rounded-full flex-shrink-0 " + (req.status === "accepted" ? "bg-green-400" : "bg-red-400/60")} />
-                                <div className="flex-1 min-w-0 text-xs text-white/50 truncate">{reqJob?.address || "Job"}</div>
-                                <div className={"text-[10px] font-semibold capitalize " + (req.status === "accepted" ? "text-green-400" : "text-red-400/70")}>{req.status}</div>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      </div>
-                    )}
                   </div>
                 </div>
               );
@@ -6960,33 +6927,6 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
               </div>
             )}
 
-            {/* Recent activity feed */}
-            {(() => {
-              const activity: { id: string; icon: string; text: string; date: string }[] = [];
-              myJobs.forEach(j => {
-                const cust = customers.find(c => c.id === j.customerId);
-                const custLabel = cust ? `${cust.firstName} ${cust.lastName}` : j.address;
-                if (j.signOff) activity.push({ id: j.id + "-signoff", icon: "✍️", text: `Got sign-off from ${custLabel}`, date: j.signOff.timestamp });
-                (j.commLog || []).forEach(c => activity.push({ id: c.id, icon: "📝", text: `Note on ${custLabel}: "${c.note}"`, date: c.date }));
-                if (j.status === "completed") activity.push({ id: j.id + "-done", icon: "✅", text: `Completed job at ${j.address}`, date: j.scheduledDate });
-              });
-              activity.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-              const recent = activity.slice(0, 5);
-              if (recent.length === 0) return null;
-              return (
-                <div>
-                  <div className="text-xs text-white/50 uppercase tracking-wider font-semibold mb-2">Recent Activity</div>
-                  <div className="space-y-1.5">
-                    {recent.map(a => (
-                      <div key={a.id} className="flex items-center gap-2 px-3 py-2 rounded-xl bg-white/3 border border-white/5">
-                        <span className="text-sm flex-shrink-0">{a.icon}</span>
-                        <div className="flex-1 min-w-0 text-xs text-white/60 truncate">{a.text}</div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              );
-            })()}
           </>}
 
           {/* Calendar tab */}

@@ -859,7 +859,7 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
     { k: "invoices", l: "Outstanding Invoices" },
     { k: "weather", l: "Weather Widget" },
     { k: "outstanding", l: "Outstanding / Upcoming" },
-    { k: "charts", l: "Charts & Weather" },
+    { k: "charts", l: "Revenue Chart" },
     { k: "activity", l: "Recent Activity" }
   ];
   const toggleWidget = k => {
@@ -1869,7 +1869,7 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
         </Glass>;
       })()}
 
-      <div className="grid lg:grid-cols-3 gap-6 items-stretch">
+      <div className="grid lg:grid-cols-2 gap-6 items-stretch">
         {/* Left: goals + upcoming jobs */}
         <div className="flex flex-col gap-4">
           {/* Goals */}
@@ -2023,138 +2023,46 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
             </div>
           </Glass>}
         </div>
-
-        {/* Right: weather */}
-        <div className="flex flex-col gap-4">
-          {/* Weather — FIX 10: never render a fake temperature when no OWM
-              key is configured; show a setup prompt instead. */}
-          {w.charts && !settings.owmKey && (
-            <Glass className="p-4 flex-1 flex items-center">
-              <div className="flex items-center gap-2 text-sm text-white/50">
-                <Cloud size={13} className="text-white/30 flex-shrink-0" />
-                Add an OpenWeatherMap API key in Settings → API Keys to see real weather here.
-              </div>
-            </Glass>
-          )}
-          {w.charts && settings.owmKey && weatherFetchError && !wCurrent && (
-            <Glass className="p-4 flex-1 flex items-center !bg-red-950/15 !border-red-700/30">
-              <div className="flex items-center gap-2 text-sm text-red-300">
-                <Cloud size={13} className="text-red-400 flex-shrink-0" />
-                Weather fetch failed — {weatherFetchError}. Check your OpenWeatherMap key in Settings → API Keys and your location in Settings → Company.
-              </div>
-            </Glass>
-          )}
-          {w.charts && settings.owmKey && !wCurrent && !weatherFetchError && (
-            <Glass className="p-4 flex-1 flex items-center">
-              <div className="flex items-center gap-2 text-sm text-white/50">
-                <Cloud size={13} className="text-white/30 flex-shrink-0 animate-pulse" />
-                Loading live weather…
-              </div>
-            </Glass>
-          )}
-          {w.charts && settings.owmKey && wCurrent && <Glass className="p-4 flex-1">
-            <div className="flex items-center justify-between mb-3">
-              <div className="font-semibold text-sm flex items-center gap-2"><Cloud size={13} className="text-blue-400" />Weather</div>
-              <span className="text-[10px] text-green-400">● Live</span>
-            </div>
-            <div className="flex items-end gap-4 mb-3">
-              <div>
-                <div className="text-3xl font-bold">{wCurrent.temp}°F</div>
-                <div className="text-xs text-white/50 capitalize">{wCurrent.description || wCurrent.condition?.replace("_"," ")}</div>
-              </div>
-              <div className="text-xs text-white/60 space-y-0.5 pb-1">
-                <div>💧 {wCurrent.rainChance}% rain</div>
-                <div>💨 {wCurrent.wind}mph wind</div>
-                <div>💦 {wCurrent.humidity}% humidity</div>
-              </div>
-            </div>
-            {!((settings as any).weatherLocation || "").trim() && (
-              <div className="text-[10px] text-yellow-400/80 mb-2">⚠ Using default location (York, PA) — add your business location in Settings → Company.</div>
-            )}
-            {wAlerts.length > 0 && <div className="mb-3 p-2 bg-yellow-950/30 border border-yellow-700/40 rounded-lg flex flex-wrap gap-1.5">
-              {wAlerts.map((a, i) => <span key={i} className="text-[10px] text-yellow-300">{a.icon || "⚠️"} {a.day}: {a.msg}</span>)}
-            </div>}
-            <div className="space-y-1.5">
-              {wForecast.slice(0, 5).map(f => <div key={f.day} className="flex items-center justify-between text-xs">
-                <span className="text-white/70 w-14">{f.day}</span>
-                <div className="flex-1 h-1 bg-black/40 rounded-full mx-2 overflow-hidden"><div className={"h-full rounded-full " + (f.rainChance > 60 ? "bg-blue-500" : f.rainChance > 30 ? "bg-yellow-500" : "bg-green-500")} style={{ width: f.rainChance + "%" }} /></div>
-                <span className="text-white/50 w-8 text-right">{f.rainChance}%</span>
-                <span className="font-semibold w-10 text-right">{f.temp}°</span>
-              </div>)}
-            </div>
-            {bestDay && <div className="mt-2 p-2 bg-green-950/20 border border-green-700/30 rounded-lg text-[10px] text-green-300">✅ Best day: {bestDay.day} — {bestDay.rainChance}% rain, {bestDay.temp}°F</div>}
-          </Glass>}
-
-        </div>
       </div>
 
-      {/* Revenue chart + Active Automations — side by side */}
-      {w.charts && <div className="grid lg:grid-cols-3 gap-6 items-stretch">
-        {/* Revenue chart — spans 2 cols */}
-        <Glass className="p-5 lg:col-span-2 flex flex-col">
-          <div className="flex items-center justify-between mb-4 flex-shrink-0">
-            <div>
-              <div className="font-semibold text-sm flex items-center gap-2"><BarChart2 size={13} className="text-red-400" />Revenue (6 months)</div>
-              {hasAnyRevData && <div className="text-[10px] text-white/40 mt-0.5">{fmt(revenueByMonth.reduce((s, m) => s + (m.revenue || 0), 0))} total · 6-month trend</div>}
-            </div>
-            <button onClick={() => onNav("analytics")} className="text-[10px] text-red-400 hover:text-red-300 flex items-center gap-1">Full analytics <ChevronRight size={10} /></button>
+      {/* BUG FIX — "get rid of active automation on the dashboard and get
+          rid of the duplicate weather widgets." This whole section used to
+          render a SECOND full weather card (identical data as the
+          standalone Weather Widget above) plus an Active Automations list
+          nobody asked to keep here (it already has its own page). Now just
+          the revenue chart, full width. */}
+      {w.charts && <Glass className="p-5 flex flex-col">
+        <div className="flex items-center justify-between mb-4 flex-shrink-0">
+          <div>
+            <div className="font-semibold text-sm flex items-center gap-2"><BarChart2 size={13} className="text-red-400" />Revenue (6 months)</div>
+            {hasAnyRevData && <div className="text-[10px] text-white/40 mt-0.5">{fmt(revenueByMonth.reduce((s, m) => s + (m.revenue || 0), 0))} total · 6-month trend</div>}
           </div>
-          {hasAnyRevData ? (
-            <ResponsiveContainer width="100%" height={300}>
-              <AreaChart data={revenueByMonth} margin={{ top: 8, right: 8, left: 4, bottom: 0 }}>
-                <defs>
-                  <linearGradient id="rdg" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stopColor="#e11d48" stopOpacity={0.5} />
-                    <stop offset="100%" stopColor="#9f1239" stopOpacity={0} />
-                  </linearGradient>
-                </defs>
-                <CartesianGrid strokeDasharray="3 3" stroke="#ffffff08" />
-                <XAxis dataKey="month" stroke="#ffffff20" fontSize={11} tick={{ fill: "#ffffff70" }} tickLine={false} axisLine={false} />
-                <YAxis stroke="#ffffff10" fontSize={10} tick={{ fill: "#ffffff50" }} tickLine={false} axisLine={false} tickFormatter={v => "$" + (v >= 1000 ? Math.round(v / 1000) + "k" : v)} width={40} />
-                <Tooltip contentStyle={{ background: "rgba(0,0,0,0.95)", border: "1px solid rgba(159,18,57,0.5)", borderRadius: "10px", fontSize: "11px", padding: "8px 12px" }} formatter={v => [fmt(Number(v)), "Revenue"]} labelStyle={{ color: "#ffffff90", marginBottom: "4px" }} cursor={{ stroke: "rgba(220,38,38,0.3)", strokeWidth: 1 }} />
-                <Area type="monotone" dataKey="revenue" stroke="#e11d48" strokeWidth={2.5} fill="url(#rdg)" dot={{ fill: "#e11d48", strokeWidth: 0, r: 3 }} activeDot={{ r: 5, fill: "#e11d48", strokeWidth: 0 }} />
-              </AreaChart>
-            </ResponsiveContainer>
-          ) : (
-            <div className="h-[300px] flex flex-col items-center justify-center text-center">
-              <BarChart2 size={28} className="text-white/10 mb-2" />
-              <div className="text-xs text-white/30">No completed jobs yet</div>
-              <button onClick={() => onNav("jobs")} className="mt-2 text-[11px] text-red-400 hover:text-red-300">Add your first job →</button>
-            </div>
-          )}
-        </Glass>
-
-        {/* Active Automations — 1 col */}
-        {w.activity && <Glass className="p-5 flex flex-col">
-          <div className="flex items-center justify-between mb-4 flex-shrink-0">
-            <div className="font-semibold text-sm flex items-center gap-2"><Zap size={13} className="text-yellow-400" />Active Automations</div>
-            <button onClick={() => onNav("automations")} className="text-[10px] text-red-400 hover:text-red-300">Manage →</button>
+          <button onClick={() => onNav("analytics")} className="text-[10px] text-red-400 hover:text-red-300 flex items-center gap-1">Full analytics <ChevronRight size={10} /></button>
+        </div>
+        {hasAnyRevData ? (
+          <ResponsiveContainer width="100%" height={300}>
+            <AreaChart data={revenueByMonth} margin={{ top: 8, right: 8, left: 4, bottom: 0 }}>
+              <defs>
+                <linearGradient id="rdg" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor="#e11d48" stopOpacity={0.5} />
+                  <stop offset="100%" stopColor="#9f1239" stopOpacity={0} />
+                </linearGradient>
+              </defs>
+              <CartesianGrid strokeDasharray="3 3" stroke="#ffffff08" />
+              <XAxis dataKey="month" stroke="#ffffff20" fontSize={11} tick={{ fill: "#ffffff70" }} tickLine={false} axisLine={false} />
+              <YAxis stroke="#ffffff10" fontSize={10} tick={{ fill: "#ffffff50" }} tickLine={false} axisLine={false} tickFormatter={v => "$" + (v >= 1000 ? Math.round(v / 1000) + "k" : v)} width={40} />
+              <Tooltip contentStyle={{ background: "rgba(0,0,0,0.95)", border: "1px solid rgba(159,18,57,0.5)", borderRadius: "10px", fontSize: "11px", padding: "8px 12px" }} formatter={v => [fmt(Number(v)), "Revenue"]} labelStyle={{ color: "#ffffff90", marginBottom: "4px" }} cursor={{ stroke: "rgba(220,38,38,0.3)", strokeWidth: 1 }} />
+              <Area type="monotone" dataKey="revenue" stroke="#e11d48" strokeWidth={2.5} fill="url(#rdg)" dot={{ fill: "#e11d48", strokeWidth: 0, r: 3 }} activeDot={{ r: 5, fill: "#e11d48", strokeWidth: 0 }} />
+            </AreaChart>
+          </ResponsiveContainer>
+        ) : (
+          <div className="h-[300px] flex flex-col items-center justify-center text-center">
+            <BarChart2 size={28} className="text-white/10 mb-2" />
+            <div className="text-xs text-white/30">No completed jobs yet</div>
+            <button onClick={() => onNav("jobs")} className="mt-2 text-[11px] text-red-400 hover:text-red-300">Add your first job →</button>
           </div>
-          <div className="flex-1 space-y-2">
-            {automations.filter(a => a.active).slice(0, 7).map(a => (
-              <div key={a.id} className="flex items-center gap-3 px-3 py-2.5 rounded-xl bg-black/40 border border-white/5 hover:border-red-900/30 transition group">
-                <span className="text-base w-6 text-center flex-shrink-0">{a.icon || "⚡"}</span>
-                <span className="text-sm text-white/80 flex-1 truncate group-hover:text-white transition">{a.name}</span>
-                <span className="flex items-center gap-1 text-[10px] text-green-400 font-semibold flex-shrink-0">
-                  <span className="w-1.5 h-1.5 rounded-full bg-green-400" />ON
-                </span>
-              </div>
-            ))}
-            {automations.filter(a => a.active).length === 0 && (
-              <div className="flex-1 flex flex-col items-center justify-center py-8 text-center">
-                <Zap size={24} className="text-white/10 mb-2" />
-                <div className="text-xs text-white/30">No active automations</div>
-                <button onClick={() => onNav("automations")} className="mt-2 text-[11px] text-red-400 hover:text-red-300">Set one up →</button>
-              </div>
-            )}
-            {automations.filter(a => a.active).length > 7 && (
-              <button onClick={() => onNav("automations")} className="w-full text-center text-[10px] text-white/40 hover:text-red-400 transition pt-1">
-                +{automations.filter(a => a.active).length - 7} more →
-              </button>
-            )}
-          </div>
-        </Glass>}
-      </div>}
+        )}
+      </Glass>}
 
       <InvoicePreviewModal
         open={!!previewInvoiceJob}
