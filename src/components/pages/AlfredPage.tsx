@@ -3043,7 +3043,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
         return m && m.needsKey && !!(settings.modelKeys || {})[mid];
       });
       const tryOrder = [...priority, ...extraModels];
-      const viableModels = tryOrder.filter(mid => {
+      const viableModelsAll = tryOrder.filter(mid => {
         const m = MODELS_MAP[mid];
         if (!m) return false;
         if (m.needsKey && !(settings.modelKeys || {})[mid]) return false; // no key
@@ -3051,6 +3051,21 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
         if (status && status.lockedUntil && status.lockedUntil > now) return false; // locked out
         return true;
       });
+      // BUG FIX — "search_customers {...}" showed up as Alfred's literal
+      // TEXT reply instead of actually running. Root cause: failover landed
+      // on a model marked supportsTools:false (e.g. OpenRouter's free
+      // Llama), which gets called with no `tools` param at all — but the
+      // system prompt still describes every tool and instructs Alfred to
+      // use them, so a model with no real function-calling capability just
+      // echoes back what LOOKS like a tool call as plain text, then stops,
+      // silently failing the entire request. Alfred's whole point is
+      // taking real actions — a model that can't call tools should only
+      // ever be a last resort, not a normal failover step. Prefer
+      // tool-capable models; only fall through to a non-tool model if
+      // literally none of the tool-capable ones are viable (better a
+      // clearly degraded chat-only reply than none at all).
+      const toolCapable = viableModelsAll.filter(mid => MODELS_MAP[mid]?.supportsTools);
+      const viableModels = toolCapable.length > 0 ? toolCapable : viableModelsAll;
       if (viableModels.length === 0) {
         const lockedWithKey = tryOrder.filter(mid => {
           const m = MODELS_MAP[mid];
