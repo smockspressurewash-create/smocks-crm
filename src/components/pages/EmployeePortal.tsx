@@ -345,6 +345,11 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
 }) {
   const effPerms = { ...DEFAULT_PERMISSIONS, ...(permsOverride || {}) };
   const [addCardOpen, setAddCardOpen] = useState(false);
+  // Tracks whether the Add Card modal was opened from the in-flow payment
+  // step (as opposed to the profile-level "Add Card on File" button) — lets
+  // onSaved reload the card list and select the new card immediately, so it
+  // can be charged in the same flow instead of the picker showing stale data.
+  const [addCardFromMethodStep, setAddCardFromMethodStep] = useState(false);
   const [cascadePrompt, setCascadePrompt] = useState<{ minutes: number } | null>(null);
   const [cascadeSending, setCascadeSending] = useState(false);
   const [chargingFee, setChargingFee] = useState(false);
@@ -1441,21 +1446,35 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
                 </div>
               )}
               {/* FEATURE — "there's no way to enter the card information" /
-                  "there should be a Pay in Person button." A customer with
-                  NO card on file yet previously had no path here besides
-                  the generic "Card" quick-select below (a manual note, not
-                  an actual charge) — this opens the real Add Card flow
-                  (same SaveCardModal the profile-level "Add Card on File"
-                  button uses) right from the payment step, so an employee
-                  taking payment in person can key in a brand-new card and
-                  actually charge it in one flow instead of having to back
-                  out to a different screen first. */}
-              {effPerms.can_process_payments && !customer?.savedPaymentMethodId && !!settings?.stripePublishableKey && (
+                  "there should be a Pay in Person button" / "ensure you can
+                  always create a new card, not just show one." This used to
+                  only appear when the customer had NO card on file at all,
+                  so once a first card existed there was never a way to key
+                  in a SECOND new card for a customer who wants to pay with
+                  a different one today. Now always available — opens the
+                  same real Add Card flow (SaveCardModal) right from the
+                  payment step regardless of what's already on file; see the
+                  addCardFromMethodStep-gated onSaved handler below, which
+                  reloads the card list and selects the new card so it can
+                  be charged immediately without leaving this screen. */}
+              {effPerms.can_process_payments && !!settings?.stripePublishableKey && (
                 <button
-                  onClick={() => setAddCardOpen(true)}
+                  onClick={() => { setAddCardFromMethodStep(true); setAddCardOpen(true); }}
                   className="w-full py-3 rounded-xl border-2 border-white/15 bg-white/5 text-white/70 hover:border-emerald-500/50 hover:text-emerald-300 transition flex items-center justify-center gap-1.5"
                 >
-                  <CreditCard size={14} />Add Card on File
+                  <CreditCard size={14} />{customer?.savedPaymentMethodId ? "Add a New Card" : "Add Card on File"}
+                </button>
+              )}
+              {/* FEATURE — "just send an invoice and save the card on file
+                  automatically." An employee who just added/has a card but
+                  the customer would rather be invoiced (not charged right
+                  now) previously had no way back to the invoice flow from
+                  here short of navigating away — the card they just saved
+                  stays on file either way (SaveCardModal already wrote it),
+                  this just routes to the same invoice step "No" uses. */}
+              {effPerms.can_send_invoices && (
+                <button onClick={() => { setPaidChoice("no"); setCompleteStep("invoice"); }} className="w-full text-center text-xs text-white/40 hover:text-white/70 transition py-1">
+                  Send an invoice instead {customer?.savedPaymentMethodId ? "(card stays saved on file)" : ""}
                 </button>
               )}
               <div className="grid grid-cols-2 gap-2">
@@ -2118,6 +2137,15 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
                 .catch((e: any) => console.warn("[AddCardOnFile] Supabase sync failed:", e?.message));
               toast?.("Card saved on file ✓", "green");
               setAddCardOpen(false);
+              // Opened from the payment step ("Add a New Card" mid-checkout)
+              // — merge the new card into jobCards and select it immediately
+              // so the "Charge to card on file" button appears with the new
+              // card ready to go, without needing a page reload.
+              if (addCardFromMethodStep) {
+                setAddCardFromMethodStep(false);
+                setJobCards(prev => prev.some(c => c.id === paymentMethodId) ? prev : [...prev, { id: paymentMethodId, brand: label?.split(" ")[0], last4: label?.match(/\d{4}$/)?.[0] }]);
+                setSelectedCardId(paymentMethodId);
+              }
             }}
           />
         )}
