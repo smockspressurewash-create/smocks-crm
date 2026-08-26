@@ -192,6 +192,43 @@ export const OPENROUTER_FREE_FALLBACKS = [
   "google/gemma-2-9b-it:free",
 ];
 
+// BUG FIX — "check that OpenRouter API keys work for Alfred": every single
+// hardcoded slug above 404'd in a real live test ("No endpoints found for
+// google/gemma-2-9b-it:free" — the LAST one tried, meaning all five had
+// already failed). Hand-maintaining this list doesn't hold up — OpenRouter's
+// free catalog genuinely rotates on its own schedule, not ours. OpenRouter
+// publishes its full model catalog at a public, unauthenticated, CORS-open
+// endpoint specifically so integrations can do this instead of guessing —
+// fetch it once per session, filter to models that are actually free right
+// now (prompt AND completion pricing both "0"), and try those FIRST, with
+// the static list above only as a last-resort fallback if that fetch
+// itself fails (offline, OpenRouter's own outage, etc.).
+let openRouterFreeModelsCache: string[] | null = null;
+let openRouterFreeModelsFetchedAt = 0;
+const OPENROUTER_CATALOG_TTL_MS = 30 * 60 * 1000;
+const getOpenRouterFreeModels = async (): Promise<string[]> => {
+  if (openRouterFreeModelsCache && Date.now() - openRouterFreeModelsFetchedAt < OPENROUTER_CATALOG_TTL_MS) {
+    return openRouterFreeModelsCache;
+  }
+  try {
+    const res = await fetch("https://openrouter.ai/api/v1/models");
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const json = await res.json() as { data?: Array<{ id: string; pricing?: { prompt?: string; completion?: string } }> };
+    const free = (json.data || [])
+      .filter(m => m.pricing?.prompt === "0" && m.pricing?.completion === "0")
+      .map(m => m.id);
+    if (free.length > 0) {
+      openRouterFreeModelsCache = free;
+      openRouterFreeModelsFetchedAt = Date.now();
+      return free;
+    }
+    throw new Error("OpenRouter returned no free models");
+  } catch (e: any) {
+    console.warn("[OpenRouter] live free-model catalog fetch failed, using static fallback list:", e?.message);
+    return [];
+  }
+};
+
 // ─── Safe fetch ───────────────────────────────────────────────────────────────
 
 // BUG FIX — "it shouldn't show that type of error; it should just say a
@@ -448,8 +485,19 @@ export const callModel = async (opts: {
 
   // ISSUE 19 — see OPENROUTER_FREE_FALLBACKS: try each candidate model in
   // order, moving to the next only on a 404 (model gone/renamed), not on
-  // other errors (auth, rate-limit, etc. should surface immediately).
-  const modelCandidates = def.provider === "openrouter" ? OPENROUTER_FREE_FALLBACKS : [def.modelId];
+  // other errors (auth, rate-limit, etc. should surface immediately). Live
+  // catalog first (see getOpenRouterFreeModels), static list as backup —
+  // deduped, live results first.
+  let modelCandidates: string[];
+  if (def.provider === "openrouter") {
+    const live = await getOpenRouterFreeModels();
+    // Cap the list — trying every free model on the whole catalog one at a
+    // time on repeated 404s could take a while; the first several already
+    // give good odds of hitting a working one.
+    modelCandidates = Array.from(new Set([...live, ...OPENROUTER_FREE_FALLBACKS])).slice(0, 8);
+  } else {
+    modelCandidates = [def.modelId];
+  }
 
   let data: { choices?: Array<{ message?: { content?: string | null; tool_calls?: Array<{ id: string; function?: { name: string; arguments?: string } }> } }> } | undefined;
   let lastErr: unknown;
