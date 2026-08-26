@@ -4003,6 +4003,19 @@ export function App() {
       const { data, error } = await supabase.auth.signInWithPassword({ email: ownerEmail.trim(), password: ownerPassword });
       setOwnerLoginLoading(false);
       if (error) { setOwnerLoginError(error.message); return; }
+      // FEATURE — "let people sign up and pay for CrewBoss" — starts the
+      // free trial the moment a brand-new owner account is created.
+      // Idempotent server-side (platform-billing.ts's start_trial never
+      // resets an existing row), so this is safe to fire on every
+      // registration without a separate "has this owner ever registered
+      // before" check here.
+      if (isRegistering && data?.session?.access_token) {
+        fetch("/api/platform-billing", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${data.session.access_token}` },
+          body: JSON.stringify({ action: "start_trial" }),
+        }).catch((e: any) => console.warn("[PlatformBilling] start_trial failed:", e?.message));
+      }
       // FIX 5 (round 2) — this used to also insert an employee row for the
       // owner right here, using snake_case columns (user_id/first_name/
       // last_name/hourly_rate) and a random default id, instead of the

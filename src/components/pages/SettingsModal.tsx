@@ -104,6 +104,85 @@ export function SettingsModal({ open, onClose, settings, setSettings, jobs = [],
     if (open) setSec("profile");
   }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // FEATURE — "let people sign up and pay for CrewBoss." Platform-level
+  // subscription status (trial countdown / active plan / past due) — a
+  // completely separate concept from the owner's OWN Stripe connection
+  // (Integrations tab), which is for charging THEIR customers.
+  const [platformSub, setPlatformSub] = useState<any>(null);
+  const [platformSubLoading, setPlatformSubLoading] = useState(false);
+  const [billingInterval, setBillingInterval] = useState<"month" | "year">("month");
+  const [billingActionBusy, setBillingActionBusy] = useState<string | null>(null);
+  useEffect(() => {
+    if (!open || sec !== "billing") return;
+    setPlatformSubLoading(true);
+    (async () => {
+      try {
+        const { data: sessionData } = await (supabase as any).auth.getSession();
+        const token = sessionData?.session?.access_token;
+        if (!token) { setPlatformSubLoading(false); return; }
+        const res = await fetch("/api/platform-billing", {
+          method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ action: "get_status" }),
+        });
+        const data = await res.json().catch(() => null);
+        setPlatformSub(data?.subscription || null);
+      } catch (e: any) {
+        console.warn("[Billing] status fetch failed:", e?.message);
+      } finally {
+        setPlatformSubLoading(false);
+      }
+    })();
+  }, [open, sec]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const startCheckout = async (plan: string) => {
+    setBillingActionBusy(plan);
+    try {
+      const { data: sessionData } = await (supabase as any).auth.getSession();
+      const token = sessionData?.session?.access_token;
+      const email = sessionData?.session?.user?.email;
+      if (!token) { toast?.("Please sign in again first", "red"); return; }
+      const res = await fetch("/api/platform-billing", {
+        method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          action: "create_checkout_session", plan, interval: billingInterval, email,
+          successUrl: window.location.origin + window.location.pathname + "#/dashboard?billed=1",
+          cancelUrl: window.location.href,
+        }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok || data?.error) throw new Error(data?.error || "Couldn't start checkout");
+      window.location.href = data.url;
+    } catch (e: any) {
+      toast?.(e?.message || "Couldn't start checkout", "red");
+    } finally {
+      setBillingActionBusy(null);
+    }
+  };
+  const openBillingPortal = async () => {
+    setBillingActionBusy("portal");
+    try {
+      const { data: sessionData } = await (supabase as any).auth.getSession();
+      const token = sessionData?.session?.access_token;
+      if (!token) { toast?.("Please sign in again first", "red"); return; }
+      const res = await fetch("/api/platform-billing", {
+        method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ action: "create_portal_session", returnUrl: window.location.href }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok || data?.error) throw new Error(data?.error || "Couldn't open billing portal");
+      window.location.href = data.url;
+    } catch (e: any) {
+      toast?.(e?.message || "Couldn't open billing portal", "red");
+    } finally {
+      setBillingActionBusy(null);
+    }
+  };
+  const BILLING_PLANS = [
+    { key: "solo", name: "Solo", monthly: 29, annual: 23, tagline: "For an owner-operator running the show alone." },
+    { key: "crew", name: "Crew", monthly: 59, annual: 47, tagline: "For a business running an actual crew in the field.", highlighted: true },
+    { key: "growth", name: "Growth", monthly: 119, annual: 95, tagline: "For multi-crew operations that want it all automated." },
+  ];
+
   // FEATURE — Legal template library ("edit, add new, save, have multiple
   // versions, choose a template for commercial vs residential"). Templates
   // themselves live in f.legalTemplates; setting one "active" for a scope
@@ -514,6 +593,7 @@ export function SettingsModal({ open, onClose, settings, setSettings, jobs = [],
         // looking for it by name.
         { key: "models", label: "Alfred", icon: Bot },
         { key: "company", label: "Company", icon: Settings },
+        { key: "billing", label: "Billing", icon: CreditCard },
         { key: "services", label: "Services", icon: Briefcase },
         { key: "goals", label: "Goals", icon: Target },
         { key: "notifications", label: "Notifications", icon: Bell },
@@ -1064,6 +1144,74 @@ export function SettingsModal({ open, onClose, settings, setSettings, jobs = [],
               </div>
             </div>
           </div>}
+
+          {sec === "billing" && (
+            <div className="space-y-4">
+              <h4 className="font-semibold text-sm">CrewBoss Subscription</h4>
+              <div className="text-xs text-white/50">This is your subscription to CrewBoss itself — separate from Stripe/Square under Integrations, which is for charging YOUR OWN customers.</div>
+              {platformSubLoading ? (
+                <div className="text-xs text-white/40">Loading…</div>
+              ) : (() => {
+                const status = platformSub?.status;
+                const trialEndsAt = platformSub?.trial_ends_at ? new Date(platformSub.trial_ends_at) : null;
+                const trialDaysLeft = trialEndsAt ? Math.max(0, Math.ceil((trialEndsAt.getTime() - Date.now()) / 86400000)) : null;
+                if (status === "active") {
+                  const plan = BILLING_PLANS.find(p => p.key === platformSub.plan);
+                  return (
+                    <Glass className="p-4 !bg-green-950/15 !border-green-700/30 space-y-2">
+                      <div className="flex items-center gap-2"><Badge tone="green">Active</Badge><div className="font-semibold text-sm">{plan?.name || platformSub.plan} Plan</div></div>
+                      <div className="text-xs text-white/50">Billed {platformSub.interval === "year" ? "annually" : "monthly"}{platformSub.current_period_end ? ` · renews ${new Date(platformSub.current_period_end).toLocaleDateString()}` : ""}</div>
+                      <GBtn variant="ghost" disabled={billingActionBusy === "portal"} onClick={openBillingPortal} className="!text-xs">
+                        {billingActionBusy === "portal" ? "Opening…" : "Manage Billing / Change Plan / Cancel"}
+                      </GBtn>
+                    </Glass>
+                  );
+                }
+                if (status === "past_due") {
+                  return (
+                    <Glass className="p-4 !bg-yellow-950/15 !border-yellow-700/30 space-y-2">
+                      <div className="flex items-center gap-2"><Badge tone="yellow">Payment Failed</Badge></div>
+                      <div className="text-xs text-white/60">Your last payment didn't go through — update your card to keep your subscription active.</div>
+                      <GBtn disabled={billingActionBusy === "portal"} onClick={openBillingPortal} className="!text-xs">
+                        {billingActionBusy === "portal" ? "Opening…" : "Update Payment Method"}
+                      </GBtn>
+                    </Glass>
+                  );
+                }
+                return (
+                  <>
+                    {status === "trialing" && trialDaysLeft !== null && (
+                      <div className={"text-xs rounded-xl px-3 py-2 border " + (trialDaysLeft <= 3 ? "text-yellow-300 bg-yellow-950/20 border-yellow-700/30" : "text-white/60 bg-white/5 border-white/10")}>
+                        {trialDaysLeft > 0 ? `${trialDaysLeft} day${trialDaysLeft !== 1 ? "s" : ""} left in your free trial.` : "Your free trial has ended — pick a plan to keep using CrewBoss."}
+                      </div>
+                    )}
+                    {status === "canceled" && (
+                      <div className="text-xs text-red-300 bg-red-950/20 border border-red-700/30 rounded-xl px-3 py-2">Your subscription was canceled. Pick a plan below to resubscribe.</div>
+                    )}
+                    <div className="flex items-center gap-1 p-1 bg-black/40 rounded-xl border border-white/10 w-fit">
+                      {(["month", "year"] as const).map(iv => (
+                        <button key={iv} onClick={() => setBillingInterval(iv)} className={"px-3 py-1.5 rounded-lg text-xs font-semibold transition " + (billingInterval === iv ? "bg-red-700 text-white" : "text-white/50 hover:text-white")}>
+                          {iv === "month" ? "Monthly" : "Annual (save ~20%)"}
+                        </button>
+                      ))}
+                    </div>
+                    <div className="grid sm:grid-cols-3 gap-3">
+                      {BILLING_PLANS.map(p => (
+                        <div key={p.key} className={"p-4 rounded-xl border space-y-2 " + (p.highlighted ? "border-red-600/50 bg-red-950/20" : "border-white/10 bg-black/30")}>
+                          <div className="font-semibold text-sm">{p.name}</div>
+                          <div className="text-2xl font-bold">${billingInterval === "year" ? p.annual : p.monthly}<span className="text-xs text-white/40 font-normal">/mo</span></div>
+                          <div className="text-[10px] text-white/40">{p.tagline}</div>
+                          <GBtn disabled={billingActionBusy === p.key} onClick={() => startCheckout(p.key)} className="w-full !text-xs !py-2">
+                            {billingActionBusy === p.key ? "Starting…" : "Subscribe"}
+                          </GBtn>
+                        </div>
+                      ))}
+                    </div>
+                  </>
+                );
+              })()}
+            </div>
+          )}
 
           {sec === "templates" && <div className="space-y-4">
             {/* Sub-tabs */}
