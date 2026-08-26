@@ -177,6 +177,14 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
   const [bulkAction, setBulkAction] = useState(null);
   const [, forceTick] = useState(0);
   const [newJobOpen, setNewJobOpen] = useState(false);
+  // BUG FIX — "it keeps creating/adding duplicate jobs on the Google
+  // calendar." The "Schedule Job" submit button had no re-entrancy guard
+  // at all — a double-tap (easy on mobile, or just a slow first click)
+  // fired this whole async handler twice, creating two real job rows AND
+  // two Google Calendar events for what was meant to be one job. Simple
+  // time-boxed lock rather than threading a saving-state through every
+  // exit path of this large handler.
+  const newJobSubmittingRef = useRef(false);
   // ISSUE 21 — FAB's "Schedule Job" now opens this modal immediately instead
   // of just landing on the Jobs tab.
   useEffect(() => {
@@ -881,8 +889,11 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
           <div className="flex gap-2 justify-end pt-2">
             <GBtn variant="ghost" onClick={() => setNewJobOpen(false)}>Cancel</GBtn>
             <GBtn onClick={async () => {
+              if (newJobSubmittingRef.current) return;
               if (!newJobForm.customerId) { toast("Select a customer", "error"); return; }
               if (!newJobForm.scheduledDate) { toast("Enter a date", "error"); return; }
+              newJobSubmittingRef.current = true;
+              setTimeout(() => { newJobSubmittingRef.current = false; }, 4000);
               // BLOCKER — assignedEmps now splits per-employee by crewModeById
               // instead of one shared mode for the whole batch, so "assign
               // Alice, request Bob" on the same job is possible, and an owner

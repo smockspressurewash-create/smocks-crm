@@ -125,6 +125,12 @@ export const crewIncludesEmployee = (crew: any, empId?: string | null, empUserId
   return list.some(c => c && targets.includes(c));
 };
 
+// Shared email-safe "label ... value" row for the end-of-day summary
+// emails — see its call sites' BUG FIX comment for why this replaced
+// display:flex (Gmail/Outlook both ignore flexbox in email HTML).
+const emailSummaryRow = (label: string, value: string): string =>
+  `<tr><td style="padding:6px 0;border-bottom:1px solid #eee;font-size:13px;color:#333">${label}</td><td style="padding:6px 0;border-bottom:1px solid #eee;font-size:13px;font-weight:700;text-align:right;color:#111">${value}</td></tr>`;
+
 // BUG FIX — "it said I never allowed the permission but I did." Every
 // geolocation failure (denied, GPS unavailable indoors, a plain timeout —
 // all extremely common in the field, none of them mean the browser
@@ -6362,12 +6368,21 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                 const revenueToday = completedToday.reduce((s, j) => s + (Number(j.amount) || 0), 0);
 
                 const empName = `${myEmployee.firstName} ${myEmployee.lastName || ""}`.trim();
-                const summaryRows = `
-                  <div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #eee"><span>Jobs completed</span><strong>${completedToday.length}</strong></div>
-                  <div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #eee"><span>Hours worked</span><strong>${hours}h</strong></div>
-                  <div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #eee"><span>Estimated pay</span><strong>${fmt(pay)}</strong></div>
-                  <div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #eee"><span>Checklist completion</span><strong>${ckRate}%</strong></div>
-                `;
+                // BUG FIX — "jobs completed 1 should have a space before the
+                // number" (same for hours/pay/checklist). These rows used
+                // display:flex to push the label and value apart — Gmail's
+                // clipped CSS support and Outlook both ignore flexbox
+                // entirely in email HTML, so the label and value collapsed
+                // together with no space between them ("Jobs completed1").
+                // A <table> row is the actual reliable way to lay out two
+                // ends of a line in HTML email; emailSummaryRow below is
+                // shared by both the employee and owner copies.
+                const summaryRows = `<table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+                  ${emailSummaryRow("Jobs completed", String(completedToday.length))}
+                  ${emailSummaryRow("Hours worked", `${hours}h`)}
+                  ${emailSummaryRow("Estimated pay", fmt(pay))}
+                  ${emailSummaryRow("Checklist completion", `${ckRate}%`)}
+                </table>`;
                 const companyName = settings?.companyName || "Crew Boss";
 
                 // BUG FIX — "the employee's email should be a little more
@@ -6390,7 +6405,8 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                 // the owner's own connected Gmail (sendOwnerGmailOnly), never
                 // silently fall back to Resend.
                 if (myEmployee?.email) {
-                  sendOwnerGmailOnly(settings as any, myEmployee.email, `Your day summary — ${todayStr}`, emailShell(settings, "End of Day Summary", `<p>${encouragement}</p>${summaryRows}`))
+                  const payTabLink = `${window.location.origin}${window.location.pathname}#/portal/pay`;
+                  sendOwnerGmailOnly(settings as any, myEmployee.email, `Your day summary — ${todayStr}`, emailShell(settings, "End of Day Summary", `<p>${encouragement}</p>${summaryRows}` + emailButton("View Pay Tab", payTabLink)))
                     .catch((e: any) => console.error("[EndOfDaySummary] employee copy failed to send:", e?.message));
                 }
                 const ownerEmail = settings?.myEmail || settings?.companyEmail;
@@ -6407,19 +6423,21 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                     const custName = cust ? `${cust.firstName || ""} ${cust.lastName || ""}`.trim() : (j.address || "Unknown");
                     const statusColor = j.status === "completed" ? "#16a34a" : j.status === "cancelled" ? "#9ca3af" : "#d97706";
                     const paymentLabel = j.status === "completed" ? paymentStatusLabel(j) : "—";
-                    return `<div style="display:flex;justify-content:space-between;gap:8px;padding:6px 0;border-bottom:1px solid #eee;font-size:13px">
-                      <span>${custName}${j.address ? ` <span style="color:#888">· ${j.address}</span>` : ""}</span>
-                      <span style="white-space:nowrap"><span style="color:${statusColor};font-weight:600">${(j.status || "").replace("_", " ")}</span>${j.status === "completed" ? ` · ${fmt(j.amount)} · ${paymentLabel}` : ""}</span>
-                    </div>`;
-                  }).join("") || `<div style="color:#888;font-size:13px;padding:6px 0">No jobs scheduled today.</div>`;
+                    return `<tr><td style="padding:6px 0;border-bottom:1px solid #eee;font-size:13px;color:#333">${custName}${j.address ? ` <span style="color:#888">· ${j.address}</span>` : ""}</td><td style="padding:6px 0;border-bottom:1px solid #eee;font-size:13px;text-align:right;white-space:nowrap"><span style="color:${statusColor};font-weight:600">${(j.status || "").replace("_", " ")}</span>${j.status === "completed" ? ` · ${fmt(j.amount)} · ${paymentLabel}` : ""}</td></tr>`;
+                  }).join("") || `<tr><td colspan="2" style="color:#888;font-size:13px;padding:6px 0">No jobs scheduled today.</td></tr>`;
                   const alertsHtml = notCompletedToday.length > 0
                     ? `<div style="margin-top:12px;padding:10px 12px;background:#fff7ed;border:1px solid #fdba74;border-radius:8px;color:#9a3412;font-size:13px"><strong>⚠️ ${notCompletedToday.length} job${notCompletedToday.length !== 1 ? "s" : ""} not marked completed:</strong> ${notCompletedToday.map(j => { const c = customers.find((x: any) => x.id === j.customerId); return c ? `${c.firstName} ${c.lastName}` : j.address; }).join(", ")}</div>`
                     : "";
-                  const milesToday = dayTrackedMiles > 0.1 ? `<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #eee"><span>Miles tracked (GPS)</span><strong>${dayTrackedMiles.toFixed(1)} mi</strong></div>` : "";
-                  const ownerBody = `${summaryRows}${milesToday}<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #eee"><span>Revenue today (this employee)</span><strong>${fmt(revenueToday)}</strong></div>
+                  const milesToday = dayTrackedMiles > 0.1 ? emailSummaryRow("Miles tracked (GPS)", `${dayTrackedMiles.toFixed(1)} mi`) : "";
+                  // BUG FIX — "add a clickable action button, such as 'View
+                  // Pay Tab' or 'View Dashboard,' in the end-of-day email
+                  // summary." Neither copy had any link back into the app
+                  // at all before.
+                  const dashboardLink = `${window.location.origin}${window.location.pathname}#/dashboard`;
+                  const ownerBody = `<table role="presentation" width="100%" cellpadding="0" cellspacing="0">${summaryRows.replace(/<\/?table[^>]*>/g, "")}${milesToday}${emailSummaryRow("Revenue today (this employee)", fmt(revenueToday))}</table>
                     <h3 style="margin:18px 0 6px;font-size:14px;color:#333">Today's jobs (${todaysJobs.length})</h3>
-                    ${jobRows}
-                    ${alertsHtml}`;
+                    <table role="presentation" width="100%" cellpadding="0" cellspacing="0">${jobRows}</table>
+                    ${alertsHtml}` + emailButton("View Dashboard", dashboardLink);
                   sendOwnerGmailOnly(settings as any, ownerEmail, `Day summary — ${empName} — ${todayStr}${notCompletedToday.length > 0 ? " ⚠️" : ""}`, emailShell(settings, `Day Summary — ${empName}`, ownerBody))
                     .catch((e: any) => console.error("[EndOfDaySummary] owner copy failed to send:", e?.message));
                 } else {
