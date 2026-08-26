@@ -20,7 +20,7 @@ import {
   Tooltip, ResponsiveContainer, Area, AreaChart, LineChart, Line,
   ComposedChart, Legend
 } from "recharts";
-import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, withTimeout, withTimeoutRetry, reconcileCrewAfterAssign, getPollIntervalMs } from "../../lib/utils";
+import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, withTimeout, withTimeoutRetry, reconcileCrewAfterAssign, getPollIntervalMs, buildJobCalendarDescription } from "../../lib/utils";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
 import { twilioSend, sendEmail, emailShell, emailButton, logOutboundSmsToInbox, getFreshOwnerGoogleToken } from "../../lib/messaging";
 import { fetchCalendarEvents, createGCalEvent, updateGCalEvent, deleteGCalEvent } from "../../lib/googleApi";
@@ -1725,8 +1725,52 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
                 setJobs((prev: any[]) => prev.map((x: any) => x.id === newJ.id ? { ...x, crew: [emp.id], crewAssignedAt } : x));
                 assignedEmployee = emp.firstName + " " + emp.lastName;
                 toast("Alfred assigned " + emp.firstName + " to the " + newJ.scheduledDate + " job");
+                // Same employee-calendar push the standalone assign_employee
+                // tool already does — this inline assignment path (crew
+                // named directly in the schedule_job call) was skipping it.
+                fetch("/api/employee-calendar-sync", {
+                  method: "POST", headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    employeeId: emp.id, ownerId, jobId: newJ.id, action: "upsert",
+                    title: c.firstName + " " + c.lastName + " — Pressure Washing",
+                    date: newJ.scheduledDate, time: newJ.scheduledTime, durationMinutes: (Number(newJ.duration) || 2) * 60,
+                    location: newJ.address, notes: newJ.notes,
+                  }),
+                }).catch(() => {});
               }
             }
+          }
+
+          // FEATURE — jobs Alfred scheduled never synced to Google Calendar
+          // at all; only the manual "New Job" form (JobsPage.tsx) had this.
+          // Mirrors that exact logic (same autoSyncCalendar/googleConnected
+          // gate, same crew-aware description/link) so a job exists on the
+          // owner's calendar the same way regardless of which path created
+          // it. Fire-and-forget after the tool's own success response is
+          // built — calendar sync failing must never make Alfred report the
+          // job itself as not scheduled, since it verifiably was.
+          if (((settings as any)?.autoSyncCalendar ?? true) && settings?.googleConnected && newJ.scheduledDate) {
+            const startDt = new Date(newJ.scheduledDate + "T" + (newJ.scheduledTime || "09:00") + ":00");
+            const endDt = new Date(startDt.getTime() + (Number(newJ.duration) || 2) * 60 * 60 * 1000);
+            const hasEmployeeCrew = !!assignedEmployee && employees.find((e: any) => (e.firstName + " " + e.lastName) === assignedEmployee)?.role !== "owner";
+            const calDescription = hasEmployeeCrew
+              ? buildJobCalendarDescription(newJ, c, `${window.location.origin}${window.location.pathname}#/portal?job=${encodeURIComponent(newJ.id)}`, "View job in Crew Portal")
+              : buildJobCalendarDescription(newJ, c, `${window.location.origin}${window.location.pathname}#/jobs?open=${encodeURIComponent(newJ.id)}`);
+            getFreshOwnerGoogleToken(settings as any).then((token: string | null) => {
+              if (!token) return null;
+              return createGCalEvent(token, {
+                title: c.firstName + " " + c.lastName + " — Pressure Washing",
+                start: startDt.toISOString(), end: endDt.toISOString(),
+                location: newJ.address || "", description: calDescription,
+              });
+            }).then((eventId: string | null) => {
+              if (eventId) {
+                setJobs((prev: any[]) => prev.map((x: any) => x.id === newJ.id ? { ...x, googleEventId: eventId } : x));
+                (supabase as any).from("jobs").update({ googleEventId: eventId }).eq("id", newJ.id).then(() => {});
+              } else {
+                console.warn("[AlfredTool schedule_job] Calendar sync produced no event id — token refresh or the create call likely failed silently upstream");
+              }
+            }).catch((e: any) => console.error("[AlfredTool schedule_job] Calendar sync failed:", e?.message || e));
           }
 
           // success stays true — the job itself was confirmed saved above,
@@ -1783,6 +1827,16 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           setJobs(prev => prev.map(x => x.id === inputs.jobId ? { ...x, ...patch } : x));
           toast("Alfred rescheduled job to " + inputs.date + (inputs.time ? " at " + inputs.time : ""));
           if (onSpotlight) onSpotlight({ page: "jobs", type: "job", id: inputs.jobId }); else setTimeout(() => onNav("jobs"), 1200);
+          // FEATURE — keep an already-synced Google Calendar event in sync
+          // when the job moves, same as schedule_job now creates one.
+          if ((j as any).googleEventId && settings?.googleConnected) {
+            const newStartDt = new Date(inputs.date + "T" + (inputs.time || j.scheduledTime || "09:00") + ":00");
+            const newEndDt = new Date(newStartDt.getTime() + (Number((j as any).duration) || 2) * 60 * 60 * 1000);
+            getFreshOwnerGoogleToken(settings as any).then((token: string | null) => {
+              if (!token) return;
+              return updateGCalEvent(token, (j as any).googleEventId, { start: newStartDt.toISOString(), end: newEndDt.toISOString() });
+            }).catch((e: any) => console.error("[AlfredTool reschedule_job] Calendar update failed:", e?.message || e));
+          }
           // FEATURE — "reschedule this job and text/email the customer" used
           // to require the model to independently chain reschedule_job then
           // send_reminder across two rounds, which worked only if the model
@@ -1828,6 +1882,14 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           setJobs(prev => prev.map(x => x.id === inputs.jobId ? { ...x, ...patch } : x));
           toast("Alfred cancelled the " + (j.scheduledDate || "") + " job");
           if (onSpotlight) onSpotlight({ page: "jobs", type: "job", id: inputs.jobId }); else setTimeout(() => onNav("jobs"), 1200);
+          // FEATURE — remove the Google Calendar event when the job is
+          // cancelled, same as schedule_job now creates one.
+          if ((j as any).googleEventId && settings?.googleConnected) {
+            getFreshOwnerGoogleToken(settings as any).then((token: string | null) => {
+              if (!token) return;
+              return deleteGCalEvent(token, (j as any).googleEventId);
+            }).catch((e: any) => console.error("[AlfredTool cancel_job] Calendar delete failed:", e?.message || e));
+          }
           let cancelNotifyWarning: string | undefined;
           if (inputs.notify && inputs.notify !== "none") {
             const c = customers.find(x => x.id === j.customerId);
