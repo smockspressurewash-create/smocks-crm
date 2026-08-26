@@ -125,6 +125,19 @@ export const crewIncludesEmployee = (crew: any, empId?: string | null, empUserId
   return list.some(c => c && targets.includes(c));
 };
 
+// BUG FIX — "it said I never allowed the permission but I did." Every
+// geolocation failure (denied, GPS unavailable indoors, a plain timeout —
+// all extremely common in the field, none of them mean the browser
+// permission was ever actually denied) was shown as "Location denied —
+// enable in settings," which is simply false for the other two error
+// codes and reads as the app not recognizing a permission the employee
+// really did grant. Classify by the real GeolocationPositionError code.
+const geoErrorMessage = (err: GeolocationPositionError): string => {
+  if (err.code === err.PERMISSION_DENIED) return "Location permission denied — enable it for this site in your browser/phone settings.";
+  if (err.code === err.POSITION_UNAVAILABLE) return "Couldn't get a GPS fix right now (weak signal or indoors) — try again outside or near a window.";
+  return "Location request timed out — try again.";
+};
+
 export const PERMISSION_DEFS = [
   { key: "can_view_jobs",          label: "View assigned jobs",        desc: "See their job schedule" },
   { key: "can_clock_in",           label: "Clock in / out",            desc: "Track time on jobs" },
@@ -3968,35 +3981,54 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
 
   // Real-time location sharing — runs the whole time the toggle is on (not
   // gated on being clocked in — the owner may want to see crew location
-  // before/after a shift too), posting a GPS fix to Supabase every 15s so the
-  // owner's Crew View → Live Now map can plot it. Stops automatically the
-  // moment the toggle flips off (interval is torn down by the effect cleanup).
+  // before/after a shift too), posting a GPS fix to Supabase so the owner's
+  // Crew View → Live Now map can plot it. Stops automatically the moment
+  // the toggle flips off (watch is torn down by the effect cleanup).
+  // BUG FIX — "the location tracking is not accurate enough and does not
+  // update fast enough." The old version called getCurrentPosition COLD
+  // every 15s — each call restarts GPS acquisition from scratch, which is
+  // both slower AND less accurate than letting the GPS chip stay warm and
+  // continuously refine its fix. watchPosition does exactly that — the OS
+  // keeps the radio/chip active and pushes a new fix as soon as one's
+  // available, typically both quicker and tighter than a fresh cold start
+  // every time. Throttled to at most one DB write per 10s (down from 15s)
+  // so Live Team View updates faster without hammering Supabase on every
+  // single watch callback (which can fire much more often than that).
   useEffect(() => {
     const empId = (myEmployee as any)?.id;
     const sharing = (myEmployee as any)?.locationSharing;
     if (!empId || !sharing) return;
     if (!navigator.geolocation) { toast("This browser doesn't support location sharing", "red"); return; }
     let deniedToastShown = false;
-    const postLocation = () => {
-      navigator.geolocation.getCurrentPosition(
-        pos => {
-          (supabase as any).from("employees").update({
-            lastLocation: { lat: pos.coords.latitude, lng: pos.coords.longitude, updatedAt: Date.now() },
-          }).eq("id", empId).then((r: any) => {
-            if (r?.error) console.warn("Location post failed:", r.error.message);
-            else refetchEmployees?.();
-          });
-        },
-        (err) => {
-          if (!deniedToastShown) { deniedToastShown = true; toast("Location permission denied — location sharing paused", "red"); }
-          console.warn("Geolocation error:", err.message);
-        },
-        { enableHighAccuracy: true, timeout: 10000 }
-      );
-    };
-    postLocation();
-    const interval = setInterval(postLocation, 15000);
-    return () => clearInterval(interval);
+    let lastPostAt = 0;
+    const MIN_POST_INTERVAL_MS = 10000;
+    const watchId = navigator.geolocation.watchPosition(
+      pos => {
+        const now = Date.now();
+        if (now - lastPostAt < MIN_POST_INTERVAL_MS) return;
+        lastPostAt = now;
+        (supabase as any).from("employees").update({
+          lastLocation: { lat: pos.coords.latitude, lng: pos.coords.longitude, accuracy: pos.coords.accuracy, updatedAt: now },
+        }).eq("id", empId).then((r: any) => {
+          if (r?.error) console.warn("Location post failed:", r.error.message);
+          else refetchEmployees?.();
+        });
+      },
+      (err) => {
+        // BUG FIX — "Live Team View isn't working... it said I never
+        // allowed the permission but I did." This showed the SAME
+        // "permission denied" toast for a genuine denial, a transient GPS
+        // timeout, or GPS being briefly unavailable (routine indoors/
+        // between buildings on a job site) — the last two are not
+        // permission problems and don't mean sharing actually stopped
+        // (the watch keeps running either way), but the alarming wrong
+        // message made it look like it had.
+        if (!deniedToastShown && err.code === err.PERMISSION_DENIED) { deniedToastShown = true; toast(geoErrorMessage(err), "red"); }
+        console.warn("Geolocation error:", err.code, err.message);
+      },
+      { enableHighAccuracy: true, maximumAge: 5000, timeout: 15000 }
+    );
+    return () => navigator.geolocation.clearWatch(watchId);
   }, [(myEmployee as any)?.id, (myEmployee as any)?.locationSharing]);
 
   // 24h job reminder — checks once on load (and hourly while the portal stays open)
@@ -4547,7 +4579,19 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     // scope: "local" — sign out only this device. The default ("global")
     // revokes the refresh token everywhere, which would also sign this
     // employee out of any other device/browser they're logged into.
-    await supabase.auth.signOut({ scope: "local" });
+    // BUG FIX — "pressing sign out did not let me when it was in the
+    // middle of trying to share my location, which just kept spinning."
+    // supabase.auth.signOut() had no timeout — if it hung (this codebase
+    // has documented real cases of Supabase auth calls hanging under some
+    // network conditions), the button just spun forever with no way out.
+    // Local sign-out (clearing the session client-side) can always
+    // succeed regardless of the network call, so force it through either
+    // way after a bounded wait rather than leaving the employee stuck.
+    try {
+      await withTimeout(supabase.auth.signOut({ scope: "local" }), 6000, "Sign out");
+    } catch (e: any) {
+      console.warn("[SignOut] server call timed out/failed — signing out locally anyway:", e?.message);
+    }
     setEmpSession(null);
     window.location.hash = "/portal";
   };
@@ -6012,7 +6056,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                   startAutoMileageTracking();
                 }
               },
-              err => { if (settled) return; settled = true; clearTimeout(safety); setLocationPermissionPending(false); console.error("[Share Location] — error:", err.code, err.message); toast("Location denied — enable in settings (" + err.message + ")", "red"); },
+              err => { if (settled) return; settled = true; clearTimeout(safety); setLocationPermissionPending(false); console.error("[Share Location] — error:", err.code, err.message); toast(geoErrorMessage(err), "red"); },
               { enableHighAccuracy: true, timeout: 10000 }
             );
             return;
@@ -6522,7 +6566,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                       settled = true; clearTimeout(safety);
                       setLocationPermissionPending(false);
                       console.error("[Share Location] — error:", err.code, err.message);
-                      toast("Location denied — enable in settings (" + err.message + ")", "red");
+                      toast(geoErrorMessage(err), "red");
                     },
                     { enableHighAccuracy: true, timeout: 10000 }
                   );
