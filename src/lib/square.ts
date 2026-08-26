@@ -5,14 +5,17 @@
 // goes through functions/api/square-action.ts (same-origin proxy, same
 // reasoning as stripe-action.ts's own security-audit comment).
 
+// No sandbox mode — always the real Square Web Payments SDK, same as Stripe
+// (which has never had a test-mode switch here either). One real charge
+// path, not a test one that silently doesn't move money.
 let squareSdkPromise: Promise<any> | null = null;
 
-export const loadSquareJs = (mode: "sandbox" | "production" = "sandbox"): Promise<any> => {
+export const loadSquareJs = (): Promise<any> => {
   if (!squareSdkPromise) {
     squareSdkPromise = new Promise((resolve, reject) => {
       if ((window as any).Square) { resolve((window as any).Square); return; }
       const script = document.createElement("script");
-      script.src = mode === "production" ? "https://web.squarecdn.com/v1/square.js" : "https://sandbox.web.squarecdn.com/v1/square.js";
+      script.src = "https://web.squarecdn.com/v1/square.js";
       script.onload = () => resolve((window as any).Square);
       script.onerror = () => reject(new Error("Failed to load Square Web Payments SDK"));
       document.head.appendChild(script);

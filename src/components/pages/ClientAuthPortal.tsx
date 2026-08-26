@@ -382,9 +382,16 @@ export function ClientAuthPortal({
       <div className="min-h-screen bg-black flex items-center justify-center p-4">
         <div className="w-full max-w-sm space-y-5">
           <div className="text-center space-y-2">
-            <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-red-600 to-red-900 flex items-center justify-center mx-auto shadow-lg shadow-red-900/40">
-              <CrewBossMark className="w-9 h-9" />
-            </div>
+            {/* BRANDING FIX — showed CrewBoss's own generic product mark
+                instead of the actual business's logo, even though the
+                business name right below it already used companyName. */}
+            {(settings as any)?.logoUrl ? (
+              <img src={(settings as any).logoUrl} alt={companyName} className="w-14 h-14 rounded-2xl object-contain mx-auto shadow-lg bg-white/5" />
+            ) : (
+              <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-red-600 to-red-900 flex items-center justify-center mx-auto shadow-lg shadow-red-900/40">
+                <CrewBossMark className="w-9 h-9" />
+              </div>
+            )}
             <div className="text-lg font-bold text-white">{companyName} — Client Portal</div>
             <div className="text-xs text-white/40">Pay invoices, track jobs, and view your referral rewards</div>
           </div>

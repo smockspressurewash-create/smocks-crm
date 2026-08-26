@@ -228,11 +228,14 @@ export function SettingsModal({ open, onClose, settings, setSettings, jobs = [],
       const token = session?.access_token;
       if (!token) throw new Error("Not signed in");
       const { saveOwnerSquareKeys, getOwnerSquareStatus } = await import("../../lib/square");
+      // No sandbox/production toggle — Square is always live/production
+      // here, same as Stripe (which has never had a test-mode switch in
+      // this app either). One real payment path, not two.
       const result = await saveOwnerSquareKeys(token, {
         squareAccessToken: squareAccessTokenInput || undefined,
         squareLocationId: f.squareLocationId,
         squareApplicationId: f.squareApplicationId,
-        mode: f.squareMode === "production" ? "production" : "sandbox",
+        mode: "production",
       });
       if (result?.error) throw new Error(result.error);
       setSquareAccessTokenInput("");
@@ -1636,23 +1639,16 @@ export function SettingsModal({ open, onClose, settings, setSettings, jobs = [],
                   <div className="font-semibold text-white/70 text-xs">How to get your keys</div>
                   <div>1. No Square account yet? <a href="https://squareup.com/signup" target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:text-blue-300 underline">Create one free</a>.</div>
                   <div>2. Go to <a href="https://developer.squareup.com/apps" target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:text-blue-300 underline">Square Developer Dashboard</a> → create (or open) an app.</div>
-                  <div>3. Copy the <b>Application ID</b> and (Sandbox or Production) <b>Access Token</b> shown there, and the <b>Location ID</b> from the Locations tab, into the fields below.</div>
-                  <div>4. Start in Sandbox mode to test with fake cards — switch to Production once you're ready for real payments.</div>
+                  <div>3. Switch that app to the <b>Production</b> tab (not Sandbox) and copy the <b>Application ID</b> and <b>Access Token</b> shown there, plus the <b>Location ID</b> from the Locations tab, into the fields below.</div>
+                  <div>4. This charges real cards immediately once saved — same as connecting Stripe with a live secret key.</div>
                 </div>
               )}
 
               <div className="space-y-2.5">
                 <div>
-                  <label className="text-[10px] text-white/50 uppercase tracking-wider mb-1 block">Mode</label>
-                  <div className="flex gap-2">
-                    <button type="button" onClick={() => setF({ ...f, squareMode: "sandbox" })} className={"flex-1 py-1.5 rounded-lg text-xs font-semibold border transition " + ((f.squareMode || "sandbox") === "sandbox" ? "bg-yellow-900/30 border-yellow-600/50 text-yellow-300" : "bg-white/5 border-white/10 text-white/50")}>Sandbox (test)</button>
-                    <button type="button" onClick={() => setF({ ...f, squareMode: "production" })} className={"flex-1 py-1.5 rounded-lg text-xs font-semibold border transition " + (f.squareMode === "production" ? "bg-green-900/30 border-green-600/50 text-green-300" : "bg-white/5 border-white/10 text-white/50")}>Production (live)</button>
-                  </div>
-                </div>
-                <div>
                   <label className="text-[10px] text-white/50 uppercase tracking-wider mb-1 block">Application ID</label>
-                  <GInput placeholder="sandbox-sq0idb-… or sq0idp-…" value={f.squareApplicationId || ""} onChange={e => setF({ ...f, squareApplicationId: e.target.value })} className="!text-xs font-mono" />
-                  <div className="text-[10px] text-white/30 mt-1">Safe to store here — this id is meant to be public.</div>
+                  <GInput placeholder="sq0idp-…" value={f.squareApplicationId || ""} onChange={e => setF({ ...f, squareApplicationId: e.target.value })} className="!text-xs font-mono" />
+                  <div className="text-[10px] text-white/30 mt-1">Safe to store here — this id is meant to be public. Use your app's Production id, not Sandbox.</div>
                 </div>
                 <div>
                   <label className="text-[10px] text-white/50 uppercase tracking-wider mb-1 block">Location ID</label>
@@ -1921,7 +1917,7 @@ export function SettingsModal({ open, onClose, settings, setSettings, jobs = [],
                 </div>
                 {bufferChannels.length > 0 && (
                   <div className="space-y-1.5 pt-1">
-                    {["instagram", "facebook", "tiktok", "linkedin"].map(platform => (
+                    {["instagram", "facebook", "tiktok"].map(platform => (
                       <div key={platform} className="flex items-center justify-between gap-2">
                         <label className="text-[10px] text-white/50 uppercase tracking-wider capitalize w-20 flex-shrink-0">{platform}</label>
                         <GSel
@@ -1947,9 +1943,9 @@ export function SettingsModal({ open, onClose, settings, setSettings, jobs = [],
             {/* Direct platform OAuth — fallback for accounts not on Buffer */}
             <Glass className="p-4 !bg-black/40">
               <div className="flex items-center gap-2 mb-1"><Link size={16} className="text-purple-400" /><div className="font-semibold text-sm">Direct Platform Connections</div></div>
-              <div className="text-xs text-white/60 mb-3">Fallback for platforms not connected through Buffer. Facebook and LinkedIn post for real once connected (plain text). TikTok can't — its API requires hosted video, so it stays on the share-sheet/paste flow below either way.</div>
+              <div className="text-xs text-white/60 mb-3">Fallback for platforms not connected through Buffer. Facebook posts for real once connected (plain text). TikTok can't — its API requires hosted video, so it stays on the share-sheet/paste flow below either way.</div>
               <div className="text-xs text-white/60 mb-3 p-2.5 bg-black/40 border border-white/10 rounded-xl">
-                <b>One-time setup</b>: paste your app's Client ID below, then add its matching secret as a Cloudflare Pages environment variable (dashboard → this project → Settings → Environment variables) — <code className="text-white/50">FACEBOOK_APP_SECRET</code> / <code className="text-white/50">LINKEDIN_CLIENT_SECRET</code> (same pattern as GOOGLE_CLIENT_SECRET). The secret never touches this app's settings — only the Client ID does.
+                <b>One-time setup</b>: paste your app's Client ID below, then add its matching secret as a Cloudflare Pages environment variable (dashboard → this project → Settings → Environment variables) — <code className="text-white/50">FACEBOOK_APP_SECRET</code> (same pattern as GOOGLE_CLIENT_SECRET). The secret never touches this app's settings — only the Client ID does.
               </div>
               <div className="mb-3">
                 <label className="text-[10px] text-white/50 uppercase tracking-wider">Custom backend URL (optional — only if you're running your own token-exchange proxy instead of this app's built-in one)</label>
@@ -1959,7 +1955,6 @@ export function SettingsModal({ open, onClose, settings, setSettings, jobs = [],
                 {([
                   { platform: "facebook" as SocialPlatform, label: "Facebook", clientIdKey: "metaClientId", tokenKey: "metaAccessToken", devUrl: "https://developers.facebook.com/" },
                   { platform: "facebook" as SocialPlatform, label: "Instagram", clientIdKey: "metaClientId", tokenKey: "metaAccessToken", devUrl: "https://developers.facebook.com/", sharedWithFacebook: true },
-                  { platform: "linkedin" as SocialPlatform, label: "LinkedIn", clientIdKey: "linkedinClientId", tokenKey: "linkedinAccessToken", devUrl: "https://developer.linkedin.com/" },
                   { platform: "tiktok" as SocialPlatform, label: "TikTok", clientIdKey: "tiktokClientId", tokenKey: "tiktokAccessToken", devUrl: "https://developers.tiktok.com/" },
                 ]).map(p => (
                   <div key={p.label} className="flex items-center gap-2 p-2.5 bg-black/40 border border-white/5 rounded-xl">
@@ -1998,13 +1993,7 @@ export function SettingsModal({ open, onClose, settings, setSettings, jobs = [],
                     <GInput value={(f as any).metaPageId || ""} onChange={e => setF({ ...f, metaPageId: e.target.value })} placeholder="Page ID to post to" className="!text-xs mt-1" />
                   </div>
                 )}
-                {(f as any).linkedinAccessToken && (
-                  <div>
-                    <label className="text-[10px] text-white/50 uppercase tracking-wider">LinkedIn Author URN</label>
-                    <GInput value={(f as any).linkedinAuthorUrn || ""} onChange={e => setF({ ...f, linkedinAuthorUrn: e.target.value })} placeholder="urn:li:person:xxxxx" className="!text-xs mt-1" />
-                  </div>
-                )}
-                <div className="text-[10px] text-white/30">Instagram and TikTok posting still needs a publicly hosted image/video URL their APIs require, so those two keep using the share-sheet/copy fallback even once connected — Facebook and LinkedIn post real text directly.</div>
+                <div className="text-[10px] text-white/30">Instagram and TikTok posting still needs a publicly hosted image/video URL their APIs require, so those two keep using the share-sheet/copy fallback even once connected — Facebook posts real text directly.</div>
               </div>
             </Glass>
           </div>}

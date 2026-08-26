@@ -12,13 +12,12 @@ import { GBtn } from "./GBtn";
 // on tokenize(), which functions/api/square-action.ts exchanges for a real
 // charge using the owner's Square access token (server-side only).
 export function SquarePaymentModal({
-  open, onClose, applicationId, locationId, mode = "sandbox", amount, description = "",
+  open, onClose, applicationId, locationId, amount, description = "",
   invoiceId, tipCents = 0, ownerId, onSuccess,
 }: {
   open: boolean; onClose: () => void;
   applicationId: string;
   locationId: string;
-  mode?: "sandbox" | "production";
   amount: number; description?: string;
   invoiceId?: string;
   tipCents?: number;
@@ -38,7 +37,7 @@ export function SquarePaymentModal({
     (async () => {
       try {
         if (!applicationId || !locationId) throw new Error("Square isn't fully configured — add your Application ID and Location ID in Settings → Integrations → Square.");
-        const Square = await loadSquareJs(mode);
+        const Square = await loadSquareJs();
         if (cancelled) return;
         const payments = Square.payments(applicationId, locationId);
         const card = await payments.card();
@@ -55,7 +54,7 @@ export function SquarePaymentModal({
       cardRef.current?.destroy?.().catch(() => {});
       cardRef.current = null;
     };
-  }, [open, applicationId, locationId, mode]);
+  }, [open, applicationId, locationId]);
 
   const pay = async () => {
     if (!cardRef.current) return;

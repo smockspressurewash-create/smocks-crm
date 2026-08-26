@@ -4912,9 +4912,21 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
       <div className="min-h-screen bg-black text-white flex flex-col items-center justify-center p-6">
         <div className="w-full max-w-sm">
           <div className="text-center mb-6">
-            <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-red-600 to-red-900 flex items-center justify-center mx-auto mb-4 shadow-lg">
-              <CrewBossMark className="w-10 h-10" />
-            </div>
+            {/* BRANDING FIX — this always showed CrewBoss's own generic
+                product mark, never the actual pressure-washing business's
+                logo, even though the business name right below it already
+                used settings.companyName. Every other owner/customer-facing
+                surface (email, client portal estimate/invoice pages) shows
+                the owner's real uploaded logoUrl when set — the employee
+                portal login screen was the one place still stuck on the
+                generic mark regardless. */}
+            {(settings as any)?.logoUrl ? (
+              <img src={(settings as any).logoUrl} alt={settings.companyName || "Company logo"} className="w-16 h-16 rounded-2xl object-contain mx-auto mb-4 shadow-lg bg-white/5" />
+            ) : (
+              <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-red-600 to-red-900 flex items-center justify-center mx-auto mb-4 shadow-lg">
+                <CrewBossMark className="w-10 h-10" />
+              </div>
+            )}
             <div className="text-xl font-bold">{settings.companyName || "Crew Boss OS"}</div>
             <div className="text-sm text-white/50 mt-1">{inviteRecord ? "Create Your Crew Account" : "Employee Portal"}</div>
             {/* PWA — lets a crew member install this as an app on their
@@ -5565,12 +5577,21 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     <div className="h-dvh h-screen overflow-hidden bg-black text-white flex flex-col">
       {/* Header */}
       <header className="sticky top-0 z-20 bg-black/95 border-b border-red-900/30 px-4 py-3 flex items-center gap-3 flex-shrink-0">
-        {/* CrewBoss brand */}
+        {/* BRANDING FIX — this hardcoded the CrewBoss product name/mark in
+            the crew's own day-to-day header, instead of the actual employer
+            (the pressure-washing business) they work for — matches the
+            login-screen fix above: owner's real logo/company name when set,
+            generic mark as fallback for a business that hasn't uploaded one
+            yet. */}
         <div className="flex items-center gap-2 flex-1 min-w-0">
-          <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-red-600 to-red-900 flex items-center justify-center flex-shrink-0 shadow-lg shadow-red-900/40">
-            <CrewBossMark className="w-[18px] h-[18px]" />
-          </div>
-          <span className="font-bold text-sm text-white tracking-tight">CrewBoss</span>
+          {(settings as any)?.logoUrl ? (
+            <img src={(settings as any).logoUrl} alt={settings.companyName || "Company logo"} className="w-8 h-8 rounded-xl object-contain flex-shrink-0 bg-white/5" />
+          ) : (
+            <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-red-600 to-red-900 flex items-center justify-center flex-shrink-0 shadow-lg shadow-red-900/40">
+              <CrewBossMark className="w-[18px] h-[18px]" />
+            </div>
+          )}
+          <span className="font-bold text-sm text-white tracking-tight truncate">{settings.companyName || "CrewBoss"}</span>
         </div>
         {/* Employee info + actions */}
         <div className="flex items-center gap-2.5">

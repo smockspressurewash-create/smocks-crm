@@ -23,7 +23,7 @@ import {
 import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, uploadJobMedia } from "../../lib/utils";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
 import { twilioSend, sendEmail, postToBuffer, fetchBufferPostAnalytics } from "../../lib/messaging";
-import { postToFacebookPage, postToLinkedIn } from "../../lib/socialOAuth";
+import { postToFacebookPage } from "../../lib/socialOAuth";
 import { seedWeather } from "../../lib/weather";
 import { seedCustomers, seedEstimates, seedJobs, seedEmployees, seedVehicles, seedExpenses, seedChemicals, seedServices, seedAutomations, seedEmailTemplates, seedSmsTemplates, seedRewardTiers, seedReferrals, seedMaintenance, campaignTemplates, seedSocialPosts, seedTimeline, seedGoals, seedReminders, seedAccountabilityEntries, seedMileage, seedLeadSrc, STEP_TYPES, AUTOMATION_TEMPLATES } from "../../lib/seed";
 import { callModel, MODELS } from "../../lib/api";
@@ -121,13 +121,23 @@ export function SocialPage({ posts = [], setPosts, toast, settings = {} as AppSe
     } catch { /* ignore malformed handoff */ }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // FEATURE — "remove posting with LinkedIn... it shows posting with
+  // Nextdoor and Google Business, but that isn't even possible." Trimmed
+  // down to only platforms this app can actually post to by some real,
+  // working method: Buffer (once a channel's connected — see
+  // bufferChannelIds), a direct Meta Graph API token (Facebook), or a
+  // real device share-sheet/clipboard-paste fallback (Instagram/TikTok
+  // both have a working app-open flow below). Nextdoor and Google Business
+  // Profile had neither a Buffer channel type nor any direct API wired up
+  // anywhere in this app — every "post" to them silently fell through to a
+  // generic Web Share call that doesn't actually reach either platform, so
+  // listing them as postable was misleading. LinkedIn is removed per
+  // explicit request (its OAuth connect flow in Settings → Integrations →
+  // Social is removed too).
   const platformMeta = {
     instagram: { color: "from-pink-600 to-purple-700", icon: "📸", limit: 2200, label: "Instagram" },
     facebook: { color: "from-blue-600 to-blue-800", icon: "👥", limit: 63206, label: "Facebook" },
     tiktok: { color: "from-black to-neutral-900", icon: "🎵", limit: 2200, label: "TikTok" },
-    linkedin: { color: "from-blue-700 to-sky-800", icon: "💼", limit: 3000, label: "LinkedIn" },
-    google: { color: "from-blue-500 to-red-500", icon: "🗺️", limit: 1500, label: "Google Business" },
-    nextdoor: { color: "from-green-600 to-green-800", icon: "🏘️", limit: 3000, label: "Nextdoor" }
   };
 
   // Personalization — mirrors the {{token}} pattern used for SMS/email merge
@@ -208,11 +218,6 @@ export function SocialPage({ posts = [], setPosts, toast, settings = {} as AppSe
       await postToFacebookPage((settings as any).metaAccessToken, (settings as any).metaPageId, caption);
       toast("Posted to Facebook ✓", "green");
       return { method: "meta" };
-    }
-    if (platform === "linkedin" && (settings as any).linkedinAccessToken && (settings as any).linkedinAuthorUrn) {
-      await postToLinkedIn((settings as any).linkedinAccessToken, (settings as any).linkedinAuthorUrn, caption);
-      toast("Posted to LinkedIn ✓", "green");
-      return { method: "linkedin" };
     }
     if (platform === "instagram" && settings.instaBridge) {
       navigator.clipboard?.writeText(caption).catch(() => {});
@@ -347,9 +352,6 @@ export function SocialPage({ posts = [], setPosts, toast, settings = {} as AppSe
     instagram: "bg-gradient-to-r from-pink-600 to-purple-700",
     facebook: "bg-blue-700",
     tiktok: "bg-black border border-white/20",
-    linkedin: "bg-gradient-to-r from-blue-700 to-sky-800",
-    google: "bg-gradient-to-r from-blue-500 to-red-500",
-    nextdoor: "bg-green-700"
   };
 
   return (
@@ -373,17 +375,24 @@ export function SocialPage({ posts = [], setPosts, toast, settings = {} as AppSe
         </div>
       </Glass>
 
-      {/* Connection status per platform — Buffer first, then a direct token */}
+      {/* Connection status per platform — shows exactly which real method
+          will actually be used to post ("it doesn't show 'post with this
+          platform' or 'post with Buffer'" — this makes that explicit
+          instead of leaving it implicit in what happens when you hit
+          Publish). Buffer takes priority when a channel's connected for
+          that platform; Facebook falls back to a direct Meta token; anything
+          else falls back to a manual share-sheet/clipboard-paste flow. */}
       <div className="flex gap-2 flex-wrap">
-        {Object.entries(platformMeta).filter(([k]) => k !== "google" && k !== "nextdoor").map(([k, m]: [string, any]) => {
-          const connected = !!settings.bufferChannelIds?.[k]
-            || (k === "facebook" && !!(settings as any).metaAccessToken)
-            || (k === "linkedin" && !!(settings as any).linkedinAccessToken);
+        {Object.entries(platformMeta).map(([k, m]: [string, any]) => {
+          const viaBuffer = !!settings.bufferChannelIds?.[k];
+          const viaDirect = k === "facebook" && !!(settings as any).metaAccessToken;
+          const method = viaBuffer ? "Buffer" : viaDirect ? "Direct" : "Manual";
+          const connected = viaBuffer || viaDirect;
           return (
             <div key={k} className={"flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] border " + (connected ? "bg-green-950/30 border-green-700/40 text-green-300" : "bg-white/5 border-white/10 text-white/40")}>
               <span>{m.icon} {m.label}</span>
               <span className={"w-1.5 h-1.5 rounded-full " + (connected ? "bg-green-400" : "bg-white/20")} />
-              <span>{connected ? "Connected" : "Not connected"}</span>
+              <span>{connected ? "via " + method : "Manual (copy & paste)"}</span>
             </div>
           );
         })}
@@ -608,8 +617,10 @@ export function SocialPage({ posts = [], setPosts, toast, settings = {} as AppSe
                 {Object.entries(platformMeta).map(([k, m]: [string, any]) => {
                   const active = f.platforms.includes(k);
                   const viaBuffer = !!settings.bufferChannelIds?.[k];
+                  const viaDirect = k === "facebook" && !!(settings as any).metaAccessToken;
+                  const methodLabel = viaBuffer ? "via Buffer" : viaDirect ? "Direct" : "Manual — copy & paste";
                   return <button key={k} type="button" onClick={() => togglePlatform(k)} className={"flex items-center justify-between gap-2 px-3 py-2 rounded-xl border text-xs transition " + (active ? "bg-gradient-to-r " + m.color + " border-white/30 text-white" : "bg-black/40 border-white/10 text-white/60 hover:text-white")}>
-                    <span>{m.icon} {m.label}{viaBuffer && <span className="ml-1.5 text-[9px] opacity-70">via Buffer</span>}</span>
+                    <span>{m.icon} {m.label}<span className="ml-1.5 text-[9px] opacity-70">{methodLabel}</span></span>
                     {active && <CheckCircle size={12} />}
                   </button>;
                 })}

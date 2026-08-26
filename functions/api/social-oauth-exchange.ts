@@ -12,8 +12,8 @@
 // One-time setup per platform the owner wants to connect (Cloudflare
 // dashboard -> this project -> Settings -> Environment variables):
 //   Facebook/Instagram (same Meta app): FACEBOOK_APP_ID, FACEBOOK_APP_SECRET
-//   LinkedIn:                           LINKEDIN_CLIENT_ID, LINKEDIN_CLIENT_SECRET
-// TikTok is deliberately NOT handled here — its content-posting API
+// LinkedIn support removed per explicit request — no LinkedIn posting
+// anywhere in this app anymore. TikTok is deliberately NOT handled here — its content-posting API
 // requires hosted video media (this app's photos/video are local data URIs,
 // not public URLs), so a token alone wouldn't let it actually post; it
 // stays on the existing share-sheet/clipboard-paste flow regardless of
@@ -37,21 +37,6 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
       const data = await res.json().catch(() => ({} as any));
       if (!res.ok || !data?.access_token) {
         return new Response(JSON.stringify({ error: data?.error?.message || `Facebook token exchange error ${res.status}` }), { status: res.status || 500, headers: { "Content-Type": "application/json" } });
-      }
-      return new Response(JSON.stringify({ access_token: data.access_token, expires_in: data.expires_in }), { headers: { "Content-Type": "application/json" } });
-    }
-
-    if (platform === "linkedin") {
-      const clientId = context.env.LINKEDIN_CLIENT_ID;
-      const clientSecret = context.env.LINKEDIN_CLIENT_SECRET;
-      if (!clientId || !clientSecret) {
-        return new Response(JSON.stringify({ error: "Server missing LINKEDIN_CLIENT_ID/LINKEDIN_CLIENT_SECRET env vars — add them in the Cloudflare Pages dashboard" }), { status: 500, headers: { "Content-Type": "application/json" } });
-      }
-      const body = new URLSearchParams({ grant_type: "authorization_code", code, redirect_uri: redirectUri, client_id: clientId, client_secret: clientSecret });
-      const res = await fetch("https://www.linkedin.com/oauth/v2/accessToken", { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: body.toString() });
-      const data = await res.json().catch(() => ({} as any));
-      if (!res.ok || !data?.access_token) {
-        return new Response(JSON.stringify({ error: data?.error_description || `LinkedIn token exchange error ${res.status}` }), { status: res.status || 500, headers: { "Content-Type": "application/json" } });
       }
       return new Response(JSON.stringify({ access_token: data.access_token, expires_in: data.expires_in }), { headers: { "Content-Type": "application/json" } });
     }

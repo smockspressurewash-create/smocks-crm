@@ -42,6 +42,40 @@ import { PBar } from "./PBar";
 import { PageFade } from "./PageFade";
 import { TimeframeSelector } from "./TimeframeSelector";
 
+// Same 16-key granular taxonomy as AlfredPage.tsx's ALFRED_TOOL_CAPABILITY
+// and alfredSmsAgent.ts's SMS_TOOL_CAPABILITY — split from the original 6
+// broad buckets (customers/jobs/estimates/messaging/automations/calendar)
+// so an owner can allow, say, texting individual customers without also
+// allowing a mass blast to the whole list. Keep this list, the tool-name
+// maps in both of those files, and ALFRED_CAPABILITY_LEGACY_GROUP below in
+// sync if a new gated tool is ever added.
+const ALFRED_CAPABILITY_LIST = [
+  { key: "add_customers", label: "Add Customers", desc: "Create new customer records, attach files" },
+  { key: "schedule_jobs", label: "Schedule Jobs", desc: "Book new jobs onto the calendar" },
+  { key: "modify_jobs", label: "Reschedule/Cancel Jobs", desc: "Move, cancel, reprioritize, edit checklists" },
+  { key: "manage_crew", label: "Assign Crew", desc: "Assign or request employees on a job" },
+  { key: "create_quotes", label: "Create Quotes/Invoices", desc: "Draft estimates and invoices" },
+  { key: "send_quotes", label: "Send Quotes/Invoices", desc: "Actually deliver them to the customer" },
+  { key: "message_customers", label: "Message Customers", desc: "Text/email one customer at a time" },
+  { key: "mass_messaging", label: "Mass/Broadcast Messaging", desc: "Text every customer at once — powerful, keep separate" },
+  { key: "message_suppliers", label: "Message Suppliers", desc: "Text/email a chemical or equipment supplier" },
+  { key: "send_email", label: "Send Email (Gmail)", desc: "Send real email via your connected Gmail" },
+  { key: "send_files", label: "Send Me Files", desc: "Text/email documents back to you" },
+  { key: "automations", label: "Automations", desc: "Create/toggle workflows, review-request automation" },
+  { key: "sops", label: "SOPs", desc: "Create instruction documents for the team" },
+  { key: "vacation_mode", label: "Vacation Mode", desc: "Set/change your out-of-office plan" },
+  { key: "calendar", label: "Calendar Events", desc: "Create/move/delete Google Calendar events" },
+  { key: "drive_tasks", label: "Drive & Tasks", desc: "Upload to Drive, create Google Tasks" },
+] as const;
+const ALFRED_CAPABILITY_LEGACY_GROUP: Record<string, string> = {
+  add_customers: "customers",
+  schedule_jobs: "jobs", modify_jobs: "jobs", manage_crew: "jobs",
+  create_quotes: "estimates", send_quotes: "estimates",
+  message_customers: "messaging", mass_messaging: "messaging", message_suppliers: "messaging", send_email: "messaging", send_files: "messaging",
+  automations: "automations", sops: "automations", vacation_mode: "automations",
+  calendar: "calendar", drive_tasks: "calendar",
+};
+
 export function AIModelsSection({ f, setF, modelStatus, setModelStatus, employees = [], toast }) {
   const [, forceTick] = useState(0);
   const [showKey, setShowKey] = useState({});
@@ -257,26 +291,27 @@ export function AIModelsSection({ f, setF, modelStatus, setModelStatus, employee
         <div className="flex items-center justify-between mb-1">
           <div className="font-semibold text-sm flex items-center gap-1.5"><Shield size={13} />Alfred Capabilities</div>
           <div className="flex items-center gap-1.5">
-            <button onClick={() => setF({ ...f, alfredCapabilities: { customers: true, jobs: true, estimates: true, messaging: true, automations: true, calendar: true } })} className="text-[10px] text-blue-400 hover:text-blue-300">Full access</button>
+            <button onClick={() => setF({ ...f, alfredCapabilities: Object.fromEntries(ALFRED_CAPABILITY_LIST.map(c => [c.key, true])) })} className="text-[10px] text-blue-400 hover:text-blue-300">Full access</button>
             <span className="text-white/20">·</span>
-            <button onClick={() => setF({ ...f, alfredCapabilities: { customers: false, jobs: false, estimates: false, messaging: false, automations: false, calendar: false } })} className="text-[10px] text-red-400 hover:text-red-300">Lock down</button>
+            <button onClick={() => setF({ ...f, alfredCapabilities: Object.fromEntries(ALFRED_CAPABILITY_LIST.map(c => [c.key, false])) })} className="text-[10px] text-red-400 hover:text-red-300">Lock down</button>
           </div>
         </div>
-        <div className="text-[10px] text-white/40 mb-2">Control what Alfred is allowed to actually DO — questions and lookups always work; these only gate actions that create, send, or change something, everywhere Alfred runs (chat and text).</div>
+        <div className="text-[10px] text-white/40 mb-2">Control exactly what Alfred is allowed to actually DO, one specific action at a time — questions and lookups always work; these only gate actions that create, send, or change something, everywhere Alfred runs (chat and text).</div>
         <div className="grid grid-cols-2 gap-1.5">
-          {([
-            { key: "customers", label: "Add Customers", desc: "Create new customer records" },
-            { key: "jobs", label: "Jobs & Scheduling", desc: "Schedule, reschedule, cancel, assign crew" },
-            { key: "estimates", label: "Quotes & Invoices", desc: "Create and send estimates/invoices" },
-            { key: "messaging", label: "Messaging", desc: "Text/email customers and suppliers" },
-            { key: "automations", label: "Automations & SOPs", desc: "Create workflows and SOPs" },
-            { key: "calendar", label: "Calendar & Files", desc: "Google Calendar events, Drive uploads" },
-          ] as const).map(cap => {
-            const capabilities = { customers: true, jobs: true, estimates: true, messaging: true, automations: true, calendar: true, ...(f.alfredCapabilities || {}) };
-            const on = capabilities[cap.key] !== false;
+          {ALFRED_CAPABILITY_LIST.map(cap => {
+            // Legacy migration — an owner who set one of the 6 old broad
+            // switches (still possibly sitting in saved settings under keys
+            // like "messaging"/"jobs") should see every new granular key
+            // under it start OFF too, until they explicitly touch this UI,
+            // rather than silently reading as re-enabled just because the
+            // key name changed. Mirrors the same fallback the tool-call
+            // gate itself applies at runtime (AlfredPage.tsx/alfredSmsAgent.ts).
+            const raw = f.alfredCapabilities || {};
+            const legacy = ALFRED_CAPABILITY_LEGACY_GROUP[cap.key];
+            const on = raw[cap.key] !== undefined ? raw[cap.key] !== false : (legacy && raw[legacy] !== undefined ? raw[legacy] !== false : true);
             return (
               <label key={cap.key} className="flex items-start gap-2 p-2 rounded-lg bg-black/30 border border-white/5 cursor-pointer hover:border-white/15 transition">
-                <input type="checkbox" checked={on} onChange={e => setF({ ...f, alfredCapabilities: { ...capabilities, [cap.key]: e.target.checked } })} className="w-3.5 h-3.5 accent-red-600 mt-0.5 flex-shrink-0" />
+                <input type="checkbox" checked={on} onChange={e => setF({ ...f, alfredCapabilities: { ...raw, [cap.key]: e.target.checked } })} className="w-3.5 h-3.5 accent-red-600 mt-0.5 flex-shrink-0" />
                 <div className="min-w-0">
                   <div className="text-xs text-white/80">{cap.label}</div>
                   <div className="text-[9px] text-white/40">{cap.desc}</div>

@@ -1011,20 +1011,50 @@ const fetchGoogleEventsInRange = async (accessToken: string, startIso: string, e
 
 // FEATURE — same capability gate as AlfredPage.tsx's in-app chat (Settings
 // → Alfred → Capabilities), enforced here too so text-Alfred honors the
-// exact same owner choices instead of being a back door around them.
+// exact same owner choices instead of being a back door around them. Same
+// 16-key granular taxonomy as AlfredPage.tsx's ALFRED_TOOL_CAPABILITY (see
+// that file's comment) — split from the original 6 broad buckets so an
+// owner can, e.g., allow individual customer texts without also allowing a
+// mass blast to the whole list.
 const SMS_TOOL_CAPABILITY: Record<string, string> = {
-  create_customer: "customers", attach_file_to_customer: "customers",
-  schedule_job: "jobs", reschedule_job: "jobs", cancel_job: "jobs", add_checklist_item: "jobs", assign_employee: "jobs", update_job_priority: "jobs", respond_to_job_request: "jobs", approve_customer_request: "jobs", decline_customer_request: "jobs",
-  create_estimate: "estimates", send_estimate: "estimates", send_invoice: "estimates",
-  notify_all_customers: "messaging", text_customer: "messaging", text_phone_number: "messaging", text_supplier: "messaging", email_supplier: "messaging", text_me_document: "messaging", send_me_files: "messaging",
-  create_promotion: "automations", enable_review_request_automation: "automations", create_sop: "automations", set_vacation_mode: "automations",
+  create_customer: "add_customers", attach_file_to_customer: "add_customers",
+  schedule_job: "schedule_jobs",
+  reschedule_job: "modify_jobs", cancel_job: "modify_jobs", update_job_priority: "modify_jobs", add_checklist_item: "modify_jobs",
+  assign_employee: "manage_crew", respond_to_job_request: "manage_crew", approve_customer_request: "manage_crew", decline_customer_request: "manage_crew",
+  create_estimate: "create_quotes",
+  send_estimate: "send_quotes", send_invoice: "send_quotes",
+  notify_all_customers: "mass_messaging",
+  text_customer: "message_customers", text_phone_number: "message_customers",
+  text_supplier: "message_suppliers", email_supplier: "message_suppliers",
+  text_me_document: "send_files", send_me_files: "send_files",
+  create_promotion: "automations", enable_review_request_automation: "automations",
+  create_sop: "sops",
+  set_vacation_mode: "vacation_mode",
   create_calendar_event: "calendar", update_calendar_event: "calendar", delete_calendar_event: "calendar",
+};
+// Legacy -> granular migration, identical mapping to AlfredPage.tsx's
+// ALFRED_LEGACY_GROUP — an owner who previously turned off one of the 6 old
+// broad categories should have every new key under it stay off too, rather
+// than silently re-enabling because the setting's key name changed.
+const SMS_LEGACY_GROUP: Record<string, string> = {
+  add_customers: "customers",
+  schedule_jobs: "jobs", modify_jobs: "jobs", manage_crew: "jobs",
+  create_quotes: "estimates", send_quotes: "estimates",
+  message_customers: "messaging", mass_messaging: "messaging", message_suppliers: "messaging", send_email: "messaging", send_files: "messaging",
+  automations: "automations", sops: "automations", vacation_mode: "automations",
+  calendar: "calendar", drive_tasks: "calendar",
+};
+const effectiveSmsCapability = (ctx: Ctx, key: string): boolean => {
+  const raw = ctx.alfredCapabilities || {};
+  if (raw[key] !== undefined) return raw[key];
+  const legacy = SMS_LEGACY_GROUP[key];
+  return legacy && raw[legacy] !== undefined ? raw[legacy] : true;
 };
 
 const executeTool = async (ctx: Ctx, name: string, input: Record<string, any>): Promise<any> => {
   try {
     const __cap = SMS_TOOL_CAPABILITY[name];
-    if (__cap && ctx.alfredCapabilities?.[__cap] === false) {
+    if (__cap && effectiveSmsCapability(ctx, __cap) === false) {
       return { error: `The owner has turned off Alfred's "${__cap}" capability in Settings → Alfred → Capabilities — this action can't be performed until they turn it back on.` };
     }
     switch (name) {

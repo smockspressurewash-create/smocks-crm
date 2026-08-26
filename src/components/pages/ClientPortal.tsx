@@ -946,7 +946,6 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
                 onClose={() => setShowSquareModal(false)}
                 applicationId={squareConfig?.applicationId || ""}
                 locationId={squareConfig?.locationId || ""}
-                mode={squareConfig?.mode || "sandbox"}
                 amount={totalWithTip}
                 invoiceId={e?.id}
                 tipCents={Math.round((Number(tip) || 0) * 100)}

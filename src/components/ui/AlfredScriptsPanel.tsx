@@ -122,7 +122,13 @@ export function AlfredScriptsPanel({
       if (res.error) throw res.error;
       if (status === "saved") {
         setLibrary(prev => [{ ...row, photo_url: null, job_id: null, created_at: new Date().toISOString() }, ...prev]);
-        toast?.("Script saved ✓");
+        toast?.("Saved to your library — see the Saved tab ✓");
+      } else {
+        // FEATURE — swipe left previously gave zero feedback (no toast at
+        // all), which on mobile read as "nothing happened" even though it
+        // was correctly logging the pass — a swipe that seems to do nothing
+        // is indistinguishable from a swipe gesture that didn't register.
+        toast?.("Passed");
       }
     } catch (e: any) {
       toast?.((status === "saved" ? "Save failed — " : "Couldn't log pass — ") + (e?.message || "unknown error"), "red");

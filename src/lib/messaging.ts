@@ -107,16 +107,29 @@ export const fetchBufferChannels = async (apiKey: string, organizationId: string
 // Buffer's next open queue slot instead of the specific date/time picked in
 // the UI. Buffer's schema wants mode `customScheduled` (not `addToQueue`)
 // paired with a `dueAt` ISO datetime to honor an exact time.
-// FEATURE — "there's no option to publish or push a video or post with
-// Buffer, nor an option to upload photos and videos." mediaUrl is a
-// publicly-fetchable URL (Supabase Storage, same pattern job/checklist
-// photos already use — see uploadJobMedia) for a photo OR video; Buffer's
-// createPost accepts a `media` input referencing an already-hosted URL, it
-// doesn't take a raw file upload. If Buffer rejects the media field (a
-// schema mismatch this hasn't been live-verified against for every account
-// type) this retries text-only rather than failing the whole post outright
-// — a caption that goes out without its photo is far better than nothing
-// going out at all.
+//
+// BUG FIX (real root cause of "the whole posting system doesn't work") —
+// this mutation was built against a GUESSED shape of Buffer's schema that
+// turned out to be wrong in several ways, verified against Buffer's real
+// live GraphQL API (api.buffer.com) via introspection:
+//   - `$schedulingType`/`$mode` were declared as `PostSchedulingTypeInput`/
+//     `PostCreationModeInput` — NEITHER type exists in Buffer's schema at
+//     all (introspection confirms). The real types are `SchedulingType`/
+//     `ShareMode` (both enums) — same string values ("automatic"/
+//     "notification", "shareNow"/"customScheduled" etc.) were already
+//     right, only the declared GraphQL type name was wrong, which is
+//     enough on its own to make the whole query invalid.
+//   - `CreatePostInput.assets: [AssetInput!]!` is REQUIRED (non-null list)
+//     and was never being sent at all — a required argument silently
+//     missing fails query validation outright, every single time,
+//     regardless of auth or channel. There is no `media`/`PostMediaInput`
+//     field in the real schema — media goes through this `assets` list
+//     instead, each entry shaped `{ image: { url } }` or `{ video: { url } }`.
+//   - `CreatePostInput.needsApproval: Boolean!` is also REQUIRED and was
+//     never sent either — same failure mode.
+// Fixed to the verified real shape below — no more silent guess-and-hope,
+// no more text-only fallback-on-failure hack (assets is just always sent,
+// empty when there's no media, so there's nothing left to fall back from).
 export const postToBuffer = async (
   settings: BufferSettings,
   platform: string,
@@ -130,42 +143,26 @@ export const postToBuffer = async (
   if (!bufferApiKey || !channelId) {
     throw new Error("Buffer not connected for this platform — add an API key and pick a channel in Settings.");
   }
-  const baseVars = {
-    text, channelId,
-    schedulingType: scheduledAt ? "automatic" : "notification",
-    mode: scheduledAt ? "customScheduled" : "shareNow",
-    dueAt: scheduledAt ? scheduledAt.toISOString() : null,
-  };
-  const runCreate = async (withMedia: boolean) => bufferGraphQL<{ createPost: { __typename: string; message?: string; post?: { id: string } } }>(
+  const assets = mediaUrl
+    ? [mediaType === "video" ? { video: { url: mediaUrl } } : { image: { url: mediaUrl } }]
+    : [];
+  const data = await bufferGraphQL<{ createPost: { __typename: string; message?: string; post?: { id: string } } }>(
     bufferApiKey,
-    withMedia
-      ? `mutation CreatePost($text: String!, $channelId: ChannelId!, $schedulingType: PostSchedulingTypeInput!, $mode: PostCreationModeInput!, $dueAt: DateTime, $media: PostMediaInput) {
-          createPost(input: { text: $text, channelId: $channelId, schedulingType: $schedulingType, mode: $mode, dueAt: $dueAt, media: $media }) {
-            ... on PostActionSuccess { post { id } }
-            ... on MutationError { message }
-          }
-        }`
-      : `mutation CreatePost($text: String!, $channelId: ChannelId!, $schedulingType: PostSchedulingTypeInput!, $mode: PostCreationModeInput!, $dueAt: DateTime) {
-          createPost(input: { text: $text, channelId: $channelId, schedulingType: $schedulingType, mode: $mode, dueAt: $dueAt }) {
-            ... on PostActionSuccess { post { id } }
-            ... on MutationError { message }
-          }
-        }`,
-    withMedia
-      ? { ...baseVars, media: mediaType === "video" ? { video: { url: mediaUrl } } : { photos: [{ url: mediaUrl }] } }
-      : baseVars
-  );
-  let data;
-  if (mediaUrl) {
-    try {
-      data = await runCreate(true);
-    } catch (e: any) {
-      console.warn("[Buffer] post with media failed, retrying text-only:", e?.message);
-      data = await runCreate(false);
+    `mutation CreatePost($text: String!, $channelId: ChannelId!, $schedulingType: SchedulingType!, $mode: ShareMode!, $dueAt: DateTime, $assets: [AssetInput!]!, $needsApproval: Boolean!) {
+      createPost(input: { text: $text, channelId: $channelId, schedulingType: $schedulingType, mode: $mode, dueAt: $dueAt, assets: $assets, needsApproval: $needsApproval }) {
+        __typename
+        ... on PostActionSuccess { post { id } }
+        ... on MutationError { message }
+      }
+    }`,
+    {
+      text, channelId, assets,
+      schedulingType: scheduledAt ? "automatic" : "notification",
+      mode: scheduledAt ? "customScheduled" : "shareNow",
+      dueAt: scheduledAt ? scheduledAt.toISOString() : null,
+      needsApproval: false,
     }
-  } else {
-    data = await runCreate(false);
-  }
+  );
   if (data?.createPost?.message) throw new Error(data.createPost.message);
   return data?.createPost?.post?.id || "";
 };
@@ -465,7 +462,7 @@ export const sendPaymentReceipt = async (
     return;
   }
   if (customer.email) {
-    const html = emailShell(companyName, "Payment Receipt", `
+    const html = emailShell(settings as any, "Payment Receipt", `
       <p>Hi ${name},</p>
       <p>This confirms your payment of <strong>$${amount}</strong> to ${companyName}${description ? " for " + description : ""}.</p>
       <p>Thank you for your business!</p>

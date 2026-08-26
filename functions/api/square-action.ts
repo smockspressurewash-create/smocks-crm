@@ -17,7 +17,11 @@
 const SUPABASE_URL = "https://boaqaihymgmrhnjtiqrs.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_8aEa3wsYJ7ghVPcGbtHymw_ugj0aEfm";
 
-const squareApiBase = (mode: string) => mode === "production" ? "https://connect.squareup.com" : "https://connect.squareupsandbox.com";
+// No sandbox mode — always the real Square production API, same as Stripe
+// (which has never had a test-mode switch here either). Any pre-existing
+// row still carrying square_mode: "sandbox" from before this change is
+// ignored; this is the one and only real charge path.
+const squareApiBase = () => "https://connect.squareup.com";
 
 const getOwnerSquareAccount = async (
   ownerId: string,
@@ -94,16 +98,15 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
           hasAccessToken: !!acct?.accessToken,
           locationId: acct?.locationId || "",
           applicationId: acct?.applicationId || "",
-          mode: acct?.mode || "sandbox",
+          mode: "production",
         });
       }
 
-      const { squareAccessToken, squareLocationId, squareApplicationId, mode } = body;
-      const patch: Record<string, any> = { owner_id: callerOwnerId, updated_at: new Date().toISOString() };
+      const { squareAccessToken, squareLocationId, squareApplicationId } = body;
+      const patch: Record<string, any> = { owner_id: callerOwnerId, updated_at: new Date().toISOString(), square_mode: "production" };
       if (squareAccessToken !== undefined && squareAccessToken !== "") patch.square_access_token = squareAccessToken; // blank = leave existing token untouched
       if (squareLocationId !== undefined) patch.square_location_id = squareLocationId || null;
       if (squareApplicationId !== undefined) patch.square_application_id = squareApplicationId || null;
-      if (mode !== undefined) patch.square_mode = mode === "production" ? "production" : "sandbox";
       const saveRes = await fetch(`${SUPABASE_URL}/rest/v1/owner_square_accounts`, {
         method: "POST",
         headers: { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}`, "Content-Type": "application/json", Prefer: "resolution=merge-duplicates,return=minimal" },
@@ -124,7 +127,7 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
       if (!ownerId) return json({ error: "Missing ownerId" }, 400);
       const acct = await getOwnerSquareAccount(ownerId, serviceRoleKey);
       if (!acct?.applicationId || !acct?.locationId) return json({ connected: false });
-      return json({ connected: true, applicationId: acct.applicationId, locationId: acct.locationId, mode: acct.mode || "sandbox" });
+      return json({ connected: true, applicationId: acct.applicationId, locationId: acct.locationId, mode: "production" });
     }
 
     // create_payment — sourceId is a one-time card nonce from Square's Web
@@ -151,7 +154,7 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
       const amountCents = (invoiceId ? await getInvoiceAmountCents(invoiceId, serviceRoleKey) : Math.round(Number(body.amountCents) || 0)) + tip;
       if (amountCents <= 0) return json({ error: "Invalid amount" }, 400);
 
-      const sqRes = await fetch(`${squareApiBase(acct.mode || "sandbox")}/v2/payments`, {
+      const sqRes = await fetch(`${squareApiBase()}/v2/payments`, {
         method: "POST",
         headers: {
           Authorization: `Bearer ${acct.accessToken}`,

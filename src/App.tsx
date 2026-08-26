@@ -824,7 +824,7 @@ export function App() {
     }
   }, []);
 
-  // Direct social-platform OAuth callback (Facebook/LinkedIn/TikTok "Connect"
+  // Direct social-platform OAuth callback (Facebook/TikTok "Connect"
   // in Settings → Integrations redirects here with ?code=...). Exchanges the
   // code for a token via the configured backend proxy, saves it to settings,
   // then sends the owner back to Social.
@@ -842,7 +842,7 @@ export function App() {
     (async () => {
       const tok = await exchangeSocialOAuthCode(settings.socialBackendUrl || "", platform, code);
       if (tok && "accessToken" in tok) {
-        const tokenField = platform === "facebook" ? "metaAccessToken" : platform === "linkedin" ? "linkedinAccessToken" : "tiktokAccessToken";
+        const tokenField = platform === "facebook" ? "metaAccessToken" : "tiktokAccessToken";
         setSettings(s => ({ ...s, [tokenField]: tok.accessToken }));
         toast(`${platform} connected ✓`, "green");
       } else {

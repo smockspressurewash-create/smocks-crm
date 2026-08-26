@@ -1,8 +1,9 @@
 // ─── Direct platform OAuth (fallback to Buffer) ─────────────────────────────
 // Buffer is the primary, recommended way to connect social accounts (it
 // handles all platforms through one API key). These helpers let a user
-// connect Instagram/Facebook (Meta), LinkedIn, or TikTok directly instead,
-// for platforms or accounts where Buffer isn't an option.
+// connect Instagram/Facebook (Meta) or TikTok directly instead, for
+// platforms or accounts where Buffer isn't an option. LinkedIn removed per
+// explicit request — no LinkedIn posting anywhere in this app anymore.
 //
 // The OAuth *authorization* step (redirecting to the platform and getting a
 // `code` back) is safe to do entirely from the browser. The *token exchange*
@@ -12,7 +13,7 @@
 // (`settings.socialBackendUrl`). Without that backend configured, "Connect"
 // will redirect and come back with a code but can't finish the exchange.
 
-export type SocialPlatform = "facebook" | "instagram" | "linkedin" | "tiktok";
+export type SocialPlatform = "facebook" | "instagram" | "tiktok";
 
 export const socialOAuthRedirectUri = (): string =>
   `${window.location.origin}${window.location.pathname}#/social-oauth-callback`;
@@ -31,14 +32,6 @@ export const buildSocialAuthorizeUrl = (
         redirect_uri: redirectUri,
         scope: "pages_manage_posts,pages_read_engagement,instagram_basic,instagram_content_publish",
         response_type: "code",
-        state,
-      })}`;
-    case "linkedin":
-      return `https://www.linkedin.com/oauth/v2/authorization?${new URLSearchParams({
-        response_type: "code",
-        client_id: clientId,
-        redirect_uri: redirectUri,
-        scope: "w_member_social openid profile",
         state,
       })}`;
     case "tiktok":
@@ -100,8 +93,8 @@ export const exchangeSocialOAuthCode = async (
 // Instagram and TikTok require hosted media (images/video) to publish via
 // their APIs — this app's photos are local data URIs, not public URLs, so
 // those two still rely on the existing share-sheet/clipboard fallback even
-// once "connected". Facebook Pages and LinkedIn accept plain text posts, so
-// those post for real once a direct token is connected.
+// once "connected". Facebook Pages accept plain text posts, so it posts for
+// real once a direct token is connected.
 
 export const postToFacebookPage = async (accessToken: string, pageId: string, message: string): Promise<void> => {
   const res = await fetch(`https://graph.facebook.com/v19.0/${encodeURIComponent(pageId)}/feed`, {
@@ -112,31 +105,5 @@ export const postToFacebookPage = async (accessToken: string, pageId: string, me
   if (!res.ok) {
     const err = await res.json().catch(() => ({})) as { error?: { message?: string } };
     throw new Error(err.error?.message ?? `Facebook error ${res.status}`);
-  }
-};
-
-export const postToLinkedIn = async (accessToken: string, authorUrn: string, text: string): Promise<void> => {
-  const res = await fetch("https://api.linkedin.com/v2/ugcPosts", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${accessToken}`,
-      "X-Restli-Protocol-Version": "2.0.0",
-    },
-    body: JSON.stringify({
-      author: authorUrn,
-      lifecycleState: "PUBLISHED",
-      specificContent: {
-        "com.linkedin.ugc.ShareContent": {
-          shareCommentary: { text },
-          shareMediaCategory: "NONE",
-        },
-      },
-      visibility: { "com.linkedin.ugc.MemberNetworkVisibility": "PUBLIC" },
-    }),
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({})) as { message?: string };
-    throw new Error(err.message ?? `LinkedIn error ${res.status}`);
   }
 };

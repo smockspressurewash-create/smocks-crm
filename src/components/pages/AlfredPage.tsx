@@ -1076,15 +1076,56 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
   // something are gated). Defaults to true for every category so an
   // existing owner's Alfred keeps behaving exactly as it always has until
   // they explicitly turn something off in Settings → Alfred → Capabilities.
+  // FEATURE — "there aren't many options for giving capabilities; there
+  // should be more specific and individualized ones." The original 6 broad
+  // buckets (customers/jobs/estimates/messaging/automations/calendar) forced
+  // an all-or-nothing choice within each — an owner who wanted Alfred to
+  // message individual customers but never blast the whole customer list
+  // (notify_all_customers) had no way to allow one without the other. Split
+  // into 16 specific tool groups instead. Every tool this granular map
+  // doesn't mention (read-only lookups, reminders, memory) stays ungated,
+  // same as before.
   const ALFRED_TOOL_CAPABILITY: Record<string, string> = {
-    create_customer: "customers", attach_file_to_customer: "customers",
-    schedule_job: "jobs", reschedule_job: "jobs", cancel_job: "jobs", add_checklist_item: "jobs", assign_employee: "jobs", request_employee: "jobs", update_job_priority: "jobs",
-    create_estimate: "estimates", send_estimate: "estimates", create_invoice: "estimates",
-    send_reminder: "messaging", text_phone_number: "messaging", notify_all_customers: "messaging", text_supplier: "messaging", email_supplier: "messaging", send_email_via_gmail: "messaging", text_me_document: "messaging", send_me_files: "messaging",
-    create_automation: "automations", toggle_automation: "automations", enable_review_request_automation: "automations", create_sop: "automations", set_vacation_mode: "automations",
-    create_calendar_event: "calendar", update_calendar_event: "calendar", delete_calendar_event: "calendar", create_google_task: "calendar", upload_to_drive: "calendar",
+    create_customer: "add_customers", attach_file_to_customer: "add_customers",
+    schedule_job: "schedule_jobs",
+    reschedule_job: "modify_jobs", cancel_job: "modify_jobs", update_job_priority: "modify_jobs", add_checklist_item: "modify_jobs",
+    assign_employee: "manage_crew", request_employee: "manage_crew",
+    create_estimate: "create_quotes", create_invoice: "create_quotes",
+    send_estimate: "send_quotes",
+    send_reminder: "message_customers", text_phone_number: "message_customers",
+    notify_all_customers: "mass_messaging",
+    text_supplier: "message_suppliers", email_supplier: "message_suppliers",
+    send_email_via_gmail: "send_email",
+    text_me_document: "send_files", send_me_files: "send_files",
+    create_automation: "automations", toggle_automation: "automations", enable_review_request_automation: "automations",
+    create_sop: "sops",
+    set_vacation_mode: "vacation_mode",
+    create_calendar_event: "calendar", update_calendar_event: "calendar", delete_calendar_event: "calendar",
+    create_google_task: "drive_tasks", upload_to_drive: "drive_tasks",
   };
-  const alfredCapabilities = { customers: true, jobs: true, estimates: true, messaging: true, automations: true, calendar: true, ...((settings as any)?.alfredCapabilities || {}) };
+  // Legacy -> granular migration: an owner who previously turned OFF one of
+  // the 6 old broad categories should have every new key that used to live
+  // under it stay off too, until they explicitly touch it in the (now more
+  // granular) Settings UI — never silently re-enable something they'd
+  // already restricted just because the setting's key name changed.
+  const ALFRED_LEGACY_GROUP: Record<string, string> = {
+    add_customers: "customers",
+    schedule_jobs: "jobs", modify_jobs: "jobs", manage_crew: "jobs",
+    create_quotes: "estimates", send_quotes: "estimates",
+    message_customers: "messaging", mass_messaging: "messaging", message_suppliers: "messaging", send_email: "messaging", send_files: "messaging",
+    automations: "automations", sops: "automations", vacation_mode: "automations",
+    calendar: "calendar", drive_tasks: "calendar",
+  };
+  const alfredCapabilities = (() => {
+    const raw = (settings as any)?.alfredCapabilities || {};
+    const out: Record<string, boolean> = {};
+    for (const key of Object.keys(ALFRED_LEGACY_GROUP)) {
+      if (raw[key] !== undefined) { out[key] = raw[key]; continue; }
+      const legacy = ALFRED_LEGACY_GROUP[key];
+      out[key] = raw[legacy] !== undefined ? raw[legacy] : true;
+    }
+    return out;
+  })();
 
   const executeTool = async (name, inputs) => {
     const __t0 = Date.now();
