@@ -194,11 +194,27 @@ export const OPENROUTER_FREE_FALLBACKS = [
 
 // ─── Safe fetch ───────────────────────────────────────────────────────────────
 
+// BUG FIX — "it shouldn't show that type of error; it should just say a
+// plain-text English error." A failed provider call used to surface its
+// raw HTTP status + response body verbatim in the chat — a JSON:API-style
+// error object (some providers, NVIDIA's NIM platform in particular,
+// return structured `{status, title, detail}` bodies) showed up as a
+// literal unreadable JSON blob. Pull the actual human-readable message out
+// of whatever shape the provider used before falling back to the raw text.
+const extractErrorMessage = (text: string, status: number): string => {
+  try {
+    const j = JSON.parse(text);
+    const msg = j?.detail || j?.error?.message || j?.error || j?.message || j?.title;
+    if (typeof msg === "string" && msg.trim()) return msg.trim();
+  } catch { /* not JSON — fall through to raw text */ }
+  return text.slice(0, 200) || `Request failed (${status})`;
+};
+
 export const safeFetch = async (url: string, opts: RequestInit): Promise<unknown> => {
   const res = await fetch(url, opts);
   if (!res.ok) {
     const text = await res.text().catch(() => "");
-    const err = new Error(`HTTP ${res.status}: ${text.slice(0, 300)}`);
+    const err = new Error(`HTTP ${res.status}: ${extractErrorMessage(text, res.status)}`);
     (err as any).status = res.status;
     (err as any).retryAfter = res.headers.get("retry-after");
     throw err;
