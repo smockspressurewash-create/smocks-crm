@@ -69,23 +69,38 @@ export function SaveCardModal({
     setStatus("loading");
     setError("");
     setAgreed(false);
+    // BUG FIX — "I press Add Card on File and it just says Loading forever."
+    // createStripeCustomer/createSetupIntent already have their own 20s
+    // timeout (stripeAction's AbortController), but loadStripeJs (the
+    // <script src="https://js.stripe.com/v3/"> load) had NONE — if that
+    // script gets silently blocked (a content blocker, restrictive wifi/
+    // firewall, a slow connection) neither its onload nor onerror ever
+    // fires, so that promise — and this whole effect — never resolved OR
+    // rejected. status stayed "loading" forever with no way out short of
+    // closing the modal. A hard 25s deadline around the ENTIRE chain
+    // guarantees SOMETHING (success or a visible error) within a bounded
+    // time regardless of which step actually hung.
+    const withDeadline = <T,>(p: Promise<T>, ms: number): Promise<T> =>
+      Promise.race([p, new Promise<T>((_, reject) => setTimeout(() => reject(new Error("Timed out loading the card form — check your connection and try again.")), ms))]);
     (async () => {
       try {
         if (!publishableKey) throw new Error("Stripe is not fully configured.");
-        const accessToken = useCallerSession ? (await supabase.auth.getSession()).data.session?.access_token : undefined;
-        const customerId = existingStripeCustomerId || (await createStripeCustomer(email, name, ownerId, accessToken)).id;
-        if (cancelled) return;
-        customerIdRef.current = customerId;
-        const intent = await createSetupIntent(customerId, ownerId, accessToken);
-        if (cancelled) return;
-        const stripe = await loadStripeJs(publishableKey, stripeAccountId);
-        if (cancelled) return;
-        stripeRef.current = stripe;
-        const elements = stripe.elements({ clientSecret: intent.client_secret });
-        elementsRef.current = elements;
-        const el = elements.create("payment");
-        if (mountRef.current) el.mount(mountRef.current);
-        setStatus("ready");
+        await withDeadline((async () => {
+          const accessToken = useCallerSession ? (await supabase.auth.getSession()).data.session?.access_token : undefined;
+          const customerId = existingStripeCustomerId || (await createStripeCustomer(email, name, ownerId, accessToken)).id;
+          if (cancelled) return;
+          customerIdRef.current = customerId;
+          const intent = await createSetupIntent(customerId, ownerId, accessToken);
+          if (cancelled) return;
+          const stripe = await loadStripeJs(publishableKey, stripeAccountId);
+          if (cancelled) return;
+          stripeRef.current = stripe;
+          const elements = stripe.elements({ clientSecret: intent.client_secret });
+          elementsRef.current = elements;
+          const el = elements.create("payment");
+          if (mountRef.current) el.mount(mountRef.current);
+          setStatus("ready");
+        })(), 25000);
       } catch (e: any) {
         if (!cancelled) { setError(e.message || "Failed to start"); setStatus("error"); }
       }

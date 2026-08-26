@@ -737,40 +737,58 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
   // Saves the signature only — completion itself (and any payment info) is
   // handled by the separate "Complete Job" flow, so sign-off can happen
   // independently without forcing the job closed.
+  // BUG FIX — "Pressing Sign and Save after the customer signs does not
+  // work." Two compounding problems, found from the owner's own console
+  // logs ("Media upload to Storage timed out", "Sign off saved timed out"):
+  // (1) the signature-photo upload has its own 15s timeout, and the JOB
+  // update after it has ANOTHER 15s timeout — back to back, that's up to
+  // 30 SECONDS of total silent waiting with the button still enabled and no
+  // "Saving…" indicator at all, which reads as "the button doesn't do
+  // anything" long before either timeout actually fires and finally shows
+  // an error. (2) With no busy state, a frustrated employee tapping it
+  // again just re-runs the whole slow chain from scratch. Now: a visible
+  // saving/disabled state the instant it's pressed, a single bounded 20s
+  // deadline over the WHOLE operation (upload + save) instead of two
+  // separate 15s waits stacking, and the button can't be double-tapped
+  // mid-save.
+  const [savingSignOff, setSavingSignOff] = useState(false);
   const saveSignOff = async () => {
+    if (savingSignOff) return;
     if (sigMode === "type") {
       if (!signerName.trim()) return;
     } else if (!sigDrawData) return;
-    let sigUrl: string | undefined;
-    if (sigMode === "draw" && sigDrawData) {
-      sigUrl = (await uploadJobMedia(dataUrlToBlob(sigDrawData), `${job.id}/signoff-${uid()}.png`, "image/png")) || undefined;
-    }
-    const signOff: any = {
-      signerName: signerName.trim() || "Drawn signature",
-      timestamp: new Date().toISOString(),
-      sigType: sigMode,
-      ...(sigMode === "draw" ? (sigUrl ? { sigUrl } : { sigData: sigDrawData }) : {}),
-    };
-    // AUDIT H (mobile round 4) — this used to fire onUpdateJob and
-    // unconditionally toast "saved" without awaiting the result. onUpdateJob
-    // never rejects (it resolves {error} on failure, see updateJob above), so
-    // a genuine Supabase save failure was silently swallowed — the customer's
-    // signature could be lost while the employee saw a green success toast.
+    setSavingSignOff(true);
     try {
-      const result = await withTimeout(Promise.resolve(onUpdateJob({ signOff })), 15000, "Sign-off save");
-      if (result?.error) {
-        toast("Sign-off not saved — " + result.error.message, "red");
-        return;
-      }
+      await withTimeout((async () => {
+        let sigUrl: string | undefined;
+        if (sigMode === "draw" && sigDrawData) {
+          sigUrl = (await uploadJobMedia(dataUrlToBlob(sigDrawData), `${job.id}/signoff-${uid()}.png`, "image/png")) || undefined;
+        }
+        const signOff: any = {
+          signerName: signerName.trim() || "Drawn signature",
+          timestamp: new Date().toISOString(),
+          sigType: sigMode,
+          ...(sigMode === "draw" ? (sigUrl ? { sigUrl } : { sigData: sigDrawData }) : {}),
+        };
+        // AUDIT H (mobile round 4) — this used to fire onUpdateJob and
+        // unconditionally toast "saved" without awaiting the result.
+        // onUpdateJob never rejects (it resolves {error} on failure, see
+        // updateJob above), so a genuine Supabase save failure was silently
+        // swallowed — the customer's signature could be lost while the
+        // employee saw a green success toast.
+        const result = await onUpdateJob({ signOff });
+        if (result?.error) throw new Error(result.error.message);
+      })(), 25000, "Sign-off save");
       toast("Sign-off saved ✓", "green");
+      setShowSignOff(false);
+      if (signOffReturnToComplete) {
+        setSignOffReturnToComplete(false);
+        setCompleteStep("review");
+      }
     } catch (e: any) {
-      toast("Sign-off not saved — " + (e?.message || "unknown error"), "red");
-      return;
-    }
-    setShowSignOff(false);
-    if (signOffReturnToComplete) {
-      setSignOffReturnToComplete(false);
-      setCompleteStep("review");
+      toast("Sign-off not saved — " + (e?.message || "unknown error") + ". Check your connection and try again.", "red");
+    } finally {
+      setSavingSignOff(false);
     }
   };
 
@@ -1296,8 +1314,8 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
             )}
           </Glass>
 
-          <GBtn onClick={saveSignOff} disabled={sigMode === "type" ? !signerName.trim() : !sigDrawData} className="w-full !justify-center !py-3">
-            <CheckCircle size={16} />Sign & Save
+          <GBtn onClick={saveSignOff} disabled={savingSignOff || (sigMode === "type" ? !signerName.trim() : !sigDrawData)} className="w-full !justify-center !py-3">
+            <CheckCircle size={16} />{savingSignOff ? "Saving…" : "Sign & Save"}
           </GBtn>
         </div>
       </div>
@@ -1421,6 +1439,24 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
                     <CreditCard size={14} />{chargingCardNow ? "Charging…" : `Charge ${fmt(job.amount)} to card on file${jobCards.length <= 1 ? ` (${customer.savedPaymentMethodLabel || "saved"})` : ""}`}
                   </button>
                 </div>
+              )}
+              {/* FEATURE — "there's no way to enter the card information" /
+                  "there should be a Pay in Person button." A customer with
+                  NO card on file yet previously had no path here besides
+                  the generic "Card" quick-select below (a manual note, not
+                  an actual charge) — this opens the real Add Card flow
+                  (same SaveCardModal the profile-level "Add Card on File"
+                  button uses) right from the payment step, so an employee
+                  taking payment in person can key in a brand-new card and
+                  actually charge it in one flow instead of having to back
+                  out to a different screen first. */}
+              {effPerms.can_process_payments && !customer?.savedPaymentMethodId && !!settings?.stripePublishableKey && (
+                <button
+                  onClick={() => setAddCardOpen(true)}
+                  className="w-full py-3 rounded-xl border-2 border-white/15 bg-white/5 text-white/70 hover:border-emerald-500/50 hover:text-emerald-300 transition flex items-center justify-center gap-1.5"
+                >
+                  <CreditCard size={14} />Add Card on File
+                </button>
               )}
               <div className="grid grid-cols-2 gap-2">
                 {["Cash", "Check", "Card", "Zelle", "Venmo", "Other"].map(m => (
@@ -1557,6 +1593,21 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
                 </div>
               )}
               <div className="grid grid-cols-2 gap-3">
+                {/* FEATURE — "there should be a Pay in Person button, not
+                    just Send Invoice." Previously "No" only ever led to
+                    send-invoice-or-skip — no way to actually collect
+                    payment on the spot even though the very next step
+                    (method) already has full card-on-file charging and
+                    manual payment-method marking built in; it just wasn't
+                    reachable from here. */}
+                {effPerms.can_process_payments && (
+                  <button
+                    onClick={() => { setPaidChoice("yes"); setCompleteStep("method"); }}
+                    className="col-span-2 py-3 rounded-xl border-2 border-emerald-600/50 bg-emerald-950/30 text-emerald-300 font-semibold hover:bg-emerald-900/40 transition flex items-center justify-center gap-1.5"
+                  >
+                    <CreditCard size={14} />Pay In Person Now
+                  </button>
+                )}
                 <GBtn onClick={() => {
                   // [SendInvoice] — this used to be a *silently disabled*
                   // button (no onClick fires at all on a disabled element)

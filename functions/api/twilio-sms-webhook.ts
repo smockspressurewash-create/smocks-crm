@@ -327,13 +327,26 @@ const synthesizeSpeechViaWorkersAI = async (ai: any, text: string): Promise<Arra
     const result: any = await ai.run("@cf/myshell-ai/melotts", { prompt: text.slice(0, 1000), lang: "en" });
     // Workers AI TTS models return { audio: "<base64>" } (mp3).
     const b64 = result?.audio;
-    if (!b64) return null;
+    if (!b64) {
+      // BUG FIX — owner confirmed a real "AI" binding IS already attached
+      // (type Workers AI, catalog value) yet still got no voice memo — the
+      // binding existing isn't the same as this specific model call
+      // succeeding. Log the full raw response when there's no `audio` field
+      // so the actual reason (model access not enabled for this account,
+      // wrong response shape, quota) shows up in Cloudflare's real-time
+      // Function logs instead of a bare "no audio" dead end.
+      console.warn("[TwilioSmsWebhook] Workers AI TTS returned no audio field — raw result:", JSON.stringify(result)?.slice(0, 500));
+      return null;
+    }
     const bin = atob(b64);
     const bytes = new Uint8Array(bin.length);
     for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
     return bytes.buffer;
   } catch (e: any) {
-    console.warn("[TwilioSmsWebhook] Workers AI TTS failed:", e?.message);
+    // Full error (not just .message) — Workers AI errors often carry the
+    // real reason (e.g. "model not enabled", auth/quota) in fields message
+    // alone doesn't surface.
+    console.warn("[TwilioSmsWebhook] Workers AI TTS failed:", e?.message, "· full error:", JSON.stringify(e, Object.getOwnPropertyNames(e || {}))?.slice(0, 500));
     return null;
   }
 };

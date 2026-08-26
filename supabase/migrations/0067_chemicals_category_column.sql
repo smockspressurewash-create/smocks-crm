@@ -1,0 +1,11 @@
+-- BUG FIX — root cause of "there's no way to add a supplier/mechanic to
+-- chemicals & equipment" (and the repeated console error "Could not find
+-- the 'category' column of 'chemicals' in the schema cache"). Every
+-- chemical/equipment item's save payload has always included `category`
+-- (BLANK_CHEMICAL defaults it to "Surfactant" in ChemicalModal.tsx) — but
+-- this column never existed. PostgREST rejects an entire insert/update if
+-- ANY single column in the payload doesn't exist (see CLAUDE.md's "safe
+-- column retry" note), so EVERY save of ANY chemical or equipment item —
+-- including the supplier/maintenance-contact fields added in prior rounds —
+-- has been silently failing outright. Already applied live.
+alter table public.chemicals add column if not exists category text;

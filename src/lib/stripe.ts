@@ -18,10 +18,20 @@ export const loadStripeJs = (publishableKey: string, stripeAccount?: string): Pr
       if ((window as any).Stripe) { resolve((window as any).Stripe); return; }
       const script = document.createElement("script");
       script.src = "https://js.stripe.com/v3/";
-      script.onload = () => resolve((window as any).Stripe);
-      script.onerror = () => reject(new Error("Failed to load Stripe.js"));
+      // BUG FIX — "Add Card on File just says Loading forever." If this
+      // script gets silently blocked (content blocker, restrictive wifi/
+      // firewall) neither onload nor onerror necessarily fires — this
+      // promise then never resolves OR rejects, hanging every caller
+      // (SaveCardModal, StripePaymentModal) indefinitely with no visible
+      // error. 15s is generous for a real script load.
+      const timer = setTimeout(() => reject(new Error("Stripe.js didn't load — check your connection (a content blocker or restrictive network may be blocking it) and try again.")), 15000);
+      script.onload = () => { clearTimeout(timer); resolve((window as any).Stripe); };
+      script.onerror = () => { clearTimeout(timer); reject(new Error("Failed to load Stripe.js")); };
       document.head.appendChild(script);
     });
+    // A failed load must not permanently poison every future attempt —
+    // clear the cached promise so the next call retries the script fresh.
+    stripeJsPromise.catch(() => { stripeJsPromise = null; });
   }
   return stripeJsPromise.then(Stripe => Stripe(publishableKey, stripeAccount ? { stripeAccount } : undefined));
 };
