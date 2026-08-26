@@ -735,7 +735,18 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
     setSendingReportProblem(true);
     const note = `🚨 ISSUE REPORTED by ${employeeName || "crew"}: ${reportProblemText.trim()}`;
     try {
-      const result = await withTimeout(Promise.resolve(onUpdateJob({ commLog: [...(job.commLog || []), { id: uid(), type: "note" as const, date: today(), note }] })), 15000, "Report problem save");
+      // BUG FIX — "it just sat at saving for a while and I got a timed-out
+      // error" even though the write likely succeeded a few seconds later.
+      // onUpdateJob (updateJob in this file) already has its OWN internal
+      // timeout + one retry (up to ~40s worst case) before it ever resolves
+      // with {error} — wrapping it AGAIN here with a SHORTER 15s outer
+      // timeout meant this outer race always lost first on any real
+      // slowness, firing a premature "timed out" toast while the actual
+      // update kept running in the background (withTimeout doesn't abort
+      // the underlying request, just stops waiting on it) and often landed
+      // successfully moments later with nobody watching. The outer ceiling
+      // now safely exceeds the inner worst case instead of undercutting it.
+      const result = await withTimeout(Promise.resolve(onUpdateJob({ commLog: [...(job.commLog || []), { id: uid(), type: "note" as const, date: today(), note }] })), 45000, "Report problem save");
       if (result?.error) {
         console.error("[ReportProblem] — error:", result.error.message);
         toast("Saved locally, but failed to sync — " + result.error.message, "red");
@@ -797,12 +808,15 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
       ? `⏸️ NOT COMPLETED by ${employeeName || "crew"} — ${reasonText}. Rescheduled to ${rescheduleDate}.`
       : `⏸️ NOT COMPLETED by ${employeeName || "crew"} — ${reasonText}. Needs a new date — moved to Unscheduled.`;
     try {
+      // BUG FIX — see the identical fix + full explanation on Report
+      // Problem's save above: onUpdateJob already retries internally for
+      // up to ~40s, so this outer ceiling must exceed that, not undercut it.
       const result = await withTimeout(Promise.resolve(onUpdateJob({
         status: "scheduled",
         scheduledDate: hasDate ? rescheduleDate : "",
         needsReschedule: true,
         commLog: [...(job.commLog || []), { id: uid(), type: "note" as const, date: today(), note }],
-      })), 15000, "Reschedule save");
+      })), 45000, "Reschedule save");
       if (result?.error) {
         console.error("[Reschedule] — error:", result.error.message);
         toast("Saved locally, but failed to sync — " + result.error.message, "red");
@@ -872,7 +886,9 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
     const newPhoto = url ? { id, type, pairIndex, caption, url, uploadedAt: today() } : { id, type, pairIndex, caption, dataUrl, uploadedAt: today() };
     const nextPhotos = [...(job.photos || []), newPhoto];
     try {
-      const result = await withTimeout(Promise.resolve(onUpdateJob({ photos: nextPhotos })), 15000, "Photo upload");
+      // BUG FIX — same outer-shorter-than-inner-timeout bug as Report
+      // Problem/Reschedule above.
+      const result = await withTimeout(Promise.resolve(onUpdateJob({ photos: nextPhotos })), 45000, "Photo upload");
       if (result?.error) {
         console.error("[PhotoSync] — error:", result.error.message);
         toast("Photo saved locally, but failed to sync — " + result.error.message, "red");
@@ -997,7 +1013,8 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
 
   const saveChecklist = async (label: string, patch: Partial<Job>) => {
     try {
-      const result = await withTimeout(Promise.resolve(onUpdateJob(patch)), 15000, label + " checklist save");
+      // BUG FIX — same outer-shorter-than-inner-timeout bug as above.
+      const result = await withTimeout(Promise.resolve(onUpdateJob(patch)), 45000, label + " checklist save");
       if (result?.error) toast(label + " checklist item didn't save — " + result.error.message, "red");
     } catch (e: any) {
       toast(label + " checklist item didn't save — " + (e?.message || "unknown error"), "red");
@@ -1443,7 +1460,8 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
     setCompleteSummary({ hours: hrs, amount: Number(job.amount) || 0, paymentStatus: paymentStatus === "Paid" ? `Paid (${patch.paymentType})` : invoiceSent ? "Unpaid — Invoice Sent" : "Unpaid" });
     setCompleteStep("summary");
     try {
-      const result = await withTimeout(Promise.resolve(onUpdateJob(patch)), 15000, "Mark complete save");
+      // BUG FIX — same outer-shorter-than-inner-timeout bug as above.
+      const result = await withTimeout(Promise.resolve(onUpdateJob(patch)), 45000, "Mark complete save");
       if (result?.error) {
         console.error("[Complete Job] — error:", result.error.message || result.error);
         toast("Completed locally, but the server didn't confirm — " + (result.error.message || "check connection"), "red");

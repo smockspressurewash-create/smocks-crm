@@ -51,17 +51,41 @@ export function CustomerReviewPage({ overrides, embedded = false }: { overrides?
   const [feedback, setFeedback] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
-  const saveToSupabase = async (r: number, text: string, _status: "pending" | "private") => {
-    try {
+  // BUG FIX — "I left a review and it didn't show in the owner CRM." This
+  // never surfaced a failure anywhere — a bad/missing customerId (no
+  // review recorded at all, just a 400 from public-data.ts) or a dropped
+  // network request both silently showed the same friendly "Thank you!"
+  // to whoever left the review, with the owner having zero way to know a
+  // submission never actually landed. Now retries once on a genuine
+  // network failure and logs loudly enough (with the exact reason) that a
+  // real gap doesn't stay silently invisible — the friendly UI stays as-is
+  // either way, since a customer shouldn't see a scary error, but this at
+  // least gives a diagnosable trail for exactly this report.
+  const saveToSupabase = async (r: number, text: string, _status: "pending" | "private"): Promise<boolean> => {
+    if (!customerId) {
+      console.error("[CustomerReview] submit_review skipped — no customerId in this link's URL (was #/rate opened without a real ?c= param?)");
+      return false;
+    }
+    const attempt = async () => {
       const res = await fetch("/api/public-data", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "submit_review", customerId: customerId || undefined, rating: r, comment: text || undefined }),
+        body: JSON.stringify({ action: "submit_review", customerId, rating: r, comment: text || undefined }),
       });
       const data = await res.json().catch(() => null);
-      if (!res.ok || data?.error) console.warn("[CustomerReview] submit_review failed:", data?.error);
+      if (!res.ok || data?.error) throw new Error(data?.error || `HTTP ${res.status}`);
+      return true;
+    };
+    try {
+      return await attempt();
     } catch (e: any) {
-      console.warn("[CustomerReview] submit_review failed:", e?.message);
+      console.warn("[CustomerReview] submit_review failed, retrying once:", e?.message);
+      try {
+        return await attempt();
+      } catch (e2: any) {
+        console.error("[CustomerReview] submit_review failed after retry — review was NOT saved:", e2?.message);
+        return false;
+      }
     }
   };
 

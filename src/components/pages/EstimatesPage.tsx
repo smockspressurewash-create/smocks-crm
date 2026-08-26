@@ -343,15 +343,24 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
     }, () => {
       setEstimates((prev: any[]) => prev.filter((e: any) => !ids.includes(e.id)));
       markRecentlyDeleted("estimates", ids);
-      (supabase as any).from("estimates").delete().in("id", ids).then((r: any) => {
+      // BUG FIX — "invoices are still not staying deleted." Same
+      // 0-row-silent-RLS-block pattern already fixed in InvoicesPage.tsx —
+      // without .select(), Supabase's delete() reports SUCCESS (no error)
+      // even when RLS silently matched ZERO rows server-side, and the row
+      // reappears on the next cross-device sync. This bulk-delete path
+      // (EstimatesPage.tsx, shared with invoices since an invoice is just
+      // an estimate row with invoiced:true) never got this fix applied.
+      (supabase as any).from("estimates").delete().in("id", ids).select("id").then((r: any) => {
         if (r?.error) toast("Removed locally, but failed to remove on server — " + r.error.message, "red");
+        else if (!Array.isArray(r?.data) || r.data.length === 0) toast("Removed locally, but the server didn't confirm — it may reappear", "red");
       }).catch(() => {});
     });
     // Must also delete server-side — otherwise the next cross-device sync poll
     // just re-fetches these rows from Supabase and they reappear locally.
     try {
-      const { error } = await (supabase as any).from("estimates").delete().in("id", ids);
+      const { error, data } = await (supabase as any).from("estimates").delete().in("id", ids).select("id");
       if (error) { toast(`Deleted locally, but failed to delete from server — ${error.message}`, "red"); return; }
+      if (!Array.isArray(data) || data.length === 0) { toast("Deleted locally, but the server didn't confirm the delete — it may reappear. Try again or refresh to check.", "red"); return; }
     } catch (err: any) {
       toast(`Deleted locally, but failed to delete from server — ${err?.message || "unknown error"}`, "red");
       return;

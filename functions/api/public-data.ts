@@ -422,6 +422,17 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
       // failure mode CLAUDE.md documents for updates), so this 500'd on
       // every single public review submission — the actual root cause of
       // "reviews aren't showing" (nothing was ever making it into the table).
+      // BUG FIX — "I left a review and it didn't show in the owner CRM."
+      // `status` on this table has two different meanings colliding: for
+      // an owner-INITIATED review request it's a real pending→sent→
+      // completed lifecycle, but this row is a customer's OWN direct
+      // submission through the public #/rate link — there was never a
+      // "request" step to begin with, so it's already complete the moment
+      // it's submitted. Saving it as "pending" put it in the same bucket
+      // as a request that hasn't been sent yet — ReviewsPage.tsx's
+      // Showcase Wall and "completed" stat only ever count status ===
+      // "completed", so a real submitted review sat there forever showing
+      // a nonsensical "Send" button instead of appearing as what it is.
       const insert = await sb(serviceRoleKey, `reviews`, {
         method: "POST",
         headers: { Prefer: "return=representation" },
@@ -429,7 +440,7 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
           id: crypto.randomUUID(),
           customerId, customerName: cust ? `${cust.firstName || ""} ${cust.lastName || ""}`.trim() : undefined,
           rating, text: comment || null, createdAt: new Date().toISOString(),
-          source: "customer-submitted", owner_id: ownerId, status: "pending",
+          source: "customer-submitted", owner_id: ownerId, status: "completed",
         }),
       });
       if (!insert.ok) return json({ error: "Failed to submit review" }, 500);
@@ -454,9 +465,14 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
       const existing = rows.find(r => normPhone(r.contact_phone) === normPhone(contactPhone));
       const newMsg = { id: crypto.randomUUID(), dir: "out", body: smsBody, ts: Date.now(), status: "sent" };
       if (existing) {
-        const messages = [...(Array.isArray(existing.messages) ? existing.messages : []), newMsg];
-        await sb(serviceRoleKey, `inbox_threads?id=eq.${encodeURIComponent(existing.id)}`, {
-          method: "PATCH", body: JSON.stringify({ messages, unread: false, last_message_at: newMsg.ts, updated_at: new Date().toISOString() }),
+        // BUG FIX — "my SMS inbox messages disappeared from one
+        // conversation." Same class of bug fixed everywhere else in this
+        // codebase: reading messages then PATCHing a brand-new array back
+        // can silently discard another appender's message that landed in
+        // the gap between the read and this write. append_inbox_message
+        // does the append inside one atomic UPDATE instead.
+        await sb(serviceRoleKey, `rpc/append_inbox_message`, {
+          method: "POST", body: JSON.stringify({ p_thread_id: existing.id, p_message: newMsg, p_unread: false }),
         });
       } else {
         await sb(serviceRoleKey, `inbox_threads`, {

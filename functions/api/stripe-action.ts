@@ -441,9 +441,18 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
           const existing = Array.isArray(threads) ? threads.find((t: any) => normDigits(t.contact_phone) === normDigits(body.customerPhone)) : null;
           const msg = { id: crypto.randomUUID(), dir: "out", body: smsBody, ts: Date.now() };
           if (existing) {
-            await fetch(`${SUPABASE_URL}/rest/v1/inbox_threads?id=eq.${encodeURIComponent(existing.id)}`, {
-              method: "PATCH", headers: { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}`, "Content-Type": "application/json", Prefer: "return=minimal" },
-              body: JSON.stringify({ messages: [...(existing.messages || []), msg], last_message_at: msg.ts, updated_at: new Date().toISOString() }),
+            // BUG FIX — "my SMS inbox messages disappeared from one
+            // conversation." This read the thread's messages array, then
+            // PATCHed a brand-new array back — if an inbound webhook (or
+            // any other sender) appended its own message to the SAME
+            // thread in between that read and this write, this overwrote
+            // it with a version that never had it, silently deleting it.
+            // append_inbox_message (Postgres function, see migration 0062)
+            // does the append inside one atomic UPDATE instead, so it can
+            // never race with another appender.
+            await fetch(`${SUPABASE_URL}/rest/v1/rpc/append_inbox_message`, {
+              method: "POST", headers: { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}`, "Content-Type": "application/json" },
+              body: JSON.stringify({ p_thread_id: existing.id, p_message: msg, p_unread: false }),
             });
           } else {
             await fetch(`${SUPABASE_URL}/rest/v1/inbox_threads`, {

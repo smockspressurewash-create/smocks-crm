@@ -89,6 +89,7 @@ import {
 import { seedWeather } from "./lib/weather";
 import { fetchRealWeather, deriveWeatherLocation } from "./lib/weather";
 import { fmt, uid, today, daysSince, daysFromNow, consumeOAuthIntent, getLastOwnerSessionFlag, setLastOwnerSessionFlag, getLastOwnerId, setLastOwnerId, buildChecklistFromServices, withTimeout, normalizeJobRow, totalJobPhotoCount, notifyDesktop, stripLegacyJobFields, getPollIntervalMs, purgeOldJobMedia, computeGoalProgress, localDateKey } from "./lib/utils";
+import { sendPushNotification } from "./lib/push";
 import { sendEmail, sendOwnerGmailOnly, emailShell, emailButton, buildTomorrowJobsEmailHtml, buildWeeklyScheduleEmailHtml, buildDailyBriefingEmailHtml, buildWeeklyOwnerDigestEmailHtml, setOptedOutPhones, setTestModeContacts, twilioSend, logOutboundSmsToInbox } from "./lib/messaging";
 import { exchangeSocialOAuthCode, type SocialPlatform } from "./lib/socialOAuth";
 import type {
@@ -1776,8 +1777,18 @@ export function App() {
       empSnap[e.id] = cur;
       if (!crewActivitySeededRef.current) continue;
       const prev = crewActivityEmpRef.current[e.id] ?? null;
-      if (cur && !prev) { const text = `🟢 ${empName(e)} started their shift`; events.push({ id: e.id + ":in:" + cur, text, at: Date.now() }); notifyDesktop(text, undefined, goToEmployeeHours); }
-      else if (!cur && prev) { const text = `⏹ ${empName(e)} ended their shift`; events.push({ id: e.id + ":out:" + Date.now(), text, at: Date.now() }); notifyDesktop(text, undefined, goToEmployeeHours); }
+      // BUG FIX — "native push notifications aren't showing or working."
+      // notifyDesktop only ever fires the plain browser Notification API,
+      // which needs a tab actually open — the real Web Push pipeline
+      // (lib/push.ts/functions/api/send-push.ts) was fully built and
+      // subscribing correctly (confirmed real rows in push_subscriptions)
+      // but was never actually CALLED from any of these events — the one
+      // real notification-worthy trigger in the whole app was job
+      // assignment (JobDetailModal.tsx). Every one of these already-built
+      // in-app/desktop notifications now also fires a real push, which
+      // reaches an installed/closed app, not just an open tab.
+      if (cur && !prev) { const text = `🟢 ${empName(e)} started their shift`; events.push({ id: e.id + ":in:" + cur, text, at: Date.now() }); notifyDesktop(text, undefined, goToEmployeeHours); if (crmUserId) sendPushNotification({ ownerId: crmUserId, title: "Shift started", body: text, tag: "crew-activity" }); }
+      else if (!cur && prev) { const text = `⏹ ${empName(e)} ended their shift`; events.push({ id: e.id + ":out:" + Date.now(), text, at: Date.now() }); notifyDesktop(text, undefined, goToEmployeeHours); if (crmUserId) sendPushNotification({ ownerId: crmUserId, title: "Shift ended", body: text, tag: "crew-activity" }); }
     }
     for (const j of jobs as any[]) {
       // FEATURE 4 (mobile round 7) — photo uploads and customer sign-off were
@@ -1831,6 +1842,7 @@ export function App() {
         const text = `📍 ${crewLabel} arrived at ${who}${timingLabel}`;
         events.push({ id: j.id + ":arrived", text, at: Date.now(), customerId: j.customerId });
         notifyDesktop(text);
+        if (crmUserId) sendPushNotification({ ownerId: crmUserId, title: "Crew arrived", body: text, tag: "crew-activity" });
       }
       if (photoCount > (prev.photoCount ?? 0)) events.push({ id: j.id + ":photos:" + photoCount, text: `📸 ${photoCount - (prev.photoCount ?? 0)} new photo${photoCount - (prev.photoCount ?? 0) !== 1 ? "s" : ""} — ${who}`, at: Date.now(), customerId: j.customerId });
       if (signed && !prev.signed) events.push({ id: j.id + ":signed", text: `✍️ Got customer sign-off — ${who}`, at: Date.now(), customerId: j.customerId });
@@ -1844,6 +1856,7 @@ export function App() {
         // issue text as the notification body since it's the highest-priority
         // event of the bunch.
         notifyDesktop(text, latestNote?.note?.replace("🚨 ISSUE REPORTED by ", "") || undefined, goToEmployeeHours);
+        if (crmUserId) sendPushNotification({ ownerId: crmUserId, title: "🚨 Problem reported", body: latestNote?.note?.replace("🚨 ISSUE REPORTED by ", "") || text, tag: "crew-issue" });
       }
     }
     crewActivityEmpRef.current = empSnap;
@@ -4472,8 +4485,19 @@ export function App() {
                 <div className="fixed inset-0 z-[150]" onClick={() => setProfileDropOpen(false)} />
                 <div className="absolute right-0 top-full mt-2 w-56 bg-black/95 border border-red-900/40 rounded-xl shadow-2xl z-[160] overflow-hidden">
                   <div className="px-4 py-3 border-b border-red-900/30">
-                    <div className="font-semibold text-sm truncate">{settings.ownerName || settings.userName || "Owner"}</div>
-                    <div className="text-xs text-white/40 truncate mt-0.5">{crmUserEmail || settings.googleEmail || "—"}</div>
+                    {/* BUG FIX — "it doesn't show the owner's name or phone
+                        number, just a dash." The email line only ever
+                        checked crmUserEmail/settings.googleEmail — both can
+                        genuinely be empty (a fresh session before either
+                        resolves, or an owner who's never connected Google)
+                        even though the owner's real email/phone are sitting
+                        right there in settings under different keys. Now
+                        falls through every place this app actually stores
+                        an owner identity, and shows the phone number too
+                        when one's on file, instead of silently dropping it. */}
+                    <div className="font-semibold text-sm truncate">{settings.ownerName || (settings as any).userName || (crmUserEmail || "").split("@")[0] || "Owner"}</div>
+                    <div className="text-xs text-white/40 truncate mt-0.5">{crmUserEmail || settings.googleEmail || (settings as any).myEmail || (settings as any).companyEmail || "No email on file"}</div>
+                    {(settings as any).myPhone && <div className="text-xs text-white/40 truncate mt-0.5">{(settings as any).myPhone}</div>}
                   </div>
                   <div className="p-1.5 space-y-0.5">
                     <button

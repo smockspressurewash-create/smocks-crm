@@ -179,7 +179,7 @@ export function BudgetPage({ jobs = [], estimates = [], expenses = [], settings 
 
   const exportTaxPDF = () => {
     const expRows = tfExp.filter(e => e.taxDeductible).map(e => `<tr><td>${e.date}</td><td>${e.category}</td><td>${e.vendor || "—"}</td><td>${e.description}</td><td class="r">${e.isCash ? "💵" : "💳"}</td><td class="r">$${Number(e.amount).toFixed(2)}</td></tr>`).join("");
-    const mileRows = tfMileage.map(m => `<tr><td>${m.date}</td><td>${m.from} → ${m.to}</td><td class="r">${m.miles}</td><td class="r">$${(m.deduction||0).toFixed(2)}</td><td>${m.purpose}</td></tr>`).join("");
+    const mileRows = tfMileage.map(m => `<tr><td>${m.date}</td><td>${m.from} → ${m.to}</td><td class="r">${m.miles}</td><td class="r">$${(m.deduction || 0).toFixed(2)}</td><td>${m.purpose}</td></tr>`).join("");
     const html = `<!DOCTYPE html><html><head><title>Tax Report — ${(settings as any)?.companyName || "Crew Boss"}</title>
     <style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:Arial,sans-serif;padding:40px;color:#111;max-width:900px;margin:auto;font-size:13px}
     h1{color:#dc2626;font-size:24px}h2{color:#333;font-size:16px;border-bottom:2px solid #dc2626;padding-bottom:6px;margin:24px 0 12px}
@@ -215,8 +215,8 @@ export function BudgetPage({ jobs = [], estimates = [], expenses = [], settings 
     <h2>Revenue Summary</h2>
     <table><thead><tr><th>Type</th><th class="r">Amount</th><th class="r">% of Total</th></tr></thead>
     <tbody>
-      <tr><td>💳 Card/Check Payments</td><td class="r">$${cardRevenue.toFixed(2)}</td><td class="r">${grossRevenue > 0 ? (cardRevenue/grossRevenue*100).toFixed(1) : 0}%</td></tr>
-      <tr><td>💵 Cash Payments</td><td class="r">$${cashRevenue.toFixed(2)}</td><td class="r">${grossRevenue > 0 ? (cashRevenue/grossRevenue*100).toFixed(1) : 0}%</td></tr>
+      <tr><td>💳 Card/Check Payments</td><td class="r">$${cardRevenue.toFixed(2)}</td><td class="r">${grossRevenue > 0 ? (cardRevenue / grossRevenue * 100).toFixed(1) : 0}%</td></tr>
+      <tr><td>💵 Cash Payments</td><td class="r">$${cashRevenue.toFixed(2)}</td><td class="r">${grossRevenue > 0 ? (cashRevenue / grossRevenue * 100).toFixed(1) : 0}%</td></tr>
       <tr class="total-row"><td>Total Revenue</td><td class="r">$${grossRevenue.toFixed(2)}</td><td class="r">100%</td></tr>
     </tbody></table>
     <div class="disclaimer">⚠️ <strong>Disclaimer:</strong> This report is for reference only and is not professional tax advice. Consult a qualified CPA or tax professional before filing. Estimated tax calculations use simplified bracket estimates and may not reflect your actual tax situation.</div>
@@ -296,7 +296,7 @@ export function BudgetPage({ jobs = [], estimates = [], expenses = [], settings 
     actualByCategory[key] = (actualByCategory[key] || 0) + Number(e.amount);
   });
 
-  // Map job revenue to income categories
+  // Map job revenue to income categories and customer relations 
   const actualIncome = {
     pressure_washing: tfJobs.filter(j => !(j.notes || "").toLowerCase().includes("roof") && !(j.notes || "").toLowerCase().includes("soft")).reduce((s, j) => s + j.amount, 0),
     soft_wash: tfJobs.filter(j => (j.notes || j.address || "").toLowerCase().includes("soft")).reduce((s, j) => s + j.amount, 0),
@@ -319,14 +319,14 @@ export function BudgetPage({ jobs = [], estimates = [], expenses = [], settings 
           <div className="text-xs text-white/50 mt-0.5">P&L overview · tax deduction planning · Your budget</div>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
-          <TimeframeSelector value={timeframe} onChange={setTimeframe} options={["30d","90d","6m","1y","all"]} />
+          <TimeframeSelector value={timeframe} onChange={setTimeframe} options={["30d", "90d", "6m", "1y", "all"]} />
           <GBtn onClick={exportTaxPDF} className="!text-xs"><Download size={12} className="inline mr-1.5" />Tax PDF</GBtn>
         </div>
       </div>
 
       {/* Tab switcher */}
       <div className="flex gap-2">
-        {[["overview","📊 Overview"],["spreadsheet","📋 Your Budget"],["tax","🧾 Tax Report"]].map(([k,l]) => (
+        {[["overview", "📊 Overview"], ["spreadsheet", "📋 Your Budget"], ["tax", "🧾 Tax Report"]].map(([k, l]) => (
           <button key={k} onClick={() => setBudgetTab(k)} className={"px-4 py-2 rounded-xl text-xs font-semibold border transition " + (budgetTab === k ? "bg-red-900/40 border-red-500/50 text-white" : "bg-black/40 border-red-900/30 text-white/60 hover:text-white")}>{l}</button>
         ))}
       </div>
@@ -410,7 +410,7 @@ export function BudgetPage({ jobs = [], estimates = [], expenses = [], settings 
               <tr className="bg-red-950/20 font-bold">
                 <td className="px-4 py-3">TOTAL EXPENSES</td>
                 <td className="px-4 py-3 text-right text-red-400">{fmt(totalExpCats)}</td>
-                <td className="px-4 py-3 text-right text-white/50">{fmt(Object.entries(budgetGoals).filter(([k]) => k.startsWith("exp_")).reduce((s,[,v]) => s + Number(v), 0))}</td>
+                <td className="px-4 py-3 text-right text-white/50">{fmt(Object.entries(budgetGoals).filter(([k]) => k.startsWith("exp_")).reduce((s, [, v]) => s + Number(v), 0))}</td>
                 <td className="px-4 py-3 text-right"></td>
               </tr>
             </tbody>
@@ -429,148 +429,148 @@ export function BudgetPage({ jobs = [], estimates = [], expenses = [], settings 
 
       {/* OVERVIEW TAB */}
       {budgetTab === "overview" && <>
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        <Stat icon={DollarSign} label={`Revenue (${tfLabel})`} value={fmt(grossRevenue)} />
-        <Stat icon={Receipt} label={`Expenses (${tfLabel})`} value={fmt(totalExpenses)} />
-        <Stat icon={TrendingUp} label="Net Profit" value={fmt(netProfit)} change={netMargin + "%"} />
-        <Stat icon={Percent} label="Profit Margin" value={netMargin + "%"} />
-      </div>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <Stat icon={DollarSign} label={`Revenue (${tfLabel})`} value={fmt(grossRevenue)} />
+          <Stat icon={Receipt} label={`Expenses (${tfLabel})`} value={fmt(totalExpenses)} />
+          <Stat icon={TrendingUp} label="Net Profit" value={fmt(netProfit)} change={netMargin + "%"} />
+          <Stat icon={Percent} label="Profit Margin" value={netMargin + "%"} />
+        </div>
 
-      {/* Cash vs Card split */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        <Glass className="p-4 !bg-green-950/20 !border-green-700/30">
-          <div className="text-[10px] text-green-400 uppercase tracking-wider mb-1">💵 Cash Revenue</div>
-          <div className="text-2xl font-bold text-green-400">{fmt(cashRevenue)}</div>
-          <div className="text-xs text-white/50 mt-0.5">{grossRevenue > 0 ? (cashRevenue / grossRevenue * 100).toFixed(1) : 0}% of total</div>
-        </Glass>
-        <Glass className="p-4">
-          <div className="text-[10px] text-blue-400 uppercase tracking-wider mb-1">💳 Card/Check</div>
-          <div className="text-2xl font-bold text-blue-400">{fmt(cardRevenue)}</div>
-          <div className="text-xs text-white/50 mt-0.5">{grossRevenue > 0 ? (cardRevenue / grossRevenue * 100).toFixed(1) : 0}% of total</div>
-        </Glass>
-        <Glass className="p-4 !bg-purple-950/20 !border-purple-700/30">
-          <div className="text-[10px] text-purple-400 uppercase tracking-wider mb-1">Total Deductions</div>
-          <div className="text-2xl font-bold text-purple-400">{fmt(totalDeductions)}</div>
-          <div className="text-xs text-white/50 mt-0.5">Expenses + mileage</div>
-        </Glass>
-        <Glass className="p-4 !bg-yellow-950/20 !border-yellow-700/30">
-          <div className="text-[10px] text-yellow-400 uppercase tracking-wider mb-1">Est. Quarterly Tax</div>
-          <div className="text-2xl font-bold text-yellow-400">{fmt(quarterlyTax)}</div>
-          <div className="text-xs text-white/50 mt-0.5">Taxable: {fmt(taxableIncome)}</div>
-        </Glass>
-      </div>
+        {/* Cash vs Card split */}
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <Glass className="p-4 !bg-green-950/20 !border-green-700/30">
+            <div className="text-[10px] text-green-400 uppercase tracking-wider mb-1">💵 Cash Revenue</div>
+            <div className="text-2xl font-bold text-green-400">{fmt(cashRevenue)}</div>
+            <div className="text-xs text-white/50 mt-0.5">{grossRevenue > 0 ? (cashRevenue / grossRevenue * 100).toFixed(1) : 0}% of total</div>
+          </Glass>
+          <Glass className="p-4">
+            <div className="text-[10px] text-blue-400 uppercase tracking-wider mb-1">💳 Card/Check</div>
+            <div className="text-2xl font-bold text-blue-400">{fmt(cardRevenue)}</div>
+            <div className="text-xs text-white/50 mt-0.5">{grossRevenue > 0 ? (cardRevenue / grossRevenue * 100).toFixed(1) : 0}% of total</div>
+          </Glass>
+          <Glass className="p-4 !bg-purple-950/20 !border-purple-700/30">
+            <div className="text-[10px] text-purple-400 uppercase tracking-wider mb-1">Total Deductions</div>
+            <div className="text-2xl font-bold text-purple-400">{fmt(totalDeductions)}</div>
+            <div className="text-xs text-white/50 mt-0.5">Expenses + mileage</div>
+          </Glass>
+          <Glass className="p-4 !bg-yellow-950/20 !border-yellow-700/30">
+            <div className="text-[10px] text-yellow-400 uppercase tracking-wider mb-1">Est. Quarterly Tax</div>
+            <div className="text-2xl font-bold text-yellow-400">{fmt(quarterlyTax)}</div>
+            <div className="text-xs text-white/50 mt-0.5">Taxable: {fmt(taxableIncome)}</div>
+          </Glass>
+        </div>
 
-      <div className="grid lg:grid-cols-2 gap-5">
-        {/* P&L Chart */}
-        <Glass className="p-5">
-          <h3 className="font-semibold mb-4 flex items-center gap-2"><BarChart2 size={14} className="text-red-400" />Monthly P&L</h3>
-          <ResponsiveContainer width="100%" height={240}>
-            <BarChart data={monthlyData} margin={{ top: 0, right: 0, left: 0, bottom: 0 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#7f1d1d22" />
-              <XAxis dataKey="month" stroke="#ffffff50" fontSize={10} />
-              <YAxis stroke="#ffffff50" fontSize={10} tickFormatter={v => "$" + (v >= 1000 ? Math.round(v/1000) + "k" : v)} />
-              <Tooltip contentStyle={{ background: "#000", border: "1px solid #991b1b", borderRadius: "8px", fontSize: "11px" }} formatter={v => fmt(Number(v))} />
-              <Bar dataKey="revenue" fill="#e11d48" radius={[4,4,0,0]} name="Revenue" />
-              <Bar dataKey="expenses" fill="#7c3aed" radius={[4,4,0,0]} name="Expenses" />
-              <Bar dataKey="profit" fill="#16a34a" radius={[4,4,0,0]} name="Profit" />
-            </BarChart>
-          </ResponsiveContainer>
-          <div className="flex gap-4 justify-center mt-2 text-[10px]">
-            <span className="flex items-center gap-1"><span className="w-2 h-2 rounded bg-red-500" />Revenue</span>
-            <span className="flex items-center gap-1"><span className="w-2 h-2 rounded bg-violet-600" />Expenses</span>
-            <span className="flex items-center gap-1"><span className="w-2 h-2 rounded bg-green-600" />Profit</span>
-          </div>
-        </Glass>
-
-        {/* Expense breakdown */}
-        <Glass className="p-5">
-          <h3 className="font-semibold mb-4 flex items-center gap-2"><PieIcon size={14} className="text-red-400" />Expense Breakdown</h3>
-          {expCatArr.length === 0 ? <div className="text-center py-12 text-white/40">No expenses in this period</div> : <>
-            <div className="space-y-2.5">
-              {expCatArr.map(([cat, amt], i) => {
-                const pct = totalExpenses > 0 ? (amt / totalExpenses * 100) : 0;
-                const colors = ["bg-red-500", "bg-orange-500", "bg-amber-500", "bg-yellow-500", "bg-lime-500", "bg-green-500", "bg-teal-500", "bg-cyan-500"];
-                return <div key={cat} className="flex items-center gap-3">
-                  <div className="text-xs text-white/70 w-24 truncate">{cat}</div>
-                  <div className="flex-1 h-2 bg-black/40 rounded-full overflow-hidden">
-                    <div className={"h-full rounded-full " + colors[i % colors.length]} style={{ width: pct + "%" }} />
-                  </div>
-                  <div className="text-xs font-semibold text-white/80 w-16 text-right">{fmt(amt)}</div>
-                  <div className="text-[10px] text-white/40 w-8 text-right">{pct.toFixed(0)}%</div>
-                </div>;
-              })}
+        <div className="grid lg:grid-cols-2 gap-5">
+          {/* P&L Chart */}
+          <Glass className="p-5">
+            <h3 className="font-semibold mb-4 flex items-center gap-2"><BarChart2 size={14} className="text-red-400" />Monthly P&L</h3>
+            <ResponsiveContainer width="100%" height={240}>
+              <BarChart data={monthlyData} margin={{ top: 0, right: 0, left: 0, bottom: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#7f1d1d22" />
+                <XAxis dataKey="month" stroke="#ffffff50" fontSize={10} />
+                <YAxis stroke="#ffffff50" fontSize={10} tickFormatter={v => "$" + (v >= 1000 ? Math.round(v / 1000) + "k" : v)} />
+                <Tooltip contentStyle={{ background: "#000", border: "1px solid #991b1b", borderRadius: "8px", fontSize: "11px" }} formatter={v => fmt(Number(v))} />
+                <Bar dataKey="revenue" fill="#e11d48" radius={[4, 4, 0, 0]} name="Revenue" />
+                <Bar dataKey="expenses" fill="#7c3aed" radius={[4, 4, 0, 0]} name="Expenses" />
+                <Bar dataKey="profit" fill="#16a34a" radius={[4, 4, 0, 0]} name="Profit" />
+              </BarChart>
+            </ResponsiveContainer>
+            <div className="flex gap-4 justify-center mt-2 text-[10px]">
+              <span className="flex items-center gap-1"><span className="w-2 h-2 rounded bg-red-500" />Revenue</span>
+              <span className="flex items-center gap-1"><span className="w-2 h-2 rounded bg-violet-600" />Expenses</span>
+              <span className="flex items-center gap-1"><span className="w-2 h-2 rounded bg-green-600" />Profit</span>
             </div>
-            <div className="mt-3 pt-3 border-t border-red-900/20 flex justify-between text-xs">
-              <span className="text-white/50">Total expenses</span>
-              <span className="font-bold text-red-400">{fmt(totalExpenses)}</span>
+          </Glass>
+
+          {/* Expense breakdown */}
+          <Glass className="p-5">
+            <h3 className="font-semibold mb-4 flex items-center gap-2"><PieIcon size={14} className="text-red-400" />Expense Breakdown</h3>
+            {expCatArr.length === 0 ? <div className="text-center py-12 text-white/40">No expenses in this period</div> : <>
+              <div className="space-y-2.5">
+                {expCatArr.map(([cat, amt], i) => {
+                  const pct = totalExpenses > 0 ? (amt / totalExpenses * 100) : 0;
+                  const colors = ["bg-red-500", "bg-orange-500", "bg-amber-500", "bg-yellow-500", "bg-lime-500", "bg-green-500", "bg-teal-500", "bg-cyan-500"];
+                  return <div key={cat} className="flex items-center gap-3">
+                    <div className="text-xs text-white/70 w-24 truncate">{cat}</div>
+                    <div className="flex-1 h-2 bg-black/40 rounded-full overflow-hidden">
+                      <div className={"h-full rounded-full " + colors[i % colors.length]} style={{ width: pct + "%" }} />
+                    </div>
+                    <div className="text-xs font-semibold text-white/80 w-16 text-right">{fmt(amt)}</div>
+                    <div className="text-[10px] text-white/40 w-8 text-right">{pct.toFixed(0)}%</div>
+                  </div>;
+                })}
+              </div>
+              <div className="mt-3 pt-3 border-t border-red-900/20 flex justify-between text-xs">
+                <span className="text-white/50">Total expenses</span>
+                <span className="font-bold text-red-400">{fmt(totalExpenses)}</span>
+              </div>
+            </>}
+          </Glass>
+        </div>
+
+        {/* Tax Planning */}
+        <Glass className="p-5 !bg-gradient-to-br !from-yellow-950/20 !to-black/60 !border-yellow-700/30">
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="font-semibold flex items-center gap-2"><Receipt size={14} className="text-yellow-400" />Tax Planning ({tfLabel})</h3>
+            <GBtn onClick={exportTaxPDF} variant="ghost" className="!text-xs"><Download size={11} className="inline mr-1" />Export for CPA</GBtn>
+          </div>
+          <div className="grid md:grid-cols-2 gap-4">
+            <div className="space-y-3">
+              <div className="text-xs text-white/50 uppercase tracking-wider mb-2">Deduction Summary</div>
+              {[
+                { label: "Deductible Expenses", amount: deductibleExp },
+                { label: `Mileage (${totalMiles.toFixed(1)} mi × $${IRS_RATE})`, amount: mileageDeduction },
+                { label: "Total Deductions", amount: totalDeductions, bold: true },
+              ].map(r => (
+                <div key={r.label} className={"flex items-center justify-between text-sm py-1.5 " + (r.bold ? "border-t border-yellow-700/30 mt-2 pt-3 font-bold" : "")}>
+                  <span className={"text-white/" + (r.bold ? "90" : "70")}>{r.label}</span>
+                  <span className={r.bold ? "text-yellow-400 text-base" : "text-white/80"}>{fmt(r.amount)}</span>
+                </div>
+              ))}
             </div>
-          </>}
+            <div className="space-y-3">
+              <div className="text-xs text-white/50 uppercase tracking-wider mb-2">Estimated Tax Liability</div>
+              {[
+                { label: "Gross Revenue", amount: grossRevenue },
+                { label: "— Total Deductions", amount: -totalDeductions },
+                { label: "= Taxable Income", amount: taxableIncome, bold: true },
+                { label: `Self-Employment (${(seRateEst * 100).toFixed(1)}%)`, amount: taxableIncome * seRateEst },
+                { label: `Federal Income (~${(fedRateEst * 100).toFixed(0)}% bracket)`, amount: taxableIncome * fedRateEst },
+                { label: "Quarterly Payment Est.", amount: quarterlyTax, bold: true },
+              ].map(r => (
+                <div key={r.label} className={"flex items-center justify-between text-sm py-1.5 " + (r.bold ? "border-t border-yellow-700/30 mt-2 pt-3 font-bold" : "")}>
+                  <span className={"text-white/" + (r.bold ? "90" : "70")}>{r.label}</span>
+                  <span className={r.bold ? "text-yellow-400 text-base" : r.amount < 0 ? "text-red-400" : "text-white/80"}>{r.amount < 0 ? "− " + fmt(-r.amount) : fmt(r.amount)}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+          <div className="mt-4 p-3 bg-yellow-950/30 border border-yellow-700/30 rounded-xl text-[10px] text-yellow-200/60">
+            ⚠️ Estimated only — not professional tax advice. Consult your CPA. Self-employment estimated at 15.3%. Federal bracket estimated based on simplified 2024 rates.
+          </div>
         </Glass>
-      </div>
 
-      {/* Tax Planning */}
-      <Glass className="p-5 !bg-gradient-to-br !from-yellow-950/20 !to-black/60 !border-yellow-700/30">
-        <div className="flex items-center justify-between mb-4">
-          <h3 className="font-semibold flex items-center gap-2"><Receipt size={14} className="text-yellow-400" />Tax Planning ({tfLabel})</h3>
-          <GBtn onClick={exportTaxPDF} variant="ghost" className="!text-xs"><Download size={11} className="inline mr-1" />Export for CPA</GBtn>
-        </div>
-        <div className="grid md:grid-cols-2 gap-4">
-          <div className="space-y-3">
-            <div className="text-xs text-white/50 uppercase tracking-wider mb-2">Deduction Summary</div>
-            {[
-              { label: "Deductible Expenses", amount: deductibleExp },
-              { label: `Mileage (${totalMiles.toFixed(1)} mi × $${IRS_RATE})`, amount: mileageDeduction },
-              { label: "Total Deductions", amount: totalDeductions, bold: true },
-            ].map(r => (
-              <div key={r.label} className={"flex items-center justify-between text-sm py-1.5 " + (r.bold ? "border-t border-yellow-700/30 mt-2 pt-3 font-bold" : "")}>
-                <span className={"text-white/" + (r.bold ? "90" : "70")}>{r.label}</span>
-                <span className={r.bold ? "text-yellow-400 text-base" : "text-white/80"}>{fmt(r.amount)}</span>
-              </div>
-            ))}
+        {/* Budget Goals */}
+        <Glass className="p-5">
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="font-semibold flex items-center gap-2"><Target size={14} className="text-red-400" />Budget Goals</h3>
+            <div className="text-xs text-white/40">Click ✏️ to set a goal</div>
           </div>
-          <div className="space-y-3">
-            <div className="text-xs text-white/50 uppercase tracking-wider mb-2">Estimated Tax Liability</div>
-            {[
-              { label: "Gross Revenue", amount: grossRevenue },
-              { label: "— Total Deductions", amount: -totalDeductions },
-              { label: "= Taxable Income", amount: taxableIncome, bold: true },
-              { label: `Self-Employment (${(seRateEst*100).toFixed(1)}%)`, amount: taxableIncome * seRateEst },
-              { label: `Federal Income (~${(fedRateEst*100).toFixed(0)}% bracket)`, amount: taxableIncome * fedRateEst },
-              { label: "Quarterly Payment Est.", amount: quarterlyTax, bold: true },
-            ].map(r => (
-              <div key={r.label} className={"flex items-center justify-between text-sm py-1.5 " + (r.bold ? "border-t border-yellow-700/30 mt-2 pt-3 font-bold" : "")}>
-                <span className={"text-white/" + (r.bold ? "90" : "70")}>{r.label}</span>
-                <span className={r.bold ? "text-yellow-400 text-base" : r.amount < 0 ? "text-red-400" : "text-white/80"}>{r.amount < 0 ? "− " + fmt(-r.amount) : fmt(r.amount)}</span>
-              </div>
-            ))}
+          <div className="grid md:grid-cols-2 gap-6">
+            <div>
+              <div className="text-[10px] text-white/40 uppercase tracking-wider mb-2">Revenue Targets</div>
+              <GoalRow label="Monthly Revenue" k="monthlyRev" actual={grossRevenue / Math.max(1, TIMEFRAMES.find(t => t.key === timeframe)?.days / 30)} />
+              <GoalRow label="Annual Revenue" k="annualRev" actual={grossRevenue * (365 / Math.max(1, TIMEFRAMES.find(t => t.key === timeframe)?.days || 365))} />
+              <GoalRow label="Avg Job Value" k="avgJob" actual={tfJobs.length ? grossRevenue / tfJobs.length : 0} />
+            </div>
+            <div>
+              <div className="text-[10px] text-white/40 uppercase tracking-wider mb-2">Expense Limits</div>
+              <GoalRow label="Monthly Expenses" k="monthlyExp" actual={totalExpenses / Math.max(1, TIMEFRAMES.find(t => t.key === timeframe)?.days / 30)} />
+              <GoalRow label="Chemicals Budget" k="chemicals" actual={tfExp.filter(e => e.category === "Chemicals").reduce((s, e) => s + Number(e.amount), 0)} />
+              <GoalRow label="Advertising Budget" k="advertising" actual={tfExp.filter(e => e.category === "Advertising").reduce((s, e) => s + Number(e.amount), 0)} />
+            </div>
           </div>
-        </div>
-        <div className="mt-4 p-3 bg-yellow-950/30 border border-yellow-700/30 rounded-xl text-[10px] text-yellow-200/60">
-          ⚠️ Estimated only — not professional tax advice. Consult your CPA. Self-employment estimated at 15.3%. Federal bracket estimated based on simplified 2024 rates.
-        </div>
-      </Glass>
-
-      {/* Budget Goals */}
-      <Glass className="p-5">
-        <div className="flex items-center justify-between mb-4">
-          <h3 className="font-semibold flex items-center gap-2"><Target size={14} className="text-red-400" />Budget Goals</h3>
-          <div className="text-xs text-white/40">Click ✏️ to set a goal</div>
-        </div>
-        <div className="grid md:grid-cols-2 gap-6">
-          <div>
-            <div className="text-[10px] text-white/40 uppercase tracking-wider mb-2">Revenue Targets</div>
-            <GoalRow label="Monthly Revenue" k="monthlyRev" actual={grossRevenue / Math.max(1, TIMEFRAMES.find(t => t.key === timeframe)?.days / 30)} />
-            <GoalRow label="Annual Revenue" k="annualRev" actual={grossRevenue * (365 / Math.max(1, TIMEFRAMES.find(t => t.key === timeframe)?.days || 365))} />
-            <GoalRow label="Avg Job Value" k="avgJob" actual={tfJobs.length ? grossRevenue / tfJobs.length : 0} />
-          </div>
-          <div>
-            <div className="text-[10px] text-white/40 uppercase tracking-wider mb-2">Expense Limits</div>
-            <GoalRow label="Monthly Expenses" k="monthlyExp" actual={totalExpenses / Math.max(1, TIMEFRAMES.find(t => t.key === timeframe)?.days / 30)} />
-            <GoalRow label="Chemicals Budget" k="chemicals" actual={tfExp.filter(e => e.category === "Chemicals").reduce((s, e) => s + Number(e.amount), 0)} />
-            <GoalRow label="Advertising Budget" k="advertising" actual={tfExp.filter(e => e.category === "Advertising").reduce((s, e) => s + Number(e.amount), 0)} />
-          </div>
-        </div>
-      </Glass>
+        </Glass>
       </>}
 
       {/* Set Goal Modal */}

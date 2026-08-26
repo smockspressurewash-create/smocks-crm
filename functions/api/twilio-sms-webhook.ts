@@ -48,9 +48,15 @@ const sendCustomerAgentReply = async (ctx: { authHeaders: Record<string, string>
     const existing = Array.isArray(threads) ? threads.find((t: any) => normalizePhoneDigits(t.contact_phone) === digits) : null;
     const msg = { id: crypto.randomUUID(), dir: "out", body, ts: Date.now(), via: "alfred" };
     if (existing) {
-      await fetch(`${SUPABASE_URL}/rest/v1/inbox_threads?id=eq.${encodeURIComponent(existing.id)}`, {
-        method: "PATCH", headers: { ...ctx.authHeaders, "Content-Type": "application/json", Prefer: "return=minimal" },
-        body: JSON.stringify({ messages: [...(existing.messages || []), msg], last_message_at: msg.ts, updated_at: new Date().toISOString() }),
+      // BUG FIX — "my SMS inbox messages disappeared from one
+      // conversation." Same class of bug as every other fixed instance in
+      // this file: a read-then-blind-overwrite PATCH can silently discard
+      // another appender's message that landed in the gap between the read
+      // above and this write. append_inbox_message does the append inside
+      // one atomic UPDATE instead.
+      await fetch(`${SUPABASE_URL}/rest/v1/rpc/append_inbox_message`, {
+        method: "POST", headers: { ...ctx.authHeaders, "Content-Type": "application/json" },
+        body: JSON.stringify({ p_thread_id: existing.id, p_message: msg, p_unread: false }),
       });
     }
     // No else-create branch — the inbound message handler above already
