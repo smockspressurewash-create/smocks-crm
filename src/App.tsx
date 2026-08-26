@@ -2814,6 +2814,69 @@ export function App() {
     return () => clearInterval(interval);
   }, [customers, estimates, chemicals]);
 
+  // FEATURE — "make sure the owner can also access the auto mileage
+  // tracking." EmployeePortal.tsx's GPS-based auto mileage tracker only
+  // ever ran for a real employee session — the owner's own clock-in
+  // (JobDetailModal's Time Tracking control) writes to the exact same
+  // employees.dayClockInAt field employees use, but nothing watched it to
+  // start/stop GPS tracking or log the trip. This mirrors that same
+  // watchPosition/haversine logic, self-contained here rather than
+  // routing the owner through EmployeePortal's employee-session-shaped
+  // internals (which assume a real employee auth session throughout).
+  const ownerMileageWatchIdRef = useRef<number | null>(null);
+  const ownerLastGpsPosRef = useRef<{ lat: number; lng: number; t: number } | null>(null);
+  const ownerDayTrackedMilesRef = useRef(0);
+  const ownerWasClockedInRef = useRef(false);
+  const myOwnerEmpRow = employees.find((e: any) => e.role === "owner" && ((e.user_id && e.user_id === crmUserId) || (e.email && crmUserEmail && e.email.toLowerCase() === crmUserEmail.toLowerCase())));
+  useEffect(() => {
+    if (!hasCrmSession || !myOwnerEmpRow) return;
+    const autoMileageEnabled = (settings as any)?.autoMileageTrackingEnabled !== false;
+    const clockedIn = !!(myOwnerEmpRow as any).dayClockInAt;
+    if (clockedIn && autoMileageEnabled && ownerMileageWatchIdRef.current == null && navigator.geolocation) {
+      ownerLastGpsPosRef.current = null;
+      ownerDayTrackedMilesRef.current = 0;
+      const haversineMi = (a: { lat: number; lng: number }, b: { lat: number; lng: number }) => {
+        const R = 3958.8;
+        const dLat = (b.lat - a.lat) * Math.PI / 180;
+        const dLng = (b.lng - a.lng) * Math.PI / 180;
+        const s = Math.sin(dLat / 2) ** 2 + Math.cos(a.lat * Math.PI / 180) * Math.cos(b.lat * Math.PI / 180) * Math.sin(dLng / 2) ** 2;
+        return R * 2 * Math.atan2(Math.sqrt(s), Math.sqrt(1 - s));
+      };
+      ownerMileageWatchIdRef.current = navigator.geolocation.watchPosition(
+        pos => {
+          const { latitude: lat, longitude: lng, accuracy } = pos.coords;
+          const now = Date.now();
+          if (accuracy != null && accuracy > 100) return;
+          const prev = ownerLastGpsPosRef.current;
+          if (prev) {
+            const miles = haversineMi(prev, { lat, lng });
+            const hours = Math.max((now - prev.t) / 3600000, 1 / 3600);
+            if (miles / hours <= 100 && miles > 0.005) ownerDayTrackedMilesRef.current = Math.round((ownerDayTrackedMilesRef.current + miles) * 100) / 100;
+          }
+          ownerLastGpsPosRef.current = { lat, lng, t: now };
+        },
+        (err) => console.warn("[Owner Mileage] GPS watch error:", err.message),
+        { enableHighAccuracy: true, maximumAge: 15000, timeout: 20000 }
+      );
+      console.log("[Owner Mileage] auto-tracking started");
+    }
+    // Transition from clocked-in -> clocked-out: stop the watch and log the trip.
+    if (!clockedIn && ownerWasClockedInRef.current && ownerMileageWatchIdRef.current != null) {
+      navigator.geolocation.clearWatch(ownerMileageWatchIdRef.current);
+      ownerMileageWatchIdRef.current = null;
+      const miles = ownerDayTrackedMilesRef.current;
+      if (miles > 0.1) {
+        const row = { id: uid(), employee_id: (myOwnerEmpRow as any).id, date: today(), from: "", to: "", miles, purpose: "Auto-tracked shift mileage", status: "approved", owner_id: crmUserId };
+        (supabase as any).from("mileage_logs").insert(row)
+          .then((r: any) => { if (r?.error) console.warn("[Owner Mileage] auto-submit failed:", r.error.message); })
+          .catch((e: any) => console.warn("[Owner Mileage] auto-submit threw:", e?.message));
+      }
+      console.log("[Owner Mileage] auto-tracking stopped —", miles, "mi logged");
+    }
+    ownerWasClockedInRef.current = clockedIn;
+  }, [hasCrmSession, (myOwnerEmpRow as any)?.dayClockInAt, (settings as any)?.autoMileageTrackingEnabled]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => () => { if (ownerMileageWatchIdRef.current != null) navigator.geolocation.clearWatch(ownerMileageWatchIdRef.current); }, []);
+
   // SMS compliance — keep messaging.ts's in-memory opted-out-phone registry
   // (see setOptedOutPhones/isPhoneOptedOut in lib/messaging.ts) in sync with
   // the live customers array, so twilioSend() blocks anyone who's replied
