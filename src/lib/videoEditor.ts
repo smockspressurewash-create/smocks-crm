@@ -9,6 +9,7 @@
 import { FFmpeg } from "@ffmpeg/ffmpeg";
 import { toBlobURL, fetchFile } from "@ffmpeg/util";
 import { getCaptionStyle, getTransition, type CaptionStyle } from "./captionStyles";
+import { uid } from "./utils";
 
 const CORE_VERSION = "0.12.6";
 const CORE_BASE = `https://unpkg.com/@ffmpeg/core@${CORE_VERSION}/dist/esm`;
@@ -144,6 +145,99 @@ export const extractAudioForTranscription = async (clip: EditorClip): Promise<Bl
   await ff.deleteFile(inName).catch(() => {});
   await ff.deleteFile(outName).catch(() => {});
   return new Blob([data as any], { type: "audio/mpeg" });
+};
+
+// FEATURE — "make it so it uses any API, not just OpenAI's for auto
+// captions." Three real, independently-selectable transcription providers
+// (see functions/api/transcribe-audio.ts for what actually calls each one).
+// OpenAI and Groq reuse whichever key the owner already has set in
+// Settings → AI Models (Groq's Whisper endpoint is genuinely a different
+// vendor/host, not just a relabeled OpenAI call); Deepgram is a fully
+// separate API with its own key, for an owner who doesn't want to depend
+// on OpenAI at all.
+export type CaptionProvider = "openai" | "groq" | "deepgram";
+export const CAPTION_PROVIDERS: { id: CaptionProvider; label: string; keyFrom: (settings: any) => string | undefined }[] = [
+  { id: "openai", label: "OpenAI Whisper", keyFrom: (s: any) => s?.modelKeys?.openai },
+  { id: "groq", label: "Groq Whisper (fast)", keyFrom: (s: any) => s?.modelKeys?.groq },
+  { id: "deepgram", label: "Deepgram", keyFrom: (s: any) => s?.deepgramApiKey },
+];
+
+// Thin fetcher shared by the per-clip "Auto-Captions" button and the
+// full "Auto-Edit" pipeline below — same proxy endpoint, provider passed
+// through so the server picks the right upstream API.
+export const requestTranscription = async (
+  audioBlob: Blob,
+  provider: CaptionProvider,
+  apiKey: string
+): Promise<{ text: string; start: number; end: number }[]> => {
+  const form = new FormData();
+  form.append("audio", audioBlob, "audio.mp3");
+  form.append("apiKey", apiKey);
+  form.append("provider", provider);
+  const res = await fetch("/api/transcribe-audio", { method: "POST", body: form });
+  const data = await res.json();
+  if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
+  return data.segments || [];
+};
+
+// FEATURE — "make it so you can auto edit, it auto cuts the dead spaces,
+// pieces the clips together." Trimming the clip's own start/end (the
+// existing Auto-Cut Silence button) only ever handled silence at the very
+// edges — a pause in the MIDDLE of a clip stayed in. This actually splits
+// a clip at every silent stretch found inside its current trim bounds,
+// returning one EditorClip per non-silent stretch — the render pipeline
+// already concatenates clips in array order, so replacing one clip with
+// its several "keep" pieces is all "piecing them back together" requires;
+// nothing else about renderFinalVideo needs to change.
+export const autoCutClipDeadSpace = async (
+  clip: EditorClip,
+  noiseDb = -30,
+  minSilenceSec = 0.6
+): Promise<EditorClip[]> => {
+  const ranges = await detectSilence(clip.file, noiseDb, minSilenceSec);
+  const trimStart = clip.startSec, trimEnd = clip.endSec;
+  const clipped = ranges
+    .map(r => ({ start: Math.max(r.start, trimStart), end: Math.min(r.end, trimEnd) }))
+    .filter(r => r.end > r.start)
+    .sort((a, b) => a.start - b.start);
+  if (clipped.length === 0) return [clip];
+
+  // Complement of the silence ranges within the clip's own trim bounds —
+  // these are the stretches that actually have something happening.
+  const keep: { start: number; end: number }[] = [];
+  let cursor = trimStart;
+  for (const r of clipped) {
+    if (r.start > cursor) keep.push({ start: cursor, end: r.start });
+    cursor = Math.max(cursor, r.end);
+  }
+  if (cursor < trimEnd) keep.push({ start: cursor, end: trimEnd });
+
+  // Drop/merge slivers too short to be worth a separate re-encoded piece —
+  // otherwise a normal mid-sentence breath can get stutter-cut into a dozen
+  // near-instant clips instead of reading as one continuous take.
+  const MIN_KEEP_SEC = 0.4;
+  const merged: { start: number; end: number }[] = [];
+  for (const seg of keep) {
+    if (seg.end - seg.start < MIN_KEEP_SEC && merged.length > 0) { merged[merged.length - 1].end = seg.end; continue; }
+    merged.push({ ...seg });
+  }
+  const final = merged.filter(seg => seg.end - seg.start >= MIN_KEEP_SEC);
+  if (final.length === 0) return [clip];
+  if (final.length === 1 && Math.abs(final[0].start - trimStart) < 0.05 && Math.abs(final[0].end - trimEnd) < 0.05) return [clip];
+
+  return final.map((seg, i) => ({
+    id: uid(),
+    file: clip.file,
+    startSec: seg.start,
+    endSec: seg.end,
+    durationSec: clip.durationSec,
+    rotation: clip.rotation,
+    flipH: clip.flipH,
+    // Only the LAST piece of a split clip should carry the original
+    // transition into whatever clip comes next — the pieces in between are
+    // internal cuts within what was one continuous clip, always hard cuts.
+    transitionToNext: i === final.length - 1 ? clip.transitionToNext : "none",
+  }));
 };
 
 export type RenderProgress = (phase: string, pct: number) => void;

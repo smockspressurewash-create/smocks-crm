@@ -997,6 +997,9 @@ export interface AppSettings {
   // Optional — unlocks "Auto-Edit with AI" in the Social video editor
   // (Shotstack); the free ffmpeg.wasm editor works fully without this.
   videoAutoEditApiKey?: string;
+  // Optional — Deepgram key for the video editor's auto-captions, an
+  // alternative to reusing the OpenAI/Groq keys already set in AI Models.
+  deepgramApiKey?: string;
   bufferOrganizationId?: string;
   bufferChannelIds?: Record<string, string>;
   googleCalendarColor?: boolean;

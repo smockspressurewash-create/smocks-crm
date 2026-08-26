@@ -10,10 +10,10 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Modal } from "./Modal";
 import { GBtn } from "./GBtn";
-import { Plus, Trash2, ChevronUp, ChevronDown, Wand2, Scissors, Type, Upload, Sparkles, RotateCw, FlipHorizontal, Captions, Save } from "lucide-react";
+import { Plus, Trash2, ChevronUp, ChevronDown, Wand2, Scissors, Type, Upload, Sparkles, RotateCw, FlipHorizontal, Captions, Save, Clapperboard } from "lucide-react";
 import { uid, uploadJobMedia } from "../../lib/utils";
 import { CAPTION_STYLES, CAPTION_GOOGLE_FONTS_HREF, captionStyleToCss, getCaptionStyle, TRANSITION_EFFECTS } from "../../lib/captionStyles";
-import { readVideoDuration, detectSilence, renderFinalVideo, extractAudioForTranscription, ASPECT_RATIOS, type AspectRatio, type EditorClip, type EditorCaption } from "../../lib/videoEditor";
+import { readVideoDuration, detectSilence, renderFinalVideo, extractAudioForTranscription, autoCutClipDeadSpace, requestTranscription, CAPTION_PROVIDERS, ASPECT_RATIOS, type AspectRatio, type CaptionProvider, type EditorClip, type EditorCaption } from "../../lib/videoEditor";
 
 export function VideoEditorModal({ open, onClose, onExported, toast, settings }: {
   open: boolean;
@@ -39,8 +39,23 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings }:
   const [autoEditing, setAutoEditing] = useState(false);
   // FEATURE — "change the frame size, like 9:16, etc."
   const [aspectRatio, setAspectRatio] = useState<AspectRatio>("9:16");
-  // FEATURE — "can it automatically create captions?"
+  // FEATURE — "can it automatically create captions?" / "use any API, not
+  // just OpenAI's." Defaults to whichever provider the owner already has a
+  // key for (OpenAI, then Groq, then Deepgram), but is fully switchable.
   const [transcribing, setTranscribing] = useState(false);
+  const [captionProvider, setCaptionProvider] = useState<CaptionProvider>("openai");
+  useEffect(() => {
+    if (!open) return;
+    const withKey = CAPTION_PROVIDERS.find(p => !!p.keyFrom(settings));
+    if (withKey) setCaptionProvider(withKey.id);
+  }, [open]);
+  const getCaptionApiKey = (provider: CaptionProvider): string | undefined => CAPTION_PROVIDERS.find(p => p.id === provider)?.keyFrom(settings);
+  // FEATURE — "make it so you can auto edit... choose caption templates,
+  // review it, can manually edit it, save, etc." Style applied to every
+  // caption the Auto-Edit pipeline generates — picked once up front.
+  const [autoEditCaptionStyle, setAutoEditCaptionStyle] = useState(CAPTION_STYLES[0].id);
+  const [autoEditRunning, setAutoEditRunning] = useState(false);
+  const [autoEditPhase, setAutoEditPhase] = useState("");
   // FEATURE — "move the text around." Which caption (if any) is currently
   // being repositioned by tapping/clicking the preview.
   const [positioningCaptionId, setPositioningCaptionId] = useState<string | null>(null);
@@ -151,23 +166,17 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings }:
   // assembled final video, not just this one clip in isolation.
   const runAutoCaptions = async () => {
     if (!activeClip) { toast?.("Add a clip first", "red"); return; }
-    const apiKey = settings?.modelKeys?.openai;
-    if (!apiKey) { toast?.("Add an OpenAI API key in Settings → AI Models to use auto-captions (or just type captions manually below — free, no key needed)", "yellow"); return; }
+    const apiKey = getCaptionApiKey(captionProvider);
+    if (!apiKey) { toast?.(`Add a ${CAPTION_PROVIDERS.find(p => p.id === captionProvider)?.label} key to use auto-captions (or just type captions manually below — free, no key needed)`, "yellow"); return; }
     setTranscribing(true);
     try {
       const audioBlob = await extractAudioForTranscription(activeClip);
-      const form = new FormData();
-      form.append("audio", audioBlob, "audio.mp3");
-      form.append("apiKey", apiKey);
-      const res = await fetch("/api/transcribe-audio", { method: "POST", body: form });
-      const data = await res.json();
-      if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
-      const segments: { text: string; start: number; end: number }[] = data.segments || [];
+      const segments = await requestTranscription(audioBlob, captionProvider, apiKey);
       if (segments.length === 0) { toast?.("No speech detected in this clip", "yellow"); return; }
       const clipIndex = clips.findIndex(c => c.id === activeClip.id);
       const offsetSec = clips.slice(0, clipIndex).reduce((s, c) => s + Math.max(0, c.endSec - c.startSec), 0);
       const newCaptions: EditorCaption[] = segments.map(seg => ({
-        id: uid(), text: seg.text, startSec: offsetSec + seg.start, endSec: offsetSec + seg.end, styleId: CAPTION_STYLES[0].id,
+        id: uid(), text: seg.text, startSec: offsetSec + seg.start, endSec: offsetSec + seg.end, styleId: autoEditCaptionStyle,
       }));
       setCaptions(prev => [...prev, ...newCaptions]);
       toast?.(`Added ${newCaptions.length} caption${newCaptions.length > 1 ? "s" : ""} from the transcript ✓ — edit any that need fixing`, "green");
@@ -175,6 +184,62 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings }:
       toast?.("Auto-captions failed — " + (e?.message || "unknown error"), "red");
     } finally {
       setTranscribing(false);
+    }
+  };
+
+  // FEATURE — "make it so you can auto edit, it auto cuts the dead spaces,
+  // pieces the clips together, adds captions, you choose captions
+  // templates, review it, can manually edit it, save, etc." One button
+  // that: (1) splits every clip at its internal silences, replacing the
+  // clip list with just the "keep" pieces — the existing render pipeline
+  // already concatenates clips in array order, so that alone is "piecing
+  // them together"; (2) transcribes every resulting piece and adds
+  // captions in the style picked below; then leaves the owner right back
+  // in this same editor with everything populated — "review it, manually
+  // edit it, save" is just the editor's own existing clip/caption controls
+  // and Render button, not a separate screen.
+  const runAutoEdit = async () => {
+    if (clips.length === 0) { toast?.("Add at least one clip first", "red"); return; }
+    setAutoEditRunning(true);
+    try {
+      setAutoEditPhase("Cutting dead space…");
+      const cutClips: EditorClip[] = [];
+      for (let i = 0; i < clips.length; i++) {
+        setAutoEditPhase(`Cutting dead space (clip ${i + 1}/${clips.length})…`);
+        const pieces = await autoCutClipDeadSpace(clips[i]);
+        cutClips.push(...pieces);
+      }
+      setClips(cutClips);
+      setActiveClipId(cutClips[0]?.id || null);
+
+      const apiKey = getCaptionApiKey(captionProvider);
+      if (apiKey) {
+        setAutoEditPhase("Generating captions…");
+        const newCaptions: EditorCaption[] = [];
+        let offset = 0;
+        for (let i = 0; i < cutClips.length; i++) {
+          const c = cutClips[i];
+          const dur = Math.max(0, c.endSec - c.startSec);
+          setAutoEditPhase(`Transcribing (${i + 1}/${cutClips.length})…`);
+          try {
+            const audioBlob = await extractAudioForTranscription(c);
+            const segments = await requestTranscription(audioBlob, captionProvider, apiKey);
+            for (const seg of segments) newCaptions.push({ id: uid(), text: seg.text, startSec: offset + seg.start, endSec: offset + seg.end, styleId: autoEditCaptionStyle });
+          } catch (e: any) {
+            console.warn("[Auto-Edit] transcription failed for a clip, continuing:", e?.message);
+          }
+          offset += dur;
+        }
+        setCaptions(prev => [...prev, ...newCaptions]);
+        toast?.(`Auto-edit done — cut down to ${cutClips.length} clip${cutClips.length > 1 ? "s" : ""} and added ${newCaptions.length} caption${newCaptions.length === 1 ? "" : "s"}. Review below, edit anything, then render ✓`, "green");
+      } else {
+        toast?.(`Auto-edit done — cut down to ${cutClips.length} clip${cutClips.length > 1 ? "s" : ""}. Add a captions API key to also auto-generate captions, or add them manually below ✓`, "green");
+      }
+    } catch (e: any) {
+      toast?.("Auto-edit failed — " + (e?.message || "unknown error"), "red");
+    } finally {
+      setAutoEditRunning(false);
+      setAutoEditPhase("");
     }
   };
 
@@ -280,6 +345,12 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings }:
           </div>
           <div className="text-[11px] text-white/40">Rendering happens on this device — don't close the tab.</div>
         </div>
+      ) : autoEditRunning ? (
+        <div className="py-16 text-center space-y-4">
+          <div className="w-14 h-14 mx-auto rounded-full border-4 border-purple-600/20 border-t-purple-500 animate-spin" />
+          <div className="text-sm font-semibold text-white">{autoEditPhase}</div>
+          <div className="text-[11px] text-white/40">Auto-editing happens on this device — don't close the tab.</div>
+        </div>
       ) : (
         <div className="space-y-5">
           {/* FEATURE — "change the frame size, like 9:16, etc." Real output
@@ -345,6 +416,40 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings }:
           </div>
           {positioningCaptionId && (
             <button onClick={() => setPositioningCaptionId(null)} className="w-full text-center text-xs text-red-400 hover:text-red-300 font-semibold -mt-3">Done positioning</button>
+          )}
+
+          {/* FEATURE — "make it so you can auto edit." One button that
+              chains auto-cut-dead-space + auto-captions across every clip
+              in the timeline (not just the active one), applying whichever
+              caption template and transcription provider are picked here —
+              then hands control right back to the normal editor below so
+              the result can be reviewed, manually adjusted, and rendered
+              exactly like a manual edit. */}
+          {clips.length > 0 && (
+            <div className="p-3 rounded-xl bg-purple-950/15 border border-purple-700/30 space-y-2.5">
+              <div className="text-xs font-semibold text-purple-300 flex items-center gap-1.5"><Clapperboard size={13} />Auto-Edit</div>
+              <div className="text-[10px] text-white/40">Cuts dead air out of every clip, stitches what's left together, and captions it in one pass — you still get to review and tweak everything after.</div>
+              <div className="grid grid-cols-2 gap-1.5">
+                <div>
+                  <label className="text-[9px] text-white/40 block mb-1">Captions from</label>
+                  <select value={captionProvider} onChange={e => setCaptionProvider(e.target.value as CaptionProvider)} className="ve-select w-full bg-black/30 border border-white/10 rounded-lg px-1.5 py-1.5 text-white">
+                    {CAPTION_PROVIDERS.map(p => <option key={p.id} value={p.id} className="bg-black">{p.label}{!p.keyFrom(settings) ? " (no key)" : ""}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="text-[9px] text-white/40 block mb-1">Caption template</label>
+                  <select value={autoEditCaptionStyle} onChange={e => setAutoEditCaptionStyle(e.target.value)} className="ve-select w-full bg-black/30 border border-white/10 rounded-lg px-1.5 py-1.5 text-white">
+                    {CAPTION_STYLES.map(s => <option key={s.id} value={s.id} className="bg-black">{s.name}</option>)}
+                  </select>
+                </div>
+              </div>
+              {!getCaptionApiKey(captionProvider) && (
+                <div className="text-[10px] text-yellow-400/80">No key for this provider yet — Auto-Edit will still cut dead space, just without captions.</div>
+              )}
+              <button onClick={runAutoEdit} className="w-full flex items-center justify-center gap-1.5 py-2.5 rounded-lg bg-purple-900/40 hover:bg-purple-900/60 border border-purple-600/50 text-purple-200 text-xs font-semibold transition">
+                <Sparkles size={13} />Run Auto-Edit
+              </button>
+            </div>
           )}
 
           {/* Clips */}

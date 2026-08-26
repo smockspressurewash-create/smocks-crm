@@ -14,7 +14,7 @@ import {
   Navigation, TrendingDown, PieChart as PieIcon, Package, Wrench,
   CheckSquare, Route, Users2, Layers, ArrowRight, BarChart2, Filter,
   Paperclip, ImageIcon, FileImage, MoreVertical, Mic, Upload, Link, Lock, User,
-  CalendarClock, Clapperboard
+  CalendarClock, Clapperboard, Captions
 } from "lucide-react";
 import {
   BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid,
@@ -2194,6 +2194,23 @@ export function SettingsModal({ open, onClose, settings, setSettings, jobs = [],
                 The Social page's video editor already lets you manually trim clips, auto-cut silence, and add captions for free — no key needed. Adding a <a href="https://shotstack.io" target="_blank" rel="noopener noreferrer" className="text-purple-400 hover:text-purple-300">Shotstack</a> API key here unlocks an optional "Auto-Edit with AI" button that assembles the edit automatically on their servers — billed to your own Shotstack account, not bundled with this app.
               </div>
               <GInput type="password" value={f.videoAutoEditApiKey || ""} onChange={e => setF({ ...f, videoAutoEditApiKey: e.target.value.trim() })} placeholder="Shotstack API key" className="!text-xs" />
+            </Glass>
+
+            {/* FEATURE — "make it so it uses any API, not just OpenAI's for
+                auto captions." The video editor's auto-captions already work
+                with OpenAI or Groq (reusing whichever key is set in AI
+                Models — no separate signup) — Deepgram is a genuinely
+                different transcription API for an owner who'd rather not
+                depend on OpenAI at all, or wants a fallback if one is down. */}
+            <Glass className="p-4 !bg-black/40">
+              <div className="flex items-center justify-between mb-3">
+                <div className="flex items-center gap-2"><Captions size={16} className="text-purple-400" /><div className="font-semibold text-sm">Auto-Captions Providers</div></div>
+                <Badge tone={f.deepgramApiKey ? "green" : "gray"}>{f.deepgramApiKey ? "Deepgram connected" : "Deepgram not set"}</Badge>
+              </div>
+              <div className="text-xs text-white/60 mb-3">
+                The video editor's Auto-Captions and Auto-Edit already work with your <b>OpenAI</b> or <b>Groq</b> key from the AI Models tab above — no extra setup. Add a <a href="https://deepgram.com" target="_blank" rel="noopener noreferrer" className="text-purple-400 hover:text-purple-300">Deepgram</a> key here for a fully independent transcription option, selectable right in the editor.
+              </div>
+              <GInput type="password" value={f.deepgramApiKey || ""} onChange={e => setF({ ...f, deepgramApiKey: e.target.value.trim() })} placeholder="Deepgram API key" className="!text-xs" />
             </Glass>
 
             {/* Direct platform OAuth — fallback for accounts not on Buffer */}
