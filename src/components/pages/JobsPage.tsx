@@ -1023,6 +1023,13 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
                 const c = customers.find(x => x.id === job.customerId);
                 const startDt = new Date(job.scheduledDate + "T" + (job.scheduledTime || "09:00") + ":00");
                 const endDt = new Date(startDt.getTime() + 2 * 60 * 60 * 1000);
+                // FEATURE — "clickable link to the employee portal, or if
+                // it's an owner working, to the owner job." Same crew-based
+                // pick as JobDetailModal's handleGoogleSync.
+                const hasEmployeeCrewNew = directAssignEmps.some((e: any) => e.role !== "owner");
+                const calDescription = hasEmployeeCrewNew
+                  ? buildJobCalendarDescription(job, c, `${window.location.origin}${window.location.pathname}#/portal?job=${encodeURIComponent(job.id)}`, "View job in Crew Portal")
+                  : buildJobCalendarDescription(job, c, `${window.location.origin}${window.location.pathname}#/jobs?open=${encodeURIComponent(job.id)}`);
                 getFreshOwnerGoogleToken(settings as any).then(token => {
                   if (!token) return null;
                   return createGCalEvent(token, {
@@ -1030,7 +1037,7 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
                     start: startDt.toISOString(),
                     end: endDt.toISOString(),
                     location: job.address || "",
-                    description: buildJobCalendarDescription(job, c, `${window.location.origin}${window.location.pathname}#/jobs?open=${encodeURIComponent(job.id)}`),
+                    description: calDescription,
                   });
                 }).then(eventId => {
                   if (eventId) setJobs(prev => prev.map(j => j.id === job.id ? { ...j, googleEventId: eventId } : j));

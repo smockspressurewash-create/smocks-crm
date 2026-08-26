@@ -204,10 +204,16 @@ export const normalizePhoneDigits = (p: string | null | undefined): string => {
 // plain job id anchor for the owner CRM. Shared by every job->Calendar sync
 // call site (JobsPage.tsx, JobDetailModal.tsx) so all of them stay
 // consistent instead of drifting apart one at a time.
+// FEATURE — "each calendar event should include the customer name, address,
+// phone number, a clickable link (employee portal if crew's assigned, else
+// the owner job view), and the job notes." linkLabel/linkUrl let the caller
+// decide which of those two links applies — see JobsPage.tsx/JobDetailModal
+// for how that's picked based on job.crew.
 export const buildJobCalendarDescription = (
-  job: { id: string; notes?: string },
+  job: { id: string; notes?: string; address?: string },
   customer: { firstName?: string; lastName?: string; phone?: string } | null | undefined,
-  portalPath: string
+  linkUrl: string,
+  linkLabel: string = "View job in CrewBoss"
 ): string => {
   const lines: string[] = [];
   if (customer) {
@@ -215,8 +221,9 @@ export const buildJobCalendarDescription = (
     if (name) lines.push(`Client: ${name}`);
     if (customer.phone) lines.push(`Phone: ${customer.phone}`);
   }
+  if (job.address) lines.push(`Address: ${job.address}`);
   if (job.notes) lines.push("", job.notes);
-  lines.push("", `View job in CrewBoss: ${portalPath}`);
+  lines.push("", `${linkLabel}: ${linkUrl}`);
   return lines.join("\n");
 };
 

@@ -984,7 +984,19 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
       const customer = customers.find((x: any) => x.id === job.customerId);
       const calCoName = settings?.companyName || "Crew Boss";
       const title = customer ? `${customer.firstName} ${customer.lastName} — ${calCoName} Service` : `${calCoName} Service`;
-      const description = buildJobCalendarDescription(job, customer, `${window.location.origin}${window.location.pathname}#/jobs?open=${encodeURIComponent(job.id)}`);
+      // FEATURE — "a clickable link to the employee portal (or, if it's an
+      // owner working, to the owner job) — whichever crew member actually
+      // needs to open this from the calendar." A real employee (not just
+      // the owner) on the crew gets the field-portal deep link; otherwise
+      // (owner working it themselves, no crew yet) it points at the
+      // owner's own Jobs page.
+      const hasEmployeeCrew = (job.crew || []).some((id: any) => {
+        const emp = employees.find((e: any) => e.id === id || e.user_id === id);
+        return emp && emp.role !== "owner";
+      });
+      const description = hasEmployeeCrew
+        ? buildJobCalendarDescription(job, customer, `${window.location.origin}${window.location.pathname}#/portal?job=${encodeURIComponent(job.id)}`, "View job in Crew Portal")
+        : buildJobCalendarDescription(job, customer, `${window.location.origin}${window.location.pathname}#/jobs?open=${encodeURIComponent(job.id)}`);
       if (job.googleEventId) {
         await updateGCalEventApi(gToken, job.googleEventId, { title, start: startDt.toISOString(), end: endDt.toISOString(), location: job.address, description });
         toast("Google Calendar event updated ✓");

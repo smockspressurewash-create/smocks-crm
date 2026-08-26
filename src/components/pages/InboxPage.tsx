@@ -317,7 +317,22 @@ export function InboxPage({ threads = [], setThreads, customers = [], setCustome
           });
           // Keep any local sms thread not yet confirmed server-side (e.g. a message
           // just sent, before its own upsert lands) so it doesn't flicker away.
-          const localOnlySms = prev.filter(t => t.channel === "sms" && !byId.has(t.id));
+          // BUG FIX — "still shows two conversations for the same number."
+          // This used to keep a local-only thread FOREVER once loaded into
+          // this tab's state, with no way to tell "still syncing" apart
+          // from "no longer exists server-side" (e.g. merged/deleted by the
+          // dedupe cleanup, or on another device). A tab that had the old
+          // duplicate loaded before a merge ran would keep showing it
+          // indefinitely — only a full reload (fresh, empty `prev`) ever
+          // cleared it. Cap it to 5 minutes past its newest message; a real
+          // pending send resolves within seconds, so anything older than
+          // that and still missing from the server is stale, not pending.
+          const FIVE_MIN = 5 * 60000;
+          const localOnlySms = prev.filter(t => {
+            if (t.channel !== "sms" || byId.has(t.id)) return false;
+            const newestTs = Math.max(0, ...(Array.isArray(t.messages) ? t.messages.map((m: any) => m.ts || 0) : []));
+            return Date.now() - newestTs < FIVE_MIN;
+          });
           const nonSms = prev.filter(t => t.channel !== "sms");
           return [...merged, ...localOnlySms, ...nonSms];
         });
