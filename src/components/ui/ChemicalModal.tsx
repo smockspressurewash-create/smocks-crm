@@ -20,7 +20,7 @@ import {
   Tooltip, ResponsiveContainer, Area, AreaChart, LineChart, Line,
   ComposedChart, Legend
 } from "recharts";
-import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE } from "../../lib/utils";
+import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, compressImageFile, dataUrlToBlob, uploadJobMedia, mediaSrc } from "../../lib/utils";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
 import { twilioSend, sendEmail } from "../../lib/messaging";
 import { seedWeather } from "../../lib/weather";
@@ -42,7 +42,7 @@ import { PBar } from "./PBar";
 import { PageFade } from "./PageFade";
 import { TimeframeSelector } from "./TimeframeSelector";
 
-const BLANK_CHEMICAL = { name: "", brand: "", category: "Surfactant", itemType: "chemical", unit: "gal", stock: 0, reorderLevel: 5, unitCost: 0, suppliers: [] as any[], notes: "" };
+const BLANK_CHEMICAL = { name: "", brand: "", category: "Surfactant", itemType: "chemical", unit: "gal", stock: 0, reorderLevel: 5, unitCost: 0, suppliers: [] as any[], notes: "", itemLink: "", photos: [] as any[] };
 const UNIT_OPTIONS = ["gal", "oz", "qt", "L", "each", "box", "case"];
 
 export function ChemicalModal({ open, onClose, data, onSave }) {
@@ -62,6 +62,23 @@ export function ChemicalModal({ open, onClose, data, onSave }) {
   }, [open, data]);
 
   const isEquipment = f.itemType === "equipment";
+  // FEATURE — "upload photos of equipment so an employee can see what they
+  // need." Same compress+upload-to-Storage pattern job photos already use;
+  // stored in the new `photos` JSONB column (migration 0069).
+  const [uploadingPhoto, setUploadingPhoto] = useState(false);
+  const addPhoto = async (file: File) => {
+    setUploadingPhoto(true);
+    try {
+      const dataUrl = await compressImageFile(file);
+      const id = uid();
+      const url = await uploadJobMedia(dataUrlToBlob(dataUrl), `chemicals/${f.id || id}/${id}.jpg`, "image/jpeg");
+      const photo = url ? { id, url } : { id, dataUrl };
+      setF((prev: any) => ({ ...prev, photos: [...(prev.photos || []), photo] }));
+    } finally {
+      setUploadingPhoto(false);
+    }
+  };
+  const removePhoto = (id: string) => setF({ ...f, photos: (f.photos || []).filter((p: any) => p.id !== id) });
   const addSupplier = () => setF({ ...f, suppliers: [...(f.suppliers || []), { id: uid(), name: "", phone: "" }] });
   const updateSupplier = (id: string, patch: any) => setF({ ...f, suppliers: (f.suppliers || []).map((s: any) => s.id === id ? { ...s, ...patch } : s) });
   const removeSupplier = (id: string) => setF({ ...f, suppliers: (f.suppliers || []).filter((s: any) => s.id !== id) });
@@ -132,6 +149,28 @@ export function ChemicalModal({ open, onClose, data, onSave }) {
           </div>
         </div>
       )}
+      {/* FEATURE — "assign a link to a chemical or equipment." A reference
+          URL for the item itself (spec sheet, manual, product/order page) —
+          distinct from a supplier's own website on the entries above. */}
+      <div><label className="text-xs text-white/60 mb-1 block">Reference Link</label><GInput type="url" value={f.itemLink || ""} onChange={e => setF({ ...f, itemLink: e.target.value })} placeholder="Spec sheet, manual, or product page URL" /></div>
+      {/* FEATURE — "upload photos of equipment so an employee can see what
+          they need." */}
+      <div>
+        <label className="text-xs text-white/60 mb-1 block">Photos</label>
+        <div className="flex gap-2 flex-wrap">
+          {(f.photos || []).map((p: any) => (
+            <div key={p.id} className="relative w-16 h-16 rounded-lg overflow-hidden border border-white/10 group">
+              <img src={mediaSrc(p.url, p.dataUrl)} alt="" className="w-full h-full object-cover" />
+              <button type="button" onClick={() => removePhoto(p.id)} className="absolute top-0.5 right-0.5 bg-black/80 text-white rounded p-0.5 opacity-0 group-hover:opacity-100 transition"><X size={10} /></button>
+            </div>
+          ))}
+          <label className="w-16 h-16 rounded-lg border-2 border-dashed border-white/15 hover:border-red-600/40 flex items-center justify-center cursor-pointer text-white/40 hover:text-white/70 transition">
+            {uploadingPhoto ? <div className="w-4 h-4 border-2 border-white/40 border-t-transparent rounded-full animate-spin" /> : <ImageIcon size={16} />}
+            <input type="file" accept="image/*" capture="environment" className="hidden" disabled={uploadingPhoto}
+              onChange={e => { const file = e.target.files?.[0]; if (file) addPhoto(file); e.target.value = ""; }} />
+          </label>
+        </div>
+      </div>
       <div><label className="text-xs text-white/60 mb-1 block">Notes</label><GTxt value={f.notes || ""} onChange={e => setF({ ...f, notes: e.target.value })} rows={2} placeholder="Nozzle size, hookup type, storage instructions, anything worth remembering" /></div>
       <div className="flex gap-2 justify-end pt-3"><GBtn variant="ghost" onClick={onClose}>Cancel</GBtn><GBtn onClick={() => { if (!f.name) return; const clean = { ...f, stock: Number(f.stock), reorderLevel: Number(f.reorderLevel), unitCost: Number(f.unitCost), suppliers: (f.suppliers || []).filter((s: any) => s.name.trim()) }; onSave(data ? { ...data, ...clean } : clean); }}>{data ? "Save" : "Add"}</GBtn></div>
     </div>

@@ -2258,6 +2258,9 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
         case "contact_general_supplier": {
           const res = await (supabase as any).from("general_suppliers").select("*").eq("owner_id", ownerId || "");
           const suppliers = Array.isArray(res?.data) ? res.data : [];
+          if (!inputs.supplierName?.trim()) {
+            return { success: true, suppliers: suppliers.map((s: any) => ({ name: s.name, category: s.category, phone: s.phone, email: s.email, address: s.address })) };
+          }
           const q = String(inputs.supplierName || "").toLowerCase().trim();
           const supplier = suppliers.find((s: any) => (s.name || "").toLowerCase().trim() === q)
             || suppliers.find((s: any) => (s.name || "").toLowerCase().includes(q));
@@ -2799,8 +2802,8 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
     },
     {
       name: "contact_general_supplier",
-      description: "Look up, text, or email a GENERAL supplier — a mechanic, main shop, or vendor not tied to any specific chemical/equipment item (see the General Suppliers list in Chemicals & Equipment). Omit channel to just look up their contact info. Outreach only — never places an order or moves money.",
-      input_schema: { type: "object", properties: { supplierName: { type: "string" }, channel: { type: "string", enum: ["text", "email"], description: "Omit to just look up contact info" }, subject: { type: "string" }, message: { type: "string" } }, required: ["supplierName"] }
+      description: "List, look up, text, or email GENERAL suppliers — mechanics, main shops, or vendors not tied to any specific chemical/equipment item (see the General Suppliers list in Chemicals & Equipment). Omit supplierName to list everyone on file (use for 'who are our suppliers?'). Omit channel to just look up one supplier's contact info. Outreach only — never places an order or moves money.",
+      input_schema: { type: "object", properties: { supplierName: { type: "string", description: "Omit to list all suppliers" }, channel: { type: "string", enum: ["text", "email"], description: "Omit to just look up contact info" }, subject: { type: "string" }, message: { type: "string" } } }
     },
     {
       name: "log_expense",

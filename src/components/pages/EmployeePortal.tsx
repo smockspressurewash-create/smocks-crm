@@ -353,13 +353,17 @@ const ARRIVAL_PROMPT_RADIUS_METERS = 150;
 // streamlined, mobile-optimized job view a field employee sees (sign-off,
 // checklist with photo upload, clock in/out — no admin fields) instead of
 // opening the full JobDetailModal for a job the OWNER is personally working.
-export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName = "the company", onComplete, perms: permsOverride, maxLunchMinutes = 30, onJobCompleted, googleMapsKey = "", paidLunchBreaks = false, signOffDisclaimer = "", settings = {} as AppSettings, setEstimates = (() => {}) as any, setCustomers = (() => {}) as any, nextJob = null, nextJobCustomer = null, laterJobsToday = [], onArrived, autoComplete = false, employeeName = "", employeeEmail = "", isPreview = false, employees = [] as Employee[] }: {
+export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, companyName = "the company", onComplete, perms: permsOverride, maxLunchMinutes = 30, onJobCompleted, googleMapsKey = "", paidLunchBreaks = false, signOffDisclaimer = "", settings = {} as AppSettings, setEstimates = (() => {}) as any, setCustomers = (() => {}) as any, nextJob = null, nextJobCustomer = null, laterJobsToday = [], onArrived, autoComplete = false, employeeName = "", employeeEmail = "", isPreview = false, employees = [] as Employee[], chemicals = [] as any[] }: {
   job: Job; customer?: Customer; onBack: () => void;
   onUpdateJob: (patch: Partial<Job>) => void | Promise<any>; toast: (msg: string, tone?: any) => void;
   companyName?: string; onComplete?: () => void; perms?: Record<string, boolean>; maxLunchMinutes?: number;
   onJobCompleted?: (job: Job) => void; googleMapsKey?: string; paidLunchBreaks?: boolean; signOffDisclaimer?: string;
   settings?: AppSettings; setEstimates?: any; setCustomers?: any; nextJob?: Job | null; nextJobCustomer?: Customer | null;
   employees?: Employee[];
+  // FEATURE — "upload photos of equipment so an employee can see what they
+  // need." Matched against job.equipment/requiredChemicals by name in the
+  // Required Equipment & Chemicals section below.
+  chemicals?: any[];
   // FEATURE (round 13, item 20) — every job scheduled later TODAY (after this
   // one), used by the Running Late cascade-notify prompt below.
   laterJobsToday?: Array<{ job: Job; customer: Customer | null }>;
@@ -1932,13 +1936,33 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
               <CheckSquare size={12} />Required Equipment & Chemicals
               {!job.equipmentChecked && <span className="text-yellow-400 ml-auto text-[10px] normal-case">Confirm before starting</span>}
             </div>
-            <div className="flex flex-wrap gap-1.5 mb-3">
-              {(job.equipment || []).map(eq => (
-                <span key={eq} className="text-[10px] px-2 py-1 rounded-lg bg-red-950/30 border border-red-700/30 text-red-300">{eq}</span>
-              ))}
-              {(job.requiredChemicals || []).map(chem => (
-                <span key={chem} className="text-[10px] px-2 py-1 rounded-lg bg-purple-950/30 border border-purple-700/30 text-purple-300">{chem}</span>
-              ))}
+            {/* FEATURE — "upload photos of equipment so an employee can see
+                what they need." Matches each required item's label against
+                the Chemicals & Equipment catalog by name — if it has photos
+                or a reference link on file there, show them right here
+                instead of a bare label the employee has to guess at. */}
+            <div className="space-y-1.5 mb-3">
+              {[...(job.equipment || []).map(l => ({ label: l, tone: "red" as const })), ...(job.requiredChemicals || []).map(l => ({ label: l, tone: "purple" as const }))].map(({ label, tone }) => {
+                const matched = chemicals.find((c: any) => (c.name || "").toLowerCase().trim() === label.toLowerCase().trim());
+                const photos = matched?.photos || [];
+                return (
+                  <div key={label}>
+                    <div className="flex items-center gap-1.5">
+                      <span className={"text-[10px] px-2 py-1 rounded-lg border " + (tone === "red" ? "bg-red-950/30 border-red-700/30 text-red-300" : "bg-purple-950/30 border-purple-700/30 text-purple-300")}>{label}</span>
+                      {matched?.itemLink && (
+                        <a href={/^https?:\/\//i.test(matched.itemLink) ? matched.itemLink : "https://" + matched.itemLink} target="_blank" rel="noopener noreferrer" className="text-[10px] text-blue-400 hover:text-blue-300 underline">Reference ↗</a>
+                      )}
+                    </div>
+                    {photos.length > 0 && (
+                      <div className="flex gap-1.5 mt-1 flex-wrap">
+                        {photos.map((p: any) => (
+                          <img key={p.id} src={mediaSrc(p.url, p.dataUrl)} alt={label} className="w-14 h-14 rounded-lg object-cover border border-white/10 cursor-pointer" onClick={() => window.open(mediaSrc(p.url, p.dataUrl), "_blank")} />
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
             <label className="flex items-center gap-2 cursor-pointer">
               <input type="checkbox" checked={!!job.equipmentChecked} onChange={e => onUpdateJob({ equipmentChecked: e.target.checked })}
@@ -2771,7 +2795,7 @@ function ShiftEndDigestModal({ hoursLabel, jobsCompleted, jobsToday, flaggedIssu
   );
 }
 
-export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, employees, customers, setCustomers = (() => {}) as any, settings, toast, isOwnerView = false, onClose = () => {}, refetchEmployees, estimates = [], setEstimates = (() => {}) as any, weatherData = null as any }: {
+export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, employees, customers, setCustomers = (() => {}) as any, settings, toast, isOwnerView = false, onClose = () => {}, refetchEmployees, estimates = [], setEstimates = (() => {}) as any, weatherData = null as any, chemicals = [] as any[] }: {
   empSession: any; setEmpSession: (s: any) => void;
   jobs: Job[]; setJobs: (fn: (prev: Job[]) => Job[]) => void;
   employees: Employee[]; customers: Customer[]; setCustomers?: any;
@@ -2780,6 +2804,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   weatherData?: { current: any; forecast?: any[] } | null;
   refetchEmployees?: () => Promise<void>;
   estimates?: any[]; setEstimates?: any;
+  chemicals?: any[];
 }) {
   // EGRESS FIX — skip the jobs poll below while the tab is hidden or the
   // employee has been idle 5+ minutes (e.g. mid-shift with the phone locked).
@@ -5411,6 +5436,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
         nextJobCustomer={nextJobCustomer}
         laterJobsToday={laterJobsToday}
         employees={employees}
+        chemicals={chemicals}
         onArrived={startDayShiftIfNeeded}
         autoComplete={pendingCompleteJobId === selectedJobId}
         employeeName={myEmployee ? `${myEmployee.firstName} ${myEmployee.lastName || ""}`.trim() : ""}

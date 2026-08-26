@@ -226,10 +226,21 @@ export function InboxPage({ threads = [], setThreads, customers = [], setCustome
   // one accumulating Alfred's replies (badged), one not. Runs once per
   // session load, combines every duplicate group's messages into a single
   // canonical row (deduped, sorted by ts), and deletes the rest.
-  const dedupeRanRef = useRef(false);
+  // BUG FIX — "two threads for the same number, one labeled Alfred, the
+  // other not, still didn't merge." This used to run at most ONCE per tab
+  // (a boolean ref flipped true on the first call, permanently blocking
+  // every later call) — but loadInboxThreads below re-runs on every
+  // realtime change AND poll, so if a SECOND duplicate got created (e.g. by
+  // texting Alfred) any time after that first check, this never got a
+  // chance to look again for the rest of the session, no matter how long
+  // it stayed open. A short cooldown instead of a permanent one-shot lets
+  // it keep periodically catching new duplicates without hammering the
+  // database on every single poll tick.
+  const dedupeRanRef = useRef(0);
+  const DEDUPE_COOLDOWN_MS = 30000;
   const mergeDuplicateInboxThreads = async () => {
-    if (dedupeRanRef.current) return;
-    dedupeRanRef.current = true;
+    if (Date.now() - dedupeRanRef.current < DEDUPE_COOLDOWN_MS) return;
+    dedupeRanRef.current = Date.now();
     try {
       const { data, error } = await (supabase as any).from("inbox_threads").select("*").eq("channel", "sms");
       if (error || !Array.isArray(data) || data.length < 2) return;
@@ -243,12 +254,17 @@ export function InboxPage({ threads = [], setThreads, customers = [], setCustome
       for (const rows of groups.values()) {
         if (rows.length < 2) continue;
         console.log("[Inbox] merging", rows.length, "duplicate threads for the same number:", rows.map(r => r.id));
-        const looksLikeRawNumber = (name: string, phone: string) => !name || normalizePhoneDigits(name) === normalizePhoneDigits(phone);
+        // "Alfred" is a placeholder too, same as a bare phone number — an
+        // older thread created before that naming got fixed elsewhere
+        // should never win as the canonical name once a real contact name
+        // (or even just the raw number from the newer, correctly-named row)
+        // is available to replace it with.
+        const looksLikeRawNumber = (name: string, phone: string) => !name || normalizePhoneDigits(name) === normalizePhoneDigits(phone) || name.trim().toLowerCase() === "alfred";
         const canonical = rows.find(r => !looksLikeRawNumber(r.contact_name, r.contact_phone))
           || [...rows].sort((a, b) => (b.messages?.length || 0) - (a.messages?.length || 0))[0];
         const others = rows.filter(r => r.id !== canonical.id);
         const allMessages = dedupeMessages(rows.flatMap(r => Array.isArray(r.messages) ? r.messages : [])).sort((a: any, b: any) => (a.ts || 0) - (b.ts || 0));
-        const bestName = rows.find(r => !looksLikeRawNumber(r.contact_name, r.contact_phone))?.contact_name || canonical.contact_name;
+        const bestName = rows.find(r => !looksLikeRawNumber(r.contact_name, r.contact_phone))?.contact_name || rows[0].contact_phone || canonical.contact_name;
         const bestCustomerId = rows.find(r => r.customer_id)?.customer_id || null;
         const anyUnread = rows.some(r => r.unread);
         await (supabase as any).from("inbox_threads").update({

@@ -3711,6 +3711,7 @@ export function App() {
           settings={settings}
           estimates={estimates}
           setEstimates={setEstimates}
+          chemicals={chemicals}
           toast={toast}
           // hasCrmSession (a verified, currently-active owner session) is the correct signal
           // here — settings.googleConnected is a sticky per-browser localStorage flag that

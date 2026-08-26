@@ -193,7 +193,7 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
   // FIX 5 — crewEmpId (singular) only ever let the owner pick ONE crew member
   // when scheduling a job; crewEmpIds (array) lets multiple be selected at
   // once, all saved to the job's crew array together.
-  const emptyNewJobForm = () => ({ customerId: "", address: "", lat: undefined as number | undefined, lng: undefined as number | undefined, amount: "", scheduledDate: today(), scheduledTime: "", priority: "normal", notes: "", duration: "", crewEmpIds: [] as string[], jobType: "residential", isRecurring: false, recurringMode: "preset" as "preset" | "days" | "weeks" | "months" | "weekdays", recurringFreq: "monthly", recurringInterval: 1, recurringWeekdays: [] as number[] });
+  const emptyNewJobForm = () => ({ customerId: "", address: "", lat: undefined as number | undefined, lng: undefined as number | undefined, amount: "", scheduledDate: today(), scheduledTime: "", priority: "normal", notes: "", duration: "", crewEmpIds: [] as string[], jobType: "residential", isRecurring: false, recurringMode: "preset" as "preset" | "days" | "weeks" | "months" | "weekdays", recurringFreq: "monthly", recurringInterval: 1, recurringWeekdays: [] as number[], checklist: [] as { id: string; label: string }[] });
   const [newJobForm, setNewJobForm] = useState(emptyNewJobForm());
   // BLOCKER — this used to be ONE shared mode applied to every selected
   // employee at once, so there was no way to assign one crew member directly
@@ -758,6 +758,24 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
             )}
           </div>
 
+          {/* FEATURE — "when scheduling a job, you should be able to edit
+              the checklist then and there as an owner." Custom items here
+              become the job's real pre-job checklist (what the field portal
+              actually shows the crew) — leave it empty to keep the standard
+              default checklist every job falls back to otherwise. */}
+          <div>
+            <label className="text-xs text-white/60 block mb-1">Checklist <span className="text-white/30">(optional — leave blank for the standard default)</span></label>
+            <div className="space-y-1.5">
+              {newJobForm.checklist.map((item, i) => (
+                <div key={item.id} className="flex items-center gap-1.5">
+                  <GInput value={item.label} onChange={e => setNewJobForm(f => ({ ...f, checklist: f.checklist.map((c, ci) => ci === i ? { ...c, label: e.target.value } : c) }))} className="flex-1 !text-xs" />
+                  <button type="button" onClick={() => setNewJobForm(f => ({ ...f, checklist: f.checklist.filter((_, ci) => ci !== i) }))} className="p-1.5 rounded-lg text-white/30 hover:text-red-400 hover:bg-red-950/30 transition"><X size={14} /></button>
+                </div>
+              ))}
+              <button type="button" onClick={() => setNewJobForm(f => ({ ...f, checklist: [...f.checklist, { id: uid(), label: "" }] }))} className="text-[11px] text-red-400 hover:text-red-300 transition">+ Add checklist item</button>
+            </div>
+          </div>
+
           <div>
             <label className="text-xs text-white/60 block mb-1">Crew (optional, select multiple)</label>
             {/* FIX 5 — was a single-select <GSel>, so only one crew member
@@ -887,6 +905,14 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
                 notes: newJobForm.notes,
                 duration: newJobForm.duration ? Number(newJobForm.duration) : undefined,
                 crew: directAssignEmps.map(e => e.id), checklist: [], photos: [], commLog: [], chemicalsUsed: [], equipment: [], tags: [],
+                // FEATURE — custom checklist items entered at scheduling
+                // time become the job's real preChecklist (what the field
+                // portal shows) — empty when the owner left it blank, so
+                // every existing fallback-to-standard-defaults behavior
+                // elsewhere (JobDetailModal, EmployeePortal) is unaffected.
+                ...(newJobForm.checklist.filter(c => c.label.trim()).length > 0
+                  ? { preChecklist: newJobForm.checklist.filter(c => c.label.trim()).map(c => ({ id: c.id, label: c.label.trim(), done: false })) }
+                  : {}),
                 loggedHours: 0, createdAt: today(), owner_id: ownerId,
                 // REVERTED — organizationId here caused the App.tsx 30s bulk
                 // autosave to fail for every job ("Could not find the
@@ -1008,7 +1034,18 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
                   });
                 }).then(eventId => {
                   if (eventId) setJobs(prev => prev.map(j => j.id === job.id ? { ...j, googleEventId: eventId } : j));
-                }).catch(() => {});
+                  else console.warn("[Calendar] auto-sync on new job produced no event id — token refresh or the create call likely failed silently upstream");
+                }).catch((e: any) => {
+                  // BUG FIX — "jobs still aren't automatically syncing to
+                  // Google Calendar." This swallowed every failure with no
+                  // trace at all — a stale/revoked Google token, a Calendar
+                  // API error, anything — so the job just silently never
+                  // showed up on the calendar with no way to tell why. Now
+                  // logs the real reason and tells the owner, instead of
+                  // failing invisibly forever.
+                  console.error("[Calendar] auto-sync failed on new job:", e?.message || e);
+                  toast?.("Job saved, but Google Calendar sync failed — " + (e?.message || "check your Google connection in Settings"), "red");
+                });
               }
               // Notify each selected crew member — assigned (no response needed) or requested (accept/decline).
               // BLOCKER — split into the two per-employee lists computed above

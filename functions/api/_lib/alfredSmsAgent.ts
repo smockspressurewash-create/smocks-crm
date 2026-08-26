@@ -395,7 +395,10 @@ const sendSms = async (ctx: Ctx, toPhone: string, bodyRaw: string, isOwnerReply 
       // a separate, harmless-to-race PATCH of fields the append above
       // doesn't touch at all.
       const backfill: Record<string, unknown> = {};
-      if (!isOwnerReply && contact?.name && (!existing.contact_name || existing.contact_name === toPhone)) backfill.contact_name = contact.name;
+      // Also correct an old thread still literally named "Alfred" from
+      // before that got fixed elsewhere in this file — not just a blank
+      // name or the bare phone number.
+      if (!isOwnerReply && contact?.name && (!existing.contact_name || existing.contact_name === toPhone || String(existing.contact_name).toLowerCase() === "alfred")) backfill.contact_name = contact.name;
       if (!isOwnerReply && contact?.customerId && !existing.customer_id) backfill.customer_id = contact.customerId;
       if (Object.keys(backfill).length > 0) {
         await fetch(`${SUPABASE_URL}/rest/v1/inbox_threads?id=eq.${encodeURIComponent(existing.id)}`, {
@@ -671,16 +674,15 @@ const TOOLS = [
   },
   {
     name: "contact_general_supplier",
-    description: "Look up, text, or email a GENERAL supplier — a mechanic, main shop, or vendor not tied to any specific chemical/equipment item (see the General Suppliers list in Chemicals & Equipment). Omit message/channel to just look up their contact info. Outreach only — never places an order or moves money.",
+    description: "List, look up, text, or email GENERAL suppliers — mechanics, main shops, or vendors not tied to any specific chemical/equipment item (see the General Suppliers list in Chemicals & Equipment). Omit supplierName entirely to list everyone on file (use this for 'who are our suppliers?'). Omit message/channel to just look up one supplier's contact info. Outreach only — never places an order or moves money.",
     input_schema: {
       type: "object",
       properties: {
-        supplierName: { type: "string", description: "Full or partial name of the supplier to look up" },
+        supplierName: { type: "string", description: "Full or partial name of one supplier to look up — omit to list all suppliers instead" },
         channel: { type: "string", enum: ["text", "email"], description: "Omit to just look up contact info without sending anything" },
         subject: { type: "string", description: "Required if channel is email" },
         message: { type: "string", description: "The exact message to send — required if channel is set" },
       },
-      required: ["supplierName"],
     },
   },
   {
@@ -1503,6 +1505,11 @@ const executeTool = async (ctx: Ctx, name: string, input: Record<string, any>): 
       }
       case "contact_general_supplier": {
         const suppliers = await sbGet(ctx, `general_suppliers?select=*${ownerScope(ctx)}&limit=200`);
+        // "Who are our suppliers?" — list everything on file instead of
+        // erroring when no specific name was given.
+        if (!input.supplierName?.trim()) {
+          return { success: true, suppliers: suppliers.map((s: any) => ({ name: s.name, category: s.category, phone: s.phone, email: s.email, address: s.address })) };
+        }
         const q = String(input.supplierName || "").toLowerCase().trim();
         const supplier = suppliers.find((s: any) => (s.name || "").toLowerCase().trim() === q)
           || suppliers.find((s: any) => (s.name || "").toLowerCase().includes(q));
