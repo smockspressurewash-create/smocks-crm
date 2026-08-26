@@ -323,18 +323,19 @@ const transcribeViaWorkersAI = async (ai: any, audioBuf: ArrayBuffer): Promise<s
 const synthesizeSpeechViaWorkersAI = async (ai: any, text: string): Promise<ArrayBuffer | null> => {
   if (!ai) { console.warn("[TwilioSmsWebhook] voice reply requested but no Workers AI binding is configured — add an `AI` binding to this Cloudflare Pages project (Settings → Functions → Bindings) to enable free TTS voice replies."); return null; }
   if (!text.trim()) return null;
-  try {
-    const result: any = await ai.run("@cf/myshell-ai/melotts", { prompt: text.slice(0, 1000), lang: "en" });
-    // Workers AI TTS models return { audio: "<base64>" } (mp3).
+  // BUG FIX (real data this time — owner captured live Cloudflare logs) —
+  // the binding IS attached and correctly invoked; the model call itself
+  // fails with Workers AI's own "3043: Internal server error", a generic
+  // upstream inference failure, not a config/auth/quota problem (those
+  // return distinct, named errors). This can be transient OR triggered by
+  // a specific input shape. Try once as before, then once more with a
+  // trimmed, simplified payload (no `lang` param, shorter text) in case
+  // the exact input is what's tipping the model over — cheap insurance
+  // against either cause, still well inside the caller's own 20s deadline.
+  const attempt = async (prompt: string, includeLang: boolean): Promise<ArrayBuffer | null> => {
+    const result: any = await ai.run("@cf/myshell-ai/melotts", includeLang ? { prompt, lang: "en" } : { prompt });
     const b64 = result?.audio;
     if (!b64) {
-      // BUG FIX — owner confirmed a real "AI" binding IS already attached
-      // (type Workers AI, catalog value) yet still got no voice memo — the
-      // binding existing isn't the same as this specific model call
-      // succeeding. Log the full raw response when there's no `audio` field
-      // so the actual reason (model access not enabled for this account,
-      // wrong response shape, quota) shows up in Cloudflare's real-time
-      // Function logs instead of a bare "no audio" dead end.
       console.warn("[TwilioSmsWebhook] Workers AI TTS returned no audio field — raw result:", JSON.stringify(result)?.slice(0, 500));
       return null;
     }
@@ -342,12 +343,17 @@ const synthesizeSpeechViaWorkersAI = async (ai: any, text: string): Promise<Arra
     const bytes = new Uint8Array(bin.length);
     for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
     return bytes.buffer;
+  };
+  try {
+    return await attempt(text.slice(0, 1000), true);
   } catch (e: any) {
-    // Full error (not just .message) — Workers AI errors often carry the
-    // real reason (e.g. "model not enabled", auth/quota) in fields message
-    // alone doesn't surface.
-    console.warn("[TwilioSmsWebhook] Workers AI TTS failed:", e?.message, "· full error:", JSON.stringify(e, Object.getOwnPropertyNames(e || {}))?.slice(0, 500));
-    return null;
+    console.warn("[TwilioSmsWebhook] Workers AI TTS failed (attempt 1):", e?.message, "· full error:", JSON.stringify(e, Object.getOwnPropertyNames(e || {}))?.slice(0, 500));
+    try {
+      return await attempt(text.slice(0, 300), false);
+    } catch (e2: any) {
+      console.warn("[TwilioSmsWebhook] Workers AI TTS failed (attempt 2, simplified):", e2?.message, "· full error:", JSON.stringify(e2, Object.getOwnPropertyNames(e2 || {}))?.slice(0, 500));
+      return null;
+    }
   }
 };
 
