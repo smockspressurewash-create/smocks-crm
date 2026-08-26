@@ -252,17 +252,33 @@ type Ctx = {
 // resolve to "no rows" — every lookup in this agent (find the customer,
 // find the job) would quietly fail as "not found" instead of erroring.
 // Detect that specific failure and retry once without the owner_id clause.
+// BUG FIX — "enhance Alfred's tool reliability." A thrown fetch (dropped
+// connection, DNS hiccup — routine on mobile data, and this function
+// backs nearly every tool Alfred has) used to propagate straight up
+// uncaught, so one transient network blip failed the whole tool call
+// immediately with a generic error and no retry — worse odds than a
+// human just trying again. One retry after a short backoff before giving
+// up for real.
 const sbGet = async (ctx: Ctx, path: string): Promise<any[]> => {
-  const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, { headers: ctx.authHeaders });
-  const data = await res.json().catch(() => []);
-  if (Array.isArray(data)) return data;
-  if (!res.ok && path.includes("owner_id=eq.")) {
-    const strippedPath = path.replace(/&owner_id=eq\.[^&]+/, "");
-    const retryRes = await fetch(`${SUPABASE_URL}/rest/v1/${strippedPath}`, { headers: ctx.authHeaders });
-    const retryData = await retryRes.json().catch(() => []);
-    return Array.isArray(retryData) ? retryData : [];
+  const attempt = async (): Promise<any[]> => {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, { headers: ctx.authHeaders });
+    const data = await res.json().catch(() => []);
+    if (Array.isArray(data)) return data;
+    if (!res.ok && path.includes("owner_id=eq.")) {
+      const strippedPath = path.replace(/&owner_id=eq\.[^&]+/, "");
+      const retryRes = await fetch(`${SUPABASE_URL}/rest/v1/${strippedPath}`, { headers: ctx.authHeaders });
+      const retryData = await retryRes.json().catch(() => []);
+      return Array.isArray(retryData) ? retryData : [];
+    }
+    return [];
+  };
+  try {
+    return await attempt();
+  } catch (e: any) {
+    console.warn("[AlfredSms] sbGet threw, retrying once:", e?.message, path);
+    await new Promise(r => setTimeout(r, 400));
+    try { return await attempt(); } catch (e2: any) { console.warn("[AlfredSms] sbGet retry also failed:", e2?.message, path); return []; }
   }
-  return [];
 };
 
 // CLAUDE.md "safe column retry" pattern — a write scoped by owner_id can
@@ -367,19 +383,19 @@ const sendSms = async (ctx: Ctx, toPhone: string, bodyRaw: string, isOwnerReply 
     const threads = await sbGet(ctx, `inbox_threads?channel=eq.sms&select=id,contact_phone,contact_name,customer_id,messages${ownerScope(ctx)}`);
     const digits = normalizePhoneDigits(toPhone);
     // BUG FIX — "outgoing messages from Alfred aren't showing" for a
-    // specific owner number. The old owner-reply consolidation matched
-    // ANY thread whose contact_phone was ONE of the owner's authorized
-    // phones, with no preference for the phone actually being replied to
-    // right now — .find() just returns whichever authorized-phone thread
-    // happens to come back first from Postgres. With more than one
-    // authorized phone on file (myPhone + alfredExtraPhones), every
-    // outgoing reply silently piled onto whichever thread existed FIRST
-    // (e.g. an old testing number), while the inbound side (a separate,
-    // simpler exact-match lookup) kept logging correctly under the real
-    // current number — exactly the one-sided "only my texts show, no
-    // replies" symptom. An exact match on the number actually being
-    // texted must always win; only fall back to "any authorized-phone
-    // thread" when there's truly no thread yet for this specific number.
+    // specific owner number. This used to match ANY thread whose
+    // contact_phone was ONE of the owner's authorized phones, with no
+    // preference for the phone actually being replied to right now —
+    // .find() just returns whichever authorized-phone thread happens to
+    // come back first from Postgres (no guaranteed order). With more than
+    // one authorized phone on file (myPhone + alfredExtraPhones), that
+    // could silently consolidate a reply onto a different/older thread
+    // than the one the inbound message just landed in — twilio-sms-webhook.ts's
+    // inbound handler applies the identical exact-match-first fix, so both
+    // directions now agree on the same thread. An exact match on the
+    // number actually being texted must always win; only fall back to "any
+    // authorized-phone thread" when there's truly no thread yet for this
+    // specific number.
     const exactMatch = threads.find((t: any) => normalizePhoneDigits(t.contact_phone) === digits);
     const existing = exactMatch || (isOwnerReply && ctx.ownerAuthorizedPhones?.length
       ? threads.find((t: any) => ctx.ownerAuthorizedPhones!.includes(normalizePhoneDigits(t.contact_phone)))

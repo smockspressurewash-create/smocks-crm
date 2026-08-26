@@ -657,13 +657,26 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
         try {
           const threadsRes = await fetch(`${SUPABASE_URL}/rest/v1/inbox_threads?channel=eq.sms&select=id,contact_phone,messages${ownerFilter}`, { headers: authHeaders });
           const existingThreads = await threadsRes.json().catch(() => []);
-          // Consolidate into ONE "Alfred" thread regardless of WHICH of the
-          // owner's authorized phones this text came from — texting from a
-          // second registered number used to open a separate thread also
-          // named "Alfred", which read as duplicate/missing conversations.
-          const existingThread = Array.isArray(existingThreads)
+          // BUG FIX — "outgoing messages from Alfred aren't showing" for a
+          // specific owner number. This used to match ANY thread whose
+          // contact_phone was one of the owner's authorized phones, with no
+          // preference for the exact number this text is actually FROM —
+          // .find() just returns whichever authorized-phone thread happens
+          // to come back first from Postgres (no guaranteed order). With
+          // more than one authorized phone on file, that could silently
+          // consolidate onto an old/different number's thread while
+          // Alfred's sendSms reply (alfredSmsAgent.ts, same fix applied
+          // there) picked a different one — splitting one real conversation
+          // across two threads with only one side visible in each. An exact
+          // match on the number this text is actually from must always win;
+          // only fall back to "any authorized-phone thread" (still useful
+          // the FIRST time a second registered number ever texts in, so it
+          // doesn't start a whole new separate thread) when there's truly
+          // no thread yet for this specific number.
+          const exactThread = Array.isArray(existingThreads) ? existingThreads.find((t: any) => normalizePhoneDigits(t.contact_phone) === fromDigits) : null;
+          const existingThread = exactThread || (Array.isArray(existingThreads)
             ? existingThreads.find((t: any) => authorizedPhones.includes(normalizePhoneDigits(t.contact_phone)))
-            : null;
+            : null);
           const msgId = params.MessageSid || crypto.randomUUID();
           const alreadyHave = existingThread && (Array.isArray(existingThread.messages) ? existingThread.messages : []).some((m: any) => m?.id === msgId);
           if (alreadyHave) return;
