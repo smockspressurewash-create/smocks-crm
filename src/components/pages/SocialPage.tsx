@@ -102,6 +102,37 @@ export function SocialPage({ posts = [], setPosts, toast, settings = {} as AppSe
   const [submitting, setSubmitting] = useState(false);
   const [refreshingId, setRefreshingId] = useState<string | null>(null);
   const [platformFilter, setPlatformFilter] = useState("all");
+  // FEATURE — saved/favorited caption templates (owner-authored, on top of
+  // the hardcoded starter templates below) and a "Day X of [Challenge]"
+  // auto-labeler (e.g. "Day 14 of 30 Days of Clean" style content series).
+  // Both are local per-device preferences, not cross-device CRM data, so
+  // they use the same usePersistent(localStorage) pattern as other
+  // per-device UI prefs in this app rather than a new Supabase column.
+  const [savedTemplates, setSavedTemplates] = usePersistent<{ id: string; label: string; body: string }[]>("smocks.social.savedTemplates", []);
+  const [saveTemplateOpen, setSaveTemplateOpen] = useState(false);
+  const [saveTemplateLabel, setSaveTemplateLabel] = useState("");
+  const [challenge, setChallenge] = usePersistent<{ enabled: boolean; name: string; startDate: string }>("smocks.social.challenge", { enabled: false, name: "", startDate: today() });
+  const challengeDayNumber = challenge.startDate
+    ? Math.max(1, Math.floor((new Date(today() + "T12:00:00").getTime() - new Date(challenge.startDate + "T12:00:00").getTime()) / 86400000) + 1)
+    : 1;
+  // FEATURE — "remind me every day to post if nothing's scheduled." Runs
+  // once per SocialPage visit; only actually toasts if (a) it hasn't
+  // already nagged today (tracked via localStorage, not state, so it
+  // survives remounts) and (b) there's truly no post dated today, whether
+  // already-published or still scheduled.
+  useEffect(() => {
+    try {
+      const key = "smocks.social.lastReminderDate";
+      const last = localStorage.getItem(key);
+      const todayStr = today();
+      if (last === todayStr) return;
+      const hasPostToday = (posts || []).some((p: any) => (p.scheduledFor || p.date || p.createdAt?.slice(0, 10)) === todayStr);
+      if (!hasPostToday) {
+        toast?.("📅 No social post scheduled for today yet — keep the streak going!", "yellow");
+      }
+      localStorage.setItem(key, todayStr);
+    } catch { /* localStorage unavailable — skip the reminder, not fatal */ }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
   // FEATURE — "make the before and after photos sync up to the social
   // section." Every real before/after pair an employee actually captured
   // on a job (EmployeePortal.tsx's pairIndex-matched photos) is real,
@@ -222,6 +253,10 @@ export function SocialPage({ posts = [], setPosts, toast, settings = {} as AppSe
     { type: "testimonial", captions: [
       "⭐⭐⭐⭐⭐ \"Couldn't believe the difference. Looked brand new. Worth every penny!\" — Jennifer W.\n\nReviews like this make the early mornings worth it. 🙏\n\n#CustomerLove #5Stars #PressureWashing",
       "We don't just clean houses — we restore them. 🏠✨\n\nThank you to all our amazing {{company_name}} customers for the 5-star love. We work hard to earn every review."
+    ]},
+    { type: "day_in_life", captions: [
+      "☀️ Day in the life at {{company_name}} 🚿\n\n6am truck load-up → first job by 8 → chemicals mixed, surfaces soft-washed, driveway looking brand new by lunch. Then two more before we call it.\n\nThis is what \"small business\" actually looks like. 💪\n\n📞 {{company_phone}} — we're always taking on more jobs like this one.",
+      "Behind the scenes of a real workday 🎥\n\nNo two jobs are the same — today it was algae-covered siding, tomorrow it might be a whole driveway resurface. Same crew, same care, every time.\n\nFollow along for more of what actually goes into this job. 👀"
     ]}
   ];
 
@@ -229,7 +264,7 @@ export function SocialPage({ posts = [], setPosts, toast, settings = {} as AppSe
     setGenerating(true);
     const companyName = settings.companyName || "Crew Boss";
     const companyPhone = settings.companyPhone || "(717) 555-0100";
-    const typeDesc = { before_after: "a before/after transformation post", promo: "a promotional offer post", testimonial: "a customer testimonial/review post", tip: "a helpful pressure washing tip", team: "a team/culture/behind-the-scenes post" }[f.type] || "a social media post";
+    const typeDesc = { before_after: "a before/after transformation post", promo: "a promotional offer post", testimonial: "a customer testimonial/review post", tip: "a helpful pressure washing tip", team: "a team/culture/behind-the-scenes post", day_in_life: "a casual 'day in the life' behind-the-scenes post following the crew through a real workday" }[f.type] || "a social media post";
     try {
       // If there's an uploaded image and it's a before_after, use vision analysis
       const imageData = f._imageData;
@@ -697,6 +732,7 @@ export function SocialPage({ posts = [], setPosts, toast, settings = {} as AppSe
                   <option value="testimonial" className="bg-black">Testimonial</option>
                   <option value="tip" className="bg-black">Helpful Tip</option>
                   <option value="team" className="bg-black">Team/Culture</option>
+                  <option value="day_in_life" className="bg-black">Day in the Life</option>
                 </GSel>
               </div>
               {/* Publish Now vs Schedule Post — explicit choice, not forced scheduling */}
@@ -807,9 +843,14 @@ export function SocialPage({ posts = [], setPosts, toast, settings = {} as AppSe
                   { id: "tip", label: "Pro Tip / Educational", body: "💡 PRO TIP: Did you know soft washing is SAFER than pressure washing for most surfaces?\n\nHigh pressure can:\n❌ Crack siding\n❌ Damage wood decks\n❌ Force water behind walls\n\nOur low-pressure soft wash uses eco-friendly solutions to clean safely and effectively.\n\nQuestions? Drop them below 👇 or DM us!\n\n📞 {{company_phone}} | York, PA" },
                   { id: "cta", label: "Strong CTA / Urgency", body: "🔴 SPOTS AVAILABLE THIS WEEK in York PA!\n\nWe had a cancellation and can fit in [X] more homes this week. If your driveway, siding, or roof needs some love — now's the time!\n\n💧 House Wash starting at $[PRICE]\n💧 Driveway Cleaning from $[PRICE]\n💧 Roof Soft Wash from $[PRICE]\n\nDM us or call {{company_phone}} to grab your spot!" },
                   { id: "team", label: "Meet the Team / Behind the Scenes", body: "👋 Just another day at {{company_name}}!\n\nStarted at 7am, [X] jobs on the books, and we're making York PA look its best one property at a time. 💪\n\nSmall business, big results. We treat every home like it's our own.\n\nTag someone whose house needs a wash! 👇" },
+                  { id: "day_in_life", label: "Day in the Life", body: "☀️ Day in the life at {{company_name}} 🚿\n\n6am truck load-up → first job by 8 → chemicals mixed, surfaces soft-washed, driveway looking brand new by lunch. Then two more before we call it.\n\nThis is what \"small business\" actually looks like. 💪\n\n📞 {{company_phone}} — we're always taking on more jobs like this one." },
+                  ...savedTemplates.map(t => ({ id: `saved:${t.id}`, label: `⭐ ${t.label}`, body: t.body })),
                 ];
                 const t = templates.find(x => x.id === e.target.value);
-                if (t) setF(prev => ({ ...prev, caption: mergeCaption(t.body) }));
+                if (t) {
+                  const prefix = challenge.enabled && challenge.name ? `Day ${challengeDayNumber} of ${challenge.name} 🔥\n\n` : "";
+                  setF(prev => ({ ...prev, caption: prefix + mergeCaption(t.body) }));
+                }
                 e.target.value = "";
               }} className="!text-xs w-full">
                 <option value="" className="bg-black">📋 Load post template…</option>
@@ -819,8 +860,41 @@ export function SocialPage({ posts = [], setPosts, toast, settings = {} as AppSe
                 <option value="tip" className="bg-black">Pro Tip / Educational</option>
                 <option value="cta" className="bg-black">Strong CTA / Urgency</option>
                 <option value="team" className="bg-black">Meet the Team / BTS</option>
+                <option value="day_in_life" className="bg-black">Day in the Life</option>
+                {savedTemplates.length > 0 && <option disabled className="bg-black">── My Saved Templates ──</option>}
+                {savedTemplates.map(t => <option key={t.id} value={`saved:${t.id}`} className="bg-black">⭐ {t.label}</option>)}
               </GSel>
             </div>
+            <div className="flex items-center justify-between gap-2 mb-2">
+              <label className="flex items-center gap-1.5 text-[10px] text-white/50 cursor-pointer">
+                <input type="checkbox" checked={challenge.enabled} onChange={e => setChallenge({ ...challenge, enabled: e.target.checked })} className="accent-red-600" />
+                Challenge series (auto-labels "Day X of…")
+              </label>
+              {saveTemplateOpen ? (
+                <div className="flex items-center gap-1">
+                  <input value={saveTemplateLabel} onChange={e => setSaveTemplateLabel(e.target.value)} placeholder="Template name" autoFocus
+                    className="!text-[10px] bg-white/5 border border-white/10 rounded px-2 py-1 text-white placeholder-white/30 focus:outline-none focus:border-red-700/60 w-28" />
+                  <button onClick={() => {
+                    if (!saveTemplateLabel.trim() || !f.caption.trim()) { toast?.("Write a caption and name it first", "red"); return; }
+                    setSavedTemplates(prev => [...prev, { id: uid(), label: saveTemplateLabel.trim(), body: f.caption }]);
+                    toast?.("Caption saved as a template ✓", "green");
+                    setSaveTemplateOpen(false); setSaveTemplateLabel("");
+                  }} className="text-[10px] text-red-400 hover:text-red-300 font-semibold">Save</button>
+                  <button onClick={() => { setSaveTemplateOpen(false); setSaveTemplateLabel(""); }} className="text-white/30 hover:text-white/60"><X size={12} /></button>
+                </div>
+              ) : (
+                <button onClick={() => setSaveTemplateOpen(true)} className="text-[10px] text-white/40 hover:text-white/70">⭐ Save as template</button>
+              )}
+            </div>
+            {challenge.enabled && (
+              <div className="flex items-center gap-1.5 mb-2">
+                <input value={challenge.name} onChange={e => setChallenge({ ...challenge, name: e.target.value })} placeholder="Challenge name (e.g. 30 Days of Clean)"
+                  className="!text-[10px] flex-1 bg-white/5 border border-white/10 rounded px-2 py-1.5 text-white placeholder-white/30 focus:outline-none focus:border-red-700/60" />
+                <input type="date" value={challenge.startDate} onChange={e => setChallenge({ ...challenge, startDate: e.target.value })}
+                  className="!text-[10px] bg-white/5 border border-white/10 rounded px-2 py-1.5 text-white focus:outline-none focus:border-red-700/60" />
+                <span className="text-[10px] text-red-300 font-semibold whitespace-nowrap">Day {challengeDayNumber}</span>
+              </div>
+            )}
             <GTxt rows={5} value={f.caption} onChange={e => setF({ ...f, caption: e.target.value })} placeholder="Write your caption or click AI Generate…" className="!text-xs" />
           </div>
           <div>
