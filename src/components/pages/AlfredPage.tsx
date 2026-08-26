@@ -3061,11 +3061,23 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
       // silently failing the entire request. Alfred's whole point is
       // taking real actions — a model that can't call tools should only
       // ever be a last resort, not a normal failover step. Prefer
-      // tool-capable models; only fall through to a non-tool model if
-      // literally none of the tool-capable ones are viable (better a
-      // clearly degraded chat-only reply than none at all).
+      // tool-capable models — BUT deprioritize, don't DROP, non-tool ones.
+      // The original version filtered viableModelsAll down to toolCapable
+      // ONLY whenever any tool-capable model had a key — which silently
+      // removed the owner's explicitly-chosen model (e.g. OpenRouter,
+      // reordered to the front via the model picker or "switch to
+      // OpenRouter") from the chain entirely as long as Gemini/NVIDIA also
+      // had keys, even though those kept failing (rate limit/CORS) every
+      // single message. Keep every viable model in the chain; just sort
+      // tool-capable ones first, non-tool ones after — and always respect
+      // the owner's explicit #1 pick as the actual first attempt.
       const toolCapable = viableModelsAll.filter(mid => MODELS_MAP[mid]?.supportsTools);
-      const viableModels = toolCapable.length > 0 ? toolCapable : viableModelsAll;
+      const nonToolCapable = viableModelsAll.filter(mid => !MODELS_MAP[mid]?.supportsTools);
+      let viableModels = [...toolCapable, ...nonToolCapable];
+      const explicitFirst = priority[0];
+      if (explicitFirst && viableModelsAll.includes(explicitFirst) && viableModels[0] !== explicitFirst) {
+        viableModels = [explicitFirst, ...viableModels.filter(mid => mid !== explicitFirst)];
+      }
       if (viableModels.length === 0) {
         const lockedWithKey = tryOrder.filter(mid => {
           const m = MODELS_MAP[mid];
