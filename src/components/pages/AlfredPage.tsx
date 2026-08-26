@@ -3141,7 +3141,18 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
             // looking successful. Detect the fake-call shape and fail this
             // model over to the next one instead of returning it to the
             // owner as if Alfred actually did something.
-            if (!toolsForModel && /^[a-zA-Z_][a-zA-Z0-9_]{2,40}\s*\(.*\)\s*\.?$/.test((result.text || "").trim())) {
+            // BUG FIX (cont'd) — the fixed-syntax regex above only caught
+            // `name(args)`. The same model also fakes calls as
+            // `search_customers → query: "..."`, `Calling search_customers...`,
+            // etc. — there's no fixed shape a model like this settles on. The
+            // one reliable signal: this model has no real tool-calling
+            // (toolsForModel is undefined), so ANY short response that
+            // starts with one of Alfred's actual tool names is it narrating
+            // a fake call, never a real final answer to the owner.
+            const trimmedResultText = (result.text || "").trim();
+            const fakesToolCall = !toolsForModel && trimmedResultText.length > 0 && trimmedResultText.length < 300 &&
+              toolDefinitions.some((td: any) => new RegExp(`(^|[\\s\`*"'([]) ?${td.name}\\b`, "i").test(trimmedResultText));
+            if (fakesToolCall) {
               throw new Error(`${MODELS_MAP[mid]?.name || mid} doesn't support tool/function calling and tried to fake a tool call as text instead of acting.`);
             }
             // BUG FIX — a completely empty response (no text, no tool call,
