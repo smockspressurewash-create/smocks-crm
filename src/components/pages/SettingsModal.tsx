@@ -839,6 +839,22 @@ export function SettingsModal({ open, onClose, settings, setSettings, jobs = [],
                 </div>
               </div>
             </label>
+            {/* FEATURE — "proactive daily check-ins, but only if the owner
+                wants them." Off by default — a real opt-in, not
+                always-on. Reuses the exact same morning-briefing content
+                that's already generated for the in-app Alfred
+                Notifications thread every day (App.tsx's tryBriefing
+                effect); this just adds texting it to the mobile number
+                above as a second delivery channel. */}
+            <label className={"flex items-start gap-2.5 p-3 rounded-xl border cursor-pointer transition " + (f.alfredSmsCheckinEnabled ? "border-red-500/40 bg-red-950/20" : "border-white/10 bg-white/5")}>
+              <input type="checkbox" checked={!!f.alfredSmsCheckinEnabled} onChange={e => setF({ ...f, alfredSmsCheckinEnabled: e.target.checked })} className="mt-0.5 accent-red-600" />
+              <div>
+                <div className="text-xs font-semibold text-white flex items-center gap-1.5"><Bot size={12} />Text me a daily check-in</div>
+                <div className="text-[10px] text-white/40 mt-0.5">
+                  Off by default. When on, Alfred texts your mobile number above a morning briefing (today's jobs, revenue pace, pending quotes, overdue invoices) once a day between 6-11am — same content as the in-app Alfred Notifications, just also sent as a text.
+                </div>
+              </div>
+            </label>
             <label className={"flex items-start gap-2.5 p-3 rounded-xl border cursor-pointer transition " + (f.clientPortalCancelReschedule ? "border-red-500/40 bg-red-950/20" : "border-white/10 bg-white/5")}>
               <input type="checkbox" checked={!!f.clientPortalCancelReschedule} onChange={e => setF({ ...f, clientPortalCancelReschedule: e.target.checked })} className="mt-0.5 accent-red-600" />
               <div>

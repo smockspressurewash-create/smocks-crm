@@ -886,6 +886,8 @@ export interface AppSettings {
   myPhone?: string;
   myEmail?: string;
   alfredSmsEnabled?: boolean;
+  // Opt-in — texts the daily morning briefing to myPhone (off by default).
+  alfredSmsCheckinEnabled?: boolean;
   // Additional numbers (besides myPhone) allowed to text Alfred — e.g. a
   // second phone the owner is using to simultaneously test the CUSTOMER
   // side of texting without losing access to the Alfred conversation on

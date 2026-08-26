@@ -88,7 +88,7 @@ import {
 import { seedWeather } from "./lib/weather";
 import { fetchRealWeather, deriveWeatherLocation } from "./lib/weather";
 import { fmt, uid, today, daysSince, daysFromNow, consumeOAuthIntent, getLastOwnerSessionFlag, setLastOwnerSessionFlag, getLastOwnerId, setLastOwnerId, buildChecklistFromServices, withTimeout, normalizeJobRow, totalJobPhotoCount, notifyDesktop, stripLegacyJobFields, getPollIntervalMs, purgeOldJobMedia, computeGoalProgress, localDateKey } from "./lib/utils";
-import { sendEmail, sendOwnerGmailOnly, emailShell, emailButton, buildTomorrowJobsEmailHtml, buildWeeklyScheduleEmailHtml, buildDailyBriefingEmailHtml, buildWeeklyOwnerDigestEmailHtml, setOptedOutPhones, setTestModeContacts } from "./lib/messaging";
+import { sendEmail, sendOwnerGmailOnly, emailShell, emailButton, buildTomorrowJobsEmailHtml, buildWeeklyScheduleEmailHtml, buildDailyBriefingEmailHtml, buildWeeklyOwnerDigestEmailHtml, setOptedOutPhones, setTestModeContacts, twilioSend, logOutboundSmsToInbox } from "./lib/messaging";
 import { exchangeSocialOAuthCode, type SocialPlatform } from "./lib/socialOAuth";
 import type {
   Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense,
@@ -2101,6 +2101,17 @@ export function App() {
       })
         .then(r => { if (!r.ok) console.warn("[AlfredBriefing] alfred-notify failed:", r.status); })
         .catch((e: any) => console.warn("[AlfredBriefing] alfred-notify threw:", e?.message));
+      // FEATURE — "proactive daily check-ins, but only if the owner wants
+      // them" (Settings → AI Models → "Text me a daily check-in" toggle,
+      // off by default — a real opt-in, not always-on). Reuses the exact
+      // same briefing content the in-app notification above already
+      // builds — one source of truth, just a second delivery channel.
+      const s = settingsRef.current as any;
+      if (s?.alfredSmsCheckinEnabled && s?.myPhone && s?.twilioSid) {
+        twilioSend(s, s.myPhone, briefing)
+          .then(() => logOutboundSmsToInbox({ contactName: "Owner (Daily Check-in)", contactPhone: s.myPhone, body: briefing }).catch(() => {}))
+          .catch((e: any) => console.warn("[AlfredBriefing] SMS check-in send failed:", e?.message));
+      }
       setSettings?.((prev: any) => ({ ...prev, alfredBriefingDate: todayStr }));
       toast?.("🌅 Alfred's morning briefing is ready — see Alfred Notifications", "green");
     };

@@ -2157,34 +2157,38 @@ const executeTool = async (ctx: Ctx, name: string, input: Record<string, any>): 
 // BUG FIX — "do you remember what we talked about yesterday?" should get
 // a real yes/no, not a guess. Two gaps caused this to fail: (1) stored
 // messages carried no timestamp at all, so even when yesterday's exchange
-// WAS still in the window, the model had no way to know it was yesterday
-// rather than five minutes ago; (2) the window was a hard last-16-messages
-// cutoff with nothing beyond it — a chatty day easily pushes yesterday's
-// whole conversation out entirely. ts is now stored per message (used to
-// render a real relative-time label injected into what the model sees —
-// see withTimeLabels below) and the window is wider (40, still bounded so
-// prompts don't balloon) with recall() as the explicit fallback for
-// anything older, called out in the system prompt.
-const THREAD_WINDOW = 40;
+// WAS still visible, the model had no way to know it was yesterday rather
+// than five minutes ago; (2) the whole stored history was hard-trimmed to
+// the last 16 messages on every save — yesterday's conversation didn't
+// just leave the model's view, it was permanently deleted. ts is now
+// stored per message (used to render a real relative-time label injected
+// into what the model sees — see withTimeLabels below), and per explicit
+// request, the FULL history is kept forever in storage (plain text SMS
+// messages are trivially small — this isn't the kind of data that
+// meaningfully costs storage) — only the PROMPT sent to the model is
+// windowed (PROMPT_WINDOW), purely to keep token cost/latency sane, never
+// as a storage decision. recall() is the explicit fallback for anything
+// older than the prompt window, called out in the system prompt.
+const PROMPT_WINDOW = 40;
 type ThreadMsg = { role: string; content: string; ts?: number };
 
-const loadThread = async (ctx: Ctx, phone: string): Promise<ThreadMsg[]> => {
+// Full stored history, never trimmed.
+const loadFullThread = async (ctx: Ctx, phone: string): Promise<ThreadMsg[]> => {
   if (!ctx.ownerId) return [];
   const rows = await sbGet(ctx, `alfred_sms_threads?owner_id=eq.${encodeURIComponent(ctx.ownerId)}&phone=eq.${encodeURIComponent(phone)}&select=messages&limit=1`);
   const msgs = rows[0]?.messages;
-  return Array.isArray(msgs) ? msgs.slice(-THREAD_WINDOW) : [];
+  return Array.isArray(msgs) ? msgs : [];
 };
 
 const saveThread = async (ctx: Ctx, phone: string, messages: ThreadMsg[]) => {
   if (!ctx.ownerId) return;
-  const trimmed = messages.slice(-THREAD_WINDOW);
   const res = await fetch(`${SUPABASE_URL}/rest/v1/alfred_sms_threads?owner_id=eq.${encodeURIComponent(ctx.ownerId)}&phone=eq.${encodeURIComponent(phone)}`, {
     method: "PATCH", headers: { ...ctx.authHeaders, "Content-Type": "application/json", Prefer: "return=representation" },
-    body: JSON.stringify({ messages: trimmed, updated_at: new Date().toISOString() }),
+    body: JSON.stringify({ messages, updated_at: new Date().toISOString() }),
   });
   const updated = await res.json().catch(() => []);
   if (!res.ok || !Array.isArray(updated) || updated.length === 0) {
-    await sbWrite(ctx, "alfred_sms_threads", "POST", { owner_id: ctx.ownerId, phone, messages: trimmed, updated_at: new Date().toISOString() });
+    await sbWrite(ctx, "alfred_sms_threads", "POST", { owner_id: ctx.ownerId, phone, messages, updated_at: new Date().toISOString() });
   }
 };
 
@@ -2259,8 +2263,12 @@ export const runAlfredSmsAgent = async (
     return "Alfred over text needs an AI model API key set in Settings → AI Models (any provider — Claude, GPT-4o, Gemini, Groq, Mistral, or a free NVIDIA model like Kimi) — add one there and text again.";
   }
 
-  const history = await loadThread(ctx, fromPhone);
-  const messages: ThreadMsg[] = [...history, { role: "user", content: incomingText, ts: Date.now() }];
+  const fullHistory = await loadFullThread(ctx, fromPhone);
+  // messages = the full history plus this turn — what actually gets
+  // persisted at the end (see saveThread call below). The model itself
+  // only ever sees the last PROMPT_WINDOW of it (via convMessages further
+  // down) — a token/latency limit, not a memory limit.
+  const messages: ThreadMsg[] = [...fullHistory, { role: "user", content: incomingText, ts: Date.now() }];
 
   // Auto-inject standing "from now on" preferences (set_standing_preference)
   // into every conversation, instead of relying on the model to remember to
@@ -2274,11 +2282,30 @@ export const runAlfredSmsAgent = async (
     }
   } catch { /* non-fatal — proceed without preferences rather than fail the whole reply */ }
 
+  // FEATURE — "the web chat and SMS should share memory." alfred_memory
+  // (remember/recall/set_standing_preference, above) was already shared —
+  // both channels read/write the exact same owner_id-scoped table. What
+  // wasn't shared was awareness of the RAW conversation itself: texting
+  // Alfred had no idea what was just discussed in the in-app chat a few
+  // minutes earlier, and vice versa. This pulls the single most recently
+  // updated web conversation (if touched in the last 48h) and summarizes
+  // its last few exchanges into the system prompt — a short digest, not
+  // the full transcript, so it doesn't blow up token cost on every text.
+  let crossChannelBlock = "";
+  try {
+    const recentWebConvos = await sbGet(ctx, `alfred_conversations?select=title,messages,updated_at${ownerScope(ctx)}&order=updated_at.desc&limit=1`);
+    const convo = recentWebConvos[0];
+    if (convo?.updated_at && Date.now() - new Date(convo.updated_at).getTime() < 48 * 3600000 && Array.isArray(convo.messages) && convo.messages.length > 0) {
+      const tail = convo.messages.slice(-6).map((m: any) => `${m.role === "alfred" ? "Alfred" : "Owner"}: ${String(m.content || "").slice(0, 200)}`).join("\n");
+      crossChannelBlock = `\n\nRECENT ACTIVITY IN THE IN-APP CHAT (web, not this text thread — "${convo.title || "conversation"}", updated ${relativeDayLabel(new Date(convo.updated_at).getTime())}):\n${tail}\nThis is a DIFFERENT conversation channel than this SMS thread — treat it as background context on what the owner's been doing/asking about recently, not as literal history of THIS text conversation.`;
+    }
+  } catch { /* non-fatal — proceed without cross-channel context */ }
+
   const nowLocal = new Date().toISOString();
   const personalityClause = PERSONALITY_PROMPTS[ctx.alfredPersonality || "drillsergeant"] || PERSONALITY_PROMPTS.drillsergeant;
   const systemPrompt = `You are Alfred, the AI assistant for ${ctx.companyName}, a pressure-washing business — texting back and forth with the OWNER over SMS while they're away from the CRM. ${personalityClause} The current date/time is ${nowLocal} (UTC). Use tools aggressively to actually read and modify the CRM — never just describe what you'd do. Keep replies SHORT (this is a text message, 1-3 sentences per item, no markdown) — the personality above shapes TONE, not length; still fit within that limit. If a tool result has an "error" field, tell the owner exactly what went wrong — do not claim success, and do not guess or describe an action vaguely if you're not certain the tool actually returned "success": true. When you finish an action, confirm plainly what happened.
 
-CASUAL CONVERSATION: the owner can talk to you like a person, not just issue commands — "how's it going", a joke, venting about their day, a random question with nothing to do with the business. Actually engage with it in your own personality's voice; never refuse or deflect with something like "I'm not programmed for that" — you're not limited to business tasks, tools are just what you reach for when a request actually needs one. Nothing above about being terse/professional/etc. means refusing to talk — it only shapes HOW you say things, never WHETHER you're willing to.${preferencesBlock}
+CASUAL CONVERSATION: the owner can talk to you like a person, not just issue commands — "how's it going", a joke, venting about their day, a random question with nothing to do with the business. Actually engage with it in your own personality's voice; never refuse or deflect with something like "I'm not programmed for that" — you're not limited to business tasks, tools are just what you reach for when a request actually needs one. Nothing above about being terse/professional/etc. means refusing to talk — it only shapes HOW you say things, never WHETHER you're willing to.${preferencesBlock}${crossChannelBlock}
 
 STANDING PREFERENCES: when the owner says something like "from now on...", "always...", "don't ask me about... anymore", or "call me...", that's a persistent instruction, not just for this one reply — call set_standing_preference to save it (it'll be listed above automatically in every future conversation from then on). Don't wait to be asked twice.
 
@@ -2338,10 +2365,11 @@ CRITICAL — NEVER INVENT A CUSTOMER: only call create_customer with a name the 
     const def = SMS_MODELS[modelKey];
     let rounds = 0;
     let localFinal = "";
-    // Time-labeled for the model (see withTimeLabels) — `messages` itself
-    // (with real ts) is what actually gets persisted via saveThread below,
-    // so the label text is never what's stored, only ever what's shown.
-    let convMessages: Array<{ role: string; content: any }> = withTimeLabels(messages);
+    // Windowed + time-labeled for the model (see withTimeLabels) —
+    // `messages` itself (full, unwindowed, real ts) is what actually gets
+    // persisted via saveThread below, so neither the window nor the label
+    // text ever affects what's stored, only what the model sees per call.
+    let convMessages: Array<{ role: string; content: any }> = withTimeLabels(messages.slice(-PROMPT_WINDOW));
     let modelFailed = false;
 
     // BUG FIX — this was capped at 4 rounds total, including the FINAL
