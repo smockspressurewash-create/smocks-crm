@@ -249,8 +249,11 @@ export const chargeSavedPaymentMethod = async (
 ): Promise<StripePaymentIntent> =>
   stripeAction("charge_saved_payment_method", { customerId, paymentMethodId, amountCents, currency, description, invoiceId, ownerId });
 
-export const refundPaymentIntent = async (paymentIntentId: string): Promise<void> => {
-  await stripeAction("refund", { paymentIntentId });
+// amountCents omitted = full refund; passed = a real partial refund of
+// exactly that amount.
+export const refundPaymentIntent = async (paymentIntentId: string, amountCents?: number): Promise<{ id: string; amount: number }> => {
+  const result = await stripeAction("refund", { paymentIntentId, amountCents });
+  return { id: result.id, amount: result.amount };
 };
 
 // FEATURE — automatic payment confirmation receipt, sent server-side (see

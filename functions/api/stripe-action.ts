@@ -608,9 +608,19 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
       case "refund": {
         // OWNER-ONLY — only ever called from InvoicesPage/JobDetailModal
         // (authenticated CRM), never exposed to the customer-facing portal.
+        // FEATURE — partial refunds: an owner can now issue a specific
+        // amount instead of only ever refunding the full charge. Omitting
+        // `amount` refunds the full remaining amount (Stripe's own default
+        // behavior) — passing it does a real partial refund.
         if (!body.paymentIntentId) throw new Error("Missing paymentIntentId");
-        await stripeFetch(secretKey, "POST", "refunds", { payment_intent: body.paymentIntentId }, stripeAccount);
-        return json({ success: true });
+        const params: Record<string, string> = { payment_intent: body.paymentIntentId };
+        if (body.amountCents !== undefined && body.amountCents !== null) {
+          const amt = Math.round(Number(body.amountCents));
+          if (!amt || amt <= 0) throw new Error("Invalid refund amount");
+          params.amount = String(amt);
+        }
+        const refund = await stripeFetch(secretKey, "POST", "refunds", params, stripeAccount);
+        return json({ success: true, id: refund.id, amount: refund.amount, status: refund.status });
       }
       default:
         return new Response(JSON.stringify({ error: "Unknown action: " + action }), { status: 400, headers: { "Content-Type": "application/json" } });

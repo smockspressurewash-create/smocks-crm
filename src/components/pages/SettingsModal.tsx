@@ -161,6 +161,7 @@ export function SettingsModal({ open, onClose, settings, setSettings, jobs = [],
   const [stripeWebhookInput, setStripeWebhookInput] = useState("");
   const [stripeSaving, setStripeSaving] = useState(false);
   const [stripeConnecting, setStripeConnecting] = useState(false);
+  const [stripeConnectError, setStripeConnectError] = useState("");
   const [showManualStripeKeys, setShowManualStripeKeys] = useState(false);
   useEffect(() => {
     if (!open) return;
@@ -274,11 +275,23 @@ export function SettingsModal({ open, onClose, settings, setSettings, jobs = [],
         webhookSecret: stripeWebhookInput || undefined,
         mode: inferredMode,
       }), 25000, "Stripe key save");
-      const status = await withTimeout(getOwnerStripeStatus(token), 25000, "Stripe status refresh");
-      setStripeStatus(status);
+      // BUG FIX — "I added my webhook secret, it said Saving, and it didn't
+      // save." The actual save call above and this status-refresh call were
+      // bundled in one try/catch — if the save succeeded but this refresh
+      // (a separate network round trip) hit any hiccup, the whole thing
+      // landed in the catch below and told the owner "Failed to save" even
+      // though their webhook secret WAS already written. Success is now
+      // reported the moment the real save confirms; the refresh is
+      // best-effort on top of that, not a condition for "did it save."
       setStripeSecretInput("");
       setStripeWebhookInput("");
       toast?.("Stripe settings saved.", "green");
+      try {
+        const status = await withTimeout(getOwnerStripeStatus(token), 25000, "Stripe status refresh");
+        setStripeStatus(status);
+      } catch (refreshErr: any) {
+        console.warn("[Stripe] status refresh after save failed (save itself succeeded):", refreshErr?.message);
+      }
     } catch (e: any) {
       toast?.("Failed to save Stripe settings: " + (e?.message || "unknown error"), "red");
     } finally {
@@ -1603,10 +1616,26 @@ export function SettingsModal({ open, onClose, settings, setSettings, jobs = [],
                       const { data: { session } } = await supabase.auth.getSession();
                       const token = session?.access_token;
                       if (!token) throw new Error("Not signed in");
-                      const url = await getStripeConnectAuthorizeUrl(token);
+                      const url = await withTimeout(getStripeConnectAuthorizeUrl(token), 20000, "Stripe Connect");
                       window.location.href = url;
+                      // Deliberately no setStripeConnecting(false) on this
+                      // success path — the page is about to navigate away to
+                      // Stripe, so leaving the button showing "Redirecting…"
+                      // is correct; the finally below only matters for the
+                      // error path.
                     } catch (e: any) {
-                      toast?.("Couldn't start Stripe Connect: " + (e?.message || "unknown error"), "red");
+                      // BUG FIX — "it said redirecting to Stripe and didn't do
+                      // anything." This DID fail every time (verified: the
+                      // server route requires a Stripe Connect Platform
+                      // application to exist first — STRIPE_CONNECT_CLIENT_ID
+                      // — which is a separate, optional, one-time Stripe
+                      // Dashboard setup most accounts haven't done; pasting
+                      // keys directly above needs none of that and is fully
+                      // functional right now). The failure toast was easy to
+                      // miss right as the button visually changed state — a
+                      // blocking modal makes the real reason (and the
+                      // working alternative) impossible to miss.
+                      setStripeConnectError(e?.message || "Unknown error");
                       setStripeConnecting(false);
                     }
                   }}
@@ -1615,6 +1644,14 @@ export function SettingsModal({ open, onClose, settings, setSettings, jobs = [],
                 >
                   {stripeConnecting ? "Redirecting to Stripe…" : "Prefer OAuth instead of pasting keys? Connect with Stripe"}
                 </button>
+                {stripeConnectError && (
+                  <div className="p-3 bg-red-950/20 border border-red-700/40 rounded-xl text-[10px] text-white/70 space-y-1.5">
+                    <div className="font-semibold text-red-300">Couldn't start Stripe Connect</div>
+                    <div>{stripeConnectError}</div>
+                    <div className="text-white/50">This OAuth option needs one extra one-time setup step in the Stripe Dashboard (registering as a Connect platform) that most accounts haven't done — <b>pasting your Secret Key and Publishable Key above works right now with no extra setup</b> and is exactly as functional.</div>
+                    <button type="button" onClick={() => setStripeConnectError("")} className="text-white/40 hover:text-white/70 underline">Dismiss</button>
+                  </div>
+                )}
               </div>
             </Glass>
 

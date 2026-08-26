@@ -206,7 +206,20 @@ export interface Estimate {
   googleEventId?: string;
   conversions?: number;
   stripePaymentIntentId?: string;
-  stripePaymentStatus?: "unpaid" | "paid" | "refunded";
+  // FEATURE — Square as a second payment processor. Which real charge this
+  // is (if any) is now provider-specific: a Square-paid invoice never had
+  // its own field before, so its payment id was previously mis-stored under
+  // stripePaymentIntentId — real, but the WRONG processor's refund API would
+  // get called for it. paymentProvider disambiguates which id field (and
+  // therefore which refund API) actually applies. stripePaymentStatus is
+  // kept as the shared generic status field for both providers (renaming it
+  // would touch too many existing read sites for what it's worth).
+  squarePaymentId?: string;
+  paymentProvider?: "stripe" | "square";
+  stripePaymentStatus?: "unpaid" | "paid" | "refunded" | "partially_refunded";
+  // Running total actually refunded so far — lets the UI show "$40 of $120
+  // refunded" and cap a new partial refund at what's actually left.
+  refundedAmount?: number;
   // AUDIT (round 12) — payment activity log + failure/refund/dispute
   // timestamps. paymentFailedAt/refundedAt/disputedAt are what the existing
   // owner-notification diff effect in App.tsx watches (same pattern as

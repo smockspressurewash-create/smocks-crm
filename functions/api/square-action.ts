@@ -178,6 +178,55 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
       return json({ id: sqData?.payment?.id || "", status: sqData?.payment?.status || "COMPLETED" });
     }
 
+    // refund_payment — OWNER-ONLY (InvoicesPage.tsx), mirrors stripe-action.ts's
+    // "refund" case: real full or partial refund via Square's own Refunds
+    // API. Resolves which business's Square account to refund through the
+    // same caller-auth-token / invoiceId / client-ownerId fallback chain
+    // used everywhere else in this file — never a client-claimed secret.
+    if (action === "refund_payment") {
+      const { paymentId, invoiceId, amountCents } = body;
+      if (!paymentId) return json({ error: "Missing paymentId" }, 400);
+      let ownerId: string | null = null;
+      if (invoiceId) ownerId = await getEstimateOwnerId(invoiceId, serviceRoleKey);
+      if (!ownerId) {
+        const accessTokenHdr = (context.request.headers.get("authorization") || "").replace(/^Bearer\s+/i, "");
+        if (accessTokenHdr) ownerId = await resolveCallerOwnerId(accessTokenHdr);
+      }
+      if (!ownerId && body.ownerId) ownerId = body.ownerId;
+      if (!ownerId) return json({ error: "Could not resolve which business owns this payment" }, 400);
+      const acct = await getOwnerSquareAccount(ownerId, serviceRoleKey);
+      if (!acct?.accessToken) return json({ error: "Square isn't configured for this business." }, 500);
+
+      let refundAmountCents = Math.round(Number(amountCents) || 0);
+      if (!refundAmountCents) {
+        // Full refund — look up the original payment's own amount rather
+        // than trusting a client-claimed total, same "never trust the
+        // client for money" rule as everywhere else in this app.
+        const payRes = await fetch(`${squareApiBase()}/v2/payments/${encodeURIComponent(paymentId)}`, {
+          headers: { Authorization: `Bearer ${acct.accessToken}`, "Square-Version": "2024-10-17" },
+        });
+        const payData = await payRes.json().catch(() => ({} as any));
+        refundAmountCents = payData?.payment?.amount_money?.amount || 0;
+      }
+      if (refundAmountCents <= 0) return json({ error: "Invalid refund amount" }, 400);
+
+      const refundRes = await fetch(`${squareApiBase()}/v2/refunds`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${acct.accessToken}`, "Content-Type": "application/json", "Square-Version": "2024-10-17" },
+        body: JSON.stringify({
+          idempotency_key: crypto.randomUUID(),
+          amount_money: { amount: refundAmountCents, currency: "USD" },
+          payment_id: paymentId,
+        }),
+      });
+      const refundData = await refundRes.json().catch(() => ({} as any));
+      if (!refundRes.ok) {
+        const msg = refundData?.errors?.[0]?.detail || `Square error ${refundRes.status}`;
+        return json({ error: msg }, refundRes.status);
+      }
+      return json({ success: true, id: refundData?.refund?.id || "", amount: refundAmountCents, status: refundData?.refund?.status || "PENDING" });
+    }
+
     return json({ error: "Unknown action: " + action }, 400);
   } catch (e: any) {
     return json({ error: e?.message || "Square proxy error" }, 500);

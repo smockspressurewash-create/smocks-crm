@@ -40,6 +40,7 @@ import { Modal } from "../ui/Modal";
 import { InvoicePreviewModal } from "../ui/InvoicePreviewModal";
 import { StripePaymentModal } from "../ui/StripePaymentModal";
 import { createCheckoutSession, retrieveCheckoutSession, refundPaymentIntent } from "../../lib/stripe";
+import { refundSquarePayment } from "../../lib/square";
 import { Badge } from "../ui/Badge";
 import { Stat } from "../ui/Stat";
 import { PBar } from "../ui/PBar";
@@ -216,6 +217,15 @@ export function InvoicesPage({ estimates = [], setEstimates, customers = [], set
   const [stripePayInvoice, setStripePayInvoice] = useState<any>(null);
   const [checkoutLoadingId, setCheckoutLoadingId] = useState<string | null>(null);
   const [refundingInvoice, setRefundingInvoice] = useState<string | null>(null);
+  // FEATURE — "give the owner the option to give refunds and partial
+  // refunds." Previously "Refund" only ever refunded the FULL charge with
+  // no confirmation of amount. This opens a small modal instead: full or a
+  // specific partial dollar amount, capped at what's actually left
+  // un-refunded so far (refundedAmount tracks running total across
+  // multiple partial refunds on the same invoice).
+  const [refundModal, setRefundModal] = useState<{ invoice: any } | null>(null);
+  const [refundAmountInput, setRefundAmountInput] = useState("");
+  const [refundMode, setRefundMode] = useState<"full" | "partial">("full");
   // ROUND 12 — the secret key check (stripeSecretKeyEnc) no longer lives
   // client-side at all (see lib/stripe.ts); readiness is just "publishable
   // key is set." If STRIPE_SECRET_KEY isn't configured server-side, the
@@ -868,43 +878,17 @@ export function InvoicesPage({ estimates = [], setEstimates, customers = [], set
               {viewing.paidAt && <>
                 {/* SECURITY/CORRECTNESS AUDIT (round 12) — this button used to
                     ONLY flip local paidAt/refundedAt fields — it never called
-                    Stripe's refund API at all. For a Stripe-paid invoice, that
-                    meant the CRM would confidently show "Refunded" while the
-                    customer's card was never actually credited — a real
-                    customer-facing lie that would surface as a dispute/
-                    chargeback down the line, not a "someday" gap. Now issues
-                    the real Stripe refund first (when the invoice has a
-                    stripePaymentIntentId) and only updates local state once
-                    Stripe confirms it; a manually-paid (cash/check) invoice
-                    has nothing to refund through Stripe, so it still just
-                    unmarks locally. */}
+                    a real refund API at all. Now opens a real full-or-partial
+                    refund flow (see refundModal below) that issues the actual
+                    Stripe/Square refund first and only updates local state
+                    once the processor confirms it; a manually-paid (cash/
+                    check) invoice has nothing to refund through either
+                    processor, so it still just unmarks locally. */}
                 <GBtn
                   variant="ghost"
-                  disabled={refundingInvoice === viewing.id}
                   className="!text-xs !border-red-800/40 !text-red-400"
-                  onClick={async () => {
-                    const hasStripeCharge = !!viewing.stripePaymentIntentId && viewing.stripePaymentStatus !== "refunded";
-                    if (!confirm(hasStripeCharge
-                      ? "Issue a real Stripe refund for this invoice? This will actually return the money to the customer's card."
-                      : "Mark this invoice as refunded/unpaid? (No Stripe charge on file to reverse — this was paid another way.)")) return;
-                    setRefundingInvoice(viewing.id);
-                    try {
-                      if (hasStripeCharge) {
-                        await refundPaymentIntent(viewing.stripePaymentIntentId);
-                      }
-                      const refundedAt = today();
-                      markUnpaid(viewing.id);
-                      setEstimates(prev => prev.map(e => e.id === viewing.id ? { ...e, refundedAt, stripePaymentStatus: hasStripeCharge ? ("refunded" as const) : e.stripePaymentStatus } : e));
-                      setViewing({ ...viewing, paidAt: null, refundedAt, stripePaymentStatus: hasStripeCharge ? "refunded" : viewing.stripePaymentStatus });
-                      (supabase as any).from("estimates").update({ refundedAt, ...(hasStripeCharge ? { stripePaymentStatus: "refunded" } : {}) }).eq("id", viewing.id).catch((e: any) => console.warn("[MarkPaid] refundedAt sync failed:", e?.message));
-                      toast?.(hasStripeCharge ? "Refunded via Stripe ✓" : "Marked refunded", "green");
-                    } catch (e: any) {
-                      toast?.("Refund failed — " + (e?.message || "unknown error") + ". The invoice was NOT changed.", "red");
-                    } finally {
-                      setRefundingInvoice(null);
-                    }
-                  }}
-                ><Undo2 size={11} className="inline mr-1" />{refundingInvoice === viewing.id ? "Refunding…" : "Refund"}</GBtn>
+                  onClick={() => { setRefundModal({ invoice: viewing }); setRefundMode("full"); setRefundAmountInput(""); }}
+                ><Undo2 size={11} className="inline mr-1" />Refund</GBtn>
                 <GBtn variant="ghost" onClick={() => { markUnpaid(viewing.id); setViewing({ ...viewing, paidAt: null }); }}><Undo2 size={12} className="inline mr-1.5" />Unpaid</GBtn>
               </>}
               <GBtn variant="danger" onClick={() => deleteInvoice(viewing)}><Trash2 size={12} className="inline mr-1.5" />Delete</GBtn>
@@ -912,6 +896,88 @@ export function InvoicesPage({ estimates = [], setEstimates, customers = [], set
           </div>;
         })()}
       </Modal>
+
+      {/* FEATURE — "give the owner the option to give refunds and partial
+          refunds." Routes to whichever processor actually took the payment
+          (paymentProvider, with the id-field-presence fallback for invoices
+          paid before that field existed) and always resolves the real
+          remaining refundable amount server-side before submitting —
+          amount input here is just what the owner wants to refund, capped
+          client-side too so the button can't even be pressed with an
+          invalid amount. */}
+      {refundModal && (() => {
+        const inv = refundModal.invoice;
+        const isSquare = inv.paymentProvider === "square" || (!inv.paymentProvider && !!inv.squarePaymentId);
+        const hasRealCharge = isSquare ? !!inv.squarePaymentId : !!inv.stripePaymentIntentId;
+        const paidTotal = Number(inv.totalPaid ?? inv.total ?? 0);
+        const alreadyRefunded = Number(inv.refundedAmount || 0);
+        const remaining = Math.max(0, paidTotal - alreadyRefunded);
+        const partialAmt = Number(refundAmountInput) || 0;
+        const validPartial = refundMode === "partial" && partialAmt > 0 && partialAmt <= remaining;
+        const canSubmit = hasRealCharge ? (refundMode === "full" || validPartial) : true;
+        return (
+          <Modal open={true} onClose={() => setRefundModal(null)} title="Issue Refund" maxW="max-w-sm">
+            <div className="space-y-4">
+              <div className="text-xs text-white/60">
+                {hasRealCharge
+                  ? `Paid via ${isSquare ? "Square" : "Stripe"} — ${fmt(remaining)} available to refund${alreadyRefunded > 0 ? ` (${fmt(alreadyRefunded)} already refunded)` : ""}.`
+                  : "No card charge on file to reverse (paid another way) — this just marks the invoice refunded/unpaid."}
+              </div>
+              {hasRealCharge && (
+                <>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button type="button" onClick={() => setRefundMode("full")} className={"py-2.5 rounded-xl text-sm font-semibold border transition " + (refundMode === "full" ? "bg-red-900/30 border-red-600/50 text-red-300" : "bg-white/5 border-white/10 text-white/50")}>Full refund</button>
+                    <button type="button" onClick={() => setRefundMode("partial")} className={"py-2.5 rounded-xl text-sm font-semibold border transition " + (refundMode === "partial" ? "bg-red-900/30 border-red-600/50 text-red-300" : "bg-white/5 border-white/10 text-white/50")}>Partial refund</button>
+                  </div>
+                  {refundMode === "full" && <div className="text-sm">Refunding <b>{fmt(remaining)}</b> — the full remaining amount.</div>}
+                  {refundMode === "partial" && (
+                    <div>
+                      <label className="text-xs text-white/60 mb-1 block">Amount to refund (up to {fmt(remaining)})</label>
+                      <GInput type="number" min={0.01} max={remaining} step={0.01} value={refundAmountInput} onChange={(e: any) => setRefundAmountInput(e.target.value)} placeholder="0.00" className="!text-sm" />
+                      {refundAmountInput !== "" && !validPartial && <div className="text-[10px] text-red-400 mt-1">Enter an amount between $0.01 and {fmt(remaining)}.</div>}
+                    </div>
+                  )}
+                </>
+              )}
+              <div className="flex gap-2 pt-2">
+                <GBtn variant="ghost" onClick={() => setRefundModal(null)} className="flex-1">Cancel</GBtn>
+                <GBtn
+                  disabled={!canSubmit || refundingInvoice === inv.id}
+                  className="flex-1 !bg-red-700/80 hover:!bg-red-700 !border-red-600/50"
+                  onClick={async () => {
+                    setRefundingInvoice(inv.id);
+                    try {
+                      const amountCents = refundMode === "partial" ? Math.round(partialAmt * 100) : undefined;
+                      let refundedTotal = alreadyRefunded;
+                      if (hasRealCharge) {
+                        const result = isSquare
+                          ? await refundSquarePayment(inv.squarePaymentId, amountCents, inv.id)
+                          : await refundPaymentIntent(inv.stripePaymentIntentId, amountCents);
+                        refundedTotal = alreadyRefunded + (result.amount / 100);
+                      } else {
+                        refundedTotal = paidTotal;
+                      }
+                      const fullyRefunded = refundedTotal >= paidTotal - 0.005;
+                      const refundedAt = today();
+                      const newStatus = fullyRefunded ? ("refunded" as const) : ("partially_refunded" as const);
+                      if (fullyRefunded) markUnpaid(inv.id);
+                      setEstimates(prev => prev.map(e => e.id === inv.id ? { ...e, refundedAt, refundedAmount: refundedTotal, stripePaymentStatus: newStatus, ...(fullyRefunded ? { paidAt: null } : {}) } : e));
+                      if (viewing?.id === inv.id) setViewing({ ...viewing, refundedAt, refundedAmount: refundedTotal, stripePaymentStatus: newStatus, ...(fullyRefunded ? { paidAt: null } : {}) } as any);
+                      (supabase as any).from("estimates").update({ refundedAt, refundedAmount: refundedTotal, stripePaymentStatus: newStatus, ...(fullyRefunded ? { paidAt: null } : {}) }).eq("id", inv.id).catch((e: any) => console.warn("[Refund] sync failed:", e?.message));
+                      toast?.(hasRealCharge ? `${fullyRefunded ? "Fully" : "Partially"} refunded via ${isSquare ? "Square" : "Stripe"} ✓` : "Marked refunded", "green");
+                      setRefundModal(null);
+                    } catch (e: any) {
+                      toast?.("Refund failed — " + (e?.message || "unknown error") + ". The invoice was NOT changed.", "red");
+                    } finally {
+                      setRefundingInvoice(null);
+                    }
+                  }}
+                >{refundingInvoice === inv.id ? "Refunding…" : "Issue Refund"}</GBtn>
+              </div>
+            </div>
+          </Modal>
+        );
+      })()}
 
       <StripePaymentModal
         open={!!stripePayInvoice}

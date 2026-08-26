@@ -367,7 +367,7 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
     }
   };
 
-  const handleApprove = async (paymentIntentId?: string, payChoice: "now" | "later" | "deposit" = "now") => {
+  const handleApprove = async (paymentIntentId?: string, payChoice: "now" | "later" | "deposit" = "now", provider: "stripe" | "square" = "stripe") => {
     // FIX 14 — redeem the applied promo/referral code once the customer
     // actually approves. A promotion bumps its redeemedCount; a referral
     // credits the REFERRER (not this customer) per Settings → Referrals.
@@ -382,7 +382,11 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
     }
     if (onApprove) onApprove(e.id, {
       sigData, payType, tip, totalPaid: paymentIntentId ? totalWithTip : 0, signedAt: new Date().toISOString(), payChoice,
-      ...(paymentIntentId ? { stripePaymentIntentId: paymentIntentId, stripePaymentStatus: "paid" as const } : {}),
+      ...(paymentIntentId ? {
+        paymentProvider: provider,
+        ...(provider === "square" ? { squarePaymentId: paymentIntentId } : { stripePaymentIntentId: paymentIntentId }),
+        stripePaymentStatus: "paid" as const,
+      } : {}),
     });
     setStep("done");
 
@@ -939,7 +943,7 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
                 invoiceId={e?.id}
                 tipCents={Math.round((Number(tip) || 0) * 100)}
                 description={`${companyName} — ${e?.lineItems?.[0]?.description || "Estimate"} #${e?.id || ""}`}
-                onSuccess={(paymentIntentId) => { setShowStripeModal(false); handleApprove(paymentIntentId); }}
+                onSuccess={(paymentIntentId) => { setShowStripeModal(false); handleApprove(paymentIntentId, "now", "stripe"); }}
               />
               <SquarePaymentModal
                 open={showSquareModal}
@@ -950,7 +954,7 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
                 invoiceId={e?.id}
                 tipCents={Math.round((Number(tip) || 0) * 100)}
                 description={`${companyName} — ${e?.lineItems?.[0]?.description || "Estimate"} #${e?.id || ""}`}
-                onSuccess={(paymentId) => { setShowSquareModal(false); handleApprove(paymentId); }}
+                onSuccess={(paymentId) => { setShowSquareModal(false); handleApprove(paymentId, "now", "square"); }}
               />
             </div>
           )}

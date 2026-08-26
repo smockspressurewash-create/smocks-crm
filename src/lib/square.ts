@@ -56,6 +56,13 @@ export const getPublicSquareConfig = (ownerId: string): Promise<SquarePublicConf
 export const createSquarePayment = (opts: { sourceId: string; invoiceId?: string; amountCents?: number; tipCents?: number; description?: string; ownerId?: string }): Promise<{ id: string; status: string }> =>
   squareAction("create_payment", opts);
 
+// amountCents omitted = full refund (server looks up the real original
+// amount itself); passed = a real partial refund of exactly that amount.
+// Owner-authenticated call — squareAction attaches the current Supabase
+// session token automatically when one exists.
+export const refundSquarePayment = (paymentId: string, amountCents?: number, invoiceId?: string): Promise<{ id: string; amount: number; status: string }> =>
+  squareAction("refund_payment", { paymentId, amountCents, invoiceId });
+
 // Owner-authenticated Settings actions.
 export const getOwnerSquareStatus = (accessToken: string) =>
   fetch("/api/square-action", {
