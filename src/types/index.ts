@@ -300,6 +300,12 @@ export interface JobChecklistItem {
   photos?: ChecklistPhoto[];
   videos?: ChecklistPhoto[];
   notes?: string;
+  // FEATURE — "assign specific checklist items to specific employees."
+  // An employee id (matches job.crew entries) — when set, only that crew
+  // member (or the owner) can check the item off; unassigned (undefined)
+  // means any crew member on the job can. Optional so every existing job's
+  // checklist keeps working exactly as before (nothing assigned = open to all).
+  assignedTo?: string;
 }
 
 export interface JobVideo {

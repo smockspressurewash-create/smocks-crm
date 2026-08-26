@@ -21,7 +21,7 @@ import { LiveMap } from "../ui/LiveMap";
 import { PropertyMapEmbed } from "../ui/PropertyMapEmbed";
 import { SaveCardModal } from "../ui/SaveCardModal";
 import { InstallAppButton } from "../ui/InstallAppButton";
-import { PushNotificationButton } from "../ui/PushNotificationButton";
+import { PushOptInPrompt } from "../ui/PushOptInPrompt";
 import { SopModal } from "../ui/SopModal";
 import { chargeSavedPaymentMethod, sendPaymentReceipt, listCustomerPaymentMethods } from "../../lib/stripe";
 import { BarChart, Bar, LineChart, Line, XAxis, YAxis, ResponsiveContainer, Tooltip, CartesianGrid } from "recharts";
@@ -146,7 +146,7 @@ export const DEFAULT_PERMISSIONS: Record<string, boolean> = {
   can_create_invoices: false, can_send_invoices: false, can_process_payments: false,
 };
 
-function PortalChecklistSection({ jobId, title, emoji, items, onUpdate, allowPhotos = false, disabled = false, toast = () => {} }: {
+function PortalChecklistSection({ jobId, title, emoji, items, onUpdate, allowPhotos = false, disabled = false, toast = () => {}, crewOptions = [], myEmployeeId = "" }: {
   jobId: string;
   title: string; emoji: string;
   items: JobChecklistItem[];
@@ -154,9 +154,25 @@ function PortalChecklistSection({ jobId, title, emoji, items, onUpdate, allowPho
   allowPhotos?: boolean;
   disabled?: boolean;
   toast?: (msg: string, tone?: any) => void;
+  // FEATURE — "assign specific checklist items to specific employees, make
+  // sure the whole process for multiple employees working on a job works
+  // well." Items with no assignedTo stay open to every crew member on the
+  // job (unchanged behavior); an assigned item can only be checked by that
+  // person (or is shown read-only, with their name, to everyone else) —
+  // the checklist itself already lives on the job row, so every crew
+  // member already sees the same list/state, this just restricts WHO can
+  // toggle a given item.
+  crewOptions?: { id: string; name: string }[];
+  myEmployeeId?: string;
 }) {
   const done = items.filter(i => i.done).length;
-  const toggle = (id: string) => { if (!disabled) onUpdate(items.map(it => it.id === id ? { ...it, done: !it.done } : it)); };
+  const isMine = (item: JobChecklistItem) => !item.assignedTo || item.assignedTo === myEmployeeId;
+  const toggle = (id: string) => {
+    if (disabled) return;
+    const item = items.find(it => it.id === id);
+    if (item && !isMine(item)) { toast(`This item is assigned to ${crewOptions.find(c => c.id === item.assignedTo)?.name || "another crew member"}`, "yellow"); return; }
+    onUpdate(items.map(it => it.id === id ? { ...it, done: !it.done } : it));
+  };
   const updateNotes = (id: string, notes: string) => onUpdate(items.map(it => it.id === id ? { ...it, notes } : it));
 
   // FEATURE — voice-to-text checklist notes. Wet/gloved hands make typing
@@ -220,12 +236,18 @@ function PortalChecklistSection({ jobId, title, emoji, items, onUpdate, allowPho
           <div key={item.id} className="p-2.5 rounded-xl bg-white/5 border border-white/5">
             <div className="flex items-start gap-2">
               <input type="checkbox" checked={item.done} onChange={() => toggle(item.id)}
-                disabled={disabled}
-                className={"mt-0.5 w-4 h-4 flex-shrink-0 " + (disabled ? "opacity-50 cursor-not-allowed" : "accent-green-500 cursor-pointer")} />
+                disabled={disabled || !isMine(item)}
+                title={!disabled && !isMine(item) ? `Assigned to ${crewOptions.find(c => c.id === item.assignedTo)?.name || "another crew member"}` : undefined}
+                className={"mt-0.5 w-4 h-4 flex-shrink-0 " + (disabled || !isMine(item) ? "opacity-50 cursor-not-allowed" : "accent-green-500 cursor-pointer")} />
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2">
                   <div className={"text-sm flex-1 " + (item.done ? "line-through text-white/30" : "text-white/80")}>
                     {item.label}
+                    {item.assignedTo && (
+                      <span className={"ml-1.5 text-[9px] px-1.5 py-0.5 rounded-full border " + (isMine(item) ? "text-purple-300 bg-purple-950/40 border-purple-700/30" : "text-white/40 bg-white/5 border-white/10")}>
+                        {isMine(item) ? "you" : (crewOptions.find(c => c.id === item.assignedTo)?.name || "assigned")}
+                      </span>
+                    )}
                   </div>
                   {allowPhotos && (
                     <label className="cursor-pointer flex-shrink-0">
@@ -805,6 +827,19 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
   // persisted. Only toast on FAILURE here (not on every successful toggle —
   // the checkbox itself is the success confirmation and a toast on every tap
   // would be noisy), matching this file's other checklist-adjacent saves.
+  // FEATURE — "assign specific checklist items to specific employees."
+  // Resolve the crew on THIS job to real names for the assignee badges, and
+  // resolve which one is the person currently viewing the portal (matched
+  // by email, the one identifier JobDetailView reliably gets passed) so
+  // PortalChecklistSection can tell "assigned to me" apart from "assigned
+  // to someone else on the crew."
+  const checklistCrewOptions = normalizeCrewArray(job.crew)
+    .map(crewEntryId)
+    .map(id => employees.find((e: any) => e.id === id || e.user_id === id))
+    .filter(Boolean)
+    .map((e: any) => ({ id: e.id, name: `${e.firstName} ${e.lastName}`.trim() }));
+  const myEmployeeIdForChecklist = employees.find((e: any) => e.email === employeeEmail)?.id || "";
+
   const saveChecklist = async (label: string, patch: Partial<Job>) => {
     try {
       const result = await withTimeout(Promise.resolve(onUpdateJob(patch)), 15000, label + " checklist save");
@@ -842,24 +877,45 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
   const [voiceThinking, setVoiceThinking] = useState(false);
   const [voiceTypedText, setVoiceTypedText] = useState("");
   const normalizeVoice = (s: string) => s.toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
+  // BUG FIX — "voice commands are very bad, fuzzy matching does not work."
+  // The matcher required an EXACT token match ("rinse" in the checklist item
+  // vs. the speech engine hearing "rinsed", or "ladder" vs "ladders") — one
+  // different suffix and the word simply never matched at all, which is the
+  // single most common way speech-to-text output differs from a checklist
+  // label. A tiny stemmer (strip -ing/-ed/-es/-s) plus a substring fallback
+  // for longer words makes near-misses actually count as fuzzy matches
+  // instead of requiring a letter-for-letter hit.
+  const stemVoiceWord = (w: string): string => w.replace(/(ing|ies|ed|es|s)$/,
+    m => (w.length - m.length >= 3 ? "" : m));
+  const voiceWordsMatch = (a: string, b: string): boolean => {
+    if (a === b) return true;
+    const sa = stemVoiceWord(a), sb = stemVoiceWord(b);
+    if (sa === sb) return true;
+    // Longer words tolerate a mis-transcribed tail/head (e.g. "drivewy" ~ "driveway").
+    if (a.length >= 5 && b.length >= 5 && (a.startsWith(b.slice(0, 4)) || b.startsWith(a.slice(0, 4)))) return true;
+    return false;
+  };
   const VOICE_PROBLEM_KEYWORDS = ["problem", "issue", "broken", "damage", "damaged", "hazard", "injury", "hurt", "leak", "leaking", "not working", "malfunction"];
   const VOICE_UNCHECK_KEYWORDS = ["uncheck", "undo", "not done", "unmark", "wasn't done", "mistake"];
   const VOICE_STOPWORDS = new Set(["check", "off", "mark", "done", "complete", "completed", "the", "item", "finished", "please", "and"]);
   const findVoiceChecklistMatch = (transcript: string): { list: "pre" | "during" | "post"; item: JobChecklistItem; score: number } | null => {
-    const words = new Set(normalizeVoice(transcript).split(" ").filter(w => w.length > 2 && !VOICE_STOPWORDS.has(w)));
-    if (words.size === 0) return null;
+    const words = Array.from(new Set(normalizeVoice(transcript).split(" ").filter(w => w.length > 2 && !VOICE_STOPWORDS.has(w))));
+    if (words.length === 0) return null;
     let best: { list: "pre" | "during" | "post"; item: JobChecklistItem; score: number } | null = null;
     const sources: Array<["pre" | "during" | "post", JobChecklistItem[]]> = [["pre", preItems], ["during", durItems], ["post", postItems]];
     for (const [key, list] of sources) {
       for (const item of list) {
         const itemWords = normalizeVoice(item.label).split(" ").filter(w => w.length > 2);
         if (itemWords.length === 0) continue;
-        const overlap = itemWords.filter(w => words.has(w)).length;
+        const overlap = itemWords.filter(iw => words.some(w => voiceWordsMatch(iw, w))).length;
         const score = overlap / itemWords.length;
         if (overlap > 0 && (!best || score > best.score)) best = { list: key, item, score };
       }
     }
-    return best && best.score >= 0.5 ? best : null;
+    // Lowered from 0.5 — fuzzy stemmed matches already reduce false
+    // positives enough that requiring half the item's words was too strict
+    // for short labels ("Rinse thoroughly" needing both words verbatim).
+    return best && best.score >= 0.4 ? best : null;
   };
   // FEATURE — "I just completed these things" (plural). Splits on
   // and/commas/"then" so one breath covering several items ("ladder setup
@@ -2363,6 +2419,8 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
             onUpdate={items => saveChecklist("Pre-Job", { preChecklist: items })}
             disabled={!effPerms.can_complete_checklist}
             toast={toast}
+            crewOptions={checklistCrewOptions}
+            myEmployeeId={myEmployeeIdForChecklist}
           />
           <PortalChecklistSection
             jobId={job.id}
@@ -2371,6 +2429,8 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
             onUpdate={items => saveChecklist("During-Job", { duringChecklist: items })}
             disabled={!effPerms.can_complete_checklist}
             toast={toast}
+            crewOptions={checklistCrewOptions}
+            myEmployeeId={myEmployeeIdForChecklist}
           />
           <PortalChecklistSection
             jobId={job.id}
@@ -2379,6 +2439,8 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
             onUpdate={items => saveChecklist("Post-Job", { postChecklist: items })}
             disabled={!effPerms.can_complete_checklist}
             toast={toast}
+            crewOptions={checklistCrewOptions}
+            myEmployeeId={myEmployeeIdForChecklist}
           />
         </Glass>
 
@@ -2865,6 +2927,23 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   const [loginLoading, setLoginLoading] = useState(false);
   const [inviteCode, setInviteCode] = useState<string | null>(null);
   const [inviteRecord, setInviteRecord] = useState<any>(null);
+  // BUG FIX — "fix the logo on the sign-up/login page." Before the employee
+  // has signed in, `settings` here is just whatever's in this DEVICE's own
+  // localStorage (App.tsx's usePersistent) — which is empty on a crew
+  // member's own phone that's never been the owner's device, so the login
+  // screen always fell back to the generic CrewBoss mark, never the real
+  // business logo. RLS on app_settings is permissive read (see CLAUDE.md),
+  // same public-branding pattern TrashCanSignupPage already uses, so once
+  // the invite resolves to an owner_id, fetch just that owner's branding
+  // directly, independent of local session state.
+  const [inviteBranding, setInviteBranding] = useState<{ logoUrl?: string; companyName?: string } | null>(null);
+  useEffect(() => {
+    const ownerId = inviteRecord?.owner_id;
+    if (!ownerId) return;
+    (supabase as any).from("app_settings").select("data").eq("owner_id", ownerId).maybeSingle()
+      .then((r: any) => { if (r?.data?.data) setInviteBranding({ logoUrl: r.data.data.logoUrl, companyName: r.data.data.companyName }); })
+      .catch(() => {});
+  }, [inviteRecord?.owner_id]);
   // Locally-resolved employee when the prop array hasn't re-fetched yet (e.g. after invite registration)
   const [localEmployee, setLocalEmployee] = useState<any>(null);
   const [retrying, setRetrying] = useState(false);
@@ -5031,21 +5110,15 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                 the owner's real uploaded logoUrl when set — the employee
                 portal login screen was the one place still stuck on the
                 generic mark regardless. */}
-            {(settings as any)?.logoUrl ? (
-              <img src={(settings as any).logoUrl} alt={settings.companyName || "Company logo"} className="w-16 h-16 rounded-2xl object-contain mx-auto mb-4 shadow-lg bg-white/5" />
+            {((settings as any)?.logoUrl || inviteBranding?.logoUrl) ? (
+              <img src={(settings as any)?.logoUrl || inviteBranding?.logoUrl} alt={settings.companyName || inviteBranding?.companyName || "Company logo"} className="w-16 h-16 rounded-2xl object-contain mx-auto mb-4 shadow-lg bg-white/5" />
             ) : (
               <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-red-600 to-red-900 flex items-center justify-center mx-auto mb-4 shadow-lg">
                 <CrewBossMark className="w-10 h-10" />
               </div>
             )}
-            <div className="text-xl font-bold">{settings.companyName || "Crew Boss OS"}</div>
+            <div className="text-xl font-bold">{settings.companyName || inviteBranding?.companyName || "Crew Boss OS"}</div>
             <div className="text-sm text-white/50 mt-1">{inviteRecord ? "Create Your Crew Account" : "Employee Portal"}</div>
-            {/* PWA — lets a crew member install this as an app on their
-                phone (own icon, full-screen, no browser chrome) straight
-                from the login screen, before they even sign in. Renders
-                nothing until Chrome actually offers it — see
-                InstallAppButton.tsx. */}
-            <div className="mt-3 flex justify-center"><InstallAppButton label="Install App on This Phone" /></div>
           </div>
 
           {!inviteRecord && (
@@ -5739,8 +5812,10 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
               was too prominent for this portal, so it's now a quiet icon
               here instead (still renders something in every browser state —
               see InstallAppButton.tsx). */}
-          <InstallAppButton className="!p-2 !gap-0 !bg-transparent !border-0 !text-white/40 hover:!text-white hover:!bg-white/10 !rounded-xl flex-shrink-0" label="" />
-          {(myEmployee as any)?.owner_id && <PushNotificationButton ownerId={(myEmployee as any).owner_id} employeeId={myEmployee.id} className="!p-2 !gap-0 !bg-transparent !border-0 !text-white/40 hover:!text-white hover:!bg-white/10 !rounded-xl flex-shrink-0" label="" />}
+          <InstallAppButton className="!p-2 !bg-transparent !border-0 !text-white/40 hover:!text-white hover:!bg-white/10 !rounded-xl flex-shrink-0" label="" />
+          {/* BUG FIX — replaces the old always-visible header notification
+              toggle with a one-time opt-in pop-up (see PushOptInPrompt.tsx). */}
+          {(myEmployee as any)?.owner_id && <PushOptInPrompt ownerId={(myEmployee as any).owner_id} employeeId={myEmployee.id} />}
           <div className="w-8 h-8 rounded-full bg-gradient-to-br from-red-700/60 to-red-900/60 border border-red-700/30 flex items-center justify-center text-xs font-bold flex-shrink-0">
             {myEmployee.firstName?.[0] || "?"}{myEmployee.lastName?.[0] || ""}
           </div>
@@ -5830,17 +5905,26 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
             refetchEmployees?.();
           } catch (e: any) { toast("Failed to save — " + (e?.message || "try again"), "red"); }
         };
+        // BUG FIX — "the top banner for an active shift should show the job,
+        // or at least let you click the banner to go to the job you're in."
+        // This bar showed "Shift Active" + a timer only, with no reference
+        // to which job the clock is actually running against, and no way to
+        // jump to it short of hunting through the job list.
+        const activeJobForBar = activeClockJob;
         return (
           <>
-            <div className={"flex items-center justify-between px-4 py-1.5 border-b text-xs font-semibold " + (onLunch ? "bg-yellow-950/40 border-yellow-800/30 text-yellow-400" : "bg-green-950/30 border-green-800/20 text-green-400")}>
-              <span className="flex items-center gap-1.5">
-                <span className="relative flex h-2 w-2">
+            <div
+              onClick={activeJobForBar ? () => setSelectedJobId(activeJobForBar.id) : undefined}
+              className={"flex items-center justify-between px-4 py-1.5 border-b text-xs font-semibold " + (activeJobForBar ? "cursor-pointer " : "") + (onLunch ? "bg-yellow-950/40 border-yellow-800/30 text-yellow-400" : "bg-green-950/30 border-green-800/20 text-green-400")}>
+              <span className="flex items-center gap-1.5 min-w-0">
+                <span className="relative flex h-2 w-2 flex-shrink-0">
                   <span className={"absolute inline-flex h-full w-full rounded-full opacity-75 animate-ping " + (onLunch ? "bg-yellow-400" : "bg-green-400")} />
                   <span className={"relative inline-flex rounded-full h-2 w-2 " + (onLunch ? "bg-yellow-400" : "bg-green-400")} />
                 </span>
-                {onLunch ? "On Lunch / Paused" : "Shift Active"}
+                <span className="flex-shrink-0">{onLunch ? "On Lunch / Paused" : "Shift Active"}</span>
+                {activeJobForBar && <span className="truncate opacity-70 font-normal">· {activeJobForBar.address}</span>}
               </span>
-              <div className="flex items-center gap-3">
+              <div className="flex items-center gap-3" onClick={e => e.stopPropagation()}>
                 <button onClick={headerToggleLocation} disabled={locationPermissionPending}
                   className={"flex items-center gap-1 px-2 py-0.5 rounded-lg border transition disabled:opacity-50 " + (locationSharing ? "bg-blue-900/40 border-blue-600/40 text-blue-300" : "bg-white/5 border-white/10 text-white/40 hover:text-white/70")}>
                   {locationPermissionPending

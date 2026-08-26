@@ -76,6 +76,7 @@ import { AIModelsSection } from "../ui/AIModelsSection";
 import { ChemicalModal } from "../ui/ChemicalModal";
 import { WeeklyBusinessReview } from "../ui/WeeklyBusinessReview";
 import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
+import { ImportDataModal } from "../ui/ImportDataModal";
 
 export function PersonalBudgetPage({ toast }) {
   const [transactions, setTransactions] = usePersistent("smocks.personal.transactions", []);
@@ -111,6 +112,32 @@ export function PersonalBudgetPage({ toast }) {
 
   const totalBudgeted = Object.values(budgets).reduce((s, v) => s + Number(v), 0);
 
+  // FEATURE — "import personal expenses with a Google Sheet link." Same
+  // shared ImportDataModal CustomersPage/ExpensesPage already use for
+  // Google Sheets links (and pasted/CSV text), mapped onto a personal
+  // transaction instead of a business Expense.
+  const [personalImportOpen, setPersonalImportOpen] = useState(false);
+  const personalImportFieldMap = {
+    date: ["date", "transaction date", "expense date"],
+    description: ["description", "memo", "details", "item"],
+    amount: ["amount", "cost", "total", "price"],
+    category: ["category", "type", "expense category"],
+  };
+  const handlePersonalImport = (rows: Record<string, string>[]) => {
+    const imported = rows.map(raw => ({
+      id: uid(),
+      date: raw.date || today(),
+      description: raw.description || "Imported transaction",
+      amount: Math.abs(Number((raw.amount || "").replace(/[^0-9.-]/g, "")) || 0),
+      category: raw.category || "Other",
+      type: "expense" as const,
+      account: "Checking",
+    })).filter(t => t.amount > 0);
+    if (imported.length === 0) { toast("No valid rows found — need at least an Amount column", "red"); return; }
+    setTransactions((prev: any[]) => [...imported, ...prev]);
+    toast(`✅ Imported ${imported.length} transaction(s)`, "green");
+  };
+
   const exportPersonalPDF = () => {
     const rows = tfTx.map(t => `<tr><td>${t.date}</td><td>${t.category}</td><td>${t.description}</td><td>${t.account}</td><td class="${t.type === "income" ? "inc" : "exp"}">${t.type === "income" ? "+" : "−"}$${Number(t.amount).toFixed(2)}</td></tr>`).join("");
     const html = `<!DOCTYPE html><html><head><title>Personal Budget</title><style>body{font-family:Arial,sans-serif;padding:32px;max-width:800px;margin:auto}h1{color:#333}table{width:100%;border-collapse:collapse;font-size:12px}th{background:#f0f0f0;padding:8px;text-align:left;border-bottom:2px solid #ccc;text-transform:uppercase;font-size:10px}td{padding:7px;border-bottom:1px solid #eee}.inc{color:green;font-weight:bold}.exp{color:#dc2626;font-weight:bold}.sum{margin:16px 0;padding:12px;background:#f9f9f9;border-radius:8px;display:flex;gap:32px}.sk{font-size:11px;color:#666}.sv{font-size:18px;font-weight:bold}</style></head><body><h1>Personal Budget</h1><p style="color:#666">${TIMEFRAMES.find(t => t.key === timeframe)?.label || "All"} · ${today()}</p><div class="sum"><div><div class="sk">Income</div><div class="sv" style="color:green">$${income.toFixed(2)}</div></div><div><div class="sk">Spent</div><div class="sv" style="color:#dc2626">$${spent.toFixed(2)}</div></div><div><div class="sk">Net</div><div class="sv" style="color:${net>=0?"green":"#dc2626"}">${net>=0?"+":"−"}$${Math.abs(net).toFixed(2)}</div></div></div><table><thead><tr><th>Date</th><th>Category</th><th>Description</th><th>Account</th><th>Amount</th></tr></thead><tbody>${rows}</tbody></table><script>window.onload=()=>setTimeout(window.print,300)</script></body></html>`;
@@ -127,10 +154,12 @@ export function PersonalBudgetPage({ toast }) {
         </div>
         <div className="flex items-center gap-2">
           <TimeframeSelector value={timeframe} onChange={setTimeframe} options={["7d","30d","90d","6m","1y","all"]} compact />
+          <GBtn variant="ghost" onClick={() => setPersonalImportOpen(true)} className="!text-xs"><Download size={12} className="inline mr-1 rotate-180" />Import</GBtn>
           <GBtn variant="ghost" onClick={exportPersonalPDF} className="!text-xs"><Download size={12} className="inline mr-1" />PDF</GBtn>
           <GBtn onClick={() => setModal(true)} className="!text-xs"><Plus size={12} className="inline mr-1" />Add</GBtn>
         </div>
       </div>
+      <ImportDataModal open={personalImportOpen} onClose={() => setPersonalImportOpen(false)} title="Import Personal Transactions" fieldMap={personalImportFieldMap} onImport={handlePersonalImport} toast={toast} />
 
       {/* KPIs */}
       <div className="grid grid-cols-3 gap-3">

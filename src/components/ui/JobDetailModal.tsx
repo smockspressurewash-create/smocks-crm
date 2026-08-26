@@ -67,11 +67,15 @@ const POST_DEFAULTS: JobChecklistItem[] = [
   { id: "post4", label: "Take after photos", done: false },
 ];
 
-function ChecklistSection({ jobId, title, emoji, items, onUpdate }: {
+function ChecklistSection({ jobId, title, emoji, items, onUpdate, crewOptions = [] }: {
   jobId: string;
   title: string; emoji: string;
   items: JobChecklistItem[];
   onUpdate: (items: JobChecklistItem[]) => void;
+  // FEATURE — "assign specific checklist items to specific employees."
+  // The crew currently assigned to this job, so the owner can pick who a
+  // given item belongs to. Empty when the job has no crew yet.
+  crewOptions?: { id: string; name: string }[];
 }) {
   const [expanded, setExpanded] = useState<string | null>(null);
   const done = items.filter(i => i.done).length;
@@ -81,6 +85,8 @@ function ChecklistSection({ jobId, title, emoji, items, onUpdate }: {
     onUpdate(items.map(it => it.id === id ? { ...it, done: !it.done } : it));
   const updateNotes = (id: string, notes: string) =>
     onUpdate(items.map(it => it.id === id ? { ...it, notes } : it));
+  const updateAssignee = (id: string, assignedTo: string) =>
+    onUpdate(items.map(it => it.id === id ? { ...it, assignedTo: assignedTo || undefined } : it));
   const addPhoto = async (id: string, dataUrl: string) => {
     const mediaId = uid();
     const url = await uploadJobMedia(dataUrlToBlob(dataUrl), `${jobId}/checklist-${id}-${mediaId}.jpg`, "image/jpeg");
@@ -109,6 +115,11 @@ function ChecklistSection({ jobId, title, emoji, items, onUpdate }: {
               <span className={"text-xs flex-1 " + (item.done ? "line-through text-white/30" : "text-white/80")}>
                 {item.label}
               </span>
+              {item.assignedTo && (
+                <span className="text-[9px] text-purple-300/80 bg-purple-950/40 border border-purple-700/30 rounded-full px-1.5 py-0.5 flex-shrink-0">
+                  {crewOptions.find(c => c.id === item.assignedTo)?.name || "assigned"}
+                </span>
+              )}
               {(item.photos || []).length > 0 && (
                 <span className="text-[9px] text-blue-400/70">📷{item.photos!.length}</span>
               )}
@@ -119,6 +130,16 @@ function ChecklistSection({ jobId, title, emoji, items, onUpdate }: {
             </div>
             {expanded === item.id && (
               <div className="pl-6 pr-2 pb-2 space-y-2">
+                {/* FEATURE — "assign specific checklist items to specific
+                    employees." Left blank ("Anyone on crew"), any assigned
+                    crew member can check it; picking a name restricts it to
+                    them (see PortalChecklistSection's matching enforcement). */}
+                {crewOptions.length > 0 && (
+                  <GSel value={item.assignedTo || ""} onChange={(e: any) => updateAssignee(item.id, e.target.value)} className="!text-xs">
+                    <option value="" className="bg-black">Anyone on crew</option>
+                    {crewOptions.map(c => <option key={c.id} value={c.id} className="bg-black">{c.name}</option>)}
+                  </GSel>
+                )}
                 <GTxt rows={1} value={item.notes || ""} onChange={e => updateNotes(item.id, e.target.value)}
                   placeholder="Add notes..." className="!text-xs" />
                 {(item.photos || []).length > 0 && (
@@ -995,6 +1016,17 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
   const updateChecklist = (field: "preChecklist" | "duringChecklist" | "postChecklist", items: JobChecklistItem[]) =>
     updateJob(jobId, { [field]: items });
 
+  // FEATURE — "assign specific checklist items to specific employees."
+  // The crew currently on this job, resolved to real names, for the
+  // per-item assignee picker in ChecklistSection above.
+  const checklistCrewOptions = (Array.isArray(job.crew) ? job.crew : [])
+    .map((c: any) => {
+      const id = typeof c === "string" ? c : (c?.id ?? c?.employeeId ?? c?.employee_id ?? c?.user_id ?? "");
+      const emp = employees.find((e: any) => e.id === id || e.user_id === id);
+      return emp ? { id: emp.id, name: `${emp.firstName} ${emp.lastName}`.trim() } : null;
+    })
+    .filter(Boolean) as { id: string; name: string }[];
+
   const openSignOff = () => {
     setSignerName(job.signOff?.signerName || "");
     setShowSignOff(true);
@@ -1641,6 +1673,7 @@ ${job.notes ? `<div class="section"><h2>Job Notes</h2><p>${job.notes}</p></div>`
           emoji="🔵"
           items={job.preChecklist?.length ? job.preChecklist : PRE_DEFAULTS}
           onUpdate={items => updateChecklist("preChecklist", items)}
+          crewOptions={checklistCrewOptions}
         />
 
         {/* During Job Checklist */}
@@ -1650,6 +1683,7 @@ ${job.notes ? `<div class="section"><h2>Job Notes</h2><p>${job.notes}</p></div>`
           emoji="🟡"
           items={job.duringChecklist?.length ? job.duringChecklist : DURING_DEFAULTS}
           onUpdate={items => updateChecklist("duringChecklist", items)}
+          crewOptions={checklistCrewOptions}
         />
 
         {/* Post-Job Checklist */}
@@ -1659,6 +1693,7 @@ ${job.notes ? `<div class="section"><h2>Job Notes</h2><p>${job.notes}</p></div>`
           emoji="🟢"
           items={job.postChecklist?.length ? job.postChecklist : POST_DEFAULTS}
           onUpdate={items => updateChecklist("postChecklist", items)}
+          crewOptions={checklistCrewOptions}
         />
 
         {/* Photos (Before / After) */}

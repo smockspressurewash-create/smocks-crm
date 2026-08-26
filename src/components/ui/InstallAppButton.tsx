@@ -87,10 +87,15 @@ export function InstallAppButton({ className = "", label = "Install App", labelC
       <button
         onClick={install}
         disabled={installing}
-        className={"flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-red-900/30 border border-red-700/40 text-red-300 hover:bg-red-900/50 text-xs font-semibold transition disabled:opacity-50 " + className}
+        className={"flex items-center justify-center " + (label ? "gap-1.5 px-3 py-1.5" : "") + " rounded-xl bg-red-900/30 border border-red-700/40 text-red-300 hover:bg-red-900/50 text-xs font-semibold transition disabled:opacity-50 " + className}
       >
         <Download size={13} className="flex-shrink-0" />
-        <span className={labelClassName}>{installing ? "Installing…" : label}</span>
+        {/* BUG FIX — "the download button icon isn't centered." An empty
+            label still rendered an empty <span>, which (with gap-1.5 still
+            applied) reserved phantom width next to the icon and pushed it
+            off-center inside the icon-only header button. Only render the
+            label element — and its gap — when there's an actual label. */}
+        {label && <span className={labelClassName}>{installing ? "Installing…" : label}</span>}
       </button>
 
       {/* BUG FIX — "the download button does not fit in the middle of the

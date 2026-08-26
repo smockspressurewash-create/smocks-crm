@@ -576,8 +576,16 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
         return json(session);
       }
       case "create_customer": {
-        if (!body.email) throw new Error("Missing email");
-        const customer = await stripeFetch(secretKey, "POST", "customers", { email: body.email, name: body.name || "" }, stripeAccount);
+        // BUG FIX — "I press Add Card and it just says missing email." Not
+        // every customer record has an email on file (phone-only customers
+        // are common for a pressure-washing business), but a Stripe Customer
+        // doesn't actually require one — only this endpoint's own hard check
+        // did. Require AT LEAST a name or email (Stripe needs something to
+        // identify the customer by), never email specifically.
+        if (!body.email && !body.name) throw new Error("Missing customer name or email");
+        const params: Record<string, string> = { name: body.name || "" };
+        if (body.email) params.email = body.email;
+        const customer = await stripeFetch(secretKey, "POST", "customers", params, stripeAccount);
         return json({ id: customer.id, email: customer.email, name: customer.name });
       }
       case "create_setup_intent": {

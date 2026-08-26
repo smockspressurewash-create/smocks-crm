@@ -65,7 +65,7 @@ import { HiringPage } from "./components/pages/HiringPage";
 import { TermsPage, PrivacyPolicyPage } from "./components/pages/LegalPages";
 import { LandingPage } from "./components/pages/LandingPage";
 import { InstallAppButton } from "./components/ui/InstallAppButton";
-import { PushNotificationButton } from "./components/ui/PushNotificationButton";
+import { PushOptInPrompt } from "./components/ui/PushOptInPrompt";
 import { FeaturesPage } from "./components/pages/FeaturesPage";
 import { PricingPage } from "./components/pages/PricingPage";
 import { AboutPage } from "./components/pages/AboutPage";
@@ -1766,7 +1766,15 @@ export function App() {
           const scheduledMs = new Date(`${j.scheduledDate}T${j.scheduledTime}:00`).getTime();
           if (!Number.isNaN(scheduledMs)) {
             const diffMin = Math.round((cur.arrivedAt - scheduledMs) / 60000);
-            timingLabel = diffMin > 10 ? ` (${diffMin}m late)` : diffMin < -5 ? " (early)" : " (on time)";
+            // BUG FIX — "if I'm an hour and a minute late, it should show an
+            // hour and a minute late," not a raw "61m late." Format past 60
+            // minutes as hours + minutes instead of one long minute count.
+            const fmtLateness = (mins: number) => {
+              const h = Math.floor(mins / 60), m = mins % 60;
+              if (h <= 0) return `${m}m`;
+              return m > 0 ? `${h}h ${m}m` : `${h}h`;
+            };
+            timingLabel = diffMin > 10 ? ` (${fmtLateness(diffMin)} late)` : diffMin < -5 ? " (early)" : " (on time)";
           }
         }
         const text = `📍 ${crewLabel} arrived at ${who}${timingLabel}`;
@@ -4094,7 +4102,6 @@ export function App() {
               that's too wide here doesn't just look cramped, it can shove
               later items past the visible edge entirely. */}
           <InstallAppButton className="!flex flex-shrink-0 !px-2 sm:!px-3" label="Install App" labelClassName="hidden sm:inline" />
-          {crmUserId && <PushNotificationButton ownerId={crmUserId} className="!flex flex-shrink-0 !px-2 sm:!px-3" label="Notify Me" labelClassName="hidden sm:inline" />}
           {/* Notifications */}
           <div className="relative">
           <button onClick={() => setNotifOpen(!notifOpen)} className="relative p-2 text-white/60 hover:text-white">
@@ -4765,6 +4772,9 @@ export function App() {
           </div>
         ))}
       </div>
+      {/* BUG FIX — replaces the old always-visible header "Notify Me" toggle
+          with a one-time opt-in pop-up (see PushOptInPrompt.tsx). */}
+      {hasCrmSession && crmUserId && <PushOptInPrompt ownerId={crmUserId} />}
     </div>
   );
 }

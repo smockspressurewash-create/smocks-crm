@@ -55,10 +55,13 @@ export function PushNotificationButton({
       <button
         onClick={toggle}
         disabled={busy}
-        className={"flex items-center gap-1.5 px-3 py-1.5 rounded-xl border text-xs font-semibold transition disabled:opacity-50 " + (subscribed ? "bg-green-900/30 border-green-700/40 text-green-300 hover:bg-green-900/50" : "bg-red-900/30 border-red-700/40 text-red-300 hover:bg-red-900/50") + " " + className}
+        className={"flex items-center justify-center " + (label ? "gap-1.5 px-3 py-1.5" : "") + " rounded-xl border text-xs font-semibold transition disabled:opacity-50 " + (subscribed ? "bg-green-900/30 border-green-700/40 text-green-300 hover:bg-green-900/50" : "bg-red-900/30 border-red-700/40 text-red-300 hover:bg-red-900/50") + " " + className}
       >
         {subscribed ? <BellRing size={13} className="flex-shrink-0" /> : <Bell size={13} className="flex-shrink-0" />}
-        <span className={labelClassName}>{busy ? "…" : subscribed ? "Notifications On" : label}</span>
+        {/* BUG FIX — same phantom-gap centering issue as InstallAppButton:
+            an empty label still rendered an empty, gapped <span>, pushing
+            the icon off-center in the icon-only header button. */}
+        {label && <span className={labelClassName}>{busy ? "…" : subscribed ? "Notifications On" : label}</span>}
       </button>
 
       {helpModal && createPortal(

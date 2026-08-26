@@ -849,13 +849,19 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
                   which processor is chosen. */}
               {(() => {
                 // FEATURE — "if I have Stripe and Square connected, I can
-                // select which one to use." Owner's Settings preference
-                // (defaults to "both" — nothing changes for an owner who's
-                // never touched it) narrows which button(s) actually render
-                // here, without touching either processor's own connection.
-                const providerPref = (settings as any)?.paymentProviderPreference || "both";
-                const stripeConfigured = !!settings?.stripePublishableKey && providerPref !== "square";
-                const squareConfigured = !!squareConfig?.connected && providerPref !== "stripe";
+                // select which one to use." BUG FIX — "Show Both" was
+                // removed from Settings (a customer choosing between two
+                // checkout buttons was the actual complaint) — exactly one
+                // processor is always shown now. A raw "both" preference
+                // saved from before this fix, or no preference at all,
+                // resolves to Stripe when it's connected, else Square —
+                // never both buttons at once.
+                const rawProviderPref = (settings as any)?.paymentProviderPreference;
+                const providerPref = (rawProviderPref === "stripe" || rawProviderPref === "square")
+                  ? rawProviderPref
+                  : (settings?.stripePublishableKey ? "stripe" : "square");
+                const stripeConfigured = !!settings?.stripePublishableKey && providerPref === "stripe";
+                const squareConfigured = !!squareConfig?.connected && providerPref === "square";
                 const lockAndOpenPayment = async (provider: "stripe" | "square") => {
                   if (String(e.id).startsWith("demo-")) { window.alert("This is a preview — no real payment is processed here."); return; }
                   // BUG FIX — "payment security in general, not just

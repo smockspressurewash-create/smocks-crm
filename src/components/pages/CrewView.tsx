@@ -550,7 +550,17 @@ export function CrewView({ jobs = [], setJobs, customers = [], employees = [], t
 
             {/* Mark complete - always show if not done */}
             {j.status !== "completed" && (
-              <button onClick={() => { if (j.clockInAt) clockOut(j); updateJob(j.id, { status: "completed" }); toast("✅ Job complete!"); }} className={"mt-3 w-full py-3 rounded-xl font-bold text-sm flex items-center justify-center gap-2 active:scale-95 transition " + (pct === 100 ? "bg-green-700 hover:bg-green-600 text-white" : "bg-green-950/50 border-2 border-green-700/50 text-green-300 hover:bg-green-900/40")}>
+              // BUG FIX — "I checked off a couple things and it told the
+              // owner the job got completed even though it wasn't." This
+              // button always fully completed the job on tap regardless of
+              // checklist %, even though its own label ("Mark Complete (40%
+              // checked)") implied it was just saving progress. Now it only
+              // completes outright at 100%; below that it asks for an
+              // explicit confirmation naming the real percentage first.
+              <button onClick={() => {
+                if (pct < 100 && !window.confirm(`Only ${pct}% of the checklist is checked off. Mark this job complete anyway?`)) return;
+                if (j.clockInAt) clockOut(j); updateJob(j.id, { status: "completed" }); toast("✅ Job complete!");
+              }} className={"mt-3 w-full py-3 rounded-xl font-bold text-sm flex items-center justify-center gap-2 active:scale-95 transition " + (pct === 100 ? "bg-green-700 hover:bg-green-600 text-white" : "bg-green-950/50 border-2 border-green-700/50 text-green-300 hover:bg-green-900/40")}>
                 <CheckCircle size={16} />{pct === 100 ? "Mark Job Complete ✓" : "Mark Complete (" + pct + "% checked)"}
               </button>
             )}

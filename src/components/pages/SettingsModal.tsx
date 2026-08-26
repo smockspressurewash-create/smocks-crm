@@ -1710,21 +1710,22 @@ export function SettingsModal({ open, onClose, settings, setSettings, jobs = [],
               </div>
             </Glass>
 
-            {/* FEATURE — "owners can use both Square and Stripe... both
-                should work" AND (later) "if I have Stripe and Square
-                connected, I can select which one to use." Both processors
-                stay fully connected/functional regardless of this choice —
-                paymentProviderPreference only controls what a CUSTOMER sees
-                on the Pay button: both options, or a specific one the owner
-                picked. Defaults to "both" (nothing changes for an owner who
-                never touches this). */}
+            {/* FEATURE — "if I have Stripe and Square connected, I can select
+                which one to use." Both processors stay fully connected here
+                in Settings regardless of this choice — it only controls
+                which single button a CUSTOMER sees on a quote/invoice.
+                BUG FIX — "Show Both" is gone: a customer picking between two
+                checkout buttons is a real point of confusion (which one did
+                they already try, which one bounced), and the explicit ask
+                was "you should not have the option to do both." Exactly one
+                is always in effect now; unset defaults to whichever
+                processor is actually connected (Stripe, if both are). */}
             {(stripeStatus?.connected || stripeStatus?.hasSecretKey) && squareStatus?.connected && (
               <Glass className="p-4 !bg-black/30">
                 <div className="font-semibold text-sm mb-1 flex items-center gap-1.5"><CheckCircle size={13} className="text-green-400" />Both processors connected</div>
-                <div className="text-xs text-white/50 mb-3">Choose what customers see on a quote/invoice — both options, or just one. Either way, both stay fully connected here in Settings.</div>
-                <div className="grid grid-cols-3 gap-2">
-                  <button type="button" onClick={() => setF({ ...f, paymentProviderPreference: "both" })} className={"py-2 rounded-xl text-xs font-semibold border transition " + ((f.paymentProviderPreference || "both") === "both" ? "bg-green-900/30 border-green-600/50 text-green-300" : "bg-white/5 border-white/10 text-white/50")}>Show Both</button>
-                  <button type="button" onClick={() => setF({ ...f, paymentProviderPreference: "stripe" })} className={"py-2 rounded-xl text-xs font-semibold border transition " + (f.paymentProviderPreference === "stripe" ? "bg-purple-900/30 border-purple-600/50 text-purple-300" : "bg-white/5 border-white/10 text-white/50")}>Stripe Only</button>
+                <div className="text-xs text-white/50 mb-3">Choose which one customers pay with. Both stay fully connected here in Settings either way — this only picks the checkout button they see.</div>
+                <div className="grid grid-cols-2 gap-2">
+                  <button type="button" onClick={() => setF({ ...f, paymentProviderPreference: "stripe" })} className={"py-2 rounded-xl text-xs font-semibold border transition " + ((f.paymentProviderPreference || "stripe") === "stripe" ? "bg-purple-900/30 border-purple-600/50 text-purple-300" : "bg-white/5 border-white/10 text-white/50")}>Stripe Only</button>
                   <button type="button" onClick={() => setF({ ...f, paymentProviderPreference: "square" })} className={"py-2 rounded-xl text-xs font-semibold border transition " + (f.paymentProviderPreference === "square" ? "bg-blue-900/30 border-blue-600/50 text-blue-300" : "bg-white/5 border-white/10 text-white/50")}>Square Only</button>
                 </div>
               </Glass>
