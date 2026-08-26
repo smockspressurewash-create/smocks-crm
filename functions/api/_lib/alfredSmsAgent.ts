@@ -199,6 +199,9 @@ type Ctx = {
   googleTokenExpiresAt?: number;
   // Owner's own email — where send_me_files (via:"email") delivers to.
   myEmail?: string;
+  // Owner-controlled Alfred capability gates (Settings → Alfred →
+  // Capabilities) — same map/enforcement as the in-app chat.
+  alfredCapabilities?: Record<string, boolean>;
   // Same Testing Mode gate lib/messaging.ts's twilioSend already enforces
   // client-side (settings.testModeEnabled) — this file sends via raw fetch
   // (it runs server-side, not through that wrapper), so bulk sends need
@@ -981,8 +984,24 @@ const fetchGoogleEventsInRange = async (accessToken: string, startIso: string, e
   }));
 };
 
+// FEATURE — same capability gate as AlfredPage.tsx's in-app chat (Settings
+// → Alfred → Capabilities), enforced here too so text-Alfred honors the
+// exact same owner choices instead of being a back door around them.
+const SMS_TOOL_CAPABILITY: Record<string, string> = {
+  create_customer: "customers", attach_file_to_customer: "customers",
+  schedule_job: "jobs", reschedule_job: "jobs", cancel_job: "jobs", add_checklist_item: "jobs", assign_employee: "jobs", update_job_priority: "jobs", respond_to_job_request: "jobs", approve_customer_request: "jobs", decline_customer_request: "jobs",
+  create_estimate: "estimates", send_estimate: "estimates", send_invoice: "estimates",
+  notify_all_customers: "messaging", text_customer: "messaging", text_phone_number: "messaging", text_supplier: "messaging", email_supplier: "messaging", text_me_document: "messaging", send_me_files: "messaging",
+  create_promotion: "automations", enable_review_request_automation: "automations", create_sop: "automations",
+  create_calendar_event: "calendar", update_calendar_event: "calendar", delete_calendar_event: "calendar",
+};
+
 const executeTool = async (ctx: Ctx, name: string, input: Record<string, any>): Promise<any> => {
   try {
+    const __cap = SMS_TOOL_CAPABILITY[name];
+    if (__cap && ctx.alfredCapabilities?.[__cap] === false) {
+      return { error: `The owner has turned off Alfred's "${__cap}" capability in Settings → Alfred → Capabilities — this action can't be performed until they turn it back on.` };
+    }
     switch (name) {
       case "get_business_stats": {
         const [jobs, estimates] = await Promise.all([

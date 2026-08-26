@@ -1068,12 +1068,35 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
   // remembering to log itself. Logs name + inputs before dispatch, then the
   // real outcome (the tool's actual return value, which for write tools IS
   // the Supabase response or an error derived from it) after.
+  // FEATURE — "let owners checkmark what access and capabilities Alfred
+  // has — full access or select specific permissions." settings.
+  // alfredCapabilities gates the WRITE-ish/outbound tool groups (a read-only
+  // question like "what's on the calendar" or "remember this" always still
+  // works even with everything off — only actions that create/send/change
+  // something are gated). Defaults to true for every category so an
+  // existing owner's Alfred keeps behaving exactly as it always has until
+  // they explicitly turn something off in Settings → Alfred → Capabilities.
+  const ALFRED_TOOL_CAPABILITY: Record<string, string> = {
+    create_customer: "customers", attach_file_to_customer: "customers",
+    schedule_job: "jobs", reschedule_job: "jobs", cancel_job: "jobs", add_checklist_item: "jobs", assign_employee: "jobs", request_employee: "jobs", update_job_priority: "jobs",
+    create_estimate: "estimates", send_estimate: "estimates", create_invoice: "estimates",
+    send_reminder: "messaging", text_phone_number: "messaging", notify_all_customers: "messaging", text_supplier: "messaging", email_supplier: "messaging", send_email_via_gmail: "messaging", text_me_document: "messaging", send_me_files: "messaging",
+    create_automation: "automations", toggle_automation: "automations", enable_review_request_automation: "automations", create_sop: "automations",
+    create_calendar_event: "calendar", update_calendar_event: "calendar", delete_calendar_event: "calendar", create_google_task: "calendar", upload_to_drive: "calendar",
+  };
+  const alfredCapabilities = { customers: true, jobs: true, estimates: true, messaging: true, automations: true, calendar: true, ...((settings as any)?.alfredCapabilities || {}) };
+
   const executeTool = async (name, inputs) => {
     const __t0 = Date.now();
     console.log("[AlfredTool] → call:", name, "input:", inputs);
     let __result;
     try {
-      __result = await executeToolCore(name, inputs);
+      const cap = ALFRED_TOOL_CAPABILITY[name];
+      if (cap && alfredCapabilities[cap] === false) {
+        __result = { error: `The owner has turned off Alfred's "${cap}" capability in Settings → Alfred → Capabilities — this action can't be performed until they turn it back on.` };
+      } else {
+        __result = await executeToolCore(name, inputs);
+      }
     } catch (err: any) {
       __result = { error: err?.message || String(err) };
     }

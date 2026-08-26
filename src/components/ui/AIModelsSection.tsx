@@ -243,6 +243,49 @@ export function AIModelsSection({ f, setF, modelStatus, setModelStatus, employee
         </div>
       </Glass>
 
+      {/* FEATURE — "let owners checkmark what access and capabilities
+          Alfred has — full access or select specific permissions, and make
+          sure all those options are fully functional." Gates the real
+          write/outbound tool groups in AlfredPage.tsx's executeTool
+          wrapper (the single place every Alfred tool call — chat AND text/
+          SMS — funnels through), so this isn't just a UI toggle with no
+          effect behind it. Read-only questions (stats, calendar summary,
+          job lookups) always still work even with everything off — this
+          only gates actions that create, send, or change something. */}
+      <Glass className="p-4">
+        <div className="flex items-center justify-between mb-1">
+          <div className="font-semibold text-sm flex items-center gap-1.5"><Shield size={13} />Alfred Capabilities</div>
+          <div className="flex items-center gap-1.5">
+            <button onClick={() => setF({ ...f, alfredCapabilities: { customers: true, jobs: true, estimates: true, messaging: true, automations: true, calendar: true } })} className="text-[10px] text-blue-400 hover:text-blue-300">Full access</button>
+            <span className="text-white/20">·</span>
+            <button onClick={() => setF({ ...f, alfredCapabilities: { customers: false, jobs: false, estimates: false, messaging: false, automations: false, calendar: false } })} className="text-[10px] text-red-400 hover:text-red-300">Lock down</button>
+          </div>
+        </div>
+        <div className="text-[10px] text-white/40 mb-2">Control what Alfred is allowed to actually DO — questions and lookups always work; these only gate actions that create, send, or change something, everywhere Alfred runs (chat and text).</div>
+        <div className="grid grid-cols-2 gap-1.5">
+          {([
+            { key: "customers", label: "Add Customers", desc: "Create new customer records" },
+            { key: "jobs", label: "Jobs & Scheduling", desc: "Schedule, reschedule, cancel, assign crew" },
+            { key: "estimates", label: "Quotes & Invoices", desc: "Create and send estimates/invoices" },
+            { key: "messaging", label: "Messaging", desc: "Text/email customers and suppliers" },
+            { key: "automations", label: "Automations & SOPs", desc: "Create workflows and SOPs" },
+            { key: "calendar", label: "Calendar & Files", desc: "Google Calendar events, Drive uploads" },
+          ] as const).map(cap => {
+            const capabilities = { customers: true, jobs: true, estimates: true, messaging: true, automations: true, calendar: true, ...(f.alfredCapabilities || {}) };
+            const on = capabilities[cap.key] !== false;
+            return (
+              <label key={cap.key} className="flex items-start gap-2 p-2 rounded-lg bg-black/30 border border-white/5 cursor-pointer hover:border-white/15 transition">
+                <input type="checkbox" checked={on} onChange={e => setF({ ...f, alfredCapabilities: { ...capabilities, [cap.key]: e.target.checked } })} className="w-3.5 h-3.5 accent-red-600 mt-0.5 flex-shrink-0" />
+                <div className="min-w-0">
+                  <div className="text-xs text-white/80">{cap.label}</div>
+                  <div className="text-[9px] text-white/40">{cap.desc}</div>
+                </div>
+              </label>
+            );
+          })}
+        </div>
+      </Glass>
+
       {/* Active model picker */}
       <div>
         <label className="text-xs text-white/60 mb-2 block">Active model (first to try)</label>
