@@ -3482,7 +3482,16 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
                       const isActive = activeModel === m.id;
                       const locked = (modelStatus[m.id] as any)?.lockedUntil > Date.now();
                       const rem = locked ? (modelStatus[m.id] as any).lockedUntil - Date.now() : 0;
-                      return <button key={m.id} onClick={() => { if (hasKey) { setSettings(s => ({ ...s, activeModel: m.id })); setModelPickerOpen(false); } else { openSettings(); setModelPickerOpen(false); } }} className={"w-full px-3 py-2 flex items-center gap-2 text-xs hover:bg-white/5 border-b border-red-900/20 last:border-b-0 text-left " + (isActive ? "bg-red-950/30" : "")}>
+                      return <button key={m.id} onClick={() => {
+                        if (hasKey) {
+                          setSettings((s: any) => {
+                            const currentPriority: string[] = Array.isArray(s.modelPriority) ? s.modelPriority : Object.keys(MODELS);
+                            const nextPriority = [m.id, ...currentPriority.filter((k: string) => k !== m.id)];
+                            return { ...s, activeModel: m.id, modelPriority: nextPriority };
+                          });
+                          setModelPickerOpen(false);
+                        } else { openSettings(); setModelPickerOpen(false); }
+                      }} className={"w-full px-3 py-2 flex items-center gap-2 text-xs hover:bg-white/5 border-b border-red-900/20 last:border-b-0 text-left " + (isActive ? "bg-red-950/30" : "")}>
                         <div className={"w-2.5 h-2.5 rounded-full flex-shrink-0 bg-gradient-to-br " + m.color} />
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center gap-1.5">
