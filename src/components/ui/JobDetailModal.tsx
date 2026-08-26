@@ -418,7 +418,8 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
           employeeId: eid, ownerId, jobId, action: adding ? "upsert" : "delete",
           title: (customers.find(x => x.id === job.customerId)?.firstName ? customers.find(x => x.id === job.customerId).firstName + " " + customers.find(x => x.id === job.customerId).lastName + " — " : "") + "Pressure Washing",
           date: job.scheduledDate, time: job.scheduledTime, durationMinutes: (Number(job.duration) || 2) * 60,
-          location: job.address, notes: job.notes,
+          location: job.address,
+          notes: buildJobCalendarDescription(job, customers.find(x => x.id === job.customerId), `${window.location.origin}${window.location.pathname}#/portal?job=${encodeURIComponent(job.id)}`, "View job in Crew Portal"),
         }),
       }).catch(() => {});
       if (adding) {

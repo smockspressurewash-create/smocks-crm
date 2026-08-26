@@ -25,7 +25,7 @@ import { PushOptInPrompt } from "../ui/PushOptInPrompt";
 import { SopModal } from "../ui/SopModal";
 import { chargeSavedPaymentMethod, sendPaymentReceipt, listCustomerPaymentMethods } from "../../lib/stripe";
 import { BarChart, Bar, LineChart, Line, XAxis, YAxis, ResponsiveContainer, Tooltip, CartesianGrid } from "recharts";
-import { fmt, uid, today, localDateStr, localDateKey, shiftDayStr, daysFromNow, computeJobRatingScore, setOAuthIntent, compressImageFile, getEffectiveRate, computeNextRecurringDate, weekdayLabels, normalizeJobRow, totalJobPhotoCount, mediaSrc, dataUrlToBlob, uploadJobMedia, checkVideoLimits, stripLegacyJobFields, reconcileCrewAfterAssign, getPollIntervalMs, getPayPeriodBounds, haversineMiles, resolveTermsForJobType } from "../../lib/utils";
+import { fmt, uid, today, localDateStr, localDateKey, shiftDayStr, daysFromNow, computeJobRatingScore, setOAuthIntent, compressImageFile, getEffectiveRate, computeNextRecurringDate, weekdayLabels, normalizeJobRow, totalJobPhotoCount, mediaSrc, dataUrlToBlob, uploadJobMedia, checkVideoLimits, stripLegacyJobFields, reconcileCrewAfterAssign, getPollIntervalMs, getPayPeriodBounds, haversineMiles, resolveTermsForJobType, buildJobCalendarDescription } from "../../lib/utils";
 import { callModel, MODELS } from "../../lib/api";
 import { usePollGate } from "../../hooks/usePollGate";
 import { usePersistent } from "../../hooks/usePersistent";
@@ -4584,15 +4584,23 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
       const endDt = new Date(startDt.getTime() + (Number(job.duration) || 2) * 3600000);
       const cust = customers.find(c => c.id === job.customerId);
       const custName = cust ? `${cust.firstName} ${cust.lastName}` : "Customer";
-      const checklistSummary = [...(job.preChecklist || []), ...(job.duringChecklist || [])]
-        .map(i => i.label).join(", ");
+      // BUG FIX — "when it adds Google jobs to calendars, it should include
+      // a clickable link and URL to view the job in the employee portal, as
+      // well as the client name and other details." This description was
+      // just a bare comma-joined checklist item list — no link, no client
+      // name/phone, nothing to actually act on from the calendar entry.
+      // Same buildJobCalendarDescription the owner's own sync already uses
+      // (AlfredPage.tsx/JobsPage.tsx), pointed at THIS employee's portal
+      // deep link instead of the owner's Jobs page.
+      const portalLink = `${window.location.origin}${window.location.pathname}#/portal?job=${encodeURIComponent(job.id)}`;
+      const description = buildJobCalendarDescription(job, cust, portalLink, "View job in Crew Portal");
       const title = `${opts.completed ? "✓ " : ""}CrewBoss Job: ${custName}${opts.completed ? " (Completed)" : ""}`;
       if (job.googleEventId) {
-        await updateGCalEvent(empToken!.token, job.googleEventId, { title, location: job.address, description: checklistSummary });
+        await updateGCalEvent(empToken!.token, job.googleEventId, { title, location: job.address, description });
         if (!opts.silent) toast("📅 Google Calendar event updated");
       } else {
         const evId = await createGCalEvent(empToken!.token, {
-          title, start: startDt.toISOString(), end: endDt.toISOString(), location: job.address, description: checklistSummary,
+          title, start: startDt.toISOString(), end: endDt.toISOString(), location: job.address, description,
         });
         setJobs(prev => prev.map(j => j.id === job.id ? { ...j, googleEventId: evId } : j));
         (supabase as any).from("jobs").update({ googleEventId: evId }).eq("id", job.id).catch(() => {});

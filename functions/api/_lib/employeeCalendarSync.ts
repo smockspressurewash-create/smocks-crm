@@ -40,16 +40,23 @@ export const syncEmployeeJobToCalendar = async (env: Record<string, string>, opt
   const authHeaders = { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}` };
 
   const ownerScope = opts.ownerId ? `&owner_id=eq.${encodeURIComponent(opts.ownerId)}` : "";
-  const empRes = await fetch(`${SUPABASE_URL}/rest/v1/employees?id=eq.${encodeURIComponent(opts.employeeId)}&select=google_token,google_refresh_token,google_token_expires_at,autosynccalendar${ownerScope}`, { headers: authHeaders });
+  const empRes = await fetch(`${SUPABASE_URL}/rest/v1/employees?id=eq.${encodeURIComponent(opts.employeeId)}&select=google_token,google_refresh_token,google_token_expires_at,autoSyncCalendar${ownerScope}`, { headers: authHeaders });
   const empRows = await empRes.json().catch(() => []);
   const emp = Array.isArray(empRows) ? empRows[0] : null;
   if (!emp) return { skipped: true, reason: "employee not found" };
   if (!emp.google_refresh_token && !emp.google_token) return { skipped: true, reason: "employee hasn't connected their Google account" };
-  // CLAUDE.md casing rule — this column was created unquoted so its real
-  // PostgREST name folded to lowercase (autosynccalendar), not
-  // autoSyncCalendar. Defaults to on, matching EmployeePortal.tsx's own
-  // "defaults to on for backward compatibility" convention.
-  if (emp.autosynccalendar === false) return { skipped: true, reason: "employee turned off calendar auto-sync in their portal" };
+  // BUG FIX — this used to read `autosynccalendar` (all-lowercase) on the
+  // theory that the real column had been created unquoted and folded to
+  // lowercase (CLAUDE.md's documented casing gotcha) — but that theory was
+  // never actually verified against the live schema. There are TWO real
+  // columns on this table: a stale `autosynccalendar` (lowercase, defaults
+  // false, never written by anything) and the real `"autoSyncCalendar"`
+  // (camelCase, properly quoted) that EmployeePortal.tsx's own toggle
+  // actually reads and writes. Checking the wrong one meant an employee who
+  // correctly turned sync ON in their portal (writing true to the real
+  // column) still got silently skipped here forever, because the OTHER,
+  // never-updated column still read false.
+  if (emp.autoSyncCalendar === false) return { skipped: true, reason: "employee turned off calendar auto-sync in their portal" };
 
   let accessToken = emp.google_token || "";
   if (emp.google_refresh_token && (!emp.google_token_expires_at || Date.now() > Number(emp.google_token_expires_at) - 60000)) {

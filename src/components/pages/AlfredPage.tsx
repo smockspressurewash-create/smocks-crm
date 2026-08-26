@@ -1735,7 +1735,13 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
                     employeeId: emp.id, ownerId, jobId: newJ.id, action: "upsert",
                     title: c.firstName + " " + c.lastName + " — Pressure Washing",
                     date: newJ.scheduledDate, time: newJ.scheduledTime, durationMinutes: (Number(newJ.duration) || 2) * 60,
-                    location: newJ.address, notes: newJ.notes,
+                    location: newJ.address,
+                    // BUG FIX — "should include a clickable link and URL to
+                    // view the job in the employee portal, as well as the
+                    // client name and other details." This just sent the
+                    // job's own free-text notes as the description before —
+                    // no link, no client info.
+                    notes: buildJobCalendarDescription(newJ, c, `${window.location.origin}${window.location.pathname}#/portal?job=${encodeURIComponent(newJ.id)}`, "View job in Crew Portal"),
                   }),
                 }).catch(() => {});
                 // BUG FIX — this inline assignment path (crew named directly
@@ -2161,7 +2167,8 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
               employeeId: emp.id, ownerId, jobId: j.id, action: "upsert",
               title: (() => { const c = customers.find(x => x.id === j.customerId); return (c ? c.firstName + " " + c.lastName + " — " : "") + "Pressure Washing"; })(),
               date: j.scheduledDate, time: j.scheduledTime, durationMinutes: (Number(j.duration) || 2) * 60,
-              location: j.address, notes: j.notes,
+              location: j.address,
+              notes: buildJobCalendarDescription(j, customers.find(x => x.id === j.customerId), `${window.location.origin}${window.location.pathname}#/portal?job=${encodeURIComponent(j.id)}`, "View job in Crew Portal"),
             }),
           }).catch(() => {});
           if (emp.email) {
