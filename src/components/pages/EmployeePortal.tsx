@@ -5609,22 +5609,12 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     <div className="h-dvh h-screen overflow-hidden bg-black text-white flex flex-col">
       {/* Header */}
       <header className="sticky top-0 z-20 bg-black/95 border-b border-red-900/30 px-4 py-3 flex items-center gap-3 flex-shrink-0">
-        {/* BRANDING FIX (reverted) — a previous round swapped this for the
-            owner's own business name/logo, on the theory that the crew's
-            day-to-day header should show their employer's brand. The owner
-            corrected that: this top-left badge is the CrewBoss PRODUCT
-            wordmark, same as the owner CRM's own sidebar logo (App.tsx —
-            "Crew" + red "Boss", font-extrabold), not the business's name —
-            the employee portal is still part of the CrewBoss product chrome,
-            just like the owner's own app shell. The business's own
-            logo/name still shows correctly everywhere it actually matters:
-            the login screen right below this, customer-facing pages, and
-            emails. */}
+        {/* BRANDING FIX (round 2) — the owner asked to remove the icon badge
+            entirely here, just the "CrewBoss" wordmark text, matching the
+            owner CRM sidebar's own logo exactly (App.tsx — plain text, no
+            icon at all). */}
         <div className="flex items-center gap-2 flex-1 min-w-0">
-          <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-red-600 to-red-900 flex items-center justify-center flex-shrink-0 shadow-lg shadow-red-900/40">
-            <CrewBossMark className="w-[18px] h-[18px]" />
-          </div>
-          <span className="font-extrabold text-base text-white tracking-tight truncate">Crew<span className="text-red-500">Boss</span></span>
+          <span className="font-extrabold text-lg text-white tracking-tight truncate">Crew<span className="text-red-500">Boss</span></span>
         </div>
         {/* Employee info + actions */}
         <div className="flex items-center gap-2.5">
