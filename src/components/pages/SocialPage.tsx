@@ -20,7 +20,7 @@ import {
   Tooltip, ResponsiveContainer, Area, AreaChart, LineChart, Line,
   ComposedChart, Legend
 } from "recharts";
-import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, uploadJobMedia } from "../../lib/utils";
+import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, uploadJobMedia, makeMediaThumbnail, deleteJobMediaByUrl } from "../../lib/utils";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
 import { twilioSend, sendEmail, postToBuffer, fetchBufferPostAnalytics } from "../../lib/messaging";
 import { postToFacebookPage } from "../../lib/socialOAuth";
@@ -359,6 +359,27 @@ export function SocialPage({ posts = [], setPosts, toast, settings = {} as AppSe
     return { method: "manual" };
   };
 
+  // FEATURE — "once published, don't keep full videos/photos in backend
+  // storage, just a small preview." Runs once a post is confirmed
+  // published: swaps its mediaUrl for a small generated thumbnail, deletes
+  // the original full-size Storage object, and marks mediaIsPreview so the
+  // Published tab renders it as a click-through to the live post instead
+  // of an inline player. Fire-and-forget — never blocks the publish flow
+  // or fails it if cleanup itself has a hiccup.
+  const cleanupPublishedMedia = async (postId: string, mediaUrl?: string, mediaType?: "image" | "video") => {
+    if (!mediaUrl || !mediaUrl.startsWith("http")) return; // nothing in Storage to clean up (no media, or already a data: URL)
+    try {
+      const thumbBlob = await makeMediaThumbnail(mediaUrl, mediaType || "image");
+      if (!thumbBlob) return;
+      const thumbUrl = await uploadJobMedia(thumbBlob, `social/thumbs/${uid()}.jpg`, "image/jpeg");
+      if (!thumbUrl) return;
+      await deleteJobMediaByUrl([mediaUrl]);
+      setPosts((prev: any[]) => prev.map(p => p.id === postId ? { ...p, mediaUrl: thumbUrl, mediaIsPreview: true } : p));
+    } catch (e: any) {
+      console.warn("[Social] published-media cleanup failed (non-fatal):", e?.message);
+    }
+  };
+
   // New Post now supports Publish Now (fires publishOnePlatform immediately)
   // and Schedule Post (real date + time, wired through as Buffer's dueAt when
   // a channel is connected) — and multi-selecting platforms fires the whole
@@ -392,6 +413,10 @@ export function SocialPage({ posts = [], setPosts, toast, settings = {} as AppSe
     }
     if (created.length > 0) {
       setPosts((prev: any[]) => [...created, ...prev]);
+      // Free up Storage for every post that just went live — not the
+      // scheduled ones, those haven't actually published their media
+      // anywhere yet.
+      created.filter(p => p.status === "published").forEach(p => cleanupPublishedMedia(p.id, p.mediaUrl, p.mediaType));
       toast(
         `${isSchedule ? "Scheduled" : "Published"} for ${created.length} platform${created.length > 1 ? "s" : ""} ✓`,
         anyFailed ? "yellow" : "green"
@@ -411,6 +436,7 @@ export function SocialPage({ posts = [], setPosts, toast, settings = {} as AppSe
     try {
       const result = await publishOnePlatform(post.platform, post.caption, undefined);
       setPosts((prev: any[]) => prev.map(p => p.id === id ? { ...p, status: "published", publishedAt: today(), bufferPostId: result.bufferPostId || p.bufferPostId, postMethod: result.method } : p));
+      cleanupPublishedMedia(id, post.mediaUrl, post.mediaType);
     } catch (e: any) {
       toast(e?.message || "Publish failed", "red");
     }
@@ -659,7 +685,29 @@ export function SocialPage({ posts = [], setPosts, toast, settings = {} as AppSe
                 <button onClick={() => del(p.id)} className="text-white/20 hover:text-red-400 transition"><X size={12} /></button>
               </div>
             </div>
-            {p.mediaUrl && (p.mediaType === "video"
+            {/* FEATURE — "once published, don't keep full videos/photos in
+                backend storage, just a preview — click it to go to the
+                live post." mediaIsPreview means the full media was already
+                deleted from Storage (see cleanupPublishedMedia above) and
+                mediaUrl is now a small generated thumbnail — render it as
+                a click-through, not an inline player, since there's
+                nothing left to actually play locally. */}
+            {p.mediaUrl && p.mediaIsPreview ? (
+              p.externalLink ? (
+                <a href={p.externalLink} target="_blank" rel="noopener noreferrer" className="relative block w-full h-40 rounded-xl mb-3 overflow-hidden group/thumb">
+                  <img src={p.mediaUrl} alt="" className="w-full h-full object-cover" />
+                  <div className="absolute inset-0 bg-black/0 group-hover/thumb:bg-black/40 transition flex items-center justify-center">
+                    <span className="opacity-0 group-hover/thumb:opacity-100 transition text-white text-xs font-semibold flex items-center gap-1"><ExternalLink size={12} />View live post</span>
+                  </div>
+                  {p.mediaType === "video" && <div className="absolute bottom-2 right-2 bg-black/60 rounded-full p-1"><Play size={12} className="text-white" /></div>}
+                </a>
+              ) : (
+                <div className="relative w-full h-40 rounded-xl mb-3 overflow-hidden">
+                  <img src={p.mediaUrl} alt="" className="w-full h-full object-cover" />
+                  {p.mediaType === "video" && <div className="absolute bottom-2 right-2 bg-black/60 rounded-full p-1"><Play size={12} className="text-white" /></div>}
+                </div>
+              )
+            ) : p.mediaUrl && (p.mediaType === "video"
               ? <video src={p.mediaUrl} className="w-full h-40 object-cover rounded-xl mb-3 bg-black" muted controls />
               : <img src={p.mediaUrl} alt="" className="w-full h-40 object-cover rounded-xl mb-3" />)}
             <div className="text-sm text-white/70 line-clamp-3 mb-3">{p.caption}</div>

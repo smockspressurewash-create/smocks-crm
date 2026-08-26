@@ -1,14 +1,14 @@
 // FEATURE — "there's a video editor, CapCut style, inside the social
-// section... auto-cutting and trimming... make it so it's really good
-// caption templates." Everything in this file runs entirely in the
-// browser via ffmpeg.wasm (WebAssembly build of real FFmpeg) — no server,
-// no per-render API cost, genuinely free regardless of usage. The core/
-// wasm binaries are ~30MB, so they're loaded from a CDN at runtime (not
-// bundled into the app's own build) and cached by the browser after first
-// use, not shipped as part of the Vite bundle.
+// section... auto-cutting and trimming... transitions, animations to the
+// text, tech transition effects for in-between videos." Everything in this
+// file runs entirely in the browser via ffmpeg.wasm (WebAssembly build of
+// real FFmpeg) — no server, no per-render API cost, genuinely free
+// regardless of usage. The core/wasm binaries are ~30MB, so they're loaded
+// from a CDN at runtime (not bundled into the app's own build) and cached
+// by the browser after first use, not shipped as part of the Vite bundle.
 import { FFmpeg } from "@ffmpeg/ffmpeg";
 import { toBlobURL, fetchFile } from "@ffmpeg/util";
-import { getCaptionStyle, type CaptionStyle } from "./captionStyles";
+import { getCaptionStyle, getTransition, type CaptionStyle } from "./captionStyles";
 
 const CORE_VERSION = "0.12.6";
 const CORE_BASE = `https://unpkg.com/@ffmpeg/core@${CORE_VERSION}/dist/esm`;
@@ -50,7 +50,12 @@ const ensureFont = async (ff: FFmpeg, style: CaptionStyle): Promise<string> => {
   return fileName;
 };
 
-export type EditorClip = { id: string; file: File; startSec: number; endSec: number; durationSec: number };
+export type EditorClip = {
+  id: string; file: File; startSec: number; endSec: number; durationSec: number;
+  // Transition applied BETWEEN this clip and the next one (ignored on the
+  // last clip) — an id from captionStyles.ts's TRANSITION_EFFECTS.
+  transitionToNext?: string;
+};
 export type EditorCaption = { id: string; text: string; startSec: number; endSec: number; styleId: string };
 
 // Escapes text for safe embedding inside an ffmpeg filtergraph string —
@@ -101,12 +106,48 @@ export const readVideoDuration = (file: File): Promise<number> =>
 
 export type RenderProgress = (phase: string, pct: number) => void;
 
+// Builds the drawtext `enable`/alpha expression for a caption's entrance
+// animation. Preview (VideoEditorModal.tsx) shows a real CSS keyframe
+// equivalent for each of these ids — kept in sync by animation id so what
+// the owner sees while editing matches what actually gets burned in.
+const ANIM_FADE_SEC = 0.35;
+const animatedAlphaExpr = (animation: string, startSec: number, endSec: number): string => {
+  const s = startSec, e = endSec, f = ANIM_FADE_SEC;
+  switch (animation) {
+    case "fade":
+    case "pop":
+    case "bounce":
+      // Fade the alpha in/out over ANIM_FADE_SEC at each edge — drawtext's
+      // `alpha` expression is evaluated per-frame with `t` (seconds).
+      return `if(lt(t,${s + f}),(t-${s})/${f},if(gt(t,${e - f}),(${e}-t)/${f},1))`;
+    case "flicker":
+      // Fast random-ish on/off using a high-frequency sine — reads as a
+      // glitch/flicker rather than a smooth fade, matching the style's name.
+      return `if(between(t,${s},${e}),0.6+0.4*sin(t*40),0)`;
+    default:
+      return `between(t,${s},${e})`;
+  }
+};
+// Vertical offset expression for slide-up/shake animations — added on top
+// of the style's own base Y position.
+const animatedYOffset = (animation: string, startSec: number): string => {
+  switch (animation) {
+    case "slide-up": return `+max(0,(1-(t-${startSec})/${ANIM_FADE_SEC})*40)`;
+    case "shake": return `+4*sin((t-${startSec})*30)`;
+    case "bounce": return `+max(0,(1-(t-${startSec})/${ANIM_FADE_SEC})*(-14))`;
+    default: return "";
+  }
+};
+
 // The main export: trims each clip to its in/out points, normalizes them
 // to a shared resolution/framerate/codec (uploaded clips routinely come
-// from different phones at different resolutions — concat demuxer requires
-// matching streams or it silently produces a broken/black output), joins
-// them in order, then burns every caption on top with its own style,
-// positioned by time via drawtext's enable='between(t,start,end)'.
+// from different phones at different resolutions — concat/xfade both
+// require matching streams or they silently produce a broken/black
+// output), joins them in order (hard concat when every transition is
+// "none"/hard-cut — much faster, stream-copy only; a real xfade/acrossfade
+// filter_complex chain when any transition is set), then burns every
+// caption on top with its own style + entrance animation, positioned by
+// time via drawtext's per-frame alpha/x/y expressions.
 export const renderFinalVideo = async (
   clips: EditorClip[],
   captions: EditorCaption[],
@@ -117,9 +158,10 @@ export const renderFinalVideo = async (
   const ff = await loadFfmpeg(msg => onProgress?.(msg, 5));
 
   const normalizedNames: string[] = [];
+  const normalizedDurations: number[] = [];
   for (let i = 0; i < clips.length; i++) {
     const c = clips[i];
-    onProgress?.(`Trimming clip ${i + 1}/${clips.length}`, 10 + Math.round((i / clips.length) * 35));
+    onProgress?.(`Trimming clip ${i + 1}/${clips.length}`, 10 + Math.round((i / clips.length) * 30));
     const inName = `clip-in-${i}.mp4`;
     const outName = `clip-norm-${i}.mp4`;
     await ff.writeFile(inName, await fetchFile(c.file));
@@ -128,8 +170,8 @@ export const renderFinalVideo = async (
       "-ss", String(c.startSec), "-i", inName, "-t", String(dur),
       // Normalize: scale to a shared height (preserve aspect via -2 width),
       // even dimensions (libx264 requires them), constant 30fps, real
-      // audio track even if the source clip is silent (concat demuxer
-      // needs every segment to have the same stream layout).
+      // audio track even if the source clip is silent (concat/xfade both
+      // need every segment to have the same stream layout).
       "-vf", `scale=-2:${NORMALIZED_HEIGHT},fps=30`,
       "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
       "-c:a", "aac", "-ar", "44100", "-ac", "2",
@@ -138,30 +180,76 @@ export const renderFinalVideo = async (
     ]);
     await ff.deleteFile(inName).catch(() => {});
     normalizedNames.push(outName);
+    normalizedDurations.push(dur);
   }
 
-  onProgress?.("Joining clips", 48);
-  const listContent = normalizedNames.map(n => `file '${n}'`).join("\n");
-  await ff.writeFile("concat_list.txt", listContent);
-  await ff.exec(["-f", "concat", "-safe", "0", "-i", "concat_list.txt", "-c", "copy", "joined.mp4"]);
+  const hasRealTransitions = clips.slice(0, -1).some(c => c.transitionToNext && c.transitionToNext !== "none");
+  onProgress?.("Joining clips", 45);
+  let joinedName: string;
+  if (!hasRealTransitions || clips.length === 1) {
+    // Fast path — stream-copy concat, no re-encode of the join itself.
+    const listContent = normalizedNames.map(n => `file '${n}'`).join("\n");
+    await ff.writeFile("concat_list.txt", listContent);
+    await ff.exec(["-f", "concat", "-safe", "0", "-i", "concat_list.txt", "-c", "copy", "joined.mp4"]);
+    await ff.deleteFile("concat_list.txt").catch(() => {});
+    joinedName = "joined.mp4";
+  } else {
+    // Real xfade/acrossfade transition chain — every pair of adjacent
+    // clips is joined with clip[i].transitionToNext's real ffmpeg xfade
+    // type (or a near-instant 0.05s fade standing in for "hard cut" pairs
+    // within the same chain, so mixing hard cuts and real transitions in
+    // one edit doesn't need two different pipelines).
+    onProgress?.("Building transitions", 50);
+    const inputArgs: string[] = [];
+    normalizedNames.forEach(n => { inputArgs.push("-i", n); });
+    let vLabel = "0:v";
+    let aLabel = "0:a";
+    let runningDur = normalizedDurations[0];
+    const filterParts: string[] = [];
+    for (let i = 1; i < normalizedNames.length; i++) {
+      const t = getTransition(clips[i - 1].transitionToNext || "none");
+      const d = t.xfadeType ? t.durationSec : 0.05;
+      const xfadeType = t.xfadeType || "fade";
+      const offset = Math.max(0, runningDur - d);
+      const vOut = `v${i}`;
+      const aOut = `a${i}`;
+      filterParts.push(`[${vLabel}][${i}:v]xfade=transition=${xfadeType}:duration=${d}:offset=${offset.toFixed(3)}[${vOut}]`);
+      filterParts.push(`[${aLabel}][${i}:a]acrossfade=d=${d}[${aOut}]`);
+      vLabel = vOut; aLabel = aOut;
+      runningDur = runningDur + normalizedDurations[i] - d;
+    }
+    await ff.exec([
+      ...inputArgs,
+      "-filter_complex", filterParts.join(";"),
+      "-map", `[${vLabel}]`, "-map", `[${aLabel}]`,
+      "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+      "-c:a", "aac", "-movflags", "+faststart",
+      "joined.mp4",
+    ]);
+    joinedName = "joined.mp4";
+  }
   for (const n of normalizedNames) await ff.deleteFile(n).catch(() => {});
 
-  let finalInput = "joined.mp4";
+  let finalInput = joinedName;
   if (captions.length > 0) {
-    onProgress?.("Burning captions", 60);
+    onProgress?.("Burning captions", 70);
     const drawtextFilters: string[] = [];
     for (const cap of captions) {
       const style = getCaptionStyle(cap.styleId);
       const fontFile = await ensureFont(ff, style);
       const text = escapeDrawtext(style.uppercase ? cap.text.toUpperCase() : cap.text);
-      const y = style.position === "top" ? "h*0.12" : style.position === "center" ? "(h-text_h)/2" : "h*0.82";
+      const baseY = style.position === "top" ? "h*0.12" : style.position === "center" ? "(h-text_h)/2" : "h*0.82";
+      const yOffset = animatedYOffset(style.animation, cap.startSec);
+      const y = `${baseY}${yOffset}`;
       const boxParts = style.background
         ? `:box=1:boxcolor=black@0.55:boxborderw=14`
         : "";
       const strokeParts = style.strokeWidth > 0 ? `:borderw=${style.strokeWidth}:bordercolor=${style.strokeColor}` : "";
+      const alphaExpr = animatedAlphaExpr(style.animation, cap.startSec, cap.endSec);
       drawtextFilters.push(
         `drawtext=fontfile=${fontFile}:text='${text}':fontcolor=${style.color}:fontsize=h*0.055` +
-        `:x=(w-text_w)/2:y=${y}${strokeParts}${boxParts}:enable='between(t,${cap.startSec},${cap.endSec})'`
+        `:x=(w-text_w)/2:y=${y}${strokeParts}${boxParts}` +
+        `:enable='between(t,${cap.startSec},${cap.endSec})':alpha='${alphaExpr}'`
       );
     }
     await ff.exec(["-i", finalInput, "-vf", drawtextFilters.join(","), "-c:a", "copy", "captioned.mp4"]);
@@ -172,7 +260,6 @@ export const renderFinalVideo = async (
   onProgress?.("Finalizing", 92);
   const data = await ff.readFile(finalInput);
   await ff.deleteFile(finalInput).catch(() => {});
-  await ff.deleteFile("concat_list.txt").catch(() => {});
   onProgress?.("Done", 100);
   return new Blob([data as any], { type: "video/mp4" });
 };

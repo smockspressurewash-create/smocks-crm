@@ -12,7 +12,7 @@ import { Modal } from "./Modal";
 import { GBtn } from "./GBtn";
 import { Plus, Trash2, ChevronUp, ChevronDown, Wand2, Scissors, Type, Upload, Sparkles } from "lucide-react";
 import { uid, uploadJobMedia } from "../../lib/utils";
-import { CAPTION_STYLES, CAPTION_GOOGLE_FONTS_HREF, captionStyleToCss, getCaptionStyle } from "../../lib/captionStyles";
+import { CAPTION_STYLES, CAPTION_GOOGLE_FONTS_HREF, captionStyleToCss, getCaptionStyle, TRANSITION_EFFECTS } from "../../lib/captionStyles";
 import { readVideoDuration, detectSilence, renderFinalVideo, type EditorClip, type EditorCaption } from "../../lib/videoEditor";
 
 export function VideoEditorModal({ open, onClose, onExported, toast, settings }: {
@@ -177,6 +177,25 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings }:
       <link rel="preconnect" href="https://fonts.googleapis.com" />
       <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
       <link href={CAPTION_GOOGLE_FONTS_HREF} rel="stylesheet" />
+      {/* FEATURE — "make the video editor mobile-friendly, not just PC."
+          Every <input>/<select> below gets font-size:16px specifically —
+          anything smaller triggers iOS Safari's auto-zoom-on-focus, which
+          on a modal this dense means the whole editor jumps and reflows
+          every time a field is tapped. Buttons get a minimum 40px tap
+          target (Apple/Google's own accessibility minimum) since several
+          were icon-only at 12-14px with no padding, fine with a mouse
+          cursor but genuinely hard to hit accurately with a thumb. */}
+      <style>{`
+        .ve-input, .ve-select { font-size: 16px !important; }
+        .ve-tap { min-width: 40px; min-height: 40px; display: inline-flex; align-items: center; justify-content: center; }
+        @keyframes ve-anim-pop { 0% { transform: scale(0.4); opacity: 0; } 60% { transform: scale(1.12); opacity: 1; } 100% { transform: scale(1); opacity: 1; } }
+        @keyframes ve-anim-bounce { 0% { transform: translateY(24px); opacity: 0; } 60% { transform: translateY(-6px); opacity: 1; } 100% { transform: translateY(0); opacity: 1; } }
+        @keyframes ve-anim-slide-up { 0% { transform: translateY(40px); opacity: 0; } 100% { transform: translateY(0); opacity: 1; } }
+        @keyframes ve-anim-fade { 0% { opacity: 0; } 100% { opacity: 1; } }
+        @keyframes ve-anim-shake { 0%, 100% { transform: translateX(0); } 20% { transform: translateX(-4px); } 40% { transform: translateX(4px); } 60% { transform: translateX(-3px); } 80% { transform: translateX(3px); } }
+        @keyframes ve-anim-typewriter { 0% { clip-path: inset(0 100% 0 0); } 100% { clip-path: inset(0 0 0 0); } }
+        @keyframes ve-anim-flicker { 0%, 19%, 21%, 23%, 25%, 54%, 56%, 100% { opacity: 1; } 20%, 22%, 24%, 55% { opacity: 0.3; } }
+      `}</style>
 
       {rendering ? (
         <div className="py-16 text-center space-y-4">
@@ -189,8 +208,10 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings }:
         </div>
       ) : (
         <div className="space-y-5">
-          {/* Preview */}
-          <div className="relative rounded-xl overflow-hidden bg-black aspect-[9/16] max-h-[360px] mx-auto">
+          {/* Preview — taller on narrow/mobile viewports (more of the
+              screen is naturally available in portrait) than the old fixed
+              360px cap, which left a cramped preview on phones. */}
+          <div className="relative rounded-xl overflow-hidden bg-black aspect-[9/16] max-h-[60vh] sm:max-h-[360px] mx-auto">
             {activeClip ? (
               <video
                 ref={videoRef}
@@ -211,7 +232,10 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings }:
                   bottom: activeCaptionStyle.position === "bottom" ? "8%" : undefined,
                 }}
               >
-                <span style={{ ...captionStyleToCss(activeCaptionStyle), fontSize: "5.5vw", lineHeight: 1.2 }}>{activeCaption.text}</span>
+                <span
+                  key={activeCaption.id}
+                  style={{ ...captionStyleToCss(activeCaptionStyle), fontSize: "5.5vw", lineHeight: 1.2, display: "inline-block", animation: activeCaptionStyle.animation !== "none" ? `ve-anim-${activeCaptionStyle.animation} 0.4s ease-out` : undefined }}
+                >{activeCaption.text}</span>
               </div>
             )}
           </div>
@@ -220,7 +244,7 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings }:
           <div>
             <div className="flex items-center justify-between mb-2">
               <div className="text-xs font-semibold text-white/70 uppercase tracking-wide flex items-center gap-1.5"><Scissors size={12} />Clips ({clips.length})</div>
-              <button onClick={() => fileInputRef.current?.click()} className="text-[11px] text-red-400 hover:text-red-300 flex items-center gap-1"><Upload size={11} />Add clips</button>
+              <button onClick={() => fileInputRef.current?.click()} className="text-[11px] text-red-400 hover:text-red-300 flex items-center gap-1 py-2 px-1"><Upload size={11} />Add clips</button>
               <input ref={fileInputRef} type="file" accept="video/*" multiple className="hidden" onChange={e => addFiles(e.target.files)} />
             </div>
             {clips.length === 0 ? (
@@ -231,23 +255,53 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings }:
                   const clipSilences = silenceRanges.filter(r => r.clipId === c.id);
                   return (
                     <div key={c.id} className={"p-2.5 rounded-xl border transition " + (activeClipId === c.id ? "bg-red-950/20 border-red-700/40" : "bg-white/5 border-white/10")}>
-                      <div className="flex items-center gap-2">
-                        <button onClick={() => setActiveClipId(c.id)} className="flex-1 text-left text-xs font-medium text-white truncate">{i + 1}. {c.file.name}</button>
-                        <button onClick={() => moveClip(c.id, -1)} disabled={i === 0} className="text-white/40 hover:text-white disabled:opacity-20"><ChevronUp size={14} /></button>
-                        <button onClick={() => moveClip(c.id, 1)} disabled={i === clips.length - 1} className="text-white/40 hover:text-white disabled:opacity-20"><ChevronDown size={14} /></button>
-                        <button onClick={() => removeClip(c.id)} className="text-red-400/60 hover:text-red-400"><Trash2 size={14} /></button>
+                      <div className="flex items-center gap-1">
+                        <button onClick={() => setActiveClipId(c.id)} className="flex-1 text-left text-xs font-medium text-white truncate py-2">{i + 1}. {c.file.name}</button>
+                        <button onClick={() => moveClip(c.id, -1)} disabled={i === 0} className="ve-tap text-white/40 hover:text-white disabled:opacity-20"><ChevronUp size={16} /></button>
+                        <button onClick={() => moveClip(c.id, 1)} disabled={i === clips.length - 1} className="ve-tap text-white/40 hover:text-white disabled:opacity-20"><ChevronDown size={16} /></button>
+                        <button onClick={() => removeClip(c.id)} className="ve-tap text-red-400/60 hover:text-red-400"><Trash2 size={16} /></button>
                       </div>
-                      <div className="flex items-center gap-2 mt-2 text-[11px] text-white/50">
+                      {/* Dual range sliders — the easier mobile-friendly way
+                          to trim (drag with a thumb) — alongside the number
+                          inputs for anyone who wants exact values. */}
+                      <div className="mt-2 space-y-1.5">
+                        <div className="flex items-center gap-2">
+                          <span className="text-[10px] text-white/40 w-8 flex-shrink-0">Start</span>
+                          <input type="range" min={0} max={c.durationSec} step={0.1} value={c.startSec}
+                            onChange={e => updateClip(c.id, { startSec: Math.min(Number(e.target.value), c.endSec - 0.1) })}
+                            className="flex-1 accent-red-600" style={{ height: 24 }} />
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <span className="text-[10px] text-white/40 w-8 flex-shrink-0">End</span>
+                          <input type="range" min={0} max={c.durationSec} step={0.1} value={c.endSec}
+                            onChange={e => updateClip(c.id, { endSec: Math.max(Number(e.target.value), c.startSec + 0.1) })}
+                            className="flex-1 accent-red-600" style={{ height: 24 }} />
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2 mt-1.5 text-[11px] text-white/50">
                         <span>Trim:</span>
                         <input type="number" min={0} max={c.durationSec} step={0.1} value={c.startSec.toFixed(1)}
                           onChange={e => updateClip(c.id, { startSec: Math.min(Number(e.target.value) || 0, c.endSec - 0.1) })}
-                          className="w-16 bg-black/30 border border-white/10 rounded px-1.5 py-1 text-white" />
+                          className="ve-input w-16 bg-black/30 border border-white/10 rounded px-1.5 py-1.5 text-white" />
                         <span>to</span>
                         <input type="number" min={0} max={c.durationSec} step={0.1} value={c.endSec.toFixed(1)}
                           onChange={e => updateClip(c.id, { endSec: Math.max(Number(e.target.value) || 0, c.startSec + 0.1) })}
-                          className="w-16 bg-black/30 border border-white/10 rounded px-1.5 py-1 text-white" />
+                          className="ve-input w-16 bg-black/30 border border-white/10 rounded px-1.5 py-1.5 text-white" />
                         <span>of {c.durationSec.toFixed(1)}s</span>
                       </div>
+                      {/* Transition to the NEXT clip (hidden on the last
+                          clip — nothing to transition into). Real ffmpeg
+                          xfade/acrossfade effects, not a preview-only
+                          affectation — see videoEditor.ts. */}
+                      {i < clips.length - 1 && (
+                        <div className="flex items-center gap-2 mt-1.5 text-[11px] text-white/50">
+                          <span className="flex-shrink-0">Transition to next →</span>
+                          <select value={c.transitionToNext || "none"} onChange={e => updateClip(c.id, { transitionToNext: e.target.value })}
+                            className="ve-select flex-1 bg-black/30 border border-white/10 rounded px-1.5 py-1.5 text-white">
+                            {TRANSITION_EFFECTS.map(t => <option key={t.id} value={t.id} className="bg-black" title={t.description}>{t.name}</option>)}
+                          </select>
+                        </div>
+                      )}
                       {clipSilences.length > 0 && (
                         <div className="mt-2 space-y-1">
                           {clipSilences.map((r, si) => (
@@ -285,7 +339,7 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings }:
           <div>
             <div className="flex items-center justify-between mb-2">
               <div className="text-xs font-semibold text-white/70 uppercase tracking-wide flex items-center gap-1.5"><Type size={12} />Captions ({captions.length})</div>
-              <button onClick={addCaption} className="text-[11px] text-red-400 hover:text-red-300 flex items-center gap-1"><Plus size={11} />Add at {previewTime.toFixed(1)}s</button>
+              <button onClick={addCaption} className="text-[11px] text-red-400 hover:text-red-300 flex items-center gap-1 py-2 px-1"><Plus size={11} />Add at {previewTime.toFixed(1)}s</button>
             </div>
             {captions.length === 0 ? (
               <div className="text-center py-6 text-white/30 text-xs border border-dashed border-white/10 rounded-xl">No captions yet — type your own, no AI needed</div>
@@ -295,16 +349,16 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings }:
                   <div key={cap.id} className="p-2.5 rounded-xl bg-white/5 border border-white/10 space-y-1.5">
                     <div className="flex items-center gap-1.5">
                       <input value={cap.text} onChange={e => updateCaption(cap.id, { text: e.target.value })}
-                        className="flex-1 bg-black/30 border border-white/10 rounded px-2 py-1 text-xs text-white" placeholder="Caption text" />
-                      <button onClick={() => removeCaption(cap.id)} className="text-red-400/60 hover:text-red-400 flex-shrink-0"><Trash2 size={13} /></button>
+                        className="ve-input flex-1 bg-black/30 border border-white/10 rounded px-2 py-2 text-white" placeholder="Caption text" />
+                      <button onClick={() => removeCaption(cap.id)} className="ve-tap text-red-400/60 hover:text-red-400 flex-shrink-0"><Trash2 size={15} /></button>
                     </div>
                     <div className="flex items-center gap-1.5 flex-wrap text-[10px] text-white/50">
                       <span>From</span>
-                      <input type="number" min={0} step={0.1} value={cap.startSec.toFixed(1)} onChange={e => updateCaption(cap.id, { startSec: Number(e.target.value) || 0 })} className="w-14 bg-black/30 border border-white/10 rounded px-1 py-0.5 text-white" />
+                      <input type="number" min={0} step={0.1} value={cap.startSec.toFixed(1)} onChange={e => updateCaption(cap.id, { startSec: Number(e.target.value) || 0 })} className="ve-input w-16 bg-black/30 border border-white/10 rounded px-1 py-1.5 text-white" />
                       <span>to</span>
-                      <input type="number" min={0} step={0.1} value={cap.endSec.toFixed(1)} onChange={e => updateCaption(cap.id, { endSec: Number(e.target.value) || 0 })} className="w-14 bg-black/30 border border-white/10 rounded px-1 py-0.5 text-white" />
+                      <input type="number" min={0} step={0.1} value={cap.endSec.toFixed(1)} onChange={e => updateCaption(cap.id, { endSec: Number(e.target.value) || 0 })} className="ve-input w-16 bg-black/30 border border-white/10 rounded px-1 py-1.5 text-white" />
                       <span>s</span>
-                      <select value={cap.styleId} onChange={e => updateCaption(cap.id, { styleId: e.target.value })} className="ml-auto bg-black/30 border border-white/10 rounded px-1.5 py-0.5 text-white">
+                      <select value={cap.styleId} onChange={e => updateCaption(cap.id, { styleId: e.target.value })} className="ve-select ml-auto bg-black/30 border border-white/10 rounded px-1.5 py-1.5 text-white">
                         {CAPTION_STYLES.map(s => <option key={s.id} value={s.id} className="bg-black">{s.name}</option>)}
                       </select>
                     </div>
@@ -312,9 +366,9 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings }:
                 ))}
               </div>
             )}
-            <div className="mt-2 grid grid-cols-3 gap-1.5">
+            <div className="mt-2 grid grid-cols-2 sm:grid-cols-3 gap-1.5 max-h-64 overflow-y-auto p-0.5">
               {CAPTION_STYLES.map(s => (
-                <div key={s.id} className="rounded-lg bg-black border border-white/10 py-3 flex items-center justify-center" title={s.description}>
+                <div key={s.id} className="rounded-lg bg-black border border-white/10 py-3 px-1.5 flex items-center justify-center text-center" title={s.description}>
                   <span style={{ ...captionStyleToCss(s), fontSize: 11 }}>{s.name}</span>
                 </div>
               ))}

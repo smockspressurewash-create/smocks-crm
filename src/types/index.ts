@@ -767,6 +767,13 @@ export interface SocialPost {
   externalLink?: string;
   metricsUpdatedAt?: string;
   postMethod?: string;
+  mediaUrl?: string;
+  mediaType?: "image" | "video";
+  // Set once the full-size mediaUrl in Storage has been deleted and
+  // replaced with a small generated thumbnail (see cleanupPublishedMedia
+  // in SocialPage.tsx) — the UI renders a click-through preview instead of
+  // an inline player when this is true, since there's nothing left to play.
+  mediaIsPreview?: boolean;
 }
 
 // ─── Accountability ───────────────────────────────────────────────────────────

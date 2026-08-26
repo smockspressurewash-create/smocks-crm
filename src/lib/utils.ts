@@ -1016,10 +1016,61 @@ export const uploadJobMedia = async (blob: Blob, path: string, contentType?: str
 // getPublicUrl() produced, since deleting from Storage needs the path, not
 // the URL. Returns null for legacy dataUrl-only media (nothing in Storage to
 // delete for those — clearing the JSONB field is enough).
-const jobMediaPathFromUrl = (url: string): string | null => {
+export const jobMediaPathFromUrl = (url: string): string | null => {
   const marker = `/object/public/${JOB_MEDIA_BUCKET}/`;
   const i = url.indexOf(marker);
   return i === -1 ? null : url.slice(i + marker.length);
+};
+
+// FEATURE — "once published, don't keep full videos/photos in backend
+// storage, just a small preview." Deletes the given full-size media
+// objects from the shared job-media Storage bucket by their public URL —
+// used once a Social post is confirmed published and its lightweight
+// thumbnail (see makeMediaThumbnail in SocialPage.tsx) has already
+// replaced the reference, so nothing is lost, only the large original.
+// Generates a small (max 480px) JPEG thumbnail from a photo OR the first
+// frame of a video — client-side, via canvas, no server cost. Used to
+// replace a full-size Social post attachment with a lightweight preview
+// once it's confirmed published (see deleteJobMediaByUrl above and
+// SocialPage.tsx's onPostPublished cleanup) — the original still lives on
+// the actual platform the post went to, so keeping a full copy here is
+// pure wasted storage.
+export const makeMediaThumbnail = (url: string, mediaType: "image" | "video"): Promise<Blob | null> =>
+  new Promise((resolve) => {
+    const MAX_DIM = 480;
+    const toThumb = (source: HTMLImageElement | HTMLVideoElement, w: number, h: number) => {
+      const scale = Math.min(1, MAX_DIM / Math.max(w, h));
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.round(w * scale);
+      canvas.height = Math.round(h * scale);
+      const ctx = canvas.getContext("2d");
+      if (!ctx) { resolve(null); return; }
+      ctx.drawImage(source, 0, 0, canvas.width, canvas.height);
+      canvas.toBlob(b => resolve(b), "image/jpeg", 0.75);
+    };
+    if (mediaType === "image") {
+      const img = new Image();
+      img.crossOrigin = "anonymous";
+      img.onload = () => toThumb(img, img.naturalWidth, img.naturalHeight);
+      img.onerror = () => resolve(null);
+      img.src = url;
+    } else {
+      const video = document.createElement("video");
+      video.crossOrigin = "anonymous";
+      video.muted = true;
+      video.preload = "metadata";
+      video.onloadeddata = () => toThumb(video, video.videoWidth, video.videoHeight);
+      video.onerror = () => resolve(null);
+      video.src = url;
+      video.currentTime = 0.1; // nudge past frame 0, which is often black on a lot of phone-recorded clips
+    }
+  });
+
+export const deleteJobMediaByUrl = async (urls: (string | undefined | null)[]): Promise<void> => {
+  const paths = urls.filter((u): u is string => !!u).map(jobMediaPathFromUrl).filter((p): p is string => !!p);
+  if (paths.length === 0) return;
+  try { await (supabase as any).storage.from(JOB_MEDIA_BUCKET).remove(paths); }
+  catch (e: any) { console.warn("[MediaCleanup] Storage delete failed:", e?.message); }
 };
 
 // Sweeps completed jobs older than `retentionDays` and strips their
