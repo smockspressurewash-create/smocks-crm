@@ -102,6 +102,68 @@ export function SocialPage({ posts = [], setPosts, toast, settings = {} as AppSe
   const [submitting, setSubmitting] = useState(false);
   const [refreshingId, setRefreshingId] = useState<string | null>(null);
   const [platformFilter, setPlatformFilter] = useState("all");
+  // FEATURE — "make the before and after photos sync up to the social
+  // section." Every real before/after pair an employee actually captured
+  // on a job (EmployeePortal.tsx's pairIndex-matched photos) is real,
+  // ready content — this pulls them in directly instead of making the
+  // owner re-upload a photo they already took.
+  const [jobPhotoPickerOpen, setJobPhotoPickerOpen] = useState(false);
+  const [pickingJobPhoto, setPickingJobPhoto] = useState(false);
+  const jobsWithPhotoPairs = jobs
+    .map((j: any) => {
+      const befores = (j.photos || []).filter((p: any) => p.type === "before" && (p.url || p.dataUrl));
+      const afters = (j.photos || []).filter((p: any) => p.type === "after" && (p.url || p.dataUrl));
+      const count = Math.max(befores.length, afters.length);
+      const pairs: { before: any; after: any }[] = [];
+      for (let i = 0; i < count; i++) {
+        const b = befores.find((p: any) => (p.pairIndex ?? befores.indexOf(p)) === i) || befores[i];
+        const a = afters.find((p: any) => (p.pairIndex ?? afters.indexOf(p)) === i) || afters[i];
+        if (b && a) pairs.push({ before: b, after: a });
+      }
+      return { job: j, pairs };
+    })
+    .filter((x: any) => x.pairs.length > 0);
+  // Vision analysis needs base64; job photos are usually a Storage http(s)
+  // URL (see uploadJobMedia), so fetch + convert rather than assuming a
+  // dataUrl is always present.
+  const toBase64 = async (src: string): Promise<{ data: string; mediaType: string } | null> => {
+    try {
+      if (src.startsWith("data:")) {
+        const [header, b64] = src.split(",");
+        return { data: b64, mediaType: /data:(.*?);base64/.exec(header)?.[1] || "image/jpeg" };
+      }
+      const res = await fetch(src);
+      const blob = await res.blob();
+      return await new Promise((resolve) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+          const result = reader.result as string;
+          resolve({ data: result.split(",")[1], mediaType: blob.type || "image/jpeg" });
+        };
+        reader.onerror = () => resolve(null);
+        reader.readAsDataURL(blob);
+      });
+    } catch {
+      return null;
+    }
+  };
+  const useJobPhotoPair = async (job: any, pair: { before: any; after: any }) => {
+    setPickingJobPhoto(true);
+    try {
+      const afterSrc = pair.after.url || pair.after.dataUrl;
+      const vision = await toBase64(afterSrc);
+      setF(prev => ({
+        ...prev,
+        _photoUrl: afterSrc,
+        _mediaType: "image",
+        _imageData: vision ? { data: vision.data, mediaType: vision.mediaType } : prev._imageData,
+      }));
+      toast?.("Before/after photo loaded — click Generate for an AI caption, or write your own ✓");
+      setJobPhotoPickerOpen(false);
+    } finally {
+      setPickingJobPhoto(false);
+    }
+  };
 
   // Cross-page handoff from Alfred's Content Scripts panel ("Send to Social")
   // — same localStorage-handoff pattern already used elsewhere in this app
@@ -663,7 +725,13 @@ export function SocialPage({ posts = [], setPosts, toast, settings = {} as AppSe
                 {generating ? <><div className="w-3 h-3 border-2 border-red-400 border-t-transparent rounded-full animate-spin" />Generating…</> : <><Zap size={12} />{f._imageData ? "Analyze Photo + Generate Caption" : "AI Generate Caption"}</>}
               </button>
               {/* Photo upload for vision analysis */}
-              {f.type === "before_after" && <div>
+              {f.type === "before_after" && <div className="space-y-1.5">
+                {jobsWithPhotoPairs.length > 0 && (
+                  <button onClick={() => setJobPhotoPickerOpen(true)} type="button"
+                    className="w-full flex items-center justify-center gap-2 py-2 rounded-xl border border-green-700/40 bg-green-950/20 text-green-300 text-xs font-medium cursor-pointer hover:bg-green-900/30 transition">
+                    <ImageIcon size={12} />Use a job's before/after photo ({jobsWithPhotoPairs.length} available)
+                  </button>
+                )}
                 <label className="w-full flex items-center justify-center gap-2 py-2 rounded-xl border border-dashed border-red-700/40 text-red-400/70 text-xs cursor-pointer hover:bg-red-950/20 transition">
                   <input type="file" accept="image/*" className="hidden" onChange={e => {
                     const file = e.target.files?.[0];
@@ -804,6 +872,27 @@ export function SocialPage({ posts = [], setPosts, toast, settings = {} as AppSe
               {submitting ? "Posting…" : f.publishMode === "schedule" ? "Schedule Post" : "Publish Now"}
             </GBtn>
           </div>
+        </div>
+      </Modal>
+
+      {/* FEATURE — job before/after photo picker (see jobsWithPhotoPairs above) */}
+      <Modal open={jobPhotoPickerOpen} onClose={() => setJobPhotoPickerOpen(false)} title="Use a Job's Before/After Photo" maxW="max-w-lg">
+        <div className="space-y-3 max-h-[60vh] overflow-y-auto">
+          {jobsWithPhotoPairs.length === 0 && <div className="text-sm text-white/40 text-center py-8">No jobs with a matched before/after pair yet.</div>}
+          {jobsWithPhotoPairs.map(({ job, pairs }: any) => (
+            <div key={job.id}>
+              <div className="text-xs text-white/50 mb-1.5">{job.address || "Job"} · {job.scheduledDate}</div>
+              <div className="grid grid-cols-3 gap-2">
+                {pairs.map((pair: any, i: number) => (
+                  <button key={i} disabled={pickingJobPhoto} onClick={() => useJobPhotoPair(job, pair)}
+                    className="relative aspect-video rounded-lg overflow-hidden border-2 border-white/10 hover:border-red-500 transition disabled:opacity-50">
+                    <img src={pair.after.url || pair.after.dataUrl} alt="After" className="w-full h-full object-cover" />
+                    <div className="absolute bottom-0 left-0 right-0 bg-black/70 text-[9px] text-center py-0.5">Pair {i + 1}</div>
+                  </button>
+                ))}
+              </div>
+            </div>
+          ))}
         </div>
       </Modal>
     </div>

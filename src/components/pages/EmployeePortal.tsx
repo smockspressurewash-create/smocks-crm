@@ -758,7 +758,7 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
     }
   };
 
-  const addPhoto = async (type: "before" | "after", dataUrl: string) => {
+  const addPhoto = async (type: "before" | "after", dataUrl: string, explicitPairIndex?: number) => {
     const id = uid();
     const caption = (type === "before" ? "Before" : "After") + " — " + today();
     const url = await uploadJobMedia(dataUrlToBlob(dataUrl), `${job.id}/photo-${id}.jpg`, "image/jpeg");
@@ -770,8 +770,11 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
     // silently mismatched whichever ones happened to be first. pairIndex
     // links the Nth "before" taken to the Nth "after" taken, so multiple
     // real pairs render as multiple correctly-matched sliders instead of
-    // one wrong one.
-    const pairIndex = (job.photos || []).filter((p: any) => p.type === type).length;
+    // one wrong one. explicitPairIndex lets the "assign to a specific
+    // before" picker (below) override the default next-slot assignment
+    // when the employee wants to link an after to a SPECIFIC earlier
+    // before rather than whichever's next in line.
+    const pairIndex = explicitPairIndex ?? (job.photos || []).filter((p: any) => p.type === type).length;
     const newPhoto = url ? { id, type, pairIndex, caption, url, uploadedAt: today() } : { id, type, pairIndex, caption, dataUrl, uploadedAt: today() };
     const nextPhotos = [...(job.photos || []), newPhoto];
     try {
@@ -1112,6 +1115,13 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
   // Draw-mode signature canvas
   const [sigMode, setSigMode] = useState<"type" | "draw">("type");
   const [sigDrawData, setSigDrawData] = useState<string | null>(null);
+  // FEATURE — "make sure you can assign a before photo to an after photo."
+  // addPhoto("after", ...) used to always just get the next sequential
+  // pairIndex — correct when there's exactly one open "before" waiting,
+  // ambiguous the moment there's more than one (which before does this
+  // after actually belong to?). When multiple are unpaired, hold the
+  // compressed photo here and show a picker instead of guessing.
+  const [pendingAfterPhoto, setPendingAfterPhoto] = useState<string | null>(null);
   const sigCanvasRef = useRef<HTMLCanvasElement>(null);
   const sigDrawing = useRef(false);
   const sigLastPos = useRef({ x: 0, y: 0 });
@@ -2392,7 +2402,11 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
                 <input type="file" accept="image/*" capture="environment" className="hidden"
                   onChange={e => {
                     const f = e.target.files?.[0]; if (!f) return;
-                    compressImageFile(f).then(dataUrl => addPhoto("after", dataUrl));
+                    compressImageFile(f).then(dataUrl => {
+                      const unpairedBefores = photoPairs.filter(p => p.before && !p.after);
+                      if (unpairedBefores.length > 1) setPendingAfterPhoto(dataUrl);
+                      else addPhoto("after", dataUrl);
+                    });
                     e.target.value = "";
                   }} />
                 <div className="flex flex-col items-center justify-center gap-1 px-2 py-2.5 rounded-xl bg-green-950/30 hover:bg-green-900/40 border border-green-700/40 text-green-300 text-xs font-medium transition text-center">
@@ -2406,6 +2420,25 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
                   <Video size={13} /><span>Video</span>
                 </div>
               </label>
+            </div>
+          )}
+          {/* FEATURE — "assign a before photo to an after photo." More than
+              one "before" is waiting for a match — ask which one this
+              "after" actually belongs to instead of guessing positionally. */}
+          {pendingAfterPhoto && (
+            <div className="fixed inset-0 z-[400] bg-black/85 flex items-center justify-center p-4" onClick={() => setPendingAfterPhoto(null)}>
+              <div className="bg-black border border-white/15 rounded-2xl p-4 max-w-sm w-full" onClick={e => e.stopPropagation()}>
+                <div className="text-sm font-semibold mb-3">Which "before" does this photo match?</div>
+                <div className="grid grid-cols-3 gap-2 mb-3">
+                  {photoPairs.filter(p => p.before && !p.after).map(p => (
+                    <button key={p.before.id} onClick={() => { addPhoto("after", pendingAfterPhoto, p.before.pairIndex); setPendingAfterPhoto(null); }}
+                      className="relative aspect-square rounded-lg overflow-hidden border-2 border-white/10 hover:border-green-500 transition">
+                      <img src={mediaSrc(p.before.url, p.before.dataUrl)} alt="Before" className="w-full h-full object-cover" />
+                    </button>
+                  ))}
+                </div>
+                <button onClick={() => setPendingAfterPhoto(null)} className="w-full py-2 rounded-xl bg-white/5 text-white/50 text-xs">Cancel</button>
+              </div>
             </div>
           )}
           {(job.photos || []).length > 0 && (
