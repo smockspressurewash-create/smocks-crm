@@ -2776,10 +2776,24 @@ export function App() {
         ]);
         if (Array.isArray(liveEstIds)) estimateSafeIds = new Set(liveEstIds.map((r: any) => r.id));
         if (Array.isArray(liveCustIds)) customerSafeIds = new Set(liveCustIds.map((r: any) => r.id));
-      } catch (err: any) { console.warn("Auto-save id check failed — skipping resurrection guard this cycle:", err?.message); }
-      const safeCustomers = !customerSafeIds ? customers : customers.filter((c: any) => customerSafeIds!.has(c.id) || !syncedCustomerIdsRef.current.has(c.id));
+      } catch (err: any) { console.warn("Auto-save id check failed — skipping this cycle entirely (see BUG FIX comment above safeCustomers/safeEstimates):", err?.message); }
+      // BUG FIX — "invoices keep coming back." The old fallback here, when
+      // the live id check itself failed (a flaky mobile connection is far
+      // more likely to hit this than desktop — confirmed a second device,
+      // an Android phone, hitting errors on this exact endpoint in the logs
+      // while diagnosing this), was to push the ENTIRE unfiltered local
+      // array with NO protection at all — completely bypassing the
+      // resurrection guard this whole mechanism exists for. A phone that's
+      // been open for a while, whose local `estimates` still has a row
+      // deleted on another device minutes ago, would resurrect it the
+      // moment its OWN live check had a network hiccup — which on mobile
+      // data is routine, not rare. Skipping the cycle entirely when the
+      // safety check fails is strictly safer than guessing: a legitimately
+      // new local-only row just waits for the next successful cycle
+      // instead of risking a deleted row coming back from the dead.
+      const safeCustomers = !customerSafeIds ? [] : customers.filter((c: any) => customerSafeIds!.has(c.id) || !syncedCustomerIdsRef.current.has(c.id));
       await upsertCustomersSafely(safeCustomers, "Customer auto-save");
-      const safeEstimates = !estimateSafeIds ? estimates : estimates.filter((e: any) => estimateSafeIds!.has(e.id) || !syncedEstimateIdsRef.current.has(e.id));
+      const safeEstimates = !estimateSafeIds ? [] : estimates.filter((e: any) => estimateSafeIds!.has(e.id) || !syncedEstimateIdsRef.current.has(e.id));
       if (safeEstimates.length > 0) {
         try {
           const { error } = await (supabase as any).from("estimates").upsert(safeEstimates.map((e: any) => ({ ...e, owner_id: crmUserId })), { onConflict: "id" });
