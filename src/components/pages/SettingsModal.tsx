@@ -783,7 +783,7 @@ export function SettingsModal({ open, onClose, settings, setSettings, jobs = [],
             );
           })()}
 
-          {sec === "models" && <AIModelsSection f={f} setF={setF} modelStatus={modelStatus} setModelStatus={setModelStatus} employees={employees} toast={toast} />}
+          {sec === "models" && <AIModelsSection f={f} setF={setF} setSettings={setSettings} modelStatus={modelStatus} setModelStatus={setModelStatus} employees={employees} toast={toast} />}
 
           {sec === "services" && <ServiceCatalogSection services={services} setServices={setServices} toast={toast} />}
 

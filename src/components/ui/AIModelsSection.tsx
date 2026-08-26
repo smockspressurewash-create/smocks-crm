@@ -76,7 +76,7 @@ const ALFRED_CAPABILITY_LEGACY_GROUP: Record<string, string> = {
   calendar: "calendar", drive_tasks: "calendar",
 };
 
-export function AIModelsSection({ f, setF, modelStatus, setModelStatus, employees = [], toast }) {
+export function AIModelsSection({ f, setF, setSettings, modelStatus, setModelStatus, employees = [], toast }) {
   const [, forceTick] = useState(0);
   const [showKey, setShowKey] = useState({});
   const [newAlfredPhone, setNewAlfredPhone] = useState("");
@@ -137,12 +137,22 @@ export function AIModelsSection({ f, setF, modelStatus, setModelStatus, employee
     return h + "h " + rm + "m";
   };
 
+  // BUG FIX — "changed the priority order, it didn't show up in Alfred
+  // chat." Reordering only ever updated this modal's own local draft (f/
+  // setF) — like every other Settings field, it needed the modal's overall
+  // Save button to actually reach the real settings object Alfred reads
+  // from. Unlike a text field the owner is still typing, a priority
+  // reorder is a single complete action the moment you click the arrow —
+  // there's no "still editing" state to wait out. Commit it to the real
+  // settings immediately (in addition to the draft, so this section's own
+  // display stays in sync), same as this app's other one-click toggles.
   const moveUp = mid => {
     const i = priority.indexOf(mid);
     if (i <= 0) return;
     const next = [...priority];
     [next[i - 1], next[i]] = [next[i], next[i - 1]];
     setF({ ...f, modelPriority: next });
+    setSettings?.((prev: any) => ({ ...prev, modelPriority: next }));
   };
   const moveDown = mid => {
     const i = priority.indexOf(mid);
@@ -150,6 +160,7 @@ export function AIModelsSection({ f, setF, modelStatus, setModelStatus, employee
     const next = [...priority];
     [next[i], next[i + 1]] = [next[i + 1], next[i]];
     setF({ ...f, modelPriority: next });
+    setSettings?.((prev: any) => ({ ...prev, modelPriority: next }));
   };
   const clearLock = mid => {
     setModelStatus(s => { const n = { ...s }; delete n[mid]; return n; });
