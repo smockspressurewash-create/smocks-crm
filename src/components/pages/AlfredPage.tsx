@@ -3268,15 +3268,15 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           const soonest = lockedModels.map(([_, s]) => (s as any).lockedUntil).sort()[0];
           const wait = Math.ceil((soonest - Date.now()) / 60000);
           if (geminiLocked && lockedModels.length === 1) {
-            errorMsg = "Gemini's daily quota is exhausted.\n\n⏱ Resets in ~" + wait + " min (Google resets at midnight Pacific)\n\n💡 Options:\n• Wait for the quota to reset\n• Add a Claude API key (console.anthropic.com) — no quota issues\n• Add an OpenRouter key for access to many free models\n• Use slash commands (/status, /route, /rollcall) — they work without any AI key";
+            errorMsg = "Gemini's daily quota is exhausted.\n\n⏱ Resets in ~" + wait + " min (Google resets at midnight Pacific)\n\n💡 Options:\n• Wait for the quota to reset\n• Add a Claude API key (console.anthropic.com) — no quota issues\n• Use slash commands (/status, /route, /rollcall) — they work without any AI key";
           } else {
             errorMsg = "All models are rate-limited.\n\n⏱ Soonest reset: ~" + wait + " min\n\n💡 Options:\n• Wait for quota to reset\n• Add a Claude API key in Settings → AI Models\n• Use slash commands (/status, /route, /rollcall) — they work without any AI key\n• Unlock a model manually in Settings → AI Models → Reset now";
           }
         } else {
           errorMsg = "Tried " + failoverChain.length + " model(s):\n" + failoverChain.map(f => "• " + (MODELS_MAP[f.model]?.name || f.model) + ": " + f.error).join("\n");
-          if (geminiLocked) errorMsg += "\n\n💡 Gemini's daily quota is exhausted. Add a Claude or OpenRouter key in Settings → AI Models, or wait for Gemini to reset (midnight Pacific).";
+          if (geminiLocked) errorMsg += "\n\n💡 Gemini's daily quota is exhausted. Add a Claude key in Settings → AI Models, or wait for Gemini to reset (midnight Pacific).";
           if (!Object.values(MODELS_MAP).some((m: any) => m.needsKey && !!(settings.modelKeys || {})[m.id])) {
-            errorMsg += "\n\n💡 No API keys set. Add a Claude, Gemini, or OpenRouter key in Settings → AI Models.";
+            errorMsg += "\n\n💡 No API keys set. Add a Claude or Gemini key in Settings → AI Models.";
           }
         }
         throw new Error(errorMsg);

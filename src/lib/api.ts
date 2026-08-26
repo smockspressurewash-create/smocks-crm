@@ -187,22 +187,19 @@ export const MODELS: Record<string, ModelDef> = {
     apiLabel: "NVIDIA API Key",
     free: true,
   },
-  openrouter: {
-    id: "openrouter",
-    modelId: "meta-llama/llama-3.3-70b-instruct:free",
-    name: "OpenRouter",
-    label: "OpenRouter (Llama 3.3 70B — Free via openrouter.ai)",
-    provider: "openrouter",
-    endpoint: "https://openrouter.ai/api/v1/chat/completions",
-    maxTokens: 4096,
-    contextWindow: 131072,
-    color: "from-violet-500 to-purple-700",
-    needsKey: true,
-    supportsTools: false,
-    keyUrl: "https://openrouter.ai/keys",
-    apiLabel: "OpenRouter API Key",
-    free: true,
-  },
+  // BUG FIX — REMOVED. OpenRouter's free tier has no real function/tool
+  // calling — Alfred's entire point is taking real actions (schedule jobs,
+  // search customers, send messages), so a model that can only fake a tool
+  // call as text was never actually usable for what this app needs, no
+  // matter how many detection/failover patches wrapped around it. Per the
+  // owner's explicit call: every selectable model must be able to do
+  // everything Alfred does, not just chat. Left out entirely rather than
+  // kept-but-hidden so it can never end up in modelPriority/switch_ai_model
+  // again. (The OPENROUTER_FREE_FALLBACKS/getOpenRouterFreeModels helpers
+  // and the "openrouter" provider branch further below are now unreachable
+  // dead code — left in place since callModel's shared retry/proxy logic
+  // for every OTHER provider runs through the same function and isn't
+  // worth the risk of restructuring just to delete a few dozen dead lines.)
 };
 
 // ISSUE 19 — OpenRouter's free-tier catalog rotates/deprecates models often
