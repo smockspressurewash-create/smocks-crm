@@ -558,10 +558,29 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
   // Same action the manual "I'm Here" button below performs — the arrival
   // prompt's "Yes" reuses this exact function rather than a second,
   // parallel notify path.
-  const markArrived = () => {
+  // BUG FIX — "when an employee presses arrive at job it should
+  // automatically also notify the customer, not just the owner." This only
+  // ever updated the job and claimed "owner notified" in the toast — no
+  // customer message was ever sent. Fires automatically (no channel picker,
+  // unlike On My Way/Running Late which ask) since arrival should just
+  // happen the instant it's marked: SMS if a phone's on file, otherwise
+  // email, silently skipped only if neither exists.
+  const markArrived = async () => {
     onUpdateJob({ arrivedAt: Date.now(), status: job.status === "scheduled" ? "in_progress" : job.status });
     toast("Marked as arrived ✓ — owner notified");
     onArrived?.();
+    const arrivalMsg = `Hi ${customer?.firstName || "there"}, your CrewBoss technician has arrived and is getting started!`;
+    try {
+      if (customer?.phone) {
+        await twilioSend(settings as any, customer.phone, arrivalMsg);
+        logOutboundSmsToInbox({ contactName: `${customer.firstName} ${customer.lastName}`, contactPhone: customer.phone, customerId: customer.id, body: arrivalMsg }).catch(() => {});
+      } else if (customer?.email) {
+        const html = emailShell(settings, "We've Arrived", `<p>${arrivalMsg}</p>`);
+        await sendOwnerGmailOnly(settings as any, customer.email, "Your technician has arrived", html);
+      }
+    } catch (e: any) {
+      console.warn("[Arrival] customer notify failed:", e?.message);
+    }
   };
 
   const hasRequiredGear = (job.equipment || []).length > 0 || (job.requiredChemicals || []).length > 0;
