@@ -119,19 +119,41 @@ export const MODELS: Record<string, ModelDef> = {
     apiLabel: "NVIDIA API Key",
     free: true,
   },
+  // BUG FIX — swapped for the model the owner confirmed is actually live on
+  // NVIDIA's catalog right now (nvidia/llama-3.1-nemotron-70b-instruct was
+  // never verified and is very likely stale, same as Kimi K2.6 was).
   nvidia_nemotron: {
     id: "nvidia_nemotron",
-    modelId: "nvidia/llama-3.1-nemotron-70b-instruct",
-    name: "Nemotron 70B",
-    label: "Llama 3.1 Nemotron 70B (NVIDIA — Free)",
+    modelId: "nvidia/nemotron-3.5-lightning-30b-a3b",
+    name: "Nemotron 3.5 Lightning",
+    label: "Nemotron 3.5 Lightning 30B (NVIDIA — Free)",
     provider: "nvidia",
     endpoint: "https://integrate.api.nvidia.com/v1/chat/completions",
-    maxTokens: 4096,
+    maxTokens: 16384,
     contextWindow: 128000,
     color: "from-green-500 to-emerald-700",
     needsKey: true,
     supportsTools: true,
-    keyUrl: "https://build.nvidia.com/nvidia/llama-3_1-nemotron-70b-instruct",
+    keyUrl: "https://build.nvidia.com/nvidia/nemotron-3.5-lightning-30b-a3b",
+    apiLabel: "NVIDIA API Key",
+    free: true,
+  },
+  nvidia_muse: {
+    id: "nvidia_muse",
+    modelId: "meta/muse-glimmer-30b",
+    name: "Muse Glimmer 30B",
+    label: "Muse Glimmer 30B (NVIDIA — Free)",
+    provider: "nvidia",
+    endpoint: "https://integrate.api.nvidia.com/v1/chat/completions",
+    maxTokens: 8192,
+    contextWindow: 32000,
+    color: "from-green-500 to-emerald-700",
+    needsKey: true,
+    // Sample code didn't show tools/function-calling usage — leaving off
+    // until confirmed, so Alfred's failover skips it for tool-using turns
+    // rather than risk a model that silently ignores tool definitions.
+    supportsTools: false,
+    keyUrl: "https://build.nvidia.com/meta/muse-glimmer-30b",
     apiLabel: "NVIDIA API Key",
     free: true,
   },
