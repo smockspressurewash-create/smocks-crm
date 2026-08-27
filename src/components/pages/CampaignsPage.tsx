@@ -780,7 +780,7 @@ export function CampaignsPage({ campaigns = [], setCampaigns, customers = [], es
       </div>}
 
       {/* A/B Testing */}
-      {tab === "ab" && <ABTestPanel matches={matches} toast={toast} />}
+      {tab === "ab" && <ABTestPanel matches={matches} toast={toast} settings={settings} setSettings={setSettings} inboxThreads={inboxThreads} />}
     </div>
   );
 }
