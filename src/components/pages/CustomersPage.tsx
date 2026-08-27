@@ -650,9 +650,15 @@ export function CustomersPage({ customers = [], setCustomers, estimates = [], jo
           </div>
           <div className="flex gap-2 flex-wrap">
             <input ref={fileRef} type="file" accept=".csv" onChange={importCSV} className="hidden" />
-            <GBtn variant="ghost" onClick={() => fileRef.current?.click()}><Download size={14} className="inline mr-1.5 rotate-180" />Import CSV</GBtn>
-            <GBtn variant="ghost" onClick={() => setSheetsImportOpen(true)}><Download size={14} className="inline mr-1.5 rotate-180" />Sheets / Paste</GBtn>
-            <GBtn variant="ghost" onClick={() => setStripeImportOpen(true)}><CreditCard size={14} className="inline mr-1.5" />Import from Stripe</GBtn>
+            {/* FEATURE — bulk-import entry points also respect the plan
+                limit now — blocked once already at the cap, same as the
+                single Add button. (Importing a batch that would only PARTLY
+                exceed the limit still goes through uncapped — mid-import
+                truncation isn't built yet, this only blocks starting a new
+                import once you're already at the ceiling.) */}
+            <GBtn variant="ghost" onClick={() => atCustomerLimit ? setUpgradePromptOpen(true) : fileRef.current?.click()}><Download size={14} className="inline mr-1.5 rotate-180" />Import CSV</GBtn>
+            <GBtn variant="ghost" onClick={() => atCustomerLimit ? setUpgradePromptOpen(true) : setSheetsImportOpen(true)}><Download size={14} className="inline mr-1.5 rotate-180" />Sheets / Paste</GBtn>
+            <GBtn variant="ghost" onClick={() => atCustomerLimit ? setUpgradePromptOpen(true) : setStripeImportOpen(true)}><CreditCard size={14} className="inline mr-1.5" />Import from Stripe</GBtn>
             <GBtn variant="ghost" onClick={exportCSV}><Download size={14} className="inline mr-1.5" />Export</GBtn>
             <GBtn variant={mergeMode ? "danger" : "ghost"} onClick={() => { setMergeMode(!mergeMode); setMergePair([]); }}><UserCheck size={14} className="inline mr-1.5" />{mergeMode ? "Cancel Merge" : "Merge"}</GBtn>
             <GBtn variant={bulkMode ? "danger" : "ghost"} onClick={() => { setBulkMode(!bulkMode); setBulkSelected([]); }}><CheckSquare size={14} className="inline mr-1.5" />{bulkMode ? "Cancel Select" : "Select"}</GBtn>
