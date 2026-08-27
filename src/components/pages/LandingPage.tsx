@@ -528,6 +528,31 @@ export function LandingPage({
         </Reveal>
       </section>
 
+      {/* ── FAQ — new, real functionality (was only ever a link off to the
+          Pricing page's own FAQ before). Plain accordion, no library. */}
+      <SectionDivider />
+      <section className="px-4 md:px-6 py-16 md:py-24 max-w-3xl mx-auto">
+        <Reveal className="text-center mb-10">
+          <h2 className="text-2xl md:text-4xl font-extrabold tracking-tight mb-3">
+            Questions, <span className="gradient-text">answered</span>
+          </h2>
+        </Reveal>
+        <Reveal delay={80}>
+          <div className="space-y-3">
+            {[
+              { q: "Do I need a separate payment processor?", a: "No — CrewBoss connects directly to Stripe or Square, whichever you already use (or want to set up). Take deposits, full payments, and in-person card charges without a third-party app in between." },
+              { q: "Can my crew use this in the field, not just the office?", a: "Yes — every technician gets the mobile field portal: their job list, on-the-way and running-late texts, checklists, photos, clock in/out, and on-site payment collection, all from their own phone." },
+              { q: "What happens when my free trial ends?", a: "You'll be prompted to pick a plan that fits your crew size. Nothing you've entered is ever deleted — pick a plan and pick up right where you left off." },
+              { q: "Is my data actually separated from other businesses using CrewBoss?", a: "Yes — every business's jobs, customers, and invoices are isolated at the database level. No other CrewBoss account can ever see your data, and you can't see theirs." },
+              { q: "Can customers pay and sign estimates online?", a: "Every customer gets a secure portal to view job history, e-sign estimates, and pay invoices — no account or app download required on their end." },
+              { q: "What is Alfred?", a: "Alfred is the built-in AI assistant — it answers questions about your business using your live data, drafts and sends customer messages, and can text you back and forth like a real assistant would." },
+            ].map((item, i) => (
+              <FaqItem key={item.q} q={item.q} a={item.a} />
+            ))}
+          </div>
+        </Reveal>
+      </section>
+
       {/* ── Roadmap & Feedback — a REAL, working section embedded right on the
           landing page (not just a nav link off to #/roadmap), per repeated
           user report: "no section to request new features, upvote or
@@ -583,6 +608,25 @@ export function LandingPage({
       </Reveal>
 
       <MarketingFooter onNavigate={onNavigate} onGetStarted={onGetStarted} />
+    </div>
+  );
+}
+
+function FaqItem({ q, a }: { q: string; a: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="glass rounded-xl overflow-hidden">
+      <button
+        onClick={() => setOpen(o => !o)}
+        className="w-full flex items-center justify-between gap-4 text-left px-5 py-4"
+        aria-expanded={open}
+      >
+        <span className="font-semibold text-sm md:text-base">{q}</span>
+        <ChevronRight size={16} className={"flex-shrink-0 text-white/40 transition-transform " + (open ? "rotate-90" : "")} />
+      </button>
+      {open && (
+        <div className="px-5 pb-4 text-sm text-white/60 leading-relaxed">{a}</div>
+      )}
     </div>
   );
 }
