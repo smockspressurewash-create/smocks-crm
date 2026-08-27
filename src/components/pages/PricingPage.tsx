@@ -7,15 +7,17 @@ import {
 import { PLANS } from "./LandingPage";
 
 // ─── #/pricing — dedicated pricing page ────────────────────────────────────
-// Expands on the illustrative 3-tier pricing already shown (condensed) on
-// LandingPage.tsx (imported from there as PLANS, so the numbers/tiers stay
-// a single source of truth instead of drifting between the two pages) with
-// a full feature-comparison table and a billing FAQ.
+// Expands on the 3-tier pricing already shown (condensed) on LandingPage.tsx
+// (imported from there as PLANS, so the numbers/tiers stay a single source
+// of truth instead of drifting between the two pages) with a full feature-
+// comparison table and a billing FAQ.
 //
-// NOTE: same caveat as LandingPage.tsx — this app's data model has no real
-// plan/tier/subscription/billing concept (checked src/types/index.ts and
-// App.tsx). These tiers and FAQ answers are clean, reasonable placeholder
-// content for a small-business CRM, not wired to any real billing system.
+// This IS wired to a real billing system — each plan button starts a real
+// Stripe Checkout session (see onChoosePlan/App.tsx's startPaidSignup), and
+// the seat/customer limits described in COMPARISON_ROWS/FAQS below are the
+// same ones actually enforced by lib/planLimits.ts (see CustomersPage.tsx/
+// EmployeesPage.tsx's upgrade-prompt gating) — keep this content and that
+// file's numbers in sync if either ever changes.
 
 const COMPARISON_ROWS: Array<{ label: string; solo: boolean | string; crew: boolean | string; growth: boolean | string }> = [
   { label: "Unlimited jobs & customers", solo: true, crew: true, growth: true },

@@ -400,10 +400,42 @@ export function LandingPage({
               ))}
             </ul>
           </div>
-          <div className="glass p-6 md:p-10 text-center">
-            <div className="text-5xl md:text-6xl font-black gradient-text mb-3">📱</div>
-            <div className="font-bold text-lg mb-2">One app, every role</div>
-            <p className="text-white/50 text-sm leading-relaxed">Owners get the full CRM. Crew get a lightweight field portal built just for the job in front of them. Customers get their own portal to sign, pay, and track their service — nobody logs into the wrong thing.</p>
+          <div className="flex justify-center">
+            {/* FEATURE — "I want to improve the landing page and add more
+                stuff, the UI should look better." A second real-looking
+                mockup (phone-shaped, not another emoji-in-a-box) for the
+                field-portal half of the pitch, matching the hero's
+                dashboard mockup's design language. */}
+            <div className="w-56 md:w-64 rounded-[2rem] border-4 border-white/10 bg-black shadow-2xl shadow-red-950/40 overflow-hidden">
+              <div className="h-6 bg-black flex items-center justify-center">
+                <div className="w-16 h-1.5 rounded-full bg-white/15" />
+              </div>
+              <div className="p-3 space-y-2.5">
+                <div className="flex items-center justify-between px-1">
+                  <span className="text-[10px] font-bold text-white/80">Today's Jobs</span>
+                  <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-green-900/40 text-green-300 border border-green-700/40">On Shift</span>
+                </div>
+                {[
+                  { addr: "412 Birch Ln", done: true },
+                  { addr: "88 Maple Ct", done: false },
+                ].map(j => (
+                  <div key={j.addr} className="glass rounded-lg p-2.5 flex items-center gap-2">
+                    {j.done ? <CheckCircle size={13} className="text-green-400 flex-shrink-0" /> : <span className="w-3 h-3 rounded-full border border-white/30 flex-shrink-0" />}
+                    <span className={"text-[10px] flex-1 truncate " + (j.done ? "text-white/40 line-through" : "text-white/80")}>{j.addr}</span>
+                  </div>
+                ))}
+                <div className="glass rounded-lg p-2.5">
+                  <div className="text-[9px] text-white/40 uppercase tracking-wider mb-1.5">Checklist</div>
+                  {["Pre-wash photos", "Soft wash applied"].map((t, i) => (
+                    <div key={t} className="flex items-center gap-1.5 text-[9px] text-white/60 py-0.5">
+                      <CheckCircle size={10} className={i === 0 ? "text-green-400" : "text-white/20"} />
+                      {t}
+                    </div>
+                  ))}
+                </div>
+                <button className="w-full py-2 rounded-lg bg-gradient-to-br from-red-600 to-red-800 text-[10px] font-bold text-center">Clock Out</button>
+              </div>
+            </div>
           </div>
         </section>
       </Reveal>
