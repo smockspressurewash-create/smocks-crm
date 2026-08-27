@@ -12,16 +12,54 @@
 // runs server-side (no CORS restriction applies to it) and same-origin (no
 // CORS restriction applies to calling IT from the browser either), so it
 // proxies the real Twilio call through.
-export const onRequestPost = async (context: { request: Request }) => {
+const SUPABASE_URL = "https://boaqaihymgmrhnjtiqrs.supabase.co";
+const normalizePhoneDigits = (p?: string | null): string => {
+  const d = (p || "").replace(/\D/g, "");
+  return d.length === 11 && d.startsWith("1") ? d.slice(1) : d;
+};
+
+export const onRequestPost = async (context: { request: Request; env: Record<string, string> }) => {
   try {
-    const { sid, token, to, from, body } = await context.request.json() as {
-      sid?: string; token?: string; to?: string; from?: string; body?: string;
+    const { sid, token, to, from, body, ownerId } = await context.request.json() as {
+      sid?: string; token?: string; to?: string; from?: string; body?: string; ownerId?: string;
     };
     if (!sid || !token || !to || !from || !body) {
       return new Response(JSON.stringify({ error: "Missing sid/token/to/from/body" }), {
         status: 400, headers: { "Content-Type": "application/json" },
       });
     }
+
+    // SECURITY FIX (found via audit) — this proxy used to forward straight
+    // to Twilio with zero opt-out check of its own, trusting lib/messaging.
+    // ts's twilioSend() (browser-side) to be the only thing that ever
+    // enforces STOP. Anyone who obtained a business's Twilio SID/token
+    // (every one of that business's own signed-in employees can read it
+    // from app_settings — see CLAUDE.md) could POST directly here and text
+    // an opted-out number, bypassing that check entirely. Re-verified here
+    // server-side whenever the caller supplies ownerId (every real call
+    // site in the app now does — see setCurrentOwnerIdForSms in
+    // messaging.ts); if it's missing (e.g. an older/custom caller), this
+    // falls back to not blocking, same as before, rather than breaking sends.
+    const serviceRoleKey = context.env.SUPABASE_SERVICE_ROLE_KEY;
+    if (ownerId && serviceRoleKey) {
+      try {
+        const toDigits = normalizePhoneDigits(to);
+        const custRes = await fetch(
+          `${SUPABASE_URL}/rest/v1/customers?owner_id=eq.${encodeURIComponent(ownerId)}&select=phone,smsOptOut&smsOptOut=eq.true`,
+          { headers: { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}` } }
+        );
+        const optedOutRows = await custRes.json().catch(() => []);
+        const isOptedOut = Array.isArray(optedOutRows) && optedOutRows.some((c: any) => normalizePhoneDigits(c.phone) === toDigits && toDigits);
+        if (isOptedOut) {
+          return new Response(JSON.stringify({ error: "This contact has opted out of text messages (replied STOP) — SMS blocked." }), {
+            status: 403, headers: { "Content-Type": "application/json" },
+          });
+        }
+      } catch (e: any) {
+        console.warn("[Twilio Send] opt-out check failed, allowing send:", e?.message);
+      }
+    }
+
     const formData = new URLSearchParams({ To: to, From: from, Body: body });
     const twilioRes = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`, {
       method: "POST",

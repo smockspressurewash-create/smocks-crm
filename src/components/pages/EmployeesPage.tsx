@@ -441,7 +441,12 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setJobs
 
   const generateInvite = async () => {
     if (!inviteF.firstName.trim() || !inviteF.email.trim()) return;
-    const code = (Math.random().toString(36).substring(2, 10) + Date.now().toString(36)).toUpperCase();
+    // SECURITY FIX — Math.random() is not cryptographically secure and the
+    // appended Date.now() component made a code guessable within any
+    // realistic sharing window. uid() is a real crypto.randomUUID() (see
+    // lib/utils.ts) — 12 hex chars from it still carries far more entropy
+    // than the old scheme ever did.
+    const code = uid().replace(/-/g, "").slice(0, 12).toUpperCase();
     const inv: InviteRecord = { code, ...inviteF, hourlyRate: Number(inviteF.hourlyRate), createdAt: new Date().toISOString().slice(0, 10), permissions: invitePerms };
     // Save to localStorage (local UI state)
     setInvites(prev => [...prev, inv]);

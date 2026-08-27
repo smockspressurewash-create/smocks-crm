@@ -91,7 +91,7 @@ import { seedWeather } from "./lib/weather";
 import { fetchRealWeather, deriveWeatherLocation } from "./lib/weather";
 import { fmt, uid, today, daysSince, daysFromNow, consumeOAuthIntent, getLastOwnerSessionFlag, setLastOwnerSessionFlag, getLastOwnerId, setLastOwnerId, buildChecklistFromServices, withTimeout, normalizeJobRow, totalJobPhotoCount, notifyDesktop, stripLegacyJobFields, getPollIntervalMs, purgeOldJobMedia, computeGoalProgress, localDateKey } from "./lib/utils";
 import { sendPushNotification } from "./lib/push";
-import { sendEmail, sendOwnerGmailOnly, emailShell, emailButton, buildTomorrowJobsEmailHtml, buildWeeklyScheduleEmailHtml, buildDailyBriefingEmailHtml, buildWeeklyOwnerDigestEmailHtml, setOptedOutPhones, setTestModeContacts, twilioSend, logOutboundSmsToInbox } from "./lib/messaging";
+import { sendEmail, sendOwnerGmailOnly, emailShell, emailButton, buildTomorrowJobsEmailHtml, buildWeeklyScheduleEmailHtml, buildDailyBriefingEmailHtml, buildWeeklyOwnerDigestEmailHtml, setOptedOutPhones, setTestModeContacts, setCurrentOwnerIdForSms, twilioSend, logOutboundSmsToInbox } from "./lib/messaging";
 import { exchangeSocialOAuthCode, type SocialPlatform } from "./lib/socialOAuth";
 import type {
   Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense,
@@ -2978,6 +2978,12 @@ export function App() {
   useEffect(() => {
     setOptedOutPhones(customers);
   }, [customers]);
+  // SECURITY FIX — lets functions/api/twilio-send.ts independently re-check
+  // opt-out status server-side instead of relying solely on the browser-
+  // side check above (see setCurrentOwnerIdForSms's own comment).
+  useEffect(() => {
+    setCurrentOwnerIdForSms(crmUserId || null);
+  }, [crmUserId]);
 
   // FEATURE (round 13, item 12) — Testing Mode, same registry pattern as
   // opt-out above. Recomputed whenever customers change OR the owner flips

@@ -116,7 +116,12 @@ export function HiringPage({ settings = {} as AppSettings, setSettings, toast, o
 
   const hireCandidate = async (cand: any) => {
     if (!cand.email?.trim()) { toast?.("This candidate has no email on file — add one before sending a portal invite", "yellow"); setHireConfirm(null); return; }
-    const code = (Math.random().toString(36).substring(2, 10) + Date.now().toString(36)).toUpperCase();
+    // SECURITY FIX — Math.random() is not cryptographically secure and the
+    // appended Date.now() component made a code guessable within any
+    // realistic sharing window. uid() is a real crypto.randomUUID() (see
+    // lib/utils.ts) — 12 hex chars from it still carries far more entropy
+    // than the old scheme ever did.
+    const code = uid().replace(/-/g, "").slice(0, 12).toUpperCase();
     try {
       const { data: { user } } = await supabase.auth.getUser();
       await (supabase as any).from("invites").insert({

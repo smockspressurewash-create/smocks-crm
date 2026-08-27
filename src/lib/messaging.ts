@@ -225,6 +225,19 @@ export const isPhoneOptedOut = (phone: string): boolean => {
   return !!digits && optedOutPhoneDigits.has(digits);
 };
 
+// SECURITY FIX (found via audit) — the opt-out check above only ever ran in
+// this browser tab's own JS; functions/api/twilio-send.ts (the actual
+// Twilio proxy every send eventually hits) had no way to independently
+// re-verify it, so anyone who obtained a business's Twilio SID/Account
+// Token (e.g. from app_settings, readable by any of that business's own
+// signed-in employee sessions — see CLAUDE.md) could POST straight to that
+// endpoint and text an opted-out number directly, bypassing this file
+// entirely. Same in-memory-registry pattern as setOptedOutPhones above —
+// App.tsx sets this once whenever the signed-in owner's id is known, and
+// twilioSend() below passes it along so the server can do its own lookup.
+let currentOwnerIdForSms: string | null = null;
+export const setCurrentOwnerIdForSms = (ownerId: string | null): void => { currentOwnerIdForSms = ownerId; };
+
 // ─── Testing mode (round 13, item 12) ───────────────────────────────────────
 // Same in-memory-registry pattern as opt-out above (see comment there for
 // why): App.tsx calls setTestModeContacts(customers, settings.testModeEnabled)
@@ -301,7 +314,10 @@ export const twilioSend = async (
   const endpoint = twilioBackendUrl ? `${twilioBackendUrl}/sms` : "/api/twilio-send";
   const payload = twilioBackendUrl
     ? { to: toNum, from, body }
-    : { sid: twilioSid, token: twilioToken, to: toNum, from, body };
+    // ownerId (see setCurrentOwnerIdForSms above) lets the server re-check
+    // opt-out status itself instead of trusting this browser-side check as
+    // the only line of defense.
+    : { sid: twilioSid, token: twilioToken, to: toNum, from, body, ownerId: currentOwnerIdForSms };
   const res = await fetch(endpoint, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
