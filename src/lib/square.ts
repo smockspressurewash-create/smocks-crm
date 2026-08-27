@@ -98,3 +98,18 @@ export const saveOwnerSquareKeys = (accessToken: string, opts: { squareAccessTok
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${accessToken}` },
     body: JSON.stringify({ action: "save_owner_square_keys", ...opts }),
   }).then(r => r.json());
+
+// ─── Recurring billing (Square Subscriptions) ─────────────────────────────
+// Square has no hosted-checkout-link equivalent for subscriptions the way
+// Stripe does — a Customer + Card must be created server-side from a
+// tokenized sourceId, which means the owner taps/swipes the card in person
+// through SquareRecurringSetupModal.tsx (mirrors SquarePaymentModal.tsx's
+// existing one-time tokenize flow).
+export const createSquareRecurringPlan = (opts: {
+  sourceId: string; crmCustomerId: string; amountCents: number; cadence: "WEEKLY" | "MONTHLY" | "ANNUAL";
+  description?: string; customerEmail?: string; customerName?: string;
+}): Promise<{ success: boolean; subscriptionId: string; status: string }> =>
+  squareAction("create_square_recurring_plan", opts);
+
+export const cancelSquareRecurringPlan = (subscriptionId: string): Promise<{ success: boolean; status: string }> =>
+  squareAction("cancel_square_recurring_plan", { subscriptionId });

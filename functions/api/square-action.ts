@@ -227,6 +227,130 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
       return json({ success: true, id: refundData?.refund?.id || "", amount: refundAmountCents, status: refundData?.refund?.status || "PENDING" });
     }
 
+    // FEATURE — real recurring billing via Square's own Subscriptions API.
+    // Unlike Stripe (which has a hosted Checkout link a customer can open on
+    // their own phone), Square's subscriptions require a Customer + a saved
+    // Card object created server-side from a tokenized `sourceId` — so this
+    // action is meant to be called right after the OWNER taps/swipes the
+    // customer's card in person through SquareRecurringSetupModal.tsx
+    // (mirrors SquarePaymentModal.tsx's existing one-time-payment tokenize
+    // flow), same "card details never touch our servers, only a one-time
+    // token does" model as create_payment above.
+    if (action === "create_square_recurring_plan") {
+      const { sourceId, crmCustomerId, amountCents, cadence, description, customerEmail, customerName } = body;
+      if (!sourceId) return json({ error: "Missing sourceId (card token)" }, 400);
+      if (!crmCustomerId) return json({ error: "Missing crmCustomerId" }, 400);
+      const amt = Math.round(Number(amountCents) || 0);
+      if (amt <= 0) return json({ error: "Invalid amount" }, 400);
+      const validCadences = ["WEEKLY", "MONTHLY", "ANNUAL"];
+      const planCadence = validCadences.includes(cadence) ? cadence : "MONTHLY";
+
+      const accessTokenHdr = (context.request.headers.get("authorization") || "").replace(/^Bearer\s+/i, "");
+      const callerOwnerId = await resolveCallerOwnerId(accessTokenHdr);
+      if (!callerOwnerId) return json({ error: "Not signed in." }, 401);
+      const acct = await getOwnerSquareAccount(callerOwnerId, serviceRoleKey);
+      if (!acct?.accessToken || !acct?.locationId) {
+        return json({ error: "Square isn't configured for this business yet — add keys in Settings → Integrations → Square." }, 500);
+      }
+      const sqHeaders = { Authorization: `Bearer ${acct.accessToken}`, "Content-Type": "application/json", "Square-Version": "2024-10-17" };
+
+      try {
+        // 1. Create (or reuse) a Square Customer for this CRM customer.
+        const custRes = await fetch(`${squareApiBase()}/v2/customers`, {
+          method: "POST", headers: sqHeaders,
+          body: JSON.stringify({ idempotency_key: crypto.randomUUID(), given_name: customerName || undefined, email_address: customerEmail || undefined, reference_id: crmCustomerId }),
+        });
+        const custData = await custRes.json().catch(() => ({} as any));
+        if (!custRes.ok) throw new Error(custData?.errors?.[0]?.detail || `Square error creating customer (${custRes.status})`);
+        const squareCustomerId = custData?.customer?.id;
+
+        // 2. Attach the tokenized card to that customer.
+        const cardRes = await fetch(`${squareApiBase()}/v2/cards`, {
+          method: "POST", headers: sqHeaders,
+          body: JSON.stringify({ idempotency_key: crypto.randomUUID(), source_id: sourceId, card: { customer_id: squareCustomerId } }),
+        });
+        const cardData = await cardRes.json().catch(() => ({} as any));
+        if (!cardRes.ok) throw new Error(cardData?.errors?.[0]?.detail || `Square error saving card (${cardRes.status})`);
+        const squareCardId = cardData?.card?.id;
+
+        // 3. Create a Catalog subscription plan + variation for this exact
+        // price/cadence — Square has no inline "price_data" equivalent, a
+        // real Catalog object is required for every subscription.
+        const catalogRes = await fetch(`${squareApiBase()}/v2/catalog/object`, {
+          method: "POST", headers: sqHeaders,
+          body: JSON.stringify({
+            idempotency_key: crypto.randomUUID(),
+            object: {
+              type: "SUBSCRIPTION_PLAN", id: "#plan",
+              subscription_plan_data: {
+                name: description || "Recurring service",
+                subscription_plan_variations: [{
+                  type: "SUBSCRIPTION_PLAN_VARIATION", id: "#variation",
+                  subscription_plan_variation_data: {
+                    name: description || "Recurring service",
+                    phases: [{ cadence: planCadence, recurring_price_money: { amount: amt, currency: "USD" }, ordinal: 0 }],
+                  },
+                }],
+              },
+            },
+          }),
+        });
+        const catalogData = await catalogRes.json().catch(() => ({} as any));
+        if (!catalogRes.ok) throw new Error(catalogData?.errors?.[0]?.detail || `Square error creating subscription plan (${catalogRes.status})`);
+        const variation = (catalogData?.related_objects || []).find((o: any) => o.type === "SUBSCRIPTION_PLAN_VARIATION") || catalogData?.catalog_object?.subscription_plan_data?.subscription_plan_variations?.[0];
+        const planId = catalogData?.catalog_object?.id;
+        const variationId = variation?.id;
+        if (!variationId) throw new Error("Square didn't return a subscription plan variation id");
+
+        // 4. Start the subscription — billing begins on the cadence above.
+        const subRes = await fetch(`${squareApiBase()}/v2/subscriptions`, {
+          method: "POST", headers: sqHeaders,
+          body: JSON.stringify({ idempotency_key: crypto.randomUUID(), location_id: acct.locationId, plan_variation_id: variationId, customer_id: squareCustomerId, card_id: squareCardId }),
+        });
+        const subData = await subRes.json().catch(() => ({} as any));
+        if (!subRes.ok) throw new Error(subData?.errors?.[0]?.detail || `Square error creating subscription (${subRes.status})`);
+
+        // Save recurringPlan on the CRM customer row here (rather than
+        // relying on a webhook, since Square's Subscriptions API doesn't
+        // hand back an easy per-CRM-customer webhook correlation the way
+        // Stripe's subscription_data.metadata does) — status starts
+        // "active" since the card + subscription were both just created
+        // successfully; a failed FUTURE renewal is caught by
+        // square-webhook-driven status updates being out of scope for now,
+        // so the owner should spot-check Square's own dashboard for
+        // ongoing renewal health.
+        const patch = {
+          provider: "square", status: "active", amountCents: amt, interval: planCadence.toLowerCase() === "annual" ? "year" : planCadence.toLowerCase() === "weekly" ? "week" : "month",
+          description: description || "Recurring service", squareSubscriptionId: subData?.subscription?.id, squareCustomerId, squareCardId, squarePlanId: planId, squareVariationId: variationId,
+        };
+        await fetch(`${SUPABASE_URL}/rest/v1/customers?id=eq.${encodeURIComponent(crmCustomerId)}`, {
+          method: "PATCH", headers: { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}`, "Content-Type": "application/json", Prefer: "return=minimal" },
+          body: JSON.stringify({ recurringPlan: patch }),
+        });
+
+        return json({ success: true, subscriptionId: subData?.subscription?.id, status: subData?.subscription?.status || "ACTIVE" });
+      } catch (e: any) {
+        return json({ error: e?.message || "Failed to set up Square recurring plan" }, 500);
+      }
+    }
+
+    // cancel_square_recurring_plan — owner-only.
+    if (action === "cancel_square_recurring_plan") {
+      const { subscriptionId } = body;
+      if (!subscriptionId) return json({ error: "Missing subscriptionId" }, 400);
+      const accessTokenHdr = (context.request.headers.get("authorization") || "").replace(/^Bearer\s+/i, "");
+      const callerOwnerId = await resolveCallerOwnerId(accessTokenHdr);
+      if (!callerOwnerId) return json({ error: "Not signed in." }, 401);
+      const acct = await getOwnerSquareAccount(callerOwnerId, serviceRoleKey);
+      if (!acct?.accessToken) return json({ error: "Square isn't configured for this business." }, 500);
+      const cancelRes = await fetch(`${squareApiBase()}/v2/subscriptions/${encodeURIComponent(subscriptionId)}/cancel`, {
+        method: "POST", headers: { Authorization: `Bearer ${acct.accessToken}`, "Square-Version": "2024-10-17" },
+      });
+      const cancelData = await cancelRes.json().catch(() => ({} as any));
+      if (!cancelRes.ok) return json({ error: cancelData?.errors?.[0]?.detail || `Square error ${cancelRes.status}` }, cancelRes.status);
+      return json({ success: true, status: cancelData?.subscription?.status || "CANCELED" });
+    }
+
     return json({ error: "Unknown action: " + action }, 400);
   } catch (e: any) {
     return json({ error: e?.message || "Square proxy error" }, 500);

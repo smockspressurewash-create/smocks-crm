@@ -46,6 +46,8 @@ import { DocumentVault } from "./DocumentVault";
 import { crewIncludesEmployee } from "../pages/EmployeePortal";
 import { supabase } from "../../lib/supabase";
 import { listCustomerPaymentMethods, detachPaymentMethod, StripeSavedCard, createRecurringCheckoutSession, cancelRecurringSubscription } from "../../lib/stripe";
+import { cancelSquareRecurringPlan } from "../../lib/square";
+import { SquareRecurringSetupModal } from "./SquareRecurringSetupModal";
 import { SaveCardModal } from "./SaveCardModal";
 import { useIsMobile } from "../../hooks/useIsMobile";
 
@@ -171,7 +173,10 @@ export function CustomerDetail({ customer: c, onClose, onDelete, onEdit, estimat
   const [recurCreating, setRecurCreating] = useState(false);
   const [recurLink, setRecurLink] = useState("");
   const [recurCanceling, setRecurCanceling] = useState(false);
+  const [squareRecurOpen, setSquareRecurOpen] = useState(false);
   const plan = c?.recurringPlan;
+  const squareConfigured = !!(settings?.squareApplicationId && settings?.squareLocationId);
+  const squareCadence = recurInterval === "year" ? "ANNUAL" : recurInterval === "week" ? "WEEKLY" : "MONTHLY";
 
   const startRecurringPlan = async () => {
     const amountCents = Math.round(parseFloat(recurAmount) * 100);
@@ -204,7 +209,7 @@ export function CustomerDetail({ customer: c, onClose, onDelete, onEdit, estimat
   };
 
   const cancelRecurringPlan = async () => {
-    if (!plan?.stripeSubscriptionId) {
+    if (!plan?.stripeSubscriptionId && !plan?.squareSubscriptionId) {
       // Never activated (customer hasn't completed checkout yet) — just clear it locally.
       setCustomers((prev: any[]) => prev.map((cust: any) => cust.id === c.id ? { ...cust, recurringPlan: null } : cust));
       await (supabase as any).from("customers").update({ recurringPlan: null }).eq("id", c.id);
@@ -214,9 +219,13 @@ export function CustomerDetail({ customer: c, onClose, onDelete, onEdit, estimat
     if (!(await confirmAsync({ message: "Cancel this customer's recurring plan? They will not be billed again.", confirmLabel: "Cancel Plan" }))) return;
     setRecurCanceling(true);
     try {
-      const { data: { session } } = await supabase.auth.getSession();
-      const token = session?.access_token;
-      await cancelRecurringSubscription(plan.stripeSubscriptionId, undefined, token);
+      if (plan.provider === "square" && plan.squareSubscriptionId) {
+        await cancelSquareRecurringPlan(plan.squareSubscriptionId);
+      } else if (plan.stripeSubscriptionId) {
+        const { data: { session } } = await supabase.auth.getSession();
+        const token = session?.access_token;
+        await cancelRecurringSubscription(plan.stripeSubscriptionId, undefined, token);
+      }
       setCustomers((prev: any[]) => prev.map((cust: any) => cust.id === c.id ? { ...cust, recurringPlan: { ...plan, status: "canceled" } } : cust));
       toast?.("Recurring plan canceled", "green");
     } catch (e: any) {
@@ -587,14 +596,46 @@ export function CustomerDetail({ customer: c, onClose, onDelete, onEdit, estimat
                     </select>
                   </div>
                   <input value={recurDesc} onChange={e => setRecurDesc(e.target.value)} placeholder="Description (e.g. Monthly window cleaning)" className="w-full px-3 py-2 rounded-lg bg-black/40 border border-white/10 text-sm outline-none focus:border-red-500/50" />
-                  <GBtn onClick={startRecurringPlan} disabled={recurCreating} className="!w-full !justify-center">
-                    {recurCreating ? "Creating…" : "Create Plan Link"}
-                  </GBtn>
+                  <div className={"flex gap-2 " + (isMobile ? "flex-col" : "flex-row")}>
+                    <GBtn onClick={startRecurringPlan} disabled={recurCreating || !recurAmount} className="flex-1 !justify-center">
+                      {recurCreating ? "Creating…" : "Send Stripe Link"}
+                    </GBtn>
+                    {squareConfigured && (
+                      <button
+                        onClick={() => { if (!recurAmount || Math.round(parseFloat(recurAmount) * 100) <= 0) { toast?.("Enter a valid amount", "red"); return; } setSquareRecurOpen(true); }}
+                        className="flex-1 px-3 py-2 rounded-lg bg-[#006AFF]/20 border border-[#006AFF]/40 text-[#4d9fff] text-sm font-medium hover:bg-[#006AFF]/30 transition"
+                      >
+                        Charge Square Card
+                      </button>
+                    )}
+                  </div>
+                  <div className="text-[10px] text-white/30">Stripe sends the customer a link to enter their own card. Square requires the card in hand (in person or read over the phone).</div>
                 </div>
               ) : (
                 <div className="text-xs text-white/40 py-2 text-center">No recurring plan set up</div>
               )}
             </Glass>
+            {squareConfigured && (
+              <SquareRecurringSetupModal
+                open={squareRecurOpen}
+                onClose={() => setSquareRecurOpen(false)}
+                applicationId={settings.squareApplicationId}
+                locationId={settings.squareLocationId}
+                crmCustomerId={c.id}
+                amountCents={Math.round(parseFloat(recurAmount || "0") * 100)}
+                cadence={squareCadence}
+                description={recurDesc.trim() || "Recurring service"}
+                customerEmail={c.email}
+                customerName={[c.firstName, c.lastName].filter(Boolean).join(" ")}
+                onSuccess={(subscriptionId) => {
+                  const newPlan = { provider: "square", status: "active", amountCents: Math.round(parseFloat(recurAmount || "0") * 100), interval: recurInterval, description: recurDesc.trim() || "Recurring service", squareSubscriptionId: subscriptionId };
+                  setCustomers((prev: any[]) => prev.map((cust: any) => cust.id === c.id ? { ...cust, recurringPlan: newPlan } : cust));
+                  setSquareRecurOpen(false);
+                  setRecurOpen(false);
+                  toast?.("Recurring plan started via Square ✓", "green");
+                }}
+              />
+            )}
             {/* Quick stats */}
             <div className="grid grid-cols-3 gap-3">
               {[
