@@ -2576,6 +2576,23 @@ export function App() {
   const refetchData = async () => {
     setIsSyncing(true);
     try {
+      // BUG FIX — "delete an invoice on one device, it reappears on another."
+      // The prune-on-fetch logic below only drops a local row once THIS TAB's
+      // syncedXIdsRef has previously seen it live and then watched it vanish
+      // — but that ref starts empty every fresh page load/reload, and gets
+      // populated from THIS SAME fetch's own results a few lines below. On a
+      // brand-new session (e.g. opening the app on a phone that's had it
+      // installed/cached a while), a row deleted on another device entirely
+      // was NEVER "previously confirmed synced" by this tab — it just isn't
+      // in the fresh fetch, indistinguishable (by that check alone) from a
+      // genuinely new, not-yet-pushed local row. Real offline-created rows
+      // are always recent (this session's usePersistent cache is normally
+      // in sync within minutes); a stale cached copy of a since-deleted row
+      // essentially never is. So: keep an unconfirmed local-only row only if
+      // it's recent — same heuristic already used by the mount-time
+      // syncLocalToSupabase push and the 30s autosave's own new-row check.
+      const RECENT_MS = 30 * 60 * 1000;
+      const isRecentRow = (row: any) => { const t = Date.parse(row?.createdAt || ""); return !Number.isNaN(t) && Date.now() - t < RECENT_MS; };
       const [{ data: sbJobs, error: jobsErr }, { data: sbCustomers, error: customersErr }, { data: sbEstimates, error: estimatesErr }, { data: sbPromotions }, { data: sbReviews, error: reviewsErr }, { data: sbChemicals }] = await Promise.all([
         (supabase as any).from("jobs").select("*").eq("owner_id", crmUserId),
         (supabase as any).from("customers").select("*").eq("owner_id", crmUserId),
@@ -2619,7 +2636,7 @@ export function App() {
           // BUG FIX — see syncedJobIdsRef's comment: prune any row this tab
           // previously confirmed synced that's now missing from THIS fresh
           // fetch, instead of keeping every row forever once seen once.
-          const pruned = prev.filter(j => sbMap.has(j.id) || !syncedJobIdsRef.current.has(j.id));
+          const pruned = prev.filter(j => sbMap.has(j.id) || (!syncedJobIdsRef.current.has(j.id) && isRecentRow(j)));
           const merged = pruned.map(j => sbMap.has(j.id) ? { ...j, ...sbMap.get(j.id) } : j);
           const existingIds = new Set(pruned.map(j => j.id));
           const added = normedJobs.filter((j: any) => !existingIds.has(j.id));
@@ -2633,7 +2650,7 @@ export function App() {
         setCustomers(prev => {
           const filteredCustomers = filterRecentlyDeleted("customers", sbCustomers);
           const sbMap = new Map(filteredCustomers.map((c: any) => [c.id, c]));
-          const pruned = prev.filter(c => sbMap.has(c.id) || !syncedCustomerIdsRef.current.has(c.id));
+          const pruned = prev.filter(c => sbMap.has(c.id) || (!syncedCustomerIdsRef.current.has(c.id) && isRecentRow(c)));
           const merged = pruned.map(c => sbMap.has(c.id) ? { ...c, ...sbMap.get(c.id) } : c);
           const existingIds = new Set(pruned.map(c => c.id));
           const added = filteredCustomers.filter((c: any) => !existingIds.has(c.id));
@@ -2646,7 +2663,7 @@ export function App() {
         setEstimates(prev => {
           const filteredEstimates = filterRecentlyDeleted("estimates", sbEstimates);
           const sbMap = new Map(filteredEstimates.map((e: any) => [e.id, e]));
-          const pruned = prev.filter(e => sbMap.has(e.id) || !syncedEstimateIdsRef.current.has(e.id));
+          const pruned = prev.filter(e => sbMap.has(e.id) || (!syncedEstimateIdsRef.current.has(e.id) && isRecentRow(e)));
           const merged = pruned.map(e => sbMap.has(e.id) ? { ...e, ...sbMap.get(e.id) } : e);
           const existingIds = new Set(pruned.map(e => e.id));
           const added = filteredEstimates.filter((e: any) => !existingIds.has(e.id));
@@ -2708,7 +2725,7 @@ export function App() {
         setChemicals(prev => {
           const filteredChemicals = filterRecentlyDeleted("chemicals", sbChemicals);
           const sbMap = new Map(filteredChemicals.map((c: any) => [c.id, c]));
-          const pruned = prev.filter(c => sbMap.has(c.id) || !syncedChemicalIdsRef.current.has(c.id));
+          const pruned = prev.filter(c => sbMap.has(c.id) || (!syncedChemicalIdsRef.current.has(c.id) && isRecentRow(c)));
           const merged = pruned.map(c => sbMap.has(c.id) ? { ...c, ...sbMap.get(c.id) } : c);
           const existingIds = new Set(pruned.map(c => c.id));
           const added = filteredChemicals.filter((c: any) => !existingIds.has(c.id));

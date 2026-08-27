@@ -1,5 +1,6 @@
 // auto-extracted from Crew Boss OS monolith
 import React, { useState, useEffect, useRef, useCallback } from "react";
+import { createPortal } from "react-dom";
 import {
   LayoutDashboard, Users, FileText, Briefcase, Bot, BarChart3,
   Settings, Bell, Menu, X, Plus, Search, Edit, Trash2, Send,
@@ -775,8 +776,19 @@ export function CalendarPage({ jobs = [], setJobs, customers = [], employees = [
         </Glass>
       )}
 
-      {/* Quick actions context menu — right-click or long-press a job pill */}
-      {jobContextMenu && (
+      {/* Quick actions context menu — right-click or long-press a job pill.
+          BUG FIX — "the pop-up doesn't appear next to the job; it appears
+          far to the right [and down]." Rendering this inline (not portaled)
+          meant its `position: fixed` coordinates were relative to whichever
+          ancestor happens to establish a CSS containing block — a transform,
+          filter, perspective, or `will-change` on ANY element between this
+          menu and <body> (e.g. Glass's own `.glass-hover:active { transform:
+          scale(.997) }`, which is live for the whole mousedown of the very
+          right-click that opens this menu) — not the real viewport. Modal.tsx
+          already sidesteps this exact class of bug via createPortal straight
+          to document.body; do the same here instead of chasing every
+          possible transformed ancestor one at a time. */}
+      {jobContextMenu && createPortal(
         <>
           <div className="fixed inset-0 z-40" onClick={() => setJobContextMenu(null)} onContextMenu={(e: React.MouseEvent) => { e.preventDefault(); setJobContextMenu(null); }} />
           <div className="fixed z-50 bg-black/95 border border-red-900/40 rounded-xl shadow-2xl overflow-hidden py-1 w-44" style={{ left: Math.max(8, Math.min(jobContextMenu.x + 10, window.innerWidth - 184)), top: Math.max(8, Math.min(jobContextMenu.y - 10, window.innerHeight - 200)) }}>
@@ -785,7 +797,8 @@ export function CalendarPage({ jobs = [], setJobs, customers = [], employees = [
             <button onClick={() => rescheduleJobQuick(jobContextMenu.jobId)} className="w-full flex items-center gap-2 px-3 py-2 text-xs text-white/80 hover:bg-white/10 transition"><RefreshCw size={12} />Reschedule</button>
             <button onClick={() => cancelJobQuick(jobContextMenu.jobId)} className="w-full flex items-center gap-2 px-3 py-2 text-xs text-red-300 hover:bg-red-950/30 transition border-t border-white/10"><Ban size={12} />Cancel Job</button>
           </div>
-        </>
+        </>,
+        document.body
       )}
 
       {/* Notify-customer confirmation, shown after picking a new day for a

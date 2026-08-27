@@ -117,15 +117,23 @@ export type EditorCaption = {
 // assets into the editor." A real second (and third, etc.) visual layer on
 // top of the main clip track — an image (logo, phone-number graphic, any
 // branding asset) positioned and timed independently of the clips below
-// it, rendered via ffmpeg's real `overlay` filter (see renderFinalVideo),
-// not a fake preview-only sticker. Video-over-video compositing (true
-// picture-in-picture) is a much larger ffmpeg pipeline change and is not
-// included in this pass — image overlays cover the actual request (logo/
-// branding/text-graphic assets), which is what CapCut's own "overlay"
-// track is used for in practice the vast majority of the time.
+// it, rendered via ffmpeg's real `overlay` filter (see renderFinalVideo).
+// FEATURE — "picture-in-picture video." An overlay can now be `kind:
+// "video"` instead of just a static image — a second clip (own `file`,
+// kept in memory only, never pushed through the base64-data-URL brand
+// asset path) composited on top of the main timeline with the exact same
+// position/size/drag-resize/time-window machinery images already use.
+// `muted` defaults to true: mixing the PiP clip's own audio in under the
+// main track's is supported (see renderFinalVideo) but most PiP use cases
+// (a talking-head cam over B-roll, a logo sting) want it silent by
+// default so it doesn't compete with the main clip's audio; the owner can
+// un-mute it per-overlay if they actually want both audio tracks.
 export type EditorOverlay = {
   id: string; name: string;
-  src: string; // data URL — from a brand asset or a one-off upload
+  kind?: "image" | "video"; // default "image" — unset means image, for back-compat with saved overlays
+  src: string; // image: data URL (brand asset or one-off upload). video: object URL, preview only.
+  file?: File; // video overlays only — the real file ffmpeg reads from for export.
+  muted?: boolean; // video overlays only.
   // GLOBAL timeline seconds, same convention as EditorCaption.
   startSec: number; endSec: number;
   // Center position (0-1 of frame) and width as a fraction of frame width
@@ -608,20 +616,46 @@ export const renderFinalVideo = async (
     onProgress?.("Compositing overlays", 78);
     for (let i = 0; i < overlays.length; i++) {
       const ov = overlays[i];
-      const imgName = `overlay-${i}.png`;
-      const res = await fetch(ov.src);
-      const buf = new Uint8Array(await res.arrayBuffer());
-      await ff.writeFile(imgName, buf);
       const outName = `overlaid-${i}.mp4`;
       const ovW = Math.max(2, Math.round(ov.widthPct * targetW / 2) * 2);
       const opacity = Math.max(0, Math.min(1, ov.opacity));
-      const overlayFilter =
-        `[1:v]scale=${ovW}:-1[ovl${i}];` +
-        (opacity < 1 ? `[ovl${i}]format=rgba,colorchannelmixer=aa=${opacity.toFixed(3)}[ovl${i}a];` : "") +
-        `[0:v][ovl${i}${opacity < 1 ? "a" : ""}]overlay=x=${(ov.xPct).toFixed(4)}*W-w/2:y=${(ov.yPct).toFixed(4)}*H-h/2:enable='between(t,${ov.startSec},${ov.endSec})'`;
-      await ff.exec(["-i", finalInput, "-i", imgName, "-filter_complex", overlayFilter, "-c:a", "copy", outName]);
+      if (ov.kind === "video" && ov.file) {
+        // Picture-in-picture: the PiP clip's own frames are trimmed to the
+        // overlay's own on-screen duration, then time-shifted (setpts +
+        // startSec/TB) so they land at the right point on the GLOBAL
+        // timeline before being composited — `overlay=...enable=between(...)`
+        // still gates visibility to that exact window the same as an image.
+        const pipName = `pip-${i}-` + ov.file.name.replace(/[^a-z0-9.]/gi, "_");
+        await ff.writeFile(pipName, await fetchFile(ov.file));
+        const dur = Math.max(0.1, ov.endSec - ov.startSec);
+        const videoChain =
+          `[1:v]scale=${ovW}:-1,trim=duration=${dur},setpts=PTS-STARTPTS+${ov.startSec}/TB[pipv${i}];` +
+          (opacity < 1 ? `[pipv${i}]format=rgba,colorchannelmixer=aa=${opacity.toFixed(3)}[pipv${i}a];` : "") +
+          `[0:v][pipv${i}${opacity < 1 ? "a" : ""}]overlay=x=${ov.xPct.toFixed(4)}*W-w/2:y=${ov.yPct.toFixed(4)}*H-h/2:enable='between(t,${ov.startSec},${ov.endSec})'[vout${i}]`;
+        if (ov.muted === false) {
+          // Mix the PiP clip's own audio in under the main track's, the same
+          // trim/delay/amix technique the music stage below uses — delayed
+          // by startSec so it lines up with when the PiP actually appears.
+          const delayMs = Math.max(0, Math.round(ov.startSec * 1000));
+          const audioChain = `[1:a]atrim=start=0:duration=${dur},asetpts=PTS-STARTPTS,adelay=${delayMs}|${delayMs}[pipa${i}];[0:a][pipa${i}]amix=inputs=2:duration=first:dropout_transition=0[aout${i}]`;
+          await ff.exec(["-i", finalInput, "-i", pipName, "-filter_complex", `${videoChain};${audioChain}`, "-map", `[vout${i}]`, "-map", `[aout${i}]`, "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac", outName]);
+        } else {
+          await ff.exec(["-i", finalInput, "-i", pipName, "-filter_complex", videoChain, "-map", `[vout${i}]`, "-map", "0:a", "-c:a", "copy", outName]);
+        }
+        await ff.deleteFile(pipName).catch(() => {});
+      } else {
+        const imgName = `overlay-${i}.png`;
+        const res = await fetch(ov.src);
+        const buf = new Uint8Array(await res.arrayBuffer());
+        await ff.writeFile(imgName, buf);
+        const overlayFilter =
+          `[1:v]scale=${ovW}:-1[ovl${i}];` +
+          (opacity < 1 ? `[ovl${i}]format=rgba,colorchannelmixer=aa=${opacity.toFixed(3)}[ovl${i}a];` : "") +
+          `[0:v][ovl${i}${opacity < 1 ? "a" : ""}]overlay=x=${(ov.xPct).toFixed(4)}*W-w/2:y=${(ov.yPct).toFixed(4)}*H-h/2:enable='between(t,${ov.startSec},${ov.endSec})'`;
+        await ff.exec(["-i", finalInput, "-i", imgName, "-filter_complex", overlayFilter, "-c:a", "copy", outName]);
+        await ff.deleteFile(imgName).catch(() => {});
+      }
       await ff.deleteFile(finalInput).catch(() => {});
-      await ff.deleteFile(imgName).catch(() => {});
       finalInput = outName;
     }
   }

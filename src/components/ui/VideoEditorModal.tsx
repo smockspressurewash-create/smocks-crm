@@ -68,6 +68,7 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings, s
   const brandAssets: BrandAsset[] = (settings as any)?.brandAssets || [];
   const assetInputRef = useRef<HTMLInputElement>(null);
   const overlayAssetInputRef = useRef<HTMLInputElement>(null);
+  const pipVideoInputRef = useRef<HTMLInputElement>(null);
   const photoInputRef = useRef<HTMLInputElement>(null);
   const musicInputRef = useRef<HTMLInputElement>(null);
   const [uploadingAsset, setUploadingAsset] = useState(false);
@@ -467,9 +468,24 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings, s
     toast?.(`"${name}" added — drag it on the preview to position it`, "green");
   };
   const addOverlayFromUpload = async (file: File) => {
-    if (!file.type.startsWith("image/")) { toast?.(`${file.name} isn't an image`, "yellow"); return; }
+    if (file.type.startsWith("video/")) { addPipVideo(file); return; }
+    if (!file.type.startsWith("image/")) { toast?.(`${file.name} isn't an image or video`, "yellow"); return; }
     const dataUrl = await readFileAsDataUrl(file);
     addOverlay(dataUrl, file.name.replace(/\.[^.]+$/, ""));
+  };
+  // FEATURE — "picture-in-picture video." Same overlay object as an image,
+  // just kind:"video" with a real `file` for ffmpeg to read from on export
+  // (see renderFinalVideo) — the object URL in `src` is preview-only, never
+  // persisted (no base64 round-trip through settings for a video file).
+  // Defaults to a fixed 6s window and muted (see EditorOverlay's comment).
+  const addPipVideo = (file: File) => {
+    if (!activeClip) { toast?.("Add a clip first", "red"); return; }
+    const start = Math.max(0, globalPreviewTime);
+    const ov: EditorOverlay = { id: uid(), name: file.name.replace(/\.[^.]+$/, ""), kind: "video", file, muted: true, src: URL.createObjectURL(file), startSec: start, endSec: start + 6, xPct: 0.72, yPct: 0.72, widthPct: 0.34, opacity: 1 };
+    setOverlays(prev => [...prev, ov]);
+    setSelectedOverlayId(ov.id);
+    setTab("overlays");
+    toast?.(`"${ov.name}" added as picture-in-picture — drag it on the preview to position it`, "green");
   };
   const updateOverlay = (id: string, patch: Partial<EditorOverlay>) => setOverlays(prev => prev.map(o => o.id === id ? { ...o, ...patch } : o));
   const removeOverlay = (id: string) => { setOverlays(prev => prev.filter(o => o.id !== id)); if (selectedOverlayId === id) setSelectedOverlayId(null); };
@@ -789,7 +805,23 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings, s
                   <X size={18} />
                 </button>
               )}
-              {activeClip ? (
+              {activeClip && activeClip.isImage ? (
+                // BUG FIX — "display the video frame in the editor preview."
+                // A photo clip's `activeClipUrl` points at an image file — a
+                // <video> element can't decode a JPEG/PNG at all, so this
+                // showed nothing but a black box the whole time a photo
+                // clip was active. Plain <img>, same transform/filter/crop
+                // treatment the video path uses, driven by a manual
+                // rAF-independent progress bar below since there's no real
+                // playback position to read off an <img>.
+                <img
+                  key={activeClip.id}
+                  src={activeClipUrl}
+                  className="w-full h-full object-contain"
+                  style={{ transform: `${activeClip.rotation ? `rotate(${activeClip.rotation}deg)` : ""} ${activeClip.flipH ? "scaleX(-1)" : ""}`.trim() || undefined, filter: previewFilterCss }}
+                  alt=""
+                />
+              ) : activeClip ? (
                 <video
                   ref={videoRef}
                   key={activeClip.id}
@@ -875,7 +907,11 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings, s
                       outlineOffset: isSelected ? "3px" : undefined,
                     }}
                   >
-                    <img src={ov.src} className="w-full h-auto pointer-events-none select-none" alt={ov.name} draggable={false} />
+                    {ov.kind === "video" ? (
+                      <video src={ov.src} muted autoPlay loop playsInline className="w-full h-auto pointer-events-none select-none rounded" />
+                    ) : (
+                      <img src={ov.src} className="w-full h-auto pointer-events-none select-none" alt={ov.name} draggable={false} />
+                    )}
                     {isSelected && (
                       <span
                         onPointerDown={e => startOverlayDrag(e, ov, "resize")}
@@ -1207,15 +1243,24 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings, s
                   )}
                 </div>
 
-                <div className="flex items-center justify-between pt-1">
+                <div className="flex items-center justify-between pt-1 flex-wrap gap-1">
                   <div className="text-xs font-semibold text-white/70 uppercase tracking-wide">Overlay Layer ({overlays.length})</div>
-                  <button onClick={() => overlayAssetInputRef.current?.click()} className="text-[11px] text-red-400 hover:text-red-300 flex items-center gap-1 py-1.5 px-1">
-                    <ImagePlus size={11} />One-off image
-                  </button>
+                  <div className="flex items-center gap-1">
+                    <button onClick={() => overlayAssetInputRef.current?.click()} className="text-[11px] text-red-400 hover:text-red-300 flex items-center gap-1 py-1.5 px-1">
+                      <ImagePlus size={11} />One-off image
+                    </button>
+                    {/* FEATURE — "picture-in-picture video." A second clip
+                        composited over the main one, own position/size/time
+                        window — same overlay layer as an image, just kind:"video". */}
+                    <button onClick={() => pipVideoInputRef.current?.click()} className="text-[11px] text-red-400 hover:text-red-300 flex items-center gap-1 py-1.5 px-1">
+                      <Layers size={11} />PiP video
+                    </button>
+                  </div>
                   <input ref={overlayAssetInputRef} type="file" accept="image/*" className="hidden" onChange={e => { const f = e.target.files?.[0]; if (f) addOverlayFromUpload(f); e.target.value = ""; }} />
+                  <input ref={pipVideoInputRef} type="file" accept="video/*" className="hidden" onChange={e => { const f = e.target.files?.[0]; if (f) addPipVideo(f); e.target.value = ""; }} />
                 </div>
                 {overlays.length === 0 ? (
-                  <div className="text-center py-6 text-white/30 text-xs border border-dashed border-white/10 rounded-xl">Tap a brand asset above (or upload a one-off image) to add it as an overlay you can drag around the preview</div>
+                  <div className="text-center py-6 text-white/30 text-xs border border-dashed border-white/10 rounded-xl">Tap a brand asset above, upload a one-off image, or add a PiP video to layer it on the preview</div>
                 ) : (
                   <div className="space-y-2">
                     {overlays.map(ov => {
@@ -1223,10 +1268,14 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings, s
                       return (
                         <div key={ov.id} onClick={() => { setSelectedOverlayId(ov.id); setPreviewTime(Math.max(0, ov.startSec - activeClipGlobalOffset)); }}
                           className={"p-2.5 rounded-xl border space-y-1.5 cursor-pointer transition flex gap-2.5 " + (isSelected ? "bg-red-950/20 border-red-600/50" : "bg-white/5 border-white/10")}>
-                          <img src={ov.src} className="w-10 h-10 rounded-lg object-contain bg-black/40 flex-shrink-0" alt={ov.name} />
+                          {ov.kind === "video" ? (
+                            <video src={ov.src} muted className="w-10 h-10 rounded-lg object-cover bg-black/40 flex-shrink-0" />
+                          ) : (
+                            <img src={ov.src} className="w-10 h-10 rounded-lg object-contain bg-black/40 flex-shrink-0" alt={ov.name} />
+                          )}
                           <div className="flex-1 min-w-0 space-y-1.5">
                             <div className="flex items-center gap-1.5">
-                              <div className="flex-1 text-xs text-white truncate">{ov.name}</div>
+                              <div className="flex-1 text-xs text-white truncate">{ov.name}{ov.kind === "video" && <span className="ml-1.5 text-[9px] text-red-400/70 uppercase">PiP</span>}</div>
                               <button onClick={e => { e.stopPropagation(); removeOverlay(ov.id); }} className="ve-tap text-red-400/60 hover:text-red-400 flex-shrink-0"><Trash2 size={14} /></button>
                             </div>
                             <div className="flex items-center gap-1.5 flex-wrap text-[10px] text-white/50" onClick={e => e.stopPropagation()}>
@@ -1240,6 +1289,12 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings, s
                               <span className="text-[10px] text-white/40 w-10 flex-shrink-0">Opacity</span>
                               <input type="range" min={0.1} max={1} step={0.05} value={ov.opacity} onChange={e => updateOverlay(ov.id, { opacity: Number(e.target.value) })} className="flex-1 accent-red-600" style={{ height: 20 }} />
                             </div>
+                            {ov.kind === "video" && (
+                              <label className="flex items-center gap-1.5 text-[10px] text-white/50" onClick={e => e.stopPropagation()}>
+                                <input type="checkbox" checked={ov.muted !== false} onChange={e => updateOverlay(ov.id, { muted: e.target.checked })} className="accent-red-600" />
+                                Mute this clip's audio
+                              </label>
+                            )}
                           </div>
                         </div>
                       );
@@ -1247,7 +1302,7 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings, s
                   </div>
                 )}
                 {overlays.length > 0 && (
-                  <div className="text-[10px] text-white/40 text-center pt-1">Drag an overlay directly on the preview above to move it; drag its corner handle to resize.</div>
+                  <div className="text-[10px] text-white/40 text-center pt-1">Click an overlay on the preview above to select it, drag it to move, or drag its corner handle to resize.</div>
                 )}
               </div>
             )}
