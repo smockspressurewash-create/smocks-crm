@@ -28,7 +28,7 @@ const DARK_STYLE = [
 // Real Google Map for Crew View → Live Now — plots one pin per employee
 // currently sharing their location, with dark/satellite/street-view toggles
 // and a "last updated" readout per pin (via marker title + an inline list).
-export function LiveMap({ apiKey, pins }: { apiKey: string; pins: LiveMapPin[] }) {
+export function LiveMap({ apiKey, pins, heightClassName = "h-56" }: { apiKey: string; pins: LiveMapPin[]; heightClassName?: string }) {
   const mapRef = useRef<HTMLDivElement | null>(null);
   const mapObjRef = useRef<any>(null);
   const markersRef = useRef<any[]>([]);
@@ -103,7 +103,7 @@ export function LiveMap({ apiKey, pins }: { apiKey: string; pins: LiveMapPin[] }
   return (
     <div className="space-y-1.5">
       <div className="relative">
-        <div ref={mapRef} className="h-56 rounded-xl overflow-hidden border border-white/10" />
+        <div ref={mapRef} className={heightClassName + " rounded-xl overflow-hidden border border-white/10"} />
         <div className="absolute top-2 right-2 flex gap-1">
           <button onClick={() => setDark(d => !d)} title="Toggle dark mode" className={"w-7 h-7 rounded-lg flex items-center justify-center border " + (dark ? "bg-blue-600/80 border-blue-400/50 text-white" : "bg-black/60 border-white/20 text-white/70")}>
             {dark ? <Moon size={13} /> : <Sun size={13} />}
@@ -116,7 +116,7 @@ export function LiveMap({ apiKey, pins }: { apiKey: string; pins: LiveMapPin[] }
           </button>
         </div>
       </div>
-      {pins.length > 0 && (
+      {pins.length > 0 && pins.length <= 30 && (
         <div className="flex flex-wrap gap-1.5">
           {pins.map(p => (
             <span key={p.id} className="text-[10px] px-2 py-0.5 rounded-full bg-black/40 border border-white/10 text-white/50">

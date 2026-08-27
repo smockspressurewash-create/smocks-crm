@@ -52,6 +52,7 @@ import { BeforeAfterSlider } from "../ui/BeforeAfterSlider";
 import { CustomerModal } from "../ui/CustomerModal";
 import { CustomerDetail } from "../ui/CustomerDetail";
 import { CustomerAnalytics } from "../ui/CustomerAnalytics";
+import { CustomerMapView } from "../ui/CustomerMapView";
 import { EstimateBuilder } from "../ui/EstimateBuilder";
 import { EstimatePreview } from "../ui/EstimatePreview";
 import { JobDetailModal } from "../ui/JobDetailModal";
@@ -140,7 +141,7 @@ export function CustomersPage({ customers = [], setCustomers, estimates = [], jo
     onAutoOpenNewConsumed?.();
   }, [autoOpenNew]); // eslint-disable-line react-hooks/exhaustive-deps
   const [detail, setDetail] = useState(null);
-  const [pageTab, setPageTab] = useState("list"); // list | analytics | duplicates
+  const [pageTab, setPageTab] = useState("list"); // list | analytics | duplicates | map
   const [dupPairs, setDupPairs] = useState(null); // null = not scanned, [] = no dupes
   const [mergeModal, setMergeModal] = useState(null); // { a, b }
   const [mergeChoices, setMergeChoices] = useState({}); // field → "a" | "b"
@@ -615,7 +616,7 @@ export function CustomersPage({ customers = [], setCustomers, estimates = [], jo
       )}
       <div className="flex flex-col gap-3">
         <div className="flex gap-2 items-center flex-wrap">
-          {["list", "analytics", "duplicates"].map(t => <button key={t} onClick={() => { setPageTab(t); if (t === "duplicates" && dupPairs === null) scanDuplicates(); }} className={"px-3 py-1.5 rounded-lg text-xs font-medium capitalize border transition " + (pageTab === t ? "bg-red-900/40 border-red-500/50 text-white" : "bg-black/40 border-red-900/30 text-white/60 hover:text-white")}>{t === "analytics" ? "📊 LTV Analytics" : t === "duplicates" ? "🔍 Find Duplicates" + (dupPairs?.length > 0 ? " (" + dupPairs.length + ")" : "") : "👥 Customers"}</button>)}
+          {["list", "map", "analytics", "duplicates"].map(t => <button key={t} onClick={() => { setPageTab(t); if (t === "duplicates" && dupPairs === null) scanDuplicates(); }} className={"px-3 py-1.5 rounded-lg text-xs font-medium capitalize border transition " + (pageTab === t ? "bg-red-900/40 border-red-500/50 text-white" : "bg-black/40 border-red-900/30 text-white/60 hover:text-white")}>{t === "analytics" ? "📊 LTV Analytics" : t === "duplicates" ? "🔍 Find Duplicates" + (dupPairs?.length > 0 ? " (" + dupPairs.length + ")" : "") : t === "map" ? "🗺️ Map" : "👥 Customers"}</button>)}
         </div>
         <div className="flex flex-col sm:flex-row gap-3 sm:items-center sm:justify-between">
           <div className="flex gap-2 items-center flex-wrap">
@@ -715,6 +716,8 @@ export function CustomersPage({ customers = [], setCustomers, estimates = [], jo
 
       {/* LTV Analytics tab */}
       {pageTab === "analytics" && <CustomerAnalytics customers={customers} jobs={jobs} estimates={estimates} />}
+
+      {pageTab === "map" && <CustomerMapView customers={customers} apiKey={settings.googleMapsKey || (settings as any).mapsKey || ""} />}
 
       {/* Duplicates tab */}
       {pageTab === "duplicates" && <div className="space-y-3">
