@@ -433,17 +433,31 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
       // Showcase Wall and "completed" stat only ever count status ===
       // "completed", so a real submitted review sat there forever showing
       // a nonsensical "Send" button instead of appearing as what it is.
+      // BUG FIX — "reviews are still not showing, they don't even show up."
+      // The reviews table has TWO customer-id columns from an earlier schema
+      // migration: legacy `customer_id` (snake_case, NOT NULL, no default)
+      // and the newer `customerId` (camelCase, nullable) this insert was
+      // actually writing. Every single public review submission has been
+      // silently failing the NOT NULL constraint on `customer_id` since this
+      // endpoint was written — confirmed via a live query showing ZERO rows
+      // ever landed in this table, for any owner, ever. The endpoint
+      // returned a real error either way (see `if (!insert.ok)` below), but
+      // CustomerReviewPage.tsx deliberately shows the same friendly "Thank
+      // you!" screen to the customer regardless of success/failure (so a
+      // real submission failure never looked scary to them) — which meant
+      // this was invisible to everyone, including the owner, until traced
+      // directly against the database.
       const insert = await sb(serviceRoleKey, `reviews`, {
         method: "POST",
         headers: { Prefer: "return=representation" },
         body: JSON.stringify({
           id: crypto.randomUUID(),
-          customerId, customerName: cust ? `${cust.firstName || ""} ${cust.lastName || ""}`.trim() : undefined,
-          rating, text: comment || null, createdAt: new Date().toISOString(),
+          customer_id: customerId, customerId, customerName: cust ? `${cust.firstName || ""} ${cust.lastName || ""}`.trim() : undefined,
+          rating, comment: comment || null, text: comment || null, createdAt: new Date().toISOString(),
           source: "customer-submitted", owner_id: ownerId, status: "completed",
         }),
       });
-      if (!insert.ok) return json({ error: "Failed to submit review" }, 500);
+      if (!insert.ok) { console.error("[submit_review] insert failed:", insert.status, JSON.stringify(insert.data)); return json({ error: "Failed to submit review" }, 500); }
       return json({ success: true, review: Array.isArray(insert.data) ? insert.data[0] : insert.data });
     }
 

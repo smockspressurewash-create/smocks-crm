@@ -2914,9 +2914,31 @@ export function App() {
       // safety check fails is strictly safer than guessing: a legitimately
       // new local-only row just waits for the next successful cycle
       // instead of risking a deleted row coming back from the dead.
-      const safeCustomers = !customerSafeIds ? [] : customers.filter((c: any) => customerSafeIds!.has(c.id) || !syncedCustomerIdsRef.current.has(c.id));
+      // BUG FIX — "overdue invoices are coming back" (again, still, for
+      // real this time). This interval used to re-push a row whenever its
+      // id was CONFIRMED TO EXIST live (customerSafeIds!.has(c.id)/
+      // estimateSafeIds!.has(e.id)) — but "the server still has this row"
+      // says nothing about whether THIS TAB's in-memory copy of its FIELDS
+      // is still current. A customer paying an invoice via a Stripe/Square
+      // webhook (a completely different write path — see
+      // functions/api/stripe-webhook.ts) sets paidAt directly in Supabase;
+      // if this owner's tab hasn't yet pulled that change down (realtime
+      // event still in flight, or the 10s poll just missed it) when this
+      // 30s interval fires, it upserts THIS tab's stale in-memory row —
+      // paidAt still null — right back over the just-paid one, every 30
+      // seconds, for as long as the tab stays open and behind. That's a
+      // silent, continuous, self-reinflicting version of the exact
+      // resurrection bug the id-existence guards above were built to stop,
+      // just at the FIELD level instead of the ROW level. This interval's
+      // only real job is to give a genuinely new, never-yet-synced local
+      // row (not in syncedCustomerIdsRef/syncedEstimateIdsRef) a push —
+      // once a row IS confirmed synced, its own explicit save call site
+      // (each already using the real .select("id") + 0-row-check pattern,
+      // see CLAUDE.md) is what should update it, never this generic bulk
+      // resync blindly overwriting fields it has no way to know are stale.
+      const safeCustomers = !customerSafeIds ? [] : customers.filter((c: any) => !syncedCustomerIdsRef.current.has(c.id) && !customerSafeIds!.has(c.id));
       await upsertCustomersSafely(safeCustomers, "Customer auto-save");
-      const safeEstimates = !estimateSafeIds ? [] : estimates.filter((e: any) => estimateSafeIds!.has(e.id) || !syncedEstimateIdsRef.current.has(e.id));
+      const safeEstimates = !estimateSafeIds ? [] : estimates.filter((e: any) => !syncedEstimateIdsRef.current.has(e.id) && !estimateSafeIds!.has(e.id));
       if (safeEstimates.length > 0) {
         try {
           const { error } = await (supabase as any).from("estimates").upsert(safeEstimates.map((e: any) => ({ ...e, owner_id: crmUserId })), { onConflict: "id" });
@@ -2930,7 +2952,8 @@ export function App() {
       // every 30s with zero protection, the same resurrection bug already
       // fixed for estimates/customers above — a chemical deleted on another
       // device could come right back the next autosave cycle on this one.
-      const safeChemicals = !chemicalSafeIds ? [] : chemicals.filter((c: any) => chemicalSafeIds!.has(c.id) || !syncedChemicalIdsRef.current.has(c.id));
+      // Same field-staleness fix as customers/estimates above.
+      const safeChemicals = !chemicalSafeIds ? [] : chemicals.filter((c: any) => !syncedChemicalIdsRef.current.has(c.id) && !chemicalSafeIds!.has(c.id));
       if (safeChemicals.length > 0) {
         try {
           const { error } = await (supabase as any).from("chemicals").upsert(safeChemicals.map((c: any) => ({ ...c, owner_id: crmUserId })), { onConflict: "id" });
@@ -3051,6 +3074,26 @@ export function App() {
       // (created in the last 30 minutes) — a real offline-created row is
       // always this fresh; a stale cached copy of a since-deleted row from
       // another device essentially never is.
+      // BUG FIX — "overdue invoices are coming back," found via a live SQL
+      // trace of the exact row: a PAID invoice's `paidAt` reverted to null
+      // with no delete/undo/refund in its paymentLog at all — the row was
+      // never deleted, so the tombstone/liveId guards above (which only
+      // ever asked "does this id still exist") never fired. Root cause:
+      // this filter included every row that DOES exist live, not just
+      // genuinely local-only ones — `liveEstIds!.has(e.id) || isRecent(e)`
+      // — so ANY row already on the server still got pushed if it also
+      // happened to exist here, and the push below is `{...e, owner_id}`,
+      // a full-row upsert with THIS BROWSER's possibly-stale cached fields.
+      // A tab left open (or reopened) with an old localStorage snapshot of
+      // an invoice from BEFORE it was paid on a different device/tab
+      // — paidAt still null in this tab's memory — silently overwrote the
+      // server's real paidAt back to null on its very next reload, which
+      // then reads right back as "overdue" on every device. This whole
+      // mount-time push exists ONLY to give a genuinely offline-created row
+      // (one the server has never seen) a head start — a row already
+      // confirmed live needs no push at all; the regular fetch/realtime
+      // path already keeps it current, and re-pushing risks clobbering
+      // whatever changed server-side since this tab's snapshot was taken.
       const RECENT_MS = 30 * 60 * 1000;
       const isRecent = (row: any) => { const t = Date.parse(row?.createdAt || ""); return !Number.isNaN(t) && Date.now() - t < RECENT_MS; };
       let liveEstIds: Set<string> | null = null;
@@ -3071,9 +3114,9 @@ export function App() {
       if (!liveEstIds || !liveCustIds || !liveChemIds) return;
       const deletedCustIds = readTombstones("customers");
       const deletedEstIds = readTombstones("estimates");
-      const safeLocalCustomers = customers.filter((c: any) => !deletedCustIds.has(c.id) && (liveCustIds!.has(c.id) || isRecent(c)));
+      const safeLocalCustomers = customers.filter((c: any) => !deletedCustIds.has(c.id) && !liveCustIds!.has(c.id) && isRecent(c));
       await upsertCustomersSafely(safeLocalCustomers, "Initial customer sync");
-      const storedEst = estimates.filter((e: any) => !deletedEstIds.has(e.id) && (liveEstIds!.has(e.id) || isRecent(e)));
+      const storedEst = estimates.filter((e: any) => !deletedEstIds.has(e.id) && !liveEstIds!.has(e.id) && isRecent(e));
       if (storedEst.length > 0) {
         try {
           const { error } = await (supabase as any).from("estimates").upsert(storedEst.map((e: any) => ({ ...e, owner_id: crmUserId })), { onConflict: "id" });
@@ -3085,7 +3128,10 @@ export function App() {
       // exist to prevent for estimates/customers just above — a chemical
       // deleted on another device would come right back on this device's
       // very next reload.
-      const safeLocalChemicals = chemicals.filter((c: any) => liveChemIds!.has(c.id) || isRecent(c));
+      // Same fix as estimates/customers above — only push chemicals not yet
+      // confirmed live, never re-push a stale local copy of one that already
+      // exists server-side (would clobber stock levels updated elsewhere).
+      const safeLocalChemicals = chemicals.filter((c: any) => !liveChemIds!.has(c.id) && isRecent(c));
       if (safeLocalChemicals.length > 0) {
         try {
           const { error } = await (supabase as any).from("chemicals").upsert(safeLocalChemicals.map((c: any) => ({ ...c, owner_id: crmUserId })), { onConflict: "id" });
