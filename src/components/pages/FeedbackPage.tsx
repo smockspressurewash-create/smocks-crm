@@ -6,8 +6,8 @@
 // is what makes it show up on the public roadmap (see RoadmapPage.tsx,
 // the logged-out landing-page equivalent that only shows planned/
 // in_progress/done items, no submit/vote).
-import React, { useEffect, useState } from "react";
-import { Bug, Lightbulb, ChevronUp, ChevronDown, Plus, Trash2, Clock, CheckCircle, Rocket } from "lucide-react";
+import React, { useEffect, useRef, useState } from "react";
+import { Bug, Lightbulb, ChevronUp, ChevronDown, Plus, Trash2, Clock, CheckCircle, Rocket, LayoutGrid, List } from "lucide-react";
 import { supabase } from "../../lib/supabase";
 import { uid } from "../../lib/utils";
 import { Glass } from "../ui/Glass";
@@ -16,6 +16,7 @@ import { GInput } from "../ui/GInput";
 import { GTxt } from "../ui/GTxt";
 import { GSel } from "../ui/GSel";
 import { Badge } from "../ui/Badge";
+import { useConfirm } from "../ui/ConfirmModal";
 
 type FeedbackItem = {
   id: string; title: string; description: string; type: "bug" | "feature";
@@ -50,6 +51,14 @@ export function FeedbackPage({ userEmail, userName, isAdmin, toast, publicMode =
   const [submitting, setSubmitting] = useState(false);
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [myUid, setMyUid] = useState<string | null>(null);
+  const { confirmAsync, ConfirmDialog } = useConfirm();
+  // FEATURE — "have the kanban style board to see what you're doing." Admin
+  // (you) gets a real drag-between-columns board; everyone else still gets
+  // the simple upvote/downvote list — they can't change status anyway, so
+  // columns would just be read-only clutter for them.
+  const [view, setView] = useState<"list" | "kanban">("kanban");
+  const [draggingId, setDraggingId] = useState<string | null>(null);
+  const boardRef = useRef<HTMLDivElement>(null);
 
   const load = async () => {
     setLoading(true);
@@ -118,24 +127,70 @@ export function FeedbackPage({ userEmail, userName, isAdmin, toast, publicMode =
     setItems(prev => prev.map(it => it.id === itemId ? { ...it, status: status as any } : it));
   };
   const deleteItem = async (itemId: string) => {
-    if (!confirm("Delete this feedback item?")) return;
+    if (!(await confirmAsync({ message: "Delete this feedback item? This can't be undone.", confirmLabel: "Delete" }))) return;
     const { error } = await (supabase as any).from("feedback_items").delete().eq("id", itemId);
     if (error) { toast?.("Couldn't delete — " + error.message, "red"); return; }
     setItems(prev => prev.filter(it => it.id !== itemId));
   };
 
+  // FEATURE — kanban drag-to-change-status. Pointer events work uniformly
+  // for touch and mouse (same technique as the video editor's timeline
+  // drag) — press a card, drag it over a column, release to commit.
+  const handleCardPointerDown = (e: React.PointerEvent, id: string) => {
+    if (!isAdmin || view !== "kanban") return;
+    setDraggingId(id);
+  };
+  useEffect(() => {
+    if (!draggingId) return;
+    let hoverColumn: string | null = null;
+    const onMove = (e: PointerEvent) => {
+      const board = boardRef.current;
+      if (!board) return;
+      const cols = Array.from(board.querySelectorAll<HTMLElement>("[data-kanban-col]"));
+      const under = cols.find(col => {
+        const r = col.getBoundingClientRect();
+        return e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom;
+      });
+      hoverColumn = under?.dataset.kanbanCol || null;
+      cols.forEach(col => col.classList.toggle("kanban-col-hover", col === under));
+    };
+    const onUp = () => {
+      boardRef.current?.querySelectorAll("[data-kanban-col]").forEach(col => col.classList.remove("kanban-col-hover"));
+      if (hoverColumn) {
+        const item = items.find(it => it.id === draggingId);
+        if (item && item.status !== hoverColumn) setStatus(draggingId, hoverColumn);
+      }
+      setDraggingId(null);
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    return () => { window.removeEventListener("pointermove", onMove); window.removeEventListener("pointerup", onUp); };
+  }, [draggingId, items]);
+
   const filtered = items
     .filter(it => publicMode ? ["planned", "in_progress", "done"].includes(it.status) : (statusFilter === "all" || it.status === statusFilter))
     .sort((a, b) => (votes[b.id]?.total || 0) - (votes[a.id]?.total || 0));
 
+  const showKanban = isAdmin && !publicMode && view === "kanban";
+
   return (
-    <div className="max-w-3xl mx-auto p-4 space-y-4">
+    <div className={showKanban ? "p-4 space-y-4" : "max-w-3xl mx-auto p-4 space-y-4"}>
+      {ConfirmDialog}
+      <style>{`.kanban-col-hover { background: rgba(220,38,38,0.08) !important; border-color: rgba(220,38,38,0.4) !important; }`}</style>
       <div className="flex items-center justify-between flex-wrap gap-2">
         <div>
           <h2 className="text-lg font-bold text-white">{publicMode ? "Roadmap" : "Feedback & Roadmap"}</h2>
-          <div className="text-xs text-white/50">{publicMode ? "What's planned, in progress, and shipped." : "Report bugs, request features, and vote on what matters most."}</div>
+          <div className="text-xs text-white/50">{publicMode ? "What's planned, in progress, and shipped." : isAdmin ? "Report bugs, request features, vote — and drag cards between columns to update status." : "Report bugs, request features, and vote on what matters most."}</div>
         </div>
-        {!publicMode && <GBtn onClick={() => setShowNew(s => !s)} className="!text-xs"><Plus size={12} className="inline mr-1" />New</GBtn>}
+        <div className="flex items-center gap-2">
+          {isAdmin && !publicMode && (
+            <div className="flex gap-1 p-1 rounded-lg bg-white/5 border border-white/10">
+              <button onClick={() => setView("kanban")} title="Kanban board" className={"p-1.5 rounded-md transition " + (view === "kanban" ? "bg-red-900/40 text-red-300" : "text-white/40 hover:text-white")}><LayoutGrid size={14} /></button>
+              <button onClick={() => setView("list")} title="List" className={"p-1.5 rounded-md transition " + (view === "list" ? "bg-red-900/40 text-red-300" : "text-white/40 hover:text-white")}><List size={14} /></button>
+            </div>
+          )}
+          {!publicMode && <GBtn onClick={() => setShowNew(s => !s)} className="!text-xs"><Plus size={12} className="inline mr-1" />New</GBtn>}
+        </div>
       </div>
 
       {!publicMode && showNew && (
@@ -150,7 +205,7 @@ export function FeedbackPage({ userEmail, userName, isAdmin, toast, publicMode =
         </Glass>
       )}
 
-      {!publicMode && (
+      {!publicMode && !showKanban && (
         <div className="flex gap-1.5 flex-wrap">
           {["all", "submitted", "planned", "in_progress", "done"].map(s => (
             <button key={s} onClick={() => setStatusFilter(s)} className={"px-2.5 py-1 rounded-full text-[11px] font-medium border transition " + (statusFilter === s ? "border-red-500/50 bg-red-950/30 text-red-300" : "border-white/10 text-white/50 hover:text-white")}>
@@ -160,7 +215,53 @@ export function FeedbackPage({ userEmail, userName, isAdmin, toast, publicMode =
         </div>
       )}
 
-      {loading ? (
+      {showKanban ? (
+        loading ? (
+          <div className="text-center py-10 text-white/30 text-sm">Loading…</div>
+        ) : (
+          <div ref={boardRef} className="flex gap-3 overflow-x-auto pb-2">
+            {Object.entries(STATUS_META).map(([statusKey, meta]) => {
+              const colItems = items.filter(it => it.status === statusKey).sort((a, b) => (votes[b.id]?.total || 0) - (votes[a.id]?.total || 0));
+              return (
+                <div key={statusKey} data-kanban-col={statusKey} className="flex-shrink-0 w-72 rounded-xl border border-white/10 bg-black/20 transition-colors">
+                  <div className="px-3 py-2.5 border-b border-white/10 flex items-center justify-between sticky top-0 bg-black/40 backdrop-blur rounded-t-xl">
+                    <div className="text-xs font-bold text-white flex items-center gap-1.5"><meta.icon size={12} className={meta.color} />{meta.label}</div>
+                    <div className="text-[10px] text-white/40 font-mono">{colItems.length}</div>
+                  </div>
+                  <div className="p-2 space-y-2 min-h-[80px]">
+                    {colItems.length === 0 && <div className="text-center py-4 text-white/20 text-[11px]">Empty</div>}
+                    {colItems.map(it => {
+                      const v = votes[it.id] || { total: 0, mine: 0 };
+                      const TypeIcon = it.type === "bug" ? Bug : Lightbulb;
+                      return (
+                        <div
+                          key={it.id}
+                          onPointerDown={e => handleCardPointerDown(e, it.id)}
+                          className={"p-2.5 rounded-lg bg-white/5 border border-white/10 cursor-grab active:cursor-grabbing select-none " + (draggingId === it.id ? "opacity-40" : "")}
+                          style={{ touchAction: "none" }}
+                        >
+                          <div className="flex items-center gap-1.5">
+                            <TypeIcon size={11} className={it.type === "bug" ? "text-red-400 flex-shrink-0" : "text-yellow-400 flex-shrink-0"} />
+                            <div className="text-xs font-semibold text-white leading-snug">{it.title}</div>
+                          </div>
+                          {it.description && <div className="text-[10px] text-white/40 mt-1 line-clamp-3">{it.description}</div>}
+                          <div className="flex items-center justify-between mt-2 pt-1.5 border-t border-white/5">
+                            <div className="text-[10px] text-white/30 truncate">{it.submitted_by_name || it.submitted_by_email || "Anonymous"}</div>
+                            <div className="flex items-center gap-1.5 flex-shrink-0">
+                              <span className="text-[10px] text-white/40 font-mono">{v.total > 0 ? `+${v.total}` : v.total}</span>
+                              <button onPointerDown={e => e.stopPropagation()} onClick={() => deleteItem(it.id)} className="text-red-400/50 hover:text-red-400"><Trash2 size={11} /></button>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )
+      ) : loading ? (
         <div className="text-center py-10 text-white/30 text-sm">Loading…</div>
       ) : filtered.length === 0 ? (
         <div className="text-center py-10 text-white/30 text-sm">Nothing here yet — be the first to submit something.</div>
