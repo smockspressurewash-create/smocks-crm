@@ -31,6 +31,7 @@ import { usePersistent } from "../../hooks/usePersistent";
 import { usePersistentRaw } from "../../hooks/usePersistentRaw";
 import { Glass } from "./Glass";
 import { GBtn } from "./GBtn";
+import { useConfirm } from "./ConfirmModal";
 import { GInput } from "./GInput";
 import { GDate } from "./GDate";
 import { GSel } from "./GSel";
@@ -58,6 +59,9 @@ export function CustomerDetail({ customer: c, onClose, onDelete, onEdit, estimat
   // itself. Click-to-expand shows all of that inline instead.
   const [expandedJobId, setExpandedJobId] = useState<string | null>(null);
   const isMobile = useIsMobile();
+  // FEATURE — "the popup should be in the CRM with the CRM's UI" — replaces
+  // window.confirm() for delete actions with a real branded modal.
+  const { confirmAsync, ConfirmDialog } = useConfirm();
 
   // FEATURE — owner-side view of a customer's saved cards (Payment Methods).
   // Customers can already save their OWN card via SaveCardModal from the
@@ -86,7 +90,7 @@ export function CustomerDetail({ customer: c, onClose, onDelete, onEdit, estimat
   };
 
   const removePaymentMethod = async (pm: StripeSavedCard) => {
-    if (!window.confirm(`Remove ${pm.brand || "card"} •••• ${pm.last4 || "----"} from file?`)) return;
+    if (!(await confirmAsync({ message: `Remove ${pm.brand || "card"} •••• ${pm.last4 || "----"} from file?`, confirmLabel: "Remove Card" }))) return;
     setPmDeletingId(pm.id);
     try {
       const { data: { session } } = await supabase.auth.getSession();
@@ -261,6 +265,7 @@ export function CustomerDetail({ customer: c, onClose, onDelete, onEdit, estimat
 
   return (
     <Modal open={!!c} onClose={onClose} title="Customer Details" maxW="max-w-2xl">
+      {ConfirmDialog}
       <div className="space-y-4">
         <Glass className="p-5 !bg-gradient-to-br !from-red-950/30 !to-black/60">
           <div className="flex items-start gap-4">
@@ -296,8 +301,8 @@ export function CustomerDetail({ customer: c, onClose, onDelete, onEdit, estimat
                 )}
                 {onDelete && (
                   <button
-                    onClick={() => {
-                      if (window.confirm(`Delete ${c.firstName} ${c.lastName}? This cannot be undone.`)) {
+                    onClick={async () => {
+                      if (await confirmAsync({ message: `Delete ${c.firstName} ${c.lastName}? This cannot be undone.`, confirmLabel: "Delete Customer" })) {
                         onDelete(c);
                       }
                     }}

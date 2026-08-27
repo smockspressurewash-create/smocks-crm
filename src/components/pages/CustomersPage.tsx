@@ -34,6 +34,7 @@ import { Glass } from "../ui/Glass";
 import { ImportDataModal } from "../ui/ImportDataModal";
 import { ImportStripeCustomersModal } from "../ui/ImportStripeCustomersModal";
 import { GBtn } from "../ui/GBtn";
+import { useConfirm } from "../ui/ConfirmModal";
 import { GInput } from "../ui/GInput";
 import { GDate } from "../ui/GDate";
 import { GSel } from "../ui/GSel";
@@ -82,6 +83,9 @@ import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 
 export function CustomersPage({ customers = [], setCustomers, estimates = [], jobs = [], employees = [], toast, timeline = {}, setTimeline = () => {}, settings = {} as AppSettings, setSettings = (() => {}) as any, autoOpenNew = false, onAutoOpenNewConsumed, highlightId = null, pushUndo = (_desc: string, _fn: () => void, _redoFn?: () => void) => {}, markRecentlyDeleted = (_table: "jobs" | "customers" | "estimates", _ids: string[]) => {}, unmarkRecentlyDeleted = (_table: "jobs" | "customers" | "estimates", _ids: string[]) => {}, onSpotlight = (_step: { page: string; type?: string; id?: string; label?: string }) => {} }: { customers?: any[]; setCustomers?: any; estimates?: any[]; jobs?: any[]; employees?: any[]; toast?: any; timeline?: any; setTimeline?: any; settings?: AppSettings; setSettings?: any; autoOpenNew?: boolean; onAutoOpenNewConsumed?: () => void; highlightId?: string | null; pushUndo?: (desc: string, fn: () => void, redoFn?: () => void) => void; markRecentlyDeleted?: (table: "jobs" | "customers" | "estimates", ids: string[]) => void; unmarkRecentlyDeleted?: (table: "jobs" | "customers" | "estimates", ids: string[]) => void; onSpotlight?: (step: { page: string; type?: string; id?: string; label?: string }) => void }) {
   const [search, setSearch] = useState("");
+  // FEATURE — "the popup should be in the CRM with the CRM's UI" — replaces
+  // window.confirm() for delete actions with a real branded modal.
+  const { confirmAsync, ConfirmDialog } = useConfirm();
   // FEATURE — "Alfred spotlight": briefly glows + scrolls to the row Alfred
   // just created/touched, driven by App.tsx's spotlight queue.
   useEffect(() => {
@@ -253,9 +257,9 @@ export function CustomersPage({ customers = [], setCustomers, estimates = [], jo
     toast?.("Folder renamed ✓");
   };
 
-  const deleteFolder = (path: string) => {
+  const deleteFolder = async (path: string) => {
     const count = folderCustomerCount(path);
-    if (!confirm(count > 0 ? `Delete "${folderLabel(path)}"? ${count} customer(s) will become unfiled (not deleted).` : `Delete empty folder "${folderLabel(path)}"?`)) return;
+    if (!(await confirmAsync({ message: count > 0 ? `Delete "${folderLabel(path)}"? ${count} customer(s) will become unfiled (not deleted).` : `Delete empty folder "${folderLabel(path)}"?`, confirmLabel: "Delete Folder" }))) return;
     setCustomers((prev: any[]) => prev.map((c: any) => (c.folder === path || (c.folder || "").startsWith(path + "/")) ? { ...c, folder: "" } : c));
     setSettings((s: any) => ({ ...s, customerFolders: (s.customerFolders || []).filter((f: string) => f !== path && !f.startsWith(path + "/")) }));
     if (folderFilter === path) setFolderFilter("");
@@ -313,9 +317,9 @@ export function CustomersPage({ customers = [], setCustomers, estimates = [], jo
     URL.revokeObjectURL(a.href);
     toast(`Downloaded ${bulkSelected.length} customer${bulkSelected.length !== 1 ? "s" : ""}`);
   };
-  const deleteSelectedCustomers = () => {
+  const deleteSelectedCustomers = async () => {
     if (bulkSelected.length === 0) return;
-    if (!window.confirm(`Permanently delete ${bulkSelected.length} customer${bulkSelected.length !== 1 ? "s" : ""}? This can't be undone.`)) return;
+    if (!(await confirmAsync({ message: `Permanently delete ${bulkSelected.length} customer${bulkSelected.length !== 1 ? "s" : ""}? This can't be undone.`, confirmLabel: "Delete" }))) return;
     const ids = [...bulkSelected];
     setCustomers(customers.filter(c => !ids.includes(c.id)));
     markRecentlyDeleted("customers", ids);
@@ -581,6 +585,7 @@ export function CustomersPage({ customers = [], setCustomers, estimates = [], jo
 
   return (
     <div className="space-y-4">
+      {ConfirmDialog}
       <div className="flex flex-col gap-3">
         <div className="flex gap-2 items-center flex-wrap">
           {["list", "analytics", "duplicates"].map(t => <button key={t} onClick={() => { setPageTab(t); if (t === "duplicates" && dupPairs === null) scanDuplicates(); }} className={"px-3 py-1.5 rounded-lg text-xs font-medium capitalize border transition " + (pageTab === t ? "bg-red-900/40 border-red-500/50 text-white" : "bg-black/40 border-red-900/30 text-white/60 hover:text-white")}>{t === "analytics" ? "📊 LTV Analytics" : t === "duplicates" ? "🔍 Find Duplicates" + (dupPairs?.length > 0 ? " (" + dupPairs.length + ")" : "") : "👥 Customers"}</button>)}

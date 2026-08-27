@@ -27,6 +27,7 @@ import { seedWeather } from "../../lib/weather";
 import { seedCustomers, seedEstimates, seedJobs, seedEmployees, seedVehicles, seedExpenses, seedChemicals, seedServices, seedAutomations, seedEmailTemplates, seedSmsTemplates, seedRewardTiers, seedReferrals, seedMaintenance, campaignTemplates, seedSocialPosts, seedTimeline, seedGoals, seedReminders, seedAccountabilityEntries, seedMileage, seedLeadSrc, STEP_TYPES, AUTOMATION_TEMPLATES } from "../../lib/seed";
 import { callModel, MODELS } from "../../lib/api";
 import { createCalendarEvent, updateCalendarEvent, deleteCalendarEvent, fetchDriveFiles, MOCK_GOOGLE_DATA, fmtSize, fmtDate, fileIcon } from "../../lib/google";
+import { useConfirm } from "../ui/ConfirmModal";
 import { usePersistent } from "../../hooks/usePersistent";
 import { usePersistentRaw } from "../../hooks/usePersistentRaw";
 import { supabase } from "../../lib/supabase";
@@ -94,6 +95,9 @@ export function InvoicesPage({ estimates = [], setEstimates, customers = [], set
   // pointing every invoice link at a domain that resolves nowhere for any
   // deployment. Same real, origin-based helper.
   const portalUrlFor = (estId: string) => `${window.location.origin}${window.location.pathname}#/estimate/${estId}`;
+  // FEATURE — "the popup should be in the CRM with the CRM's UI" — replaces
+  // window.confirm() for delete actions with a real branded modal.
+  const { confirmAsync, ConfirmDialog } = useConfirm();
   const [sendingJobInvoiceId, setSendingJobInvoiceId] = useState<string | null>(null);
   const [showSentJobs, setShowSentJobs] = useState(false);
   const needsInvoiceJobs = jobs.filter((j: any) => j.status === "completed" && j.paymentStatus !== "Paid" && !j.invoiceSentAt);
@@ -436,8 +440,8 @@ export function InvoicesPage({ estimates = [], setEstimates, customers = [], set
   // FIX 7 — invoices are stored as estimates with invoiced:true, so deleting
   // one removes it from the shared `estimates` table (both locally and
   // server-side, else the next cross-device poll just re-fetches it).
-  const deleteInvoice = (inv: any) => {
-    if (!window.confirm(`Permanently delete invoice #${(inv.id || "").toUpperCase()}? This can't be undone.`)) return;
+  const deleteInvoice = async (inv: any) => {
+    if (!(await confirmAsync({ message: `Permanently delete invoice #${(inv.id || "").toUpperCase()}? This can't be undone.`, confirmLabel: "Delete Invoice" }))) return;
     setEstimates(estimates.filter(e => e.id !== inv.id));
     // BUG FIX — "delete invoice, it comes back": refetchData()'s merge in
     // App.tsx is additive-only, so a cross-device poll/realtime refresh that
@@ -537,9 +541,9 @@ export function InvoicesPage({ estimates = [], setEstimates, customers = [], set
     URL.revokeObjectURL(a.href);
     toast?.(`Downloaded ${selected.length} invoice${selected.length !== 1 ? "s" : ""}`);
   };
-  const deleteSelectedInvoices = () => {
+  const deleteSelectedInvoices = async () => {
     if (selected.length === 0) return;
-    if (!window.confirm(`Permanently delete ${selected.length} invoice${selected.length !== 1 ? "s" : ""}? This can't be undone.`)) return;
+    if (!(await confirmAsync({ message: `Permanently delete ${selected.length} invoice${selected.length !== 1 ? "s" : ""}? This can't be undone.`, confirmLabel: "Delete" }))) return;
     const ids = [...selected];
     setEstimates(estimates.filter(e => !ids.includes(e.id)));
     markRecentlyDeleted("estimates", ids);
@@ -574,6 +578,7 @@ export function InvoicesPage({ estimates = [], setEstimates, customers = [], set
 
   return (
     <div className="space-y-4">
+      {ConfirmDialog}
       {/* Header + New Invoice (FEATURE 7) */}
       <div className="flex items-center justify-between gap-2">
         <h2 className="text-lg font-bold">Invoices</h2>

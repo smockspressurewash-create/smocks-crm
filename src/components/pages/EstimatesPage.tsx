@@ -32,6 +32,7 @@ import { usePersistent } from "../../hooks/usePersistent";
 import { usePersistentRaw } from "../../hooks/usePersistentRaw";
 import { Glass } from "../ui/Glass";
 import { GBtn } from "../ui/GBtn";
+import { useConfirm } from "../ui/ConfirmModal";
 import { GInput } from "../ui/GInput";
 import { GDate } from "../ui/GDate";
 import { GSel } from "../ui/GSel";
@@ -89,6 +90,9 @@ const DECLINE_REASON_LABELS: Record<string, string> = {
 
 export function EstimatesPage({ estimates = [], setEstimates, customers = [], services = [], settings = {} as AppSettings, toast, onPortal = () => {}, estimateTemplates = [], setEstimateTemplates = () => {}, setJobs = () => {}, onNav = () => {}, autoOpenNew = false, onAutoOpenNewConsumed, presetCustomerId = "", ownerId = "", highlightId = null, pushUndo = (_desc: string, _fn: () => void, _redoFn?: () => void) => {}, markRecentlyDeleted = (_table: "jobs" | "customers" | "estimates", _ids: string[]) => {}, unmarkRecentlyDeleted = (_table: "jobs" | "customers" | "estimates", _ids: string[]) => {} }: { estimates?: any[]; setEstimates?: any; customers?: any[]; services?: any[]; settings?: AppSettings; toast?: any; onPortal?: any; estimateTemplates?: any[]; setEstimateTemplates?: any; setJobs?: any; onNav?: any; autoOpenNew?: boolean; onAutoOpenNewConsumed?: () => void; presetCustomerId?: string; ownerId?: string; highlightId?: string | null; pushUndo?: (desc: string, fn: () => void, redoFn?: () => void) => void; markRecentlyDeleted?: (table: "jobs" | "customers" | "estimates", ids: string[]) => void; unmarkRecentlyDeleted?: (table: "jobs" | "customers" | "estimates", ids: string[]) => void }) {
   const [builderOpen, setBuilderOpen] = useState(false);
+  // FEATURE — "the popup should be in the CRM with the CRM's UI" — replaces
+  // window.confirm() for delete actions with a real branded modal.
+  const { confirmAsync, ConfirmDialog } = useConfirm();
   // FEATURE — "Alfred spotlight": briefly glows + scrolls to the estimate/
   // invoice Alfred just created, driven by App.tsx's spotlight queue.
   useEffect(() => {
@@ -328,7 +332,7 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
 
   const bulkDelete = async () => {
     if (selected.length === 0) return;
-    if (!window.confirm(`Permanently delete ${selected.length} estimate${selected.length !== 1 ? "s" : ""}? This can't be undone.`)) return;
+    if (!(await confirmAsync({ message: `Permanently delete ${selected.length} estimate${selected.length !== 1 ? "s" : ""}? This can't be undone.`, confirmLabel: "Delete" }))) return;
     const ids = [...selected];
     const deleted = estimates.filter(e => ids.includes(e.id));
     setEstimates(estimates.filter(e => !ids.includes(e.id)));
@@ -386,6 +390,7 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
 
   return (
     <div className="space-y-4">
+      {ConfirmDialog}
       <div className="flex flex-wrap gap-2 items-center justify-between">
         <div className="flex gap-2 flex-wrap items-center">
           {["all", "pending", "approved", "rejected"].map(s => <button key={s} onClick={() => setFilter(s)} className={"px-3 py-1.5 rounded-xl text-xs font-medium transition border " + (filter === s ? "bg-red-900/40 border-red-500/50 text-white" : "bg-black/40 border-red-900/30 text-white/60 hover:text-white")}>{s === "all" ? "All (" + estimates.length + ")" : (s === "rejected" ? "declined" : s) + " (" + estimates.filter(e => e.status === s).length + ")"}</button>)}
