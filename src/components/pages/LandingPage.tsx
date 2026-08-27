@@ -159,6 +159,7 @@ export function LandingPage({
   choosingPlan = false,
   isLoggedIn = false,
   onGoToDashboard,
+  onRoadmap,
 }: {
   onGetStarted: () => void;
   onNavigate: (page: MarketingPage) => void;
@@ -170,6 +171,7 @@ export function LandingPage({
   // BUG FIX — "not showing I'm logged in" — see MarketingNav's own comment.
   isLoggedIn?: boolean;
   onGoToDashboard?: () => void;
+  onRoadmap?: () => void;
 }) {
   const [billing, setBilling] = useState<"monthly" | "annual">("annual");
   return (
@@ -183,7 +185,7 @@ export function LandingPage({
     <div className="h-dvh h-screen overflow-y-auto bg-black text-white overflow-x-hidden isolate">
       <MarketingStyles />
       <BackgroundBlobs />
-      <MarketingNav active="welcome" onNavigate={onNavigate} onGetStarted={onGetStarted} isLoggedIn={isLoggedIn} onGoToDashboard={onGoToDashboard} />
+      <MarketingNav active="welcome" onNavigate={onNavigate} onGetStarted={onGetStarted} isLoggedIn={isLoggedIn} onGoToDashboard={onGoToDashboard} onRoadmap={onRoadmap} />
 
       {/* ── Hero ─────────────────────────────────────────────────────────────── */}
       <section className="relative px-4 md:px-6 pt-16 pb-20 md:pt-28 md:pb-32 max-w-5xl mx-auto text-center overflow-hidden">
@@ -231,6 +233,65 @@ export function LandingPage({
             </button>
           </div>
           <p className="text-xs text-white/30 mt-4">No credit card required to explore. Cancel anytime.</p>
+        </Reveal>
+
+        {/* FEATURE — "I want to improve the landing page... the UI should
+            look better." A hero that only describes the product reads as
+            vaporware; showing a real stylized preview of what the CRM
+            actually looks like (dashboard KPIs, today's schedule, live
+            crew) does more to sell it than another paragraph of copy —
+            built from this same page's own design tokens (glass, gradient-
+            text, the red pulse dot already used elsewhere) so it reads as
+            a genuine screen, not a stock illustration. */}
+        <Reveal delay={300}>
+          <div className="mt-14 md:mt-20 max-w-3xl mx-auto">
+            <div className="rounded-2xl border border-white/10 bg-black/60 shadow-2xl shadow-red-950/40 overflow-hidden lp-mockup-float">
+              <div className="flex items-center gap-1.5 px-4 py-2.5 border-b border-white/10 bg-white/[0.03]">
+                <span className="w-2.5 h-2.5 rounded-full bg-white/15" />
+                <span className="w-2.5 h-2.5 rounded-full bg-white/15" />
+                <span className="w-2.5 h-2.5 rounded-full bg-white/15" />
+                <span className="ml-3 text-[11px] text-white/30 font-mono">crewboss.app/dashboard</span>
+              </div>
+              <div className="p-4 md:p-6 text-left grid grid-cols-3 gap-3 md:gap-4">
+                {[
+                  { label: "Revenue MTD", value: "$18,240", tone: "text-red-300" },
+                  { label: "Active Jobs", value: "12", tone: "text-white" },
+                  { label: "Crew on Shift", value: "4", tone: "text-green-400" },
+                ].map(s => (
+                  <div key={s.label} className="glass rounded-xl p-3 md:p-4">
+                    <div className="text-[9px] md:text-[10px] uppercase tracking-wider text-white/40 mb-1">{s.label}</div>
+                    <div className={"text-lg md:text-2xl font-black " + s.tone}>{s.value}</div>
+                  </div>
+                ))}
+                <div className="col-span-2 glass rounded-xl p-3 md:p-4 space-y-2">
+                  <div className="text-[9px] md:text-[10px] uppercase tracking-wider text-white/40 mb-1">Today's Schedule</div>
+                  {[
+                    { time: "9:00", addr: "412 Birch Ln", tag: "In Progress", tone: "bg-yellow-900/40 text-yellow-300 border-yellow-700/40" },
+                    { time: "11:30", addr: "88 Maple Ct", tag: "Scheduled", tone: "bg-blue-900/40 text-blue-300 border-blue-700/40" },
+                    { time: "2:00", addr: "215 Ridge Rd", tag: "Scheduled", tone: "bg-blue-900/40 text-blue-300 border-blue-700/40" },
+                  ].map(j => (
+                    <div key={j.addr} className="flex items-center justify-between text-[11px] md:text-xs py-1">
+                      <span className="text-white/50 font-mono w-10 flex-shrink-0">{j.time}</span>
+                      <span className="flex-1 text-white/80 truncate px-2">{j.addr}</span>
+                      <span className={"px-2 py-0.5 rounded-full border text-[9px] md:text-[10px] font-semibold flex-shrink-0 " + j.tone}>{j.tag}</span>
+                    </div>
+                  ))}
+                </div>
+                <div className="glass rounded-xl p-3 md:p-4">
+                  <div className="text-[9px] md:text-[10px] uppercase tracking-wider text-white/40 mb-2">Live Crew</div>
+                  {["Marco", "Dee"].map(name => (
+                    <div key={name} className="flex items-center gap-1.5 text-[11px] md:text-xs text-white/70 py-1">
+                      <span className="relative flex h-1.5 w-1.5 flex-shrink-0">
+                        <span className="absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75 lp-pulse-dot" />
+                        <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-green-400" />
+                      </span>
+                      {name}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
         </Reveal>
         </div>
       </section>

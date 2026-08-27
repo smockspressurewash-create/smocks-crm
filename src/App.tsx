@@ -1039,6 +1039,11 @@ export function App() {
   // it existed server-side (syncedJobIdsRef has it) AND it's now missing
   // from a fresh full fetch — never a brand-new, not-yet-synced local row.
   const syncedJobIdsRef = useRef<Set<string>>(new Set());
+  // BUG FIX — chemicals had the exact same two gaps estimates/customers/
+  // jobs did: an unfiltered blind push on the 30s autosave, AND (see
+  // refetchData below) an additive-only read-side merge that could never
+  // prune a row missing from a fresh fetch. Same synced-ids-ref fix.
+  const syncedChemicalIdsRef = useRef<Set<string>>(new Set());
 
   const filterRecentlyDeleted = (table: "jobs" | "customers" | "estimates" | "chemicals", rows: any[]) => {
     const m = recentlyDeletedRef.current[table];
@@ -2674,12 +2679,14 @@ export function App() {
           });
         }
       }
-      if (Array.isArray(sbChemicals) && sbChemicals.length > 0) {
+      if (Array.isArray(sbChemicals)) {
+        sbChemicals.forEach((c: any) => syncedChemicalIdsRef.current.add(c.id));
         setChemicals(prev => {
           const filteredChemicals = filterRecentlyDeleted("chemicals", sbChemicals);
           const sbMap = new Map(filteredChemicals.map((c: any) => [c.id, c]));
-          const merged = prev.map(c => sbMap.has(c.id) ? { ...c, ...sbMap.get(c.id) } : c);
-          const existingIds = new Set(prev.map(c => c.id));
+          const pruned = prev.filter(c => sbMap.has(c.id) || !syncedChemicalIdsRef.current.has(c.id));
+          const merged = pruned.map(c => sbMap.has(c.id) ? { ...c, ...sbMap.get(c.id) } : c);
+          const existingIds = new Set(pruned.map(c => c.id));
           const added = filteredChemicals.filter((c: any) => !existingIds.has(c.id));
           return [...merged, ...added];
         });
@@ -2882,13 +2889,16 @@ export function App() {
       // NEVER confirmed synced before (a genuinely new local row), go out.
       let estimateSafeIds: Set<string> | null = null;
       let customerSafeIds: Set<string> | null = null;
+      let chemicalSafeIds: Set<string> | null = null;
       try {
-        const [{ data: liveEstIds }, { data: liveCustIds }] = await Promise.all([
+        const [{ data: liveEstIds }, { data: liveCustIds }, { data: liveChemIds }] = await Promise.all([
           (supabase as any).from("estimates").select("id").eq("owner_id", crmUserId),
           (supabase as any).from("customers").select("id").eq("owner_id", crmUserId),
+          (supabase as any).from("chemicals").select("id").eq("owner_id", crmUserId),
         ]);
         if (Array.isArray(liveEstIds)) estimateSafeIds = new Set(liveEstIds.map((r: any) => r.id));
         if (Array.isArray(liveCustIds)) customerSafeIds = new Set(liveCustIds.map((r: any) => r.id));
+        if (Array.isArray(liveChemIds)) chemicalSafeIds = new Set(liveChemIds.map((r: any) => r.id));
       } catch (err: any) { console.warn("Auto-save id check failed — skipping this cycle entirely (see BUG FIX comment above safeCustomers/safeEstimates):", err?.message); }
       // BUG FIX — "invoices keep coming back." The old fallback here, when
       // the live id check itself failed (a flaky mobile connection is far
@@ -2916,10 +2926,16 @@ export function App() {
       }
       // FEATURE — Chemicals & Equipment used to never reach Supabase at all
       // (localStorage-only) — see migration 0056's comment.
-      if (chemicals.length > 0) {
+      // BUG FIX — this used to blindly push the WHOLE local chemicals array
+      // every 30s with zero protection, the same resurrection bug already
+      // fixed for estimates/customers above — a chemical deleted on another
+      // device could come right back the next autosave cycle on this one.
+      const safeChemicals = !chemicalSafeIds ? [] : chemicals.filter((c: any) => chemicalSafeIds!.has(c.id) || !syncedChemicalIdsRef.current.has(c.id));
+      if (safeChemicals.length > 0) {
         try {
-          const { error } = await (supabase as any).from("chemicals").upsert(chemicals.map((c: any) => ({ ...c, owner_id: crmUserId })), { onConflict: "id" });
+          const { error } = await (supabase as any).from("chemicals").upsert(safeChemicals.map((c: any) => ({ ...c, owner_id: crmUserId })), { onConflict: "id" });
           if (error) console.warn("Chemicals auto-save failed:", error.message);
+          else safeChemicals.forEach((c: any) => syncedChemicalIdsRef.current.add(c.id));
         } catch (err: any) { console.warn("Chemicals auto-save failed:", err?.message); }
       }
     }, 30000);
@@ -3039,17 +3055,20 @@ export function App() {
       const isRecent = (row: any) => { const t = Date.parse(row?.createdAt || ""); return !Number.isNaN(t) && Date.now() - t < RECENT_MS; };
       let liveEstIds: Set<string> | null = null;
       let liveCustIds: Set<string> | null = null;
+      let liveChemIds: Set<string> | null = null;
       try {
-        const [{ data: estRows }, { data: custRows }] = await Promise.all([
+        const [{ data: estRows }, { data: custRows }, { data: chemRows }] = await Promise.all([
           (supabase as any).from("estimates").select("id").eq("owner_id", crmUserId),
           (supabase as any).from("customers").select("id").eq("owner_id", crmUserId),
+          (supabase as any).from("chemicals").select("id").eq("owner_id", crmUserId),
         ]);
         if (Array.isArray(estRows)) liveEstIds = new Set(estRows.map((r: any) => r.id));
         if (Array.isArray(custRows)) liveCustIds = new Set(custRows.map((r: any) => r.id));
+        if (Array.isArray(chemRows)) liveChemIds = new Set(chemRows.map((r: any) => r.id));
       } catch (err: any) { console.warn("Initial sync — live id check failed, skipping local push entirely this load:", err?.message); }
       // Live check itself failing is the same "can't tell new from deleted"
       // situation as a missing id set — skip the push rather than guess.
-      if (!liveEstIds || !liveCustIds) return;
+      if (!liveEstIds || !liveCustIds || !liveChemIds) return;
       const deletedCustIds = readTombstones("customers");
       const deletedEstIds = readTombstones("estimates");
       const safeLocalCustomers = customers.filter((c: any) => !deletedCustIds.has(c.id) && (liveCustIds!.has(c.id) || isRecent(c)));
@@ -3061,9 +3080,15 @@ export function App() {
           if (error) console.warn("Initial estimate sync failed:", error.message);
         } catch (err: any) { console.warn("Initial estimate sync failed:", err?.message); }
       }
-      if (chemicals.length > 0) {
+      // BUG FIX — this used to push every local chemical unconditionally on
+      // mount, the same cross-device resurrection bug tombstones/live-checks
+      // exist to prevent for estimates/customers just above — a chemical
+      // deleted on another device would come right back on this device's
+      // very next reload.
+      const safeLocalChemicals = chemicals.filter((c: any) => liveChemIds!.has(c.id) || isRecent(c));
+      if (safeLocalChemicals.length > 0) {
         try {
-          const { error } = await (supabase as any).from("chemicals").upsert(chemicals.map((c: any) => ({ ...c, owner_id: crmUserId })), { onConflict: "id" });
+          const { error } = await (supabase as any).from("chemicals").upsert(safeLocalChemicals.map((c: any) => ({ ...c, owner_id: crmUserId })), { onConflict: "id" });
           if (error) console.warn("Initial chemicals sync failed:", error.message);
         } catch (err: any) { console.warn("Initial chemicals sync failed:", err?.message); }
       }
@@ -3913,43 +3938,62 @@ export function App() {
   // `marketingPreview` lets an already-logged-in owner explicitly view
   // these pages (see the flag's own comment above) — everyone else still
   // needs the normal !empSession && !hasCrmSession public-page gate.
-  // The little "Back to Dashboard" bar is rendered here, wrapping the page,
-  // rather than threaded as a prop into all four marketing page files.
-  const previewBar = marketingPreview && hasCrmSession && (
-    <div className="fixed top-0 inset-x-0 z-[400] bg-red-700 text-white text-xs font-medium py-2 px-4 flex items-center justify-center gap-3">
-      Previewing the marketing site while logged in
-      <button onClick={() => { setMarketingPreview(false); window.location.hash = "/dashboard"; setPage("dashboard"); }} className="underline hover:no-underline font-semibold">Back to Dashboard</button>
-    </div>
-  );
+  // BUG FIX — "it shouldn't have the bar at the top that says previewing
+  // the marketing site while logged in." That banner was the only signal
+  // of login state before isLoggedIn/onGoToDashboard existed on the nav
+  // itself (see MarketingNav's own comment) — now that the nav's CTA
+  // already says "Go to Dashboard" whenever logged in, the extra banner is
+  // redundant and was the thing actually being complained about. Removed;
+  // marketingPreview itself stays (it's still what lets a logged-in owner
+  // reach these pages at all — see the render gates just below).
+  const goToRoadmap = () => { window.location.hash = "/roadmap"; setPage("roadmap"); };
   if (page === "welcome" && (marketingPreview || (!empSession && !hasCrmSession))) {
-    return <>{previewBar}<LandingPage onGetStarted={() => navigateMarketing("login")} onNavigate={navigateMarketing} onChoosePlan={startPaidSignup} choosingPlan={choosingPlan} isLoggedIn={hasCrmSession} onGoToDashboard={goToDashboardFromMarketing} /></>;
+    return <LandingPage onGetStarted={() => navigateMarketing("login")} onNavigate={navigateMarketing} onChoosePlan={startPaidSignup} choosingPlan={choosingPlan} isLoggedIn={hasCrmSession} onGoToDashboard={goToDashboardFromMarketing} onRoadmap={goToRoadmap} />;
   }
   // ── Dedicated marketing pages — same public, no-session-required pattern
   // as "welcome" above. See MarketingShared.tsx for the shared nav/footer.
   if (page === "features" && (marketingPreview || (!empSession && !hasCrmSession))) {
-    return <>{previewBar}<FeaturesPage onGetStarted={() => navigateMarketing("login")} onNavigate={navigateMarketing} isLoggedIn={hasCrmSession} onGoToDashboard={goToDashboardFromMarketing} /></>;
+    return <FeaturesPage onGetStarted={() => navigateMarketing("login")} onNavigate={navigateMarketing} isLoggedIn={hasCrmSession} onGoToDashboard={goToDashboardFromMarketing} onRoadmap={goToRoadmap} />;
   }
   if (page === "pricing" && (marketingPreview || (!empSession && !hasCrmSession))) {
-    return <>{previewBar}<PricingPage onGetStarted={() => navigateMarketing("login")} onNavigate={navigateMarketing} onChoosePlan={startPaidSignup} choosingPlan={choosingPlan} isLoggedIn={hasCrmSession} onGoToDashboard={goToDashboardFromMarketing} /></>;
+    return <PricingPage onGetStarted={() => navigateMarketing("login")} onNavigate={navigateMarketing} onChoosePlan={startPaidSignup} choosingPlan={choosingPlan} isLoggedIn={hasCrmSession} onGoToDashboard={goToDashboardFromMarketing} onRoadmap={goToRoadmap} />;
   }
   if (page === "about" && (marketingPreview || (!empSession && !hasCrmSession))) {
-    return <>{previewBar}<AboutPage onGetStarted={() => navigateMarketing("login")} onNavigate={navigateMarketing} isLoggedIn={hasCrmSession} onGoToDashboard={goToDashboardFromMarketing} /></>;
+    return <AboutPage onGetStarted={() => navigateMarketing("login")} onNavigate={navigateMarketing} isLoggedIn={hasCrmSession} onGoToDashboard={goToDashboardFromMarketing} onRoadmap={goToRoadmap} />;
   }
-  // FEATURE — public roadmap (logged-out visitors) — read-only, only shows
-  // items the admin has actually scheduled/shipped, no submit/vote (that
-  // needs a real CrewBoss account — see the in-app "Feedback" nav item).
+  // FEATURE — public roadmap (logged-out visitors) — read-only list of
+  // planned/in-progress/done items always shows; submitting/voting needs a
+  // real CrewBoss account (any business, cross-tenant by design — see
+  // FeedbackPage.tsx), surfaced below as a clear "log in to submit" CTA
+  // instead of just quietly having no submit form at all.
   if (page === "roadmap" && (marketingPreview || (!empSession && !hasCrmSession))) {
     return (
-      <>
-        {previewBar}
-        <div className="min-h-screen bg-black text-white">
-          <div className="sticky top-0 z-40 backdrop-blur-md bg-black/60 border-b border-white/10 px-4 py-3 flex items-center justify-between">
-            <button onClick={() => navigateMarketing("welcome")} className="font-bold text-lg tracking-tight">Crew<span className="text-red-500">Boss</span></button>
+      <div className="min-h-screen bg-black text-white">
+        <div className="sticky top-0 z-40 backdrop-blur-md bg-black/60 border-b border-white/10 px-4 py-3 flex items-center justify-between">
+          <button onClick={() => navigateMarketing("welcome")} className="font-bold text-lg tracking-tight">Crew<span className="text-red-500">Boss</span></button>
+          {hasCrmSession ? (
+            <button onClick={goToDashboardFromMarketing} className="px-4 py-2 rounded-lg bg-gradient-to-br from-red-600 to-red-800 text-sm font-semibold">Go to Dashboard</button>
+          ) : (
             <button onClick={() => navigateMarketing("login")} className="px-4 py-2 rounded-lg bg-gradient-to-br from-red-600 to-red-800 text-sm font-semibold">Start Free Trial</button>
-          </div>
-          <FeedbackPage publicMode />
+          )}
         </div>
-      </>
+        {/* FEATURE — "still not seeing a way for users to request new
+            features or record bugs, upvote or downvote." The public
+            roadmap is read-only (see FeedbackPage's publicMode) since
+            submitting/voting is tied to a real account — this banner is
+            what was actually missing: an explicit, visible path from "I
+            found this page" to "I can act on it," instead of a silent
+            dead end for a logged-out visitor. */}
+        {!hasCrmSession && (
+          <div className="max-w-3xl mx-auto px-4 pt-4">
+            <div className="p-3.5 rounded-xl bg-red-950/20 border border-red-700/40 text-sm text-white/80 flex items-center justify-between gap-3 flex-wrap">
+              <span>Have an idea or found a bug? Log in to your CrewBoss account to submit it and vote on others.</span>
+              <button onClick={() => navigateMarketing("login")} className="px-3 py-1.5 rounded-lg bg-red-600 hover:bg-red-700 text-white text-xs font-semibold flex-shrink-0">Log In →</button>
+            </div>
+          </div>
+        )}
+        <FeedbackPage publicMode />
+      </div>
     );
   }
 

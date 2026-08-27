@@ -64,11 +64,13 @@ export function AboutPage({
   onNavigate,
   isLoggedIn = false,
   onGoToDashboard,
+  onRoadmap,
 }: {
   onGetStarted: () => void;
   onNavigate: (page: MarketingPage) => void;
   isLoggedIn?: boolean;
   onGoToDashboard?: () => void;
+  onRoadmap?: () => void;
 }) {
   return (
     // BUG FIX — see the identical fix + comment in LandingPage.tsx: this
@@ -77,7 +79,7 @@ export function AboutPage({
     <div className="h-dvh h-screen overflow-y-auto bg-black text-white overflow-x-hidden isolate">
       <MarketingStyles />
       <BackgroundBlobs />
-      <MarketingNav active="about" onNavigate={onNavigate} onGetStarted={onGetStarted} isLoggedIn={isLoggedIn} onGoToDashboard={onGoToDashboard} />
+      <MarketingNav active="about" onNavigate={onNavigate} onGetStarted={onGetStarted} isLoggedIn={isLoggedIn} onGoToDashboard={onGoToDashboard} onRoadmap={onRoadmap} />
 
       <MarketingPageHeader
         eyebrow="Why CrewBoss exists"

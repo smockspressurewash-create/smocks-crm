@@ -93,6 +93,7 @@ export function PricingPage({
   choosingPlan = false,
   isLoggedIn = false,
   onGoToDashboard,
+  onRoadmap,
 }: {
   onGetStarted: () => void;
   onNavigate: (page: MarketingPage) => void;
@@ -103,6 +104,7 @@ export function PricingPage({
   choosingPlan?: boolean;
   isLoggedIn?: boolean;
   onGoToDashboard?: () => void;
+  onRoadmap?: () => void;
 }) {
   const [billing, setBilling] = useState<"monthly" | "annual">("annual");
   return (
@@ -112,7 +114,7 @@ export function PricingPage({
     <div className="h-dvh h-screen overflow-y-auto bg-black text-white overflow-x-hidden isolate">
       <MarketingStyles />
       <BackgroundBlobs />
-      <MarketingNav active="pricing" onNavigate={onNavigate} onGetStarted={onGetStarted} isLoggedIn={isLoggedIn} onGoToDashboard={onGoToDashboard} />
+      <MarketingNav active="pricing" onNavigate={onNavigate} onGetStarted={onGetStarted} isLoggedIn={isLoggedIn} onGoToDashboard={onGoToDashboard} onRoadmap={onRoadmap} />
 
       <MarketingPageHeader
         eyebrow="Simple, honest pricing"

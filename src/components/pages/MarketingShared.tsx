@@ -125,8 +125,16 @@ export function MarketingStyles() {
       }
       .lp-divider-sweep { animation: lp-divider-sweep-move 6s ease-in-out infinite; }
 
+      /* Subtle ambient float for the hero's dashboard mockup — just enough
+         motion to read as "alive," not distracting from the content in it. */
+      @keyframes lp-mockup-float {
+        0%, 100% { transform: translateY(0); }
+        50% { transform: translateY(-8px); }
+      }
+      .lp-mockup-float { animation: lp-mockup-float 6s ease-in-out infinite; }
+
       @media (prefers-reduced-motion: reduce) {
-        .lp-blob, .lp-blob-slow, .lp-wave-track, .lp-marquee-track, .lp-pulse-dot, .lp-hero-gradient, .lp-divider-sweep {
+        .lp-blob, .lp-blob-slow, .lp-wave-track, .lp-marquee-track, .lp-pulse-dot, .lp-hero-gradient, .lp-divider-sweep, .lp-mockup-float {
           animation: none !important;
         }
       }
@@ -237,10 +245,16 @@ export function MarketingNav({
   onGetStarted,
   isLoggedIn = false,
   onGoToDashboard,
+  onRoadmap,
 }: {
   active: MarketingPage;
   onNavigate: (page: MarketingPage) => void;
   onGetStarted: () => void;
+  // FEATURE — "still not seeing a way for users to request new features or
+  // record bugs, upvote or downvote." #/roadmap already existed as a real
+  // public page (read list + a "log in to submit" CTA — see App.tsx) but
+  // had no link pointing at it from anywhere on the marketing site itself.
+  onRoadmap?: () => void;
   // BUG FIX — "it's not showing I'm logged in when I go to the landing
   // page." A signed-in owner previewing the marketing site (via the
   // "CrewBoss" logo/nav click in the CRM — see App.tsx's marketingPreview
@@ -278,6 +292,11 @@ export function MarketingNav({
               {l.label}
             </button>
           ))}
+          {onRoadmap && (
+            <button onClick={onRoadmap} className="hover:text-white transition-colors">
+              Roadmap
+            </button>
+          )}
           {isLoggedIn ? (
             <button
               onClick={onGoToDashboard}
@@ -316,6 +335,11 @@ export function MarketingNav({
               {l.label}
             </button>
           ))}
+          {onRoadmap && (
+            <button onClick={() => { setNavOpen(false); onRoadmap(); }} className="block w-full text-left py-2 text-white/70">
+              Roadmap
+            </button>
+          )}
           {isLoggedIn ? (
             <button
               onClick={() => { setNavOpen(false); onGoToDashboard?.(); }}
@@ -365,6 +389,7 @@ export function MarketingFooter({
             <button onClick={() => onNavigate("features")} className="hover:text-white/70 transition-colors">Features</button>
             <button onClick={() => onNavigate("pricing")} className="hover:text-white/70 transition-colors">Pricing</button>
             <button onClick={() => onNavigate("about")} className="hover:text-white/70 transition-colors">About</button>
+            <a href="#/roadmap" className="hover:text-white/70 transition-colors">Roadmap</a>
             <a href="#/terms" className="hover:text-white/70 transition-colors">Terms</a>
             <a href="#/privacy" className="hover:text-white/70 transition-colors">Privacy</a>
             <button onClick={onGetStarted} className="hover:text-white/70 transition-colors">Log In</button>
