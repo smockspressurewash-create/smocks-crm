@@ -5462,7 +5462,6 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     setLoginLoading(false);
     if (!signInErr && signInData.session) {
       const newUserId = signInData.session.user.id;
-      const newEmail = signInData.session.user.email || "";
 
       // Mark invite used + link the employees row to this new auth user —
       // both routed through the service-role invite-action function (see
@@ -5471,14 +5470,20 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
       // current_owner_id() can't resolve anything for it to write these
       // rows directly, even though it's the same person who just proved
       // ownership of the invite code.
-      const invEmpId = inviteRecord?.employeeId || inviteRecord?.employee_id;
       let linkedEmployee: any = null;
       if (inviteCode) {
         try {
+          // SECURITY — the server now derives WHICH invite/employee to link
+          // solely from the invite row itself (owner_id + employee_email)
+          // and verifies who's asking via this real access token, not from
+          // any client-supplied id/email — see invite-action.ts's own
+          // header comment for why that used to be a full account-takeover
+          // hole. newUserId/employeeId/email are no longer read server-side;
+          // kept out of the body so nothing here implies they still matter.
           const res = await fetch("/api/invite-action", {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ action: "consume", code: inviteCode, newUserId, employeeId: invEmpId, email: newEmail }),
+            headers: { "Content-Type": "application/json", Authorization: `Bearer ${signInData.session.access_token}` },
+            body: JSON.stringify({ action: "consume", code: inviteCode }),
           });
           const result = await res.json().catch(() => ({} as any));
           if (res.ok) linkedEmployee = result?.employee || null;
