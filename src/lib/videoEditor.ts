@@ -25,7 +25,12 @@ export const loadFfmpeg = async (onProgress?: (msg: string) => void): Promise<FF
   if (loadingPromise) return loadingPromise;
   loadingPromise = (async () => {
     const ff = new FFmpeg();
-    ff.on("log", ({ message }: any) => { lastLog.push(message); if (lastLog.length > 500) lastLog.shift(); });
+    // BUG FIX — 500 lines was too small a cap even with -nostats added at
+    // each call site (detectSilence) — a longer clip's silencedetect
+    // output alone can exceed it. 4000 gives real headroom without
+    // holding onto an unbounded amount of log text across the app's
+    // lifetime.
+    ff.on("log", ({ message }: any) => { lastLog.push(message); if (lastLog.length > 4000) lastLog.shift(); });
     onProgress?.("Loading video engine (first time only, ~30MB)...");
     const [coreURL, wasmURL] = await Promise.all([
       toBlobURL(`${CORE_BASE}/ffmpeg-core.js`, "text/javascript"),
@@ -88,6 +93,11 @@ export type EditorCaption = {
   // the style's default top/center/bottom placement when set — null/
   // undefined keeps using the style's own position.
   xPct?: number; yPct?: number;
+  // FEATURE — "click a caption to resize it, like in CapCut." Multiplier
+  // on the style's base font size (1 = unchanged); applied identically in
+  // the live CSS preview and the real ffmpeg drawtext fontsize= expression
+  // in renderFinalVideo so what's dragged in the editor is what exports.
+  fontScale?: number;
 };
 
 // Escapes text for safe embedding inside an ffmpeg filtergraph string —
@@ -117,8 +127,19 @@ export const detectSilence = async (file: File, noiseDb = -30, minDurationSec = 
   const ff = await loadFfmpeg();
   const inName = "silence-in-" + file.name.replace(/[^a-z0-9.]/gi, "_");
   await ff.writeFile(inName, await fetchFile(file));
+  // BUG FIX — "auto-cut silence is analyzing, but doesn't show any
+  // result." lastLog is a shared, capped 500-line ring buffer (see
+  // loadFfmpeg's `ff.on("log", ...)` above) fed by EVERY log line this
+  // exec call prints — including ffmpeg's own per-frame `-stats` progress
+  // output, which for anything longer than a few seconds of footage blows
+  // past 500 lines on its own and evicts the real silence_start/
+  // silence_end pairs before this function ever reads them back out.
+  // `-nostats` suppresses that per-frame progress spam (silencedetect's
+  // own log lines are a separate, always-on log stream and are
+  // unaffected), so the ring buffer only ever holds lines this function
+  // actually cares about.
   lastLog = [];
-  await ff.exec(["-i", inName, "-af", `silencedetect=noise=${noiseDb}dB:d=${minDurationSec}`, "-f", "null", "-"]);
+  await ff.exec(["-nostats", "-i", inName, "-af", `silencedetect=noise=${noiseDb}dB:d=${minDurationSec}`, "-f", "null", "-"]);
   await ff.deleteFile(inName).catch(() => {});
   const ranges: { start: number; end: number }[] = [];
   let pendingStart: number | null = null;
@@ -455,8 +476,12 @@ export const renderFinalVideo = async (
         : "";
       const strokeParts = style.strokeWidth > 0 ? `:borderw=${style.strokeWidth}:bordercolor=${style.strokeColor}` : "";
       const alphaExpr = animatedAlphaExpr(style.animation, cap.startSec, cap.endSec);
+      // FEATURE — "click a caption to resize it." fontScale defaults to 1
+      // (unchanged) — real pixel size in the actual export, not just a
+      // preview-only CSS affectation.
+      const fontScale = cap.fontScale && cap.fontScale > 0 ? cap.fontScale : 1;
       drawtextFilters.push(
-        `drawtext=fontfile=${fontFile}:text='${text}':fontcolor=${style.color}:fontsize=h*0.055` +
+        `drawtext=fontfile=${fontFile}:text='${text}':fontcolor=${style.color}:fontsize=h*${(0.055 * fontScale).toFixed(4)}` +
         `:x=${baseX}:y=${y}${strokeParts}${boxParts}` +
         `:enable='between(t,${cap.startSec},${cap.endSec})':alpha='${alphaExpr}'`
       );

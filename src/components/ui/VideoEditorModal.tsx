@@ -19,7 +19,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { GBtn } from "./GBtn";
-import { X, Plus, Trash2, Wand2, Scissors, Type, Upload, Sparkles, RotateCw, FlipHorizontal, Captions, Crop as CropIcon, Sliders } from "lucide-react";
+import { X, Plus, Trash2, Wand2, Scissors, Type, Upload, Sparkles, RotateCw, FlipHorizontal, Captions, Crop as CropIcon, Sliders, Maximize2, Minimize2 } from "lucide-react";
 import { uid, uploadJobMedia } from "../../lib/utils";
 import { CAPTION_STYLES, CAPTION_GOOGLE_FONTS_HREF, captionStyleToCss, getCaptionStyle, TRANSITION_EFFECTS } from "../../lib/captionStyles";
 import { readVideoMeta, detectSilence, renderFinalVideo, extractAudioForTranscription, autoCutClipDeadSpace, requestTranscription, CAPTION_PROVIDERS, ASPECT_RATIOS, type AspectRatio, type CaptionProvider, type CropRect, type EditorClip, type EditorCaption } from "../../lib/videoEditor";
@@ -53,6 +53,26 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings }:
   const [tab, setTab] = useState<ToolTab>("clips");
   // FEATURE — "change the frame size, like 9:16, etc."
   const [aspectRatio, setAspectRatio] = useState<AspectRatio>("9:16");
+  // FEATURE — "allow full-screen video editing within the editor, with an
+  // X to return to editing." Real native Fullscreen API on the preview
+  // box itself (not just this already-full-viewport component) — an
+  // immersive, distraction-free preview with just the video + captions,
+  // an explicit X overlay to back out of (Escape/swipe-down also exits
+  // browser fullscreen natively, this is the always-visible explicit path).
+  const [isFullscreenPreview, setIsFullscreenPreview] = useState(false);
+  useEffect(() => {
+    const onFsChange = () => setIsFullscreenPreview(!!document.fullscreenElement && document.fullscreenElement === previewBoxRef.current);
+    document.addEventListener("fullscreenchange", onFsChange);
+    return () => document.removeEventListener("fullscreenchange", onFsChange);
+  }, []);
+  const toggleFullscreenPreview = async () => {
+    try {
+      if (document.fullscreenElement) await document.exitFullscreen();
+      else await previewBoxRef.current?.requestFullscreen();
+    } catch (e: any) {
+      toast?.("Fullscreen isn't supported here — " + (e?.message || "try a different browser"), "yellow");
+    }
+  };
   // FEATURE — "can it automatically create captions?" / "use any API, not
   // just OpenAI's." Defaults to whichever provider the owner already has a
   // key for (OpenAI, then Groq, then Deepgram), but is fully switchable.
@@ -84,6 +104,23 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings }:
 
   const activeClip = clips.find(c => c.id === activeClipId) || clips[0] || null;
   const hasApiKey = !!(settings?.videoAutoEditApiKey);
+  // BUG FIX — "auto captions does nothing, added captions don't appear."
+  // Captions are stored in GLOBAL assembled-timeline seconds (offset by
+  // every earlier clip's own duration — the only coordinate system that's
+  // correct for the real export, see renderFinalVideo/runAutoCaptions),
+  // but the preview compared them against `previewTime`, which is just
+  // the ACTIVE <video> element's own local currentTime (0..that one
+  // clip's duration). For any clip after the first, a caption's global
+  // startSec/endSec could never fall inside that local range, so it
+  // existed in state (the "Added N captions" toast was truthful) but
+  // could never actually satisfy the preview's active-caption check. One
+  // shared offset, used everywhere previewTime needs to be compared
+  // against caption timing.
+  const activeClipIndex = clips.findIndex(c => c.id === activeClip?.id);
+  const activeClipGlobalOffset = activeClipIndex >= 0
+    ? clips.slice(0, activeClipIndex).reduce((s, c) => s + Math.max(0, c.endSec - c.startSec), 0)
+    : 0;
+  const globalPreviewTime = activeClipGlobalOffset + Math.max(0, previewTime - (activeClip?.startSec || 0));
 
   // Lock body scroll while the full-screen editor is open — same pattern
   // as Modal.tsx.
@@ -225,8 +262,12 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings }:
   // pixel math in renderFinalVideo.
   const [cropEditingId, setCropEditingId] = useState<string | null>(null);
   const [containRect, setContainRect] = useState({ renderW: 0, renderH: 0, offsetX: 0, offsetY: 0 });
+  // Measured whenever the preview box exists — used by BOTH the crop tool
+  // and the caption drag/resize handles below (captions need it to convert
+  // a pointer drag delta into the same xPct/yPct fraction space the crop
+  // tool already uses), not just while cropEditingId is set.
   useEffect(() => {
-    if (!cropEditingId || !activeClip || !previewBoxRef.current) return;
+    if (!activeClip || !previewBoxRef.current) return;
     const measure = () => {
       const box = previewBoxRef.current;
       if (!box) return;
@@ -277,6 +318,52 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings }:
     return () => { window.removeEventListener("pointermove", onMove); window.removeEventListener("pointerup", onUp); };
   }, [cropDragging, activeClip?.id, containRect]);
 
+  // FEATURE — "I can't click the video preview or a caption to resize,
+  // adjust, or move it like in CapCut." Tapping a caption directly on the
+  // canvas selects it (selectedCaptionId) instead of needing the separate
+  // "Position" button first; once selected it can be dragged to move
+  // (same fraction-of-rendered-box math as the crop tool) and a corner
+  // handle drags to resize its font size (fontScale). Selecting also makes
+  // the template gallery below apply to THIS caption on tap.
+  const [selectedCaptionId, setSelectedCaptionId] = useState<string | null>(null);
+  const captionDragRef = useRef<{ mode: "move" | "resize"; startX: number; startY: number; startXPct: number; startYPct: number; startScale: number } | null>(null);
+  const [captionDragging, setCaptionDragging] = useState(false);
+  const startCaptionDrag = (e: React.PointerEvent, cap: EditorCaption, mode: "move" | "resize") => {
+    e.preventDefault();
+    e.stopPropagation();
+    setSelectedCaptionId(cap.id);
+    captionDragRef.current = {
+      mode, startX: e.clientX, startY: e.clientY,
+      startXPct: cap.xPct !== undefined ? cap.xPct : 0.5,
+      startYPct: cap.yPct !== undefined ? cap.yPct : 0.82,
+      startScale: cap.fontScale || 1,
+    };
+    setCaptionDragging(true);
+  };
+  useEffect(() => {
+    if (!captionDragging) return;
+    const onMove = (e: PointerEvent) => {
+      const st = captionDragRef.current;
+      if (!st || !selectedCaptionId || containRect.renderW === 0) return;
+      if (st.mode === "move") {
+        const dxFrac = (e.clientX - st.startX) / containRect.renderW;
+        const dyFrac = (e.clientY - st.startY) / containRect.renderH;
+        updateCaption(selectedCaptionId, { xPct: clamp(st.startXPct + dxFrac, 0, 1), yPct: clamp(st.startYPct + dyFrac, 0, 1) });
+      } else {
+        // Resize — drag distance from the caption's own position scales
+        // font size; scaling by renderW keeps the feel consistent across
+        // different preview sizes/aspect ratios.
+        const dxFrac = (e.clientX - st.startX) / containRect.renderW;
+        const nextScale = clamp(st.startScale + dxFrac * 2.5, 0.4, 3);
+        updateCaption(selectedCaptionId, { fontScale: nextScale });
+      }
+    };
+    const onUp = () => { setCaptionDragging(false); captionDragRef.current = null; };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    return () => { window.removeEventListener("pointermove", onMove); window.removeEventListener("pointerup", onUp); };
+  }, [captionDragging, selectedCaptionId, containRect]);
+
   const runAutoCut = async () => {
     if (!activeClip) { toast?.("Add a clip first", "red"); return; }
     setDetectingSilence(true);
@@ -294,8 +381,11 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings }:
 
   const addCaption = () => {
     if (!activeClip) { toast?.("Add a clip first", "red"); return; }
-    const start = Math.min(previewTime, activeClip.durationSec - 1);
-    setCaptions(prev => [...prev, { id: uid(), text: "New caption", startSec: Math.max(0, start), endSec: Math.min(activeClip.durationSec, start + 2.5), styleId: CAPTION_STYLES[0].id }]);
+    // Stored in GLOBAL timeline seconds (see activeClipGlobalOffset's
+    // comment above) — previewTime alone would put this caption at the
+    // wrong spot on any clip after the first.
+    const start = Math.max(0, globalPreviewTime);
+    setCaptions(prev => [...prev, { id: uid(), text: "New caption", startSec: start, endSec: start + 2.5, styleId: CAPTION_STYLES[0].id }]);
   };
 
   // FEATURE — "can it automatically create captions?" Transcribes the
@@ -386,7 +476,7 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings }:
   const updateCaption = (id: string, patch: Partial<EditorCaption>) => setCaptions(prev => prev.map(c => c.id === id ? { ...c, ...patch } : c));
   const removeCaption = (id: string) => setCaptions(prev => prev.filter(c => c.id !== id));
 
-  const activeCaption = captions.find(c => c.startSec <= previewTime && previewTime <= c.endSec);
+  const activeCaption = captions.find(c => c.startSec <= globalPreviewTime && globalPreviewTime <= c.endSec);
   const activeCaptionStyle = activeCaption ? getCaptionStyle(activeCaption.styleId) : null;
 
   const doExport = async () => {
@@ -513,6 +603,11 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings }:
                   {ar}
                 </button>
               ))}
+              {activeClip && (
+                <button onClick={toggleFullscreenPreview} title="Fullscreen preview" className="ve-tap px-2.5 py-1.5 rounded-lg text-xs font-semibold border border-white/10 text-white/50 hover:text-white flex items-center gap-1">
+                  <Maximize2 size={13} />
+                </button>
+              )}
             </div>
             <div
               ref={previewBoxRef}
@@ -526,6 +621,15 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings }:
               className={"relative rounded-xl overflow-hidden bg-black mx-auto max-h-full " + (positioningCaptionId ? "cursor-crosshair ring-2 ring-red-500" : "") + " " + (aspectRatio === "9:16" ? "aspect-[9/16]" : aspectRatio === "1:1" ? "aspect-square" : "aspect-video")}
               style={{ maxWidth: aspectRatio === "9:16" ? "min(100%, 60vh)" : "100%" }}
             >
+              {isFullscreenPreview && (
+                <button
+                  onClick={toggleFullscreenPreview}
+                  className="absolute top-3 right-3 z-10 w-10 h-10 rounded-full bg-black/60 border border-white/20 flex items-center justify-center text-white hover:bg-black/80"
+                  title="Exit fullscreen"
+                >
+                  <X size={18} />
+                </button>
+              )}
               {activeClip ? (
                 <video
                   ref={videoRef}
@@ -542,24 +646,49 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings }:
                   <button onClick={() => fileInputRef.current?.click()} className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-red-900/40 border border-red-700/40 text-red-300 text-xs font-semibold"><Upload size={13} />Add clips</button>
                 </div>
               )}
-              {activeCaption && activeCaptionStyle && (
-                <div
-                  className="absolute left-0 right-0 flex justify-center px-4 pointer-events-none text-center"
-                  style={
-                    activeCaption.xPct !== undefined && activeCaption.yPct !== undefined
-                      ? { left: `${activeCaption.xPct * 100}%`, top: `${activeCaption.yPct * 100}%`, right: "auto", transform: "translate(-50%, -50%)", width: "90%" }
-                      : {
-                          top: activeCaptionStyle.position === "top" ? "10%" : activeCaptionStyle.position === "center" ? "45%" : undefined,
-                          bottom: activeCaptionStyle.position === "bottom" ? "8%" : undefined,
-                        }
-                  }
-                >
-                  <span
-                    key={activeCaption.id}
-                    style={{ ...captionStyleToCss(activeCaptionStyle), fontSize: "5.5vw", lineHeight: 1.2, display: "inline-block", animation: activeCaptionStyle.animation !== "none" ? `ve-anim-${activeCaptionStyle.animation} 0.4s ease-out` : undefined }}
-                  >{activeCaption.text}</span>
-                </div>
-              )}
+              {activeCaption && activeCaptionStyle && (() => {
+                const isSelected = selectedCaptionId === activeCaption.id;
+                const canInteract = !positioningCaptionId && !cropEditingId;
+                return (
+                  <div
+                    className={"absolute left-0 right-0 flex justify-center px-4 text-center " + (canInteract ? "pointer-events-auto" : "pointer-events-none")}
+                    style={
+                      activeCaption.xPct !== undefined && activeCaption.yPct !== undefined
+                        ? { left: `${activeCaption.xPct * 100}%`, top: `${activeCaption.yPct * 100}%`, right: "auto", transform: "translate(-50%, -50%)", width: "90%" }
+                        : {
+                            top: activeCaptionStyle.position === "top" ? "10%" : activeCaptionStyle.position === "center" ? "45%" : undefined,
+                            bottom: activeCaptionStyle.position === "bottom" ? "8%" : undefined,
+                          }
+                    }
+                  >
+                    <span
+                      key={activeCaption.id}
+                      onPointerDown={canInteract ? e => startCaptionDrag(e, activeCaption, "move") : undefined}
+                      style={{
+                        ...captionStyleToCss(activeCaptionStyle),
+                        fontSize: `${5.5 * (activeCaption.fontScale || 1)}vw`, lineHeight: 1.2, display: "inline-block",
+                        animation: activeCaptionStyle.animation !== "none" ? `ve-anim-${activeCaptionStyle.animation} 0.4s ease-out` : undefined,
+                        cursor: canInteract ? "grab" : undefined,
+                        outline: isSelected ? "2px dashed #ef4444" : undefined,
+                        outlineOffset: isSelected ? "4px" : undefined,
+                        touchAction: "none",
+                        position: "relative",
+                      }}
+                    >
+                      {activeCaption.text}
+                      {isSelected && canInteract && (
+                        <span
+                          onPointerDown={e => startCaptionDrag(e, activeCaption, "resize")}
+                          className="absolute -bottom-3 -right-3 w-7 h-7 bg-red-500 rounded-full border-2 border-white flex items-center justify-center cursor-nwse-resize"
+                          style={{ touchAction: "none" }}
+                        >
+                          <Maximize2 size={11} className="text-white" />
+                        </span>
+                      )}
+                    </span>
+                  </div>
+                );
+              })()}
               {positioningCaptionId && (
                 <div className="absolute inset-x-0 bottom-2 text-center text-[10px] text-white bg-black/70 py-1 pointer-events-none">Tap anywhere to place this caption</div>
               )}
@@ -651,7 +780,12 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings }:
           </div>
 
           {/* Tool panel */}
-          <div className="flex-shrink-0 max-h-[38vh] overflow-y-auto px-3 py-3 border-t border-white/5">
+          {/* BUG FIX — "the preview is not very big." This panel was
+              permanently reserved at 38vh regardless of tab content,
+              leaving the preview only ~25-30% of a typical phone screen.
+              Capped lower so the preview (flex-1, above) actually gets
+              most of the vertical space back. */}
+          <div className="flex-shrink-0 max-h-[26vh] overflow-y-auto px-3 py-3 border-t border-white/5">
             {tab === "clips" && (
               <div className="space-y-2">
                 {clips.length === 0 ? (
@@ -761,25 +895,31 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings }:
                   <div className="text-center py-6 text-white/30 text-xs border border-dashed border-white/10 rounded-xl">No captions yet — type your own, or use Auto-Captions in the Clips tab</div>
                 ) : (
                   <div className="space-y-2">
-                    {captions.map(cap => (
-                      <div key={cap.id} className="p-2.5 rounded-xl bg-white/5 border border-white/10 space-y-1.5">
+                    {captions.map(cap => {
+                      const isSelected = selectedCaptionId === cap.id;
+                      return (
+                      <div
+                        key={cap.id}
+                        onClick={() => { setSelectedCaptionId(cap.id); setActiveClipId(activeClipId); setPreviewTime(Math.max(0, cap.startSec - activeClipGlobalOffset)); }}
+                        className={"p-2.5 rounded-xl border space-y-1.5 cursor-pointer transition " + (isSelected ? "bg-red-950/20 border-red-600/50" : "bg-white/5 border-white/10")}
+                      >
                         <div className="flex items-center gap-1.5">
                           <input value={cap.text} onChange={e => updateCaption(cap.id, { text: e.target.value })}
                             className="ve-input flex-1 bg-black/30 border border-white/10 rounded px-2 py-2 text-white" placeholder="Caption text" />
-                          <button onClick={() => removeCaption(cap.id)} className="ve-tap text-red-400/60 hover:text-red-400 flex-shrink-0"><Trash2 size={15} /></button>
+                          <button onClick={e => { e.stopPropagation(); removeCaption(cap.id); }} className="ve-tap text-red-400/60 hover:text-red-400 flex-shrink-0"><Trash2 size={15} /></button>
                         </div>
                         <div className="flex items-center gap-1.5 flex-wrap text-[10px] text-white/50">
                           <span>From</span>
-                          <input type="number" min={0} step={0.1} value={cap.startSec.toFixed(1)} onChange={e => updateCaption(cap.id, { startSec: Number(e.target.value) || 0 })} className="ve-input w-16 bg-black/30 border border-white/10 rounded px-1 py-1.5 text-white" />
+                          <input type="number" min={0} step={0.1} value={cap.startSec.toFixed(1)} onChange={e => updateCaption(cap.id, { startSec: Number(e.target.value) || 0 })} className="ve-input w-16 bg-black/30 border border-white/10 rounded px-1 py-1.5 text-white" onClick={e => e.stopPropagation()} />
                           <span>to</span>
-                          <input type="number" min={0} step={0.1} value={cap.endSec.toFixed(1)} onChange={e => updateCaption(cap.id, { endSec: Number(e.target.value) || 0 })} className="ve-input w-16 bg-black/30 border border-white/10 rounded px-1 py-1.5 text-white" />
+                          <input type="number" min={0} step={0.1} value={cap.endSec.toFixed(1)} onChange={e => updateCaption(cap.id, { endSec: Number(e.target.value) || 0 })} className="ve-input w-16 bg-black/30 border border-white/10 rounded px-1 py-1.5 text-white" onClick={e => e.stopPropagation()} />
                           <span>s</span>
                         </div>
-                        <div className="flex items-center gap-1.5">
+                        <div className="flex items-center gap-1.5" onClick={e => e.stopPropagation()}>
                           <select value={cap.styleId} onChange={e => updateCaption(cap.id, { styleId: e.target.value })} className="ve-select flex-1 bg-black/30 border border-white/10 rounded px-1.5 py-1.5 text-white">
                             {CAPTION_STYLES.map(s => <option key={s.id} value={s.id} className="bg-black">{s.name}</option>)}
                           </select>
-                          <button onClick={() => { setPreviewTime(cap.startSec); setPositioningCaptionId(cap.id); }}
+                          <button onClick={() => { setSelectedCaptionId(cap.id); setPreviewTime(Math.max(0, cap.startSec - activeClipGlobalOffset)); setPositioningCaptionId(cap.id); }}
                             className={"text-[11px] font-semibold px-2 py-1.5 rounded-lg border flex-shrink-0 " + (cap.xPct !== undefined ? "border-red-500/50 bg-red-950/30 text-red-300" : "border-white/10 text-white/50 hover:text-white")}>
                             Position
                           </button>
@@ -788,15 +928,33 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings }:
                           )}
                         </div>
                       </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 )}
+                {/* FEATURE — "I can't select caption templates or switch
+                    templates after clicking a caption." This gallery used
+                    to be purely decorative (no onClick at all) — tap a
+                    caption above (or on the canvas) to select it, then tap
+                    a tile here to apply that template to it. */}
+                <div className="text-[10px] text-white/40 -mb-1">{selectedCaptionId ? "Tap a template to apply it to the selected caption" : "Select a caption above (or tap it on the preview) to change its template"}</div>
                 <div className="grid grid-cols-3 sm:grid-cols-4 gap-1.5 max-h-40 overflow-y-auto p-0.5">
-                  {CAPTION_STYLES.map(s => (
-                    <div key={s.id} className="rounded-lg bg-black border border-white/10 py-3 px-1.5 flex items-center justify-center text-center" title={s.description}>
+                  {CAPTION_STYLES.map(s => {
+                    const selectedCap = captions.find(c => c.id === selectedCaptionId);
+                    const isActive = selectedCap?.styleId === s.id;
+                    return (
+                    <button
+                      key={s.id}
+                      type="button"
+                      disabled={!selectedCaptionId}
+                      onClick={() => selectedCaptionId && updateCaption(selectedCaptionId, { styleId: s.id })}
+                      className={"rounded-lg bg-black border py-3 px-1.5 flex items-center justify-center text-center transition disabled:opacity-40 " + (isActive ? "border-red-500 ring-2 ring-red-500/50" : "border-white/10 hover:border-white/30")}
+                      title={s.description}
+                    >
                       <span style={{ ...captionStyleToCss(s), fontSize: 11 }}>{s.name}</span>
-                    </div>
-                  ))}
+                    </button>
+                    );
+                  })}
                 </div>
               </div>
             )}
