@@ -22,7 +22,7 @@ import {
 } from "recharts";
 import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE } from "../../lib/utils";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
-import { twilioSend, sendEmail, logOutboundSmsToInbox } from "../../lib/messaging";
+import { twilioSend, sendEmail, logOutboundSmsToInbox, emailShell, emailButton } from "../../lib/messaging";
 import { seedWeather } from "../../lib/weather";
 import { seedCustomers, seedEstimates, seedJobs, seedEmployees, seedVehicles, seedExpenses, seedChemicals, seedServices, seedAutomations, seedEmailTemplates, seedSmsTemplates, seedRewardTiers, seedReferrals, seedMaintenance, campaignTemplates, seedSocialPosts, seedTimeline, seedGoals, seedReminders, seedAccountabilityEntries, seedMileage, seedLeadSrc, STEP_TYPES, AUTOMATION_TEMPLATES } from "../../lib/seed";
 import { callModel, MODELS } from "../../lib/api";
@@ -420,12 +420,73 @@ export function CalendarPage({ jobs = [], setJobs, customers = [], employees = [
     }
     setJobContextMenu(null);
   };
+  // FEATURE — "when you right-click and select Reschedule, it should show
+  // the calendar again and say 'Click on the day you want to reschedule.'
+  // ... a pop-up asking 'Do you want me to notify the customer?' ...
+  // whenever jobs are rescheduled it should automatically email the
+  // employee." Replaces the old window.prompt("YYYY-MM-DD") — that was
+  // real functionality, just not what was actually asked for. reschedulingId
+  // puts the existing month grid itself into "pick a day" mode (no separate
+  // popup calendar needed — the real one is right there, and month
+  // nav/off still works normally while this is active); clicking a day
+  // opens the notify-customer confirmation instead of saving immediately.
+  const [reschedulingId, setReschedulingId] = useState<string | null>(null);
+  const [rescheduleTarget, setRescheduleTarget] = useState<{ jobId: string; newDate: string } | null>(null);
+  const [notifyBusy, setNotifyBusy] = useState(false);
   const rescheduleJobQuick = (jid: string) => {
-    const job = jobs.find(j => j.id === jid);
-    const newDate = window.prompt("New date (YYYY-MM-DD):", job?.scheduledDate || "");
     setJobContextMenu(null);
-    if (!newDate) return;
-    updateJob(jid, { scheduledDate: newDate });
+    setView("month"); // the day-click picker below is only wired up for month view
+    setReschedulingId(jid);
+  };
+  const pickRescheduleDay = (newDate: string) => {
+    if (!reschedulingId) return;
+    setRescheduleTarget({ jobId: reschedulingId, newDate });
+    setReschedulingId(null);
+  };
+  // Always fires regardless of the customer-notify choice — the crew member
+  // actually doing the work needs to know their schedule changed either way.
+  const notifyEmployeeOfReschedule = async (job: any, oldDate: string, newDate: string) => {
+    const crewIds: string[] = Array.isArray(job.crew) ? job.crew : [];
+    const crew = employees.filter((e: any) => crewIds.includes(e.id) && e.email);
+    if (crew.length === 0) return;
+    const jobUrl = `${window.location.origin}${window.location.pathname}#/portal`;
+    const customer = customers.find((c: any) => c.id === job.customerId);
+    for (const emp of crew) {
+      const html = emailShell(settings as any, "Job Rescheduled",
+        `<p>Hi ${emp.firstName},</p><p>A job on your schedule was moved:</p><ul><li><b>Customer:</b> ${customer ? customer.firstName + " " + customer.lastName : "—"}</li><li><b>Address:</b> ${job.address || "—"}</li><li><b>Was:</b> ${oldDate}</li><li><b>Now:</b> ${newDate}</li></ul>` +
+        emailButton("View My Schedule", jobUrl)
+      );
+      try { await sendEmail(settings as any, { to: emp.email, subject: `Job Rescheduled — ${newDate}`, body: html }); }
+      catch (e: any) { console.warn("[Reschedule] employee email failed for", emp.email, e?.message); }
+    }
+  };
+  const confirmReschedule = async (channel: "none" | "sms" | "email" | "both") => {
+    if (!rescheduleTarget) return;
+    const { jobId, newDate } = rescheduleTarget;
+    const job = jobs.find(j => j.id === jobId);
+    if (!job) { setRescheduleTarget(null); return; }
+    const oldDate = job.scheduledDate;
+    setNotifyBusy(true);
+    updateJob(jobId, { scheduledDate: newDate });
+    const customer = customers.find((c: any) => c.id === job.customerId);
+    if (customer && channel !== "none") {
+      const msg = `Hi ${customer.firstName}, your ${(settings as any)?.companyName || "Crew Boss"} appointment has been moved from ${oldDate} to ${newDate}. Questions? Just reply here.`;
+      if ((channel === "sms" || channel === "both") && customer.phone) {
+        try {
+          await twilioSend(settings as any, customer.phone, msg);
+          logOutboundSmsToInbox({ contactName: `${customer.firstName} ${customer.lastName}`, contactPhone: customer.phone, customerId: customer.id, body: msg }).catch(() => {});
+        } catch (e: any) { toast?.("Text to customer failed — " + (e?.message || "unknown error"), "red"); }
+      }
+      if ((channel === "email" || channel === "both") && customer.email) {
+        try {
+          const html = emailShell(settings as any, "Appointment Rescheduled", `<p>Hi ${customer.firstName},</p><p>Your appointment has been moved:</p><ul><li><b>Was:</b> ${oldDate}</li><li><b>Now:</b> ${newDate}</li></ul><p>Questions? Just reply to this email.</p>`);
+          await sendEmail(settings as any, { to: customer.email, subject: "Your appointment has been rescheduled", body: html });
+        } catch (e: any) { toast?.("Email to customer failed — " + (e?.message || "unknown error"), "red"); }
+      }
+    }
+    await notifyEmployeeOfReschedule(job, oldDate, newDate);
+    setNotifyBusy(false);
+    setRescheduleTarget(null);
     toast("Rescheduled to " + newDate);
   };
   const openJobContextMenu = (e: React.MouseEvent | React.TouchEvent, jid: string) => {
@@ -448,6 +509,12 @@ export function CalendarPage({ jobs = [], setJobs, customers = [], employees = [
 
   return (
     <div className="space-y-4">
+      {reschedulingId && (
+        <div className="flex items-center justify-between gap-3 px-4 py-3 rounded-xl bg-blue-950/30 border border-blue-600/50 text-sm text-blue-200">
+          <span>Click on the day you want to reschedule to — you can still page between months.</span>
+          <button onClick={() => setReschedulingId(null)} className="px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-white text-xs font-semibold flex-shrink-0">Cancel</button>
+        </div>
+      )}
       <div className="flex items-center gap-2 flex-wrap">
         {["month", "week", "agenda"].map(v => <button key={v} onClick={() => { setView(v); setOff(0); }} className={"px-4 py-2 rounded-xl text-sm font-medium transition border capitalize " + (view === v ? "bg-gradient-to-r from-red-600 to-red-800 border-red-500/50 text-white" : "bg-black/40 border-red-900/30 text-white/60 hover:text-white")}>{v}</button>)}
 
@@ -526,7 +593,7 @@ export function CalendarPage({ jobs = [], setJobs, customers = [], employees = [
               const cellBg = isT ? "bg-red-950/30 border-red-700/50" : hasInProgress ? "bg-orange-950/20 border-orange-700/30" : hasCompleted && dj.every(j => j.status === "completed") ? "bg-green-950/20 border-green-800/30" : hasUrgent ? "bg-red-950/20 border-red-700/40" : dj.length > 0 ? "bg-blue-950/10 border-blue-900/20" : gd.length > 0 ? "bg-blue-950/10 border-blue-900/20" : "bg-white/5 border-white/5 hover:border-red-900/30";
               const isTouchDragOver = touchDragOverKey === k;
               return (
-                <div key={d} data-daykey={k} onDragOver={e => e.preventDefault()} onDrop={() => handleDrop(k)} className={"min-h-[84px] p-1.5 rounded-lg border transition-all " + cellBg + (isTouchDragOver ? " !border-red-500 !bg-red-950/40 scale-[1.03]" : "")}>
+                <div key={d} data-daykey={k} onDragOver={e => e.preventDefault()} onDrop={() => handleDrop(k)} onClick={() => reschedulingId && pickRescheduleDay(k)} className={"min-h-[84px] p-1.5 rounded-lg border transition-all " + cellBg + (isTouchDragOver ? " !border-red-500 !bg-red-950/40 scale-[1.03]" : "") + (reschedulingId ? " cursor-pointer hover:!border-blue-500 hover:!bg-blue-950/30" : "")}>
                   <div className="flex items-center justify-between mb-1">
                     <div className={"text-xs font-semibold " + (isT ? "text-red-400" : "text-white/70")}>{d}</div>
                     {dt > 0 && <div className="text-[8px] text-green-400/70 font-mono">${Math.round(dt)}</div>}
@@ -558,7 +625,7 @@ export function CalendarPage({ jobs = [], setJobs, customers = [], employees = [
                             drag threshold cancels the long-press and drags
                             the job to another day (or the unschedule zone)
                             instead. */}
-                        <div draggable onDragStart={() => setDragId(j.id)} onClick={() => setSelectedJobId(j.id)} onContextMenu={(e: React.MouseEvent) => openJobContextMenu(e, j.id)}
+                        <div draggable onDragStart={() => setDragId(j.id)} onClick={(e: React.MouseEvent) => { if (reschedulingId) { e.stopPropagation(); pickRescheduleDay(k); return; } setSelectedJobId(j.id); }} onContextMenu={(e: React.MouseEvent) => openJobContextMenu(e, j.id)}
                           onTouchStart={(e: React.TouchEvent) => { startLongPress(e, j.id); handleUnscheduledTouchStart(e, j.id); }}
                           onTouchMove={(e: React.TouchEvent) => { cancelLongPress(); handleTouchDragMove(e); }}
                           onTouchEnd={() => { cancelLongPress(); handleTouchDragEnd(); }}
@@ -719,6 +786,23 @@ export function CalendarPage({ jobs = [], setJobs, customers = [], employees = [
             <button onClick={() => cancelJobQuick(jobContextMenu.jobId)} className="w-full flex items-center gap-2 px-3 py-2 text-xs text-red-300 hover:bg-red-950/30 transition border-t border-white/10"><Ban size={12} />Cancel Job</button>
           </div>
         </>
+      )}
+
+      {/* Notify-customer confirmation, shown after picking a new day for a
+          reschedule. The assigned employee(s) always get emailed regardless
+          of what's chosen here — see notifyEmployeeOfReschedule. */}
+      {rescheduleTarget && (
+        <Modal open={!!rescheduleTarget} onClose={() => !notifyBusy && setRescheduleTarget(null)} title="Notify the customer?" maxW="max-w-xs">
+          <div className="space-y-3">
+            <div className="text-sm text-white/60">Moving this job to <span className="text-white font-semibold">{rescheduleTarget.newDate}</span>. Let the customer know?</div>
+            <div className="grid grid-cols-1 gap-2">
+              <GBtn disabled={notifyBusy} onClick={() => confirmReschedule("both")} className="w-full !justify-center">{notifyBusy ? "Working…" : "Yes — Text & Email"}</GBtn>
+              <button disabled={notifyBusy} onClick={() => confirmReschedule("sms")} className="w-full py-2.5 rounded-xl border border-white/15 bg-white/5 hover:bg-white/10 text-sm font-medium disabled:opacity-50">Text Only</button>
+              <button disabled={notifyBusy} onClick={() => confirmReschedule("email")} className="w-full py-2.5 rounded-xl border border-white/15 bg-white/5 hover:bg-white/10 text-sm font-medium disabled:opacity-50">Email Only</button>
+              <button disabled={notifyBusy} onClick={() => confirmReschedule("none")} className="w-full py-2 text-xs text-white/40 hover:text-white/60 transition disabled:opacity-50">No, don't notify them</button>
+            </div>
+          </div>
+        </Modal>
       )}
 
       {/* Job Detail Modal — opens when a CRM job chip is clicked */}
