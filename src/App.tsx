@@ -4465,7 +4465,11 @@ export function App() {
   // CrewBoss owner (any business, not just this one) — a real "Feedback"
   // nav item, not gated like Alfred Cockpit above (that one's a private
   // line to the developer; this is the product's own public board).
-  const navGroupsWithFeedback = navGroups.map(g => g.label === "Main" ? { ...g, items: [...g.items, { id: "feedback", label: "Feedback", icon: MessageSquare }] } : g);
+  // BUG FIX — "move the feedback section down on the left sidebar." Was
+  // appended to "Main" (the very top group) — moved to "Personal", the
+  // last group in navGroups, so it sits near the bottom of the sidebar
+  // instead of competing with Dashboard/Alfred/Inbox for top billing.
+  const navGroupsWithFeedback = navGroups.map(g => g.label === "Personal" ? { ...g, items: [...g.items, { id: "feedback", label: "Feedback", icon: MessageSquare }] } : g);
   const visibleNavGroups = (isCockpitOwner
     ? [...navGroupsWithFeedback, { label: "Developer", items: [{ id: "cockpit", label: "Alfred Cockpit", icon: LayoutGrid }] }]
     : navGroupsWithFeedback

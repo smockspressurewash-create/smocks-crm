@@ -248,28 +248,30 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
   const weekStart = new Date(nowD); weekStart.setDate(nowD.getDate() - nowD.getDay());
   const monthStart = new Date(nowD.getFullYear(), nowD.getMonth(), 1);
   const completedJobs = jobs.filter(j => j.status === "completed");
-  // FIX 2 — today() is UTC-derived (rolls to the next date ~4-8pm US local
-  // time), so "Today" revenue could silently drop to $0 or the wrong day's
-  // total in the evening while looking "stale" to the owner. localDateStr()
-  // uses local Date components instead, matching what the owner actually
-  // considers "today."
-  const revToday = completedJobs.filter(j => j.scheduledDate === localDateStr()).reduce((s, j) => s + j.amount, 0);
-  // BUG FIX (owner report — "make sure Today/This Week revenue numbers are
-  // accurate") — same class of bug FIX 2 above already fixed for revToday,
-  // just missed here: job.scheduledDate is a plain "YYYY-MM-DD" string,
-  // which `new Date(...)` always parses as UTC MIDNIGHT regardless of the
-  // browser's timezone. Comparing that against weekStart/monthStart (Date
-  // objects anchored to LOCAL midnight) means, for any negative-UTC-offset
-  // timezone (all of the US), a job scheduled for the FIRST day of the
-  // week/month got its UTC-midnight instant compared against a LATER
-  // local-midnight-in-UTC instant and silently failed the >= check —
-  // dropped out of "This Week"/"This Month" revenue entirely. Comparing
-  // the plain date strings instead (via localDateKey, same helper
-  // utils.ts already documents for exactly this bug class) sidesteps the
-  // UTC-parsing step altogether.
   const weekStartStr = localDateKey(weekStart);
   const monthStartStr = localDateKey(monthStart);
-  const revWeek = completedJobs.filter(j => j.scheduledDate >= weekStartStr).reduce((s, j) => s + j.amount, 0);
+  // BUG FIX — "Today $ / This Week $ aren't accurate, aren't pulling real
+  // data." revToday/revWeek used to sum job.amount (the job's QUOTED price)
+  // for jobs COMPLETED on that date — not the same thing as money actually
+  // COLLECTED that date. A job completed today with an invoice paid three
+  // days later counted as "today's revenue" the moment it was marked done,
+  // while a five-year-old job whose invoice finally got paid today
+  // contributed nothing to "today." "Revenue today/this week" now means
+  // exactly what those words say: the real total of invoices/estimates
+  // actually PAID on that date (paidAt), summed by their real invoiced
+  // total (e.stotal is the real amount charged — job.amount can drift
+  // from it once line items/discounts are added at invoicing time), using
+  // the same local-date-string comparison FIX 2 already established below
+  // to avoid the UTC-midnight parsing bug (paidAt is a plain "YYYY-MM-DD"
+  // string from today(), same shape as scheduledDate).
+  const paidEstimates = estimates.filter((e: any) => !!e.paidAt);
+  const revToday = paidEstimates.filter((e: any) => e.paidAt === localDateStr()).reduce((s: number, e: any) => s + (Number(e.total) || 0), 0);
+  const revWeek = paidEstimates.filter((e: any) => e.paidAt >= weekStartStr).reduce((s: number, e: any) => s + (Number(e.total) || 0), 0);
+  // Month/year-to-date figures below stay on the existing "completed jobs,
+  // scheduledDate" basis deliberately — those are used for the run-rate/
+  // forecast and YoY comparisons, which are about WORK DONE (a pipeline/
+  // production metric), not cash collected — a different, still-accurate
+  // question from "how much money did I actually make today/this week."
   const revMonth = completedJobs.filter(j => j.scheduledDate >= monthStartStr).reduce((s, j) => s + j.amount, 0);
   const avgJobVal = completedJobs.length > 0 ? completedJobs.reduce((s, j) => s + j.amount, 0) / completedJobs.length : 0;
 
@@ -1515,45 +1517,88 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
         );
       })()}
 
-      {/* Completed jobs that haven't been invoiced or marked paid yet */}
-      {needsInvoiceJobs.length > 0 && (
-        <Glass className="p-4 !bg-yellow-950/15 !border-yellow-700/30">
-          <button onClick={() => setNeedsInvoiceCollapsed(c => !c)} className="w-full flex items-center gap-2 mb-3 text-left">
-            <AlertTriangle size={14} className="text-yellow-400" />
-            <h3 className="font-semibold text-sm flex-1">Completed — Needs Invoice</h3>
-            <Badge tone="yellow">{needsInvoiceJobs.length}</Badge>
-            <ChevronRight size={14} className={"text-white/40 transition-transform " + (needsInvoiceCollapsed ? "" : "rotate-90")} />
-          </button>
-          {!needsInvoiceCollapsed && (
-            <>
-              <div className="space-y-2">
-                {needsInvoiceJobs.slice(0, 5).map((j: any) => {
-                  const cust = customers.find((c: any) => c.id === j.customerId);
-                  return (
-                    <div key={j.id} className="flex items-center justify-between gap-3 p-3 rounded-xl bg-black/30 border border-white/10">
-                      <div className="min-w-0 flex-1">
-                        <div className="text-sm font-medium truncate">{cust ? `${cust.firstName} ${cust.lastName}` : j.address}</div>
-                        <div className="text-xs text-white/40">{j.address} · {fmt(j.amount)}</div>
-                      </div>
-                      <div className="flex gap-1.5 flex-shrink-0">
-                        <button onClick={() => { setJobs((prev: any[]) => prev.map(x => x.id === j.id ? { ...x, invoiceSentAt: today(), paymentType: x.paymentType || "Invoice" } : x)); toast?.("Marked as sent (outside the CRM)", "green"); }} title="Already sent this invoice outside the CRM" className="px-2 py-1.5 rounded-lg border border-white/10 bg-white/5 text-white/50 hover:text-white text-xs transition">
-                          Mark Sent
-                        </button>
-                        <GBtn onClick={() => setPreviewInvoiceJob(j)} disabled={sendingDashInvoiceId === j.id} className="!text-xs !py-1.5">
-                          {sendingDashInvoiceId === j.id ? "Sending…" : "Send Invoice"}
-                        </GBtn>
-                      </div>
+      {/* BUG FIX — "there are two different items that say Completed Needs
+          Invoice and Outstanding Invoice, keep only one or merge them."
+          These were two genuinely different pipeline stages (invoice not
+          sent yet vs. sent-but-unpaid) rendered as two separate cards —
+          merged into one "Invoices" card with both sections stacked under
+          a single combined count/header, instead of two cards competing
+          for the same visual real estate on the dashboard. Both sections'
+          own row content/actions are unchanged. */}
+      {(() => {
+        const unpaidInvoices = (estimates || []).filter((e: any) => e.invoiced && !e.paidAt);
+        const totalCount = needsInvoiceJobs.length + unpaidInvoices.length;
+        if (totalCount === 0) return null;
+        const totalOwed = unpaidInvoices.reduce((s: number, e: any) => s + e.total, 0);
+        const overdue = unpaidInvoices.filter((e: any) => e.invoicedAt && daysSince(e.invoicedAt) > 14);
+        return (
+          <Glass className="p-4 !bg-yellow-950/15 !border-yellow-700/30">
+            <button onClick={() => setNeedsInvoiceCollapsed(c => !c)} className="w-full flex items-center gap-2 mb-3 text-left">
+              <AlertTriangle size={14} className="text-yellow-400" />
+              <h3 className="font-semibold text-sm flex-1">Invoices</h3>
+              {overdue.length > 0 && <Badge tone="red">{overdue.length} overdue</Badge>}
+              <Badge tone="yellow">{totalCount}</Badge>
+              <ChevronRight size={14} className={"text-white/40 transition-transform " + (needsInvoiceCollapsed ? "" : "rotate-90")} />
+            </button>
+            {!needsInvoiceCollapsed && (
+              <div className="space-y-4">
+                {needsInvoiceJobs.length > 0 && (
+                  <div>
+                    <div className="text-[10px] text-white/40 uppercase tracking-wider mb-1.5">Needs invoice sent ({needsInvoiceJobs.length})</div>
+                    <div className="space-y-2">
+                      {needsInvoiceJobs.slice(0, 5).map((j: any) => {
+                        const cust = customers.find((c: any) => c.id === j.customerId);
+                        return (
+                          <div key={j.id} className="flex items-center justify-between gap-3 p-3 rounded-xl bg-black/30 border border-white/10">
+                            <div className="min-w-0 flex-1">
+                              <div className="text-sm font-medium truncate">{cust ? `${cust.firstName} ${cust.lastName}` : j.address}</div>
+                              <div className="text-xs text-white/40">{j.address} · {fmt(j.amount)}</div>
+                            </div>
+                            <div className="flex gap-1.5 flex-shrink-0">
+                              <button onClick={() => { setJobs((prev: any[]) => prev.map(x => x.id === j.id ? { ...x, invoiceSentAt: today(), paymentType: x.paymentType || "Invoice" } : x)); toast?.("Marked as sent (outside the CRM)", "green"); }} title="Already sent this invoice outside the CRM" className="px-2 py-1.5 rounded-lg border border-white/10 bg-white/5 text-white/50 hover:text-white text-xs transition">
+                                Mark Sent
+                              </button>
+                              <GBtn onClick={() => setPreviewInvoiceJob(j)} disabled={sendingDashInvoiceId === j.id} className="!text-xs !py-1.5">
+                                {sendingDashInvoiceId === j.id ? "Sending…" : "Send Invoice"}
+                              </GBtn>
+                            </div>
+                          </div>
+                        );
+                      })}
                     </div>
-                  );
-                })}
+                    {needsInvoiceJobs.length > 5 && (
+                      <button onClick={() => onNav("invoices")} className="w-full mt-2 text-xs text-white/40 hover:text-white/60 text-center">View all {needsInvoiceJobs.length} →</button>
+                    )}
+                  </div>
+                )}
+                {unpaidInvoices.length > 0 && (
+                  <div>
+                    <div className="flex items-center justify-between mb-1.5">
+                      <div className="text-[10px] text-white/40 uppercase tracking-wider">Awaiting payment ({unpaidInvoices.length})</div>
+                      <div className="text-sm font-black text-red-400">{fmt(totalOwed)}</div>
+                    </div>
+                    <div className="space-y-1.5 max-h-40 overflow-y-auto">
+                      {unpaidInvoices.slice(0, 5).map((inv: any) => {
+                        const cu = (customers || []).find((x: any) => x.id === inv.customerId);
+                        const age = inv.invoicedAt ? daysSince(inv.invoicedAt) : 0;
+                        return (
+                          <div key={inv.id} className="flex items-center justify-between text-xs py-1.5 border-b border-red-900/10">
+                            <span><span className="font-medium">{cu ? cu.firstName + " " + cu.lastName : "?"}</span> <span className={"text-[10px] " + (age > 14 ? "text-red-400" : "text-white/40")}>{age > 0 ? age + "d ago" : "today"}</span></span>
+                            <span className="font-bold text-red-400">{fmt(inv.total)}</span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                    {unpaidInvoices.length > 5 && (
+                      <button onClick={() => onNav("invoices")} className="w-full mt-2 text-xs text-white/40 hover:text-white/60 text-center">View all →</button>
+                    )}
+                  </div>
+                )}
               </div>
-              {needsInvoiceJobs.length > 5 && (
-                <button onClick={() => onNav("invoices")} className="w-full mt-2 text-xs text-white/40 hover:text-white/60 text-center">View all {needsInvoiceJobs.length} →</button>
-              )}
-            </>
-          )}
-        </Glass>
-      )}
+            )}
+          </Glass>
+        );
+      })()}
 
       {/* End-of-day summary — auto-generated from today's job/crew activity.
           Recomputed on every render from live props, so it updates the moment
@@ -1620,18 +1665,17 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
         );
       })()}
 
-      {/* Top row: quick actions + revenue periods */}
+      {/* Top row: revenue periods.
+          BUG FIX — "remove New Estimate / Schedule Job from the dashboard,
+          they should automatically be at the bottom on mobile, on desktop
+          use the normal workflow." Both duplicated the mobile FAB (see
+          App.tsx's ALL_FAB_ACTIONS — "New Quote"/"Schedule Job" already
+          exist there, already bottom-positioned on mobile) and the normal
+          per-page Add buttons on Estimates/Jobs — this row was a third,
+          redundant path to the same two actions cluttering the top of the
+          dashboard. Removed; the FAB and each page's own Add button are
+          the one real path now, exactly matching the request. */}
       <div className="grid grid-cols-2 lg:grid-cols-6 gap-4">
-        <button onClick={() => onNav("estimates")} className="btn-hover glass-hover bg-gradient-to-br from-red-600 to-red-900 border border-red-500/50 rounded-2xl p-4 text-left shadow-lg">
-          <FileText size={18} className="mb-2" />
-          <div className="font-bold text-sm">New Estimate</div>
-          <div className="text-[10px] text-red-200/70">Quick create</div>
-        </button>
-        <button onClick={() => onNav("jobs")} className="btn-hover glass-hover bg-black/40 border border-red-900/30 rounded-2xl p-4 text-left">
-          <Briefcase size={18} className="mb-2 text-red-400" />
-          <div className="font-bold text-sm">Schedule Job</div>
-          <div className="text-[10px] text-white/50">Add to calendar</div>
-        </button>
         {(() => {
           const todayRoute = jobs.filter(j => j.scheduledDate === tKey && j.status === "scheduled");
           if (todayRoute.length === 0) return null;
@@ -1766,37 +1810,6 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
         </Glass>;
       })()}
 
-      {/* Outstanding Invoices Widget */}
-      {(w.invoices ?? true) && (() => {
-        const unpaid = (estimates || []).filter(e => e.invoiced && !e.paidAt);
-        const totalOwed = unpaid.reduce((s,e) => s + e.total, 0);
-        if (unpaid.length === 0) return null;
-        const overdue = unpaid.filter(e => e.invoicedAt && daysSince(e.invoicedAt) > 14);
-        return <Glass className="p-4">
-          <div className="flex items-center justify-between mb-3">
-            <div className="font-semibold text-sm flex items-center gap-2"><Receipt size={13} className="text-red-400" />Outstanding Invoices</div>
-            <div className="flex items-center gap-2">
-              {overdue.length > 0 && <Badge tone="red">{overdue.length} overdue</Badge>}
-              <button onClick={() => onNav("invoices")} className="text-[10px] text-red-400 hover:text-red-300">View all →</button>
-            </div>
-          </div>
-          <div className="flex items-center justify-between mb-3 p-3 bg-red-950/20 border border-red-900/30 rounded-xl">
-            <div className="text-xs text-white/60">{unpaid.length} unpaid invoice{unpaid.length !== 1 ? "s" : ""}</div>
-            <div className="text-2xl font-black text-red-400">{fmt(totalOwed)}</div>
-          </div>
-          <div className="space-y-1.5 max-h-40 overflow-y-auto">
-            {unpaid.slice(0,5).map(inv => {
-              const cu = (customers || []).find(x => x.id === inv.customerId);
-              const age = inv.invoicedAt ? daysSince(inv.invoicedAt) : 0;
-              return <div key={inv.id} className="flex items-center justify-between text-xs py-1.5 border-b border-red-900/10">
-                <span><span className="font-medium">{cu ? cu.firstName + " " + cu.lastName : "?"}</span> <span className={"text-[10px] " + (age > 14 ? "text-red-400" : "text-white/40")}>{age > 0 ? age + "d ago" : "today"}</span></span>
-                <span className="font-bold text-red-400">{fmt(inv.total)}</span>
-              </div>;
-            })}
-          </div>
-        </Glass>;
-      })()}
-
       {/* Weather Widget — today's job impact */}
       {/* FIX 10 — this used to render wCurrent (seedWeather's hardcoded 72°F
           fallback) as if it were a real reading whenever no OWM key was set,
@@ -1869,11 +1882,15 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
         </Glass>;
       })()}
 
-      <div className="grid lg:grid-cols-2 gap-6 items-stretch">
-        {/* Left: goals + upcoming jobs */}
-        <div className="flex flex-col gap-4">
-          {/* Goals */}
-          {w.goals && <Glass className="p-4">
+      {/* BUG FIX — "remove the Upcoming and Recent Activity widgets, as well
+          as the Pending Quotes widget." All three removed below. That left
+          this 2-column grid with only the Goals card in it (Upcoming was
+          the left column's other item; Pending Quotes + Recent Activity
+          WERE the entire right column) — collapsed to a single wrapper
+          around Goals alone instead of leaving an empty second grid column. */}
+      <div className="flex flex-col gap-4">
+        {/* Goals */}
+        {w.goals && <Glass className="p-4">
             <div className="flex items-center justify-between mb-3">
               <div className="font-semibold text-sm flex items-center gap-2"><Target size={13} className="text-red-400" />Goals</div>
               <button onClick={() => onNav("reports")} className="text-[10px] text-red-400 hover:text-red-300">Analytics →</button>
@@ -1940,89 +1957,6 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
               </div>
             </div>
           </Glass>}
-
-          {/* Upcoming jobs */}
-          <Glass className="p-4 flex-1">
-            <div className="flex items-center justify-between mb-3">
-              <div className="font-semibold text-sm flex items-center gap-2"><Briefcase size={13} className="text-red-400" />Upcoming (7d)</div>
-              <button onClick={() => onNav("calendar")} className="text-[10px] text-red-400 hover:text-red-300">Calendar →</button>
-            </div>
-            <div className="space-y-2">
-              {upcoming.slice(0, 4).map(j => {
-                const c = customers.find(x => x.id === j.customerId);
-                const risk = settings.owmKey ? (forecastFor(wForecast, j.scheduledDate) as any) : null;
-                const isToday = j.scheduledDate === tKey;
-                return <div key={j.id} className={"flex items-center gap-3 py-3 border-b border-red-900/10 last:border-0 rounded-lg px-2 -mx-2 " + (isToday ? "bg-red-950/20" : "")}>
-                  <div className={"w-1 self-stretch rounded-full flex-shrink-0 " + (isToday ? "bg-red-500" : j.priority === "urgent" ? "bg-orange-500" : "bg-red-900/60")} />
-                  <div className="flex-1 min-w-0">
-                    <div className="text-sm font-semibold truncate">{c ? c.firstName + " " + c.lastName : j.address?.split(",")[0]}</div>
-                    <div className="text-[10px] text-white/50 mt-0.5">{isToday ? "Today" : j.scheduledDate} · {fmt(j.amount)}</div>
-                  </div>
-                  {risk && risk.level === "high" && <span className="text-[10px]">{risk.icon}</span>}
-                  <Badge tone={j.status === "completed" ? "green" : j.status === "in_progress" ? "yellow" : "gray"}>{j.status.replace("_"," ").replace("scheduled","sched")}</Badge>
-                </div>;
-              })}
-              {upcoming.length === 0 && (
-                <div className="text-center py-6">
-                  <Calendar size={20} className="mx-auto mb-2 text-white/20" />
-                  <div className="text-xs text-white/40">No upcoming jobs this week</div>
-                  <button onClick={() => onNav("jobs")} className="mt-2 text-xs text-red-400 hover:text-red-300">Schedule a job →</button>
-                </div>
-              )}
-            </div>
-          </Glass>
-        </div>
-
-        {/* Center: pending quotes + activity */}
-        <div className="flex flex-col gap-4">
-          {/* Pending estimates */}
-          <Glass className="p-4">
-            <div className="flex items-center justify-between mb-3">
-              <div className="font-semibold text-sm flex items-center gap-2"><FileText size={13} className="text-red-400" />Pending Quotes ({stats.pendingEst})</div>
-              <button onClick={() => onNav("estimates")} className="text-[10px] text-red-400 hover:text-red-300">View all →</button>
-            </div>
-            <div className="space-y-2">
-              {pending.map(e => {
-                const c = customers.find(x => x.id === e.customerId);
-                const age = daysSince(e.createdAt);
-                const accentColor = age >= 7 ? "bg-red-500" : age >= 3 ? "bg-yellow-500" : "bg-green-500";
-                return <div key={e.id} className="flex items-center gap-3 py-3 border-b border-red-900/10 last:border-0 rounded-lg px-2 -mx-2">
-                  <div className={"w-1 self-stretch rounded-full flex-shrink-0 " + accentColor} />
-                  <div className="flex-1 min-w-0">
-                    <div className="text-sm font-semibold truncate">{c ? c.firstName + " " + c.lastName : "Unknown"}</div>
-                    <div className="text-[10px] text-white/50 mt-0.5">{fmt(e.total)} · {age}d old</div>
-                  </div>
-                  <span className={"text-[10px] font-bold px-2 py-0.5 rounded-full " + (age >= 7 ? "text-red-300 bg-red-950/50" : age >= 3 ? "text-yellow-300 bg-yellow-950/40" : "text-green-300 bg-green-950/40")}>{age >= 7 ? "⚠ Stale" : age >= 3 ? "Follow up" : "New"}</span>
-                </div>;
-              })}
-              {pending.length === 0 && (
-                <div className="text-center py-6">
-                  <FileText size={20} className="mx-auto mb-2 text-white/20" />
-                  <div className="text-xs text-white/40">No pending estimates</div>
-                  <button onClick={() => onNav("estimates")} className="mt-2 text-xs text-red-400 hover:text-red-300">Create an estimate →</button>
-                </div>
-              )}
-            </div>
-          </Glass>
-
-          {/* Activity feed */}
-          {w.activity && <Glass className="p-4 flex-1">
-            <div className="font-semibold text-sm flex items-center gap-2 mb-4"><Activity size={13} className="text-red-400" />Recent Activity</div>
-            <div className="space-y-0.5">
-              {activity.map((a, i) => {
-                const Icon = a.icon;
-                return <div key={i} className="flex items-center gap-3 py-3.5 border-b border-white/5 last:border-0 group hover:bg-white/3 rounded-lg px-2 -mx-2 transition">
-                  <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-red-900/60 to-black/60 border border-red-900/30 flex items-center justify-center flex-shrink-0 group-hover:border-red-600/50 group-hover:scale-110 transition"><Icon size={14} className="text-red-400" /></div>
-                  <div className="flex-1 min-w-0">
-                    <div className="text-xs text-white/90 truncate">{a.text}</div>
-                    <div className="text-[10px] text-white/35 mt-0.5">{a.date}</div>
-                  </div>
-                  {a.amount && <div className="text-xs font-bold text-green-400 flex-shrink-0 bg-green-400/10 px-2 py-0.5 rounded-full">{fmt(a.amount)}</div>}
-                </div>;
-              })}
-            </div>
-          </Glass>}
-        </div>
       </div>
 
       {/* BUG FIX — "get rid of active automation on the dashboard and get
