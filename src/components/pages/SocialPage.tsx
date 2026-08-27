@@ -82,7 +82,7 @@ import { AlfredScriptsPanel } from "../ui/AlfredScriptsPanel";
 
 const SOCIAL_HASHTAGS_DEFAULT = "#pressurewashing #softwash #yorkpa #homeimprovement #curb appeal";
 
-export function SocialPage({ posts = [], setPosts, toast, settings = {} as AppSettings, jobs = [], ownerId = "", onNav }: { posts?: any[]; setPosts?: any; toast?: any; settings?: AppSettings; jobs?: any[]; ownerId?: string; onNav?: (page: string) => void }) {
+export function SocialPage({ posts = [], setPosts, toast, settings = {} as AppSettings, setSettings, jobs = [], ownerId = "", onNav }: { posts?: any[]; setPosts?: any; toast?: any; settings?: AppSettings; setSettings?: any; jobs?: any[]; ownerId?: string; onNav?: (page: string) => void }) {
   const [modal, setModal] = useState(false);
   const [tab, setTab] = useState("scheduled");
   const initialForm = () => ({
@@ -1063,7 +1063,7 @@ export function SocialPage({ posts = [], setPosts, toast, settings = {} as AppSe
         </div>
       </Modal>
 
-      <VideoEditorModal open={videoEditorOpen} onClose={() => setVideoEditorOpen(false)} onExported={onVideoExported} toast={toast} settings={settings} />
+      <VideoEditorModal open={videoEditorOpen} onClose={() => setVideoEditorOpen(false)} onExported={onVideoExported} toast={toast} settings={settings} setSettings={setSettings} />
 
       {/* FEATURE — job before/after photo picker (see jobsWithPhotoPairs above) */}
       <Modal open={jobPhotoPickerOpen} onClose={() => setJobPhotoPickerOpen(false)} title="Use a Job's Before/After Photo" maxW="max-w-lg">

@@ -86,6 +86,18 @@ export type EditorClip = {
   // ranges in renderFinalVideo, and to CSS filter() percentages for the
   // live preview so what's on screen while editing matches the export.
   brightness?: number; contrast?: number; saturation?: number;
+  // FEATURE — "more photo editing options." A still image can be added as
+  // a clip too (uploaded alongside/instead of video) — rendered as a fixed-
+  // duration segment via ffmpeg's `-loop 1` image-to-video path, then flows
+  // through the exact same crop/rotate/color/reframe pipeline every video
+  // clip already goes through. isImage is set once at add-time from the
+  // file's MIME type; durationSec for an image clip is the OWNER-CHOSEN
+  // on-screen time (default 3s), not a probed media duration.
+  isImage?: boolean;
+  // FEATURE — "applying various sound effects such as muffled or
+  // underwater sounds." Applied to this clip's own audio only, during
+  // normalization — an id from SOUND_EFFECTS above.
+  audioEffect?: string;
 };
 export type EditorCaption = {
   id: string; text: string; startSec: number; endSec: number; styleId: string;
@@ -99,6 +111,57 @@ export type EditorCaption = {
   // in renderFinalVideo so what's dragged in the editor is what exports.
   fontScale?: number;
 };
+
+// FEATURE — "multi-track editor with overlays... allow users to add their
+// own branding — import their logo, phone number... drag and drop those
+// assets into the editor." A real second (and third, etc.) visual layer on
+// top of the main clip track — an image (logo, phone-number graphic, any
+// branding asset) positioned and timed independently of the clips below
+// it, rendered via ffmpeg's real `overlay` filter (see renderFinalVideo),
+// not a fake preview-only sticker. Video-over-video compositing (true
+// picture-in-picture) is a much larger ffmpeg pipeline change and is not
+// included in this pass — image overlays cover the actual request (logo/
+// branding/text-graphic assets), which is what CapCut's own "overlay"
+// track is used for in practice the vast majority of the time.
+export type EditorOverlay = {
+  id: string; name: string;
+  src: string; // data URL — from a brand asset or a one-off upload
+  // GLOBAL timeline seconds, same convention as EditorCaption.
+  startSec: number; endSec: number;
+  // Center position (0-1 of frame) and width as a fraction of frame width
+  // (height follows the source image's own aspect ratio) — same
+  // fraction-of-rendered-box math the caption drag/crop tools already use.
+  xPct: number; yPct: number; widthPct: number; opacity: number;
+};
+
+// FEATURE — "enable adding music, moving music tracks." A single music
+// track (CapCut supports many; one is the real, useful 90% case for a
+// short-form business promo video) mixed into the final audio under
+// whatever the clips' own audio already is. `startSec` is where in the
+// GLOBAL timeline it begins playing — draggable on the music track row in
+// the UI, same drag pattern as everything else here.
+export type MusicTrack = {
+  id: string; file: File; name: string; durationSec: number;
+  startSec: number; trimStart: number; trimEnd: number; volume: number; // volume: 0-2, 1 = unchanged
+};
+
+// FEATURE — "applying various sound effects such as muffled or underwater
+// sounds... a range of sound effects." Real ffmpeg audio filters, applied
+// per-clip (see renderFinalVideo) — every filter here is a standard,
+// well-supported ffmpeg audio filter (lowpass/highpass/tremolo/aecho), not
+// an experimental one, so it behaves the same in ffmpeg.wasm as desktop
+// ffmpeg.
+export type SoundEffect = { id: string; name: string; description: string; filter: string };
+export const SOUND_EFFECTS: SoundEffect[] = [
+  { id: "none", name: "None", description: "Original audio, unaffected.", filter: "" },
+  { id: "muffled", name: "Muffled", description: "Low, muted, far-away sound — like through a wall.", filter: "lowpass=f=500" },
+  { id: "underwater", name: "Underwater", description: "Submerged, wavy, muted tone.", filter: "lowpass=f=350,tremolo=f=4.5:d=0.6" },
+  { id: "telephone", name: "Telephone", description: "Thin, band-limited phone-call sound.", filter: "highpass=f=400,lowpass=f=2600,volume=1.6" },
+  { id: "megaphone", name: "Megaphone", description: "Loud, distorted bullhorn/PA sound.", filter: "highpass=f=300,lowpass=f=3400,volume=2.2,alimiter=limit=0.8" },
+  { id: "cave-echo", name: "Cave Echo", description: "Big, roomy echo — cavernous space.", filter: "aecho=0.8:0.85:900:0.35" },
+  { id: "tinny", name: "Tinny Speaker", description: "Small, cheap-speaker sound — no bass at all.", filter: "highpass=f=900" },
+];
+export const getSoundEffect = (id?: string): SoundEffect => SOUND_EFFECTS.find(s => s.id === id) || SOUND_EFFECTS[0];
 
 // Escapes text for safe embedding inside an ffmpeg filtergraph string —
 // drawtext's `text=` value is itself inside a filter string that's already
@@ -184,6 +247,18 @@ export const readVideoMeta = (file: File): Promise<{ duration: number; width: nu
     };
     v.onerror = () => { URL.revokeObjectURL(url); resolve({ duration: 0, width: 0, height: 0 }); };
     v.src = url;
+  });
+
+// Reads a still image's real pixel dimensions — the image-clip equivalent
+// of readVideoMeta, used when a photo is added to the timeline (see
+// EditorClip.isImage above).
+export const readImageMeta = (file: File): Promise<{ width: number; height: number }> =>
+  new Promise((resolve) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => { const w = img.naturalWidth, h = img.naturalHeight; URL.revokeObjectURL(url); resolve({ width: w || 0, height: h || 0 }); };
+    img.onerror = () => { URL.revokeObjectURL(url); resolve({ width: 0, height: 0 }); };
+    img.src = url;
   });
 
 // Extracts a trimmed clip's audio as a small mp3 — used to send to
@@ -344,7 +419,9 @@ export const renderFinalVideo = async (
   clips: EditorClip[],
   captions: EditorCaption[],
   onProgress?: RenderProgress,
-  aspectRatio: AspectRatio = "9:16"
+  aspectRatio: AspectRatio = "9:16",
+  overlays: EditorOverlay[] = [],
+  music: MusicTrack | null = null
 ): Promise<Blob> => {
   if (clips.length === 0) throw new Error("Add at least one clip first");
   onProgress?.("Loading video engine", 5);
@@ -356,7 +433,8 @@ export const renderFinalVideo = async (
   for (let i = 0; i < clips.length; i++) {
     const c = clips[i];
     onProgress?.(`Trimming clip ${i + 1}/${clips.length}`, 10 + Math.round((i / clips.length) * 30));
-    const inName = `clip-in-${i}.mp4`;
+    const isImage = !!c.isImage;
+    const inName = `clip-in-${i}.${isImage ? "img" : "mp4"}`;
     const outName = `clip-norm-${i}.mp4`;
     await ff.writeFile(inName, await fetchFile(c.file));
     const dur = Math.max(0.1, c.endSec - c.startSec);
@@ -391,18 +469,44 @@ export const renderFinalVideo = async (
       filters.push(`eq=brightness=${b}:contrast=${cst}:saturation=${s}`);
     }
     filters.push(`scale=${targetW}:${targetH}:force_original_aspect_ratio=increase`, `crop=${targetW}:${targetH}`, "fps=30");
-    await ff.exec([
-      "-ss", String(c.startSec), "-i", inName, "-t", String(dur),
-      // Even dimensions (libx264 requires them — targetW/H above are
-      // already even) and a real audio track even if the source clip is
-      // silent (concat/xfade both need every segment to have the same
-      // stream layout).
-      "-vf", filters.join(","),
-      "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
-      "-c:a", "aac", "-ar", "44100", "-ac", "2",
-      "-movflags", "+faststart",
-      outName,
-    ]);
+    // FEATURE — "applying various sound effects such as muffled or
+    // underwater sounds." Applied to this clip's own audio stream during
+    // normalization, before concat/xfade ever sees it — the same standard
+    // ffmpeg audio filter shown in the editor's live description.
+    const fx = getSoundEffect(c.audioEffect);
+    const audioArgs = fx.filter ? ["-af", fx.filter] : [];
+    if (isImage) {
+      // FEATURE — "more photo editing options." A still image has no
+      // native timeline to seek/trim — `-loop 1` turns it into a video
+      // stream for exactly `dur` seconds, and a synthetic silent audio
+      // track (anullsrc) keeps this clip's stream layout identical to
+      // every real video clip's, which concat/xfade both require.
+      await ff.exec([
+        "-loop", "1", "-i", inName,
+        "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100",
+        "-t", String(dur),
+        "-vf", filters.join(","),
+        ...audioArgs,
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-ar", "44100", "-ac", "2",
+        "-shortest", "-movflags", "+faststart",
+        outName,
+      ]);
+    } else {
+      await ff.exec([
+        "-ss", String(c.startSec), "-i", inName, "-t", String(dur),
+        // Even dimensions (libx264 requires them — targetW/H above are
+        // already even) and a real audio track even if the source clip is
+        // silent (concat/xfade both need every segment to have the same
+        // stream layout).
+        "-vf", filters.join(","),
+        ...audioArgs,
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+        "-c:a", "aac", "-ar", "44100", "-ac", "2",
+        "-movflags", "+faststart",
+        outName,
+      ]);
+    }
     await ff.deleteFile(inName).catch(() => {});
     normalizedNames.push(outName);
     normalizedDurations.push(dur);
@@ -489,6 +593,57 @@ export const renderFinalVideo = async (
     await ff.exec(["-i", finalInput, "-vf", drawtextFilters.join(","), "-c:a", "copy", "captioned.mp4"]);
     await ff.deleteFile(finalInput).catch(() => {});
     finalInput = "captioned.mp4";
+  }
+
+  // FEATURE — "add a CapCut-style multi-track editor with overlays, drag
+  // and drop... their own branding — logo, phone number." Each overlay is
+  // scaled to its own widthPct of the frame and composited with ffmpeg's
+  // real `overlay` filter, gated to only be visible during its own
+  // startSec–endSec window — the exact same time-gating technique already
+  // used for captions above, just for an image layer instead of drawtext.
+  // Applied one at a time (simpler and more debuggable than one giant
+  // filter_complex for an arbitrary number of overlays) — each overlay's
+  // output becomes the next overlay's input.
+  if (overlays.length > 0) {
+    onProgress?.("Compositing overlays", 78);
+    for (let i = 0; i < overlays.length; i++) {
+      const ov = overlays[i];
+      const imgName = `overlay-${i}.png`;
+      const res = await fetch(ov.src);
+      const buf = new Uint8Array(await res.arrayBuffer());
+      await ff.writeFile(imgName, buf);
+      const outName = `overlaid-${i}.mp4`;
+      const ovW = Math.max(2, Math.round(ov.widthPct * targetW / 2) * 2);
+      const opacity = Math.max(0, Math.min(1, ov.opacity));
+      const overlayFilter =
+        `[1:v]scale=${ovW}:-1[ovl${i}];` +
+        (opacity < 1 ? `[ovl${i}]format=rgba,colorchannelmixer=aa=${opacity.toFixed(3)}[ovl${i}a];` : "") +
+        `[0:v][ovl${i}${opacity < 1 ? "a" : ""}]overlay=x=${(ov.xPct).toFixed(4)}*W-w/2:y=${(ov.yPct).toFixed(4)}*H-h/2:enable='between(t,${ov.startSec},${ov.endSec})'`;
+      await ff.exec(["-i", finalInput, "-i", imgName, "-filter_complex", overlayFilter, "-c:a", "copy", outName]);
+      await ff.deleteFile(finalInput).catch(() => {});
+      await ff.deleteFile(imgName).catch(() => {});
+      finalInput = outName;
+    }
+  }
+
+  // FEATURE — "enable adding music, moving music tracks." Trims the music
+  // file to its own selected window, applies volume, delays it to start at
+  // the right point in the GLOBAL timeline (adelay — ffmpeg's real per-
+  // channel audio-offset filter), and mixes it under the video's existing
+  // audio with amix (duration=first keeps the output length pinned to the
+  // video, so a long music file can never extend the final export).
+  if (music) {
+    onProgress?.("Mixing music", 88);
+    const musicIn = "music-in." + (music.file.name.split(".").pop() || "mp3");
+    await ff.writeFile(musicIn, await fetchFile(music.file));
+    const trimDur = Math.max(0.1, music.trimEnd - music.trimStart);
+    const delayMs = Math.max(0, Math.round(music.startSec * 1000));
+    const vol = Math.max(0, music.volume);
+    const musicFilter = `[1:a]atrim=start=${music.trimStart}:duration=${trimDur},asetpts=PTS-STARTPTS,volume=${vol.toFixed(3)},adelay=${delayMs}|${delayMs}[music];[0:a][music]amix=inputs=2:duration=first:dropout_transition=0[aout]`;
+    await ff.exec(["-i", finalInput, "-i", musicIn, "-filter_complex", musicFilter, "-map", "0:v", "-map", "[aout]", "-c:v", "copy", "-c:a", "aac", "mixed.mp4"]);
+    await ff.deleteFile(finalInput).catch(() => {});
+    await ff.deleteFile(musicIn).catch(() => {});
+    finalInput = "mixed.mp4";
   }
 
   onProgress?.("Finalizing", 92);

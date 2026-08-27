@@ -70,6 +70,17 @@ const F = {
   monoton: JSDELIVR_FONTS + "ofl/monoton/Monoton-Regular.ttf",
   vt323: JSDELIVR_FONTS + "ofl/vt323/VT323-Regular.ttf",
   blackOps: JSDELIVR_FONTS + "ofl/blackopsone/BlackOpsOne-Regular.ttf",
+  // FEATURE — "better, artistic fonts." Rounds out the set with real
+  // script/brush, elegant-serif, graffiti, and art-deco display faces —
+  // genres the original 21 fonts didn't cover at all.
+  greatVibes: JSDELIVR_FONTS + "ofl/greatvibes/GreatVibes-Regular.ttf",
+  pacifico: JSDELIVR_FONTS + "ofl/pacifico/Pacifico-Regular.ttf",
+  playfairBold: JSDELIVR_FONTS + "ofl/playfairdisplay/PlayfairDisplay%5Bwght%5D.ttf",
+  cinzelBold: JSDELIVR_FONTS + "ofl/cinzel/Cinzel%5Bwght%5D.ttf",
+  permanentMarker: JSDELIVR_FONTS + "ofl/permanentmarker/PermanentMarker-Regular.ttf",
+  luckiestGuy: JSDELIVR_FONTS + "ofl/luckiestguy/LuckiestGuy-Regular.ttf",
+  abrilFatface: JSDELIVR_FONTS + "ofl/abrilfatface/AbrilFatface-Regular.ttf",
+  spaceMono: JSDELIVR_FONTS + "ofl/spacemono/SpaceMono-Bold.ttf",
 };
 const CSS_FAMILY: Record<string, string> = {
   [F.archivoBlack]: "Archivo Black", [F.anton]: "Anton", [F.bebas]: "Bebas Neue",
@@ -78,6 +89,8 @@ const CSS_FAMILY: Record<string, string> = {
   [F.fjalla]: "Fjalla One", [F.passionBold]: "Passion One", [F.kanitBold]: "Kanit", [F.kanitExtra]: "Kanit",
   [F.orbitron]: "Orbitron", [F.pressStart]: "Press Start 2P", [F.caveat]: "Caveat",
   [F.bangers]: "Bangers", [F.creepster]: "Creepster", [F.monoton]: "Monoton", [F.vt323]: "VT323", [F.blackOps]: "Black Ops One",
+  [F.greatVibes]: "Great Vibes", [F.pacifico]: "Pacifico", [F.playfairBold]: "Playfair Display", [F.cinzelBold]: "Cinzel",
+  [F.permanentMarker]: "Permanent Marker", [F.luckiestGuy]: "Luckiest Guy", [F.abrilFatface]: "Abril Fatface", [F.spaceMono]: "Space Mono",
 };
 
 type PresetInput = Omit<CaptionStyle, "cssFamily"> & { fontFileUrl: string };
@@ -139,6 +152,18 @@ export const CAPTION_STYLES: CaptionStyle[] = [
   // ── Sale / Promo ───────────────────────────────────────────────
   p({ id: "sale-tag", name: "Sale Tag", category: "Promo", description: "High-contrast red/white promo-style caption — discounts, urgency.", fontFileUrl: F.blackOps, fontWeight: 400, color: "#ffffff", strokeColor: "#000000", strokeWidth: 2, background: "#c0181f", uppercase: true, position: "top", letterSpacing: "0.01em", animation: "bounce" }),
   p({ id: "starred-testimonial", name: "5-Star Review", category: "Promo", description: "Clean gold-accented caption for review/testimonial callouts.", fontFileUrl: F.poppinsBold, fontWeight: 700, color: "#ffffff", strokeColor: "transparent", strokeWidth: 0, background: "rgba(20,15,5,0.7)", uppercase: false, position: "bottom", letterSpacing: "0", animation: "fade" }),
+
+  // ── Script / Elegant ───────────────────────────────────────────
+  p({ id: "elegant-script", name: "Elegant Script", category: "Script", description: "Flowing calligraphy-style script — weddings, luxury, personal touches.", fontFileUrl: F.greatVibes, fontWeight: 400, color: "#ffffff", strokeColor: "#000000", strokeWidth: 1, background: null, uppercase: false, position: "center", letterSpacing: "0.01em", animation: "fade" }),
+  p({ id: "friendly-brush", name: "Friendly Brush", category: "Script", description: "Rounded brush-pen script — warm, approachable, hand-made feel.", fontFileUrl: F.pacifico, fontWeight: 400, color: "#ffe9c7", strokeColor: "#4a2600", strokeWidth: 2, background: null, uppercase: false, position: "bottom", letterSpacing: "0", animation: "pop" }),
+  p({ id: "editorial-playfair", name: "Editorial Serif", category: "Script", description: "High-fashion magazine-style serif display — premium editorial look.", fontFileUrl: F.playfairBold, fontWeight: 700, color: "#ffffff", strokeColor: "#000000", strokeWidth: 1, background: null, uppercase: false, position: "center", letterSpacing: "0.01em", animation: "fade" }),
+  p({ id: "art-deco-caps", name: "Art Deco Caps", category: "Script", description: "Wide-tracked engraved-style caps — timeless, upscale brand feel.", fontFileUrl: F.cinzelBold, fontWeight: 700, color: "#f0e4c8", strokeColor: "#1a1400", strokeWidth: 1, background: null, uppercase: true, position: "bottom", letterSpacing: "0.18em", animation: "fade" }),
+
+  // ── Marker / Street ────────────────────────────────────────────
+  p({ id: "marker-note", name: "Marker Note", category: "Street", description: "Bold permanent-marker handwriting — punchy, DIY energy.", fontFileUrl: F.permanentMarker, fontWeight: 400, color: "#ffffff", strokeColor: "#000000", strokeWidth: 2, background: null, uppercase: false, position: "top", letterSpacing: "0", animation: "shake" }),
+  p({ id: "playful-bubble", name: "Playful Bubble", category: "Street", description: "Big rounded bubble-letter caps — fun, youthful, high-energy hooks.", fontFileUrl: F.luckiestGuy, fontWeight: 400, color: "#ffcf3d", strokeColor: "#1a0f00", strokeWidth: 3, background: null, uppercase: true, position: "center", letterSpacing: "0.01em", animation: "bounce" }),
+  p({ id: "high-fashion", name: "High Fashion", category: "Street", description: "Dramatic oversized serif display — bold statement openers.", fontFileUrl: F.abrilFatface, fontWeight: 400, color: "#ffffff", strokeColor: "#000000", strokeWidth: 2, background: null, uppercase: false, position: "top", letterSpacing: "0", animation: "pop" }),
+  p({ id: "mono-code", name: "Mono Code", category: "Street", description: "Clean bold monospace — technical, precise, modern-brand feel.", fontFileUrl: F.spaceMono, fontWeight: 700, color: "#e8ffe8", strokeColor: "#001a00", strokeWidth: 1, background: "rgba(0,20,0,0.6)", uppercase: false, position: "bottom", letterSpacing: "0.02em", animation: "typewriter" }),
 ];
 
 export const CAPTION_CATEGORIES = Array.from(new Set(CAPTION_STYLES.map(s => s.category)));
@@ -173,6 +198,9 @@ export const CAPTION_GOOGLE_FONTS_HREF =
     "family=Passion+One:wght@700", "family=Kanit:wght@700;800",
     "family=Orbitron:wght@700", "family=Press+Start+2P", "family=Caveat:wght@700",
     "family=Bangers", "family=Creepster", "family=Monoton", "family=VT323", "family=Black+Ops+One",
+    "family=Great+Vibes", "family=Pacifico", "family=Playfair+Display:wght@700",
+    "family=Cinzel:wght@700", "family=Permanent+Marker", "family=Luckiest+Guy",
+    "family=Abril+Fatface", "family=Space+Mono:wght@700",
   ].join("&") + "&display=swap";
 
 // Transition effects between clips (videoEditor.ts's buildTransitionFilter

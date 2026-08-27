@@ -19,16 +19,31 @@
 import React, { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { GBtn } from "./GBtn";
-import { X, Plus, Trash2, Wand2, Scissors, Type, Upload, Sparkles, RotateCw, FlipHorizontal, Captions, Crop as CropIcon, Sliders, Maximize2, Minimize2 } from "lucide-react";
+import { X, Plus, Trash2, Wand2, Scissors, Type, Upload, Sparkles, RotateCw, FlipHorizontal, Captions, Crop as CropIcon, Sliders, Maximize2, Minimize2, Layers, Music as MusicIcon, ImagePlus, Volume2, VolumeX } from "lucide-react";
 import { uid, uploadJobMedia } from "../../lib/utils";
 import { CAPTION_STYLES, CAPTION_GOOGLE_FONTS_HREF, captionStyleToCss, getCaptionStyle, TRANSITION_EFFECTS } from "../../lib/captionStyles";
-import { readVideoMeta, detectSilence, renderFinalVideo, extractAudioForTranscription, autoCutClipDeadSpace, requestTranscription, CAPTION_PROVIDERS, ASPECT_RATIOS, type AspectRatio, type CaptionProvider, type CropRect, type EditorClip, type EditorCaption } from "../../lib/videoEditor";
+import { readVideoMeta, readImageMeta, detectSilence, renderFinalVideo, extractAudioForTranscription, autoCutClipDeadSpace, requestTranscription, CAPTION_PROVIDERS, ASPECT_RATIOS, SOUND_EFFECTS, type AspectRatio, type CaptionProvider, type CropRect, type EditorClip, type EditorCaption, type EditorOverlay, type MusicTrack } from "../../lib/videoEditor";
 
 const clamp = (v: number, min: number, max: number) => Math.max(min, Math.min(max, v));
 
-type ToolTab = "clips" | "adjust" | "captions" | "auto";
+type ToolTab = "clips" | "adjust" | "captions" | "overlays" | "music" | "auto";
 
-export function VideoEditorModal({ open, onClose, onExported, toast, settings }: {
+// FEATURE — "allow users to add their own branding — import their logo,
+// phone number, and other media into a folder inside the video's social
+// section." A real persistent asset library, not a one-off-per-session
+// upload — stored on settings.brandAssets (small images only, as data
+// URLs) so it syncs cross-device the same way every other setting already
+// does via app_settings.data, and survives closing/reopening the editor.
+export type BrandAsset = { id: string; name: string; dataUrl: string; addedAt: number };
+const readFileAsDataUrl = (file: File): Promise<string> =>
+  new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = () => reject(new Error("Failed to read file"));
+    reader.readAsDataURL(file);
+  });
+
+export function VideoEditorModal({ open, onClose, onExported, toast, settings, setSettings }: {
   open: boolean;
   onClose: () => void;
   // Hands back the finished video as a Blob + a suggested filename — the
@@ -39,9 +54,23 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings }:
   onExported: (blob: Blob, draftOnly?: boolean) => void;
   toast?: (msg: string, tone?: any) => void;
   settings?: any;
+  setSettings?: any;
 }) {
   const [clips, setClips] = useState<EditorClip[]>([]);
   const [captions, setCaptions] = useState<EditorCaption[]>([]);
+  // FEATURE — "CapCut-style multi-track editor with overlays... separate
+  // layers." A real second visual track (images/branding, independently
+  // timed and positioned) and a real audio track (music), on top of the
+  // main clips track — see EditorOverlay/MusicTrack in videoEditor.ts.
+  const [overlays, setOverlays] = useState<EditorOverlay[]>([]);
+  const [selectedOverlayId, setSelectedOverlayId] = useState<string | null>(null);
+  const [music, setMusic] = useState<MusicTrack | null>(null);
+  const brandAssets: BrandAsset[] = (settings as any)?.brandAssets || [];
+  const assetInputRef = useRef<HTMLInputElement>(null);
+  const overlayAssetInputRef = useRef<HTMLInputElement>(null);
+  const photoInputRef = useRef<HTMLInputElement>(null);
+  const musicInputRef = useRef<HTMLInputElement>(null);
+  const [uploadingAsset, setUploadingAsset] = useState(false);
   const [activeClipId, setActiveClipId] = useState<string | null>(null);
   const [previewTime, setPreviewTime] = useState(0);
   const [rendering, setRendering] = useState(false);
@@ -195,7 +224,7 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings }:
   // Reset state whenever the editor is freshly opened, not left over from a
   // previous editing session (the component instance is reused, not remounted).
   useEffect(() => {
-    if (open) { setClips([]); setCaptions([]); setActiveClipId(null); setSilenceRanges([]); setRendering(false); setClipThumbs({}); setTab("clips"); setCropEditingId(null); }
+    if (open) { setClips([]); setCaptions([]); setOverlays([]); setMusic(null); setSelectedOverlayId(null); setActiveClipId(null); setSilenceRanges([]); setRendering(false); setClipThumbs({}); setTab("clips"); setCropEditingId(null); }
   }, [open]);
 
   const addFiles = async (files: FileList | null) => {
@@ -209,6 +238,33 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings }:
     if (newClips.length > 0) {
       setClips(prev => [...prev, ...newClips]);
       toast?.(`Added ${newClips.length} clip${newClips.length > 1 ? "s" : ""} ✓`);
+    }
+  };
+
+  // FEATURE — "more video and photo editing options." A still photo added
+  // straight to the main timeline as its own clip (fixed on-screen
+  // duration, adjustable afterward) — goes through the exact same crop/
+  // rotate/color/reframe controls every video clip already has, see
+  // EditorClip.isImage in videoEditor.ts.
+  const PHOTO_CLIP_DEFAULT_SEC = 3;
+  const addPhotoClips = async (files: FileList | null) => {
+    if (!files || files.length === 0) return;
+    const newClips: EditorClip[] = [];
+    for (const file of Array.from(files)) {
+      if (!file.type.startsWith("image/")) { toast?.(`${file.name} isn't a photo — skipped`, "yellow"); continue; }
+      const meta = await readImageMeta(file);
+      // durationSec is set well above the actual default on-screen time —
+      // for a video clip it's the real probed media length (a hard trim
+      // ceiling), but a photo has no such ceiling at all; this just gives
+      // the existing Start/End trim sliders (which cap at durationSec)
+      // enough room to actually stretch a photo's on-screen time out
+      // longer than the 3s default, not just shorter.
+      const PHOTO_CLIP_MAX_SEC = 30;
+      newClips.push({ id: uid(), file, startSec: 0, endSec: PHOTO_CLIP_DEFAULT_SEC, durationSec: PHOTO_CLIP_MAX_SEC, width: meta.width, height: meta.height, isImage: true });
+    }
+    if (newClips.length > 0) {
+      setClips(prev => [...prev, ...newClips]);
+      toast?.(`Added ${newClips.length} photo clip${newClips.length > 1 ? "s" : ""} ✓ — adjust how long each shows on the Clips tab`);
     }
   };
 
@@ -364,6 +420,109 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings }:
     return () => { window.removeEventListener("pointermove", onMove); window.removeEventListener("pointerup", onUp); };
   }, [captionDragging, selectedCaptionId, containRect]);
 
+  // ── Brand asset library ("a folder inside the video's social section") ──
+  const MAX_ASSET_DIM = 500; // downscaled on upload — these are logos/small graphics, not photos; keeps settings.brandAssets light
+  const addBrandAsset = async (file: File) => {
+    if (!file.type.startsWith("image/")) { toast?.(`${file.name} isn't an image`, "yellow"); return; }
+    setUploadingAsset(true);
+    try {
+      const dataUrl = await new Promise<string>((resolve, reject) => {
+        const img = new Image();
+        const url = URL.createObjectURL(file);
+        img.onload = () => {
+          URL.revokeObjectURL(url);
+          const scale = Math.min(1, MAX_ASSET_DIM / Math.max(img.naturalWidth, img.naturalHeight));
+          const canvas = document.createElement("canvas");
+          canvas.width = Math.max(1, Math.round(img.naturalWidth * scale));
+          canvas.height = Math.max(1, Math.round(img.naturalHeight * scale));
+          const ctx = canvas.getContext("2d");
+          if (!ctx) { reject(new Error("Canvas not supported")); return; }
+          ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+          resolve(canvas.toDataURL("image/png"));
+        };
+        img.onerror = () => { URL.revokeObjectURL(url); reject(new Error("Failed to read image")); };
+        img.src = url;
+      });
+      const asset: BrandAsset = { id: uid(), name: file.name.replace(/\.[^.]+$/, ""), dataUrl, addedAt: Date.now() };
+      setSettings?.((prev: any) => ({ ...prev, brandAssets: [...((prev as any)?.brandAssets || []), asset] }));
+      toast?.(`"${asset.name}" added to your brand assets ✓`, "green");
+    } catch (e: any) {
+      toast?.("Couldn't add that image — " + (e?.message || "unknown error"), "red");
+    } finally {
+      setUploadingAsset(false);
+    }
+  };
+  const deleteBrandAsset = (id: string) => {
+    setSettings?.((prev: any) => ({ ...prev, brandAssets: ((prev as any)?.brandAssets || []).filter((a: BrandAsset) => a.id !== id) }));
+  };
+
+  // ── Overlays (image layer — logo/branding/anything, own time + position) ──
+  const addOverlay = (src: string, name: string) => {
+    if (!activeClip) { toast?.("Add a clip first", "red"); return; }
+    const start = Math.max(0, globalPreviewTime);
+    const ov: EditorOverlay = { id: uid(), name, src, startSec: start, endSec: start + 4, xPct: 0.5, yPct: 0.5, widthPct: 0.28, opacity: 1 };
+    setOverlays(prev => [...prev, ov]);
+    setSelectedOverlayId(ov.id);
+    setTab("overlays");
+    toast?.(`"${name}" added — drag it on the preview to position it`, "green");
+  };
+  const addOverlayFromUpload = async (file: File) => {
+    if (!file.type.startsWith("image/")) { toast?.(`${file.name} isn't an image`, "yellow"); return; }
+    const dataUrl = await readFileAsDataUrl(file);
+    addOverlay(dataUrl, file.name.replace(/\.[^.]+$/, ""));
+  };
+  const updateOverlay = (id: string, patch: Partial<EditorOverlay>) => setOverlays(prev => prev.map(o => o.id === id ? { ...o, ...patch } : o));
+  const removeOverlay = (id: string) => { setOverlays(prev => prev.filter(o => o.id !== id)); if (selectedOverlayId === id) setSelectedOverlayId(null); };
+  const activeOverlays = overlays.filter(o => o.startSec <= globalPreviewTime && globalPreviewTime <= o.endSec);
+
+  // Drag-to-move / drag-corner-to-resize on the canvas — same fraction-of-
+  // rendered-box math as the caption/crop drag tools above, generalized to
+  // an image overlay's position (xPct/yPct) and width (widthPct).
+  const overlayDragRef = useRef<{ mode: "move" | "resize"; startX: number; startY: number; startXPct: number; startYPct: number; startWidthPct: number } | null>(null);
+  const [overlayDragging, setOverlayDragging] = useState(false);
+  const startOverlayDrag = (e: React.PointerEvent, ov: EditorOverlay, mode: "move" | "resize") => {
+    e.preventDefault();
+    e.stopPropagation();
+    setSelectedOverlayId(ov.id);
+    overlayDragRef.current = { mode, startX: e.clientX, startY: e.clientY, startXPct: ov.xPct, startYPct: ov.yPct, startWidthPct: ov.widthPct };
+    setOverlayDragging(true);
+  };
+  useEffect(() => {
+    if (!overlayDragging) return;
+    const onMove = (e: PointerEvent) => {
+      const st = overlayDragRef.current;
+      if (!st || !selectedOverlayId || containRect.renderW === 0) return;
+      const dxFrac = (e.clientX - st.startX) / containRect.renderW;
+      const dyFrac = (e.clientY - st.startY) / containRect.renderH;
+      if (st.mode === "move") {
+        updateOverlay(selectedOverlayId, { xPct: clamp(st.startXPct + dxFrac, 0, 1), yPct: clamp(st.startYPct + dyFrac, 0, 1) });
+      } else {
+        updateOverlay(selectedOverlayId, { widthPct: clamp(st.startWidthPct + dxFrac, 0.06, 0.9) });
+      }
+    };
+    const onUp = () => { setOverlayDragging(false); overlayDragRef.current = null; };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    return () => { window.removeEventListener("pointermove", onMove); window.removeEventListener("pointerup", onUp); };
+  }, [overlayDragging, selectedOverlayId, containRect]);
+
+  // ── Music track ──────────────────────────────────────────────────────────
+  const addMusic = async (file: File) => {
+    if (!file.type.startsWith("audio/")) { toast?.(`${file.name} isn't an audio file`, "yellow"); return; }
+    const duration: number = await new Promise(resolve => {
+      const a = new Audio();
+      const url = URL.createObjectURL(file);
+      a.preload = "metadata";
+      a.onloadedmetadata = () => { URL.revokeObjectURL(url); resolve(Number.isFinite(a.duration) ? a.duration : 0); };
+      a.onerror = () => { URL.revokeObjectURL(url); resolve(0); };
+      a.src = url;
+    });
+    setMusic({ id: uid(), file, name: file.name, durationSec: duration, startSec: 0, trimStart: 0, trimEnd: duration, volume: 0.6 });
+    setTab("music");
+    toast?.(`"${file.name}" added to the music track ✓`, "green");
+  };
+  const totalTimelineSec = clips.reduce((s, c) => s + Math.max(0, c.endSec - c.startSec), 0);
+
   const runAutoCut = async () => {
     if (!activeClip) { toast?.("Add a clip first", "red"); return; }
     setDetectingSilence(true);
@@ -485,7 +644,7 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings }:
     setRenderPhase("Starting…");
     setRenderPct(0);
     try {
-      const blob = await renderFinalVideo(clips, captions, (phase, pct) => { setRenderPhase(phase); setRenderPct(pct); }, aspectRatio);
+      const blob = await renderFinalVideo(clips, captions, (phase, pct) => { setRenderPhase(phase); setRenderPct(pct); }, aspectRatio, overlays, music);
       onExported(blob, saveAsDraftOnly);
       toast?.(saveAsDraftOnly ? "Video saved as a draft ✓" : "Video rendered ✓", "green");
       onClose();
@@ -692,6 +851,43 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings }:
               {positioningCaptionId && (
                 <div className="absolute inset-x-0 bottom-2 text-center text-[10px] text-white bg-black/70 py-1 pointer-events-none">Tap anywhere to place this caption</div>
               )}
+              {/* FEATURE — "drag and drop those assets into the editor...
+                  separate layers." Every overlay active at the current
+                  preview time, drawn as a real absolutely-positioned image
+                  the owner can drag to move or drag the corner handle to
+                  resize — same interaction pattern as captions/crop above,
+                  generalized to an image layer. */}
+              {!cropEditingId && !positioningCaptionId && activeOverlays.map(ov => {
+                const isSelected = selectedOverlayId === ov.id;
+                return (
+                  <div
+                    key={ov.id}
+                    onPointerDown={e => startOverlayDrag(e, ov, "move")}
+                    onClick={e => { e.stopPropagation(); setSelectedOverlayId(ov.id); }}
+                    className="absolute cursor-grab active:cursor-grabbing"
+                    style={{
+                      touchAction: "none",
+                      left: `${ov.xPct * 100}%`, top: `${ov.yPct * 100}%`,
+                      width: `${ov.widthPct * 100}%`,
+                      transform: "translate(-50%, -50%)",
+                      opacity: ov.opacity,
+                      outline: isSelected ? "2px dashed #ef4444" : undefined,
+                      outlineOffset: isSelected ? "3px" : undefined,
+                    }}
+                  >
+                    <img src={ov.src} className="w-full h-auto pointer-events-none select-none" alt={ov.name} draggable={false} />
+                    {isSelected && (
+                      <span
+                        onPointerDown={e => startOverlayDrag(e, ov, "resize")}
+                        className="absolute -bottom-3 -right-3 w-7 h-7 bg-red-500 rounded-full border-2 border-white flex items-center justify-center cursor-nwse-resize"
+                        style={{ touchAction: "none" }}
+                      >
+                        <Maximize2 size={11} className="text-white" />
+                      </span>
+                    )}
+                  </div>
+                );
+              })}
               {/* FEATURE — "crop stuff, resize it." Draggable crop rect —
                   move the whole box, or drag a corner to resize. Mapped
                   from the video's real rendered box (see containRect
@@ -758,22 +954,30 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings }:
                   </div>
                 );
               })}
-              <button onClick={() => fileInputRef.current?.click()} className="flex-shrink-0 w-12 h-16 rounded-lg border-2 border-dashed border-white/20 flex items-center justify-center text-white/40 hover:text-white">
+              <button onClick={() => fileInputRef.current?.click()} title="Add video clip" className="flex-shrink-0 w-12 h-16 rounded-lg border-2 border-dashed border-white/20 flex items-center justify-center text-white/40 hover:text-white">
                 <Plus size={18} />
               </button>
+              <button onClick={() => photoInputRef.current?.click()} title="Add photo clip" className="flex-shrink-0 w-12 h-16 rounded-lg border-2 border-dashed border-white/20 flex items-center justify-center text-white/40 hover:text-white">
+                <ImagePlus size={16} />
+              </button>
               <input ref={fileInputRef} type="file" accept="video/*" multiple className="hidden" onChange={e => addFiles(e.target.files)} />
+              <input ref={photoInputRef} type="file" accept="image/*" multiple className="hidden" onChange={e => addPhotoClips(e.target.files)} />
             </div>
           </div>
 
-          {/* Tool tabs */}
-          <div className="flex-shrink-0 grid grid-cols-4 border-t border-white/10">
+          {/* Tool tabs — scrollable, not a fixed grid, so adding tracks
+              (Overlays/Music) doesn't squeeze every tab unreadably thin on
+              a phone. */}
+          <div className="flex-shrink-0 flex overflow-x-auto border-t border-white/10">
             {([
               { id: "clips" as const, label: "Clips", icon: Scissors },
               { id: "adjust" as const, label: "Adjust", icon: Sliders },
               { id: "captions" as const, label: "Captions", icon: Type },
+              { id: "overlays" as const, label: "Overlays", icon: Layers },
+              { id: "music" as const, label: "Music", icon: MusicIcon },
               { id: "auto" as const, label: "Auto-Edit", icon: Sparkles },
             ]).map(t => (
-              <button key={t.id} onClick={() => setTab(t.id)} className={"flex flex-col items-center justify-center gap-0.5 py-2.5 text-[10px] font-semibold transition " + (tab === t.id ? "text-red-400 bg-red-950/20" : "text-white/40 hover:text-white/70")}>
+              <button key={t.id} onClick={() => setTab(t.id)} className={"flex-1 min-w-[68px] flex flex-col items-center justify-center gap-0.5 py-2.5 text-[10px] font-semibold transition " + (tab === t.id ? "text-red-400 bg-red-950/20" : "text-white/40 hover:text-white/70")}>
                 <t.icon size={16} />{t.label}
               </button>
             ))}
@@ -881,6 +1085,18 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings }:
                     </div>
                   ))}
                   <button onClick={() => updateClip(activeClip.id, { brightness: 0, contrast: 0, saturation: 0 })} className="text-[10px] text-white/40 hover:text-white/70">Reset adjustments</button>
+                  {/* FEATURE — "applying various sound effects such as
+                      muffled or underwater sounds." Real ffmpeg audio
+                      filters, applied to this clip's own audio only. */}
+                  <div className="pt-2 border-t border-white/10">
+                    <div className="text-[11px] text-white/60 mb-1">Sound effect (this clip's audio)</div>
+                    <select value={activeClip.audioEffect || "none"} onChange={e => updateClip(activeClip.id, { audioEffect: e.target.value })} className="ve-select w-full bg-black/30 border border-white/10 rounded-lg px-1.5 py-2 text-white">
+                      {SOUND_EFFECTS.map(fx => <option key={fx.id} value={fx.id} className="bg-black" title={fx.description}>{fx.name}</option>)}
+                    </select>
+                    {activeClip.audioEffect && activeClip.audioEffect !== "none" && (
+                      <div className="text-[10px] text-white/40 mt-1">{SOUND_EFFECTS.find(fx => fx.id === activeClip.audioEffect)?.description}</div>
+                    )}
+                  </div>
                 </div>
               )
             )}
@@ -956,6 +1172,135 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings }:
                     );
                   })}
                 </div>
+              </div>
+            )}
+
+            {tab === "overlays" && (
+              <div className="space-y-3">
+                {/* FEATURE — "import their logo, phone number, and other
+                    media into a folder inside the video's social section
+                    and drag and drop those assets into the editor." Real,
+                    persistent brand asset library (settings.brandAssets) —
+                    upload once, reuse on every future video. */}
+                <div>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <div className="text-xs font-semibold text-white/70 uppercase tracking-wide flex items-center gap-1.5"><Layers size={12} />Brand Assets</div>
+                    <button onClick={() => assetInputRef.current?.click()} disabled={uploadingAsset} className="text-[11px] text-red-400 hover:text-red-300 flex items-center gap-1 py-1.5 px-1 disabled:opacity-50">
+                      <Plus size={11} />{uploadingAsset ? "Adding…" : "Upload Logo/Asset"}
+                    </button>
+                    <input ref={assetInputRef} type="file" accept="image/*" className="hidden" onChange={e => { const f = e.target.files?.[0]; if (f) addBrandAsset(f); e.target.value = ""; }} />
+                  </div>
+                  {brandAssets.length === 0 ? (
+                    <div className="text-center py-4 text-white/30 text-[11px] border border-dashed border-white/10 rounded-xl">No brand assets yet — upload your logo, a phone-number graphic, or any image you reuse across videos</div>
+                  ) : (
+                    <div className="flex gap-2 overflow-x-auto pb-1">
+                      {brandAssets.map(a => (
+                        <div key={a.id} className="flex-shrink-0 w-16 group relative">
+                          <button onClick={() => addOverlay(a.dataUrl, a.name)} className="w-16 h-16 rounded-lg bg-white/10 border border-white/10 hover:border-red-500/50 overflow-hidden flex items-center justify-center transition">
+                            <img src={a.dataUrl} className="max-w-full max-h-full object-contain" alt={a.name} />
+                          </button>
+                          <div className="text-[9px] text-white/40 truncate text-center mt-0.5">{a.name}</div>
+                          <button onClick={() => deleteBrandAsset(a.id)} className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-black/80 border border-white/20 text-red-400 hidden group-hover:flex items-center justify-center"><X size={9} /></button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                <div className="flex items-center justify-between pt-1">
+                  <div className="text-xs font-semibold text-white/70 uppercase tracking-wide">Overlay Layer ({overlays.length})</div>
+                  <button onClick={() => overlayAssetInputRef.current?.click()} className="text-[11px] text-red-400 hover:text-red-300 flex items-center gap-1 py-1.5 px-1">
+                    <ImagePlus size={11} />One-off image
+                  </button>
+                  <input ref={overlayAssetInputRef} type="file" accept="image/*" className="hidden" onChange={e => { const f = e.target.files?.[0]; if (f) addOverlayFromUpload(f); e.target.value = ""; }} />
+                </div>
+                {overlays.length === 0 ? (
+                  <div className="text-center py-6 text-white/30 text-xs border border-dashed border-white/10 rounded-xl">Tap a brand asset above (or upload a one-off image) to add it as an overlay you can drag around the preview</div>
+                ) : (
+                  <div className="space-y-2">
+                    {overlays.map(ov => {
+                      const isSelected = selectedOverlayId === ov.id;
+                      return (
+                        <div key={ov.id} onClick={() => { setSelectedOverlayId(ov.id); setPreviewTime(Math.max(0, ov.startSec - activeClipGlobalOffset)); }}
+                          className={"p-2.5 rounded-xl border space-y-1.5 cursor-pointer transition flex gap-2.5 " + (isSelected ? "bg-red-950/20 border-red-600/50" : "bg-white/5 border-white/10")}>
+                          <img src={ov.src} className="w-10 h-10 rounded-lg object-contain bg-black/40 flex-shrink-0" alt={ov.name} />
+                          <div className="flex-1 min-w-0 space-y-1.5">
+                            <div className="flex items-center gap-1.5">
+                              <div className="flex-1 text-xs text-white truncate">{ov.name}</div>
+                              <button onClick={e => { e.stopPropagation(); removeOverlay(ov.id); }} className="ve-tap text-red-400/60 hover:text-red-400 flex-shrink-0"><Trash2 size={14} /></button>
+                            </div>
+                            <div className="flex items-center gap-1.5 flex-wrap text-[10px] text-white/50" onClick={e => e.stopPropagation()}>
+                              <span>From</span>
+                              <input type="number" min={0} step={0.1} value={ov.startSec.toFixed(1)} onChange={e => updateOverlay(ov.id, { startSec: Number(e.target.value) || 0 })} className="ve-input w-14 bg-black/30 border border-white/10 rounded px-1 py-1.5 text-white" />
+                              <span>to</span>
+                              <input type="number" min={0} step={0.1} value={ov.endSec.toFixed(1)} onChange={e => updateOverlay(ov.id, { endSec: Number(e.target.value) || 0 })} className="ve-input w-14 bg-black/30 border border-white/10 rounded px-1 py-1.5 text-white" />
+                              <span>s</span>
+                            </div>
+                            <div className="flex items-center gap-1.5" onClick={e => e.stopPropagation()}>
+                              <span className="text-[10px] text-white/40 w-10 flex-shrink-0">Opacity</span>
+                              <input type="range" min={0.1} max={1} step={0.05} value={ov.opacity} onChange={e => updateOverlay(ov.id, { opacity: Number(e.target.value) })} className="flex-1 accent-red-600" style={{ height: 20 }} />
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+                {overlays.length > 0 && (
+                  <div className="text-[10px] text-white/40 text-center pt-1">Drag an overlay directly on the preview above to move it; drag its corner handle to resize.</div>
+                )}
+              </div>
+            )}
+
+            {tab === "music" && (
+              <div className="space-y-3">
+                {/* FEATURE — "enable adding music, moving music tracks." */}
+                <div className="flex items-center justify-between">
+                  <div className="text-xs font-semibold text-white/70 uppercase tracking-wide flex items-center gap-1.5"><MusicIcon size={12} />Music Track</div>
+                  {!music && (
+                    <button onClick={() => musicInputRef.current?.click()} className="text-[11px] text-red-400 hover:text-red-300 flex items-center gap-1 py-1.5 px-1"><Plus size={11} />Add Music</button>
+                  )}
+                  <input ref={musicInputRef} type="file" accept="audio/*" className="hidden" onChange={e => { const f = e.target.files?.[0]; if (f) addMusic(f); e.target.value = ""; }} />
+                </div>
+                {!music ? (
+                  <div className="text-center py-6 text-white/30 text-xs border border-dashed border-white/10 rounded-xl">No music yet — add a track to play under your clips' own audio</div>
+                ) : (
+                  <div className="p-3 rounded-xl bg-white/5 border border-white/10 space-y-2.5">
+                    <div className="flex items-center gap-1.5">
+                      <div className="flex-1 text-xs text-white truncate">{music.name}</div>
+                      <button onClick={() => setMusic(null)} className="ve-tap text-red-400/60 hover:text-red-400 flex-shrink-0"><Trash2 size={15} /></button>
+                    </div>
+                    <div>
+                      {/* FEATURE — "moving music tracks." A real timeline
+                          slider for where the music starts playing relative
+                          to the whole assembled video — drag it, same idea
+                          as every other timeline control here. */}
+                      <div className="flex justify-between text-[10px] text-white/40 mb-1"><span>Starts at {music.startSec.toFixed(1)}s</span><span>Video is {totalTimelineSec.toFixed(1)}s</span></div>
+                      <input type="range" min={0} max={Math.max(0.1, totalTimelineSec)} step={0.1} value={music.startSec}
+                        onChange={e => setMusic(m => m && { ...m, startSec: Number(e.target.value) })}
+                        className="w-full accent-red-600" style={{ height: 24 }} />
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <div className="text-[10px] text-white/40 mb-1">Trim start</div>
+                        <input type="number" min={0} max={music.durationSec} step={0.1} value={music.trimStart.toFixed(1)}
+                          onChange={e => setMusic(m => m && { ...m, trimStart: Math.min(Number(e.target.value) || 0, m.trimEnd - 0.1) })}
+                          className="ve-input w-full bg-black/30 border border-white/10 rounded px-1.5 py-1.5 text-white" />
+                      </div>
+                      <div>
+                        <div className="text-[10px] text-white/40 mb-1">Trim end</div>
+                        <input type="number" min={0} max={music.durationSec} step={0.1} value={music.trimEnd.toFixed(1)}
+                          onChange={e => setMusic(m => m && { ...m, trimEnd: Math.max(Number(e.target.value) || 0, m.trimStart + 0.1) })}
+                          className="ve-input w-full bg-black/30 border border-white/10 rounded px-1.5 py-1.5 text-white" />
+                      </div>
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-1.5 text-[10px] text-white/40 mb-1">{music.volume === 0 ? <VolumeX size={11} /> : <Volume2 size={11} />}<span>Volume — {Math.round(music.volume * 100)}%</span></div>
+                      <input type="range" min={0} max={1.5} step={0.05} value={music.volume} onChange={e => setMusic(m => m && { ...m, volume: Number(e.target.value) })} className="w-full accent-red-600" style={{ height: 24 }} />
+                    </div>
+                    <div className="text-[10px] text-white/40">Clips' own audio still plays too — this mixes under it, doesn't replace it.</div>
+                  </div>
+                )}
               </div>
             )}
 
