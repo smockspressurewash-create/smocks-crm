@@ -178,9 +178,30 @@ export function InvoicesPage({ estimates = [], setEstimates, customers = [], set
   const [newInvOpen, setNewInvOpen] = useState(false);
   const [newInvForm, setNewInvForm] = useState<{ customerId: string; title: string; items: { id: string; description: string; quantity: number; unitPrice: number }[] }>({ customerId: "", title: "", items: [{ id: uid(), description: "", quantity: 1, unitPrice: 0 }] });
   const newInvTotal = newInvForm.items.reduce((s, it) => s + (Number(it.quantity) || 0) * (Number(it.unitPrice) || 0), 0);
+  // BUG FIX — "overdue invoices keep coming back / not staying deleted."
+  // Root cause found via a live query: this was never a delete-persistence
+  // bug at all — the SAME demo customer had 8-10 GENUINELY DUPLICATE
+  // invoices, identical customer/amount/date but different ids. This button
+  // had no disabled-while-submitting guard at all, so a double-click/
+  // double-tap (very easy to trigger on mobile, and the exact device this
+  // was being tested from) fired createStandaloneInvoice() more than once
+  // before the modal closed, each call minting a fresh uid() and inserting
+  // a full duplicate row. Deleting ONE of ten near-identical invoices reads
+  // exactly like "I deleted it and it's still there" even though the
+  // delete itself worked fine every time — there were just nine more.
+  const [creatingInvoice, setCreatingInvoice] = useState(false);
+  // A ref, not just the state above — state updates aren't synchronous/
+  // aren't visible to a second click handled in the same tick, so a truly
+  // fast double-click could still see creatingInvoice as still false for
+  // both calls. The ref flips immediately, closing that exact gap; the
+  // state is only there to visually disable the button.
+  const creatingInvoiceRef = useRef(false);
   const createStandaloneInvoice = () => {
+    if (creatingInvoiceRef.current) return;
     if (!newInvForm.customerId) { toast?.("Pick a customer first", "yellow"); return; }
     if (newInvTotal <= 0) { toast?.("Add at least one line item with an amount", "yellow"); return; }
+    creatingInvoiceRef.current = true;
+    setCreatingInvoice(true);
     const inv: any = {
       id: uid(), customerId: newInvForm.customerId,
       title: newInvForm.title.trim() || "Invoice",
@@ -202,7 +223,8 @@ export function InvoicesPage({ estimates = [], setEstimates, customers = [], set
         if (r?.error) { console.error("[NewInvoice] save failed:", r.error.message); toast?.("Created locally, but failed to sync — " + r.error.message, "red"); }
         else toast?.("Invoice created ✓ — open it to send or take payment", "green");
       })
-      .catch((e: any) => { console.error("[NewInvoice] save threw:", e?.message); toast?.("Created locally, but failed to sync — " + (e?.message || "unknown error"), "red"); });
+      .catch((e: any) => { console.error("[NewInvoice] save threw:", e?.message); toast?.("Created locally, but failed to sync — " + (e?.message || "unknown error"), "red"); })
+      .finally(() => { creatingInvoiceRef.current = false; setCreatingInvoice(false); });
     setNewInvOpen(false);
     setNewInvForm({ customerId: "", title: "", items: [{ id: uid(), description: "", quantity: 1, unitPrice: 0 }] });
   };
@@ -1064,7 +1086,7 @@ export function InvoicesPage({ estimates = [], setEstimates, customers = [], set
             <span className="text-sm text-white/60">Total</span>
             <span className="text-xl font-black text-green-400">{fmt(newInvTotal)}</span>
           </div>
-          <GBtn onClick={createStandaloneInvoice} className="w-full !justify-center !py-3">Create Invoice</GBtn>
+          <GBtn onClick={createStandaloneInvoice} disabled={creatingInvoice} className="w-full !justify-center !py-3">{creatingInvoice ? "Creating…" : "Create Invoice"}</GBtn>
           <div className="text-[10px] text-white/30 text-center">After creating, open the invoice to send it (Gmail / SMS) or take payment. It appears in the list and the customer can pay via the client portal.</div>
         </div>
       </Modal>
