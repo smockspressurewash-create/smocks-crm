@@ -89,7 +89,7 @@ import {
 } from "./lib/seed";
 import { seedWeather } from "./lib/weather";
 import { fetchRealWeather, deriveWeatherLocation } from "./lib/weather";
-import { fmt, uid, today, daysSince, daysFromNow, consumeOAuthIntent, getLastOwnerSessionFlag, setLastOwnerSessionFlag, getLastOwnerId, setLastOwnerId, buildChecklistFromServices, withTimeout, normalizeJobRow, totalJobPhotoCount, notifyDesktop, stripLegacyJobFields, getPollIntervalMs, purgeOldJobMedia, computeGoalProgress, localDateKey } from "./lib/utils";
+import { fmt, uid, today, daysSince, daysFromNow, consumeOAuthIntent, getLastOwnerSessionFlag, setLastOwnerSessionFlag, getLastOwnerId, setLastOwnerId, buildChecklistFromServices, withTimeout, normalizeJobRow, totalJobPhotoCount, notifyDesktop, stripLegacyJobFields, getPollIntervalMs, purgeOldJobMedia, computeGoalProgress, localDateKey, US_STATE_BASE_TAX_RATES } from "./lib/utils";
 import { sendPushNotification } from "./lib/push";
 import { sendEmail, sendOwnerGmailOnly, emailShell, emailButton, buildTomorrowJobsEmailHtml, buildWeeklyScheduleEmailHtml, buildDailyBriefingEmailHtml, buildWeeklyOwnerDigestEmailHtml, setOptedOutPhones, setTestModeContacts, setCurrentOwnerIdForSms, twilioSend, logOutboundSmsToInbox } from "./lib/messaging";
 import { exchangeSocialOAuthCode, type SocialPlatform } from "./lib/socialOAuth";
@@ -2402,6 +2402,12 @@ export function App() {
   const [setupDone, setSetupDone] = usePersistentRaw("smocks.setupDone", "");
   const [companySetupOpen, setCompanySetupOpen] = useState(false);
   const [companySetupName, setCompanySetupName] = useState("");
+  // FEATURE — "ensure that when people sign up, they must specify their
+  // state so the system sets their tax bracket." Settings → Company already
+  // has a real State field/tax-rate-suggestion button (see SettingsModal.tsx),
+  // but nothing required it up front — an owner could go their entire time
+  // in the app without ever setting it. Required here at first-run instead.
+  const [companySetupState, setCompanySetupState] = useState("");
 
   useEffect(() => {
     if (!settings.googleConnected || setupDone || oauthProcessing) return;
@@ -2424,7 +2430,8 @@ export function App() {
 
   const saveCompanySetup = async () => {
     const name = companySetupName.trim() || "My Company";
-    setSettings((prev: any) => ({ ...prev, companyName: name }));
+    const suggestedRate = companySetupState ? US_STATE_BASE_TAX_RATES[companySetupState] : undefined;
+    setSettings((prev: any) => ({ ...prev, companyName: name, ...(companySetupState ? { companyState: companySetupState } : {}), ...(suggestedRate !== undefined && !prev.taxRate ? { taxRate: suggestedRate } : {}) }));
     setSetupDone("1");
     setCompanySetupOpen(false);
     // Try Supabase org creation — graceful failure if tables don't exist
@@ -4932,7 +4939,7 @@ export function App() {
                 {page === "budget"         && <BudgetPage jobs={jobs} estimates={estimates} expenses={expenses} settings={settings} toast={toast} />}
                 {page === "personal"       && <PersonalBudgetPage toast={toast} />}
                 {page === "accountability" && (managerBlocked("accountability") ? <RestrictedNotice label="Accountability Tools" /> : <AccountabilityPage entries={accountability} setEntries={setAccountability} goals={goalsList} setGoals={setGoalsList} wins={wins} setWins={setWins} toast={toast} settings={settings} ownerId={crmUserId} onNav={setPage} />)}
-                {page === "goals" && <GoalsPage goals={goalsList} setGoals={setGoalsList} jobs={jobs} customers={customers} toast={toast} />}
+                {page === "goals" && <GoalsPage goals={goalsList} setGoals={setGoalsList} jobs={jobs} customers={customers} estimates={estimates} settings={settings} onOpenSettings={() => setSettingsOpen(true)} toast={toast} />}
                 {page === "referrals"      && <ReferralsPage customers={customers} setCustomers={setCustomers} jobs={jobs} toast={toast} settings={settings} setSettings={setSettings} />}
                 {page === "promotions"     && <PromotionsPage promotions={promotions} setPromotions={setPromotions} customers={customers} services={services} settings={settings} toast={toast} />}
                 {page === "trashcans"      && <TrashCanPage jobs={jobs} setJobs={setJobs} customers={customers} settings={settings} setSettings={setSettings} toast={toast} ownerId={crmUserId} />}
@@ -5413,9 +5420,20 @@ export function App() {
                 className="w-full bg-white/5 border border-white/20 rounded-xl px-3 py-2.5 text-sm text-white placeholder-white/30 focus:outline-none focus:border-red-500/50"
               />
             </div>
+            <div>
+              <label className="text-xs text-white/50 mb-1.5 block">State <span className="text-white/30 font-normal">(sets your sales tax rate)</span></label>
+              <select
+                value={companySetupState}
+                onChange={e => setCompanySetupState(e.target.value)}
+                className="w-full bg-white/5 border border-white/20 rounded-xl px-3 py-2.5 text-sm text-white focus:outline-none focus:border-red-500/50"
+              >
+                <option value="" className="bg-black">Select your state…</option>
+                {Object.keys(US_STATE_BASE_TAX_RATES).sort().map(code => <option key={code} value={code} className="bg-black">{code}</option>)}
+              </select>
+            </div>
             <button
               onClick={saveCompanySetup}
-              disabled={!companySetupName.trim()}
+              disabled={!companySetupName.trim() || !companySetupState}
               className="w-full py-2.5 rounded-xl bg-gradient-to-r from-red-600 to-red-800 text-white text-sm font-semibold hover:from-red-500 hover:to-red-700 transition disabled:opacity-40 disabled:cursor-not-allowed"
             >
               Get Started

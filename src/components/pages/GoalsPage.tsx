@@ -5,7 +5,7 @@
 // business-metric goals that auto-track from real jobs/customers data
 // instead of needing a manual number typed in every time).
 import React, { useState } from "react";
-import { Target, Clock, Gift, CheckCircle2, AlertTriangle, Plus, Trash2, TrendingUp, Briefcase, Users, Repeat, UserPlus, Sparkles } from "lucide-react";
+import { Target, Clock, Gift, CheckCircle2, AlertTriangle, Plus, Trash2, TrendingUp, Briefcase, Users, Repeat, UserPlus, Sparkles, Settings as SettingsIcon } from "lucide-react";
 import { Glass } from "../ui/Glass";
 import { GBtn } from "../ui/GBtn";
 import { GInput } from "../ui/GInput";
@@ -14,7 +14,7 @@ import { GSel } from "../ui/GSel";
 import { Badge } from "../ui/Badge";
 import { PBar } from "../ui/PBar";
 import { PageFade } from "../ui/PageFade";
-import { today, uid, fmt, computeGoalProgress } from "../../lib/utils";
+import { today, uid, fmt, computeGoalProgress, localDateKey } from "../../lib/utils";
 
 const METRICS = [
   { id: "revenue",         label: "Revenue",          icon: TrendingUp, unit: "$",  auto: true  },
@@ -27,8 +27,28 @@ const METRICS = [
 
 const metricMeta = (id: string) => METRICS.find(m => m.id === id) || METRICS[METRICS.length - 1];
 
-export function GoalsPage({ goals = [], setGoals = (() => {}) as any, jobs = [], customers = [], toast }: { goals?: any[]; setGoals?: any; jobs?: any[]; customers?: any[]; toast?: any }) {
+export function GoalsPage({ goals = [], setGoals = (() => {}) as any, jobs = [], customers = [], estimates = [], toast, settings = {} as any, onOpenSettings }: { goals?: any[]; setGoals?: any; jobs?: any[]; customers?: any[]; estimates?: any[]; toast?: any; settings?: any; onOpenSettings?: () => void }) {
   const tKey = today();
+
+  // FEATURE — "make sure the goals section inside Settings matches the
+  // goals section here and that they sync." These are structurally two
+  // different systems (this page's `goals` array is a custom, ad-hoc list
+  // with deadlines/rewards; Settings' "Goals & Tax" panel is a handful of
+  // simple recurring monthly/quarterly/annual scalar targets, the same ones
+  // Dashboard.tsx's own Goals widget reads via `settings.monthlyRevenueGoal`/
+  // `monthlyJobsGoal`) — merging them into one data model would be a much
+  // bigger, riskier change than what was actually reported. This card reads
+  // the SAME settings fields Dashboard uses (never a locally-duplicated
+  // copy), so the number shown here can never drift from what Settings has
+  // or what the Dashboard widget shows — that's the actual sync.
+  const now = new Date();
+  const monthStartStr = localDateKey(new Date(now.getFullYear(), now.getMonth(), 1));
+  const revMonthActual = estimates.filter((e: any) => !!e.paidAt && e.paidAt >= monthStartStr).reduce((s: number, e: any) => s + (Number(e.total) || 0), 0);
+  const jobsMonthActual = jobs.filter((j: any) => j.status === "completed" && j.scheduledDate >= monthStartStr).length;
+  const monthlyRevenueGoal = Number(settings.monthlyRevenueGoal) || 0;
+  const monthlyJobsGoal = Number(settings.monthlyJobsGoal) || 0;
+  const revGoalPct = monthlyRevenueGoal > 0 ? Math.round((revMonthActual / monthlyRevenueGoal) * 100) : 0;
+  const jobsGoalPct = monthlyJobsGoal > 0 ? Math.round((jobsMonthActual / monthlyJobsGoal) * 100) : 0;
   const [formOpen, setFormOpen] = useState(false);
   const [fText, setFText] = useState("");
   const [fMetric, setFMetric] = useState<string>("revenue");
@@ -164,6 +184,34 @@ export function GoalsPage({ goals = [], setGoals = (() => {}) as any, jobs = [],
           </div>
           <GBtn onClick={() => setFormOpen(o => !o)}><Plus size={14} className="inline mr-1" />{formOpen ? "Cancel" : "New Goal"}</GBtn>
         </div>
+
+        {/* Synced monthly targets — same numbers as Settings → Goals & Tax
+            and the Dashboard Goals widget, always. Edit them in Settings;
+            this page's own "New Goal" below is for one-off/custom goals. */}
+        <Glass className="p-4">
+          <div className="flex items-center justify-between mb-3">
+            <div className="text-xs font-semibold text-white/70 uppercase tracking-wider">This Month — from Settings</div>
+            {onOpenSettings && <button onClick={onOpenSettings} className="text-[11px] text-red-400 hover:text-red-300 flex items-center gap-1"><SettingsIcon size={11} />Edit in Settings</button>}
+          </div>
+          {monthlyRevenueGoal <= 0 && monthlyJobsGoal <= 0 ? (
+            <div className="text-xs text-white/40">No monthly goals set yet — add them in Settings → Goals & Tax.</div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {monthlyRevenueGoal > 0 && (
+                <div>
+                  <div className="flex justify-between text-xs mb-1"><span className="text-white/70">Revenue</span><span className={revGoalPct >= 75 ? "text-green-400 font-bold" : "text-white/60"}>{fmt(revMonthActual)} / {fmt(monthlyRevenueGoal)} ({revGoalPct}%)</span></div>
+                  <PBar value={revMonthActual} max={monthlyRevenueGoal} />
+                </div>
+              )}
+              {monthlyJobsGoal > 0 && (
+                <div>
+                  <div className="flex justify-between text-xs mb-1"><span className="text-white/70">Jobs Done</span><span className={jobsGoalPct >= 75 ? "text-green-400 font-bold" : "text-white/60"}>{jobsMonthActual} / {monthlyJobsGoal} ({jobsGoalPct}%)</span></div>
+                  <PBar value={jobsMonthActual} max={monthlyJobsGoal} />
+                </div>
+              )}
+            </div>
+          )}
+        </Glass>
 
         {formOpen && (
           <Glass className="p-5 space-y-3">

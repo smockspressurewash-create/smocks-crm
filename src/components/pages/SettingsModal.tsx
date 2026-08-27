@@ -911,6 +911,44 @@ export function SettingsModal({ open, onClose, settings, setSettings, jobs = [],
               <GInput value={f.weatherLocation || ""} onChange={e => setF({ ...f, weatherLocation: e.target.value })} placeholder="e.g. 17403 or York, PA" className="!text-xs" />
               <div className="text-[10px] text-white/30 mt-1">Defaults to York, PA if left blank.</div>
             </div>
+            {/* FEATURE — "move the tax rate percentage from Goals into
+                Company." Moved from the Goals & Tax panel to here, right
+                next to the field that actually determines it. Was
+                previously guessed from a free-text "Company Address" field
+                that didn't actually exist anywhere in Settings — guessing
+                always silently failed. A real State dropdown fixes that at
+                the source; new signups are asked for this directly too (see
+                the company-setup step) so the rate is right from day one. */}
+            <div>
+              <label className="text-xs text-white/60 mb-1 block">State</label>
+              <GSel value={f.companyState || ""} onChange={e => {
+                const st = e.target.value;
+                const suggested = st ? US_STATE_BASE_TAX_RATES[st] : undefined;
+                setF(prev => ({ ...prev, companyState: st, ...(suggested !== undefined && !prev.taxRate ? { taxRate: suggested } : {}) }));
+              }}>
+                <option value="" className="bg-black">Select your state…</option>
+                {Object.keys(US_STATE_BASE_TAX_RATES).sort().map(code => <option key={code} value={code} className="bg-black">{code}</option>)}
+              </GSel>
+            </div>
+            <div>
+              <label className="text-xs text-white/60 mb-1 block">Tax Rate (%)</label>
+              <div className="flex gap-2">
+                <GInput type="number" step="0.01" value={f.taxRate} onChange={e => setF({ ...f, taxRate: e.target.value })} className="flex-1" />
+                {/* Suggests, never silently overwrites — the owner may have
+                    already set a deliberately different rate (county
+                    add-on, service-tax-exempt state, etc.). */}
+                {f.companyState && US_STATE_BASE_TAX_RATES[f.companyState] !== undefined && (
+                  <GBtn variant="ghost" className="!text-xs !py-1.5 !px-3 flex-shrink-0" onClick={() => { setF({ ...f, taxRate: US_STATE_BASE_TAX_RATES[f.companyState] }); toast?.(`Set to ${f.companyState}'s base rate (${US_STATE_BASE_TAX_RATES[f.companyState]}%)`, "green"); }}>
+                    Use {f.companyState} rate ({US_STATE_BASE_TAX_RATES[f.companyState]}%)
+                  </GBtn>
+                )}
+              </div>
+              <div className="text-[10px] text-white/30 mt-1">
+                {f.companyState
+                  ? `Suggestion above is ${f.companyState}'s base state rate — county/city add-ons and whether services are taxable at all vary, so double-check with your accountant.`
+                  : `Select your state above to get a tax rate suggestion.`}
+              </div>
+            </div>
             <div><label className="text-xs text-white/60 mb-1 block flex items-center gap-1"><Phone size={10} />Your Mobile # <span className="text-white/30 font-normal">(for Alfred SMS summaries)</span></label><GInput type="tel" value={f.myPhone || ""} onChange={e => setF({ ...f, myPhone: e.target.value })} placeholder="+17175550100" className="!text-xs" /></div>
             <label className={"flex items-start gap-2.5 p-3 rounded-xl border cursor-pointer transition " + (f.alfredSmsEnabled ? "border-red-500/40 bg-red-950/20" : "border-white/10 bg-white/5")}>
               <input type="checkbox" checked={!!f.alfredSmsEnabled} onChange={e => setF({ ...f, alfredSmsEnabled: e.target.checked })} className="mt-0.5 accent-red-600" />
@@ -1109,7 +1147,7 @@ export function SettingsModal({ open, onClose, settings, setSettings, jobs = [],
           </div>}
 
           {sec === "goals" && <div className="space-y-3">
-            <h4 className="font-semibold text-sm">Goals & Tax</h4>
+            <h4 className="font-semibold text-sm">Goals</h4>
             <div><label className="text-xs text-white/60 mb-1 block">Monthly Revenue Goal ($)</label><GInput type="number" value={f.monthlyRevenueGoal} onChange={e => setF({ ...f, monthlyRevenueGoal: e.target.value })} /></div>
             <div><label className="text-xs text-white/60 mb-1 block">Quarterly Revenue Goal ($)</label><GInput type="number" value={f.quarterlyRevenueGoal || ""} onChange={e => setF({ ...f, quarterlyRevenueGoal: e.target.value })} placeholder={(f.monthlyRevenueGoal * 3) || "45000"} /></div>
             <div><label className="text-xs text-white/60 mb-1 block">Monthly Jobs Goal</label><GInput type="number" value={f.monthlyJobsGoal} onChange={e => setF({ ...f, monthlyJobsGoal: e.target.value })} /></div>
@@ -1117,34 +1155,6 @@ export function SettingsModal({ open, onClose, settings, setSettings, jobs = [],
             <div><label className="text-xs text-white/60 mb-1 block">Customer Acquisition Goal <span className="text-white/30">(new customers/mo)</span></label><GInput type="number" value={f.customerAcquisitionGoal || ""} onChange={e => setF({ ...f, customerAcquisitionGoal: e.target.value })} placeholder="10" /></div>
             <div><label className="text-xs text-white/60 mb-1 block">Avg Job Value Goal ($)</label><GInput type="number" value={f.avgJobValueGoal || ""} onChange={e => setF({ ...f, avgJobValueGoal: e.target.value })} placeholder="350" /></div>
             <div><label className="text-xs text-white/60 mb-1 block">Review Rating Goal <span className="text-white/30">(out of 5)</span></label><GInput type="number" step="0.1" min="1" max="5" value={f.reviewRatingGoal || ""} onChange={e => setF({ ...f, reviewRatingGoal: e.target.value })} placeholder="4.8" /></div>
-            <div>
-              <label className="text-xs text-white/60 mb-1 block">Tax Rate (%)</label>
-              <div className="flex gap-2">
-                <GInput type="number" step="0.01" value={f.taxRate} onChange={e => setF({ ...f, taxRate: e.target.value })} className="flex-1" />
-                {/* FEATURE — "make sure taxes are correct for the owner's
-                    state." Suggests, never silently overwrites — the owner
-                    may have already set a deliberately different rate
-                    (county add-on, service-tax-exempt state, etc.). */}
-                {(() => {
-                  const stateCode = guessStateCodeFromAddress(f.companyAddress || "");
-                  const suggested = stateCode ? US_STATE_BASE_TAX_RATES[stateCode] : null;
-                  if (suggested === null || suggested === undefined) return null;
-                  return (
-                    <GBtn variant="ghost" className="!text-xs !py-1.5 !px-3 flex-shrink-0" onClick={() => { setF({ ...f, taxRate: suggested }); toast?.(`Set to ${stateCode}'s base rate (${suggested}%)`, "green"); }}>
-                      Use {stateCode} rate ({suggested}%)
-                    </GBtn>
-                  );
-                })()}
-              </div>
-              <div className="text-[10px] text-white/30 mt-1">
-                {(() => {
-                  const stateCode = guessStateCodeFromAddress(f.companyAddress || "");
-                  return stateCode
-                    ? `Suggestion above is ${stateCode}'s base state rate — county/city add-ons and whether services are taxable at all vary, so double-check with your accountant.`
-                    : `Set your Company Address above to get a state tax rate suggestion.`;
-                })()}
-              </div>
-            </div>
           </div>}
 
           {sec === "billing" && (
