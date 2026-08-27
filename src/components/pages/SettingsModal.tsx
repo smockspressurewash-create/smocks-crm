@@ -91,7 +91,7 @@ const isValidHttpsUrl = (value: string): boolean => {
   }
 };
 
-export function SettingsModal({ open, onClose, settings, setSettings, jobs = [], setJobs = (() => {}) as any, customers = [], estimates = [], campaigns = [], services, setServices, emailTemplates, setEmailTemplates, smsTemplates, setSmsTemplates, estimateTemplates = [], setEstimateTemplates = (() => {}) as any, modelStatus = {}, setModelStatus = (() => {}) as any, employees = [], toast, onSignOut, restrictToProfile = false, onAddManager, markRecentlyDeleted }: { open?: any; onClose?: any; settings?: any; setSettings?: any; jobs?: any[]; setJobs?: any; customers?: any[]; estimates?: any[]; campaigns?: any[]; services?: any; setServices?: any; emailTemplates?: any; setEmailTemplates?: any; smsTemplates?: any; setSmsTemplates?: any; estimateTemplates?: any[]; setEstimateTemplates?: any; modelStatus?: any; setModelStatus?: any; employees?: any[]; toast?: any; onSignOut?: () => void; restrictToProfile?: boolean; onAddManager?: () => void; markRecentlyDeleted?: (table: "jobs" | "customers" | "estimates", ids: string[]) => void }) {
+export function SettingsModal({ open, onClose, settings, setSettings, jobs = [], setJobs = (() => {}) as any, customers = [], estimates = [], campaigns = [], services, setServices, emailTemplates, setEmailTemplates, smsTemplates, setSmsTemplates, estimateTemplates = [], setEstimateTemplates = (() => {}) as any, modelStatus = {}, setModelStatus = (() => {}) as any, employees = [], toast, onSignOut, restrictToProfile = false, onAddManager, markRecentlyDeleted, initialSection }: { open?: any; onClose?: any; settings?: any; setSettings?: any; jobs?: any[]; setJobs?: any; customers?: any[]; estimates?: any[]; campaigns?: any[]; services?: any; setServices?: any; emailTemplates?: any; setEmailTemplates?: any; smsTemplates?: any; setSmsTemplates?: any; estimateTemplates?: any[]; setEstimateTemplates?: any; modelStatus?: any; setModelStatus?: any; employees?: any[]; toast?: any; onSignOut?: () => void; restrictToProfile?: boolean; onAddManager?: () => void; markRecentlyDeleted?: (table: "jobs" | "customers" | "estimates", ids: string[]) => void; initialSection?: string }) {
   const [f, setF] = useState(settings);
   const [sec, setSec] = useState("profile");
   // BUG FIX — "Settings always opens to API keys instead of my profile."
@@ -99,9 +99,11 @@ export function SettingsModal({ open, onClose, settings, setSettings, jobs = [],
   // `open`), so the `useState` initializer above only ever ran once, on
   // first mount — any later navigation to another tab stuck as the starting
   // point for every future open. Reset to Profile every time the modal is
-  // actually opened, not just on the very first mount.
+  // actually opened, not just on the very first mount — UNLESS the caller
+  // explicitly asked for a specific starting tab (e.g. an upgrade prompt
+  // deep-linking straight to Billing), which wins for that one open.
   useEffect(() => {
-    if (open) setSec("profile");
+    if (open) setSec(initialSection || "profile");
   }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // FEATURE — "let people sign up and pay for CrewBoss." Platform-level

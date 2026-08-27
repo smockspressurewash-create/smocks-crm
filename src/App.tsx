@@ -15,6 +15,7 @@ import { useAutomationEngine } from "./hooks/useAutomationEngine";
 import { useScheduledCampaigns } from "./hooks/useScheduledCampaigns";
 import { useIsMobile } from "./hooks/useIsMobile";
 import { supabase } from "./lib/supabase";
+import { getPlanLimits, type PlatformSubscription } from "./lib/planLimits";
 import { SafePage } from "./components/ui/ErrorBoundary";
 import { CrewBossMark } from "./components/ui/CrewBossMark";
 import { PageFade } from "./components/ui/PageFade";
@@ -432,6 +433,32 @@ export function App() {
   // the auth bootstrap (below) actively clears the flag and flips this back
   // to false the instant a real session check comes back negative.
   const [hasCrmSession, setHasCrmSession] = useState(() => getLastOwnerSessionFlag());
+  // FEATURE — "any base account hits their plan limit... prompts them to
+  // upgrade." Fetched once per session, not on every render — see
+  // lib/planLimits.ts for how a raw status/plan/trial_ends_at row turns
+  // into actual enforced limits (and why "no row" is deliberately treated
+  // as unlimited, not free-tier-limited).
+  const [platformSub, setPlatformSub] = useState<PlatformSubscription>(null);
+  useEffect(() => {
+    if (!crmUserId || !hasCrmSession) return;
+    (async () => {
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        const token = session?.access_token;
+        if (!token) return;
+        const res = await fetch("/api/platform-billing", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ action: "get_status" }),
+        });
+        const data = await res.json().catch(() => null);
+        if (data?.subscription !== undefined) setPlatformSub(data.subscription);
+      } catch (e: any) {
+        console.warn("[PlatformBilling] get_status failed:", e?.message);
+      }
+    })();
+  }, [crmUserId, hasCrmSession]);
+  const planLimits = getPlanLimits(platformSub);
   // "owner" or "manager" — both get the CRM, but managers get a restricted Settings modal
   // (profile tab only) and can't touch billing/Stripe or delete company data.
   const [crmRole, setCrmRole] = useState<"owner" | "manager">("owner");
@@ -665,6 +692,10 @@ export function App() {
   // Out with the slightest finger drift was sometimes read as a close-drag
   // instead of a click, making sign-out feel flaky.
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // FEATURE — an upgrade prompt's "View Plans" jumps straight to Settings →
+  // Billing instead of the default Profile tab.
+  const [settingsInitialSection, setSettingsInitialSection] = useState<string | undefined>(undefined);
+  const openBillingUpgrade = () => { setSettingsInitialSection("billing"); setSettingsOpen(true); };
   // Stripe Connect OAuth redirect landing — functions/api/stripe-connect-oauth.ts
   // sends the browser back to `${origin}/#/settings?stripe_connected=1` (or
   // `?stripe_connect_error=...`) after the owner authorizes on Stripe's own
@@ -4668,7 +4699,7 @@ export function App() {
                 {page === "cockpit" && isCockpitOwner && <CockpitPage ownerId={crmUserId} toast={toast} />}
                 {page === "feedback" && <FeedbackPage userEmail={crmUserEmail} userName={(settings as any)?.ownerName || (settings as any)?.companyName} isAdmin={isCockpitOwner} toast={toast} />}
                 {page === "dashboard"      && <Dashboard jobs={jobs} setJobs={setJobs} customers={customers} estimates={estimates} setEstimates={setEstimates} automations={automations} stats={{ totalRev, activeJobs, pendingEst, closeRate, doneMonth }} goals={{ revenue: settings.monthlyRevenueGoal ?? 8000, jobCount: settings.monthlyJobsGoal ?? 20 }} vehicles={vehicles} maintenance={maintenance} chemicals={chemicals} settings={settings} setSettings={setSettings} onNav={setPage} toast={toast} weatherData={weatherData} weatherFetchError={weatherFetchError} inboxThreads={inboxThreads} employees={employees} crewFetchError={crewFetchError} reviews={reviews} onSendDailyBriefing={sendDailyBriefingNow} onViewJob={id => { setOpenJobId(id); setPage("jobs"); }} ownerId={crmUserId} />}
-                {page === "customers"      && <CustomersPage customers={customers} setCustomers={setCustomers} estimates={estimates} jobs={jobs} employees={employees} toast={toast} timeline={timeline} setTimeline={setTimeline} settings={settings} setSettings={setSettings} autoOpenNew={fabAutoOpenNew === "customers"} onAutoOpenNewConsumed={() => setFabAutoOpenNew(null)} highlightId={alfredHighlight?.type === "customer" ? alfredHighlight.id : null} pushUndo={pushUndo} markRecentlyDeleted={markRecentlyDeleted} unmarkRecentlyDeleted={unmarkRecentlyDeleted} onSpotlight={queueAlfredSpotlight} />}
+                {page === "customers"      && <CustomersPage customers={customers} setCustomers={setCustomers} estimates={estimates} jobs={jobs} employees={employees} toast={toast} timeline={timeline} setTimeline={setTimeline} settings={settings} setSettings={setSettings} autoOpenNew={fabAutoOpenNew === "customers"} onAutoOpenNewConsumed={() => setFabAutoOpenNew(null)} highlightId={alfredHighlight?.type === "customer" ? alfredHighlight.id : null} pushUndo={pushUndo} markRecentlyDeleted={markRecentlyDeleted} unmarkRecentlyDeleted={unmarkRecentlyDeleted} onSpotlight={queueAlfredSpotlight} planLimits={planLimits} onUpgrade={openBillingUpgrade} />}
                 {page === "estimates"      && <EstimatesPage estimates={estimates} setEstimates={setEstimates} customers={customers} services={services} settings={settings} toast={toast} onPortal={id => setPortalEstId(id)} estimateTemplates={estimateTemplates} setEstimateTemplates={setEstimateTemplates} setJobs={setJobs} onNav={setPage} autoOpenNew={fabAutoOpenNew === "estimates"} onAutoOpenNewConsumed={() => { setFabAutoOpenNew(null); setEstimatePresetCustomerId(null); }} presetCustomerId={estimatePresetCustomerId || ""} ownerId={crmUserId} highlightId={alfredHighlight?.type === "estimate" ? alfredHighlight.id : null} pushUndo={pushUndo} markRecentlyDeleted={markRecentlyDeleted} unmarkRecentlyDeleted={unmarkRecentlyDeleted} />}
                 {page === "invoices"       && <InvoicesPage estimates={estimates} setEstimates={setEstimates} customers={customers} settings={settings} toast={toast} jobs={jobs} setJobs={setJobs} ownerId={crmUserId} highlightId={alfredHighlight?.type === "invoice" ? alfredHighlight.id : null} pushUndo={pushUndo} markRecentlyDeleted={markRecentlyDeleted} unmarkRecentlyDeleted={unmarkRecentlyDeleted} />}
                 {page === "jobs"           && <JobsPage jobs={jobs} setJobs={setJobs} customers={customers} setCustomers={setCustomers} employees={employees} estimates={estimates} setEstimates={setEstimates} settings={settings} setSettings={setSettings} toast={toast} posts={socialPosts} setPosts={setSocialPosts} setTimeline={setTimeline} initialDetailId={openJobId} onInitialDetailIdConsumed={() => setOpenJobId(null)} onPortal={id => setPortalEstId(id)} ownerId={crmUserId} autoOpenNew={fabAutoOpenNew === "jobs"} onAutoOpenNewConsumed={() => setFabAutoOpenNew(null)} highlightId={alfredHighlight?.type === "job" ? alfredHighlight.id : null} pushUndo={pushUndo} markRecentlyDeleted={markRecentlyDeleted} unmarkRecentlyDeleted={unmarkRecentlyDeleted} services={services} />}
@@ -4738,6 +4769,7 @@ export function App() {
       <SettingsModal
         open={settingsOpen}
         onClose={() => setSettingsOpen(false)}
+        initialSection={settingsInitialSection}
         settings={settings}
         setSettings={setSettings}
         jobs={jobs}

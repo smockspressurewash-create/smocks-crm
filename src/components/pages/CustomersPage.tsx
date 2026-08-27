@@ -35,6 +35,8 @@ import { ImportDataModal } from "../ui/ImportDataModal";
 import { ImportStripeCustomersModal } from "../ui/ImportStripeCustomersModal";
 import { GBtn } from "../ui/GBtn";
 import { useConfirm } from "../ui/ConfirmModal";
+import { UpgradePrompt } from "../ui/UpgradePrompt";
+import type { PlanLimits } from "../../lib/planLimits";
 import { GInput } from "../ui/GInput";
 import { GDate } from "../ui/GDate";
 import { GSel } from "../ui/GSel";
@@ -81,7 +83,7 @@ import { ChemicalModal } from "../ui/ChemicalModal";
 import { WeeklyBusinessReview } from "../ui/WeeklyBusinessReview";
 import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 
-export function CustomersPage({ customers = [], setCustomers, estimates = [], jobs = [], employees = [], toast, timeline = {}, setTimeline = () => {}, settings = {} as AppSettings, setSettings = (() => {}) as any, autoOpenNew = false, onAutoOpenNewConsumed, highlightId = null, pushUndo = (_desc: string, _fn: () => void, _redoFn?: () => void) => {}, markRecentlyDeleted = (_table: "jobs" | "customers" | "estimates", _ids: string[]) => {}, unmarkRecentlyDeleted = (_table: "jobs" | "customers" | "estimates", _ids: string[]) => {}, onSpotlight = (_step: { page: string; type?: string; id?: string; label?: string }) => {} }: { customers?: any[]; setCustomers?: any; estimates?: any[]; jobs?: any[]; employees?: any[]; toast?: any; timeline?: any; setTimeline?: any; settings?: AppSettings; setSettings?: any; autoOpenNew?: boolean; onAutoOpenNewConsumed?: () => void; highlightId?: string | null; pushUndo?: (desc: string, fn: () => void, redoFn?: () => void) => void; markRecentlyDeleted?: (table: "jobs" | "customers" | "estimates", ids: string[]) => void; unmarkRecentlyDeleted?: (table: "jobs" | "customers" | "estimates", ids: string[]) => void; onSpotlight?: (step: { page: string; type?: string; id?: string; label?: string }) => void }) {
+export function CustomersPage({ customers = [], setCustomers, estimates = [], jobs = [], employees = [], toast, timeline = {}, setTimeline = () => {}, settings = {} as AppSettings, setSettings = (() => {}) as any, autoOpenNew = false, onAutoOpenNewConsumed, highlightId = null, pushUndo = (_desc: string, _fn: () => void, _redoFn?: () => void) => {}, markRecentlyDeleted = (_table: "jobs" | "customers" | "estimates", _ids: string[]) => {}, unmarkRecentlyDeleted = (_table: "jobs" | "customers" | "estimates", _ids: string[]) => {}, onSpotlight = (_step: { page: string; type?: string; id?: string; label?: string }) => {}, planLimits, onUpgrade = () => {} }: { customers?: any[]; setCustomers?: any; estimates?: any[]; jobs?: any[]; employees?: any[]; toast?: any; timeline?: any; setTimeline?: any; settings?: AppSettings; setSettings?: any; autoOpenNew?: boolean; onAutoOpenNewConsumed?: () => void; highlightId?: string | null; pushUndo?: (desc: string, fn: () => void, redoFn?: () => void) => void; markRecentlyDeleted?: (table: "jobs" | "customers" | "estimates", ids: string[]) => void; unmarkRecentlyDeleted?: (table: "jobs" | "customers" | "estimates", ids: string[]) => void; onSpotlight?: (step: { page: string; type?: string; id?: string; label?: string }) => void; planLimits?: PlanLimits; onUpgrade?: () => void }) {
   const [search, setSearch] = useState("");
   // FEATURE — "the popup should be in the CRM with the CRM's UI" — replaces
   // window.confirm() for delete actions with a real branded modal.
@@ -119,13 +121,22 @@ export function CustomersPage({ customers = [], setCustomers, estimates = [], jo
   const [draggedCustomerId, setDraggedCustomerId] = useState<string | null>(null);
   const [dragOverFolder, setDragOverFolder] = useState<string | null>(null);
   const [modal, setModal] = useState({ open: false, data: null });
+  // FEATURE — "whenever they hit their plan limit... it prompts them to
+  // upgrade." Every path that opens the Add-customer modal funnels through
+  // this one check instead of calling setModal directly.
+  const [upgradePromptOpen, setUpgradePromptOpen] = useState(false);
+  const atCustomerLimit = !!planLimits && planLimits.customers !== null && customers.length >= planLimits.customers;
+  const openAddCustomer = () => {
+    if (atCustomerLimit) { setUpgradePromptOpen(true); return; }
+    setModal({ open: true, data: null });
+  };
   // ISSUE 21 — the FAB's "New Customer" action used to just navigate here
   // and leave the owner to find/click Add themselves. Opens the Add modal
   // automatically once, then tells the parent to clear the flag so it
   // doesn't reopen on every re-render or the next time this page is visited.
   useEffect(() => {
     if (!autoOpenNew) return;
-    setModal({ open: true, data: null });
+    openAddCustomer();
     onAutoOpenNewConsumed?.();
   }, [autoOpenNew]); // eslint-disable-line react-hooks/exhaustive-deps
   const [detail, setDetail] = useState(null);
@@ -586,6 +597,22 @@ export function CustomersPage({ customers = [], setCustomers, estimates = [], jo
   return (
     <div className="space-y-4">
       {ConfirmDialog}
+      {planLimits && (
+        <UpgradePrompt
+          open={upgradePromptOpen}
+          onClose={() => setUpgradePromptOpen(false)}
+          onUpgrade={() => { setUpgradePromptOpen(false); onUpgrade(); }}
+          tier={planLimits.tier}
+          resource="customers"
+          limit={planLimits.customers || 0}
+        />
+      )}
+      {planLimits?.customers !== null && planLimits && (
+        <div className={"flex items-center justify-between gap-2 px-3 py-2 rounded-xl border text-xs " + (atCustomerLimit ? "bg-red-950/20 border-red-700/40 text-red-300" : "bg-white/5 border-white/10 text-white/50")}>
+          <span>{customers.length} / {planLimits.customers} customers used on the Free plan</span>
+          <button onClick={onUpgrade} className="text-red-400 hover:text-red-300 font-semibold flex-shrink-0">Upgrade →</button>
+        </div>
+      )}
       <div className="flex flex-col gap-3">
         <div className="flex gap-2 items-center flex-wrap">
           {["list", "analytics", "duplicates"].map(t => <button key={t} onClick={() => { setPageTab(t); if (t === "duplicates" && dupPairs === null) scanDuplicates(); }} className={"px-3 py-1.5 rounded-lg text-xs font-medium capitalize border transition " + (pageTab === t ? "bg-red-900/40 border-red-500/50 text-white" : "bg-black/40 border-red-900/30 text-white/60 hover:text-white")}>{t === "analytics" ? "📊 LTV Analytics" : t === "duplicates" ? "🔍 Find Duplicates" + (dupPairs?.length > 0 ? " (" + dupPairs.length + ")" : "") : "👥 Customers"}</button>)}
@@ -629,7 +656,7 @@ export function CustomersPage({ customers = [], setCustomers, estimates = [], jo
             <GBtn variant="ghost" onClick={exportCSV}><Download size={14} className="inline mr-1.5" />Export</GBtn>
             <GBtn variant={mergeMode ? "danger" : "ghost"} onClick={() => { setMergeMode(!mergeMode); setMergePair([]); }}><UserCheck size={14} className="inline mr-1.5" />{mergeMode ? "Cancel Merge" : "Merge"}</GBtn>
             <GBtn variant={bulkMode ? "danger" : "ghost"} onClick={() => { setBulkMode(!bulkMode); setBulkSelected([]); }}><CheckSquare size={14} className="inline mr-1.5" />{bulkMode ? "Cancel Select" : "Select"}</GBtn>
-            <GBtn onClick={() => setModal({ open: true, data: null })}><Plus size={14} className="inline mr-1.5" />Add</GBtn>
+            <GBtn onClick={openAddCustomer}><Plus size={14} className="inline mr-1.5" />Add</GBtn>
           </div>
         </div>
       </div>
