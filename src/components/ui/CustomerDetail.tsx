@@ -49,6 +49,26 @@ import { listCustomerPaymentMethods, detachPaymentMethod, StripeSavedCard } from
 import { SaveCardModal } from "./SaveCardModal";
 import { useIsMobile } from "../../hooks/useIsMobile";
 
+// Same default checklist template used by Dashboard.tsx/JobDetailModal.tsx/
+// EmployeePortal.tsx/CrewView.tsx — see renderJobRow's BUG FIX comment below.
+const CD_PRE_DEFAULTS = [
+  { id: "pre1", label: "Take photos of existing damage", done: false },
+  { id: "pre2", label: "Confirm water access", done: false },
+  { id: "pre3", label: "Check weather conditions", done: false },
+  { id: "pre4", label: "Note any pre-existing issues", done: false },
+];
+const CD_DURING_DEFAULTS = [
+  { id: "dur1", label: "Apply cleaning solution", done: false },
+  { id: "dur2", label: "Scrub affected areas", done: false },
+  { id: "dur3", label: "Rinse thoroughly", done: false },
+];
+const CD_POST_DEFAULTS = [
+  { id: "post1", label: "Customer walkthrough", done: false },
+  { id: "post2", label: "Collect payment", done: false },
+  { id: "post3", label: "Get customer signature", done: false },
+  { id: "post4", label: "Take after photos", done: false },
+];
+
 export function CustomerDetail({ customer: c, onClose, onDelete, onEdit, estimates = [], jobs = [], employees = [], timeline = {}, setTimeline = (..._args: any[]) => {}, settings = {} as any, toast = (..._args: any[]) => {}, setCustomers = (..._args: any[]) => {}, onOpenEstimate = (_id: string, _label?: string) => {} }) {
   const [tab, setTab] = useState("info");
   const [note, setNote] = useState("");
@@ -176,10 +196,21 @@ export function CustomerDetail({ customer: c, onClose, onDelete, onEdit, estimat
     // list — a job with 7 real items showed some of them twice. `checklist`
     // is only meaningful on its own for jobs that predate the phase split
     // (no pre/during/post data at all).
+    // BUG FIX — "checklist items weren't showing." This was the only
+    // checklist-rendering spot in the app with no default-template
+    // fallback — Dashboard.tsx, JobDetailModal.tsx, EmployeePortal.tsx, and
+    // CrewView.tsx all fall back to a default pre/during/post template when
+    // a job's own arrays are still empty (real per-item state only gets
+    // written once a field employee actually taps a checkbox — see
+    // CLAUDE.md's Checklist sync note). Here, a job nobody had touched yet
+    // showed NO checklist section at all, while the exact same job showed a
+    // real (default) checklist everywhere else in the app.
     const hasPhaseChecklist = (j.preChecklist||[]).length || (j.duringChecklist||[]).length || (j.postChecklist||[]).length;
     const allChecklist = hasPhaseChecklist
       ? [...(j.preChecklist||[]), ...(j.duringChecklist||[]), ...(j.postChecklist||[])]
-      : (j.checklist||[]);
+      : (j.checklist||[]).length > 0
+        ? j.checklist
+        : [...CD_PRE_DEFAULTS, ...CD_DURING_DEFAULTS, ...CD_POST_DEFAULTS];
     const ckDone = allChecklist.filter((it: any) => it.done).length;
     const crewNames = employees
       .filter((e: any) => crewIncludesEmployee(j.crew, e.id, e.user_id))

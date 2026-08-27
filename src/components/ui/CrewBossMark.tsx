@@ -7,23 +7,24 @@ import React from "react";
 // is a separate static asset (can't reference a React component) but should
 // stay visually identical.
 //
-// BUG FIX — "fix the logo on the landing page." The previous design (a
-// small person silhouette — head, body, legs — with "C"/"B" letters woven
-// around it) was detailed enough that it needed real screen real estate to
-// read as anything but a blob; every actual usage of this component renders
-// it at 16–20px (nav badges, sidebar, login screens), the exact same size
-// class that caused favicon.svg to need this identical simplification
-// already (see that file's own BUG FIX comment — "doesn't fit fully,
-// corners are cut off"). This never got applied here, so the mark still
-// looked broken specifically where the icon was small enough to matter,
-// including the landing page's nav. Matches favicon.svg's simple "C"+"B"
-// wordmark exactly so the brand mark is now genuinely identical everywhere,
-// not just intended to be.
+// BUG FIX — "the logo on the landing page still isn't right." Root cause,
+// confirmed by reading every call site (App.tsx's login screen,
+// ClientAuthPortal, EmployeePortal, MarketingShared's nav AND footer):
+// this component is ALWAYS rendered inside a `bg-gradient-to-br from-
+// red-600 to-red-900` badge — every single usage, no exceptions. The "B"
+// glyph below was filled #dc2626 (Tailwind red-600) — nearly the exact
+// same red as the badge it sits on. Against a red background, a red
+// letter is camouflaged: the mark visually read as a lone white "C" (or a
+// smudge) everywhere it appeared, which is exactly "not right" without
+// being an obvious crash or layout bug. Both letters are white now — full
+// contrast against every real usage. (favicon.svg is a separate static
+// file with its own black background, where the red B was already fine —
+// left as-is.)
 export function CrewBossMark({ className = "" }: { className?: string }) {
   return (
     <svg viewBox="0 0 100 100" className={className}>
       <text x="32" y="68" fontFamily="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" fontWeight={800} fontSize={48} fill="#ffffff" textAnchor="middle">C</text>
-      <text x="68" y="68" fontFamily="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" fontWeight={800} fontSize={48} fill="#dc2626" textAnchor="middle">B</text>
+      <text x="68" y="68" fontFamily="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" fontWeight={800} fontSize={48} fill="#ffffff" textAnchor="middle">B</text>
     </svg>
   );
 }

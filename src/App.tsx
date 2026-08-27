@@ -3881,6 +3881,11 @@ export function App() {
     }
   };
 
+  // BUG FIX — "not showing I'm logged in when I go to the landing page" —
+  // passed into every marketing page's MarketingNav (isLoggedIn prop) so
+  // its CTA reflects reality instead of always saying "Log In."
+  const goToDashboardFromMarketing = () => { setMarketingPreview(false); window.location.hash = "/dashboard"; setPage("dashboard"); };
+
   // `marketingPreview` lets an already-logged-in owner explicitly view
   // these pages (see the flag's own comment above) — everyone else still
   // needs the normal !empSession && !hasCrmSession public-page gate.
@@ -3893,18 +3898,18 @@ export function App() {
     </div>
   );
   if (page === "welcome" && (marketingPreview || (!empSession && !hasCrmSession))) {
-    return <>{previewBar}<LandingPage onGetStarted={() => navigateMarketing("login")} onNavigate={navigateMarketing} onChoosePlan={startPaidSignup} choosingPlan={choosingPlan} /></>;
+    return <>{previewBar}<LandingPage onGetStarted={() => navigateMarketing("login")} onNavigate={navigateMarketing} onChoosePlan={startPaidSignup} choosingPlan={choosingPlan} isLoggedIn={hasCrmSession} onGoToDashboard={goToDashboardFromMarketing} /></>;
   }
   // ── Dedicated marketing pages — same public, no-session-required pattern
   // as "welcome" above. See MarketingShared.tsx for the shared nav/footer.
   if (page === "features" && (marketingPreview || (!empSession && !hasCrmSession))) {
-    return <>{previewBar}<FeaturesPage onGetStarted={() => navigateMarketing("login")} onNavigate={navigateMarketing} /></>;
+    return <>{previewBar}<FeaturesPage onGetStarted={() => navigateMarketing("login")} onNavigate={navigateMarketing} isLoggedIn={hasCrmSession} onGoToDashboard={goToDashboardFromMarketing} /></>;
   }
   if (page === "pricing" && (marketingPreview || (!empSession && !hasCrmSession))) {
-    return <>{previewBar}<PricingPage onGetStarted={() => navigateMarketing("login")} onNavigate={navigateMarketing} onChoosePlan={startPaidSignup} choosingPlan={choosingPlan} /></>;
+    return <>{previewBar}<PricingPage onGetStarted={() => navigateMarketing("login")} onNavigate={navigateMarketing} onChoosePlan={startPaidSignup} choosingPlan={choosingPlan} isLoggedIn={hasCrmSession} onGoToDashboard={goToDashboardFromMarketing} /></>;
   }
   if (page === "about" && (marketingPreview || (!empSession && !hasCrmSession))) {
-    return <>{previewBar}<AboutPage onGetStarted={() => navigateMarketing("login")} onNavigate={navigateMarketing} /></>;
+    return <>{previewBar}<AboutPage onGetStarted={() => navigateMarketing("login")} onNavigate={navigateMarketing} isLoggedIn={hasCrmSession} onGoToDashboard={goToDashboardFromMarketing} /></>;
   }
   // FEATURE — public roadmap (logged-out visitors) — read-only, only shows
   // items the admin has actually scheduled/shipped, no submit/vote (that
@@ -4734,14 +4739,19 @@ export function App() {
           </div>
         </main>
 
-        {/* Mobile bottom nav — quick access to the 4 most-used sections;
-            everything else still lives behind the hamburger sidebar. */}
+        {/* Mobile bottom nav — quick access to the 4 most-used sections,
+            plus Feedback (5th slot) so "report a bug / request a feature"
+            has a guaranteed-visible entry point on mobile, not just buried
+            behind the hamburger sidebar (which technically already had it,
+            but wasn't obviously "where you'd go for that" without a label
+            pointing at it). */}
         <nav className="md:hidden fixed bottom-0 left-0 right-0 z-30 bg-black/95 border-t border-red-900/30 backdrop-blur flex items-stretch" style={{ paddingBottom: "env(safe-area-inset-bottom)" }}>
           {[
             { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
             { id: "jobs", label: "Jobs", icon: Briefcase },
             { id: "customers", label: "Customers", icon: Users },
             { id: "estimates", label: "Estimates", icon: FileText },
+            { id: "feedback", label: "Feedback", icon: MessageSquare },
           ].map(item => {
             const Icon = item.icon;
             const active = page === item.id;

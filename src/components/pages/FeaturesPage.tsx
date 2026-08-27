@@ -163,9 +163,13 @@ const CATEGORIES: Category[] = [
 export function FeaturesPage({
   onGetStarted,
   onNavigate,
+  isLoggedIn = false,
+  onGoToDashboard,
 }: {
   onGetStarted: () => void;
   onNavigate: (page: MarketingPage) => void;
+  isLoggedIn?: boolean;
+  onGoToDashboard?: () => void;
 }) {
   return (
     // BUG FIX — see the identical fix + comment in LandingPage.tsx: this
@@ -174,7 +178,7 @@ export function FeaturesPage({
     <div className="h-dvh h-screen overflow-y-auto bg-black text-white overflow-x-hidden isolate">
       <MarketingStyles />
       <BackgroundBlobs />
-      <MarketingNav active="features" onNavigate={onNavigate} onGetStarted={onGetStarted} />
+      <MarketingNav active="features" onNavigate={onNavigate} onGetStarted={onGetStarted} isLoggedIn={isLoggedIn} onGoToDashboard={onGoToDashboard} />
 
       <MarketingPageHeader
         eyebrow="Every capability, in one place"

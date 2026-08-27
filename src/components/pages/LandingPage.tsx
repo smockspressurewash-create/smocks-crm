@@ -157,6 +157,8 @@ export function LandingPage({
   onNavigate,
   onChoosePlan,
   choosingPlan = false,
+  isLoggedIn = false,
+  onGoToDashboard,
 }: {
   onGetStarted: () => void;
   onNavigate: (page: MarketingPage) => void;
@@ -165,6 +167,9 @@ export function LandingPage({
   // renders fine if a caller doesn't pass it (falls back to onGetStarted).
   onChoosePlan?: (plan: string, interval: "month" | "year") => void;
   choosingPlan?: boolean;
+  // BUG FIX — "not showing I'm logged in" — see MarketingNav's own comment.
+  isLoggedIn?: boolean;
+  onGoToDashboard?: () => void;
 }) {
   const [billing, setBilling] = useState<"monthly" | "annual">("annual");
   return (
@@ -178,7 +183,7 @@ export function LandingPage({
     <div className="h-dvh h-screen overflow-y-auto bg-black text-white overflow-x-hidden isolate">
       <MarketingStyles />
       <BackgroundBlobs />
-      <MarketingNav active="welcome" onNavigate={onNavigate} onGetStarted={onGetStarted} />
+      <MarketingNav active="welcome" onNavigate={onNavigate} onGetStarted={onGetStarted} isLoggedIn={isLoggedIn} onGoToDashboard={onGoToDashboard} />
 
       {/* ── Hero ─────────────────────────────────────────────────────────────── */}
       <section className="relative px-4 md:px-6 pt-16 pb-20 md:pt-28 md:pb-32 max-w-5xl mx-auto text-center overflow-hidden">

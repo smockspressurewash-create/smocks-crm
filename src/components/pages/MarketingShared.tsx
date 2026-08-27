@@ -235,10 +235,23 @@ export function MarketingNav({
   active,
   onNavigate,
   onGetStarted,
+  isLoggedIn = false,
+  onGoToDashboard,
 }: {
   active: MarketingPage;
   onNavigate: (page: MarketingPage) => void;
   onGetStarted: () => void;
+  // BUG FIX — "it's not showing I'm logged in when I go to the landing
+  // page." A signed-in owner previewing the marketing site (via the
+  // "CrewBoss" logo/nav click in the CRM — see App.tsx's marketingPreview
+  // flag) saw a nav bar that still said "Log In" / "Start Free Trial" no
+  // matter what, exactly as if they were a logged-out visitor — the one
+  // signal that WAS already there (App.tsx's red "Previewing the marketing
+  // site while logged in" strip above this nav) got contradicted right
+  // underneath it. When true, replaces both CTAs with one real "Go to
+  // Dashboard" button instead.
+  isLoggedIn?: boolean;
+  onGoToDashboard?: () => void;
 }) {
   const [navOpen, setNavOpen] = useState(false);
 
@@ -265,15 +278,26 @@ export function MarketingNav({
               {l.label}
             </button>
           ))}
-          <button onClick={onGetStarted} className="text-white/70 hover:text-white transition-colors">
-            Log In
-          </button>
-          <button
-            onClick={onGetStarted}
-            className="px-4 py-2 rounded-lg bg-gradient-to-br from-red-600 to-red-800 hover:from-red-500 hover:to-red-700 transition-all font-semibold shadow-lg shadow-red-900/30 hover:shadow-red-700/40 hover:-translate-y-0.5"
-          >
-            Start Free Trial
-          </button>
+          {isLoggedIn ? (
+            <button
+              onClick={onGoToDashboard}
+              className="px-4 py-2 rounded-lg bg-gradient-to-br from-red-600 to-red-800 hover:from-red-500 hover:to-red-700 transition-all font-semibold shadow-lg shadow-red-900/30 hover:shadow-red-700/40 hover:-translate-y-0.5"
+            >
+              Go to Dashboard
+            </button>
+          ) : (
+            <>
+              <button onClick={onGetStarted} className="text-white/70 hover:text-white transition-colors">
+                Log In
+              </button>
+              <button
+                onClick={onGetStarted}
+                className="px-4 py-2 rounded-lg bg-gradient-to-br from-red-600 to-red-800 hover:from-red-500 hover:to-red-700 transition-all font-semibold shadow-lg shadow-red-900/30 hover:shadow-red-700/40 hover:-translate-y-0.5"
+              >
+                Start Free Trial
+              </button>
+            </>
+          )}
         </nav>
 
         <button className="md:hidden p-2 -mr-2 text-white/80" onClick={() => setNavOpen(o => !o)} aria-label="Toggle menu">
@@ -292,15 +316,26 @@ export function MarketingNav({
               {l.label}
             </button>
           ))}
-          <button onClick={() => { setNavOpen(false); onGetStarted(); }} className="w-full text-left py-2 text-white/70">
-            Log In
-          </button>
-          <button
-            onClick={() => { setNavOpen(false); onGetStarted(); }}
-            className="w-full px-4 py-2.5 rounded-lg bg-gradient-to-br from-red-600 to-red-800 font-semibold"
-          >
-            Start Free Trial
-          </button>
+          {isLoggedIn ? (
+            <button
+              onClick={() => { setNavOpen(false); onGoToDashboard?.(); }}
+              className="w-full px-4 py-2.5 rounded-lg bg-gradient-to-br from-red-600 to-red-800 font-semibold"
+            >
+              Go to Dashboard
+            </button>
+          ) : (
+            <>
+              <button onClick={() => { setNavOpen(false); onGetStarted(); }} className="w-full text-left py-2 text-white/70">
+                Log In
+              </button>
+              <button
+                onClick={() => { setNavOpen(false); onGetStarted(); }}
+                className="w-full px-4 py-2.5 rounded-lg bg-gradient-to-br from-red-600 to-red-800 font-semibold"
+              >
+                Start Free Trial
+              </button>
+            </>
+          )}
         </div>
       )}
     </header>

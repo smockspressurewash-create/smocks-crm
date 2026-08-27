@@ -62,9 +62,13 @@ const PILLARS: Array<{ icon: React.ElementType; title: string; body: string }> =
 export function AboutPage({
   onGetStarted,
   onNavigate,
+  isLoggedIn = false,
+  onGoToDashboard,
 }: {
   onGetStarted: () => void;
   onNavigate: (page: MarketingPage) => void;
+  isLoggedIn?: boolean;
+  onGoToDashboard?: () => void;
 }) {
   return (
     // BUG FIX — see the identical fix + comment in LandingPage.tsx: this
@@ -73,7 +77,7 @@ export function AboutPage({
     <div className="h-dvh h-screen overflow-y-auto bg-black text-white overflow-x-hidden isolate">
       <MarketingStyles />
       <BackgroundBlobs />
-      <MarketingNav active="about" onNavigate={onNavigate} onGetStarted={onGetStarted} />
+      <MarketingNav active="about" onNavigate={onNavigate} onGetStarted={onGetStarted} isLoggedIn={isLoggedIn} onGoToDashboard={onGoToDashboard} />
 
       <MarketingPageHeader
         eyebrow="Why CrewBoss exists"

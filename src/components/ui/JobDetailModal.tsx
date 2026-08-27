@@ -248,6 +248,55 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
   // exact same job. Same message templates/send paths as EmployeePortal.tsx.
   const [sendingOtw, setSendingOtw] = useState(false);
   const [sendingRunningLate, setSendingRunningLate] = useState(false);
+  // BUG FIX — "location sharing wasn't showing the owner." The owner's own
+  // #/portal visit always renders the read-only OwnerTeamPortal preview
+  // (App.tsx's isOwnerView), which has no location-sharing toggle at all —
+  // there was genuinely no code path anywhere that could ever set
+  // locationSharing:true on the owner's own employees row, so they could
+  // never appear on the Live Team/Crew View map no matter what. Mirrors
+  // EmployeePortal.tsx's own one-shot toggle (same fields, same optimistic-
+  // then-confirmed pattern) since Time Tracking here is the owner's actual
+  // real self-service control, per CLAUDE.md's "Owner self-assign" note.
+  const [ownerLocSharingPending, setOwnerLocSharingPending] = useState(false);
+  const [optimisticOwnerLocSharing, setOptimisticOwnerLocSharing] = useState<boolean | undefined>(undefined);
+  const ownerEmpRow = employees.find((e: any) => e.role === "owner");
+  const ownerLocationSharing = optimisticOwnerLocSharing !== undefined ? optimisticOwnerLocSharing : !!(ownerEmpRow as any)?.locationSharing;
+  const toggleOwnerLocationSharing = () => {
+    const empId = (ownerEmpRow as any)?.id;
+    if (!empId) { toast?.("Couldn't find your own crew record — try reloading", "red"); return; }
+    const turningOn = !ownerLocationSharing;
+    if (turningOn) {
+      if (!navigator.geolocation) { toast?.("This browser doesn't support location sharing", "red"); return; }
+      setOwnerLocSharingPending(true);
+      let settled = false;
+      const safety = setTimeout(() => { if (settled) return; settled = true; setOwnerLocSharingPending(false); toast?.("Location request timed out", "red"); }, 12000);
+      navigator.geolocation.getCurrentPosition(
+        async pos => {
+          if (settled) return; settled = true; clearTimeout(safety);
+          setOwnerLocSharingPending(false);
+          setOptimisticOwnerLocSharing(true);
+          toast?.("📍 Location sharing active", "green");
+          const { error } = await (supabase as any).from("employees").update({ locationSharing: true, lastLocation: { lat: pos.coords.latitude, lng: pos.coords.longitude, updatedAt: Date.now() } }).eq("id", empId);
+          if (error) {
+            console.error("[Owner Location Share] error:", error.message);
+            setOptimisticOwnerLocSharing(false);
+            toast?.("Failed to save location sharing — " + error.message, "red");
+          }
+        },
+        err => {
+          if (settled) return; settled = true; clearTimeout(safety); setOwnerLocSharingPending(false);
+          console.error("[Owner Location Share] error:", err.code, err.message);
+          toast?.(err.code === 1 ? "Location permission denied — enable it in your browser/device settings" : "Couldn't get your location — try again", "red");
+        },
+        { enableHighAccuracy: true, timeout: 10000 }
+      );
+      return;
+    }
+    setOptimisticOwnerLocSharing(false);
+    (supabase as any).from("employees").update({ locationSharing: false }).eq("id", empId).then((r: any) => {
+      if (r?.error) toast?.("Failed to save — " + r.error.message, "red");
+    });
+  };
   // ITEM (edit-mode parity) — was a single showRequestForm boolean driving one
   // shared dropdown-based request form, so requesting a SPECIFIC employee
   // meant opening a global form and picking them from a <select> — not a true
@@ -1427,7 +1476,22 @@ ${job.notes ? `<div class="section"><h2>Job Notes</h2><p>${job.notes}</p></div>`
                 </div>
               </div>
             </div>
-            {job.clockInAt ? <GBtn variant="danger" onClick={clockOut} className="!text-xs">Clock Out</GBtn> : <GBtn onClick={clockIn} className="!text-xs"><Play size={10} className="inline mr-1" />Clock In</GBtn>}
+            <div className="flex items-center gap-2">
+              {ownerEmpRow && (
+                <button
+                  onClick={toggleOwnerLocationSharing}
+                  disabled={ownerLocSharingPending}
+                  title="Share your location with your own Live Team/Crew View"
+                  className={"flex items-center gap-1 px-2 py-1.5 rounded-lg border text-[11px] font-medium transition disabled:opacity-50 " + (ownerLocationSharing ? "bg-blue-900/40 border-blue-600/40 text-blue-300" : "bg-white/5 border-white/10 text-white/50 hover:text-white/80")}
+                >
+                  {ownerLocSharingPending
+                    ? <div className="w-2.5 h-2.5 border border-white/40 border-t-transparent rounded-full animate-spin" />
+                    : <MapPin size={11} />}
+                  {ownerLocationSharing ? "📍 Sharing" : "Share Location"}
+                </button>
+              )}
+              {job.clockInAt ? <GBtn variant="danger" onClick={clockOut} className="!text-xs">Clock Out</GBtn> : <GBtn onClick={clockIn} className="!text-xs"><Play size={10} className="inline mr-1" />Clock In</GBtn>}
+            </div>
           </div>
         </Glass>
 

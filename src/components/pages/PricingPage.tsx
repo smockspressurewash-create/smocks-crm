@@ -91,6 +91,8 @@ export function PricingPage({
   onNavigate,
   onChoosePlan,
   choosingPlan = false,
+  isLoggedIn = false,
+  onGoToDashboard,
 }: {
   onGetStarted: () => void;
   onNavigate: (page: MarketingPage) => void;
@@ -99,6 +101,8 @@ export function PricingPage({
   // exists — see App.tsx's startPaidSignup / pendingCheckoutSession.
   onChoosePlan?: (plan: string, interval: "month" | "year") => void;
   choosingPlan?: boolean;
+  isLoggedIn?: boolean;
+  onGoToDashboard?: () => void;
 }) {
   const [billing, setBilling] = useState<"monthly" | "annual">("annual");
   return (
@@ -108,7 +112,7 @@ export function PricingPage({
     <div className="h-dvh h-screen overflow-y-auto bg-black text-white overflow-x-hidden isolate">
       <MarketingStyles />
       <BackgroundBlobs />
-      <MarketingNav active="pricing" onNavigate={onNavigate} onGetStarted={onGetStarted} />
+      <MarketingNav active="pricing" onNavigate={onNavigate} onGetStarted={onGetStarted} isLoggedIn={isLoggedIn} onGoToDashboard={onGoToDashboard} />
 
       <MarketingPageHeader
         eyebrow="Simple, honest pricing"
