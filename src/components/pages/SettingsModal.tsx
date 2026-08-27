@@ -22,6 +22,7 @@ import {
   ComposedChart, Legend
 } from "recharts";
 import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, compressImageFile, POLL_INTERVAL_OPTIONS, DEFAULT_POLL_INTERVAL_MS, backfillJobMediaToStorage, withTimeout, guessStateCodeFromAddress, US_STATE_BASE_TAX_RATES } from "../../lib/utils";
+import { getPlanLimits, PLAN_TIER_LABEL } from "../../lib/planLimits";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField, LegalTemplate } from "../../types";
 import { twilioSend, sendEmail, fetchBufferOrganizationId, fetchBufferChannels, checkA2pCampaignStatus, checkTwilioAccountStatus, type BufferChannel } from "../../lib/messaging";
 import { buildSocialAuthorizeUrl, type SocialPlatform } from "../../lib/socialOAuth";
@@ -1161,6 +1162,48 @@ export function SettingsModal({ open, onClose, settings, setSettings, jobs = [],
             <div className="space-y-4">
               <h4 className="font-semibold text-sm">CrewBoss Subscription</h4>
               <div className="text-xs text-white/50">This is your subscription to CrewBoss itself — separate from Stripe/Square under Integrations, which is for charging YOUR OWN customers.</div>
+              {/* FEATURE — "show your limits and all that different stuff."
+                  getPlanLimits (lib/planLimits.ts) already enforces real
+                  customer/employee-seat caps elsewhere in the app (see
+                  CustomersPage.tsx/EmployeesPage.tsx's onUpgrade prop) but
+                  had no visible usage display anywhere — an owner on a
+                  limited plan had no way to see how close they were to a
+                  cap until they actually hit it and got blocked. */}
+              {!platformSubLoading && (() => {
+                const limits = getPlanLimits(platformSub);
+                if (limits.customers === null && limits.employeeSeats === null) return null;
+                const custUsed = customers.length;
+                const empUsed = employees.filter((e: any) => (e.status || "active") !== "terminated").length;
+                const bar = (used: number, max: number | null) => {
+                  if (max === null) return null;
+                  const pct = Math.min(100, Math.round((used / max) * 100));
+                  return (
+                    <div className="h-1.5 rounded-full bg-white/10 overflow-hidden mt-1">
+                      <div className={"h-full rounded-full " + (pct >= 100 ? "bg-red-500" : pct >= 80 ? "bg-yellow-500" : "bg-green-500")} style={{ width: pct + "%" }} />
+                    </div>
+                  );
+                };
+                return (
+                  <Glass className="p-4 space-y-3">
+                    <div className="text-xs font-semibold text-white/70 uppercase tracking-wider">Usage — {PLAN_TIER_LABEL[limits.tier]}</div>
+                    {limits.customers !== null && (
+                      <div>
+                        <div className="flex justify-between text-xs"><span className="text-white/60">Customers</span><span className={custUsed >= limits.customers ? "text-red-400 font-semibold" : "text-white/70"}>{custUsed} / {limits.customers}</span></div>
+                        {bar(custUsed, limits.customers)}
+                      </div>
+                    )}
+                    {limits.employeeSeats !== null && (
+                      <div>
+                        <div className="flex justify-between text-xs"><span className="text-white/60">Employee Seats</span><span className={empUsed >= limits.employeeSeats ? "text-red-400 font-semibold" : "text-white/70"}>{empUsed} / {limits.employeeSeats}</span></div>
+                        {bar(empUsed, limits.employeeSeats)}
+                      </div>
+                    )}
+                    {(custUsed >= (limits.customers ?? Infinity) || empUsed >= (limits.employeeSeats ?? Infinity)) && (
+                      <div className="text-[11px] text-yellow-300">You've hit a limit on {PLAN_TIER_LABEL[limits.tier]} — upgrade below for unlimited customers and seats.</div>
+                    )}
+                  </Glass>
+                );
+              })()}
               {platformSubLoading ? (
                 <div className="text-xs text-white/40">Loading…</div>
               ) : (() => {
@@ -1199,6 +1242,21 @@ export function SettingsModal({ open, onClose, settings, setSettings, jobs = [],
                     )}
                     {status === "canceled" && (
                       <div className="text-xs text-red-300 bg-red-950/20 border border-red-700/30 rounded-xl px-3 py-2">Your subscription was canceled. Pick a plan below to resubscribe.</div>
+                    )}
+                    {/* FEATURE — "you never added the free plan." Free was
+                        already a REAL enforced tier (getPlanLimits falls
+                        back to it once a trial expires with no upgrade, or
+                        a subscription lapses) but was never shown anywhere
+                        as an actual plan option — an owner who landed there
+                        had no visible confirmation of what they were on or
+                        what it included. Not a Stripe checkout item (it's
+                        free), so this is informational, not a "Subscribe"
+                        button like the paid cards below. */}
+                    {getPlanLimits(platformSub).tier === "free" && (
+                      <Glass className="p-4 !border-white/15">
+                        <div className="flex items-center gap-2 mb-1"><Badge tone="gray">Current Plan</Badge><div className="font-semibold text-sm">Free</div></div>
+                        <div className="text-xs text-white/50">Up to 15 customers, 1 employee seat. Upgrade any time below for unlimited customers and crew.</div>
+                      </Glass>
                     )}
                     <div className="flex items-center gap-1 p-1 bg-black/40 rounded-xl border border-white/10 w-fit">
                       {(["month", "year"] as const).map(iv => (
