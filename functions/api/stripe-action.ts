@@ -591,6 +591,46 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
         const intent = await stripeFetch(secretKey, "GET", `payment_intents/${encodeURIComponent(body.id)}`, undefined, stripeAccount);
         return json(intent);
       }
+      // AUDIT FIX — ClientAuthPortal.tsx's post-payment write used to PATCH
+      // `estimates` directly from the CUSTOMER's own Supabase Auth session.
+      // Per CLAUDE.md's owner_id-scoped RLS model, a customer never resolves
+      // to that invoice's owner_id, so that write matched ZERO rows EVERY
+      // SINGLE TIME — no error, no toast, completely silent (the exact
+      // documented 0-row-silent-success gotcha) — and was never checked or
+      // caught. The card genuinely charged successfully; only the CRM's own
+      // record of it depended entirely on the Stripe webhook eventually
+      // arriving (a manual per-owner Cloudflare/Stripe dashboard setup step
+      // that may not be configured). This action is the real fix: verify
+      // the payment really succeeded via Stripe's own API (never trust a
+      // client-claimed status) using the SAME owner-key resolution as every
+      // other action here, then write with the service role (bypasses RLS
+      // the same way stripe-webhook.ts already does) and actually check the
+      // result — a same-origin, same-trust-level backstop that doesn't wait
+      // on webhook delivery.
+      case "confirm_invoice_payment": {
+        if (!body.invoiceId || !body.paymentIntentId) throw new Error("Missing invoiceId or paymentIntentId");
+        if (!serviceRoleKey) throw new Error("Server missing SUPABASE_SERVICE_ROLE_KEY env var — add it in the Cloudflare Pages dashboard.");
+        const intent = await stripeFetch(secretKey, "GET", `payment_intents/${encodeURIComponent(body.paymentIntentId)}`, undefined, stripeAccount);
+        if (intent?.status !== "succeeded") {
+          return new Response(JSON.stringify({ error: `Payment intent status is "${intent?.status}", not succeeded — invoice not marked paid.` }), { status: 400, headers: { "Content-Type": "application/json" } });
+        }
+        const authHeaders = { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}` };
+        const getRes = await fetch(`${SUPABASE_URL}/rest/v1/estimates?id=eq.${encodeURIComponent(body.invoiceId)}&select=paymentLog`, { headers: authHeaders });
+        const rows = await getRes.json().catch(() => []);
+        const existingLog = Array.isArray(rows) && Array.isArray(rows[0]?.paymentLog) ? rows[0].paymentLog : [];
+        const alreadyLogged = existingLog.some((e: any) => e?.type === "paid" && e?.stripePaymentIntentId === body.paymentIntentId);
+        const newLog = alreadyLogged ? existingLog : [...existingLog, { id: crypto.randomUUID(), at: new Date().toISOString(), type: "paid", amount: (intent.amount || 0) / 100, stripePaymentIntentId: body.paymentIntentId, note: "Paid via Stripe (customer portal)" }];
+        const patchRes = await fetch(`${SUPABASE_URL}/rest/v1/estimates?id=eq.${encodeURIComponent(body.invoiceId)}&select=id`, {
+          method: "PATCH",
+          headers: { ...authHeaders, "Content-Type": "application/json", Prefer: "return=representation" },
+          body: JSON.stringify({ paidAt: new Date().toISOString().slice(0, 10), stripePaymentIntentId: body.paymentIntentId, stripePaymentStatus: "paid", paymentLog: newLog }),
+        });
+        const updated = await patchRes.json().catch(() => []);
+        if (!patchRes.ok || !Array.isArray(updated) || updated.length === 0) {
+          return new Response(JSON.stringify({ error: "Payment succeeded with Stripe, but the invoice record couldn't be updated (0 rows matched) — contact the business directly to confirm your invoice shows paid." }), { status: 500, headers: { "Content-Type": "application/json" } });
+        }
+        return json({ success: true });
+      }
       case "create_checkout_session": {
         const amountCents = body.invoiceId ? await getInvoiceAmountCents(body.invoiceId, serviceRoleKey) : Math.round(Number(body.amountCents) || 0);
         if (amountCents <= 0) throw new Error("Invalid amount");

@@ -89,6 +89,24 @@ const logPaymentEvent = async (
   });
   const rows = await getRes.json().catch(() => []);
   const existingLog = Array.isArray(rows) && Array.isArray(rows[0]?.paymentLog) ? rows[0].paymentLog : [];
+  // BUG FIX (audit) — Stripe delivers webhooks at-least-once (retries on any
+  // non-2xx response, plus a dashboard "Resend"). checkout.session.completed
+  // and payment_intent.succeeded can also both legitimately fire for the
+  // SAME real payment. Without this check, every redelivery/overlap appended
+  // another paymentLog entry for the same event, and — since this function's
+  // whole job is recording an event, not just patching status fields — kept
+  // "succeeding" every time, which is exactly the kind of duplicate this
+  // dedup exists to catch. Match on type + the Stripe id that identifies the
+  // underlying event (payment intent id covers paid/failed/refunded; the
+  // dispute path has no payment intent on some accounts, so it also matches
+  // on note+type as a fallback).
+  const alreadyLogged = entry.stripePaymentIntentId
+    ? existingLog.some((e: any) => e?.type === entry.type && e?.stripePaymentIntentId === entry.stripePaymentIntentId)
+    : existingLog.some((e: any) => e?.type === entry.type && e?.note === entry.note);
+  if (alreadyLogged) {
+    console.log("[StripeWebhook] duplicate event for invoice", invoiceId, "type", entry.type, "— already recorded, skipping re-write");
+    return true;
+  }
   const newLog = [...existingLog, { id: crypto.randomUUID(), at: new Date().toISOString(), ...entry }];
 
   // .select("id") + explicit 0-row check — same reasoning as every other
@@ -165,6 +183,19 @@ const recordRecurringPayment = async (
 ): Promise<void> => {
   if (!serviceRoleKey || !ownerId) return;
   const authHeaders = { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}` };
+  // BUG FIX (audit) — Stripe delivers webhooks at-least-once (retries on any
+  // non-2xx from this endpoint, plus a dashboard "Resend"). Without this
+  // check, every redelivery of the same invoice.paid event inserted ANOTHER
+  // duplicate "paid" invoice row for the same real recurring charge — see
+  // migration 0081_recurring_payment_idempotency.sql.
+  if (stripeInvoiceId) {
+    const dupRes = await fetch(`${SUPABASE_URL}/rest/v1/estimates?stripeInvoiceId=eq.${encodeURIComponent(stripeInvoiceId)}&select=id&limit=1`, { headers: authHeaders });
+    const dupRows = await dupRes.json().catch(() => []);
+    if (Array.isArray(dupRows) && dupRows.length > 0) {
+      console.log("[StripeWebhook] recurring payment for Stripe invoice", stripeInvoiceId, "already recorded as", dupRows[0].id, "— skipping duplicate insert");
+      return;
+    }
+  }
   const today = new Date().toISOString().slice(0, 10);
   await fetch(`${SUPABASE_URL}/rest/v1/estimates`, {
     method: "POST",
@@ -180,6 +211,7 @@ const recordRecurringPayment = async (
       total: amount,
       paidAt: today,
       stripePaymentStatus: "paid",
+      stripeInvoiceId: stripeInvoiceId || undefined,
       paymentLog: [{ id: crypto.randomUUID(), at: new Date().toISOString(), type: "paid", amount, note: "Recurring payment via Stripe (" + stripeInvoiceId + ")" }],
       createdAt: Date.now(),
     }),

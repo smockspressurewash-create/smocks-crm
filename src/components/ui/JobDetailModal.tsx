@@ -959,8 +959,16 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
   const clockIn = () => {
     updateJob(jobId, { clockInAt: Date.now() });
     toast("Clocked in");
-    if (ownerOnCrew) (supabase as any).from("employees").update({ dayClockInAt: Date.now() }).eq("id", ownerEmpId)
-      .then((r: any) => { if (r?.error) console.warn("[Payroll] owner dayClockInAt save failed:", r.error.message); })
+    // AUDIT FIX — missing the documented RLS 0-row-silent-success check
+    // (CLAUDE.md): this could match 0 rows with no error at all, leaving
+    // Live Team View silently disagreeing with what the owner sees here.
+    // EmployeePortal.tsx's equivalent writes to this same field all check
+    // this; this parallel owner-side path hadn't been brought up to match.
+    if (ownerOnCrew) (supabase as any).from("employees").update({ dayClockInAt: Date.now() }).eq("id", ownerEmpId).select("id")
+      .then((r: any) => {
+        if (r?.error) { console.warn("[Payroll] owner dayClockInAt save failed:", r.error.message); toast("Clocked in locally, but failed to sync — " + r.error.message, "red"); }
+        else if (!Array.isArray(r?.data) || r.data.length === 0) { console.warn("[Payroll] owner dayClockInAt update matched 0 rows for", ownerEmpId); toast("Clocked in locally, but the server didn't confirm — Live Crew View may not show you as on shift.", "red"); }
+      })
       .catch((e: any) => console.warn("[Payroll] owner dayClockInAt save threw:", e?.message));
   };
   const clockOut = () => {
@@ -970,7 +978,17 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
     const rounded = Math.round(hrs * 100) / 100;
     updateJob(jobId, { clockInAt: null, loggedHours: Math.round(((Number(job.loggedHours) || 0) + rounded) * 100) / 100 });
     toast("+" + rounded + "h logged");
-    if (ownerOnCrew) (supabase as any).from("employees").update({ dayClockInAt: null }).eq("id", ownerEmpId).then(() => {}, () => {});
+    // AUDIT FIX — was only resetting dayClockInAt. Every EmployeePortal.tsx
+    // end-of-shift write also resets dayLunchStartAt/dayPausedMinutes (the
+    // same shift-timer fields, shared table) — leaving those behind here
+    // means a lunch/pause value from today's shift corrupts tomorrow's
+    // elapsed-time math (netSecs subtracts dayPausedMinutes from elapsed).
+    // Also added the same 0-row check as clockIn above.
+    if (ownerOnCrew) (supabase as any).from("employees").update({ dayClockInAt: null, dayLunchStartAt: null, dayPausedMinutes: 0 }).eq("id", ownerEmpId).select("id")
+      .then((r: any) => {
+        if (r?.error) toast("Clocked out locally, but failed to sync — " + r.error.message, "red");
+        else if (!Array.isArray(r?.data) || r.data.length === 0) toast("Clocked out locally, but the server didn't confirm — check your shift status.", "red");
+      }, () => {});
   };
   // Same message/send pattern as EmployeePortal.tsx's sendOtw — SMS if the
   // customer has a phone (Twilio), otherwise Gmail (never Resend — CLAUDE.md

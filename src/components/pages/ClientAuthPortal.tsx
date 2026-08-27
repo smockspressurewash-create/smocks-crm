@@ -11,8 +11,10 @@ import { Badge } from "../ui/Badge";
 import { Stat } from "../ui/Stat";
 import { Modal } from "../ui/Modal";
 import { StripePaymentModal } from "../ui/StripePaymentModal";
+import { SquarePaymentModal } from "../ui/SquarePaymentModal";
 import { SaveCardModal } from "../ui/SaveCardModal";
-import { getMySavedCard, getMySavedCards, detachMyPaymentMethod, sendPaymentReceipt, type StripeSavedCard } from "../../lib/stripe";
+import { getPublicSquareConfig, confirmSquareInvoicePayment } from "../../lib/square";
+import { getMySavedCard, getMySavedCards, detachMyPaymentMethod, sendPaymentReceipt, confirmInvoicePayment, type StripeSavedCard } from "../../lib/stripe";
 import { seedRewardTiers } from "../../lib/seed";
 
 // Public, unauthenticated-by-default route (#/client) — a customer-facing
@@ -98,6 +100,13 @@ export function ClientAuthPortal({
     }
   };
   const [payingInv, setPayingInv] = useState<Estimate | null>(null);
+  // AUDIT FIX — "Square unreachable from the full customer login portal."
+  // This page only ever wired up StripePaymentModal — a customer of an
+  // owner who only configured Square (no Stripe) had no way to pay an
+  // invoice from here at all. ClientPortal.tsx (the single-invoice-link
+  // entry point) already resolves both processors this same way; mirrored
+  // here so both customer-facing entry points behave the same.
+  const [squareConfig, setSquareConfig] = useState<{ connected: boolean; applicationId?: string; locationId?: string } | null>(null);
   // FEATURE — legal disclaimer/T&Cs gate before the Stripe modal opens (this
   // portal jumps straight from "Pay Now" to the card form with no review
   // step, unlike ClientPortal.tsx's estimate-payment flow, so the checkbox
@@ -243,6 +252,12 @@ export function ClientAuthPortal({
 
   const active = demoMode ? demoAccount : (portalData?.accounts?.[activeIdx] || null);
   const cust = active?.customer || null;
+
+  useEffect(() => {
+    const ownerId = (cust as any)?.owner_id;
+    if (!ownerId) { setSquareConfig(null); return; }
+    getPublicSquareConfig(ownerId).then(setSquareConfig).catch(() => setSquareConfig(null));
+  }, [(cust as any)?.owner_id]);
 
   // Real brand/last4 for the saved-card display below (closes the TODO left
   // where the display previously only had the generic literal "Card on
@@ -932,6 +947,44 @@ export function ClientAuthPortal({
         )}
       </div>
 
+      {/* AUDIT FIX — "Square unreachable from the full customer login
+          portal." Same provider-resolution rule as ClientPortal.tsx: an
+          explicit paymentProviderPreference wins; otherwise Stripe if
+          configured, else Square — never both buttons/modals at once. */}
+      {(() => {
+        const rawProviderPref = (active?.settings as any)?.paymentProviderPreference;
+        const providerPref = (rawProviderPref === "stripe" || rawProviderPref === "square")
+          ? rawProviderPref
+          : (active?.settings?.stripePublishableKey ? "stripe" : "square");
+        return providerPref === "square" && squareConfig?.connected;
+      })() ? (
+        <SquarePaymentModal
+          open={!!payingInv}
+          onClose={() => setPayingInv(null)}
+          applicationId={squareConfig?.applicationId || ""}
+          locationId={squareConfig?.locationId || ""}
+          amount={payingInv?.total || 0}
+          description={`${companyName} — Invoice #${payingInv?.id || ""}`}
+          invoiceId={payingInv?.id}
+          onSuccess={(paymentId) => {
+            const invId = payingInv?.id;
+            setEstimates((prev: Estimate[]) => prev.map(e => e.id === invId ? { ...e, paidAt: today(), squarePaymentId: paymentId, stripePaymentStatus: "paid" as const } as any : e));
+            patchActiveEstimates(ests => ests.map(e => e.id === invId ? { ...e, paidAt: today(), squarePaymentId: paymentId, stripePaymentStatus: "paid" as const } as any : e));
+            if (invId) {
+              confirmSquareInvoicePayment(invId, paymentId).catch((e: any) => {
+                console.error("[Payment] confirmSquareInvoicePayment failed:", e?.message);
+                toast?.("Payment received, but confirming it with the business is taking longer than usual — it may take a minute to show as paid.", "yellow");
+              });
+            }
+            sendPaymentReceipt({
+              customerPhone: cust.phone, customerEmail: cust.email, customerFirstName: cust.firstName, customerId: cust.id,
+              amountCents: Math.round((payingInv?.total || 0) * 100), description: `Invoice #${invId || ""}`, invoiceId: invId,
+            }).catch((e: any) => console.warn("[PaymentReceipt] failed:", e?.message));
+            toast?.("Payment received ✓", "green");
+            setPayingInv(null);
+          }}
+        />
+      ) : (
       <StripePaymentModal
         open={!!payingInv}
         onClose={() => setPayingInv(null)}
@@ -970,8 +1023,21 @@ export function ClientAuthPortal({
           patchActiveEstimates(ests => ests.map(e => e.id === invId ? { ...e, paidAt: today(), stripePaymentIntentId: paymentIntentId, stripePaymentStatus: "paid" as const } : e));
           // Persist to Supabase so the OWNER's CRM poll sees the payment and
           // fires an owner notification (BUG 15 / FEATURE 5).
+          // AUDIT FIX — this used to write `estimates` directly on the
+          // CUSTOMER's own Supabase session. Under owner_id-scoped RLS
+          // (CLAUDE.md) a customer never resolves to that invoice's
+          // owner_id, so this matched 0 rows EVERY time, silently — no
+          // error, nothing caught. The charge itself was real; only the
+          // CRM's record of it depended entirely on the Stripe webhook
+          // eventually landing. confirmInvoicePayment re-verifies the
+          // payment with Stripe itself and writes via the service role
+          // (same trust level as the webhook), so the invoice is marked
+          // paid even on a deployment whose webhook isn't configured yet.
           if (invId) {
-            (supabase as any).from("estimates").update({ paidAt: today(), stripePaymentIntentId: paymentIntentId, stripePaymentStatus: "paid" }).eq("id", invId).then(() => {}).catch(() => {});
+            confirmInvoicePayment(invId, paymentIntentId).catch((e: any) => {
+              console.error("[Payment] confirmInvoicePayment failed:", e?.message);
+              toast?.("Payment received, but confirming it with the business is taking longer than usual — it may take a minute to show as paid.", "yellow");
+            });
           }
           sendPaymentReceipt({
             customerPhone: cust.phone, customerEmail: cust.email, customerFirstName: cust.firstName, customerId: cust.id,
@@ -981,6 +1047,7 @@ export function ClientAuthPortal({
           setPayingInv(null);
         }}
       />
+      )}
 
       <SaveCardModal
         open={showSaveCard}

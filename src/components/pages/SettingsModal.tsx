@@ -282,9 +282,14 @@ export function SettingsModal({ open, onClose, settings, setSettings, jobs = [],
   // users to connect payments... switch between each one easily"). Same
   // load/save shape as the Stripe block above, own service-role-only table
   // (owner_square_accounts, migration 0064) via functions/api/square-action.ts.
-  const [squareStatus, setSquareStatus] = useState<{ connected: boolean; hasAccessToken: boolean; locationId: string; applicationId: string; mode: string } | null>(null);
+  const [squareStatus, setSquareStatus] = useState<{ connected: boolean; hasAccessToken: boolean; locationId: string; applicationId: string; mode: string; hasWebhookSignatureKey?: boolean; webhookUrl?: string } | null>(null);
   const [squareStatusLoading, setSquareStatusLoading] = useState(false);
   const [squareAccessTokenInput, setSquareAccessTokenInput] = useState("");
+  // AUDIT FIX — Square recurring subscriptions had no webhook/status sync
+  // at all. This key is what functions/api/square-webhook.ts (new) uses to
+  // verify an incoming event really came from Square before writing
+  // anything — same role stripeWebhookSecret plays for Stripe below.
+  const [squareWebhookKeyInput, setSquareWebhookKeyInput] = useState("");
   const [squareSaving, setSquareSaving] = useState(false);
   useEffect(() => {
     if (!open) return;
@@ -318,6 +323,7 @@ export function SettingsModal({ open, onClose, settings, setSettings, jobs = [],
         squareAccessToken: squareAccessTokenInput || undefined,
         squareLocationId: f.squareLocationId,
         squareApplicationId: f.squareApplicationId,
+        squareWebhookSignatureKey: squareWebhookKeyInput || undefined,
         mode: "production",
       });
       if (result?.error) throw new Error(result.error);
@@ -326,6 +332,7 @@ export function SettingsModal({ open, onClose, settings, setSettings, jobs = [],
       // save confirms, don't let a separate status-refresh hiccup afterward
       // relabel an already-successful save as "failed."
       setSquareAccessTokenInput("");
+      setSquareWebhookKeyInput("");
       toast?.("Square settings saved ✓", "green");
       try {
         const status = await getOwnerSquareStatus(token);
@@ -1965,6 +1972,26 @@ export function SettingsModal({ open, onClose, settings, setSettings, jobs = [],
                   <GInput type="password" placeholder={squareStatus?.hasAccessToken ? "•••••••••••••••• (leave blank to keep current token)" : "EAAA… "} value={squareAccessTokenInput} onChange={e => setSquareAccessTokenInput(e.target.value)} className="!text-xs font-mono" />
                   <div className="text-[10px] text-white/30 mt-1">Stored server-side only — never sent to customers' browsers, never visible again once saved.</div>
                 </div>
+                {/* AUDIT FIX — recurring Square subscriptions had no way to
+                    hear back from Square about renewals/cancellations at
+                    all. This webhook makes that real; the owner just needs
+                    to paste this exact URL into their Square Developer
+                    Dashboard and save the Signature Key it hands back. */}
+                {squareStatus?.connected && (
+                  <div className="p-3 bg-black/60 rounded-xl border border-white/5 space-y-2">
+                    <div className="font-semibold text-white/70 text-xs">Recurring plan status updates (optional but recommended)</div>
+                    <div className="text-[10px] text-white/50">Without this, a declined renewal or a subscription cancelled from Square's own dashboard won't be reflected here — the CRM will keep showing it as active.</div>
+                    <div>
+                      <label className="text-[10px] text-white/50 uppercase tracking-wider mb-1 block">Webhook URL — paste into Square Developer Dashboard → your app → Webhooks</label>
+                      <GInput readOnly value={squareStatus?.webhookUrl || ""} onClick={(e: any) => e.target.select()} className="!text-xs font-mono" />
+                      <div className="text-[10px] text-white/30 mt-1">Subscribe to events: subscription.updated, invoice.updated.</div>
+                    </div>
+                    <div>
+                      <label className="text-[10px] text-white/50 uppercase tracking-wider mb-1 block">Signature Key {squareStatus?.hasWebhookSignatureKey && <span className="text-green-400 normal-case">· already saved</span>}</label>
+                      <GInput type="password" placeholder={squareStatus?.hasWebhookSignatureKey ? "•••••••••••••••• (leave blank to keep current key)" : "Shown when you save the webhook subscription in Square"} value={squareWebhookKeyInput} onChange={e => setSquareWebhookKeyInput(e.target.value)} className="!text-xs font-mono" />
+                    </div>
+                  </div>
+                )}
                 <GBtn onClick={saveSquareKeys} disabled={squareSaving} className="!text-xs w-full">
                   {squareSaving ? "Saving…" : "Save Square Settings"}
                 </GBtn>

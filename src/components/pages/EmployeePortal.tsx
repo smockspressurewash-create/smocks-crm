@@ -613,6 +613,13 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
     // set — arriving didn't actually start the job clock.
     onUpdateJob({ arrivedAt: Date.now(), status: job.status === "scheduled" ? "in_progress" : job.status, ...(job.clockInAt ? {} : { clockInAt: Date.now() }) });
     haptic(20);
+    // AUDIT FIX — this toast claimed "owner notified" but never actually
+    // notified the owner at all, only the customer below. A second,
+    // separate arrival implementation elsewhere in this file (JobCard's
+    // own arriveCard) DID notify the owner, but via generic sendEmail()
+    // (Resend-capable) instead of sendOwnerGmailOnly — this codebase's own
+    // "never default to Resend" rule (CLAUDE.md) — with its failure fully
+    // swallowed. Both are now the same real owner ping, via Gmail only.
     toast("Marked as arrived ✓ — owner notified");
     onArrived?.();
     const arrivalMsg = `Hi ${customer?.firstName || "there"}, your CrewBoss technician has arrived and is getting started!`;
@@ -626,6 +633,11 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
       }
     } catch (e: any) {
       console.warn("[Arrival] customer notify failed:", e?.message);
+    }
+    const ownerEmail = (settings as any)?.myEmail || (settings as any)?.companyEmail;
+    if (ownerEmail) {
+      const ownerHtml = emailShell(settings, "Crew Arrived", `<p>${customer ? customer.firstName + " " + customer.lastName : job.address} — technician has arrived on site.</p><p>Address: ${job.address}</p>`);
+      sendOwnerGmailOnly(settings as any, ownerEmail, `Arrived — ${job.address}`, ownerHtml).catch((e: any) => console.warn("[Arrival] owner notify failed:", e?.message));
     }
   };
 
@@ -3526,6 +3538,23 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
        null)
     : null;
 
+  // AUDIT FIX — "fire/suspend an employee, revoke their access." App.tsx's
+  // resolveUserRole only blocks a NON-active employee at sign-in — a
+  // status flip while this portal is already open in a tab (the owner
+  // fires someone mid-shift) was never re-checked, so that tab could keep
+  // clocking in/out, messaging customers, etc. indefinitely on its
+  // existing session. `employees` is already polled every ~3-10s for Live
+  // Crew View/shift sync elsewhere in this file — this just acts on it:
+  // the moment this employee's own row shows a non-active status, sign
+  // them out for real, the same way App.tsx already does at login.
+  useEffect(() => {
+    const status = (myEmployee as any)?.status;
+    if (!myEmployee || !status || status === "active") return;
+    console.warn("[Access] employee status changed to", status, "mid-session — signing out");
+    toast?.(status === "terminated" ? "Your access to this account has been removed." : "Your access is currently paused — contact your employer.", "red");
+    supabase.auth.signOut().catch(() => {});
+  }, [(myEmployee as any)?.status]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // FEATURE — "keep updating the owner" while clocked in with sharing on,
   // not just a one-time GPS snapshot at the moment the toggle was flipped.
   // Piggybacks on the mileage tracker's existing watchPosition callback
@@ -5008,7 +5037,18 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
         });
         const nextMap = { ...((job as any).crewGoogleEventIds || {}), [myEmployee.id]: evId };
         setJobs(prev => prev.map(j => j.id === job.id ? { ...j, crewGoogleEventIds: nextMap } as any : j));
-        (supabase as any).from("jobs").update({ crewGoogleEventIds: nextMap }).eq("id", job.id).then(() => {}, () => {});
+        // AUDIT FIX — this write was completely unchecked (no error, no
+        // 0-row check, no retry). If it silently failed (RLS 0-row, network
+        // blip), the next 3s cross-device poll overwrites this tab's local
+        // state with the still-empty crewGoogleEventIds from the server,
+        // and the hourly backfill pass then calls createGCalEvent AGAIN for
+        // the same job — recreating the exact duplicate-calendar-event bug
+        // the per-employee JSONB tracking field exists to prevent, just on
+        // a later pass instead of a concurrent one.
+        (supabase as any).from("jobs").update({ crewGoogleEventIds: nextMap }).eq("id", job.id).select("id").then(
+          (r: any) => { if (!Array.isArray(r?.data) || r.data.length === 0) console.warn("[CalendarSync] crewGoogleEventIds save matched 0 rows for job", job.id, "— may create a duplicate event on the next backfill"); },
+          (e: any) => console.warn("[CalendarSync] crewGoogleEventIds save failed:", e?.message)
+        );
         if (!opts.silent) toast("📅 Added to your Google Calendar");
       }
     } catch (e) {
@@ -5254,8 +5294,11 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     const empId = (myEmployee as any)?.id;
     if (!empId) { toast?.("Couldn't save — no employee record found.", "red"); setAutoSyncCalendar(!next); return; }
     try {
-      const { error } = await (supabase as any).from("employees").update({ autoSyncCalendar: next }).eq("id", empId);
+      const { error, data } = await (supabase as any).from("employees").update({ autoSyncCalendar: next }).eq("id", empId).select("id");
       if (error) throw error;
+      // AUDIT FIX — added the documented .select("id") 0-row check
+      // (CLAUDE.md) — an RLS-filtered 0-row update reports no error at all.
+      if (!Array.isArray(data) || data.length === 0) throw new Error("the server didn't confirm the change");
       toast?.(next ? "Jobs will now auto-add to your Google Calendar ✓" : "Auto-sync to Google Calendar turned off ✓", "green");
     } catch (e: any) {
       setAutoSyncCalendar(!next);
@@ -5925,7 +5968,12 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     const ownerEmail = (settings as any)?.myEmail || (settings as any)?.companyEmail;
     if (!ownerEmail) return;
     const html = emailShell(settings, "Crew Arrived", `<p>${myEmployee.firstName} ${myEmployee.lastName} has arrived at a job:</p><ul><li><b>Address:</b> ${job.address}</li>${cust ? `<li><b>Customer:</b> ${cust.firstName} ${cust.lastName}</li>` : ""}<li><b>Time:</b> ${new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</li></ul>`);
-    sendEmail(settings, { to: ownerEmail, subject: `${myEmployee.firstName} arrived — ${job.address}`, body: html }).catch(() => {});
+    // AUDIT FIX — was sendEmail() (Resend-capable) with its failure fully
+    // swallowed. CLAUDE.md is explicit: field-portal sends must use
+    // sendOwnerGmailOnly, never sendEmail/Resend — this was a regression
+    // from that rule, matching this file's own sendRunningLate owner-ping
+    // a few thousand lines up, which already does it correctly.
+    sendOwnerGmailOnly(settings as any, ownerEmail, `${myEmployee.firstName} arrived — ${job.address}`, html).catch((e: any) => console.warn("[Arrival] owner notify failed:", e?.message));
   };
 
   const JobCard = ({ job }: { job: Job }) => {
@@ -6369,7 +6417,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                 // Write BOTH fields in one update so the badge state and the pin
                 // land together — a split write meant a missing/slow second
                 // update left the badge off even though coords were captured.
-                const { error } = await (supabase as any).from("employees").update({ locationSharing: true, lastLocation: { lat: pos.coords.latitude, lng: pos.coords.longitude, updatedAt: Date.now() } }).eq("id", empId);
+                const { error, data } = await (supabase as any).from("employees").update({ locationSharing: true, lastLocation: { lat: pos.coords.latitude, lng: pos.coords.longitude, updatedAt: Date.now() } }).eq("id", empId).select("id");
                 // BUG FIX — this write had no failure feedback at all (the
                 // "off" branch below already toasts on error; "on" silently
                 // logged to console only). If this update failed for any
@@ -6380,10 +6428,13 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                 // reloading re-reads the real (never-updated) DB value.
                 // Revert the optimistic flip and tell the owner outright
                 // instead of leaving a UI state that isn't real.
-                if (error) {
-                  console.error("[Share Location] — error saving:", error.message);
+                // AUDIT FIX — also added the documented .select("id") 0-row
+                // check (CLAUDE.md) — `error` alone misses an RLS-filtered
+                // 0-row "success."
+                if (error || !Array.isArray(data) || data.length === 0) {
+                  console.error("[Share Location] — error saving:", error?.message || "matched 0 rows");
                   setOptimisticLocationSharing(false);
-                  toast("Failed to save location sharing — " + error.message, "red");
+                  toast("Failed to save location sharing — " + (error?.message || "the server didn't confirm the save"), "red");
                 } else {
                   refetchEmployees?.();
                   // Start the watcher so location keeps updating every ~90s
@@ -6403,8 +6454,9 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
           // Turning OFF
           setOptimisticLocationSharing(false);
           try {
-            const result = await (supabase as any).from("employees").update({ locationSharing: false }).eq("id", empId);
+            const result = await (supabase as any).from("employees").update({ locationSharing: false }).eq("id", empId).select("id");
             if (result?.error) { toast("Failed to save — " + result.error.message, "red"); return; }
+            if (!Array.isArray(result?.data) || result.data.length === 0) { toast("Turned off locally, but the server didn't confirm — it may still show as sharing to the owner.", "red"); return; }
             refetchEmployees?.();
           } catch (e: any) { toast("Failed to save — " + (e?.message || "try again"), "red"); }
         };
@@ -6926,8 +6978,8 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                       setLocationPermissionPending(false);
                       setOptimisticLocationSharing(true);
                       toast("📍 Location sharing active");
-                      (supabase as any).from("employees").update({ lastLocation: { lat: pos.coords.latitude, lng: pos.coords.longitude, updatedAt: Date.now() }, locationSharing: true }).eq("id", empId).then((r: any) => {
-                        if (r?.error) { console.error("[Share Location] — error saving coords:", r.error.message); setOptimisticLocationSharing(false); toast("Failed to save location sharing — " + r.error.message, "red"); }
+                      (supabase as any).from("employees").update({ lastLocation: { lat: pos.coords.latitude, lng: pos.coords.longitude, updatedAt: Date.now() }, locationSharing: true }).eq("id", empId).select("id").then((r: any) => {
+                        if (r?.error || !Array.isArray(r?.data) || r.data.length === 0) { console.error("[Share Location] — error saving coords:", r?.error?.message || "matched 0 rows"); setOptimisticLocationSharing(false); toast("Failed to save location sharing — " + (r?.error?.message || "the server didn't confirm the save"), "red"); }
                         else { refetchEmployees?.(); startAutoMileageTracking(); }
                       });
                     },
@@ -6958,8 +7010,9 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                 // Only reaches here for "turning off."
                 setOptimisticLocationSharing(false);
                 try {
-                  const result = await (supabase as any).from("employees").update({ locationSharing: turningOn }).eq("id", empId);
+                  const result = await (supabase as any).from("employees").update({ locationSharing: turningOn }).eq("id", empId).select("id");
                   if (result?.error) { setOptimisticLocationSharing(true); toast("Failed to save — " + result.error.message, "red"); return; }
+                  if (!Array.isArray(result?.data) || result.data.length === 0) { setOptimisticLocationSharing(true); toast("Failed to save — the server didn't confirm the change.", "red"); return; }
                   refetchEmployees?.();
                 } catch (e: any) { setOptimisticLocationSharing(true); toast("Failed to save — " + (e?.message || "try again"), "red"); }
               };

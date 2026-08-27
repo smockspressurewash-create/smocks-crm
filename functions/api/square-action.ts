@@ -26,16 +26,16 @@ const squareApiBase = () => "https://connect.squareup.com";
 const getOwnerSquareAccount = async (
   ownerId: string,
   serviceRoleKey: string
-): Promise<{ accessToken?: string; locationId?: string; applicationId?: string; mode?: string } | null> => {
+): Promise<{ accessToken?: string; locationId?: string; applicationId?: string; mode?: string; webhookSignatureKey?: string } | null> => {
   if (!ownerId || !serviceRoleKey) return null;
   const res = await fetch(
-    `${SUPABASE_URL}/rest/v1/owner_square_accounts?owner_id=eq.${encodeURIComponent(ownerId)}&select=square_access_token,square_location_id,square_application_id,square_mode`,
+    `${SUPABASE_URL}/rest/v1/owner_square_accounts?owner_id=eq.${encodeURIComponent(ownerId)}&select=square_access_token,square_location_id,square_application_id,square_mode,square_webhook_signature_key`,
     { headers: { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}` } }
   );
   const rows = await res.json().catch(() => []);
   const row = Array.isArray(rows) ? rows[0] : null;
   if (!row) return null;
-  return { accessToken: row.square_access_token || undefined, locationId: row.square_location_id || undefined, applicationId: row.square_application_id || undefined, mode: row.square_mode || "sandbox" };
+  return { accessToken: row.square_access_token || undefined, locationId: row.square_location_id || undefined, applicationId: row.square_application_id || undefined, mode: row.square_mode || "sandbox", webhookSignatureKey: row.square_webhook_signature_key || undefined };
 };
 
 const getEstimateOwnerId = async (invoiceId: string, serviceRoleKey: string): Promise<string | null> => {
@@ -99,14 +99,21 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
           locationId: acct?.locationId || "",
           applicationId: acct?.applicationId || "",
           mode: "production",
+          hasWebhookSignatureKey: !!acct?.webhookSignatureKey,
+          webhookUrl: `${new URL(context.request.url).origin}/api/square-webhook?oid=${encodeURIComponent(callerOwnerId)}`,
         });
       }
 
-      const { squareAccessToken, squareLocationId, squareApplicationId } = body;
+      const { squareAccessToken, squareLocationId, squareApplicationId, squareWebhookSignatureKey } = body;
       const patch: Record<string, any> = { owner_id: callerOwnerId, updated_at: new Date().toISOString(), square_mode: "production" };
       if (squareAccessToken !== undefined && squareAccessToken !== "") patch.square_access_token = squareAccessToken; // blank = leave existing token untouched
       if (squareLocationId !== undefined) patch.square_location_id = squareLocationId || null;
       if (squareApplicationId !== undefined) patch.square_application_id = squareApplicationId || null;
+      // AUDIT FIX — lets an owner actually save the Signature Key Square
+      // hands out when they create a webhook subscription, so
+      // square-webhook.ts (subscription lifecycle sync — was entirely
+      // missing before this) has something to verify incoming events with.
+      if (squareWebhookSignatureKey !== undefined && squareWebhookSignatureKey !== "") patch.square_webhook_signature_key = squareWebhookSignatureKey;
       const saveRes = await fetch(`${SUPABASE_URL}/rest/v1/owner_square_accounts`, {
         method: "POST",
         headers: { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}`, "Content-Type": "application/json", Prefer: "resolution=merge-duplicates,return=minimal" },
@@ -332,6 +339,44 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
       } catch (e: any) {
         return json({ error: e?.message || "Failed to set up Square recurring plan" }, 500);
       }
+    }
+
+    // AUDIT FIX — same problem stripe-action.ts's confirm_invoice_payment
+    // solves: ClientAuthPortal.tsx/ClientPortal.tsx can't write `estimates`
+    // directly from a CUSTOMER session (owner_id-scoped RLS always matches
+    // 0 rows for a non-owner caller — see CLAUDE.md). Verifies the payment
+    // really completed via Square's own API first, then writes with the
+    // service role and actually checks the result.
+    if (action === "confirm_invoice_payment") {
+      const { invoiceId, paymentId } = body;
+      if (!invoiceId || !paymentId) return json({ error: "Missing invoiceId or paymentId" }, 400);
+      const ownerId = await getEstimateOwnerId(invoiceId, serviceRoleKey);
+      if (!ownerId) return json({ error: "Invoice not found" }, 404);
+      const acct = await getOwnerSquareAccount(ownerId, serviceRoleKey);
+      if (!acct?.accessToken) return json({ error: "Square isn't configured for this business." }, 500);
+      const payRes = await fetch(`${squareApiBase()}/v2/payments/${encodeURIComponent(paymentId)}`, {
+        headers: { Authorization: `Bearer ${acct.accessToken}`, "Square-Version": "2024-10-17" },
+      });
+      const payData = await payRes.json().catch(() => ({} as any));
+      if (!payRes.ok || payData?.payment?.status !== "COMPLETED") {
+        return json({ error: `Payment status is "${payData?.payment?.status || "unknown"}", not COMPLETED — invoice not marked paid.` }, 400);
+      }
+      const authHeaders = { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}` };
+      const getRes = await fetch(`${SUPABASE_URL}/rest/v1/estimates?id=eq.${encodeURIComponent(invoiceId)}&select=paymentLog`, { headers: authHeaders });
+      const rows = await getRes.json().catch(() => []);
+      const existingLog = Array.isArray(rows) && Array.isArray(rows[0]?.paymentLog) ? rows[0].paymentLog : [];
+      const alreadyLogged = existingLog.some((e: any) => e?.type === "paid" && e?.squarePaymentId === paymentId);
+      const newLog = alreadyLogged ? existingLog : [...existingLog, { id: crypto.randomUUID(), at: new Date().toISOString(), type: "paid", amount: (payData.payment.amount_money?.amount || 0) / 100, squarePaymentId: paymentId, note: "Paid via Square (customer portal)" }];
+      const patchRes = await fetch(`${SUPABASE_URL}/rest/v1/estimates?id=eq.${encodeURIComponent(invoiceId)}&select=id`, {
+        method: "PATCH",
+        headers: { ...authHeaders, "Content-Type": "application/json", Prefer: "return=representation" },
+        body: JSON.stringify({ paidAt: new Date().toISOString().slice(0, 10), squarePaymentId: paymentId, stripePaymentStatus: "paid", paymentLog: newLog }),
+      });
+      const updated = await patchRes.json().catch(() => []);
+      if (!patchRes.ok || !Array.isArray(updated) || updated.length === 0) {
+        return json({ error: "Payment succeeded with Square, but the invoice record couldn't be updated (0 rows matched) — contact the business directly to confirm your invoice shows paid." }, 500);
+      }
+      return json({ success: true });
     }
 
     // cancel_square_recurring_plan — owner-only.

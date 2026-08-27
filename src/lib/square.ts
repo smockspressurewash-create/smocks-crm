@@ -84,6 +84,15 @@ export const createSquarePayment = (opts: { sourceId: string; invoiceId?: string
 export const refundSquarePayment = (paymentId: string, amountCents?: number, invoiceId?: string): Promise<{ id: string; amount: number; status: string }> =>
   squareAction("refund_payment", { paymentId, amountCents, invoiceId });
 
+// AUDIT FIX — server-verified "mark this invoice paid" for Square, callable
+// from an unauthenticated/customer session where a direct Supabase write
+// would silently match 0 rows under owner_id-scoped RLS. Mirrors
+// confirmInvoicePayment in lib/stripe.ts.
+export const confirmSquareInvoicePayment = async (invoiceId: string, paymentId: string): Promise<void> => {
+  const result = await squareAction("confirm_invoice_payment", { invoiceId, paymentId });
+  if (result?.error) throw new Error(result.error);
+};
+
 // Owner-authenticated Settings actions.
 export const getOwnerSquareStatus = (accessToken: string) =>
   fetchWithTimeout("/api/square-action", {
@@ -92,7 +101,7 @@ export const getOwnerSquareStatus = (accessToken: string) =>
     body: JSON.stringify({ action: "get_owner_square_status" }),
   }).then(r => r.json());
 
-export const saveOwnerSquareKeys = (accessToken: string, opts: { squareAccessToken?: string; squareLocationId?: string; squareApplicationId?: string; mode?: "sandbox" | "production" }) =>
+export const saveOwnerSquareKeys = (accessToken: string, opts: { squareAccessToken?: string; squareLocationId?: string; squareApplicationId?: string; squareWebhookSignatureKey?: string; mode?: "sandbox" | "production" }) =>
   fetchWithTimeout("/api/square-action", {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${accessToken}` },

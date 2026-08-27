@@ -3942,6 +3942,15 @@ export function App() {
           // Anonymous visitor — no owner_id-satisfying session, so this
           // write goes through the service-role approve_estimate action
           // (see functions/api/public-data.ts) rather than the anon client.
+          // AUDIT FIX — this fetch was fire-and-forget with the success
+          // toast firing unconditionally right after, violating CLAUDE.md's
+          // "toast on success AND failure, no silent fails" rule. If this
+          // write fails server-side, the customer sees "Paid"/"Signed" and
+          // the local UI reflects it, but the CRM's own estimate/job record
+          // (and the owner-notification SMS this action sends) never lands
+          // — the charge itself already happened separately before this
+          // point, so nothing here can undo that, but the owner needs to
+          // know the record didn't sync so they can follow up manually.
           fetch("/api/public-data", {
             method: "POST", headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
@@ -3949,7 +3958,11 @@ export function App() {
               paid, totalPaid: data.totalPaid, payType: data.payType,
               job: newJob,
             }),
-          }).catch(() => {});
+          }).then(r => {
+            if (!r.ok) toast(paid ? "Payment received, but the business's records may take longer than usual to update — contact them if it doesn't confirm soon." : "Signed, but there was a problem saving it — please contact the business to confirm.", "red");
+          }).catch(() => {
+            toast(paid ? "Payment received, but the business's records may take longer than usual to update — contact them if it doesn't confirm soon." : "Signed, but there was a problem saving it — please contact the business to confirm.", "red");
+          });
           toast(paid ? "✓ Paid — " + fmt(data.totalPaid) : "✓ Signed — you'll pay later");
         }}
         onDecline={async (id: string, data: { reason?: string; category?: string }) => {

@@ -441,9 +441,15 @@ export function InvoicesPage({ estimates = [], setEstimates, customers = [], set
     const inv = estimates.find(e => e.id === id);
     setEstimates(estimates.map(e => e.id === id ? { ...e, paidAt, status: "approved" } : e));
     syncJobPaymentStatus((inv as any)?.jobId, "Paid");
-    (supabase as any).from("estimates").update({ paidAt, status: "approved" }).eq("id", id)
+    // AUDIT FIX — this only checked `.error`, missing the documented
+    // RLS 0-row-silent-success case (CLAUDE.md): an owner_id mismatch/stale
+    // row returns HTTP success with zero rows updated, no error at all, so
+    // without .select("id") this always toasted "Marked paid" even on a
+    // write that never actually landed server-side.
+    (supabase as any).from("estimates").update({ paidAt, status: "approved" }).eq("id", id).select("id")
       .then((r: any) => {
         if (r?.error) { console.error("[MarkPaid] failed:", r.error.message); toast("Saved locally, but failed to sync — " + r.error.message, "red"); }
+        else if (!Array.isArray(r?.data) || r.data.length === 0) { console.error("[MarkPaid] update matched 0 rows for", id); toast("Saved locally, but the server didn't confirm — it may revert. Try again or refresh to check.", "red"); }
         else toast("Marked paid ✓", "green");
       })
       .catch((e: any) => { console.error("[MarkPaid] threw:", e?.message); toast("Saved locally, but failed to sync — " + (e?.message || "unknown error"), "red"); });
@@ -452,9 +458,10 @@ export function InvoicesPage({ estimates = [], setEstimates, customers = [], set
     const inv = estimates.find(e => e.id === id);
     setEstimates(estimates.map(e => e.id === id ? { ...e, paidAt: null } : e));
     syncJobPaymentStatus((inv as any)?.jobId, "Pending");
-    (supabase as any).from("estimates").update({ paidAt: null }).eq("id", id)
+    (supabase as any).from("estimates").update({ paidAt: null }).eq("id", id).select("id")
       .then((r: any) => {
         if (r?.error) { console.error("[MarkPaid] unpaid failed:", r.error.message); toast("Saved locally, but failed to sync — " + r.error.message, "red"); }
+        else if (!Array.isArray(r?.data) || r.data.length === 0) { console.error("[MarkPaid] unpaid matched 0 rows for", id); toast("Saved locally, but the server didn't confirm — it may revert. Try again or refresh to check.", "red"); }
         else toast("Marked unpaid", "green");
       })
       .catch((e: any) => { console.error("[MarkPaid] unpaid threw:", e?.message); toast("Saved locally, but failed to sync — " + (e?.message || "unknown error"), "red"); });
@@ -886,9 +893,10 @@ export function InvoicesPage({ estimates = [], setEstimates, customers = [], set
                   // 10s poll overwrote it with the still-unpaid server row.
                   setEstimates(estimates.map(e => e.id === viewing.id ? { ...e, partialPaid: newPartialPaid, paidAt: newPaidAt } : e));
                   setViewing({ ...viewing, partialPaid: newPartialPaid, paidAt: newPaidAt });
-                  (supabase as any).from("estimates").update({ partialPaid: newPartialPaid, paidAt: newPaidAt }).eq("id", viewing.id)
+                  (supabase as any).from("estimates").update({ partialPaid: newPartialPaid, paidAt: newPaidAt }).eq("id", viewing.id).select("id")
                     .then((r: any) => {
                       if (r?.error) { console.error("[MarkPaid] partial payment failed:", r.error.message); toast("Saved locally, but failed to sync — " + r.error.message, "red"); }
+                      else if (!Array.isArray(r?.data) || r.data.length === 0) { console.error("[MarkPaid] partial payment matched 0 rows for", viewing.id); toast("Saved locally, but the server didn't confirm — it may revert. Try again or refresh to check.", "red"); }
                       else toast("Partial payment of " + fmt(partial) + " recorded · Balance: " + fmt(newBalance), "green");
                     })
                     .catch((e: any) => { console.error("[MarkPaid] partial payment threw:", e?.message); toast("Saved locally, but failed to sync — " + (e?.message || "unknown error"), "red"); });
@@ -990,7 +998,24 @@ export function InvoicesPage({ estimates = [], setEstimates, customers = [], set
                       if (fullyRefunded) markUnpaid(inv.id);
                       setEstimates(prev => prev.map(e => e.id === inv.id ? { ...e, refundedAt, refundedAmount: refundedTotal, stripePaymentStatus: newStatus, ...(fullyRefunded ? { paidAt: null } : {}) } : e));
                       if (viewing?.id === inv.id) setViewing({ ...viewing, refundedAt, refundedAmount: refundedTotal, stripePaymentStatus: newStatus, ...(fullyRefunded ? { paidAt: null } : {}) } as any);
-                      (supabase as any).from("estimates").update({ refundedAt, refundedAmount: refundedTotal, stripePaymentStatus: newStatus, ...(fullyRefunded ? { paidAt: null } : {}) }).eq("id", inv.id).then(() => {}, (e: any) => console.warn("[Refund] sync failed:", e?.message));
+                      // AUDIT FIX — this is the ONLY place a Square refund
+                      // ever gets recorded (Square has no webhook — Stripe
+                      // refunds also land via stripe-webhook.ts's
+                      // charge.refunded handler as a backstop, Square
+                      // doesn't). Money has already actually left the
+                      // processor by this point (refundSquarePayment/
+                      // refundPaymentIntent above already succeeded) — a
+                      // silent 0-row RLS mismatch here means the charge was
+                      // genuinely refunded but the CRM permanently shows the
+                      // invoice still paid, with no way to notice short of
+                      // reconciling against the Stripe/Square dashboard by
+                      // hand. Must check, not just log-and-move-on.
+                      (supabase as any).from("estimates").update({ refundedAt, refundedAmount: refundedTotal, stripePaymentStatus: newStatus, ...(fullyRefunded ? { paidAt: null } : {}) }).eq("id", inv.id).select("id").then(
+                        (r: any) => {
+                          if (!Array.isArray(r?.data) || r.data.length === 0) toast?.(`Refunded via ${isSquare ? "Square" : "Stripe"}, but the CRM couldn't confirm the invoice update — check Invoices for this customer and fix it manually if it still shows paid.`, "red");
+                        },
+                        (e: any) => { console.warn("[Refund] sync failed:", e?.message); toast?.(`Refunded via ${isSquare ? "Square" : "Stripe"}, but the CRM couldn't save the refund on this invoice — check Invoices for this customer and fix it manually if it still shows paid. (${e?.message || "sync failed"})`, "red"); }
+                      );
                       toast?.(hasRealCharge ? `${fullyRefunded ? "Fully" : "Partially"} refunded via ${isSquare ? "Square" : "Stripe"} ✓` : "Marked refunded", "green");
                       setRefundModal(null);
                     } catch (e: any) {

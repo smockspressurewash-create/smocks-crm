@@ -208,6 +208,15 @@ export const createPaymentIntent = async (
 export const retrievePaymentIntent = async (id: string): Promise<StripePaymentIntent> =>
   stripeAction("retrieve_payment_intent", { id });
 
+// AUDIT FIX — server-verified "mark this invoice paid," callable from an
+// unauthenticated/customer session where a direct Supabase write would
+// silently match 0 rows under owner_id-scoped RLS (see stripe-action.ts's
+// confirm_invoice_payment comment for the full story). Re-checks the
+// payment intent's real status with Stripe itself before writing anything.
+export const confirmInvoicePayment = async (invoiceId: string, paymentIntentId: string): Promise<void> => {
+  await stripeAction("confirm_invoice_payment", { invoiceId, paymentIntentId });
+};
+
 // ─── Checkout Sessions (hosted checkout page) ─────────────────────────────────
 
 export interface StripeCheckoutSession {
