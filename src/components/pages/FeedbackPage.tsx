@@ -9,7 +9,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { Bug, Lightbulb, ChevronUp, ChevronDown, Plus, Trash2, Clock, CheckCircle, Rocket, LayoutGrid, List } from "lucide-react";
 import { supabase } from "../../lib/supabase";
-import { uid } from "../../lib/utils";
+import { uid, withTimeout } from "../../lib/utils";
 import { Glass } from "../ui/Glass";
 import { GBtn } from "../ui/GBtn";
 import { GInput } from "../ui/GInput";
@@ -60,15 +60,24 @@ export function FeedbackPage({ userEmail, userName, isAdmin, toast, publicMode =
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const boardRef = useRef<HTMLDivElement>(null);
 
+  // BUG FIX — "the feedback and roadmap sections just say Loading." No
+  // timeout existed here at all — a hung/slow request (flaky connection,
+  // cold Supabase connection on the public landing page) left `loading`
+  // stuck true forever with no way out, exactly like every other "stuck
+  // on X forever" bug already fixed elsewhere in this app with a real
+  // withTimeout wrapper (see CLAUDE.md). 12s matches the timeout other
+  // public-facing reads in this app use.
   const load = async () => {
     setLoading(true);
     try {
-      const { data: { user } } = await (supabase as any).auth.getUser();
+      const { data: { user } } = await withTimeout<any>((supabase as any).auth.getUser(), 12000, "Feedback auth check");
       setMyUid(user?.id || null);
-      const [itemsRes, votesRes] = await Promise.all([
+      const [itemsRes, votesRes] = await withTimeout(Promise.all([
         (supabase as any).from("feedback_items").select("*").order("created_at", { ascending: false }),
         (supabase as any).from("feedback_votes").select("feedback_id,voter_id,value"),
-      ]);
+      ]), 12000, "Feedback load");
+      if (itemsRes.error) console.warn("[Feedback] items fetch error:", itemsRes.error.message);
+      if (votesRes.error) console.warn("[Feedback] votes fetch error:", votesRes.error.message);
       setItems(itemsRes.data || []);
       const tally: Record<string, { total: number; mine: number }> = {};
       (votesRes.data || []).forEach((v: any) => {
@@ -172,8 +181,21 @@ export function FeedbackPage({ userEmail, userName, isAdmin, toast, publicMode =
     return () => { window.removeEventListener("pointermove", onMove); window.removeEventListener("pointerup", onUp); };
   }, [draggingId, items]);
 
+  // FEATURE — "I want a page where users can request new features, upvote
+  // ideas, downvote them... a leaderboard ranked by votes... report bugs."
+  // publicMode used to mean "always read-only, curated to planned/in_progress/
+  // done only" — correct for a truly anonymous visitor, but wrong once
+  // they're actually logged in (any CrewBoss owner/employee, cross-tenant
+  // by design, per the header comment). Read-only-ness now follows whether
+  // we've actually resolved a real signed-in user (myUid), not the static
+  // publicMode flag — an anonymous visitor still gets the curated
+  // read-only view, but a logged-in one gets the full submit/vote board
+  // right on the landing page, matching the "Log in to submit/vote" CTA
+  // already shown above this component.
+  const canInteract = !!myUid;
   const filtered = items
-    .filter(it => publicMode ? ["planned", "in_progress", "done"].includes(it.status) : (statusFilter === "all" || it.status === statusFilter))
+    .filter(it => (publicMode && !canInteract) ? ["planned", "in_progress", "done"].includes(it.status) : (statusFilter === "all" || it.status === statusFilter || publicMode))
+    .filter(it => publicMode ? it.status !== "declined" : true)
     .sort((a, b) => (votes[b.id]?.total || 0) - (votes[a.id]?.total || 0));
 
   const showKanban = isAdmin && !publicMode && view === "kanban";
@@ -184,8 +206,8 @@ export function FeedbackPage({ userEmail, userName, isAdmin, toast, publicMode =
       <style>{`.kanban-col-hover { background: rgba(220,38,38,0.08) !important; border-color: rgba(220,38,38,0.4) !important; }`}</style>
       <div className="flex items-center justify-between flex-wrap gap-2">
         <div>
-          <h2 className="text-lg font-bold text-white">{publicMode ? "Roadmap" : "Feedback & Roadmap"}</h2>
-          <div className="text-xs text-white/50">{publicMode ? "What's planned, in progress, and shipped." : isAdmin ? "Report bugs, request features, vote — and drag cards between columns to update status." : "Report bugs, request features, and vote on what matters most."}</div>
+          <h2 className="text-lg font-bold text-white">{publicMode ? "Roadmap & Feedback" : "Feedback & Roadmap"}</h2>
+          <div className="text-xs text-white/50">{publicMode ? (canInteract ? "Vote on what matters most, or submit a feature request or bug report." : "What's planned, in progress, and shipped — log in to submit or vote.") : isAdmin ? "Report bugs, request features, vote — and drag cards between columns to update status." : "Report bugs, request features, and vote on what matters most."}</div>
         </div>
         <div className="flex items-center gap-2">
           {isAdmin && !publicMode && (
@@ -194,11 +216,11 @@ export function FeedbackPage({ userEmail, userName, isAdmin, toast, publicMode =
               <button onClick={() => setView("list")} title="List" className={"p-1.5 rounded-md transition " + (view === "list" ? "bg-red-900/40 text-red-300" : "text-white/40 hover:text-white")}><List size={14} /></button>
             </div>
           )}
-          {!publicMode && <GBtn onClick={() => setShowNew(s => !s)} className="!text-xs"><Plus size={12} className="inline mr-1" />New</GBtn>}
+          {(!publicMode || canInteract) && <GBtn onClick={() => setShowNew(s => !s)} className="!text-xs"><Plus size={12} className="inline mr-1" />New</GBtn>}
         </div>
       </div>
 
-      {!publicMode && showNew && (
+      {(!publicMode || canInteract) && showNew && (
         <Glass className="p-4 space-y-2.5">
           <div className="flex gap-2">
             <button onClick={() => setNewType("feature")} className={"flex-1 py-2 rounded-lg text-xs font-semibold border transition " + (newType === "feature" ? "border-yellow-500/50 bg-yellow-950/30 text-yellow-300" : "border-white/10 text-white/50")}><Lightbulb size={12} className="inline mr-1" />Feature Request</button>
@@ -278,11 +300,16 @@ export function FeedbackPage({ userEmail, userName, isAdmin, toast, publicMode =
             const TypeIcon = it.type === "bug" ? Bug : Lightbulb;
             return (
               <Glass key={it.id} className="p-3 flex gap-3">
-                {!publicMode && (
+                {(!publicMode || canInteract) ? (
                   <div className="flex flex-col items-center gap-0.5 flex-shrink-0 pt-0.5">
                     <button onClick={() => vote(it.id, 1)} className={"w-7 h-7 flex items-center justify-center rounded-lg " + (v.mine === 1 ? "text-green-400 bg-green-950/30" : "text-white/30 hover:text-white/60")}><ChevronUp size={16} /></button>
                     <div className="text-xs font-bold text-white">{v.total}</div>
                     <button onClick={() => vote(it.id, -1)} className={"w-7 h-7 flex items-center justify-center rounded-lg " + (v.mine === -1 ? "text-red-400 bg-red-950/30" : "text-white/30 hover:text-white/60")}><ChevronDown size={16} /></button>
+                  </div>
+                ) : (
+                  <div className="flex flex-col items-center gap-0.5 flex-shrink-0 pt-0.5 w-7">
+                    <div className="text-xs font-bold text-white/60">{v.total}</div>
+                    <div className="text-[8px] text-white/30 uppercase tracking-wider">votes</div>
                   </div>
                 )}
                 <div className="flex-1 min-w-0">

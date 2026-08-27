@@ -292,11 +292,6 @@ export function MarketingNav({
               {l.label}
             </button>
           ))}
-          {onRoadmap && (
-            <button onClick={onRoadmap} className="hover:text-white transition-colors">
-              Roadmap
-            </button>
-          )}
           {isLoggedIn ? (
             <button
               onClick={onGoToDashboard}
@@ -335,11 +330,6 @@ export function MarketingNav({
               {l.label}
             </button>
           ))}
-          {onRoadmap && (
-            <button onClick={() => { setNavOpen(false); onRoadmap(); }} className="block w-full text-left py-2 text-white/70">
-              Roadmap
-            </button>
-          )}
           {isLoggedIn ? (
             <button
               onClick={() => { setNavOpen(false); onGoToDashboard?.(); }}
@@ -386,7 +376,6 @@ export function MarketingFooter({
             <button onClick={() => onNavigate("features")} className="hover:text-white/70 transition-colors">Features</button>
             <button onClick={() => onNavigate("pricing")} className="hover:text-white/70 transition-colors">Pricing</button>
             <button onClick={() => onNavigate("about")} className="hover:text-white/70 transition-colors">About</button>
-            <a href="#/roadmap" className="hover:text-white/70 transition-colors">Roadmap</a>
             <a href="#/terms" className="hover:text-white/70 transition-colors">Terms</a>
             <a href="#/privacy" className="hover:text-white/70 transition-colors">Privacy</a>
             <button onClick={onGetStarted} className="hover:text-white/70 transition-colors">Log In</button>
