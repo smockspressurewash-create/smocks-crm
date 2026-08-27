@@ -8,6 +8,7 @@ import {
   Reveal, MarketingStyles, BackgroundBlobs, MarketingNav, MarketingFooter,
   MarketingPage, MarketingMarquee, SectionDivider,
 } from "./MarketingShared";
+import { FeedbackPage } from "./FeedbackPage";
 
 // ─── Public marketing / landing page for CrewBoss (this product) ──────────────
 // Reached at "#/" (or "#/welcome") for any visitor with no active session —
@@ -524,6 +525,41 @@ export function LandingPage({
             See full plan comparison & FAQ
             <ChevronRight size={16} />
           </button>
+        </Reveal>
+      </section>
+
+      {/* ── Roadmap & Feedback — a REAL, working section embedded right on the
+          landing page (not just a nav link off to #/roadmap), per repeated
+          user report: "no section to request new features, upvote or
+          downvote them, or report bugs." Reuses the exact same live
+          feedback_items board FeedbackPage already renders at #/roadmap —
+          same data, same voting, same bug-report form — just surfaced here
+          too so a visitor doesn't have to go hunting for it. */}
+      <SectionDivider />
+      <section className="px-4 md:px-6 py-16 md:py-24 max-w-5xl mx-auto">
+        <Reveal className="text-center mb-10">
+          <h2 className="text-2xl md:text-4xl font-extrabold tracking-tight mb-3">
+            Built with the crews <span className="gradient-text">who use it</span>
+          </h2>
+          <p className="text-white/50 max-w-xl mx-auto text-sm md:text-base">
+            See what's planned, in progress, and shipped — request a feature, report a bug, and vote on what matters most.
+          </p>
+        </Reveal>
+        <Reveal delay={80}>
+          {!isLoggedIn && (
+            <div className="max-w-3xl mx-auto mb-4 p-3.5 rounded-xl bg-red-950/20 border border-red-700/40 text-sm text-white/80 flex items-center justify-between gap-3 flex-wrap">
+              <span>Have an idea or found a bug? Log in to submit it and vote on others.</span>
+              <button onClick={onGetStarted} className="px-3 py-1.5 rounded-lg bg-red-600 hover:bg-red-700 text-white text-xs font-semibold flex-shrink-0">Log In →</button>
+            </div>
+          )}
+          <div className="rounded-2xl border border-white/10 bg-black/40 overflow-hidden">
+            <FeedbackPage publicMode />
+          </div>
+          <div className="text-center mt-4">
+            <button onClick={onRoadmap} className="text-sm text-red-400 hover:text-red-300 font-medium inline-flex items-center gap-1">
+              View the full roadmap <ChevronRight size={14} />
+            </button>
+          </div>
         </Reveal>
       </section>
 
