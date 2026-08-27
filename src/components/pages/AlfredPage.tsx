@@ -1534,7 +1534,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           }
           if (!sentEmail && !sentSms) return { error: "Failed to send — " + (errs.join("; ") || "no email/phone on file for this customer") };
           const sentAt = today();
-          (supabase as any).from("estimates").update({ sentAt, sendChannel: channel }).eq("id", est.id).catch(() => {});
+          (supabase as any).from("estimates").update({ sentAt, sendChannel: channel }).eq("id", est.id).then(() => {}, () => {});
           setEstimates((prev: any[]) => prev.map(x => x.id === est.id ? { ...x, sentAt, sendChannel: channel } : x));
           toast("Alfred sent the estimate to " + sc.firstName + (errs.length ? " (partial)" : ""));
           return { success: true, estimateId: est.id, customer: sc.firstName + " " + sc.lastName, sentEmail, sentSms, warnings: errs.length ? errs : undefined };

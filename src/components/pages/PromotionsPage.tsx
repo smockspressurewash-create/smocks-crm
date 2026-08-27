@@ -100,7 +100,7 @@ export function PromotionsPage({ promotions = [], setPromotions = (() => {}) as 
 
   const remove = (id: string) => {
     setPromotions((prev: Promotion[]) => prev.filter(p => p.id !== id));
-    (supabase as any).from("promotions").delete().eq("id", id).catch(() => {});
+    (supabase as any).from("promotions").delete().eq("id", id).then(() => {}, () => {});
     toast?.("Promotion deleted");
   };
 

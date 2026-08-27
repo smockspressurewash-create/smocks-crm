@@ -395,7 +395,7 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
             // this, the row stayed stale and got re-refreshed from scratch
             // on every future call here until the employee's own 5-min
             // interval happened to catch up.
-            (supabase as any).from("employees").update({ google_token: refreshed.token, google_token_expires_at: new Date(refreshed.expiresAt).toISOString() }).eq("id", (emp as any).id).catch(() => {});
+            (supabase as any).from("employees").update({ google_token: refreshed.token, google_token_expires_at: new Date(refreshed.expiresAt).toISOString() }).eq("id", (emp as any).id).then(() => {}, () => {});
           } else {
             tok = null;
           }
@@ -559,7 +559,7 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
           const refreshed = await refreshEmpGoogleToken(settings.googleBackendUrl, empRow.google_refresh_token);
           if (refreshed?.token) {
             tok = refreshed.token;
-            (supabase as any).from("employees").update({ google_token: refreshed.token, google_token_expires_at: new Date(refreshed.expiresAt).toISOString() }).eq("id", emp.id).catch(() => {});
+            (supabase as any).from("employees").update({ google_token: refreshed.token, google_token_expires_at: new Date(refreshed.expiresAt).toISOString() }).eq("id", emp.id).then(() => {}, () => {});
           } else tok = null;
         } else if (!validTok) {
           tok = null;
@@ -668,7 +668,7 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
     if (linkedInvoice) {
       setEstimates((prev: any[]) => prev.map(e => e.id === linkedInvoice.id ? { ...e, paidAt: today(), status: "approved", stripePaymentIntentId: paymentIntentId, stripePaymentStatus: "paid" as const } : e));
       (supabase as any).from("estimates").update({ paidAt: today(), status: "approved", stripePaymentIntentId: paymentIntentId, stripePaymentStatus: "paid" }).eq("id", linkedInvoice.id)
-        .catch((e: any) => console.warn("[ChargeCard] invoice sync failed:", e?.message));
+        .then(() => {}, (e: any) => console.warn("[ChargeCard] invoice sync failed:", e?.message));
     }
     setChargeCardOpen(false);
     toast("Payment received ✓", "green");
@@ -842,7 +842,7 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
             const refreshed = await refreshEmpGoogleToken(settings?.googleBackendUrl, empRow.google_refresh_token);
             if (refreshed?.token) {
               tok = refreshed.token;
-              (supabase as any).from("employees").update({ google_token: refreshed.token, google_token_expires_at: new Date(refreshed.expiresAt).toISOString() }).eq("id", emp.id).catch(() => {});
+              (supabase as any).from("employees").update({ google_token: refreshed.token, google_token_expires_at: new Date(refreshed.expiresAt).toISOString() }).eq("id", emp.id).then(() => {}, () => {});
             } else tok = null;
           } else if (!validTok) {
             tok = null;
@@ -970,7 +970,7 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
     const rounded = Math.round(hrs * 100) / 100;
     updateJob(jobId, { clockInAt: null, loggedHours: Math.round(((Number(job.loggedHours) || 0) + rounded) * 100) / 100 });
     toast("+" + rounded + "h logged");
-    if (ownerOnCrew) (supabase as any).from("employees").update({ dayClockInAt: null }).eq("id", ownerEmpId).catch(() => {});
+    if (ownerOnCrew) (supabase as any).from("employees").update({ dayClockInAt: null }).eq("id", ownerEmpId).then(() => {}, () => {});
   };
   // Same message/send pattern as EmployeePortal.tsx's sendOtw — SMS if the
   // customer has a phone (Twilio), otherwise Gmail (never Resend — CLAUDE.md

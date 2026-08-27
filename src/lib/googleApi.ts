@@ -492,10 +492,19 @@ export const getValidEmpGoogleToken = async (
   // successful on-demand refresh was lost even though it worked — the
   // employees row never learned about it. Mirror it to Supabase too, same
   // columns/shape the background interval writes.
+  // BUG FIX — "Uncaught TypeError: ...catch is not a function," repeating
+  // constantly in the console. Supabase's PostgrestBuilder only implements
+  // `.then(onfulfilled, onrejected)` (a bare PromiseLike), not a full
+  // Promise — it has no `.catch()`/`.finally()` method at all. Calling
+  // `.catch()` directly on one (instead of `.then()` or wrapping in
+  // withTimeout/Promise.resolve first) throws synchronously the moment
+  // this line runs, which surfaced as a real unhandled promise rejection
+  // firing on every single Google token refresh. `.then(ok, err)` is the
+  // two-argument form the bare PromiseLike interface actually supports.
   (supabase as any).from("employees")
     .update({ google_token: refreshed.token, google_token_expires_at: new Date(refreshed.expiresAt).toISOString() })
     .eq("user_id", userId)
-    .catch(() => {});
+    .then(() => {}, () => {});
   return updated;
 };
 

@@ -990,7 +990,7 @@ export function InvoicesPage({ estimates = [], setEstimates, customers = [], set
                       if (fullyRefunded) markUnpaid(inv.id);
                       setEstimates(prev => prev.map(e => e.id === inv.id ? { ...e, refundedAt, refundedAmount: refundedTotal, stripePaymentStatus: newStatus, ...(fullyRefunded ? { paidAt: null } : {}) } : e));
                       if (viewing?.id === inv.id) setViewing({ ...viewing, refundedAt, refundedAmount: refundedTotal, stripePaymentStatus: newStatus, ...(fullyRefunded ? { paidAt: null } : {}) } as any);
-                      (supabase as any).from("estimates").update({ refundedAt, refundedAmount: refundedTotal, stripePaymentStatus: newStatus, ...(fullyRefunded ? { paidAt: null } : {}) }).eq("id", inv.id).catch((e: any) => console.warn("[Refund] sync failed:", e?.message));
+                      (supabase as any).from("estimates").update({ refundedAt, refundedAmount: refundedTotal, stripePaymentStatus: newStatus, ...(fullyRefunded ? { paidAt: null } : {}) }).eq("id", inv.id).then(() => {}, (e: any) => console.warn("[Refund] sync failed:", e?.message));
                       toast?.(hasRealCharge ? `${fullyRefunded ? "Fully" : "Partially"} refunded via ${isSquare ? "Square" : "Stripe"} ✓` : "Marked refunded", "green");
                       setRefundModal(null);
                     } catch (e: any) {

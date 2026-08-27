@@ -138,7 +138,7 @@ export function HiringPage({ settings = {} as AppSettings, setSettings, toast, o
       await (supabase as any).from("employees").insert(preCreated);
       if (onboardingTemplateItems.length > 0) {
         const items = onboardingTemplateItems.map(t => ({ id: t.id, title: t.title, description: t.description, done: false, completedAt: null }));
-        await (supabase as any).from("employee_onboarding").upsert({ id: uid(), owner_id: ownerId, employee_id: newEmployeeId, items }, { onConflict: "employee_id" }).catch(() => {});
+        await (supabase as any).from("employee_onboarding").upsert({ id: uid(), owner_id: ownerId, employee_id: newEmployeeId, items }, { onConflict: "employee_id" }).then(() => {}, () => {});
       }
       setHireInviteResult({ code, email: cand.email, firstName: cand.firstName, phone: cand.phone || "" });
       toast?.(`${cand.firstName} added to the team — portal invite ready`, "green");
@@ -167,7 +167,7 @@ export function HiringPage({ settings = {} as AppSettings, setSettings, toast, o
     if (removed.length) {
       setCandidates(prev => prev.map(c => removed.includes(c.phase) ? { ...c, phase: cleaned[0] } : c));
       removed.forEach(p => {
-        (supabase as any).from("candidates").update({ phase: cleaned[0] }).eq("owner_id", ownerId).eq("phase", p).catch(() => {});
+        (supabase as any).from("candidates").update({ phase: cleaned[0] }).eq("owner_id", ownerId).eq("phase", p).then(() => {}, () => {});
       });
     }
     setSettings?.((s: any) => ({ ...s, hiringPhases: cleaned }));

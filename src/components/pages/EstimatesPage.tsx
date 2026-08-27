@@ -180,7 +180,7 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
         else { window.location.href = "sms:" + cust.phone.replace(/\D/g, "") + "?body=" + encodeURIComponent(buildSendSms(sendModalEst, cust)); }
       }
       setEstimates((prev: any[]) => prev.map((x: any) => x.id === sendModalEst.id ? { ...x, sentAt: today(), sendChannel, templateId: sendTemplateId || undefined } : x));
-      (supabase as any).from("estimates").update({ sentAt: today(), sendChannel }).eq("id", sendModalEst.id).catch(() => {});
+      (supabase as any).from("estimates").update({ sentAt: today(), sendChannel }).eq("id", sendModalEst.id).then(() => {}, () => {});
       toast?.(`📧 Estimate sent to ${cust.firstName} ✓`, "green");
       setSendModalEst(null);
       setSendPreviewOn(false);

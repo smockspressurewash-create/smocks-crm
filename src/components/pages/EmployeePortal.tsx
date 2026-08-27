@@ -2450,7 +2450,7 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
               // (CustomersPage.tsx), which this portal has never needed
               // before now.
               (supabase as any).from("customers").update({ stripeCustomerId, savedPaymentMethodId: paymentMethodId, savedPaymentMethodLabel: label, cardConsentAt: consentAt }).eq("id", customer.id)
-                .catch((e: any) => console.warn("[AddCardOnFile] Supabase sync failed:", e?.message));
+                .then(() => {}, (e: any) => console.warn("[AddCardOnFile] Supabase sync failed:", e?.message));
               toast?.("Card saved on file ✓", "green");
               setAddCardOpen(false);
               // Opened from the payment step ("Add a New Card" mid-checkout)
@@ -4041,10 +4041,13 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
       setEmpGoogleRefreshFailed(false);
       setEmpGoogleConfigMissing(false);
       saveEmpGoogleToken(uid, { ...existing, token: refreshed.token, expiresAt: refreshed.expiresAt });
+      // BUG FIX — "...catch is not a function," repeating in the console
+      // on every Google token refresh. See lib/googleApi.ts's comment on
+      // this same class of bug (raw PostgrestBuilder has no .catch()).
       (supabase as any).from("employees")
         .update({ google_token: refreshed.token, google_token_expires_at: new Date(refreshed.expiresAt).toISOString() })
         .eq("user_id", uid)
-        .catch(() => {});
+        .then(() => {}, () => {});
       setGoogleHydrateTick(t => t + 1);
     };
     tryRefresh();
@@ -4795,7 +4798,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     const score = computeJobRatingScore(job);
     const prevScore = (myEmployee as any)?.ratingScore;
     const nextScore = typeof prevScore === "number" ? Math.round(prevScore * 0.75 + score * 0.25) : score;
-    (supabase as any).from("employees").update({ ratingScore: nextScore }).eq("id", empId).catch(() => {});
+    (supabase as any).from("employees").update({ ratingScore: nextScore }).eq("id", empId).then(() => {}, () => {});
   };
 
   const handleJobComplete = () => {
@@ -5005,7 +5008,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
         });
         const nextMap = { ...((job as any).crewGoogleEventIds || {}), [myEmployee.id]: evId };
         setJobs(prev => prev.map(j => j.id === job.id ? { ...j, crewGoogleEventIds: nextMap } as any : j));
-        (supabase as any).from("jobs").update({ crewGoogleEventIds: nextMap }).eq("id", job.id).catch(() => {});
+        (supabase as any).from("jobs").update({ crewGoogleEventIds: nextMap }).eq("id", job.id).then(() => {}, () => {});
         if (!opts.silent) toast("📅 Added to your Google Calendar");
       }
     } catch (e) {

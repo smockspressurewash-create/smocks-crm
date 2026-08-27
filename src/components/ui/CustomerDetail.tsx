@@ -126,8 +126,12 @@ export function CustomerDetail({ customer: c, onClose, onDelete, onEdit, estimat
       // now-detached payment method.
       if (c.savedPaymentMethodId === pm.id) {
         setCustomers((prev: any[]) => prev.map((cust: any) => cust.id === c.id ? { ...cust, savedPaymentMethodId: undefined, savedPaymentMethodLabel: undefined } : cust));
+        // BUG FIX — direct .catch() on a raw Supabase builder throws
+        // ("...catch is not a function" — PostgrestBuilder only implements
+        // .then(), not a full Promise). See lib/googleApi.ts's comment on
+        // the same class of bug for the full explanation.
         (supabase as any).from("customers").update({ savedPaymentMethodId: null, savedPaymentMethodLabel: null }).eq("id", c.id)
-          .catch((e: any) => console.warn("[PaymentMethods] clear savedPaymentMethodId sync failed:", e?.message));
+          .then(() => {}, (e: any) => console.warn("[PaymentMethods] clear savedPaymentMethodId sync failed:", e?.message));
       }
       await loadPaymentMethods();
     } catch (e: any) {
@@ -893,7 +897,7 @@ export function CustomerDetail({ customer: c, onClose, onDelete, onEdit, estimat
         onSaved={(stripeCustomerId, paymentMethodId, label) => {
           setCustomers((prev: any[]) => prev.map((cust: any) => cust.id === c.id ? { ...cust, stripeCustomerId, savedPaymentMethodId: paymentMethodId, savedPaymentMethodLabel: label } : cust));
           (supabase as any).from("customers").update({ stripeCustomerId, savedPaymentMethodId: paymentMethodId, savedPaymentMethodLabel: label }).eq("id", c.id)
-            .catch((e: any) => console.warn("[PaymentMethods] add-card Supabase sync failed:", e?.message));
+            .then(() => {}, (e: any) => console.warn("[PaymentMethods] add-card Supabase sync failed:", e?.message));
           toast?.("Card saved on file ✓", "green");
           setAddCardOpen(false);
           loadPaymentMethods();

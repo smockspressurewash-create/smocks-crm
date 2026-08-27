@@ -384,12 +384,12 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
     // credits the REFERRER (not this customer) per Settings → Referrals.
     if (appliedPromo?.kind === "promotion") {
       const promoId = appliedPromo.promo.id;
-      (supabase as any).from("promotions").update({ redeemedCount: (appliedPromo.promo.redeemedCount || 0) + 1 }).eq("id", promoId).catch(() => {});
+      (supabase as any).from("promotions").update({ redeemedCount: (appliedPromo.promo.redeemedCount || 0) + 1 }).eq("id", promoId).then(() => {}, () => {});
     } else if (appliedPromo?.kind === "referral") {
       const referrer = appliedPromo.referrer;
       const nextCredit = (Number(referrer.referralCreditOwed) || 0) + (Number(referralSettings.referrerCredit) || 0);
       setCustomers?.((prev: any[]) => prev.map(cust => cust.id === referrer.id ? { ...cust, referralCreditOwed: nextCredit } : cust));
-      (supabase as any).from("customers").update({ referralCreditOwed: nextCredit }).eq("id", referrer.id).catch(() => {});
+      (supabase as any).from("customers").update({ referralCreditOwed: nextCredit }).eq("id", referrer.id).then(() => {}, () => {});
     }
     if (onApprove) onApprove(e.id, {
       sigData, payType, tip, totalPaid: paymentIntentId ? totalWithTip : 0, signedAt: new Date().toISOString(), payChoice,
