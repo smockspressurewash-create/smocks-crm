@@ -1025,6 +1025,20 @@ export function App() {
   // row, or could be one this tab doesn't know was deleted elsewhere."
   const syncedEstimateIdsRef = useRef<Set<string>>(new Set());
   const syncedCustomerIdsRef = useRef<Set<string>>(new Set());
+  // BUG FIX — "invoices still aren't staying deleted," root cause finally
+  // found after 3 earlier rounds only hardened the WRITE side. The READ-side
+  // merge in refetchData (below) was purely additive: `prev.map()` always
+  // emits one row per EXISTING id, whether or not that id is still in the
+  // fresh server response, so once a row was in a tab's memory, no later
+  // fetch — not even a genuinely empty server response — could ever remove
+  // it. A second tab/device that already had an invoice loaded would fetch
+  // the real (now-absent) server state correctly but just keep showing the
+  // stale row forever. jobs never had its own "confirmed synced" ref at
+  // all (estimates/customers did); added here so all three can prune the
+  // same way: only drop a `prev` row once this tab has previously confirmed
+  // it existed server-side (syncedJobIdsRef has it) AND it's now missing
+  // from a fresh full fetch — never a brand-new, not-yet-synced local row.
+  const syncedJobIdsRef = useRef<Set<string>>(new Set());
 
   const filterRecentlyDeleted = (table: "jobs" | "customers" | "estimates" | "chemicals", rows: any[]) => {
     const m = recentlyDeletedRef.current[table];
@@ -2566,42 +2580,46 @@ export function App() {
         syncFailureStreakRef.current = 0;
         setSupabaseDegraded(false);
       }
-      if (Array.isArray(sbJobs) && sbJobs.length > 0) {
+      if (Array.isArray(sbJobs)) {
         const normedJobs = filterRecentlyDeleted("jobs", sbJobs.map(normalizeJobRow));
-        // AUDIT — this [Hours] log was a one-time diagnostic for FIX 7
-        // (Hours/Payroll tabs pulling real data), but refetchData runs every
-        // 10s PLUS on every realtime jobs/customers/estimates change, so it
-        // was printing continuously all day long. That's confirmed working
-        // now — removed rather than left flooding the console.
+        // See syncedJobIdsRef's comment above — every id the server
+        // actually returns is confirmed to exist there right now.
+        normedJobs.forEach((j: any) => syncedJobIdsRef.current.add(j.id));
         setJobs(prev => {
           const sbMap = new Map(normedJobs.map((j: any) => [j.id, j]));
-          const merged = prev.map(j => sbMap.has(j.id) ? { ...j, ...sbMap.get(j.id) } : j);
-          const existingIds = new Set(prev.map(j => j.id));
+          // BUG FIX — see syncedJobIdsRef's comment: prune any row this tab
+          // previously confirmed synced that's now missing from THIS fresh
+          // fetch, instead of keeping every row forever once seen once.
+          const pruned = prev.filter(j => sbMap.has(j.id) || !syncedJobIdsRef.current.has(j.id));
+          const merged = pruned.map(j => sbMap.has(j.id) ? { ...j, ...sbMap.get(j.id) } : j);
+          const existingIds = new Set(pruned.map(j => j.id));
           const added = normedJobs.filter((j: any) => !existingIds.has(j.id));
           return [...merged, ...added];
         });
       }
-      if (Array.isArray(sbCustomers) && sbCustomers.length > 0) {
+      if (Array.isArray(sbCustomers)) {
         // See syncedCustomerIdsRef's comment above — every id the server
         // actually returns is confirmed to exist there right now.
         sbCustomers.forEach((c: any) => syncedCustomerIdsRef.current.add(c.id));
         setCustomers(prev => {
           const filteredCustomers = filterRecentlyDeleted("customers", sbCustomers);
           const sbMap = new Map(filteredCustomers.map((c: any) => [c.id, c]));
-          const merged = prev.map(c => sbMap.has(c.id) ? { ...c, ...sbMap.get(c.id) } : c);
-          const existingIds = new Set(prev.map(c => c.id));
+          const pruned = prev.filter(c => sbMap.has(c.id) || !syncedCustomerIdsRef.current.has(c.id));
+          const merged = pruned.map(c => sbMap.has(c.id) ? { ...c, ...sbMap.get(c.id) } : c);
+          const existingIds = new Set(pruned.map(c => c.id));
           const added = filteredCustomers.filter((c: any) => !existingIds.has(c.id));
           return [...merged, ...added];
         });
       }
-      if (Array.isArray(sbEstimates) && sbEstimates.length > 0) {
+      if (Array.isArray(sbEstimates)) {
         // See syncedEstimateIdsRef's comment above.
         sbEstimates.forEach((e: any) => syncedEstimateIdsRef.current.add(e.id));
         setEstimates(prev => {
           const filteredEstimates = filterRecentlyDeleted("estimates", sbEstimates);
           const sbMap = new Map(filteredEstimates.map((e: any) => [e.id, e]));
-          const merged = prev.map(e => sbMap.has(e.id) ? { ...e, ...sbMap.get(e.id) } : e);
-          const existingIds = new Set(prev.map(e => e.id));
+          const pruned = prev.filter(e => sbMap.has(e.id) || !syncedEstimateIdsRef.current.has(e.id));
+          const merged = pruned.map(e => sbMap.has(e.id) ? { ...e, ...sbMap.get(e.id) } : e);
+          const existingIds = new Set(pruned.map(e => e.id));
           const added = filteredEstimates.filter((e: any) => !existingIds.has(e.id));
           return [...merged, ...added];
         });
@@ -4122,6 +4140,21 @@ export function App() {
       if (!ownerEmail.trim() || !ownerPassword.trim()) {
         setOwnerLoginError("Enter email and password"); return;
       }
+      // BUG FIX (audit) — a bad/expired/tampered session_id (verification
+      // failed → pendingCheckoutSession.status === "error") or one that
+      // just hadn't finished verifying yet used to let registration proceed
+      // anyway, silently falling through to a free trial instead of ever
+      // blocking — someone reaching this screen off a broken payment link
+      // got a free account with no error surfaced at all. Block registering
+      // outright until verification has actually succeeded.
+      if (ownerLoginMode === "register" && pendingCheckoutSession && pendingCheckoutSession.status !== "ready") {
+        setOwnerLoginError(
+          pendingCheckoutSession.status === "verifying"
+            ? "Still confirming your payment — wait a moment and try again."
+            : "Couldn't confirm your payment — go back to Pricing and try again, or contact support if you were charged."
+        );
+        return;
+      }
       setOwnerLoginLoading(true); setOwnerLoginError("");
       let isRegistering = false;
       if (ownerLoginMode === "register") {
@@ -4154,11 +4187,29 @@ export function App() {
       // point), start the free trial exactly as before.
       if (isRegistering && data?.session?.access_token) {
         if (pendingCheckoutSession?.status === "ready") {
-          fetch("/api/platform-billing", {
-            method: "POST",
-            headers: { "Content-Type": "application/json", Authorization: `Bearer ${data.session.access_token}` },
-            body: JSON.stringify({ action: "complete_signup", sessionId: pendingCheckoutSession.sessionId }),
-          }).catch((e: any) => console.warn("[PlatformBilling] complete_signup failed:", e?.message));
+          // BUG FIX (audit) — this used to be fire-and-forget: if it failed
+          // AFTER a real payment had already been verified, the account was
+          // created with no platform_subscriptions row at all and no
+          // error ever shown — a paying customer silently landing on
+          // whatever getPlanLimits() treats a missing row as (unlimited/
+          // grandfathered, so not immediately harmful, but the payment
+          // would look "lost" with nothing telling them to follow up).
+          // Awaited now so a failure surfaces as a real, actionable message.
+          try {
+            const res = await fetch("/api/platform-billing", {
+              method: "POST",
+              headers: { "Content-Type": "application/json", Authorization: `Bearer ${data.session.access_token}` },
+              body: JSON.stringify({ action: "complete_signup", sessionId: pendingCheckoutSession.sessionId }),
+            });
+            if (!res.ok) {
+              const errData = await res.json().catch(() => ({} as any));
+              console.error("[PlatformBilling] complete_signup failed:", errData?.error);
+              toast("Account created, but we couldn't confirm your subscription — go to Settings → Billing to fix this, or contact support.", "red");
+            }
+          } catch (e: any) {
+            console.error("[PlatformBilling] complete_signup threw:", e?.message);
+            toast("Account created, but we couldn't confirm your subscription — go to Settings → Billing to fix this, or contact support.", "red");
+          }
         } else {
           fetch("/api/platform-billing", {
             method: "POST",
@@ -4291,7 +4342,7 @@ export function App() {
               )}
               <button
                 onClick={handleOwnerLogin}
-                disabled={ownerLoginLoading}
+                disabled={ownerLoginLoading || (ownerLoginMode === "register" && pendingCheckoutSession?.status === "verifying")}
                 className="w-full min-h-[52px] py-4 rounded-2xl bg-gradient-to-r from-red-600 to-red-800 text-white font-semibold text-base hover:from-red-500 hover:to-red-700 active:scale-95 transition-all disabled:opacity-50"
               >
                 {ownerLoginLoading ? "Please wait…" : ownerLoginMode === "login" ? "Sign In" : "Create Owner Account"}

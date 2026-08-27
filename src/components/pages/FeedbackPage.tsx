@@ -121,8 +121,13 @@ export function FeedbackPage({ userEmail, userName, isAdmin, toast, publicMode =
   };
 
   const setStatus = async (itemId: string, status: string) => {
-    const { error } = await (supabase as any).from("feedback_items").update({ status, updated_at: new Date().toISOString() }).eq("id", itemId).select("id");
+    const { error, data } = await (supabase as any).from("feedback_items").update({ status, updated_at: new Date().toISOString() }).eq("id", itemId).select("id");
     if (error) { toast?.("Couldn't update status — " + error.message, "red"); return; }
+    // BUG FIX (audit) — RLS silently succeeds with 0 rows affected on a
+    // write that doesn't match, same pattern as everywhere else in this
+    // app (see CLAUDE.md) — this update only ever checked `error`, so a
+    // blocked write showed "moved ✓" with nothing actually persisted.
+    if (!Array.isArray(data) || data.length === 0) { toast?.("Status didn't save — the server didn't confirm the change", "red"); return; }
     toast?.("Status updated ✓", "green");
     setItems(prev => prev.map(it => it.id === itemId ? { ...it, status: status as any } : it));
   };

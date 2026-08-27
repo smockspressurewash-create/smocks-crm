@@ -259,7 +259,24 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
   // real self-service control, per CLAUDE.md's "Owner self-assign" note.
   const [ownerLocSharingPending, setOwnerLocSharingPending] = useState(false);
   const [optimisticOwnerLocSharing, setOptimisticOwnerLocSharing] = useState<boolean | undefined>(undefined);
-  const ownerEmpRow = employees.find((e: any) => e.role === "owner");
+  // BUG FIX (audit) — this used to match `employees.find(e => e.role ===
+  // "owner")` — i.e. "the" owner row, not the row for whoever's actually
+  // signed in right now. A manager (who also gets this same modal, per
+  // CLAUDE.md's manager-CRM-access model) opening a job would find and
+  // toggle the OWNER's own location, not their own — silently overwriting
+  // someone else's shared-location state. Resolved from the real signed-in
+  // Supabase session instead, matching by user_id (or email as a fallback
+  // for a not-yet-linked row), so this only ever affects the caller's own
+  // record — for the owner themselves, that's still their own "owner" row.
+  const [myAuthUser, setMyAuthUser] = useState<{ id: string; email: string } | null>(null);
+  useEffect(() => {
+    supabase.auth.getUser().then(({ data }: any) => {
+      if (data?.user) setMyAuthUser({ id: data.user.id, email: (data.user.email || "").toLowerCase() });
+    }).catch(() => {});
+  }, []);
+  const ownerEmpRow = myAuthUser
+    ? employees.find((e: any) => e.user_id === myAuthUser.id || (e.email || "").toLowerCase() === myAuthUser.email)
+    : undefined;
   const ownerLocationSharing = optimisticOwnerLocSharing !== undefined ? optimisticOwnerLocSharing : !!(ownerEmpRow as any)?.locationSharing;
   const toggleOwnerLocationSharing = () => {
     const empId = (ownerEmpRow as any)?.id;
