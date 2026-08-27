@@ -25,6 +25,15 @@ export function CustomerMapView({ customers = [], apiKey }: { customers?: any[];
   const [pins, setPins] = useState<LiveMapPin[]>([]);
   const [geocoding, setGeocoding] = useState(false);
   const [progress, setProgress] = useState({ done: 0, total: 0 });
+  // BUG FIX — "the customer map view does not show pins." Every geocode
+  // failure was silently swallowed with no visible error at all — a customer
+  // list where EVERY address fails (the actual live cause: the Google Maps
+  // key has the Geocoding API disabled in Cloud Console, confirmed by the
+  // "This API key is not authorized" errors already showing for Distance
+  // Matrix on the same key) rendered a map with zero pins and zero
+  // explanation. Tracks the failure reason so a systemic key/API problem is
+  // surfaced clearly instead of looking like "customers have no location."
+  const [lastErrorStatus, setLastErrorStatus] = useState<string | null>(null);
   const cacheRef = useRef<Record<string, { lat: number; lng: number }>>(readCache());
 
   useEffect(() => {
@@ -63,6 +72,7 @@ export function CustomerMapView({ customers = [], apiKey }: { customers?: any[];
       // miss) from taking minutes on a large customer list.
       const CAP = 300;
       let done = 0;
+      let consecutiveFailures = 0;
       for (const c of toGeocode.slice(0, CAP)) {
         if (cancelled) return;
         try {
@@ -76,8 +86,17 @@ export function CustomerMapView({ customers = [], apiKey }: { customers?: any[];
           const lat = loc.lat(), lng = loc.lng();
           cache[c.address] = { lat, lng };
           setPins(prev => [...prev, { id: c.id, label: `${c.firstName} ${c.lastName}`.trim() || c.address, lat, lng, updatedAt: Date.now() }]);
-        } catch {
-          // Bad/unresolvable address — skip it, don't block the rest.
+          consecutiveFailures = 0;
+        } catch (e: any) {
+          // Bad/unresolvable address is normal and expected sometimes — skip
+          // it, don't block the rest. But the SAME failure reason on every
+          // single address in a row (especially REQUEST_DENIED/
+          // OVER_QUERY_LIMIT) means the key/API itself is the problem, not
+          // any individual address — worth surfacing once that's clearly
+          // what's happening rather than staying silent.
+          consecutiveFailures++;
+          setLastErrorStatus(e?.message || "UNKNOWN_ERROR");
+          if (consecutiveFailures >= 5 && (e?.message === "REQUEST_DENIED" || e?.message === "OVER_QUERY_LIMIT")) break;
         }
         done++;
         setProgress({ done, total: toGeocode.length });
@@ -99,6 +118,13 @@ export function CustomerMapView({ customers = [], apiKey }: { customers?: any[];
         <div className="text-[11px] text-white/40 flex items-center gap-2">
           <div className="w-3 h-3 border-2 border-white/30 border-t-white/70 rounded-full animate-spin" />
           Locating customers on the map… {progress.done}/{progress.total}
+        </div>
+      )}
+      {!geocoding && pins.length === 0 && (lastErrorStatus === "REQUEST_DENIED" || lastErrorStatus === "OVER_QUERY_LIMIT") && (
+        <div className="text-xs text-yellow-200 bg-yellow-950/20 border border-yellow-700/40 rounded-xl p-3">
+          {lastErrorStatus === "REQUEST_DENIED"
+            ? "No pins loaded because Google rejected every geocode request (REQUEST_DENIED) — the Maps API key in Settings → Integrations most likely doesn't have the Geocoding API enabled. Enable it for this key in the Google Cloud Console, under APIs & Services."
+            : "No pins loaded — Google's geocoding rate limit was hit immediately (OVER_QUERY_LIMIT). Check the API key's quota/billing in the Google Cloud Console."}
         </div>
       )}
       <LiveMap apiKey={apiKey} pins={pins} heightClassName="h-[70vh] min-h-[420px]" />

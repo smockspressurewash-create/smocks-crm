@@ -1330,8 +1330,10 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
         })}
       </div>
 
+      {/* BUG FIX — "there are two buttons that say Schedule Job. There
+          should only be the one in the top right." Removed the duplicate
+          that used to sit here in the search/filter row. */}
       <div className="flex flex-wrap gap-2 items-center">
-        <GBtn onClick={() => { setNewJobForm(emptyNewJobForm()); setNewJobOpen(true); }} className="!py-1.5 !text-xs flex-shrink-0"><Plus size={13} className="inline mr-1" />Schedule Job</GBtn>
         <div className="relative flex-1 min-w-[160px]">
           <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-white/40" />
           <GInput placeholder="Search customer, address, tag..." value={search} onChange={e => setSearch(e.target.value)} className="!pl-9 !py-1.5 !text-xs" />

@@ -5209,8 +5209,15 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     const empId = (myEmployee as any)?.id;
     if (!empId) return;
     try {
-      const result = await (supabase as any).from("employees").update({ homeBaseAddress: addr }).eq("id", empId);
+      // BUG FIX — "you never told me whether the home base field saves —
+      // previously it would not save." This never checked for a 0-row
+      // response, only `error` — PostgREST returns SUCCESS with an empty
+      // result when an owner_id-scoped RLS write matches zero rows (see
+      // CLAUDE.md), which read as "saved" here even when nothing was
+      // actually written. .select("id") makes that 0-row case visible.
+      const result = await (supabase as any).from("employees").update({ homeBaseAddress: addr }).eq("id", empId).select("id");
       if (result?.error) { toast("Failed to save home base — " + result.error.message, "red"); return; }
+      if (!Array.isArray(result?.data) || result.data.length === 0) { toast("Home base didn't save — the server didn't confirm the change", "red"); return; }
     } catch (e: any) {
       toast("Failed to save home base — " + (e?.message || "try again"), "red");
       return;
@@ -7085,6 +7092,38 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                     )
                   )}
                 </>
+              );
+            })()}
+
+            {/* FEATURE — "the employee map view already shows their
+                location, but we need a map that displays pins for where
+                their jobs are, with a line connecting stop 1, stop 2, stop
+                3, stop 4." A real ordered route: today's jobs, numbered by
+                scheduled time, connected by a polyline (LiveMap's new
+                routeLine prop) — distinct from the location-SHARING map
+                above, which only ever shows the employee's own live GPS
+                dot. Jobs need their own geocoded lat/lng (set when the
+                address was picked via AddressAutocomplete — see
+                CrewView.tsx's identical job-pin comment); a job entered by
+                hand without ever touching the address autocomplete won't
+                have one yet and is simply skipped here, same as it already
+                is on the owner's Crew View map. */}
+            {(() => {
+              const routeJobs = myJobs
+                .filter((j: any) => j.scheduledDate === todayStr && j.status !== "cancelled" && typeof j.lat === "number" && typeof j.lng === "number")
+                .sort((a: any, b: any) => (a.scheduledTime || "").localeCompare(b.scheduledTime || ""));
+              if (routeJobs.length === 0) return null;
+              const mapsKey = settings.googleMapsKey || settings.mapsKey || "";
+              if (!mapsKey) return null;
+              const routePins = routeJobs.map((j: any, i: number) => ({
+                id: "route-" + j.id, label: j.customerName || j.address || `Stop ${i + 1}`,
+                lat: j.lat, lng: j.lng, updatedAt: Date.now(), kind: "job" as const, stopNumber: i + 1,
+              }));
+              return (
+                <div className="space-y-1.5">
+                  <div className="text-xs font-semibold text-white/70 flex items-center gap-1.5"><Route size={12} className="text-blue-400" />Today's Route ({routeJobs.length} stop{routeJobs.length !== 1 ? "s" : ""})</div>
+                  <LiveMap apiKey={mapsKey} pins={routePins} routeLine heightClassName="h-64" />
+                </div>
               );
             })()}
 

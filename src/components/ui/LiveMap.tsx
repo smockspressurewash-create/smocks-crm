@@ -14,6 +14,12 @@ export interface LiveMapPin {
   // location sharing. Blue distinguishes a job pin from the default red
   // employee-location pin at a glance.
   kind?: "employee" | "job";
+  // FEATURE — "a map with pins for where their jobs are, with a line
+  // connecting stop 1, stop 2, stop 3, stop 4." When set, the pin's marker
+  // label is this stop number instead of the first letter of `label`, and
+  // (when `routeLine` is also true on the map) a polyline is drawn through
+  // every numbered pin in ascending stop order.
+  stopNumber?: number;
 }
 
 const DARK_STYLE = [
@@ -28,10 +34,11 @@ const DARK_STYLE = [
 // Real Google Map for Crew View → Live Now — plots one pin per employee
 // currently sharing their location, with dark/satellite/street-view toggles
 // and a "last updated" readout per pin (via marker title + an inline list).
-export function LiveMap({ apiKey, pins, heightClassName = "h-56" }: { apiKey: string; pins: LiveMapPin[]; heightClassName?: string }) {
+export function LiveMap({ apiKey, pins, heightClassName = "h-56", routeLine = false }: { apiKey: string; pins: LiveMapPin[]; heightClassName?: string; routeLine?: boolean }) {
   const mapRef = useRef<HTMLDivElement | null>(null);
   const mapObjRef = useRef<any>(null);
   const markersRef = useRef<any[]>([]);
+  const routeLineRef = useRef<any>(null);
   const streetViewRef = useRef<any>(null);
   const [ready, setReady] = useState(false);
   const [error, setError] = useState("");
@@ -80,10 +87,28 @@ export function LiveMap({ apiKey, pins, heightClassName = "h-56" }: { apiKey: st
     markersRef.current = pins.map(p => new g.maps.Marker({
       position: { lat: p.lat, lng: p.lng },
       map: mapObjRef.current,
-      label: { text: p.label[0]?.toUpperCase() || "?", color: "#fff" },
-      title: `${p.label} — updated ${new Date(p.updatedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`,
+      label: { text: p.stopNumber != null ? String(p.stopNumber) : (p.label[0]?.toUpperCase() || "?"), color: "#fff", fontWeight: "700" },
+      title: `${p.stopNumber != null ? `Stop ${p.stopNumber} — ` : ""}${p.label} — updated ${new Date(p.updatedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`,
       icon: p.kind === "job" ? { url: "https://maps.google.com/mapfiles/ms/icons/blue-dot.png" } : undefined,
     }));
+    // FEATURE — "a line connecting stop 1, stop 2, stop 3, stop 4." Draws
+    // through every stopNumber-tagged pin in ascending order — a real
+    // route line, not just floating pins with no sense of order.
+    routeLineRef.current?.setMap(null);
+    routeLineRef.current = null;
+    if (routeLine) {
+      const numbered = pins.filter(p => p.stopNumber != null).sort((a, b) => (a.stopNumber || 0) - (b.stopNumber || 0));
+      if (numbered.length > 1) {
+        routeLineRef.current = new g.maps.Polyline({
+          path: numbered.map(p => ({ lat: p.lat, lng: p.lng })),
+          geodesic: true,
+          strokeColor: "#3b82f6",
+          strokeOpacity: 0.85,
+          strokeWeight: 3,
+          map: mapObjRef.current,
+        });
+      }
+    }
     if (pins.length > 1) {
       const bounds = new g.maps.LatLngBounds();
       pins.forEach(p => bounds.extend({ lat: p.lat, lng: p.lng }));
@@ -91,7 +116,7 @@ export function LiveMap({ apiKey, pins, heightClassName = "h-56" }: { apiKey: st
     } else if (pins.length === 1) {
       mapObjRef.current.setCenter({ lat: pins[0].lat, lng: pins[0].lng });
     }
-  }, [ready, pins]);
+  }, [ready, pins, routeLine]);
 
   if (!apiKey) {
     return <div className="h-48 rounded-xl bg-black/30 border border-white/10 flex items-center justify-center text-xs text-white/30">Add a Google Maps API key in Settings to see live locations on a map</div>;
