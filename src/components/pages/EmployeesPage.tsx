@@ -52,6 +52,8 @@ import { PBar } from "../ui/PBar";
 import { PageFade } from "../ui/PageFade";
 import { TimeframeSelector } from "../ui/TimeframeSelector";
 import { AddressAutocomplete } from "../ui/AddressAutocomplete";
+import { UpgradePrompt } from "../ui/UpgradePrompt";
+import type { PlanLimits } from "../../lib/planLimits";
 import { BeforeAfterSlider } from "../ui/BeforeAfterSlider";
 import { CustomerModal } from "../ui/CustomerModal";
 import { CustomerDetail } from "../ui/CustomerDetail";
@@ -299,7 +301,7 @@ function PayrollCalendar({ employees, jobs = [] }: { employees: any[]; jobs?: an
   );
 }
 
-export function EmployeesPage({ employees = [], setEmployees, jobs = [], setJobs = (() => {}) as any, customers = [], settings = {} as any, toast = (_msg: string, _tone?: string) => {}, autoOpenManagerInvite = false, onAutoOpenManagerInviteConsumed, initialView, onInitialViewConsumed, ownerId }: { employees?: any[]; setEmployees: any; jobs?: any[]; setJobs?: any; customers?: any[]; settings?: any; toast?: any; autoOpenManagerInvite?: boolean; onAutoOpenManagerInviteConsumed?: () => void; initialView?: "list" | "hours" | "payroll"; onInitialViewConsumed?: () => void; ownerId?: string }) {
+export function EmployeesPage({ employees = [], setEmployees, jobs = [], setJobs = (() => {}) as any, customers = [], settings = {} as any, toast = (_msg: string, _tone?: string) => {}, autoOpenManagerInvite = false, onAutoOpenManagerInviteConsumed, initialView, onInitialViewConsumed, ownerId, planLimits, onUpgrade = () => {} }: { employees?: any[]; setEmployees: any; jobs?: any[]; setJobs?: any; customers?: any[]; settings?: any; toast?: any; autoOpenManagerInvite?: boolean; onAutoOpenManagerInviteConsumed?: () => void; initialView?: "list" | "hours" | "payroll"; onInitialViewConsumed?: () => void; ownerId?: string; planLimits?: PlanLimits; onUpgrade?: () => void }) {
   const [modal, setModal] = useState({ open: false, data: null });
   const [view, setView] = useState("list"); // list | hours | payroll
   // Hours tab — which employee's per-shift/per-job paid/unpaid breakdown is
@@ -374,6 +376,18 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setJobs
   // very different forms (one creates an invite code + pre-placeholder row,
   // the other saves a real employee row directly).
   const [addChooserOpen, setAddChooserOpen] = useState(false);
+  // FEATURE — "whenever they hit their plan limit... it prompts them to
+  // upgrade." Seat count excludes the owner's own auto-created row (role
+  // "owner") — the limit is about team members, not the account itself.
+  // Pending (not-yet-accepted) invites aren't counted — a known
+  // simplification, see the equivalent note on the customer-limit gate.
+  const [upgradePromptOpen, setUpgradePromptOpen] = useState(false);
+  const seatCount = employees.filter((e: any) => e.role !== "owner").length;
+  const atSeatLimit = !!planLimits && planLimits.employeeSeats !== null && seatCount >= planLimits.employeeSeats;
+  const openAddTeamMember = () => {
+    if (atSeatLimit) { setUpgradePromptOpen(true); return; }
+    setAddChooserOpen(true);
+  };
   const [inviteOpen, setInviteOpen] = useState(false);
   const [invites, setInvites] = usePersistent<InviteRecord[]>("smocks.invites", []);
   const [inviteF, setInviteF] = useState({ firstName: "", lastName: "", email: "", phone: "", role: "Technician", hourlyRate: 18, isNewHire: true });
@@ -842,6 +856,22 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setJobs
 
   return (
     <div className="space-y-4">
+      {planLimits && (
+        <UpgradePrompt
+          open={upgradePromptOpen}
+          onClose={() => setUpgradePromptOpen(false)}
+          onUpgrade={() => { setUpgradePromptOpen(false); onUpgrade(); }}
+          tier={planLimits.tier}
+          resource="team members"
+          limit={planLimits.employeeSeats || 0}
+        />
+      )}
+      {planLimits?.employeeSeats !== null && planLimits && (
+        <div className={"flex items-center justify-between gap-2 px-3 py-2 rounded-xl border text-xs " + (atSeatLimit ? "bg-red-950/20 border-red-700/40 text-red-300" : "bg-white/5 border-white/10 text-white/50")}>
+          <span>{seatCount} / {planLimits.employeeSeats} team seats used on {planLimits.tier === "solo" ? "the Solo plan" : "the Free plan"}</span>
+          <button onClick={onUpgrade} className="text-red-400 hover:text-red-300 font-semibold flex-shrink-0">Upgrade →</button>
+        </div>
+      )}
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div className="flex items-center gap-3">
           <div className="flex gap-1 bg-black/40 border border-red-900/30 rounded-xl p-1">
@@ -853,7 +883,7 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setJobs
           <button onClick={() => setShowPortalInfo(!showPortalInfo)} className="text-xs px-3 py-1.5 bg-black/40 border border-blue-700/40 text-blue-300 hover:bg-blue-950/30 rounded-xl transition flex items-center gap-1.5">
             <Globe size={12} />Team Portal
           </button>
-          <GBtn onClick={() => setAddChooserOpen(true)}><Plus size={14} className="inline mr-1.5" />Add Team Member</GBtn>
+          <GBtn onClick={openAddTeamMember}><Plus size={14} className="inline mr-1.5" />Add Team Member</GBtn>
         </div>
       </div>
 
