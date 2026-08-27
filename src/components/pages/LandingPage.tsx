@@ -93,11 +93,15 @@ const FEATURES: Array<{ icon: React.ElementType; title: string; desc: string }> 
   },
 ];
 
-// ─── Pricing (illustrative) ──────────────────────────────────────────────────
-// NOTE: this app's data model has no real plan/tier/subscription/billing
-// concept (checked src/types/index.ts and App.tsx) — these tiers are clean,
-// reasonable placeholder pricing for a small-business CRM, clearly marked as
-// such below, and are NOT wired to any real payment/signup flow.
+// ─── Pricing ──────────────────────────────────────────────────────────────────
+// FEATURE — "it should ask them to pay first, then create an account." Each
+// plan card's button below now calls onChoosePlan(plan, interval), which
+// App.tsx's startPaidSignup wires to a REAL Stripe Checkout session — no
+// account exists yet when this fires. Only after Stripe confirms payment
+// does #/signup-complete let anyone actually create an account (see
+// App.tsx's pendingCheckoutSession). The plain "Start Free Trial" CTAs
+// elsewhere on this page are a separate, intentionally-unpaid path (see
+// onGetStarted) — that's the real free/limited tier signup.
 // BUG FIX (user report) — "make the pricing a bit cheaper, offer a discount
 // for annual." Lowered all three monthly prices and added a real annual
 // rate (~20% off, i.e. 2 months free) — priceMonthly is what's billed
@@ -151,9 +155,16 @@ export const PLANS: Array<{ name: string; priceMonthly: number; priceAnnual: num
 export function LandingPage({
   onGetStarted,
   onNavigate,
+  onChoosePlan,
+  choosingPlan = false,
 }: {
   onGetStarted: () => void;
   onNavigate: (page: MarketingPage) => void;
+  // FEATURE — pay-first signup: starts a real Stripe Checkout for the
+  // clicked plan before any account exists. Optional so this page still
+  // renders fine if a caller doesn't pass it (falls back to onGetStarted).
+  onChoosePlan?: (plan: string, interval: "month" | "year") => void;
+  choosingPlan?: boolean;
 }) {
   const [billing, setBilling] = useState<"monthly" | "annual">("annual");
   return (
@@ -342,7 +353,6 @@ export function LandingPage({
           <p className="text-white/50 max-w-xl mx-auto text-sm md:text-base">
             Pick the plan that matches your crew size. Switch anytime.
           </p>
-          <p className="text-white/25 text-[11px] mt-2">Illustrative pricing — contact us for current rates.</p>
         </Reveal>
 
         {/* Billing cycle toggle — annual defaults on since it's the better
@@ -392,16 +402,16 @@ export function LandingPage({
                 </ul>
 
                 <button
-                  onClick={onGetStarted}
+                  onClick={() => onChoosePlan ? onChoosePlan(plan.name.toLowerCase(), billing === "annual" ? "year" : "month") : onGetStarted()}
+                  disabled={choosingPlan}
                   className={
-                    "w-full py-3 rounded-xl font-semibold text-sm transition-all flex items-center justify-center gap-1.5 " +
+                    "w-full py-3 rounded-xl font-semibold text-sm transition-all flex items-center justify-center gap-1.5 disabled:opacity-50 " +
                     (plan.highlighted
                       ? "bg-gradient-to-br from-red-600 to-red-800 hover:from-red-500 hover:to-red-700 shadow-lg shadow-red-900/30 hover:-translate-y-0.5"
                       : "bg-white/5 hover:bg-white/10 border border-white/10")
                   }
                 >
-                  Get Started
-                  <ChevronRight size={15} />
+                  {choosingPlan ? "Redirecting to checkout…" : <>Get Started<ChevronRight size={15} /></>}
                 </button>
               </div>
             </Reveal>

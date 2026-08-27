@@ -89,9 +89,16 @@ function FaqItem({ q, a }: { q: string; a: string }) {
 export function PricingPage({
   onGetStarted,
   onNavigate,
+  onChoosePlan,
+  choosingPlan = false,
 }: {
   onGetStarted: () => void;
   onNavigate: (page: MarketingPage) => void;
+  // FEATURE — "it should ask them to pay first, then create an account."
+  // Starts a real Stripe Checkout for the clicked plan before any account
+  // exists — see App.tsx's startPaidSignup / pendingCheckoutSession.
+  onChoosePlan?: (plan: string, interval: "month" | "year") => void;
+  choosingPlan?: boolean;
 }) {
   const [billing, setBilling] = useState<"monthly" | "annual">("annual");
   return (
@@ -108,7 +115,6 @@ export function PricingPage({
         title={<>Pick the plan that matches <span className="lp-hero-gradient">your crew size</span></>}
         subtitle="No per-feature upsells, no surprise fees. Switch tiers anytime as your business grows."
       />
-      <p className="text-white/25 text-[11px] text-center -mt-6 mb-4">Illustrative pricing — contact us for current rates.</p>
 
       {/* ── Pricing cards ─────────────────────────────────────────────────── */}
       <section className="px-4 md:px-6 py-10 md:py-14 max-w-6xl mx-auto">
@@ -155,16 +161,16 @@ export function PricingPage({
                 </ul>
 
                 <button
-                  onClick={onGetStarted}
+                  onClick={() => onChoosePlan ? onChoosePlan(plan.name.toLowerCase(), billing === "annual" ? "year" : "month") : onGetStarted()}
+                  disabled={choosingPlan}
                   className={
-                    "w-full py-3 rounded-xl font-semibold text-sm transition-all flex items-center justify-center gap-1.5 " +
+                    "w-full py-3 rounded-xl font-semibold text-sm transition-all flex items-center justify-center gap-1.5 disabled:opacity-50 " +
                     (plan.highlighted
                       ? "bg-gradient-to-br from-red-600 to-red-800 hover:from-red-500 hover:to-red-700 shadow-lg shadow-red-900/30 hover:-translate-y-0.5"
                       : "bg-white/5 hover:bg-white/10 border border-white/10")
                   }
                 >
-                  Get Started
-                  <ChevronRight size={15} />
+                  {choosingPlan ? "Redirecting to checkout…" : <>Get Started<ChevronRight size={15} /></>}
                 </button>
               </div>
             </Reveal>

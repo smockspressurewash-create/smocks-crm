@@ -123,13 +123,30 @@ export function OnboardingFlow({
     { n: 4, label: "Ready", icon: CheckCircle },
   ];
 
+  // FEATURE — "it should have cool animations and transitions and UI."
+  // A fade+slide entrance keyed by step number (React remounts the panel
+  // whenever `key` changes, which restarts the CSS animation every time),
+  // plus an animated fill bar under the step dots that actually tracks
+  // progress instead of just recoloring instantly.
   return (
     <div className="fixed inset-0 z-[100] bg-black flex flex-col items-center overflow-y-auto">
+      <style>{`
+        @keyframes onb-step-in { 0% { opacity: 0; transform: translateY(16px) scale(0.98); } 100% { opacity: 1; transform: translateY(0) scale(1); } }
+        .onb-step-panel { animation: onb-step-in 0.38s cubic-bezier(0.16,1,0.3,1); }
+        @keyframes onb-dot-pop { 0% { transform: scale(0.7); } 60% { transform: scale(1.15); } 100% { transform: scale(1); } }
+        .onb-dot-active { animation: onb-dot-pop 0.35s ease-out; }
+      `}</style>
       <div className="w-full max-w-lg px-5 py-8 space-y-5">
         <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
+          <div className="relative flex items-center gap-2">
+            {/* Track + animated fill behind the dots */}
+            <div className="absolute left-3.5 right-3.5 top-1/2 -translate-y-1/2 h-0.5 bg-white/10 -z-0" />
+            <div
+              className="absolute left-3.5 top-1/2 -translate-y-1/2 h-0.5 bg-gradient-to-r from-red-600 to-green-600 -z-0 transition-all duration-500 ease-out"
+              style={{ width: `calc(${((step - 1) / (steps.length - 1)) * 100}% - ${((step - 1) / (steps.length - 1)) * 28}px)` }}
+            />
             {steps.map(s => (
-              <div key={s.n} className={"w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold " + (s.n === step ? "bg-red-600 text-white" : s.n < step ? "bg-green-700 text-white" : "bg-white/10 text-white/30")}>
+              <div key={s.n} className={"relative z-10 w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold transition-colors duration-300 " + (s.n === step ? "bg-red-600 text-white onb-dot-active" : s.n < step ? "bg-green-700 text-white" : "bg-white/10 text-white/30")}>
                 {s.n < step ? <CheckCircle size={14} /> : s.n}
               </div>
             ))}
@@ -138,7 +155,7 @@ export function OnboardingFlow({
         </div>
 
         {step === 1 && (
-          <Glass className="p-6 space-y-4">
+          <Glass key={1} className="onb-step-panel p-6 space-y-4">
             <div>
               <div className="text-xl font-bold flex items-center gap-2"><Building2 size={20} className="text-red-400" />Tell us about your business</div>
               <div className="text-sm text-white/40 mt-1">This helps us tailor the dashboard to you.</div>
@@ -166,7 +183,7 @@ export function OnboardingFlow({
         )}
 
         {step === 2 && (
-          <Glass className="p-6 space-y-4">
+          <Glass key={2} className="onb-step-panel p-6 space-y-4">
             <div>
               <div className="text-xl font-bold flex items-center gap-2"><UsersIcon size={20} className="text-red-400" />Import your clients</div>
               <div className="text-sm text-white/40 mt-1">Paste a CSV, upload a file, or skip and add clients later.</div>
@@ -196,7 +213,7 @@ export function OnboardingFlow({
         )}
 
         {step === 3 && (
-          <Glass className="p-6 space-y-4">
+          <Glass key={3} className="onb-step-panel p-6 space-y-4">
             <div>
               <div className="text-xl font-bold flex items-center gap-2"><DollarSign size={20} className="text-red-400" />Set your rates</div>
               <div className="text-sm text-white/40 mt-1">Default pricing for common services — you can change these anytime in Services.</div>
@@ -219,8 +236,8 @@ export function OnboardingFlow({
         )}
 
         {step === 4 && (
-          <Glass className="p-6 space-y-4 text-center">
-            <div className="w-16 h-16 rounded-full bg-green-900/40 border border-green-600/50 flex items-center justify-center mx-auto">
+          <Glass key={4} className="onb-step-panel p-6 space-y-4 text-center">
+            <div className="w-16 h-16 rounded-full bg-green-900/40 border border-green-600/50 flex items-center justify-center mx-auto onb-dot-active">
               <CheckCircle size={28} className="text-green-400" />
             </div>
             <div className="text-xl font-bold">You're ready!</div>

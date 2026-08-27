@@ -478,6 +478,37 @@ export function App() {
   const [ownerCompanyName, setOwnerCompanyName] = useState("");
   const [ownerFullName, setOwnerFullName] = useState("");
 
+  // FEATURE — "it should ask them to pay first, then create an account."
+  // Populated only when the URL is Stripe's own redirect back from a real
+  // Checkout payment (#/signup-complete?session_id=...). null = normal
+  // login/register flow, unchanged. "verifying" briefly shows a spinner
+  // while the session_id is confirmed against Stripe server-side (never
+  // trust the query string alone — see verify_signup_session).
+  const [pendingCheckoutSession, setPendingCheckoutSession] = useState<
+    { status: "verifying" } | { status: "ready"; sessionId: string; plan: string; interval: string; email: string } | { status: "error"; message: string } | null
+  >(null);
+  useEffect(() => {
+    const hash = window.location.hash.replace(/^#\/?/, "");
+    if (!hash.startsWith("signup-complete")) return;
+    const qs = new URLSearchParams(hash.split("?")[1] || "");
+    const sessionId = qs.get("session_id");
+    if (!sessionId) { setPendingCheckoutSession({ status: "error", message: "No payment session found — please start from the pricing page." }); return; }
+    setPendingCheckoutSession({ status: "verifying" });
+    setOwnerLoginMode("register");
+    fetch("/api/platform-billing", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "verify_signup_session", sessionId }),
+    })
+      .then(r => r.json())
+      .then((data: any) => {
+        if (data.error) { setPendingCheckoutSession({ status: "error", message: data.error }); return; }
+        setPendingCheckoutSession({ status: "ready", sessionId, plan: data.plan || "", interval: data.interval || "month", email: data.email || "" });
+        if (data.email) setOwnerEmail(data.email);
+      })
+      .catch((e: any) => setPendingCheckoutSession({ status: "error", message: e?.message || "Couldn't verify payment — try refreshing." }));
+  }, []);
+
   // ── Navigation ────────────────────────────────────────────────────────────
   const [page, setPage] = useState(() => {
     // Restore page from URL hash on first load. The employee portal owns sub-paths
@@ -524,6 +555,13 @@ export function App() {
     // is exactly why the reset page sometimes never even loaded. Prefix-match
     // it like "portal/" and "estimate/" above.
     if (hash === "reset-password" || hash.startsWith("reset-password&") || hash.startsWith("reset-password?")) return "reset-password";
+    // FEATURE — "it should ask them to pay first, then create an account."
+    // Stripe redirects back here (see startPaidSignup below) after a real
+    // payment on the hosted Checkout page, carrying its own session_id —
+    // the signup-complete screen (rendered from the "login" page render
+    // path below, gated on pendingCheckoutSession) verifies that session
+    // server-side before letting anyone create an account against it.
+    if (hash === "signup-complete" || hash.startsWith("signup-complete?")) return "login";
     // FEATURE — public marketing/landing page for the product itself
     // (CrewBoss), shown at the bare root ("#" or "#/", i.e. no hash at all)
     // or "#/welcome"/"#/home". Previously an empty hash fell through to the
@@ -3781,6 +3819,36 @@ export function App() {
     window.location.hash = "/" + p;
     setPage(p);
   };
+  // FEATURE — "it should ask them to pay first, then create an account."
+  // Real Stripe Checkout, started with NO session/account yet — Stripe's
+  // own hosted page collects the card, then redirects back to
+  // #/signup-complete?session_id=... (see the effect near ownerCompanyName
+  // above), which is where an account actually gets created. The
+  // hero/footer "Start Free Trial" buttons deliberately keep going through
+  // navigateMarketing("login") unchanged — that's the real free-tier
+  // signup path, no payment involved at all.
+  const [choosingPlan, setChoosingPlan] = useState(false);
+  const startPaidSignup = async (plan: string, interval: "month" | "year") => {
+    setChoosingPlan(true);
+    try {
+      const res = await fetch("/api/platform-billing", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "create_signup_checkout_session",
+          plan, interval,
+          successUrl: `${window.location.origin}${window.location.pathname}#/signup-complete?session_id={CHECKOUT_SESSION_ID}`,
+          cancelUrl: `${window.location.origin}${window.location.pathname}#/pricing`,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.url) { toast(data.error || "Couldn't start checkout — try again", "red"); setChoosingPlan(false); return; }
+      window.location.href = data.url;
+    } catch (e: any) {
+      toast("Couldn't start checkout — " + (e?.message || "unknown error"), "red");
+      setChoosingPlan(false);
+    }
+  };
 
   // `marketingPreview` lets an already-logged-in owner explicitly view
   // these pages (see the flag's own comment above) — everyone else still
@@ -3794,7 +3862,7 @@ export function App() {
     </div>
   );
   if (page === "welcome" && (marketingPreview || (!empSession && !hasCrmSession))) {
-    return <>{previewBar}<LandingPage onGetStarted={() => navigateMarketing("login")} onNavigate={navigateMarketing} /></>;
+    return <>{previewBar}<LandingPage onGetStarted={() => navigateMarketing("login")} onNavigate={navigateMarketing} onChoosePlan={startPaidSignup} choosingPlan={choosingPlan} /></>;
   }
   // ── Dedicated marketing pages — same public, no-session-required pattern
   // as "welcome" above. See MarketingShared.tsx for the shared nav/footer.
@@ -3802,7 +3870,7 @@ export function App() {
     return <>{previewBar}<FeaturesPage onGetStarted={() => navigateMarketing("login")} onNavigate={navigateMarketing} /></>;
   }
   if (page === "pricing" && (marketingPreview || (!empSession && !hasCrmSession))) {
-    return <>{previewBar}<PricingPage onGetStarted={() => navigateMarketing("login")} onNavigate={navigateMarketing} /></>;
+    return <>{previewBar}<PricingPage onGetStarted={() => navigateMarketing("login")} onNavigate={navigateMarketing} onChoosePlan={startPaidSignup} choosingPlan={choosingPlan} /></>;
   }
   if (page === "about" && (marketingPreview || (!empSession && !hasCrmSession))) {
     return <>{previewBar}<AboutPage onGetStarted={() => navigateMarketing("login")} onNavigate={navigateMarketing} /></>;
@@ -4034,18 +4102,28 @@ export function App() {
       const { data, error } = await supabase.auth.signInWithPassword({ email: ownerEmail.trim(), password: ownerPassword });
       setOwnerLoginLoading(false);
       if (error) { setOwnerLoginError(error.message); return; }
-      // FEATURE — "let people sign up and pay for CrewBoss" — starts the
-      // free trial the moment a brand-new owner account is created.
-      // Idempotent server-side (platform-billing.ts's start_trial never
-      // resets an existing row), so this is safe to fire on every
-      // registration without a separate "has this owner ever registered
-      // before" check here.
+      // FEATURE — "let people sign up and pay for CrewBoss" / "it should
+      // ask them to pay first, then create an account." Two mutually
+      // exclusive paths for a brand-new registration: if this account was
+      // just created off a verified Stripe payment (pendingCheckoutSession,
+      // see the effect above), record that REAL paid subscription — never
+      // the free trial. Otherwise (the ordinary free signup, still fully
+      // supported — this is the actual "free but limited" tier entry
+      // point), start the free trial exactly as before.
       if (isRegistering && data?.session?.access_token) {
-        fetch("/api/platform-billing", {
-          method: "POST",
-          headers: { "Content-Type": "application/json", Authorization: `Bearer ${data.session.access_token}` },
-          body: JSON.stringify({ action: "start_trial" }),
-        }).catch((e: any) => console.warn("[PlatformBilling] start_trial failed:", e?.message));
+        if (pendingCheckoutSession?.status === "ready") {
+          fetch("/api/platform-billing", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", Authorization: `Bearer ${data.session.access_token}` },
+            body: JSON.stringify({ action: "complete_signup", sessionId: pendingCheckoutSession.sessionId }),
+          }).catch((e: any) => console.warn("[PlatformBilling] complete_signup failed:", e?.message));
+        } else {
+          fetch("/api/platform-billing", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", Authorization: `Bearer ${data.session.access_token}` },
+            body: JSON.stringify({ action: "start_trial" }),
+          }).catch((e: any) => console.warn("[PlatformBilling] start_trial failed:", e?.message));
+        }
       }
       // FIX 5 (round 2) — this used to also insert an employee row for the
       // owner right here, using snake_case columns (user_id/first_name/
@@ -4089,6 +4167,22 @@ export function App() {
               Employee Portal
             </button>
           </div>
+
+          {pendingCheckoutSession?.status === "verifying" && (
+            <div className="w-full p-4 rounded-2xl bg-green-950/20 border border-green-700/40 text-center text-sm text-green-300 flex items-center justify-center gap-2">
+              <div className="w-4 h-4 border-2 border-green-400/40 border-t-green-400 rounded-full animate-spin" />
+              Confirming your payment…
+            </div>
+          )}
+          {pendingCheckoutSession?.status === "error" && (
+            <div className="w-full p-4 rounded-2xl bg-red-950/30 border border-red-700/40 text-center text-sm text-red-300">{pendingCheckoutSession.message}</div>
+          )}
+          {pendingCheckoutSession?.status === "ready" && (
+            <div className="w-full p-4 rounded-2xl bg-green-950/20 border border-green-700/40 text-center">
+              <div className="text-sm font-semibold text-green-300">✓ Payment received — {pendingCheckoutSession.plan ? pendingCheckoutSession.plan[0].toUpperCase() + pendingCheckoutSession.plan.slice(1) : "your"} plan, billed {pendingCheckoutSession.interval === "year" ? "annually" : "monthly"}</div>
+              <div className="text-xs text-green-400/70 mt-1">Create your account below to finish setting up.</div>
+            </div>
+          )}
 
           <div className="w-full space-y-3">
             {/* Email/password owner login */}
