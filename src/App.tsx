@@ -234,40 +234,56 @@ const setCachedRole = (userId: string, role: "employee" | "manager"): void => {
 // signed into the main CRM would have had every owner_id-scoped query
 // resolve to their OWN uid instead of the business they work for, matching
 // zero rows.
-async function resolveUserRole(session: any): Promise<{ role: "owner" | "manager" | "employee"; ownerId: string }> {
-  if (!session?.user) return { role: "owner", ownerId: "" };
+// FEATURE — "fire an employee and revoke their portal access without
+// deleting their account." employees.status was already free-text but
+// nothing ever actually enforced it here — an "inactive"/"terminated"/
+// "leave" employee's Supabase Auth account still logged straight into the
+// field portal exactly as if nothing had changed (the pre-existing toggle
+// only ever affected payroll totals/dimming in EmployeesPage.tsx, never
+// real access). `status` is now threaded through every resolution path
+// below so every call site can gate on it before granting a session —
+// "active" (or unset, for any pre-existing employee row from before this
+// feature) is the only value that grants portal/CRM access; "leave" and
+// "terminated" both block it (leave is meant to be temporary and restores
+// exactly as it was the moment the owner flips it back to "active", since
+// nothing else about the employee row is touched by either state).
+async function resolveUserRole(session: any): Promise<{ role: "owner" | "manager" | "employee"; ownerId: string; status: string }> {
+  if (!session?.user) return { role: "owner", ownerId: "", status: "active" };
   const selfId = session.user.id;
 
   const cached = getCachedRole(session.user.id);
   if (cached) {
     // Cache only ever stores "employee"/"manager" (see setCachedRole call
-    // sites below) — re-resolve ownerId from the employees row even on a
-    // cache hit, since the cache predates this field and doesn't store it.
+    // sites below) — re-resolve ownerId/status from the employees row even
+    // on a cache hit, since the cache predates these fields and doesn't
+    // store them, and status can change at any time after the role itself
+    // was cached.
     try {
-      const { data } = await (supabase as any).from("employees").select("owner_id").eq("user_id", selfId).maybeSingle();
-      if (data?.owner_id) return { role: cached, ownerId: data.owner_id };
+      const { data } = await (supabase as any).from("employees").select("owner_id, status").eq("user_id", selfId).maybeSingle();
+      if (data?.owner_id) return { role: cached, ownerId: data.owner_id, status: data.status || "active" };
     } catch { /* fall through */ }
-    return { role: cached, ownerId: selfId };
+    return { role: cached, ownerId: selfId, status: "active" };
   }
 
   try {
     const { data } = await (supabase as any)
       .from("employees")
-      .select("id, role, owner_id")
+      .select("id, role, owner_id, status")
       .eq("user_id", selfId)
       .maybeSingle();
     if (data) {
       const role = (data.role || "").toLowerCase();
       const ownerId = data.owner_id || selfId;
+      const status = data.status || "active";
       if (role === "owner") {
-        return { role: "owner", ownerId };
+        return { role: "owner", ownerId, status };
       }
       if (role === "manager") {
         setCachedRole(selfId, "manager");
-        return { role: "manager", ownerId };
+        return { role: "manager", ownerId, status };
       }
       setCachedRole(selfId, "employee");
-      return { role: "employee", ownerId };
+      return { role: "employee", ownerId, status };
     }
   } catch { /* employees table may not exist */ }
 
@@ -285,26 +301,27 @@ async function resolveUserRole(session: any): Promise<{ role: "owner" | "manager
       if (byEmail) {
         const role = (byEmail.role || "").toLowerCase();
         const ownerId = byEmail.owner_id || selfId;
-        if (role === "owner") return { role: "owner", ownerId };
-        if (role === "manager") { setCachedRole(selfId, "manager"); return { role: "manager", ownerId }; }
+        const status = byEmail.status || "active";
+        if (role === "owner") return { role: "owner", ownerId, status };
+        if (role === "manager") { setCachedRole(selfId, "manager"); return { role: "manager", ownerId, status }; }
         setCachedRole(selfId, "employee");
-        return { role: "employee", ownerId };
+        return { role: "employee", ownerId, status };
       }
     } catch { /* RPC may not exist yet (migration not applied) or no matching row */ }
   }
 
   const oauthIntent = consumeOAuthIntent();
   if (oauthIntent === "employee") {
-    return { role: "employee", ownerId: selfId };
+    return { role: "employee", ownerId: selfId, status: "active" };
   }
 
   const identities = session.user.identities || [];
   const hasGoogle = identities.some((i: any) => i.provider === "google");
   if (hasGoogle) {
-    return { role: "owner", ownerId: selfId };
+    return { role: "owner", ownerId: selfId, status: "active" };
   }
 
-  return { role: "employee", ownerId: selfId };
+  return { role: "employee", ownerId: selfId, status: "active" };
 }
 
 // Captures the Google OAuth token bridged via sessionStorage (see the manual
@@ -3426,7 +3443,26 @@ export function App() {
               return;
             }
 
-            const { role: userRole, ownerId: resolvedOwnerId } = await resolveUserRole(session);
+            const { role: userRole, ownerId: resolvedOwnerId, status: userStatus } = await resolveUserRole(session);
+
+            // FEATURE — "fire an employee and revoke their portal access
+            // without deleting their account." Their Supabase Auth login
+            // itself still succeeds (that account was never touched) — this
+            // is the actual enforcement point: a non-owner whose employees
+            // row isn't "active" gets signed straight back out before any
+            // session state is granted, every time they try to log in,
+            // until the owner restores them.
+            if (userRole !== "owner" && userStatus && userStatus !== "active") {
+              console.warn("[Access] blocked sign-in — employee status is", userStatus);
+              await supabase.auth.signOut().catch(() => {});
+              setEmpSession(null);
+              setHasCrmSession(false);
+              setLastOwnerSessionFlag(false);
+              setOauthProcessing(false);
+              toast?.(userStatus === "terminated" ? "Your access to this account has been removed." : "Your access is currently paused — contact your employer.", "red");
+              setPage("login");
+              return;
+            }
 
             if (userRole === "employee") {
               // Force the hash to #/portal immediately too — belt-and-suspenders so the
@@ -3511,7 +3547,23 @@ export function App() {
         }
         const { data: { session: initial } } = await supabase.auth.getSession();
         const initIsGoogle = (initial?.user?.identities || []).some((i: any) => i.provider === "google");
-        const { role: initRole, ownerId: initOwnerId } = await resolveUserRole(initial);
+        const { role: initRole, ownerId: initOwnerId, status: initStatus } = await resolveUserRole(initial);
+        // Same enforcement as the onAuthStateChange branch above, for a
+        // returning session found on page load rather than a fresh sign-in.
+        if (initial && initRole !== "owner" && initStatus && initStatus !== "active") {
+          console.warn("[Access] blocked returning session — employee status is", initStatus);
+          await supabase.auth.signOut().catch(() => {});
+          setEmpSession(null);
+          setHasCrmSession(false);
+          setLastOwnerSessionFlag(false);
+          setOauthProcessing(false);
+          setSessionChecked(true);
+          bootstrapDone = true;
+          clearTimeout(forceRenderTimer);
+          toast?.(initStatus === "terminated" ? "Your access to this account has been removed." : "Your access is currently paused — contact your employer.", "red");
+          setPage("login");
+          return;
+        }
         if (initial && initRole === "employee") {
           if (!window.location.hash.startsWith("#/portal")) window.location.hash = "/portal";
           setEmpSession(initial);

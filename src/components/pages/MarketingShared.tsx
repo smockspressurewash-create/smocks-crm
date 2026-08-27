@@ -1,6 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
 import { Menu, X, ArrowRight } from "lucide-react";
-import { CrewBossMark } from "../ui/CrewBossMark";
 
 // ─── Shared building blocks for CrewBoss's public marketing pages ─────────────
 // Used by LandingPage.tsx (#/welcome), FeaturesPage.tsx (#/features),
@@ -275,15 +274,16 @@ export function MarketingNav({
   return (
     <header className="sticky top-0 z-40 backdrop-blur-md bg-black/60 border-b border-white/10">
       <div className="max-w-6xl mx-auto px-4 md:px-6 h-16 flex items-center justify-between">
+        {/* BUG FIX — "the logo for the landing page is wrong; make it just
+            the word CrewBoss and make it larger." Dropped the icon badge —
+            this product's identity is the wordmark, not a generic gradient
+            box — and sized the text up to actually read as a logo. */}
         <button
           onClick={() => onNavigate("welcome")}
-          className="flex items-center gap-2.5"
+          className="flex items-center"
           aria-label="CrewBoss home"
         >
-          <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-red-600 to-red-900 flex items-center justify-center shadow-lg shadow-red-900/40">
-            <CrewBossMark className="w-5 h-5" />
-          </div>
-          <span className="font-bold text-lg tracking-tight">Crew<span className="text-red-500">Boss</span></span>
+          <span className="font-black text-2xl md:text-[26px] tracking-tight">Crew<span className="text-red-500">Boss</span></span>
         </button>
 
         <nav className="hidden md:flex items-center gap-8 text-sm text-white/70">
@@ -378,11 +378,8 @@ export function MarketingFooter({
     <footer className="border-t border-white/10 px-4 md:px-6 py-10 mt-8">
       <div className="max-w-6xl mx-auto flex flex-col gap-8">
         <div className="flex flex-col md:flex-row items-center justify-between gap-6">
-          <button onClick={() => onNavigate("welcome")} className="flex items-center gap-2.5">
-            <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-red-600 to-red-900 flex items-center justify-center">
-              <CrewBossMark className="w-4 h-4" />
-            </div>
-            <span className="font-bold text-sm tracking-tight text-white/70">Crew<span className="text-red-500">Boss</span></span>
+          <button onClick={() => onNavigate("welcome")} className="flex items-center">
+            <span className="font-black text-lg tracking-tight text-white/80">Crew<span className="text-red-500">Boss</span></span>
           </button>
 
           <div className="flex flex-wrap items-center justify-center gap-x-6 gap-y-2 text-xs text-white/40">

@@ -13,7 +13,7 @@ import {
   Globe, Share2, Trophy, ExternalLink, Workflow, ToggleLeft, ToggleRight,
   Navigation, TrendingDown, PieChart as PieIcon, Package, Wrench,
   CheckSquare, Route, Users2, Layers, ArrowRight, BarChart2, Filter,
-  Paperclip, ImageIcon, FileImage, MoreVertical, Mic, Upload, Link, Lock, User
+  Paperclip, ImageIcon, FileImage, MoreVertical, Mic, Upload, Link, Lock, User, UserX
 } from "lucide-react";
 import {
   BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid,
@@ -613,11 +613,29 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setJobs
       .then((r: any) => { if (r?.error) toast?.("Removed locally, but failed to sync — " + r.error.message, "red"); })
       .catch((e: any) => toast?.("Removed locally, but failed to sync — " + (e?.message || ""), "red"));
   };
-  const toggle = id => {
-    setEmployees(prev => prev.map(e => e.id === id ? { ...e, status: e.status === "active" ? "inactive" : "active" } : e));
-    const emp = employees.find((e: any) => e.id === id);
-    const nextStatus = emp?.status === "active" ? "inactive" : "active";
-    (supabase as any).from("employees").update({ status: nextStatus }).eq("id", id).catch(() => {});
+  // FEATURE — "fire an employee and revoke their portal access... don't
+  // delete their account. Also let the owner mark someone as on leave/break
+  // so they can restore it exactly as it was before." Three real states now
+  // (see App.tsx's resolveUserRole, which is what actually enforces this at
+  // login — this page only ever sets the status field):
+  //   "active"     — normal, full access.
+  //   "leave"      — temporary (break/PTO/leave of absence). Access paused;
+  //                  flipping back to "active" restores everything exactly
+  //                  as it was, since nothing else about the row is touched.
+  //   "terminated" — fired. Access permanently revoked; the record itself is
+  //                  kept (not this action) so the owner can separately
+  //                  delete it via the trash icon once they're ready to.
+  // Payroll/hours filters throughout this page used to only exclude the
+  // legacy "inactive" status — extended to also exclude the two new paused-
+  // access states so a fired or on-leave employee doesn't keep counting
+  // toward active payroll totals.
+  const isWorking = (e: any) => !["inactive", "leave", "terminated"].includes(e.status);
+  const setEmployeeStatus = (id: string, status: "active" | "leave" | "terminated") => {
+    if (status === "terminated" && !confirm("Revoke this employee's portal access? Their account stays on file — you can restore access or delete them entirely at any time.")) return;
+    setEmployees(prev => prev.map(e => e.id === id ? { ...e, status } : e));
+    (supabase as any).from("employees").update({ status }).eq("id", id).select("id")
+      .then((r: any) => { if (r?.error || !r?.data?.length) toast?.("Failed to update access — " + (r?.error?.message || "try again"), "red"); })
+      .catch((e: any) => toast?.("Failed to update access — " + (e?.message || ""), "red"));
   };
 
   const roles = ["Owner", "Manager", "Lead Technician", "Technician", "Helper", "Office", "Sales"];
@@ -728,7 +746,7 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setJobs
   // making it look like "hours aren't showing" even though the underlying
   // job/pay math was correct the whole time. Only an explicit "inactive"
   // should ever exclude someone.
-  const totalPayroll = employees.filter(e => e.status !== "inactive").reduce((s, e) => {
+  const totalPayroll = employees.filter(e => isWorking(e)).reduce((s, e) => {
     return s + getEmployeePay(e, payPeriodStart, payPeriodEnd);
   }, 0);
 
@@ -882,7 +900,7 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setJobs
           <div className="flex gap-1 bg-black/40 border border-red-900/30 rounded-xl p-1">
             {["list","hours","payroll","mileage"].map(v => <button key={v} onClick={() => setView(v)} className={"px-3 py-1.5 rounded-lg text-xs font-semibold capitalize transition " + (view === v ? "bg-gradient-to-r from-red-600 to-red-800 text-white" : "text-white/50 hover:text-white")}>{v === "hours" ? "⏱ Hours" : v === "payroll" ? "💰 Payroll" : v === "mileage" ? "🚗 Mileage" : "👥 Team"}</button>)}
           </div>
-          <div className="text-xs text-white/50">{employees.filter(e => e.status !== "inactive").length} active</div>
+          <div className="text-xs text-white/50">{employees.filter(e => isWorking(e)).length} active</div>
         </div>
         <div className="flex gap-2">
           <button onClick={() => setShowPortalInfo(!showPortalInfo)} className="text-xs px-3 py-1.5 bg-black/40 border border-blue-700/40 text-blue-300 hover:bg-blue-950/30 rounded-xl transition flex items-center gap-1.5">
@@ -910,13 +928,15 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setJobs
 
       {view === "list" && <div className="grid md:grid-cols-2 gap-4">
         {employees.map(e => (
-          <Glass key={e.id} className={"p-4 group " + (e.status === "inactive" ? "opacity-60" : "")}>
+          <Glass key={e.id} className={"p-4 group " + (!isWorking(e) ? "opacity-60" : "")}>
             <div className="flex items-start gap-3">
               <div className="w-12 h-12 rounded-full bg-gradient-to-br from-red-600 to-red-900 flex items-center justify-center text-base font-bold flex-shrink-0">{e.firstName?.[0]}{e.lastName?.[0]}</div>
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2 flex-wrap">
                   <span className="font-semibold">{e.firstName} {e.lastName}</span>
-                  <Badge tone={e.status === "active" ? "green" : "gray"}>{e.status}</Badge>
+                  <Badge tone={e.status === "terminated" ? "red" : e.status === "leave" ? "yellow" : e.status === "active" || !e.status ? "green" : "gray"}>
+                    {e.status === "terminated" ? "Access Revoked" : e.status === "leave" ? "On Leave" : (e.status || "active")}
+                  </Badge>
                   <Badge tone="blue">{e.role}</Badge>
                   {e.email && <Badge tone="gray">Portal Ready</Badge>}
                 </div>
@@ -945,9 +965,16 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setJobs
                 })()}
               </div>
               <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition flex-shrink-0">
-                <button onClick={() => setModal({ open: true, data: e })} className="p-1.5 rounded-lg hover:bg-white/10 text-white/50"><Edit size={12} /></button>
-                <button onClick={() => toggle(e.id)} className="p-1.5 rounded-lg hover:bg-white/10 text-white/50">{e.status === "active" ? <EyeOff size={12} /> : <Eye size={12} />}</button>
-                <button onClick={() => del(e.id)} className="p-1.5 rounded-lg hover:bg-red-900/30 text-white/50 hover:text-red-400"><Trash2 size={12} /></button>
+                <button onClick={() => setModal({ open: true, data: e })} title="Edit" className="p-1.5 rounded-lg hover:bg-white/10 text-white/50"><Edit size={12} /></button>
+                {e.status === "active" || !e.status ? (
+                  <>
+                    <button onClick={() => setEmployeeStatus(e.id, "leave")} title="Mark on leave/break (temporary)" className="p-1.5 rounded-lg hover:bg-yellow-900/30 text-white/50 hover:text-yellow-400"><EyeOff size={12} /></button>
+                    <button onClick={() => setEmployeeStatus(e.id, "terminated")} title="Fire — revoke access, keep record" className="p-1.5 rounded-lg hover:bg-red-900/30 text-white/50 hover:text-red-400"><UserX size={12} /></button>
+                  </>
+                ) : (
+                  <button onClick={() => setEmployeeStatus(e.id, "active")} title="Restore access — exactly as it was" className="p-1.5 rounded-lg hover:bg-green-900/30 text-white/50 hover:text-green-400"><Eye size={12} /></button>
+                )}
+                <button onClick={() => del(e.id)} title="Delete account permanently" className="p-1.5 rounded-lg hover:bg-red-900/30 text-white/50 hover:text-red-400"><Trash2 size={12} /></button>
               </div>
             </div>
           </Glass>
@@ -1002,7 +1029,7 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setJobs
             <span>Employee:</span>
             <GSel value={hoursEmpFilter} onChange={e => setHoursEmpFilter(e.target.value)} className="!text-xs !py-1.5 !w-44">
               <option value="">All employees</option>
-              {employees.filter(e => e.status !== "inactive").map(e => <option key={e.id} value={e.id}>{e.firstName} {e.lastName}</option>)}
+              {employees.filter(e => isWorking(e)).map(e => <option key={e.id} value={e.id}>{e.firstName} {e.lastName}</option>)}
             </GSel>
           </div>
         </div>
@@ -1010,7 +1037,7 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setJobs
             horizontal scrolling to see Rate/Est. Pay/paid status on a narrow
             screen, so mobile gets a wrapped/stacked layout instead. */}
         <div className="sm:hidden space-y-2">
-          {employees.filter(e => e.status !== "inactive" && (!hoursEmpFilter || e.id === hoursEmpFilter)).map(e => {
+          {employees.filter(e => isWorking(e) && (!hoursEmpFilter || e.id === hoursEmpFilter)).map(e => {
             const empJobs = jobs.filter(j => crewIncludesEmployee(j.crew, e.id, (e as any).user_id) && j.status === "completed" && j.scheduledDate >= hoursRangeStart && j.scheduledDate <= hoursRangeEnd);
             const hrs = getEmployeeHours(e.id, hoursRangeStart, hoursRangeEnd);
             const cost = getEmployeePay(e, hoursRangeStart, hoursRangeEnd);
@@ -1052,7 +1079,7 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setJobs
           <Glass className="p-3 !bg-red-950/20 !border-red-900/30 flex items-center justify-between">
             <div className="text-xs font-bold">Total{hoursEmpFilter ? "" : " Payroll"} Est.<div className="text-[10px] font-normal text-white/40">{isHoursAllTime ? "all time" : hoursRangeStart + " – " + hoursRangeEnd}</div></div>
             <div className="text-red-400 font-bold text-base">
-              {fmt(employees.filter(e => e.status !== "inactive" && (!hoursEmpFilter || e.id === hoursEmpFilter)).reduce((s, e) => s + getEmployeePay(e, hoursRangeStart, hoursRangeEnd), 0))}
+              {fmt(employees.filter(e => isWorking(e) && (!hoursEmpFilter || e.id === hoursEmpFilter)).reduce((s, e) => s + getEmployeePay(e, hoursRangeStart, hoursRangeEnd), 0))}
             </div>
           </Glass>
         </div>
@@ -1070,7 +1097,7 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setJobs
               <th className="text-right px-4 py-3 text-xs uppercase tracking-wider text-white/60"></th>
             </tr></thead>
             <tbody>
-              {employees.filter(e => e.status !== "inactive" && (!hoursEmpFilter || e.id === hoursEmpFilter)).map(e => {
+              {employees.filter(e => isWorking(e) && (!hoursEmpFilter || e.id === hoursEmpFilter)).map(e => {
                 const empJobs = jobs.filter(j => crewIncludesEmployee(j.crew, e.id, (e as any).user_id) && j.status === "completed" && j.scheduledDate >= hoursRangeStart && j.scheduledDate <= hoursRangeEnd);
                 // FIX 5 (mobile round 5) — was job.loggedHours only, missing
                 // the shift-timer top-up getEmployeeHours (used everywhere
@@ -1130,7 +1157,7 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setJobs
               <tr className="bg-red-950/20 font-bold border-t border-red-900/30">
                 <td className="px-4 py-3" colSpan={6}>Total{hoursEmpFilter ? "" : " Payroll"} Est. ({isHoursAllTime ? "all time" : hoursRangeStart + " – " + hoursRangeEnd})</td>
                 <td className="px-4 py-3 text-right text-red-400 text-base">
-                  {fmt(employees.filter(e => e.status !== "inactive" && (!hoursEmpFilter || e.id === hoursEmpFilter)).reduce((s, e) => s + getEmployeePay(e, hoursRangeStart, hoursRangeEnd), 0))}
+                  {fmt(employees.filter(e => isWorking(e) && (!hoursEmpFilter || e.id === hoursEmpFilter)).reduce((s, e) => s + getEmployeePay(e, hoursRangeStart, hoursRangeEnd), 0))}
                 </td>
                 <td></td>
               </tr>
@@ -1173,7 +1200,7 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setJobs
             </button>
           </div>
           <button onClick={() => {
-            const rows = employees.filter(e => e.status !== "inactive").map(e => {
+            const rows = employees.filter(e => isWorking(e)).map(e => {
               const hrs = getEmployeeHours(e.id, payPeriodStart, payPeriodEnd);
               const gross = getEmployeePay(e, payPeriodStart, payPeriodEnd);
               const fica = gross * 0.0765;
@@ -1187,7 +1214,7 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setJobs
         </div>
         <PayrollCalendar employees={employees} jobs={jobs} />
         <div className="grid gap-4">
-          {employees.filter(e => e.status !== "inactive").map(e => {
+          {employees.filter(e => isWorking(e)).map(e => {
             const hrs = getEmployeeHours(e.id, payPeriodStart, payPeriodEnd);
             const gross = getEmployeePay(e, payPeriodStart, payPeriodEnd);
             const fica = gross * 0.0765;
@@ -1574,7 +1601,9 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setJobs
           </div>
           <div className="grid grid-cols-2 gap-2">
             <div><label className="text-xs text-white/60 mb-1 block">Start Date</label><GDate value={f.startDate} onChange={e => setF({ ...f, startDate: e.target.value })} /></div>
-            <div><label className="text-xs text-white/60 mb-1 block">Status</label><GSel value={f.status} onChange={e => setF({ ...f, status: e.target.value })}><option value="active" className="bg-black">Active</option><option value="inactive" className="bg-black">Inactive</option></GSel></div>
+            <div><label className="text-xs text-white/60 mb-1 block">Status</label><GSel value={f.status} onChange={e => setF({ ...f, status: e.target.value })}><option value="active" className="bg-black">Active</option><option value="leave" className="bg-black">On Leave / Break (temporary)</option><option value="terminated" className="bg-black">Terminated — revoke access</option></GSel>
+              {f.status && f.status !== "active" && <div className="text-[10px] text-white/40 mt-1">Portal/CRM access is blocked while status isn't Active — their account and data are kept, and switching back to Active restores everything exactly as it was.</div>}
+            </div>
           </div>
           <div><label className="text-xs text-white/60 mb-1 block">Emergency Contact</label><GInput value={f.emergencyContact} onChange={e => setF({ ...f, emergencyContact: e.target.value })} placeholder="Name — (717) 555-0000" /></div>
           <div><label className="text-xs text-white/60 mb-1 block">Notes</label><GTxt rows={2} value={f.notes} onChange={e => setF({ ...f, notes: e.target.value })} /></div>
@@ -1832,8 +1861,9 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setJobs
           })()}
           {/* Manager CRM permissions — only for role: Manager. Owner can change
               or fully revoke a manager's CRM access here anytime; setting
-              status to Inactive above (or deleting the employee) removes CRM
-              access entirely regardless of these toggles. */}
+              status to Leave or Terminated above (enforced in App.tsx's
+              resolveUserRole, or deleting the employee) removes CRM access
+              entirely regardless of these toggles. */}
           {f.role === "Manager" && (
             <div className="border border-purple-700/30 rounded-xl p-3 bg-purple-950/10 space-y-1">
               <div className="text-xs font-semibold text-purple-300 mb-1 flex items-center gap-1.5"><Shield size={12} />Manager CRM Access</div>
