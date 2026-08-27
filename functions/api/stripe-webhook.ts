@@ -12,7 +12,10 @@
 // 2. Stripe dashboard → Developers → Webhooks → Add endpoint →
 //    https://<your-domain>/api/stripe-webhook
 //    → select events: checkout.session.completed, checkout.session.async_payment_succeeded,
-//      payment_intent.succeeded
+//      payment_intent.succeeded, payment_intent.payment_failed, charge.refunded,
+//      charge.dispute.created, invoice.paid, invoice.payment_failed,
+//      customer.subscription.deleted (the last three power recurring billing —
+//      see create_recurring_checkout_session in stripe-action.ts)
 // 3. Stripe shows the signing secret ("whsec_...") when you create the
 //    endpoint — that's the value for STRIPE_WEBHOOK_SECRET.
 //
@@ -120,6 +123,69 @@ const markInvoicePaid = (invoiceId: string, paymentIntentId: string, serviceRole
   );
 };
 
+// RECURRING BILLING — subscription lifecycle events don't carry an
+// invoiceId (this app's estimates table), only the crmCustomerId stashed in
+// subscription_data.metadata at checkout time (see stripe-action.ts's
+// create_recurring_checkout_session). Patches customers.recurringPlan (a
+// JSONB blob — Postgres folds the unquoted "recurringPlan" column name to
+// lowercase, see CLAUDE.md, so PostgREST's own column resolution handles
+// that automatically as long as this patch key matches the camelCase the
+// client also reads/writes it as).
+const patchCustomerRecurringPlan = async (
+  crmCustomerId: string,
+  patch: Record<string, unknown>,
+  serviceRoleKey: string
+): Promise<boolean> => {
+  if (!serviceRoleKey || !crmCustomerId) return false;
+  const authHeaders = { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}` };
+  const getRes = await fetch(`${SUPABASE_URL}/rest/v1/customers?id=eq.${encodeURIComponent(crmCustomerId)}&select=recurringPlan`, { headers: authHeaders });
+  const rows = await getRes.json().catch(() => []);
+  const existing = Array.isArray(rows) && rows[0]?.recurringPlan ? rows[0].recurringPlan : {};
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/customers?id=eq.${encodeURIComponent(crmCustomerId)}&select=id`, {
+    method: "PATCH",
+    headers: { ...authHeaders, "Content-Type": "application/json", Prefer: "return=representation" },
+    body: JSON.stringify({ recurringPlan: { ...existing, ...patch } }),
+  });
+  if (!res.ok) { console.error("[StripeWebhook] recurringPlan update failed:", res.status, await res.text().catch(() => "")); return false; }
+  const updated = await res.json().catch(() => []);
+  return Array.isArray(updated) && updated.length > 0;
+};
+
+// A successful recurring charge is real revenue and should show up in the
+// owner's Dashboard/Invoices exactly like any other payment — recorded as a
+// paid `estimates` row (invoices ARE estimate rows with invoiced:true, see
+// CLAUDE.md) rather than only living inside the Stripe-side subscription.
+const recordRecurringPayment = async (
+  crmCustomerId: string,
+  ownerId: string,
+  amount: number,
+  description: string,
+  stripeInvoiceId: string,
+  serviceRoleKey: string
+): Promise<void> => {
+  if (!serviceRoleKey || !ownerId) return;
+  const authHeaders = { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}` };
+  const today = new Date().toISOString().slice(0, 10);
+  await fetch(`${SUPABASE_URL}/rest/v1/estimates`, {
+    method: "POST",
+    headers: { ...authHeaders, "Content-Type": "application/json", Prefer: "return=minimal" },
+    body: JSON.stringify({
+      id: crypto.randomUUID(),
+      customerId: crmCustomerId,
+      owner_id: ownerId,
+      invoiced: true,
+      status: "accepted",
+      title: description || "Recurring service",
+      items: [{ id: crypto.randomUUID(), description: description || "Recurring service", qty: 1, price: amount }],
+      total: amount,
+      paidAt: today,
+      stripePaymentStatus: "paid",
+      paymentLog: [{ id: crypto.randomUUID(), at: new Date().toISOString(), type: "paid", amount, note: "Recurring payment via Stripe (" + stripeInvoiceId + ")" }],
+      createdAt: Date.now(),
+    }),
+  }).catch(e => console.error("[StripeWebhook] recordRecurringPayment insert failed:", e?.message));
+};
+
 // MULTI-TENANT (Phase F) — each business configures its OWN Stripe webhook
 // in its OWN Stripe dashboard, pointing at this same endpoint with an
 // `?oid=<ownerId>` query param (mirrors TrashCanSignupPage.tsx's existing
@@ -211,6 +277,31 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
           serviceRoleKey
         );
       }
+    } else if (event.type === "invoice.paid") {
+      // Fires for EVERY successful recurring charge, including the very
+      // first one right after checkout — this is the single source of
+      // truth for "a recurring payment actually landed." (Real activation
+      // for a brand-new plan happens here too, not on
+      // checkout.session.completed, since a subscription Checkout session
+      // doesn't carry payment_status the same way a one-time session does.)
+      const invoice = event.data?.object || {};
+      const subId = invoice.subscription;
+      const crmCustomerId = invoice.subscription_details?.metadata?.crmCustomerId || invoice.lines?.data?.[0]?.metadata?.crmCustomerId;
+      const ownerId = invoice.subscription_details?.metadata?.ownerId || invoice.lines?.data?.[0]?.metadata?.ownerId || oid || "";
+      const amount = (invoice.amount_paid || 0) / 100;
+      const description = invoice.lines?.data?.[0]?.description || "Recurring service";
+      if (crmCustomerId) {
+        await patchCustomerRecurringPlan(crmCustomerId, { status: "active", stripeSubscriptionId: subId, lastPaidAt: new Date().toISOString(), lastAmount: amount }, serviceRoleKey);
+        await recordRecurringPayment(crmCustomerId, ownerId, amount, description, invoice.id || "", serviceRoleKey);
+      }
+    } else if (event.type === "invoice.payment_failed") {
+      const invoice = event.data?.object || {};
+      const crmCustomerId = invoice.subscription_details?.metadata?.crmCustomerId || invoice.lines?.data?.[0]?.metadata?.crmCustomerId;
+      if (crmCustomerId) await patchCustomerRecurringPlan(crmCustomerId, { status: "payment_failed", lastFailedAt: new Date().toISOString() }, serviceRoleKey);
+    } else if (event.type === "customer.subscription.deleted") {
+      const sub = event.data?.object || {};
+      const crmCustomerId = sub.metadata?.crmCustomerId;
+      if (crmCustomerId) await patchCustomerRecurringPlan(crmCustomerId, { status: "canceled", canceledAt: new Date().toISOString() }, serviceRoleKey);
     } else if (event.type === "charge.refunded") {
       // AUDIT (round 12) — catches refunds issued directly from the Stripe
       // dashboard too, not just the app's own Refund button (InvoicesPage.tsx),

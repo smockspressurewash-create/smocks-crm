@@ -500,6 +500,7 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
     // deployments keep working unmodified).
     let secretKey = platformSecretKey;
     let stripeAccount: string | undefined;
+    let resolvedOwnerIdOuter: string | null = null;
     const serviceRoleKey = context.env.SUPABASE_SERVICE_ROLE_KEY;
     if (serviceRoleKey) {
       let resolvedOwnerId: string | null = null;
@@ -521,6 +522,7 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
         if (accessToken) resolvedOwnerId = await resolveCallerOwnerId(accessToken);
       }
       if (!resolvedOwnerId && body.ownerId) resolvedOwnerId = body.ownerId;
+      resolvedOwnerIdOuter = resolvedOwnerId;
       if (resolvedOwnerId) {
         const acct = await getOwnerStripeAccount(resolvedOwnerId, serviceRoleKey);
         if (acct?.stripeAccountId) { stripeAccount = acct.stripeAccountId; }
@@ -605,6 +607,50 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
         if (body.invoiceId) { params.client_reference_id = body.invoiceId; params["metadata[invoiceId]"] = body.invoiceId; }
         const session = await stripeFetch(secretKey, "POST", "checkout/sessions", params, stripeAccount);
         return json({ id: session.id, url: session.url, payment_status: session.payment_status, payment_intent: session.payment_intent });
+      }
+      // FEATURE — real recurring billing. Owner sets up a recurring plan for
+      // one of their own customers (from CustomerDetail.tsx); this is
+      // configuration by the AUTHENTICATED OWNER of their own pricing, not a
+      // customer-facing amount, so amountCents is trusted here the same way
+      // create_customer already trusts owner-supplied name/email — the
+      // "never trust the client" rule elsewhere in this file exists
+      // specifically to stop a CUSTOMER from lying about what THEY owe, not
+      // to stop an owner from setting their own price. Uses Stripe Checkout
+      // in subscription mode with inline price_data (a real, fully
+      // supported recurring-price shape — same pattern platform-billing.ts
+      // already uses for CrewBoss's own SaaS billing), so no Stripe Product
+      // catalog setup is required on the owner's account.
+      case "create_recurring_checkout_session": {
+        const amountCents = Math.round(Number(body.amountCents) || 0);
+        if (amountCents <= 0) throw new Error("Invalid amount");
+        const interval = ["day", "week", "month", "year"].includes(body.interval) ? body.interval : "month";
+        const intervalCount = Math.max(1, Math.round(Number(body.intervalCount) || 1));
+        if (!body.crmCustomerId) throw new Error("Missing crmCustomerId");
+        const params: Record<string, string> = {
+          mode: "subscription",
+          success_url: body.successUrl,
+          cancel_url: body.cancelUrl,
+          "line_items[0][price_data][currency]": body.currency || "usd",
+          "line_items[0][price_data][product_data][name]": body.description || "Recurring service",
+          "line_items[0][price_data][unit_amount]": String(amountCents),
+          "line_items[0][price_data][recurring][interval]": interval,
+          "line_items[0][price_data][recurring][interval_count]": String(intervalCount),
+          "line_items[0][quantity]": "1",
+          "subscription_data[metadata][crmCustomerId]": body.crmCustomerId,
+        };
+        if (resolvedOwnerIdOuter) params["subscription_data[metadata][ownerId]"] = resolvedOwnerIdOuter;
+        if (body.customerEmail) params.customer_email = body.customerEmail;
+        const session = await stripeFetch(secretKey, "POST", "checkout/sessions", params, stripeAccount);
+        return json({ id: session.id, url: session.url });
+      }
+      // cancel_recurring_subscription — owner-only, stops future billing.
+      // Stripe's DELETE cancels immediately (no partial-period refund is
+      // issued automatically — same as Stripe's own dashboard "Cancel
+      // subscription" default).
+      case "cancel_recurring_subscription": {
+        if (!body.subscriptionId) throw new Error("Missing subscriptionId");
+        const sub = await stripeFetch(secretKey, "DELETE", `subscriptions/${encodeURIComponent(body.subscriptionId)}`, undefined, stripeAccount);
+        return json({ success: true, status: sub.status || "canceled" });
       }
       case "retrieve_checkout_session": {
         if (!body.sessionId) throw new Error("Missing sessionId");

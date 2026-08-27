@@ -292,3 +292,26 @@ export const sendPaymentReceipt = async (opts: {
   invoiceId?: string; ownerId?: string; accessToken?: string;
 }): Promise<{ channel: "sms" | "email" }> =>
   stripeAction("send_payment_receipt", opts, opts.accessToken);
+
+// ─── Recurring billing (subscriptions) ────────────────────────────────────
+// Owner sets a fixed amount + cadence for one of their own customers; the
+// resulting Checkout Session URL is sent to the customer (SMS/email) so
+// they can enter a card once and be billed automatically going forward.
+// Real Stripe subscription lifecycle events (successful renewal, failed
+// charge, cancellation) are handled server-side in stripe-webhook.ts and
+// written to customers.recurringPlan — never trust a client-side guess at
+// whether a plan is "active".
+
+export interface RecurringCheckoutSession { id: string; url: string }
+
+export const createRecurringCheckoutSession = async (
+  opts: {
+    crmCustomerId: string; amountCents: number; interval: "day" | "week" | "month" | "year"; intervalCount?: number;
+    description?: string; customerEmail?: string; successUrl: string; cancelUrl: string; ownerId?: string; accessToken?: string;
+  }
+): Promise<RecurringCheckoutSession> =>
+  stripeAction("create_recurring_checkout_session", opts, opts.accessToken);
+
+export const cancelRecurringSubscription = async (subscriptionId: string, ownerId?: string, accessToken?: string): Promise<void> => {
+  await stripeAction("cancel_recurring_subscription", { subscriptionId, ownerId }, accessToken);
+};

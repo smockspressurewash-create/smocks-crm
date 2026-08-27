@@ -45,7 +45,7 @@ import { TimeframeSelector } from "./TimeframeSelector";
 import { DocumentVault } from "./DocumentVault";
 import { crewIncludesEmployee } from "../pages/EmployeePortal";
 import { supabase } from "../../lib/supabase";
-import { listCustomerPaymentMethods, detachPaymentMethod, StripeSavedCard } from "../../lib/stripe";
+import { listCustomerPaymentMethods, detachPaymentMethod, StripeSavedCard, createRecurringCheckoutSession, cancelRecurringSubscription } from "../../lib/stripe";
 import { SaveCardModal } from "./SaveCardModal";
 import { useIsMobile } from "../../hooks/useIsMobile";
 
@@ -158,7 +158,75 @@ export function CustomerDetail({ customer: c, onClose, onDelete, onEdit, estimat
     }
   };
 
-  useEffect(() => { if (c) { setTab("info"); setNote(""); loadPaymentMethods(); } }, [c?.id]);
+  // FEATURE — real recurring billing (Stripe subscriptions). Owner sets a
+  // fixed amount + cadence for this customer; the resulting hosted Checkout
+  // link is handed to the owner to text/email — the customer enters a card
+  // once there and is billed automatically going forward. Renewal/failure/
+  // cancellation status is written server-side by stripe-webhook.ts into
+  // customers.recurringPlan (never guessed client-side) — see lib/stripe.ts.
+  const [recurOpen, setRecurOpen] = useState(false);
+  const [recurAmount, setRecurAmount] = useState("");
+  const [recurInterval, setRecurInterval] = useState<"week" | "month" | "year">("month");
+  const [recurDesc, setRecurDesc] = useState("");
+  const [recurCreating, setRecurCreating] = useState(false);
+  const [recurLink, setRecurLink] = useState("");
+  const [recurCanceling, setRecurCanceling] = useState(false);
+  const plan = c?.recurringPlan;
+
+  const startRecurringPlan = async () => {
+    const amountCents = Math.round(parseFloat(recurAmount) * 100);
+    if (!amountCents || amountCents <= 0) { toast?.("Enter a valid amount", "red"); return; }
+    setRecurCreating(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const token = session?.access_token;
+      if (!token) throw new Error("Not signed in");
+      const desc = recurDesc.trim() || "Recurring service";
+      const session2 = await createRecurringCheckoutSession({
+        crmCustomerId: c.id,
+        amountCents,
+        interval: recurInterval,
+        description: desc,
+        customerEmail: c.email || undefined,
+        successUrl: window.location.origin + "/#/",
+        cancelUrl: window.location.origin + "/#/",
+        accessToken: token,
+      });
+      setRecurLink(session2.url);
+      setCustomers((prev: any[]) => prev.map((cust: any) => cust.id === c.id ? { ...cust, recurringPlan: { status: "pending", amountCents, interval: recurInterval, description: desc, checkoutUrl: session2.url } } : cust));
+      await (supabase as any).from("customers").update({ recurringPlan: { status: "pending", amountCents, interval: recurInterval, description: desc, checkoutUrl: session2.url } }).eq("id", c.id);
+      toast?.("Recurring plan link created — send it to the customer to activate", "green");
+    } catch (e: any) {
+      toast?.("Failed to create recurring plan: " + (e?.message || "unknown error"), "red");
+    } finally {
+      setRecurCreating(false);
+    }
+  };
+
+  const cancelRecurringPlan = async () => {
+    if (!plan?.stripeSubscriptionId) {
+      // Never activated (customer hasn't completed checkout yet) — just clear it locally.
+      setCustomers((prev: any[]) => prev.map((cust: any) => cust.id === c.id ? { ...cust, recurringPlan: null } : cust));
+      await (supabase as any).from("customers").update({ recurringPlan: null }).eq("id", c.id);
+      setRecurLink(""); setRecurOpen(false);
+      return;
+    }
+    if (!(await confirmAsync({ message: "Cancel this customer's recurring plan? They will not be billed again.", confirmLabel: "Cancel Plan" }))) return;
+    setRecurCanceling(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const token = session?.access_token;
+      await cancelRecurringSubscription(plan.stripeSubscriptionId, undefined, token);
+      setCustomers((prev: any[]) => prev.map((cust: any) => cust.id === c.id ? { ...cust, recurringPlan: { ...plan, status: "canceled" } } : cust));
+      toast?.("Recurring plan canceled", "green");
+    } catch (e: any) {
+      toast?.("Failed to cancel: " + (e?.message || "unknown error"), "red");
+    } finally {
+      setRecurCanceling(false);
+    }
+  };
+
+  useEffect(() => { if (c) { setTab("info"); setNote(""); loadPaymentMethods(); setRecurOpen(false); setRecurLink(""); } }, [c?.id]);
 
   if (!c) return null;
   const ce = estimates.filter(e => e.customerId === c.id);
@@ -467,6 +535,64 @@ export function CustomerDetail({ customer: c, onClose, onDelete, onEdit, estimat
                     );
                   })}
                 </div>
+              )}
+            </Glass>
+            {/* Recurring Billing — real Stripe subscriptions, see
+                createRecurringCheckoutSession in lib/stripe.ts. Status is
+                only ever trusted from customers.recurringPlan, written
+                server-side by stripe-webhook.ts once Stripe itself confirms
+                a charge/cancellation — never assumed client-side. */}
+            <Glass className="p-4 !bg-black/40">
+              <div className={"flex items-center justify-between mb-3 gap-2 " + (isMobile ? "flex-col items-stretch" : "flex-row")}>
+                <div className="text-[10px] text-white/50 uppercase tracking-wider flex items-center gap-1"><Repeat size={9} />Recurring Billing</div>
+                {!plan || plan.status === "canceled" ? (
+                  <GBtn onClick={() => setRecurOpen(o => !o)} className={"!py-1.5 !px-3 !text-xs " + (isMobile ? "!w-full !justify-center" : "")}>
+                    <Plus size={12} />{recurOpen ? "Close" : "Set Up Plan"}
+                  </GBtn>
+                ) : null}
+              </div>
+
+              {plan && plan.status !== "canceled" ? (
+                <div className="space-y-2">
+                  <div className={"flex items-center gap-3 p-3 rounded-xl border " + (plan.status === "active" ? "bg-green-950/20 border-green-700/40" : plan.status === "payment_failed" ? "bg-red-950/20 border-red-700/40" : "bg-yellow-950/20 border-yellow-700/40") + " " + (isMobile ? "flex-col items-stretch text-center" : "flex-row justify-between")}>
+                    <div className="text-sm">
+                      <div className="font-semibold">{fmt((plan.amountCents || 0) / 100)} / {plan.interval}</div>
+                      <div className="text-white/50 text-xs">{plan.description}</div>
+                    </div>
+                    <Badge tone={plan.status === "active" ? "green" : plan.status === "payment_failed" ? "red" : "yellow"}>
+                      {plan.status === "active" ? "Active" : plan.status === "payment_failed" ? "Payment Failed" : "Awaiting card"}
+                    </Badge>
+                  </div>
+                  {plan.status === "pending" && plan.checkoutUrl && (
+                    <div className="text-xs text-white/50">Not active yet — send the customer this link to enter their card:
+                      <div className={"flex gap-2 mt-2 " + (isMobile ? "flex-col" : "flex-row")}>
+                        <button onClick={() => { navigator.clipboard?.writeText(plan.checkoutUrl); toast?.("Link copied", "green"); }} className="flex-1 px-2 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 transition text-white/80">Copy Link</button>
+                        {c.phone && <button onClick={() => window.open(`sms:${c.phone}?body=${encodeURIComponent("Set up automatic billing here: " + plan.checkoutUrl)}`)} className="flex-1 px-2 py-1.5 rounded-lg bg-blue-950/30 hover:bg-blue-950/50 transition text-blue-300">Text Link</button>}
+                        {c.email && <button onClick={() => window.open(`mailto:${c.email}?subject=${encodeURIComponent("Set up automatic billing")}&body=${encodeURIComponent("Set up automatic billing here: " + plan.checkoutUrl)}`)} className="flex-1 px-2 py-1.5 rounded-lg bg-purple-950/30 hover:bg-purple-950/50 transition text-purple-300">Email Link</button>}
+                      </div>
+                    </div>
+                  )}
+                  <button onClick={cancelRecurringPlan} disabled={recurCanceling} className="w-full text-xs text-red-400 hover:text-red-300 disabled:opacity-40 px-2 py-1.5 rounded-lg hover:bg-red-950/30 transition">
+                    {recurCanceling ? "Canceling…" : "Cancel Recurring Plan"}
+                  </button>
+                </div>
+              ) : recurOpen ? (
+                <div className="space-y-2">
+                  <div className="grid grid-cols-2 gap-2">
+                    <input value={recurAmount} onChange={e => setRecurAmount(e.target.value)} type="number" min="0" step="0.01" placeholder="Amount ($)" className="px-3 py-2 rounded-lg bg-black/40 border border-white/10 text-sm outline-none focus:border-red-500/50" />
+                    <select value={recurInterval} onChange={e => setRecurInterval(e.target.value as any)} className="px-3 py-2 rounded-lg bg-black/40 border border-white/10 text-sm outline-none focus:border-red-500/50">
+                      <option value="week">Weekly</option>
+                      <option value="month">Monthly</option>
+                      <option value="year">Yearly</option>
+                    </select>
+                  </div>
+                  <input value={recurDesc} onChange={e => setRecurDesc(e.target.value)} placeholder="Description (e.g. Monthly window cleaning)" className="w-full px-3 py-2 rounded-lg bg-black/40 border border-white/10 text-sm outline-none focus:border-red-500/50" />
+                  <GBtn onClick={startRecurringPlan} disabled={recurCreating} className="!w-full !justify-center">
+                    {recurCreating ? "Creating…" : "Create Plan Link"}
+                  </GBtn>
+                </div>
+              ) : (
+                <div className="text-xs text-white/40 py-2 text-center">No recurring plan set up</div>
               )}
             </Glass>
             {/* Quick stats */}
