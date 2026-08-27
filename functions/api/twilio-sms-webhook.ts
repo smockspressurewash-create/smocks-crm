@@ -663,26 +663,21 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
         try {
           const threadsRes = await fetch(`${SUPABASE_URL}/rest/v1/inbox_threads?channel=eq.sms&select=id,contact_phone,messages${ownerFilter}`, { headers: authHeaders });
           const existingThreads = await threadsRes.json().catch(() => []);
-          // BUG FIX — "outgoing messages from Alfred aren't showing" for a
-          // specific owner number. This used to match ANY thread whose
-          // contact_phone was one of the owner's authorized phones, with no
-          // preference for the exact number this text is actually FROM —
-          // .find() just returns whichever authorized-phone thread happens
-          // to come back first from Postgres (no guaranteed order). With
-          // more than one authorized phone on file, that could silently
-          // consolidate onto an old/different number's thread while
-          // Alfred's sendSms reply (alfredSmsAgent.ts, same fix applied
-          // there) picked a different one — splitting one real conversation
-          // across two threads with only one side visible in each. An exact
-          // match on the number this text is actually from must always win;
-          // only fall back to "any authorized-phone thread" (still useful
-          // the FIRST time a second registered number ever texts in, so it
-          // doesn't start a whole new separate thread) when there's truly
-          // no thread yet for this specific number.
-          const exactThread = Array.isArray(existingThreads) ? existingThreads.find((t: any) => normalizePhoneDigits(t.contact_phone) === fromDigits) : null;
-          const existingThread = exactThread || (Array.isArray(existingThreads)
-            ? existingThreads.find((t: any) => authorizedPhones.includes(normalizePhoneDigits(t.contact_phone)))
-            : null);
+          // BUG FIX — "one whole SMS conversation is missing from the
+          // Inbox." This used to fall back to matching ANY thread whose
+          // contact_phone was one of the owner's authorized phones whenever
+          // there was no exact match yet — meant to avoid "starting a new
+          // thread the first time a second registered number ever texts
+          // in," but it actually meant every distinct authorized number
+          // (owner's real phone, a second personal test number, an
+          // employee's own registered Alfred number) permanently got
+          // folded into whichever ONE of those threads was created first,
+          // forever. Confirmed live: an employee's Alfred texts from their
+          // own registered number never got their own Inbox thread at all —
+          // every message silently appended into the owner's separate
+          // personal Alfred thread instead. A thread must always represent
+          // one distinct real phone number — exact match only.
+          const existingThread = Array.isArray(existingThreads) ? existingThreads.find((t: any) => normalizePhoneDigits(t.contact_phone) === fromDigits) : null;
           const msgId = params.MessageSid || crypto.randomUUID();
           const alreadyHave = existingThread && (Array.isArray(existingThread.messages) ? existingThread.messages : []).some((m: any) => m?.id === msgId);
           if (alreadyHave) return;

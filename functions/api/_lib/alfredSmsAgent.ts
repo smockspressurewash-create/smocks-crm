@@ -382,24 +382,23 @@ const sendSms = async (ctx: Ctx, toPhone: string, bodyRaw: string, isOwnerReply 
   try {
     const threads = await sbGet(ctx, `inbox_threads?channel=eq.sms&select=id,contact_phone,contact_name,customer_id,messages${ownerScope(ctx)}`);
     const digits = normalizePhoneDigits(toPhone);
-    // BUG FIX — "outgoing messages from Alfred aren't showing" for a
-    // specific owner number. This used to match ANY thread whose
-    // contact_phone was ONE of the owner's authorized phones, with no
-    // preference for the phone actually being replied to right now —
-    // .find() just returns whichever authorized-phone thread happens to
-    // come back first from Postgres (no guaranteed order). With more than
-    // one authorized phone on file (myPhone + alfredExtraPhones), that
-    // could silently consolidate a reply onto a different/older thread
-    // than the one the inbound message just landed in — twilio-sms-webhook.ts's
-    // inbound handler applies the identical exact-match-first fix, so both
-    // directions now agree on the same thread. An exact match on the
-    // number actually being texted must always win; only fall back to "any
-    // authorized-phone thread" when there's truly no thread yet for this
-    // specific number.
-    const exactMatch = threads.find((t: any) => normalizePhoneDigits(t.contact_phone) === digits);
-    const existing = exactMatch || (isOwnerReply && ctx.ownerAuthorizedPhones?.length
-      ? threads.find((t: any) => ctx.ownerAuthorizedPhones!.includes(normalizePhoneDigits(t.contact_phone)))
-      : undefined);
+    // BUG FIX — "one whole SMS conversation is missing from the Inbox."
+    // This used to fall back to matching ANY thread whose contact_phone was
+    // ONE OF the owner's authorized phones (myPhone + every alfredExtraPhones
+    // entry) whenever there was no EXACT match yet — meant to avoid
+    // "starting a new thread the first time a second number ever texts in,"
+    // but in practice it meant every distinct authorized number (the
+    // owner's real phone, a second personal test number, an employee's
+    // number registered for their own narrower Alfred access) permanently
+    // got folded into whichever ONE of those threads happened to be created
+    // first, forever — confirmed live: an employee's own Alfred texts from
+    // their registered number were silently appended into the OWNER's
+    // separate personal Alfred thread instead of ever getting their own,
+    // so that employee's whole conversation never showed up as its own
+    // entry in the Inbox. A thread must always represent one distinct real
+    // phone number's conversation — exact match only; a new number always
+    // gets its own new thread, exactly like every non-owner sender already does.
+    const existing = threads.find((t: any) => normalizePhoneDigits(t.contact_phone) === digits);
     // BUG FIX — was always `dir: "out"` with no marker at all, so a reply
     // Alfred sent to the OWNER looked in the Inbox exactly like a normal
     // outgoing message the owner sent themselves, with no way to tell them

@@ -1,19 +1,32 @@
 // FEATURE — CapCut-style video editor inside the Social section: upload
-// clips, trim/reorder them, auto-detect+strip silence, add styled
-// captions with a live preview, and export a real rendered MP4 — all via
-// ffmpeg.wasm in the browser (src/lib/videoEditor.ts), genuinely free with
-// no per-render cost. An optional "Auto-Edit with AI" button appears only
-// when the owner has configured their own video-API key in Settings (see
-// functions/api/video-autoedit.ts) — kept fully separate from the free
-// path so nothing here silently starts costing money without the owner
-// explicitly opting in with their own account.
-import React, { useEffect, useMemo, useRef, useState } from "react";
-import { Modal } from "./Modal";
+// clips, trim/reorder/crop/color-grade them on a real visual timeline,
+// auto-detect+strip silence, add styled captions with a live preview, and
+// export a real rendered MP4 — all via ffmpeg.wasm in the browser
+// (src/lib/videoEditor.ts), genuinely free with no per-render cost. An
+// optional "Auto-Edit with AI" button appears only when the owner has
+// configured their own video-API key in Settings (see functions/api/
+// video-autoedit.ts) — kept fully separate from the free path so nothing
+// here silently starts costing money without the owner explicitly opting
+// in with their own account.
+//
+// FEATURE — "make the editor full screen, not just a pop-up... based off
+// of CapCut." Portals straight to document.body as its own fixed
+// full-viewport layer (same portal technique as Modal.tsx, just without
+// Modal's centered-card chrome) instead of living inside a Modal card —
+// a real editor needs the whole screen, not a dialog box. Top bar (close +
+// export), a real horizontal timeline strip with draggable thumbnail clips
+// (CapCut's signature layout), and a preview that fills the rest.
+import React, { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { GBtn } from "./GBtn";
-import { Plus, Trash2, ChevronUp, ChevronDown, Wand2, Scissors, Type, Upload, Sparkles, RotateCw, FlipHorizontal, Captions, Save, Clapperboard } from "lucide-react";
+import { X, Plus, Trash2, Wand2, Scissors, Type, Upload, Sparkles, RotateCw, FlipHorizontal, Captions, Crop as CropIcon, Sliders } from "lucide-react";
 import { uid, uploadJobMedia } from "../../lib/utils";
 import { CAPTION_STYLES, CAPTION_GOOGLE_FONTS_HREF, captionStyleToCss, getCaptionStyle, TRANSITION_EFFECTS } from "../../lib/captionStyles";
-import { readVideoDuration, detectSilence, renderFinalVideo, extractAudioForTranscription, autoCutClipDeadSpace, requestTranscription, CAPTION_PROVIDERS, ASPECT_RATIOS, type AspectRatio, type CaptionProvider, type EditorClip, type EditorCaption } from "../../lib/videoEditor";
+import { readVideoMeta, detectSilence, renderFinalVideo, extractAudioForTranscription, autoCutClipDeadSpace, requestTranscription, CAPTION_PROVIDERS, ASPECT_RATIOS, type AspectRatio, type CaptionProvider, type CropRect, type EditorClip, type EditorCaption } from "../../lib/videoEditor";
+
+const clamp = (v: number, min: number, max: number) => Math.max(min, Math.min(max, v));
+
+type ToolTab = "clips" | "adjust" | "captions" | "auto";
 
 export function VideoEditorModal({ open, onClose, onExported, toast, settings }: {
   open: boolean;
@@ -37,6 +50,7 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings }:
   const [detectingSilence, setDetectingSilence] = useState(false);
   const [silenceRanges, setSilenceRanges] = useState<{ clipId: string; start: number; end: number }[]>([]);
   const [autoEditing, setAutoEditing] = useState(false);
+  const [tab, setTab] = useState<ToolTab>("clips");
   // FEATURE — "change the frame size, like 9:16, etc."
   const [aspectRatio, setAspectRatio] = useState<AspectRatio>("9:16");
   // FEATURE — "can it automatically create captions?" / "use any API, not
@@ -66,9 +80,19 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings }:
   const videoRef = useRef<HTMLVideoElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const previewBoxRef = useRef<HTMLDivElement>(null);
+  const timelineRef = useRef<HTMLDivElement>(null);
 
   const activeClip = clips.find(c => c.id === activeClipId) || clips[0] || null;
   const hasApiKey = !!(settings?.videoAutoEditApiKey);
+
+  // Lock body scroll while the full-screen editor is open — same pattern
+  // as Modal.tsx.
+  useEffect(() => {
+    if (!open) return;
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => { document.body.style.overflow = prev; };
+  }, [open]);
 
   // BUG FIX — "when I try to slice or trim a clip it doesn't let me play
   // it, it's rough." URL.createObjectURL(activeClip.file) was called
@@ -94,14 +118,47 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings }:
   useEffect(() => () => { clipUrlCacheRef.current.forEach(url => URL.revokeObjectURL(url)); }, []);
   const activeClipUrl = activeClip ? clipUrlCacheRef.current.get(activeClip.id) : undefined;
 
+  // FEATURE — "show a timeline, the different clips like CapCut shows."
+  // One small poster-frame thumbnail per clip, generated once (cached by
+  // clip id) via a hidden <video> + <canvas> grab — cheap, no ffmpeg
+  // needed for this, just enough for the timeline strip to read as a real
+  // filmstrip instead of blank tiles.
+  const [clipThumbs, setClipThumbs] = useState<Record<string, string>>({});
+  useEffect(() => {
+    clips.forEach(c => {
+      if (clipThumbs[c.id]) return;
+      const url = clipUrlCacheRef.current.get(c.id);
+      if (!url) return;
+      const v = document.createElement("video");
+      v.muted = true; v.playsInline = true; v.preload = "metadata"; v.src = url;
+      v.addEventListener("loadedmetadata", () => { try { v.currentTime = Math.min(0.3, (v.duration || 1) / 2); } catch { /* ignore */ } }, { once: true });
+      v.addEventListener("seeked", () => {
+        try {
+          const AR = 9 / 16;
+          const canvas = document.createElement("canvas");
+          canvas.width = 90; canvas.height = Math.round(90 / AR);
+          const ctx = canvas.getContext("2d");
+          if (ctx && v.videoWidth) {
+            const srcRatio = v.videoWidth / v.videoHeight;
+            let sw = v.videoWidth, sh = v.videoHeight, sx = 0, sy = 0;
+            if (srcRatio > AR) { sw = v.videoHeight * AR; sx = (v.videoWidth - sw) / 2; }
+            else { sh = v.videoWidth / AR; sy = (v.videoHeight - sh) / 2; }
+            ctx.drawImage(v, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
+            setClipThumbs(prev => ({ ...prev, [c.id]: canvas.toDataURL("image/jpeg", 0.6) }));
+          }
+        } catch { /* not fatal — timeline block just stays blank */ }
+      }, { once: true });
+    });
+  }, [clips]);
+
   useEffect(() => {
     if (!activeClipId && clips.length > 0) setActiveClipId(clips[0].id);
   }, [clips, activeClipId]);
 
-  // Reset state whenever the modal is freshly opened, not left over from a
-  // previous editing session (the modal instance is reused, not remounted).
+  // Reset state whenever the editor is freshly opened, not left over from a
+  // previous editing session (the component instance is reused, not remounted).
   useEffect(() => {
-    if (open) { setClips([]); setCaptions([]); setActiveClipId(null); setSilenceRanges([]); setRendering(false); }
+    if (open) { setClips([]); setCaptions([]); setActiveClipId(null); setSilenceRanges([]); setRendering(false); setClipThumbs({}); setTab("clips"); setCropEditingId(null); }
   }, [open]);
 
   const addFiles = async (files: FileList | null) => {
@@ -109,8 +166,8 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings }:
     const newClips: EditorClip[] = [];
     for (const file of Array.from(files)) {
       if (!file.type.startsWith("video/")) { toast?.(`${file.name} isn't a video — skipped`, "yellow"); continue; }
-      const dur = await readVideoDuration(file);
-      newClips.push({ id: uid(), file, startSec: 0, endSec: dur, durationSec: dur });
+      const meta = await readVideoMeta(file);
+      newClips.push({ id: uid(), file, startSec: 0, endSec: meta.duration, durationSec: meta.duration, width: meta.width, height: meta.height });
     }
     if (newClips.length > 0) {
       setClips(prev => [...prev, ...newClips]);
@@ -118,23 +175,107 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings }:
     }
   };
 
-  const moveClip = (id: string, dir: -1 | 1) => {
-    setClips(prev => {
-      const i = prev.findIndex(c => c.id === id);
-      const j = i + dir;
-      if (i < 0 || j < 0 || j >= prev.length) return prev;
-      const next = [...prev];
-      [next[i], next[j]] = [next[j], next[i]];
-      return next;
-    });
-  };
-
   const removeClip = (id: string) => {
     setClips(prev => prev.filter(c => c.id !== id));
     setSilenceRanges(prev => prev.filter(r => r.clipId !== id));
+    if (cropEditingId === id) setCropEditingId(null);
   };
 
   const updateClip = (id: string, patch: Partial<EditorClip>) => setClips(prev => prev.map(c => c.id === id ? { ...c, ...patch } : c));
+
+  // FEATURE — "give me a full visual editor where you can move stuff, drag
+  // and drop." Reordering clips is now a real drag on the timeline strip
+  // itself (pointer events — works with touch AND mouse identically)
+  // instead of only up/down arrow buttons.
+  const [draggingClipId, setDraggingClipId] = useState<string | null>(null);
+  const handleTimelinePointerDown = (e: React.PointerEvent, id: string) => {
+    if (cropEditingId || positioningCaptionId) return;
+    setDraggingClipId(id);
+  };
+  useEffect(() => {
+    if (!draggingClipId) return;
+    const onMove = (e: PointerEvent) => {
+      const container = timelineRef.current;
+      if (!container) return;
+      const blocks = Array.from(container.querySelectorAll<HTMLElement>("[data-clip-id]"));
+      let targetIndex = blocks.length - 1;
+      for (let i = 0; i < blocks.length; i++) {
+        const rect = blocks[i].getBoundingClientRect();
+        if (e.clientX < rect.left + rect.width / 2) { targetIndex = i; break; }
+      }
+      setClips(prev => {
+        const curIndex = prev.findIndex(c => c.id === draggingClipId);
+        if (curIndex === -1 || curIndex === targetIndex) return prev;
+        const next = [...prev];
+        const [moved] = next.splice(curIndex, 1);
+        next.splice(targetIndex, 0, moved);
+        return next;
+      });
+    };
+    const onUp = () => setDraggingClipId(null);
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    return () => { window.removeEventListener("pointermove", onMove); window.removeEventListener("pointerup", onUp); };
+  }, [draggingClipId]);
+
+  // FEATURE — "you should be able to crop stuff, resize it." A draggable
+  // crop rectangle drawn over the preview, mapped from the video's real
+  // rendered ("object-fit: contain") box back to fractions of the source's
+  // own pixel dimensions — see CropRect in videoEditor.ts and the crop
+  // pixel math in renderFinalVideo.
+  const [cropEditingId, setCropEditingId] = useState<string | null>(null);
+  const [containRect, setContainRect] = useState({ renderW: 0, renderH: 0, offsetX: 0, offsetY: 0 });
+  useEffect(() => {
+    if (!cropEditingId || !activeClip || !previewBoxRef.current) return;
+    const measure = () => {
+      const box = previewBoxRef.current;
+      if (!box) return;
+      const containerW = box.clientWidth, containerH = box.clientHeight;
+      const srcW = activeClip.width || containerW, srcH = activeClip.height || containerH;
+      const containerRatio = containerW / containerH;
+      const srcRatio = srcW / srcH;
+      let renderW: number, renderH: number;
+      if (srcRatio > containerRatio) { renderW = containerW; renderH = containerW / srcRatio; }
+      else { renderH = containerH; renderW = containerH * srcRatio; }
+      setContainRect({ renderW, renderH, offsetX: (containerW - renderW) / 2, offsetY: (containerH - renderH) / 2 });
+    };
+    measure();
+    window.addEventListener("resize", measure);
+    return () => window.removeEventListener("resize", measure);
+  }, [cropEditingId, activeClip?.id, activeClip?.width, activeClip?.height, aspectRatio]);
+  const cropDragRef = useRef<{ mode: "move" | "tl" | "tr" | "bl" | "br"; startX: number; startY: number; startCrop: CropRect } | null>(null);
+  const [cropDragging, setCropDragging] = useState(false);
+  const startCropDrag = (e: React.PointerEvent, mode: "move" | "tl" | "tr" | "bl" | "br") => {
+    e.preventDefault();
+    if (!activeClip) return;
+    cropDragRef.current = { mode, startX: e.clientX, startY: e.clientY, startCrop: activeClip.crop || { x: 0, y: 0, w: 1, h: 1 } };
+    setCropDragging(true);
+  };
+  useEffect(() => {
+    if (!cropDragging) return;
+    const onMove = (e: PointerEvent) => {
+      const st = cropDragRef.current;
+      if (!st || !activeClip || containRect.renderW === 0) return;
+      const dxFrac = (e.clientX - st.startX) / containRect.renderW;
+      const dyFrac = (e.clientY - st.startY) / containRect.renderH;
+      const MIN = 0.15;
+      let { x, y, w, h } = st.startCrop;
+      if (st.mode === "move") {
+        x = clamp(st.startCrop.x + dxFrac, 0, 1 - w);
+        y = clamp(st.startCrop.y + dyFrac, 0, 1 - h);
+      } else {
+        if (st.mode.includes("l")) { const nx = clamp(st.startCrop.x + dxFrac, 0, st.startCrop.x + st.startCrop.w - MIN); w = st.startCrop.w - (nx - st.startCrop.x); x = nx; }
+        if (st.mode.includes("r")) { w = clamp(st.startCrop.w + dxFrac, MIN, 1 - st.startCrop.x); }
+        if (st.mode.includes("t")) { const ny = clamp(st.startCrop.y + dyFrac, 0, st.startCrop.y + st.startCrop.h - MIN); h = st.startCrop.h - (ny - st.startCrop.y); y = ny; }
+        if (st.mode.includes("b")) { h = clamp(st.startCrop.h + dyFrac, MIN, 1 - st.startCrop.y); }
+      }
+      updateClip(activeClip.id, { crop: { x, y, w, h } });
+    };
+    const onUp = () => { setCropDragging(false); cropDragRef.current = null; };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    return () => { window.removeEventListener("pointermove", onMove); window.removeEventListener("pointerup", onUp); };
+  }, [cropDragging, activeClip?.id, containRect]);
 
   const runAutoCut = async () => {
     if (!activeClip) { toast?.("Add a clip first", "red"); return; }
@@ -158,12 +299,11 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings }:
   };
 
   // FEATURE — "can it automatically create captions?" Transcribes the
-  // active clip's trimmed audio (OpenAI Whisper, via the owner's own
-  // OpenAI key already set up for Alfred if they have one — no separate
-  // signup needed) and turns each returned segment into a real, editable
-  // caption with real timing — offset by however much timeline the clips
-  // BEFORE this one already take up, so the timing lines up with the
-  // assembled final video, not just this one clip in isolation.
+  // active clip's trimmed audio (via whichever provider is picked — see
+  // CAPTION_PROVIDERS) and turns each returned segment into a real,
+  // editable caption with real timing — offset by however much timeline
+  // the clips BEFORE this one already take up, so the timing lines up with
+  // the assembled final video, not just this one clip in isolation.
   const runAutoCaptions = async () => {
     if (!activeClip) { toast?.("Add a clip first", "red"); return; }
     const apiKey = getCaptionApiKey(captionProvider);
@@ -311,19 +451,24 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings }:
     }
   };
 
-  return (
-    <Modal open={open} onClose={rendering ? () => {} : onClose} title="Video Editor" maxW="max-w-3xl">
+  if (!open) return null;
+
+  const busy = rendering || autoEditRunning;
+  const previewFilterCss = activeClip
+    ? `brightness(${1 + (activeClip.brightness || 0) / 100}) contrast(${1 + (activeClip.contrast || 0) / 100}) saturate(${Math.max(0, 1 + (activeClip.saturation || 0) / 100)})`
+    : undefined;
+
+  const editor = (
+    <div className="fixed inset-0 bg-black flex flex-col" style={{ zIndex: 400, height: "100dvh" }}>
       <link rel="preconnect" href="https://fonts.googleapis.com" />
       <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
       <link href={CAPTION_GOOGLE_FONTS_HREF} rel="stylesheet" />
       {/* FEATURE — "make the video editor mobile-friendly, not just PC."
           Every <input>/<select> below gets font-size:16px specifically —
           anything smaller triggers iOS Safari's auto-zoom-on-focus, which
-          on a modal this dense means the whole editor jumps and reflows
-          every time a field is tapped. Buttons get a minimum 40px tap
-          target (Apple/Google's own accessibility minimum) since several
-          were icon-only at 12-14px with no padding, fine with a mouse
-          cursor but genuinely hard to hit accurately with a thumb. */}
+          on a screen this dense means everything jumps and reflows every
+          time a field is tapped. Buttons get a minimum 40px tap target
+          (Apple/Google's own accessibility minimum). */}
       <style>{`
         .ve-input, .ve-select { font-size: 16px !important; }
         .ve-tap { min-width: 40px; min-height: 40px; display: inline-flex; align-items: center; justify-content: center; }
@@ -336,304 +481,384 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings }:
         @keyframes ve-anim-flicker { 0%, 19%, 21%, 23%, 25%, 54%, 56%, 100% { opacity: 1; } 20%, 22%, 24%, 55% { opacity: 0.3; } }
       `}</style>
 
-      {rendering ? (
-        <div className="py-16 text-center space-y-4">
-          <div className="w-14 h-14 mx-auto rounded-full border-4 border-red-600/20 border-t-red-600 animate-spin" />
-          <div className="text-sm font-semibold text-white">{renderPhase}</div>
-          <div className="max-w-xs mx-auto h-2 rounded-full bg-white/10 overflow-hidden">
-            <div className="h-full bg-red-600 transition-all" style={{ width: `${renderPct}%` }} />
+      {/* Top bar */}
+      <div className="flex items-center justify-between px-2 py-2 border-b border-white/10 flex-shrink-0">
+        <button onClick={busy ? undefined : onClose} disabled={busy} className="ve-tap text-white/60 hover:text-white disabled:opacity-30"><X size={20} /></button>
+        <div className="text-sm font-semibold text-white">Video Editor</div>
+        {!busy && clips.length > 0 ? (
+          <button onClick={doExport} className="px-3 py-1.5 rounded-lg bg-red-600 hover:bg-red-700 text-white text-xs font-bold">Export</button>
+        ) : <div className="w-16" />}
+      </div>
+
+      {busy ? (
+        <div className="flex-1 flex items-center justify-center">
+          <div className="py-16 text-center space-y-4 px-6">
+            <div className={"w-14 h-14 mx-auto rounded-full border-4 animate-spin " + (rendering ? "border-red-600/20 border-t-red-600" : "border-purple-600/20 border-t-purple-500")} />
+            <div className="text-sm font-semibold text-white">{rendering ? renderPhase : autoEditPhase}</div>
+            {rendering && (
+              <div className="max-w-xs mx-auto h-2 rounded-full bg-white/10 overflow-hidden">
+                <div className="h-full bg-red-600 transition-all" style={{ width: `${renderPct}%` }} />
+              </div>
+            )}
+            <div className="text-[11px] text-white/40">{rendering ? "Rendering happens on this device — don't close the tab." : "Auto-editing happens on this device — don't close the tab."}</div>
           </div>
-          <div className="text-[11px] text-white/40">Rendering happens on this device — don't close the tab.</div>
-        </div>
-      ) : autoEditRunning ? (
-        <div className="py-16 text-center space-y-4">
-          <div className="w-14 h-14 mx-auto rounded-full border-4 border-purple-600/20 border-t-purple-500 animate-spin" />
-          <div className="text-sm font-semibold text-white">{autoEditPhase}</div>
-          <div className="text-[11px] text-white/40">Auto-editing happens on this device — don't close the tab.</div>
         </div>
       ) : (
-        <div className="space-y-5">
-          {/* FEATURE — "change the frame size, like 9:16, etc." Real output
-              dimensions, not just a preview affectation — see
-              ASPECT_DIMENSIONS in videoEditor.ts, which renderFinalVideo
-              actually reframes (scale+crop) every clip to match. */}
-          <div className="flex items-center justify-center gap-1.5">
-            {ASPECT_RATIOS.map(ar => (
-              <button key={ar} onClick={() => setAspectRatio(ar)} className={"px-3 py-1.5 rounded-lg text-xs font-semibold border transition " + (aspectRatio === ar ? "border-red-500/50 bg-red-950/30 text-red-300" : "border-white/10 text-white/50 hover:text-white")}>
-                {ar}
+        <div className="flex-1 min-h-0 flex flex-col">
+          {/* Preview */}
+          <div className="flex-1 min-h-0 flex flex-col items-center justify-center p-2 gap-1.5">
+            <div className="flex items-center justify-center gap-1.5">
+              {ASPECT_RATIOS.map(ar => (
+                <button key={ar} onClick={() => setAspectRatio(ar)} className={"px-3 py-1.5 rounded-lg text-xs font-semibold border transition " + (aspectRatio === ar ? "border-red-500/50 bg-red-950/30 text-red-300" : "border-white/10 text-white/50 hover:text-white")}>
+                  {ar}
+                </button>
+              ))}
+            </div>
+            <div
+              ref={previewBoxRef}
+              onClick={e => {
+                if (!positioningCaptionId || !previewBoxRef.current) return;
+                const rect = previewBoxRef.current.getBoundingClientRect();
+                const xPct = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
+                const yPct = Math.min(1, Math.max(0, (e.clientY - rect.top) / rect.height));
+                updateCaption(positioningCaptionId, { xPct, yPct });
+              }}
+              className={"relative rounded-xl overflow-hidden bg-black mx-auto max-h-full " + (positioningCaptionId ? "cursor-crosshair ring-2 ring-red-500" : "") + " " + (aspectRatio === "9:16" ? "aspect-[9/16]" : aspectRatio === "1:1" ? "aspect-square" : "aspect-video")}
+              style={{ maxWidth: aspectRatio === "9:16" ? "min(100%, 60vh)" : "100%" }}
+            >
+              {activeClip ? (
+                <video
+                  ref={videoRef}
+                  key={activeClip.id}
+                  src={activeClipUrl}
+                  controls={!positioningCaptionId && !cropEditingId}
+                  className="w-full h-full object-contain"
+                  style={{ transform: `${activeClip.rotation ? `rotate(${activeClip.rotation}deg)` : ""} ${activeClip.flipH ? "scaleX(-1)" : ""}`.trim() || undefined, filter: previewFilterCss }}
+                  onTimeUpdate={e => setPreviewTime((e.target as HTMLVideoElement).currentTime)}
+                />
+              ) : (
+                <div className="w-full h-full flex flex-col items-center justify-center text-white/30 text-sm gap-3">
+                  <div>Add a clip to preview</div>
+                  <button onClick={() => fileInputRef.current?.click()} className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-red-900/40 border border-red-700/40 text-red-300 text-xs font-semibold"><Upload size={13} />Add clips</button>
+                </div>
+              )}
+              {activeCaption && activeCaptionStyle && (
+                <div
+                  className="absolute left-0 right-0 flex justify-center px-4 pointer-events-none text-center"
+                  style={
+                    activeCaption.xPct !== undefined && activeCaption.yPct !== undefined
+                      ? { left: `${activeCaption.xPct * 100}%`, top: `${activeCaption.yPct * 100}%`, right: "auto", transform: "translate(-50%, -50%)", width: "90%" }
+                      : {
+                          top: activeCaptionStyle.position === "top" ? "10%" : activeCaptionStyle.position === "center" ? "45%" : undefined,
+                          bottom: activeCaptionStyle.position === "bottom" ? "8%" : undefined,
+                        }
+                  }
+                >
+                  <span
+                    key={activeCaption.id}
+                    style={{ ...captionStyleToCss(activeCaptionStyle), fontSize: "5.5vw", lineHeight: 1.2, display: "inline-block", animation: activeCaptionStyle.animation !== "none" ? `ve-anim-${activeCaptionStyle.animation} 0.4s ease-out` : undefined }}
+                  >{activeCaption.text}</span>
+                </div>
+              )}
+              {positioningCaptionId && (
+                <div className="absolute inset-x-0 bottom-2 text-center text-[10px] text-white bg-black/70 py-1 pointer-events-none">Tap anywhere to place this caption</div>
+              )}
+              {/* FEATURE — "crop stuff, resize it." Draggable crop rect —
+                  move the whole box, or drag a corner to resize. Mapped
+                  from the video's real rendered box (see containRect
+                  measurement above) back to fractions of the source's own
+                  pixel dimensions. */}
+              {cropEditingId && activeClip && cropEditingId === activeClip.id && containRect.renderW > 0 && (() => {
+                const crop = activeClip.crop || { x: 0, y: 0, w: 1, h: 1 };
+                return (
+                  <div
+                    onPointerDown={e => startCropDrag(e, "move")}
+                    className="absolute border-2 border-red-500 cursor-move"
+                    style={{
+                      touchAction: "none",
+                      left: containRect.offsetX + crop.x * containRect.renderW,
+                      top: containRect.offsetY + crop.y * containRect.renderH,
+                      width: crop.w * containRect.renderW,
+                      height: crop.h * containRect.renderH,
+                      boxShadow: "0 0 0 2000px rgba(0,0,0,0.55)",
+                    }}
+                  >
+                    {(["tl", "tr", "bl", "br"] as const).map(corner => (
+                      <div
+                        key={corner}
+                        onPointerDown={e => { e.stopPropagation(); startCropDrag(e, corner); }}
+                        className="absolute w-7 h-7 bg-red-500 rounded-full border-2 border-white"
+                        style={{
+                          touchAction: "none",
+                          left: corner.includes("l") ? -14 : undefined, right: corner.includes("r") ? -14 : undefined,
+                          top: corner.includes("t") ? -14 : undefined, bottom: corner.includes("b") ? -14 : undefined,
+                        }}
+                      />
+                    ))}
+                  </div>
+                );
+              })()}
+            </div>
+            {positioningCaptionId && (
+              <button onClick={() => setPositioningCaptionId(null)} className="text-center text-xs text-red-400 hover:text-red-300 font-semibold">Done positioning</button>
+            )}
+            {cropEditingId && (
+              <button onClick={() => setCropEditingId(null)} className="text-center text-xs text-red-400 hover:text-red-300 font-semibold">Done cropping</button>
+            )}
+          </div>
+
+          {/* FEATURE — "show a timeline, the different clips like CapCut
+              shows... move stuff drag and drop." Horizontal filmstrip of
+              proportionally-sized, thumbnailed clip blocks — drag one to
+              reorder (see handleTimelinePointerDown), tap to select. */}
+          <div className="flex-shrink-0 border-t border-white/10 px-2 pt-2 pb-1">
+            <div ref={timelineRef} className="flex items-stretch gap-1 overflow-x-auto pb-1">
+              {clips.map((c, i) => {
+                const widthPx = Math.max(48, Math.min(160, (c.endSec - c.startSec) * 18));
+                return (
+                  <div
+                    key={c.id}
+                    data-clip-id={c.id}
+                    onPointerDown={e => handleTimelinePointerDown(e, c.id)}
+                    onClick={() => { setActiveClipId(c.id); setTab("clips"); }}
+                    className={"relative flex-shrink-0 h-16 rounded-lg overflow-hidden border-2 cursor-grab active:cursor-grabbing " + (activeClipId === c.id ? "border-red-500" : "border-white/10") + (draggingClipId === c.id ? " opacity-60" : "")}
+                    style={{ width: widthPx, touchAction: "none" }}
+                  >
+                    {clipThumbs[c.id] ? <img src={clipThumbs[c.id]} className="w-full h-full object-cover" draggable={false} alt="" /> : <div className="w-full h-full bg-white/5" />}
+                    <div className="absolute bottom-0 inset-x-0 bg-black/60 text-[8px] text-white text-center py-0.5">{i + 1}</div>
+                  </div>
+                );
+              })}
+              <button onClick={() => fileInputRef.current?.click()} className="flex-shrink-0 w-12 h-16 rounded-lg border-2 border-dashed border-white/20 flex items-center justify-center text-white/40 hover:text-white">
+                <Plus size={18} />
+              </button>
+              <input ref={fileInputRef} type="file" accept="video/*" multiple className="hidden" onChange={e => addFiles(e.target.files)} />
+            </div>
+          </div>
+
+          {/* Tool tabs */}
+          <div className="flex-shrink-0 grid grid-cols-4 border-t border-white/10">
+            {([
+              { id: "clips" as const, label: "Clips", icon: Scissors },
+              { id: "adjust" as const, label: "Adjust", icon: Sliders },
+              { id: "captions" as const, label: "Captions", icon: Type },
+              { id: "auto" as const, label: "Auto-Edit", icon: Sparkles },
+            ]).map(t => (
+              <button key={t.id} onClick={() => setTab(t.id)} className={"flex flex-col items-center justify-center gap-0.5 py-2.5 text-[10px] font-semibold transition " + (tab === t.id ? "text-red-400 bg-red-950/20" : "text-white/40 hover:text-white/70")}>
+                <t.icon size={16} />{t.label}
               </button>
             ))}
           </div>
 
-          {/* Preview — taller on narrow/mobile viewports (more of the
-              screen is naturally available in portrait) than the old fixed
-              360px cap, which left a cramped preview on phones. */}
-          <div
-            ref={previewBoxRef}
-            onClick={e => {
-              if (!positioningCaptionId || !previewBoxRef.current) return;
-              const rect = previewBoxRef.current.getBoundingClientRect();
-              const xPct = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
-              const yPct = Math.min(1, Math.max(0, (e.clientY - rect.top) / rect.height));
-              updateCaption(positioningCaptionId, { xPct, yPct });
-            }}
-            className={"relative rounded-xl overflow-hidden bg-black max-h-[60vh] sm:max-h-[360px] mx-auto " + (positioningCaptionId ? "cursor-crosshair ring-2 ring-red-500" : "") + " " + (aspectRatio === "9:16" ? "aspect-[9/16]" : aspectRatio === "1:1" ? "aspect-square" : "aspect-video")}
-          >
-            {activeClip ? (
-              <video
-                ref={videoRef}
-                key={activeClip.id}
-                src={activeClipUrl}
-                controls={!positioningCaptionId}
-                className="w-full h-full object-contain"
-                style={{ transform: `${activeClip.rotation ? `rotate(${activeClip.rotation}deg)` : ""} ${activeClip.flipH ? "scaleX(-1)" : ""}`.trim() || undefined }}
-                onTimeUpdate={e => setPreviewTime((e.target as HTMLVideoElement).currentTime)}
-              />
-            ) : (
-              <div className="w-full h-full flex items-center justify-center text-white/30 text-sm">Add a clip to preview</div>
-            )}
-            {activeCaption && activeCaptionStyle && (
-              <div
-                className="absolute left-0 right-0 flex justify-center px-4 pointer-events-none text-center"
-                style={
-                  activeCaption.xPct !== undefined && activeCaption.yPct !== undefined
-                    ? { left: `${activeCaption.xPct * 100}%`, top: `${activeCaption.yPct * 100}%`, right: "auto", transform: "translate(-50%, -50%)", width: "90%" }
-                    : {
-                        top: activeCaptionStyle.position === "top" ? "10%" : activeCaptionStyle.position === "center" ? "45%" : undefined,
-                        bottom: activeCaptionStyle.position === "bottom" ? "8%" : undefined,
-                      }
-                }
-              >
-                <span
-                  key={activeCaption.id}
-                  style={{ ...captionStyleToCss(activeCaptionStyle), fontSize: "5.5vw", lineHeight: 1.2, display: "inline-block", animation: activeCaptionStyle.animation !== "none" ? `ve-anim-${activeCaptionStyle.animation} 0.4s ease-out` : undefined }}
-                >{activeCaption.text}</span>
-              </div>
-            )}
-            {positioningCaptionId && (
-              <div className="absolute inset-x-0 bottom-2 text-center text-[10px] text-white bg-black/70 py-1 pointer-events-none">Tap anywhere to place this caption</div>
-            )}
-          </div>
-          {positioningCaptionId && (
-            <button onClick={() => setPositioningCaptionId(null)} className="w-full text-center text-xs text-red-400 hover:text-red-300 font-semibold -mt-3">Done positioning</button>
-          )}
-
-          {/* FEATURE — "make it so you can auto edit." One button that
-              chains auto-cut-dead-space + auto-captions across every clip
-              in the timeline (not just the active one), applying whichever
-              caption template and transcription provider are picked here —
-              then hands control right back to the normal editor below so
-              the result can be reviewed, manually adjusted, and rendered
-              exactly like a manual edit. */}
-          {clips.length > 0 && (
-            <div className="p-3 rounded-xl bg-purple-950/15 border border-purple-700/30 space-y-2.5">
-              <div className="text-xs font-semibold text-purple-300 flex items-center gap-1.5"><Clapperboard size={13} />Auto-Edit</div>
-              <div className="text-[10px] text-white/40">Cuts dead air out of every clip, stitches what's left together, and captions it in one pass — you still get to review and tweak everything after.</div>
-              <div className="grid grid-cols-2 gap-1.5">
-                <div>
-                  <label className="text-[9px] text-white/40 block mb-1">Captions from</label>
-                  <select value={captionProvider} onChange={e => setCaptionProvider(e.target.value as CaptionProvider)} className="ve-select w-full bg-black/30 border border-white/10 rounded-lg px-1.5 py-1.5 text-white">
-                    {CAPTION_PROVIDERS.map(p => <option key={p.id} value={p.id} className="bg-black">{p.label}{!p.keyFrom(settings) ? " (no key)" : ""}</option>)}
-                  </select>
-                </div>
-                <div>
-                  <label className="text-[9px] text-white/40 block mb-1">Caption template</label>
-                  <select value={autoEditCaptionStyle} onChange={e => setAutoEditCaptionStyle(e.target.value)} className="ve-select w-full bg-black/30 border border-white/10 rounded-lg px-1.5 py-1.5 text-white">
-                    {CAPTION_STYLES.map(s => <option key={s.id} value={s.id} className="bg-black">{s.name}</option>)}
-                  </select>
-                </div>
-              </div>
-              {!getCaptionApiKey(captionProvider) && (
-                <div className="text-[10px] text-yellow-400/80">No key for this provider yet — Auto-Edit will still cut dead space, just without captions.</div>
-              )}
-              <button onClick={runAutoEdit} className="w-full flex items-center justify-center gap-1.5 py-2.5 rounded-lg bg-purple-900/40 hover:bg-purple-900/60 border border-purple-600/50 text-purple-200 text-xs font-semibold transition">
-                <Sparkles size={13} />Run Auto-Edit
-              </button>
-            </div>
-          )}
-
-          {/* Clips */}
-          <div>
-            <div className="flex items-center justify-between mb-2">
-              <div className="text-xs font-semibold text-white/70 uppercase tracking-wide flex items-center gap-1.5"><Scissors size={12} />Clips ({clips.length})</div>
-              <button onClick={() => fileInputRef.current?.click()} className="text-[11px] text-red-400 hover:text-red-300 flex items-center gap-1 py-2 px-1"><Upload size={11} />Add clips</button>
-              <input ref={fileInputRef} type="file" accept="video/*" multiple className="hidden" onChange={e => addFiles(e.target.files)} />
-            </div>
-            {clips.length === 0 ? (
-              <div className="text-center py-8 text-white/30 text-xs border border-dashed border-white/10 rounded-xl">No clips yet — add one or more videos to build your edit</div>
-            ) : (
+          {/* Tool panel */}
+          <div className="flex-shrink-0 max-h-[38vh] overflow-y-auto px-3 py-3 border-t border-white/5">
+            {tab === "clips" && (
               <div className="space-y-2">
-                {clips.map((c, i) => {
-                  const clipSilences = silenceRanges.filter(r => r.clipId === c.id);
-                  return (
-                    <div key={c.id} className={"p-2.5 rounded-xl border transition " + (activeClipId === c.id ? "bg-red-950/20 border-red-700/40" : "bg-white/5 border-white/10")}>
-                      <div className="flex items-center gap-1">
-                        <button onClick={() => setActiveClipId(c.id)} className="flex-1 text-left text-xs font-medium text-white truncate py-2">{i + 1}. {c.file.name}</button>
-                        {/* FEATURE — "flip videos at different degrees, it
-                            should snap at certain angles." Snaps through
-                            0→90→180→270→0 — clean, lossless-shape rotation. */}
-                        <button onClick={() => updateClip(c.id, { rotation: (((c.rotation || 0) + 90) % 360) as any })} title="Rotate 90°" className={"ve-tap " + ((c.rotation || 0) !== 0 ? "text-red-400" : "text-white/40 hover:text-white")}><RotateCw size={16} /></button>
-                        <button onClick={() => updateClip(c.id, { flipH: !c.flipH })} title="Flip horizontal" className={"ve-tap " + (c.flipH ? "text-red-400" : "text-white/40 hover:text-white")}><FlipHorizontal size={16} /></button>
-                        <button onClick={() => moveClip(c.id, -1)} disabled={i === 0} className="ve-tap text-white/40 hover:text-white disabled:opacity-20"><ChevronUp size={16} /></button>
-                        <button onClick={() => moveClip(c.id, 1)} disabled={i === clips.length - 1} className="ve-tap text-white/40 hover:text-white disabled:opacity-20"><ChevronDown size={16} /></button>
-                        <button onClick={() => removeClip(c.id)} className="ve-tap text-red-400/60 hover:text-red-400"><Trash2 size={16} /></button>
-                      </div>
-                      {/* Dual range sliders — the easier mobile-friendly way
-                          to trim (drag with a thumb) — alongside the number
-                          inputs for anyone who wants exact values. */}
-                      <div className="mt-2 space-y-1.5">
-                        <div className="flex items-center gap-2">
-                          <span className="text-[10px] text-white/40 w-8 flex-shrink-0">Start</span>
-                          <input type="range" min={0} max={c.durationSec} step={0.1} value={c.startSec}
-                            onChange={e => updateClip(c.id, { startSec: Math.min(Number(e.target.value), c.endSec - 0.1) })}
-                            className="flex-1 accent-red-600" style={{ height: 24 }} />
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <span className="text-[10px] text-white/40 w-8 flex-shrink-0">End</span>
-                          <input type="range" min={0} max={c.durationSec} step={0.1} value={c.endSec}
-                            onChange={e => updateClip(c.id, { endSec: Math.max(Number(e.target.value), c.startSec + 0.1) })}
-                            className="flex-1 accent-red-600" style={{ height: 24 }} />
-                        </div>
-                      </div>
-                      <div className="flex items-center gap-2 mt-1.5 text-[11px] text-white/50">
-                        <span>Trim:</span>
-                        <input type="number" min={0} max={c.durationSec} step={0.1} value={c.startSec.toFixed(1)}
-                          onChange={e => updateClip(c.id, { startSec: Math.min(Number(e.target.value) || 0, c.endSec - 0.1) })}
-                          className="ve-input w-16 bg-black/30 border border-white/10 rounded px-1.5 py-1.5 text-white" />
-                        <span>to</span>
-                        <input type="number" min={0} max={c.durationSec} step={0.1} value={c.endSec.toFixed(1)}
-                          onChange={e => updateClip(c.id, { endSec: Math.max(Number(e.target.value) || 0, c.startSec + 0.1) })}
-                          className="ve-input w-16 bg-black/30 border border-white/10 rounded px-1.5 py-1.5 text-white" />
-                        <span>of {c.durationSec.toFixed(1)}s</span>
-                      </div>
-                      {/* Transition to the NEXT clip (hidden on the last
-                          clip — nothing to transition into). Real ffmpeg
-                          xfade/acrossfade effects, not a preview-only
-                          affectation — see videoEditor.ts. */}
-                      {i < clips.length - 1 && (
-                        <div className="flex items-center gap-2 mt-1.5 text-[11px] text-white/50">
-                          <span className="flex-shrink-0">Transition to next →</span>
-                          <select value={c.transitionToNext || "none"} onChange={e => updateClip(c.id, { transitionToNext: e.target.value })}
-                            className="ve-select flex-1 bg-black/30 border border-white/10 rounded px-1.5 py-1.5 text-white">
-                            {TRANSITION_EFFECTS.map(t => <option key={t.id} value={t.id} className="bg-black" title={t.description}>{t.name}</option>)}
-                          </select>
-                        </div>
-                      )}
-                      {clipSilences.length > 0 && (
-                        <div className="mt-2 space-y-1">
-                          {clipSilences.map((r, si) => (
-                            <div key={si} className="flex items-center justify-between text-[10px] bg-yellow-950/20 border border-yellow-700/30 rounded-lg px-2 py-1 text-yellow-200/80">
-                              <span>Quiet: {r.start.toFixed(1)}s–{r.end.toFixed(1)}s</span>
-                              <button
-                                onClick={() => {
-                                  // Trim the clip's end back to right before this
-                                  // silent stretch, or nudge start forward if the
-                                  // silence sits at the very beginning.
-                                  if (r.start <= c.startSec + 0.3) updateClip(c.id, { startSec: r.end });
-                                  else updateClip(c.id, { endSec: r.start });
-                                  setSilenceRanges(prev => prev.filter(x => x !== r));
-                                }}
-                                className="text-yellow-300 hover:text-yellow-100 font-semibold"
-                              >Trim it</button>
-                            </div>
-                          ))}
-                        </div>
-                      )}
+                {clips.length === 0 ? (
+                  <div className="text-center py-8 text-white/30 text-xs border border-dashed border-white/10 rounded-xl">No clips yet — tap the + on the timeline above to add videos</div>
+                ) : !activeClip ? null : (
+                  <div className="space-y-2.5">
+                    <div className="flex items-center gap-1">
+                      <div className="flex-1 text-xs font-medium text-white truncate py-2">{activeClip.file.name}</div>
+                      <button onClick={() => updateClip(activeClip.id, { rotation: (((activeClip.rotation || 0) + 90) % 360) as any })} title="Rotate 90°" className={"ve-tap " + ((activeClip.rotation || 0) !== 0 ? "text-red-400" : "text-white/40 hover:text-white")}><RotateCw size={16} /></button>
+                      <button onClick={() => updateClip(activeClip.id, { flipH: !activeClip.flipH })} title="Flip horizontal" className={"ve-tap " + (activeClip.flipH ? "text-red-400" : "text-white/40 hover:text-white")}><FlipHorizontal size={16} /></button>
+                      <button onClick={() => setCropEditingId(cropEditingId === activeClip.id ? null : activeClip.id)} title="Crop" className={"ve-tap " + (cropEditingId === activeClip.id ? "text-red-400" : activeClip.crop ? "text-red-300" : "text-white/40 hover:text-white")}><CropIcon size={16} /></button>
+                      <button onClick={() => removeClip(activeClip.id)} className="ve-tap text-red-400/60 hover:text-red-400"><Trash2 size={16} /></button>
                     </div>
-                  );
-                })}
-              </div>
-            )}
-            {activeClip && (
-              <div className="mt-2 grid grid-cols-2 gap-1.5">
-                <button onClick={runAutoCut} disabled={detectingSilence}
-                  className="flex items-center justify-center gap-1.5 py-2 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-white/60 text-xs font-semibold transition disabled:opacity-40">
-                  <Wand2 size={12} />{detectingSilence ? "Analyzing…" : "Auto-Cut Silence"}
-                </button>
-                <button onClick={runAutoCaptions} disabled={transcribing}
-                  className="flex items-center justify-center gap-1.5 py-2 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-white/60 text-xs font-semibold transition disabled:opacity-40">
-                  <Captions size={12} />{transcribing ? "Transcribing…" : "Auto-Captions"}
-                </button>
-              </div>
-            )}
-          </div>
-
-          {/* Captions */}
-          <div>
-            <div className="flex items-center justify-between mb-2">
-              <div className="text-xs font-semibold text-white/70 uppercase tracking-wide flex items-center gap-1.5"><Type size={12} />Captions ({captions.length})</div>
-              <button onClick={addCaption} className="text-[11px] text-red-400 hover:text-red-300 flex items-center gap-1 py-2 px-1"><Plus size={11} />Add at {previewTime.toFixed(1)}s</button>
-            </div>
-            {captions.length === 0 ? (
-              <div className="text-center py-6 text-white/30 text-xs border border-dashed border-white/10 rounded-xl">No captions yet — type your own, no AI needed</div>
-            ) : (
-              <div className="space-y-2">
-                {captions.map(cap => (
-                  <div key={cap.id} className="p-2.5 rounded-xl bg-white/5 border border-white/10 space-y-1.5">
-                    <div className="flex items-center gap-1.5">
-                      <input value={cap.text} onChange={e => updateCaption(cap.id, { text: e.target.value })}
-                        className="ve-input flex-1 bg-black/30 border border-white/10 rounded px-2 py-2 text-white" placeholder="Caption text" />
-                      <button onClick={() => removeCaption(cap.id)} className="ve-tap text-red-400/60 hover:text-red-400 flex-shrink-0"><Trash2 size={15} /></button>
+                    {activeClip.crop && (
+                      <button onClick={() => updateClip(activeClip.id, { crop: undefined })} className="text-[10px] text-white/40 hover:text-white/70">Reset crop</button>
+                    )}
+                    <div className="space-y-1.5">
+                      <div className="flex items-center gap-2">
+                        <span className="text-[10px] text-white/40 w-8 flex-shrink-0">Start</span>
+                        <input type="range" min={0} max={activeClip.durationSec} step={0.1} value={activeClip.startSec}
+                          onChange={e => updateClip(activeClip.id, { startSec: Math.min(Number(e.target.value), activeClip.endSec - 0.1) })}
+                          className="flex-1 accent-red-600" style={{ height: 24 }} />
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-[10px] text-white/40 w-8 flex-shrink-0">End</span>
+                        <input type="range" min={0} max={activeClip.durationSec} step={0.1} value={activeClip.endSec}
+                          onChange={e => updateClip(activeClip.id, { endSec: Math.max(Number(e.target.value), activeClip.startSec + 0.1) })}
+                          className="flex-1 accent-red-600" style={{ height: 24 }} />
+                      </div>
                     </div>
-                    <div className="flex items-center gap-1.5 flex-wrap text-[10px] text-white/50">
-                      <span>From</span>
-                      <input type="number" min={0} step={0.1} value={cap.startSec.toFixed(1)} onChange={e => updateCaption(cap.id, { startSec: Number(e.target.value) || 0 })} className="ve-input w-16 bg-black/30 border border-white/10 rounded px-1 py-1.5 text-white" />
+                    <div className="flex items-center gap-2 text-[11px] text-white/50">
+                      <span>Trim:</span>
+                      <input type="number" min={0} max={activeClip.durationSec} step={0.1} value={activeClip.startSec.toFixed(1)}
+                        onChange={e => updateClip(activeClip.id, { startSec: Math.min(Number(e.target.value) || 0, activeClip.endSec - 0.1) })}
+                        className="ve-input w-16 bg-black/30 border border-white/10 rounded px-1.5 py-1.5 text-white" />
                       <span>to</span>
-                      <input type="number" min={0} step={0.1} value={cap.endSec.toFixed(1)} onChange={e => updateCaption(cap.id, { endSec: Number(e.target.value) || 0 })} className="ve-input w-16 bg-black/30 border border-white/10 rounded px-1 py-1.5 text-white" />
-                      <span>s</span>
+                      <input type="number" min={0} max={activeClip.durationSec} step={0.1} value={activeClip.endSec.toFixed(1)}
+                        onChange={e => updateClip(activeClip.id, { endSec: Math.max(Number(e.target.value) || 0, activeClip.startSec + 0.1) })}
+                        className="ve-input w-16 bg-black/30 border border-white/10 rounded px-1.5 py-1.5 text-white" />
+                      <span>of {activeClip.durationSec.toFixed(1)}s</span>
                     </div>
-                    <div className="flex items-center gap-1.5">
-                      <select value={cap.styleId} onChange={e => updateCaption(cap.id, { styleId: e.target.value })} className="ve-select flex-1 bg-black/30 border border-white/10 rounded px-1.5 py-1.5 text-white">
-                        {CAPTION_STYLES.map(s => <option key={s.id} value={s.id} className="bg-black">{s.name}</option>)}
-                      </select>
-                      {/* FEATURE — "move the text around." Tap, then tap
-                          anywhere on the preview above to place it there —
-                          a real per-caption override (see xPct/yPct), not
-                          just the style's default top/center/bottom. */}
-                      <button onClick={() => { setActiveClipId(activeClipId); setPreviewTime(cap.startSec); setPositioningCaptionId(cap.id); }}
-                        className={"text-[11px] font-semibold px-2 py-1.5 rounded-lg border flex-shrink-0 " + (cap.xPct !== undefined ? "border-red-500/50 bg-red-950/30 text-red-300" : "border-white/10 text-white/50 hover:text-white")}>
-                        Position
+                    {clips.findIndex(c => c.id === activeClip.id) < clips.length - 1 && (
+                      <div className="flex items-center gap-2 text-[11px] text-white/50">
+                        <span className="flex-shrink-0">Transition to next →</span>
+                        <select value={activeClip.transitionToNext || "none"} onChange={e => updateClip(activeClip.id, { transitionToNext: e.target.value })}
+                          className="ve-select flex-1 bg-black/30 border border-white/10 rounded px-1.5 py-1.5 text-white">
+                          {TRANSITION_EFFECTS.map(t => <option key={t.id} value={t.id} className="bg-black" title={t.description}>{t.name}</option>)}
+                        </select>
+                      </div>
+                    )}
+                    {silenceRanges.filter(r => r.clipId === activeClip.id).length > 0 && (
+                      <div className="space-y-1">
+                        {silenceRanges.filter(r => r.clipId === activeClip.id).map((r, si) => (
+                          <div key={si} className="flex items-center justify-between text-[10px] bg-yellow-950/20 border border-yellow-700/30 rounded-lg px-2 py-1 text-yellow-200/80">
+                            <span>Quiet: {r.start.toFixed(1)}s–{r.end.toFixed(1)}s</span>
+                            <button
+                              onClick={() => {
+                                if (r.start <= activeClip.startSec + 0.3) updateClip(activeClip.id, { startSec: r.end });
+                                else updateClip(activeClip.id, { endSec: r.start });
+                                setSilenceRanges(prev => prev.filter(x => x !== r));
+                              }}
+                              className="text-yellow-300 hover:text-yellow-100 font-semibold"
+                            >Trim it</button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    <div className="grid grid-cols-2 gap-1.5 pt-1">
+                      <button onClick={runAutoCut} disabled={detectingSilence}
+                        className="flex items-center justify-center gap-1.5 py-2 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-white/60 text-xs font-semibold transition disabled:opacity-40">
+                        <Wand2 size={12} />{detectingSilence ? "Analyzing…" : "Auto-Cut Silence"}
                       </button>
-                      {cap.xPct !== undefined && (
-                        <button onClick={() => updateCaption(cap.id, { xPct: undefined, yPct: undefined })} className="text-[10px] text-white/30 hover:text-white/60 flex-shrink-0">Reset</button>
-                      )}
+                      <button onClick={runAutoCaptions} disabled={transcribing}
+                        className="flex items-center justify-center gap-1.5 py-2 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-white/60 text-xs font-semibold transition disabled:opacity-40">
+                        <Captions size={12} />{transcribing ? "Transcribing…" : "Auto-Captions"}
+                      </button>
                     </div>
                   </div>
-                ))}
+                )}
               </div>
             )}
-            <div className="mt-2 grid grid-cols-2 sm:grid-cols-3 gap-1.5 max-h-64 overflow-y-auto p-0.5">
-              {CAPTION_STYLES.map(s => (
-                <div key={s.id} className="rounded-lg bg-black border border-white/10 py-3 px-1.5 flex items-center justify-center text-center" title={s.description}>
-                  <span style={{ ...captionStyleToCss(s), fontSize: 11 }}>{s.name}</span>
+
+            {tab === "adjust" && (
+              !activeClip ? <div className="text-center py-8 text-white/30 text-xs">Add a clip first</div> : (
+                <div className="space-y-3">
+                  <div className="text-[10px] text-white/40">Adjustments apply to this clip only — pick another clip on the timeline to adjust it separately.</div>
+                  {(["brightness", "contrast", "saturation"] as const).map(key => (
+                    <div key={key}>
+                      <div className="text-[11px] text-white/60 mb-1 capitalize flex justify-between"><span>{key}</span><span className="text-white/40">{(activeClip as any)[key] || 0}</span></div>
+                      <input type="range" min={-100} max={100} value={(activeClip as any)[key] || 0}
+                        onChange={e => updateClip(activeClip.id, { [key]: Number(e.target.value) } as any)}
+                        className="w-full accent-red-600" style={{ height: 24 }} />
+                    </div>
+                  ))}
+                  <button onClick={() => updateClip(activeClip.id, { brightness: 0, contrast: 0, saturation: 0 })} className="text-[10px] text-white/40 hover:text-white/70">Reset adjustments</button>
                 </div>
-              ))}
-            </div>
+              )
+            )}
+
+            {tab === "captions" && (
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <div className="text-xs font-semibold text-white/70 uppercase tracking-wide">Captions ({captions.length})</div>
+                  <button onClick={addCaption} className="text-[11px] text-red-400 hover:text-red-300 flex items-center gap-1 py-2 px-1"><Plus size={11} />Add at {previewTime.toFixed(1)}s</button>
+                </div>
+                {captions.length === 0 ? (
+                  <div className="text-center py-6 text-white/30 text-xs border border-dashed border-white/10 rounded-xl">No captions yet — type your own, or use Auto-Captions in the Clips tab</div>
+                ) : (
+                  <div className="space-y-2">
+                    {captions.map(cap => (
+                      <div key={cap.id} className="p-2.5 rounded-xl bg-white/5 border border-white/10 space-y-1.5">
+                        <div className="flex items-center gap-1.5">
+                          <input value={cap.text} onChange={e => updateCaption(cap.id, { text: e.target.value })}
+                            className="ve-input flex-1 bg-black/30 border border-white/10 rounded px-2 py-2 text-white" placeholder="Caption text" />
+                          <button onClick={() => removeCaption(cap.id)} className="ve-tap text-red-400/60 hover:text-red-400 flex-shrink-0"><Trash2 size={15} /></button>
+                        </div>
+                        <div className="flex items-center gap-1.5 flex-wrap text-[10px] text-white/50">
+                          <span>From</span>
+                          <input type="number" min={0} step={0.1} value={cap.startSec.toFixed(1)} onChange={e => updateCaption(cap.id, { startSec: Number(e.target.value) || 0 })} className="ve-input w-16 bg-black/30 border border-white/10 rounded px-1 py-1.5 text-white" />
+                          <span>to</span>
+                          <input type="number" min={0} step={0.1} value={cap.endSec.toFixed(1)} onChange={e => updateCaption(cap.id, { endSec: Number(e.target.value) || 0 })} className="ve-input w-16 bg-black/30 border border-white/10 rounded px-1 py-1.5 text-white" />
+                          <span>s</span>
+                        </div>
+                        <div className="flex items-center gap-1.5">
+                          <select value={cap.styleId} onChange={e => updateCaption(cap.id, { styleId: e.target.value })} className="ve-select flex-1 bg-black/30 border border-white/10 rounded px-1.5 py-1.5 text-white">
+                            {CAPTION_STYLES.map(s => <option key={s.id} value={s.id} className="bg-black">{s.name}</option>)}
+                          </select>
+                          <button onClick={() => { setPreviewTime(cap.startSec); setPositioningCaptionId(cap.id); }}
+                            className={"text-[11px] font-semibold px-2 py-1.5 rounded-lg border flex-shrink-0 " + (cap.xPct !== undefined ? "border-red-500/50 bg-red-950/30 text-red-300" : "border-white/10 text-white/50 hover:text-white")}>
+                            Position
+                          </button>
+                          {cap.xPct !== undefined && (
+                            <button onClick={() => updateCaption(cap.id, { xPct: undefined, yPct: undefined })} className="text-[10px] text-white/30 hover:text-white/60 flex-shrink-0">Reset</button>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <div className="grid grid-cols-3 sm:grid-cols-4 gap-1.5 max-h-40 overflow-y-auto p-0.5">
+                  {CAPTION_STYLES.map(s => (
+                    <div key={s.id} className="rounded-lg bg-black border border-white/10 py-3 px-1.5 flex items-center justify-center text-center" title={s.description}>
+                      <span style={{ ...captionStyleToCss(s), fontSize: 11 }}>{s.name}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {tab === "auto" && (
+              <div className="space-y-3">
+                {/* FEATURE — "make it so you can auto edit." One button
+                    that chains auto-cut-dead-space + auto-captions across
+                    every clip in the timeline (not just the active one). */}
+                <div className="p-3 rounded-xl bg-purple-950/15 border border-purple-700/30 space-y-2.5">
+                  <div className="text-xs font-semibold text-purple-300 flex items-center gap-1.5"><Sparkles size={13} />Auto-Edit</div>
+                  <div className="text-[10px] text-white/40">Cuts dead air out of every clip, stitches what's left together, and captions it in one pass — you still get to review and tweak everything after.</div>
+                  <div className="grid grid-cols-2 gap-1.5">
+                    <div>
+                      <label className="text-[9px] text-white/40 block mb-1">Captions from</label>
+                      <select value={captionProvider} onChange={e => setCaptionProvider(e.target.value as CaptionProvider)} className="ve-select w-full bg-black/30 border border-white/10 rounded-lg px-1.5 py-1.5 text-white">
+                        {CAPTION_PROVIDERS.map(p => <option key={p.id} value={p.id} className="bg-black">{p.label}{!p.keyFrom(settings) ? " (no key)" : ""}</option>)}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="text-[9px] text-white/40 block mb-1">Caption template</label>
+                      <select value={autoEditCaptionStyle} onChange={e => setAutoEditCaptionStyle(e.target.value)} className="ve-select w-full bg-black/30 border border-white/10 rounded-lg px-1.5 py-1.5 text-white">
+                        {CAPTION_STYLES.map(s => <option key={s.id} value={s.id} className="bg-black">{s.name}</option>)}
+                      </select>
+                    </div>
+                  </div>
+                  {!getCaptionApiKey(captionProvider) && (
+                    <div className="text-[10px] text-yellow-400/80">No key for this provider yet — Auto-Edit will still cut dead space, just without captions.</div>
+                  )}
+                  <button onClick={runAutoEdit} className="w-full flex items-center justify-center gap-1.5 py-2.5 rounded-lg bg-purple-900/40 hover:bg-purple-900/60 border border-purple-600/50 text-purple-200 text-xs font-semibold transition">
+                    <Sparkles size={13} />Run Auto-Edit
+                  </button>
+                </div>
+                {hasApiKey && (
+                  <button onClick={doAutoEditWithApi} disabled={autoEditing}
+                    className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl bg-purple-950/30 hover:bg-purple-900/40 border border-purple-700/40 text-purple-300 text-xs font-semibold transition disabled:opacity-40">
+                    <Sparkles size={13} />{autoEditing ? "Submitting…" : "Auto-Edit with AI (uses your configured video API)"}
+                  </button>
+                )}
+                {!hasApiKey && (
+                  <div className="text-[10px] text-white/30 text-center">
+                    Want fully automated AI editing? Add a video-editing API key in Settings → Integrations to unlock "Auto-Edit with AI" — optional, uses your own account.
+                  </div>
+                )}
+              </div>
+            )}
           </div>
 
-          {/* AI auto-edit (optional, owner's own key) */}
-          {hasApiKey && (
-            <button onClick={doAutoEditWithApi} disabled={autoEditing}
-              className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl bg-purple-950/30 hover:bg-purple-900/40 border border-purple-700/40 text-purple-300 text-xs font-semibold transition disabled:opacity-40">
-              <Sparkles size={13} />{autoEditing ? "Submitting…" : "Auto-Edit with AI (uses your configured video API)"}
-            </button>
-          )}
-          {!hasApiKey && (
-            <div className="text-[10px] text-white/30 text-center">
-              Want fully automated AI editing? Add a video-editing API key in Settings → Integrations to unlock "Auto-Edit with AI" — optional, uses your own account.
-            </div>
-          )}
-
-          {/* FEATURE — "edit videos, but save them and not post them." */}
-          <label className="flex items-center gap-2 text-xs text-white/60 cursor-pointer justify-center">
-            <input type="checkbox" checked={saveAsDraftOnly} onChange={e => setSaveAsDraftOnly(e.target.checked)} className="accent-red-600" />
-            Save as a draft — don't open the post composer
-          </label>
-          <GBtn onClick={doExport} disabled={clips.length === 0} className="w-full !justify-center !py-3">
-            {saveAsDraftOnly ? "Render & Save Draft" : "Render & Use This Video"}
-          </GBtn>
+          {/* Export row */}
+          <div className="flex-shrink-0 px-3 py-2.5 border-t border-white/10 space-y-2">
+            <label className="flex items-center gap-2 text-xs text-white/60 cursor-pointer justify-center">
+              <input type="checkbox" checked={saveAsDraftOnly} onChange={e => setSaveAsDraftOnly(e.target.checked)} className="accent-red-600" />
+              Save as a draft — don't open the post composer
+            </label>
+            <GBtn onClick={doExport} disabled={clips.length === 0} className="w-full !justify-center !py-3">
+              {saveAsDraftOnly ? "Render & Save Draft" : "Render & Use This Video"}
+            </GBtn>
+          </div>
         </div>
       )}
-    </Modal>
+    </div>
   );
+
+  return createPortal(editor, document.body);
 }

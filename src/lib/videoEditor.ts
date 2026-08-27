@@ -51,8 +51,20 @@ const ensureFont = async (ff: FFmpeg, style: CaptionStyle): Promise<string> => {
   return fileName;
 };
 
+// FEATURE — "you should be able to crop stuff, resize it." x/y/w/h are
+// fractions (0-1) of the clip's OWN source pixel dimensions (clip.width/
+// clip.height, probed by readVideoMeta below) — resolution-independent so
+// the same crop rect means the same thing regardless of the source
+// clip's actual resolution. Applied to the source BEFORE rotation/flip
+// and before the aspect-ratio reframe.
+export type CropRect = { x: number; y: number; w: number; h: number };
+
 export type EditorClip = {
   id: string; file: File; startSec: number; endSec: number; durationSec: number;
+  // Source pixel dimensions, probed once when the clip is added (see
+  // readVideoMeta) — needed to turn a fractional crop rect into real pixel
+  // coordinates for ffmpeg's crop filter.
+  width?: number; height?: number;
   // Transition applied BETWEEN this clip and the next one (ignored on the
   // last clip) — an id from captionStyles.ts's TRANSITION_EFFECTS.
   transitionToNext?: string;
@@ -63,6 +75,12 @@ export type EditorClip = {
   // horizontally (selfie/mirrored-camera footage).
   rotation?: 0 | 90 | 180 | 270;
   flipH?: boolean;
+  crop?: CropRect;
+  // FEATURE — "change saturation, contrast, brightness, etc." All three on
+  // a -100..100 slider scale (0 = unchanged); mapped to ffmpeg's eq filter
+  // ranges in renderFinalVideo, and to CSS filter() percentages for the
+  // live preview so what's on screen while editing matches the export.
+  brightness?: number; contrast?: number; saturation?: number;
 };
 export type EditorCaption = {
   id: string; text: string; startSec: number; endSec: number; styleId: string;
@@ -127,6 +145,23 @@ export const readVideoDuration = (file: File): Promise<number> =>
     v.preload = "metadata";
     v.onloadedmetadata = () => { const d = v.duration; URL.revokeObjectURL(url); resolve(Number.isFinite(d) ? d : 0); };
     v.onerror = () => { URL.revokeObjectURL(url); resolve(0); };
+    v.src = url;
+  });
+
+// Same idea as readVideoDuration, but also grabs the source's real pixel
+// dimensions — needed to turn a fractional crop rect (see CropRect) into
+// real pixel coordinates for ffmpeg's crop filter.
+export const readVideoMeta = (file: File): Promise<{ duration: number; width: number; height: number }> =>
+  new Promise((resolve) => {
+    const url = URL.createObjectURL(file);
+    const v = document.createElement("video");
+    v.preload = "metadata";
+    v.onloadedmetadata = () => {
+      const d = v.duration, w = v.videoWidth, h = v.videoHeight;
+      URL.revokeObjectURL(url);
+      resolve({ duration: Number.isFinite(d) ? d : 0, width: w || 0, height: h || 0 });
+    };
+    v.onerror = () => { URL.revokeObjectURL(url); resolve({ duration: 0, width: 0, height: 0 }); };
     v.src = url;
   });
 
@@ -308,14 +343,32 @@ export const renderFinalVideo = async (
     // crop the overflow) rather than a plain scale — a plain scale to a
     // different aspect ratio than the source either distorts or
     // letterboxes; this is the standard "reframe" technique CapCut and
-    // every other short-form editor uses. Rotation (90° multiples, via
-    // transpose) and horizontal flip are applied BEFORE the reframe so
-    // they affect the actual visible frame, not just get cropped oddly.
+    // every other short-form editor uses. A manual crop (if the owner drew
+    // one) comes first — relative to the SOURCE's own pixels, before
+    // rotation/flip touch the frame at all — then rotation/flip, then any
+    // color adjustment, then the aspect-ratio reframe.
     const filters: string[] = [];
+    if (c.crop && c.width && c.height) {
+      const cw = Math.max(2, Math.round(c.crop.w * c.width / 2) * 2);
+      const ch = Math.max(2, Math.round(c.crop.h * c.height / 2) * 2);
+      const cx = Math.max(0, Math.round(c.crop.x * c.width));
+      const cy = Math.max(0, Math.round(c.crop.y * c.height));
+      filters.push(`crop=${cw}:${ch}:${cx}:${cy}`);
+    }
     if (c.rotation === 90) filters.push("transpose=1");
     else if (c.rotation === 180) filters.push("transpose=1,transpose=1");
     else if (c.rotation === 270) filters.push("transpose=2");
     if (c.flipH) filters.push("hflip");
+    // FEATURE — "change saturation, contrast, brightness, etc." -100..100
+    // sliders mapped onto ffmpeg eq's real ranges: brightness -1..1,
+    // contrast 0..2, saturation 0..3 (clamped — the slider only reaches 2).
+    const hasColorAdjust = !!(c.brightness || c.contrast || c.saturation);
+    if (hasColorAdjust) {
+      const b = ((c.brightness || 0) / 100).toFixed(3);
+      const cst = (1 + (c.contrast || 0) / 100).toFixed(3);
+      const s = Math.max(0, 1 + (c.saturation || 0) / 100).toFixed(3);
+      filters.push(`eq=brightness=${b}:contrast=${cst}:saturation=${s}`);
+    }
     filters.push(`scale=${targetW}:${targetH}:force_original_aspect_ratio=increase`, `crop=${targetW}:${targetH}`, "fps=30");
     await ff.exec([
       "-ss", String(c.startSec), "-i", inName, "-t", String(dur),
