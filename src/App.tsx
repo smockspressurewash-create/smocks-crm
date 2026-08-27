@@ -4243,7 +4243,7 @@ export function App() {
           refetchEmployees={refetchEmployees}
           weatherData={weatherData}
         />
-        <div className="fixed bottom-20 left-4 right-4 md:bottom-4 md:right-auto z-50 space-y-2 pointer-events-none">
+        <div className="fixed bottom-20 left-4 right-4 md:bottom-4 md:right-auto z-[500] space-y-2 pointer-events-none">
           {toasts.map(t => (
             <div key={t.id} className={"pointer-events-auto flex items-center gap-2.5 px-4 py-3 rounded-xl shadow-xl text-sm font-medium backdrop-blur animate-fade-in border " + (t.tone === "red" ? "bg-red-950/90 border-red-700/50 text-red-200" : t.tone === "yellow" ? "bg-yellow-950/90 border-yellow-700/50 text-yellow-200" : "bg-black/90 border-green-700/50 text-green-200")}>
               <div className={"w-1.5 h-1.5 rounded-full flex-shrink-0 " + (t.tone === "red" ? "bg-red-400" : t.tone === "yellow" ? "bg-yellow-400" : "bg-green-400")} />
@@ -5445,8 +5445,15 @@ export function App() {
         </div>
       )}
 
-      {/* Toasts — raised above the mobile bottom nav so they're not hidden behind it */}
-      <div className="fixed bottom-20 left-4 right-4 md:bottom-4 md:right-auto z-50 space-y-2 pointer-events-none">
+      {/* Toasts — raised above the mobile bottom nav so they're not hidden
+          behind it. BUG FIX — "pressing auto captions does nothing" (and
+          any other silently-failing action inside the video editor): this
+          sat at z-50 while VideoEditorModal renders a full-screen overlay
+          at zIndex 400 — every toast fired while the editor was open,
+          including the "add an API key" warning and any real error, was
+          completely covered and invisible. z-[500] keeps toasts above
+          every other overlay in the app, video editor included. */}
+      <div className="fixed bottom-20 left-4 right-4 md:bottom-4 md:right-auto z-[500] space-y-2 pointer-events-none">
         {toasts.map(t => (
           <div key={t.id} className={"pointer-events-auto flex items-center gap-2.5 px-4 py-3 rounded-xl shadow-xl text-sm font-medium backdrop-blur animate-fade-in border " + (t.tone === "red" ? "bg-red-950/90 border-red-700/50 text-red-200" : t.tone === "yellow" ? "bg-yellow-950/90 border-yellow-700/50 text-yellow-200" : "bg-black/90 border-green-700/50 text-green-200")}>
             <div className={"w-1.5 h-1.5 rounded-full flex-shrink-0 " + (t.tone === "red" ? "bg-red-400" : t.tone === "yellow" ? "bg-yellow-400" : "bg-green-400")} />
