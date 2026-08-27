@@ -23,6 +23,7 @@ import {
 import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE } from "../../lib/utils";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
 import { twilioSend, sendEmail, logOutboundSmsToInbox } from "../../lib/messaging";
+import { supabase } from "../../lib/supabase";
 import { seedWeather } from "../../lib/weather";
 import { seedCustomers, seedEstimates, seedJobs, seedEmployees, seedVehicles, seedExpenses, seedChemicals, seedServices, seedAutomations, seedEmailTemplates, seedSmsTemplates, seedRewardTiers, seedReferrals, seedMaintenance, campaignTemplates, seedSocialPosts, seedTimeline, seedGoals, seedReminders, seedAccountabilityEntries, seedMileage, seedLeadSrc, STEP_TYPES, AUTOMATION_TEMPLATES } from "../../lib/seed";
 import { callModel, MODELS } from "../../lib/api";
@@ -106,7 +107,15 @@ export function ReferralsPage({ customers = [], setCustomers = (() => {}) as any
   const applyCredit = (c: any) => {
     const owed = Number(c.referralCreditOwed) || 0;
     if (owed <= 0) return;
-    setCustomers((prev: any[]) => prev.map(x => x.id === c.id ? { ...x, referralCreditOwed: 0, referralCreditApplied: (Number(x.referralCreditApplied) || 0) + owed } : x));
+    const newApplied = (Number(c.referralCreditApplied) || 0) + owed;
+    setCustomers((prev: any[]) => prev.map(x => x.id === c.id ? { ...x, referralCreditOwed: 0, referralCreditApplied: newApplied } : x));
+    // BUG FIX — "make sure referrals actually work." This only ever
+    // touched local React state — never Supabase — so applying a credit
+    // looked like it worked, then silently reverted on the next sync from
+    // the server (which still had the old referralCreditOwed).
+    (supabase as any).from("customers").update({ referralCreditOwed: 0, referralCreditApplied: newApplied }).eq("id", c.id).select("id")
+      .then((r: any) => { if (r?.error || !r?.data?.length) toast?.("Applied locally, but failed to sync — " + (r?.error?.message || "try again"), "red"); })
+      .catch((e: any) => toast?.("Applied locally, but failed to sync — " + (e?.message || ""), "red"));
     toast?.(`$${owed} referral credit applied for ${c.firstName} — deduct it on their next invoice`, "green");
   };
 

@@ -334,7 +334,19 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
           const referrer = customers.find(x => x.id === c.referredBy);
           if (referrer) {
             const creditAmount = Number((settings as any)?.referralSettings?.referrerCredit) || 25;
-            setCustomers((prev: any[]) => prev.map(x => x.id === referrer.id ? { ...x, referralCreditOwed: (Number(x.referralCreditOwed) || 0) + creditAmount } : x));
+            const newOwed = (Number(referrer.referralCreditOwed) || 0) + creditAmount;
+            setCustomers((prev: any[]) => prev.map(x => x.id === referrer.id ? { ...x, referralCreditOwed: newOwed } : x));
+            // BUG FIX — "make sure referrals actually work." This only ever
+            // updated local React state — never Supabase — so the credit
+            // was invisible on any other device and got silently wiped out
+            // the next time customers synced from the server (the server's
+            // still-stale referralCreditOwed would just overwrite this
+            // tab's local bump right back to what it was). Same real
+            // write + 0-row-check pattern every other owner_id-scoped
+            // update in this app uses (CLAUDE.md).
+            (supabase as any).from("customers").update({ referralCreditOwed: newOwed }).eq("id", referrer.id).select("id")
+              .then((r: any) => { if (r?.error || !r?.data?.length) console.error("[Referral] credit sync failed:", r?.error?.message || "0 rows matched"); })
+              .catch((e: any) => console.error("[Referral] credit sync threw:", e?.message));
             toast?.(`${referrer.firstName} earned $${creditAmount} referral credit for referring ${c.firstName} ✓`, "green");
           }
         }

@@ -395,10 +395,16 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
       const payload = { ...customer, owner_id: ownerId };
       let insert = await sb(serviceRoleKey, `customers`, { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify(payload) });
       if (!insert.ok) {
-        const { smsOptIn, smsOptInAt, stripeCustomerId, savedPaymentMethodId, savedPaymentMethodLabel, ...core } = payload;
+        // BUG FIX — "make sure referrals actually work." referredBy was
+        // missing from this retry's strip list (added by migration
+        // 0079_referral_columns.sql, which any deployment that hasn't run
+        // it yet still lacks) — every referral signup insert was failing
+        // outright with no fallback at all, the exact "referrals silently
+        // don't work" symptom this was meant to guard against.
+        const { smsOptIn, smsOptInAt, stripeCustomerId, savedPaymentMethodId, savedPaymentMethodLabel, referredBy, ...core } = payload;
         insert = await sb(serviceRoleKey, `customers`, { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify(core) });
       }
-      if (!insert.ok) return json({ error: "Failed to save referral signup" }, 500);
+      if (!insert.ok) { console.error("[submit_referral_signup] insert failed:", insert.status, JSON.stringify(insert.data)); return json({ error: "Failed to save referral signup" }, 500); }
       return json({ success: true });
     }
 
