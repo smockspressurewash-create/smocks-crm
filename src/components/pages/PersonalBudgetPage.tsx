@@ -87,6 +87,19 @@ export function PersonalBudgetPage({ toast }) {
   const [f, setF] = useState({ date: today(), description: "", amount: "", category: "Food & Dining", type: "expense", account: "Checking" });
   const [timeframe, setTimeframe] = useState("30d");
   const [editBudget, setEditBudget] = useState(null);
+  // FEATURE — "add more options and different tracking features and goals
+  // for the personal budget section. It's kind of basic." Two real
+  // additions beyond the existing budget-vs-actual/transaction tracking:
+  // savings/financial goals with a target + deadline + contribution
+  // tracking, and recurring bills/income so a rent payment or paycheck
+  // doesn't have to be typed in by hand every single period.
+  const [section, setSection] = useState<"overview" | "goals" | "recurring">("overview");
+  const [personalGoals, setPersonalGoals] = usePersistent<any[]>("smocks.personal.goals", []);
+  const [goalModal, setGoalModal] = useState(false);
+  const [gf, setGf] = useState({ name: "", target: "", deadline: "" });
+  const [recurringItems, setRecurringItems] = usePersistent<any[]>("smocks.personal.recurring", []);
+  const [recurModal, setRecurModal] = useState(false);
+  const [rf, setRf] = useState({ description: "", amount: "", category: "Housing", type: "expense", frequency: "monthly", nextDate: today() });
 
   const categories = ["Housing", "Food & Dining", "Transportation", "Entertainment", "Health & Fitness", "Savings", "Clothing", "Phone", "Subscriptions", "Family", "Other"];
   const accounts = ["Checking", "Savings", "Credit Card", "Cash"];
@@ -104,6 +117,60 @@ export function PersonalBudgetPage({ toast }) {
     setModal(false);
     toast("Transaction added");
   };
+
+  // ── Savings/Financial Goals ────────────────────────────────────────────
+  const saveGoal = () => {
+    const target = Number(gf.target);
+    if (!gf.name.trim() || !target || target <= 0) { toast("Give the goal a name and a target greater than 0", "red"); return; }
+    setPersonalGoals(prev => [...prev, { id: uid(), name: gf.name.trim(), target, current: 0, deadline: gf.deadline || undefined, createdAt: today() }]);
+    setGf({ name: "", target: "", deadline: "" });
+    setGoalModal(false);
+    toast("Goal added 🎯");
+  };
+  const contributeToGoal = (id: string, amount: number) => {
+    setPersonalGoals(prev => prev.map(g => g.id === id ? { ...g, current: Math.max(0, (Number(g.current) || 0) + amount) } : g));
+  };
+  const deleteGoal = (id: string) => setPersonalGoals(prev => prev.filter(g => g.id !== id));
+
+  // ── Recurring bills/income ──────────────────────────────────────────────
+  const advanceDate = (dateStr: string, freq: string): string => {
+    const d = new Date(dateStr + "T00:00:00");
+    if (freq === "weekly") d.setDate(d.getDate() + 7);
+    else if (freq === "yearly") d.setFullYear(d.getFullYear() + 1);
+    else d.setMonth(d.getMonth() + 1); // monthly
+    return d.toISOString().slice(0, 10);
+  };
+  const saveRecurring = () => {
+    if (!rf.description.trim() || !rf.amount) { toast("Give it a description and amount", "red"); return; }
+    setRecurringItems(prev => [...prev, { id: uid(), ...rf, amount: Number(rf.amount) }]);
+    setRf({ description: "", amount: "", category: "Housing", type: "expense", frequency: "monthly", nextDate: today() });
+    setRecurModal(false);
+    toast("Recurring item added ✓");
+  };
+  const logRecurring = (item: any) => {
+    setTransactions(prev => [{ id: uid(), date: today(), description: item.description, amount: item.amount, category: item.category, type: item.type, account: "Checking" }, ...prev]);
+    setRecurringItems(prev => prev.map(r => r.id === item.id ? { ...r, nextDate: advanceDate(r.nextDate, r.frequency) } : r));
+    toast(`Logged ${item.description} — next due ${advanceDate(item.nextDate, item.frequency)}`, "green");
+  };
+  const deleteRecurring = (id: string) => setRecurringItems(prev => prev.filter(r => r.id !== id));
+
+  // ── Monthly trend (last 6 months, real transaction data) ───────────────
+  const monthlyTrend = (() => {
+    const months: { key: string; label: string; income: number; spent: number }[] = [];
+    const now = new Date();
+    for (let i = 5; i >= 0; i--) {
+      const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      const key = d.toISOString().slice(0, 7);
+      months.push({ key, label: d.toLocaleDateString(undefined, { month: "short" }), income: 0, spent: 0 });
+    }
+    for (const t of transactions) {
+      const key = (t.date || "").slice(0, 7);
+      const m = months.find(x => x.key === key);
+      if (!m) continue;
+      if (t.type === "income") m.income += Number(t.amount) || 0; else m.spent += Number(t.amount) || 0;
+    }
+    return months;
+  })();
 
   const spentByCategory = categories.reduce((acc, cat) => {
     acc[cat] = tfTx.filter(t => t.type === "expense" && t.category === cat).reduce((s, t) => s + Number(t.amount), 0);
@@ -161,6 +228,14 @@ export function PersonalBudgetPage({ toast }) {
       </div>
       <ImportDataModal open={personalImportOpen} onClose={() => setPersonalImportOpen(false)} title="Import Personal Transactions" fieldMap={personalImportFieldMap} onImport={handlePersonalImport} toast={toast} />
 
+      {/* Section tabs */}
+      <div className="flex gap-2">
+        {([["overview", "Overview"], ["goals", `🎯 Goals${personalGoals.length ? ` (${personalGoals.length})` : ""}`], ["recurring", `🔁 Recurring${recurringItems.length ? ` (${recurringItems.length})` : ""}`]] as const).map(([k, l]) => (
+          <button key={k} onClick={() => setSection(k)} className={"px-3 py-1.5 rounded-lg text-xs font-medium border transition " + (section === k ? "bg-red-900/40 border-red-500/50 text-white" : "bg-black/40 border-white/10 text-white/60 hover:text-white")}>{l}</button>
+        ))}
+      </div>
+
+      {section === "overview" && <>
       {/* KPIs */}
       <div className="grid grid-cols-3 gap-3">
         <div className="p-4 bg-green-950/20 border border-green-700/30 rounded-2xl">
@@ -235,6 +310,90 @@ export function PersonalBudgetPage({ toast }) {
         </Glass>
       </div>
 
+      {/* Monthly trend — real transaction data, last 6 months */}
+      <Glass className="p-5">
+        <h3 className="font-semibold text-sm mb-4">Income vs. Spending — Last 6 Months</h3>
+        <ResponsiveContainer width="100%" height={200}>
+          <BarChart data={monthlyTrend}>
+            <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
+            <XAxis dataKey="label" stroke="rgba(255,255,255,0.3)" fontSize={11} />
+            <YAxis stroke="rgba(255,255,255,0.3)" fontSize={11} />
+            <Tooltip contentStyle={{ background: "#000", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 8, fontSize: 12 }} formatter={(v: any) => fmt(Number(v))} />
+            <Legend wrapperStyle={{ fontSize: 11 }} />
+            <Bar dataKey="income" name="Income" fill="#22c55e" radius={[4, 4, 0, 0]} />
+            <Bar dataKey="spent" name="Spent" fill="#dc2626" radius={[4, 4, 0, 0]} />
+          </BarChart>
+        </ResponsiveContainer>
+      </Glass>
+      </>}
+
+      {section === "goals" && (
+        <div className="space-y-4">
+          <div className="flex items-center justify-between">
+            <div className="text-sm text-white/50">Save toward something specific — a vacation, a down payment, an emergency fund.</div>
+            <GBtn onClick={() => setGoalModal(true)} className="!text-xs flex-shrink-0"><Plus size={12} className="inline mr-1" />New Goal</GBtn>
+          </div>
+          {personalGoals.length === 0 ? (
+            <div className="text-center py-12 text-white/40 text-sm"><Target size={28} className="mx-auto mb-2 opacity-30" />No savings goals yet</div>
+          ) : (
+            <div className="grid md:grid-cols-2 gap-4">
+              {personalGoals.map((g: any) => {
+                const pct = g.target > 0 ? Math.min(100, Math.round((g.current / g.target) * 100)) : 0;
+                const daysLeft = g.deadline ? Math.ceil((new Date(g.deadline + "T00:00:00").getTime() - Date.now()) / 86400000) : null;
+                return (
+                  <Glass key={g.id} className="p-4">
+                    <div className="flex items-start justify-between gap-2 mb-2">
+                      <div>
+                        <div className="font-semibold text-sm">{g.name}</div>
+                        {g.deadline && <div className="text-[10px] text-white/40">{daysLeft !== null && daysLeft >= 0 ? `${daysLeft} days left` : daysLeft !== null ? "Overdue" : ""} · due {g.deadline}</div>}
+                      </div>
+                      <button onClick={() => deleteGoal(g.id)} className="p-1 rounded hover:bg-red-900/30 text-white/30 hover:text-red-400 flex-shrink-0"><Trash2 size={12} /></button>
+                    </div>
+                    <div className="flex justify-between text-xs mb-1"><span className="text-white/60">{fmt(g.current)} / {fmt(g.target)}</span><span className={pct >= 100 ? "text-green-400 font-bold" : "text-white/60"}>{pct}%</span></div>
+                    <PBar value={g.current} max={g.target || 1} />
+                    <div className="flex gap-2 mt-3">
+                      <GBtn variant="ghost" className="!text-xs !py-1.5 flex-1" onClick={() => contributeToGoal(g.id, 25)}>+$25</GBtn>
+                      <GBtn variant="ghost" className="!text-xs !py-1.5 flex-1" onClick={() => contributeToGoal(g.id, 100)}>+$100</GBtn>
+                      {pct >= 100 && <Badge tone="green">🎉 Reached!</Badge>}
+                    </div>
+                  </Glass>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
+      {section === "recurring" && (
+        <div className="space-y-4">
+          <div className="flex items-center justify-between">
+            <div className="text-sm text-white/50">Bills and income that repeat — log one with a tap instead of retyping it every period.</div>
+            <GBtn onClick={() => setRecurModal(true)} className="!text-xs flex-shrink-0"><Plus size={12} className="inline mr-1" />New Recurring</GBtn>
+          </div>
+          {recurringItems.length === 0 ? (
+            <div className="text-center py-12 text-white/40 text-sm"><Repeat size={28} className="mx-auto mb-2 opacity-30" />No recurring bills or income set up yet</div>
+          ) : (
+            <div className="space-y-2">
+              {recurringItems.map((r: any) => {
+                const due = r.nextDate <= today();
+                return (
+                  <Glass key={r.id} className={"p-3 flex items-center gap-3 " + (due ? "!border-yellow-600/40" : "")}>
+                    <div className="w-9 h-9 rounded-lg flex items-center justify-center text-sm flex-shrink-0" style={{ background: r.type === "income" ? "rgba(16,185,129,0.15)" : "rgba(220,38,38,0.15)" }}>{r.type === "income" ? "💵" : "🔁"}</div>
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm font-medium truncate">{r.description}</div>
+                      <div className="text-xs text-white/40">{r.category} · {r.frequency} · next {r.nextDate}{due ? " — due" : ""}</div>
+                    </div>
+                    <div className={"font-bold text-sm flex-shrink-0 " + (r.type === "income" ? "text-green-400" : "text-red-400")}>{r.type === "income" ? "+" : "−"}{fmt(Number(r.amount))}</div>
+                    <GBtn onClick={() => logRecurring(r)} className={"!text-[10px] !py-1.5 !px-2.5 flex-shrink-0 " + (due ? "" : "!bg-white/10 hover:!bg-white/15")}>Log Now</GBtn>
+                    <button onClick={() => deleteRecurring(r.id)} className="p-1.5 rounded hover:bg-red-900/30 text-white/30 hover:text-red-400 flex-shrink-0"><Trash2 size={12} /></button>
+                  </Glass>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Add Transaction Modal */}
       <Modal open={modal} onClose={() => setModal(false)} title="Add Transaction" maxW="max-w-sm">
         <div className="space-y-3">
@@ -271,6 +430,43 @@ export function PersonalBudgetPage({ toast }) {
             <GBtn onClick={() => { setBudgets(prev => ({ ...prev, [editBudget.key]: Number(editBudget.value) })); setEditBudget(null); toast("Budget updated"); }}>Save</GBtn>
           </div>
         </div>}
+      </Modal>
+
+      {/* New Goal Modal */}
+      <Modal open={goalModal} onClose={() => setGoalModal(false)} title="New Savings Goal" maxW="max-w-xs">
+        <div className="space-y-3">
+          <div><label className="text-xs text-white/60 mb-1 block">Goal name</label><GInput autoFocus value={gf.name} onChange={e => setGf({ ...gf, name: e.target.value })} placeholder="e.g. Emergency fund" /></div>
+          <div><label className="text-xs text-white/60 mb-1 block">Target ($)</label><GInput type="number" value={gf.target} onChange={e => setGf({ ...gf, target: e.target.value })} placeholder="5000" /></div>
+          <div><label className="text-xs text-white/60 mb-1 block">Deadline (optional)</label><GDate value={gf.deadline} onChange={e => setGf({ ...gf, deadline: e.target.value })} /></div>
+          <div className="flex gap-2 justify-end pt-1">
+            <GBtn variant="ghost" onClick={() => setGoalModal(false)}>Cancel</GBtn>
+            <GBtn onClick={saveGoal}>Save Goal</GBtn>
+          </div>
+        </div>
+      </Modal>
+
+      {/* New Recurring Item Modal */}
+      <Modal open={recurModal} onClose={() => setRecurModal(false)} title="New Recurring Item" maxW="max-w-sm">
+        <div className="space-y-3">
+          <div className="flex gap-2">
+            {["expense", "income"].map(t => (
+              <button key={t} onClick={() => setRf({ ...rf, type: t })} className={"flex-1 py-2 rounded-xl border text-xs font-semibold uppercase transition " + (rf.type === t ? (t === "income" ? "bg-green-900/40 border-green-500/50 text-green-200" : "bg-red-900/40 border-red-500/50 text-red-200") : "bg-black/40 border-white/10 text-white/50 hover:text-white")}>
+                {t === "income" ? "💵 Income" : "💳 Expense"}
+              </button>
+            ))}
+          </div>
+          <div><label className="text-xs text-white/60 mb-1 block">Description</label><GInput value={rf.description} onChange={e => setRf({ ...rf, description: e.target.value })} placeholder="Rent, Netflix, Paycheck..." /></div>
+          <div className="grid grid-cols-2 gap-2">
+            <div><label className="text-xs text-white/60 mb-1 block">Amount ($)</label><GInput type="number" step="0.01" value={rf.amount} onChange={e => setRf({ ...rf, amount: e.target.value })} placeholder="0.00" /></div>
+            <div><label className="text-xs text-white/60 mb-1 block">Frequency</label><GSel value={rf.frequency} onChange={e => setRf({ ...rf, frequency: e.target.value })} className="!text-xs"><option value="weekly" className="bg-black">Weekly</option><option value="monthly" className="bg-black">Monthly</option><option value="yearly" className="bg-black">Yearly</option></GSel></div>
+          </div>
+          {rf.type === "expense" && <div><label className="text-xs text-white/60 mb-1 block">Category</label><GSel value={rf.category} onChange={e => setRf({ ...rf, category: e.target.value })} className="!text-xs">{categories.map(c => <option key={c} value={c} className="bg-black">{c}</option>)}</GSel></div>}
+          <div><label className="text-xs text-white/60 mb-1 block">Next due date</label><GDate value={rf.nextDate} onChange={e => setRf({ ...rf, nextDate: e.target.value })} /></div>
+          <div className="flex gap-2 justify-end pt-1">
+            <GBtn variant="ghost" onClick={() => setRecurModal(false)}>Cancel</GBtn>
+            <GBtn onClick={saveRecurring} disabled={!rf.description.trim() || !rf.amount}>Save</GBtn>
+          </div>
+        </div>
       </Modal>
     </div>
   );
