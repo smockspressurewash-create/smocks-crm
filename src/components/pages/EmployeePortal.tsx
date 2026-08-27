@@ -1632,8 +1632,45 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
                   <PenLine size={14} className="inline mr-1.5" />Get Sign-Off First
                 </GBtn>
               )}
-              <GBtn onClick={() => setCompleteStep("payment")} className="w-full !justify-center !py-3">
-                Continue <ChevronRight size={14} className="inline ml-1" />
+              <GBtn
+                onClick={async () => {
+                  // FEATURE — "set up automated charge payments for recurring
+                  // jobs... dates fluctuate, but bill automatically when we
+                  // have that recurring job." This job may land on any date
+                  // (the whole point — a Monday one month, a Thursday the
+                  // next), so billing is tied to the job actually being
+                  // completed, not a fixed calendar day. If the customer has
+                  // opted in (CustomerDetail.tsx → Recurring Billing →
+                  // "Auto-charge on completion") and has a card on file,
+                  // charge it right here and skip straight past the manual
+                  // "did they pay / how did they pay" screens — those stay
+                  // exactly as they were for every non-opted-in job.
+                  const autoEligible = !!(job.isRecurring && (customer as any)?.autoChargeRecurringJobs && customer?.savedPaymentMethodId && customer?.stripeCustomerId && effPerms.can_process_payments && settings?.stripePublishableKey);
+                  if (!autoEligible) { setCompleteStep("payment"); return; }
+                  setChargingCardNow(true);
+                  try {
+                    await chargeSavedPaymentMethod(customer.stripeCustomerId!, customer.savedPaymentMethodId!, Math.round((Number(job.amount) || 0) * 100), "usd", `Recurring job — ${job.address || ""}`, undefined, (job as any).owner_id);
+                    toast(`Auto-charged ${fmt(job.amount)} to card on file ✓`, "green");
+                    sendPaymentReceipt({
+                      customerPhone: customer?.phone, customerEmail: customer?.email, customerFirstName: customer?.firstName, customerId: customer?.id,
+                      amountCents: Math.round((Number(job.amount) || 0) * 100), description: `Job at ${job.address || ""}`, ownerId: (job as any).owner_id,
+                    }).catch((e: any) => console.warn("[PaymentReceipt] failed:", e?.message));
+                    setPaidChoice("yes");
+                    setCompleteStep("tip");
+                  } catch (e: any) {
+                    // Auto-charge failing (expired card, insufficient funds,
+                    // etc.) must never silently skip payment collection — fall
+                    // through to the normal manual flow so it's still handled.
+                    toast("Auto-charge failed — " + (e?.message || "unknown error") + " — collect payment manually", "red");
+                    setCompleteStep("payment");
+                  } finally {
+                    setChargingCardNow(false);
+                  }
+                }}
+                disabled={chargingCardNow}
+                className="w-full !justify-center !py-3"
+              >
+                {chargingCardNow ? "Charging saved card…" : <>Continue <ChevronRight size={14} className="inline ml-1" /></>}
               </GBtn>
             </>
           )}

@@ -546,6 +546,39 @@ export function CustomerDetail({ customer: c, onClose, onDelete, onEdit, estimat
                 </div>
               )}
             </Glass>
+            {/* FEATURE — "set up automated charge payments for recurring
+                jobs... dates fluctuate... bill automatically when we have
+                that recurring job." Distinct from the fixed-cadence
+                Recurring Billing (Stripe subscription) section below this
+                one — this bills whenever a recurring JOB dispatched to this
+                customer is actually marked completed, whatever date that
+                turns out to be (see the "Continue" button in
+                EmployeePortal.tsx's Complete Job flow, which checks this
+                flag). Only ever offered once a card is already on file. */}
+            {c.stripeCustomerId && paymentMethods.length > 0 && (
+              <Glass className="p-4 !bg-black/40">
+                <label className="flex items-start gap-2.5 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={!!c.autoChargeRecurringJobs}
+                    onChange={async e => {
+                      const checked = e.target.checked;
+                      setCustomers((prev: any[]) => prev.map((cust: any) => cust.id === c.id ? { ...cust, autoChargeRecurringJobs: checked } : cust));
+                      const res = await (supabase as any).from("customers").update({ autoChargeRecurringJobs: checked }).eq("id", c.id).select("id");
+                      if (res?.error || !res?.data?.length) toast?.("Failed to save — " + (res?.error?.message || "try again"), "red");
+                      else toast?.(checked ? "Auto-charge on job completion enabled ✓" : "Auto-charge on job completion disabled", "green");
+                    }}
+                    className="mt-0.5 accent-red-600 flex-shrink-0"
+                  />
+                  <div>
+                    <div className="text-sm font-medium">Auto-charge recurring jobs on completion</div>
+                    <div className="text-[11px] text-white/40 mt-0.5">
+                      Whenever a recurring job for {c.firstName} is marked complete — whatever day it actually lands on — their card on file is charged for that job's amount automatically, no manual "charge card" tap needed.
+                    </div>
+                  </div>
+                </label>
+              </Glass>
+            )}
             {/* Recurring Billing — real Stripe subscriptions, see
                 createRecurringCheckoutSession in lib/stripe.ts. Status is
                 only ever trusted from customers.recurringPlan, written
