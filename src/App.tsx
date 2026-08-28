@@ -2287,7 +2287,16 @@ export function App() {
   // conversation not yet known server-side). A toast fires alongside it so
   // the owner notices even without opening the Alfred tab.
   useEffect(() => {
-    if (!crmUserId) return;
+    // BUG FIX — "I keep getting notifications saying Alfred checked in on
+    // the employee portal; employees should never see that." App.tsx is
+    // mounted for the whole session regardless of which view renders
+    // (owner CRM vs EmployeePortal — see the early-return further down),
+    // and crmUserId resolves to the OWNER's id even for an employee's own
+    // session (so owner-scoped data reads work for them too) — this effect
+    // had no role check at all, so it fired the "Alfred checked in" toast
+    // and Supabase notification on every device, including employees'.
+    // Alfred's check-ins are owner-only.
+    if (!crmUserId || crmRole !== "owner") return;
     // ROUND 5 REWRITE — two separate complaints, one root cause. (1) "creates
     // a new chat every time" — every fire pushed a brand-new conversation via
     // setAlfredConversations, so a session left open all day (up to 3 fires)
@@ -4457,9 +4466,16 @@ export function App() {
   // anywhere. Hold on a lightweight loading state instead of mounting the
   // portal at all until we genuinely know one way or the other.
   if (page === "portal" && !empSession && !sessionChecked) {
+    // BUG FIX — "it quickly says loading" — a plain unbranded "Loading…"
+    // string on a bare black screen read as a glitch/incomplete page during
+    // the brief (but real, unavoidable) window session bootstrap takes.
+    // Branded to match the portal's own header (same wordmark, same dark
+    // background) so this reads as an intentional splash, not a flash of
+    // broken UI.
     return (
-      <div className="min-h-screen bg-black flex items-center justify-center text-white/50 text-sm p-4 text-center">
-        Loading…
+      <div className="min-h-screen bg-black flex flex-col items-center justify-center gap-3 p-4 text-center">
+        <span className="font-extrabold text-2xl text-white tracking-tight">Crew<span className="text-red-500">Boss</span></span>
+        <div className="w-5 h-5 border-2 border-white/20 border-t-red-500 rounded-full animate-spin" />
       </div>
     );
   }

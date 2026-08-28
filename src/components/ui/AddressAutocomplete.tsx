@@ -10,6 +10,20 @@ import { GInput } from "./GInput";
 let _ready = false;
 let _loading = false;
 let _failed: Error | null = null;
+// BUG FIX — "I re-added my key / made a new one, still gave me an error."
+// _ready was a bare boolean with no memory of WHICH key it was loaded
+// with. Google's JS loader script itself always "succeeds" even with a
+// bad/restricted key (only the actual API calls — Geocoder, Places —
+// fail at runtime with REQUEST_DENIED), so once _ready flipped true for
+// an old/bad key, every later call in the same browser tab short-
+// circuited straight to "already loaded" and kept silently using that
+// stale key — updating the key in Settings had no effect until a hard
+// page refresh, which nothing ever told the owner they needed. Now
+// tracks which key is actually loaded and self-heals with one automatic
+// reload the moment a different key shows up, since the Maps JS API has
+// no supported way to hot-swap keys on an already-loaded page.
+let _readyKey: string | null = null;
+const MAPS_KEY_RELOAD_FLAG = "smocks.mapsKeyReloadedOnce";
 const _queue: Array<{ resolve: () => void; reject: (e: Error) => void }> = [];
 const GMAPS_CALLBACK = "__smocksGMapsLoaded";
 
@@ -29,16 +43,29 @@ function injectScript(key: string, onDone: (err: Error | null) => void) {
 
 export function loadMapsScript(key: string): Promise<void> {
   return new Promise((resolve, reject) => {
-    if (_ready) { resolve(); return; }
-    if ((window as any).google?.maps?.importLibrary) { _ready = true; resolve(); return; }
+    if (_ready && _readyKey === key) { resolve(); return; }
+    if ((_ready || (window as any).google?.maps?.importLibrary) && _readyKey !== null && _readyKey !== key) {
+      // The key changed since this tab loaded Maps — self-heal with ONE
+      // automatic reload (guarded so it can only ever fire once per bad
+      // load, never loops) instead of leaving a stale key silently active.
+      if (!sessionStorage.getItem(MAPS_KEY_RELOAD_FLAG)) {
+        sessionStorage.setItem(MAPS_KEY_RELOAD_FLAG, "1");
+        console.warn("[Maps] API key changed since this page loaded — reloading once to pick up the new key.");
+        window.location.reload();
+        return; // page is reloading — this promise never needs to settle
+      }
+      reject(new Error("Google Maps API key changed but a fresh page load didn't pick it up — try a hard refresh."));
+      return;
+    }
+    if ((window as any).google?.maps?.importLibrary) { _ready = true; _readyKey = key; try { sessionStorage.removeItem(MAPS_KEY_RELOAD_FLAG); } catch { /* ignore */ } resolve(); return; }
     _queue.push({ resolve, reject });
     if (_loading) return;
     _loading = true;
     _failed = null;
     const settle = (err: Error | null) => {
       _loading = false;
-      if (err) { _ready = false; _failed = err; }
-      else { _ready = true; _failed = null; }
+      if (err) { _ready = false; _readyKey = null; _failed = err; }
+      else { _ready = true; _readyKey = key; _failed = null; try { sessionStorage.removeItem(MAPS_KEY_RELOAD_FLAG); } catch { /* ignore */ } }
       const q = _queue.splice(0, _queue.length);
       q.forEach(p => err ? p.reject(err) : p.resolve());
     };
