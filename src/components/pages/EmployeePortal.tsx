@@ -2177,6 +2177,26 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
           </Glass>
         )}
 
+        {/* FEATURE — "allow owners to attach work orders — PDF files,
+            photos, or videos — to job orders that employees can see. For
+            example, a commercial job may have a five-page PDF." Read-only
+            here — attaching/removing is owner-only, in JobDetailModal. */}
+        {(job.attachments || []).filter((a: any) => a.url).length > 0 && (
+          <Glass className="p-4 !bg-black/40">
+            <div className="text-xs text-white/60 uppercase tracking-wider mb-2 flex items-center gap-1"><FileText size={11} />Work Order Attachments</div>
+            <div className="space-y-1.5">
+              {(job.attachments || []).filter((a: any) => a.url).map((a: any) => (
+                <a key={a.id} href={a.url} target="_blank" rel="noopener noreferrer" className="flex items-center justify-between text-sm p-2.5 bg-white/5 rounded-lg hover:bg-white/10 transition">
+                  <span className="truncate flex items-center gap-2 text-white/80">
+                    {a.type === "pdf" ? "📄" : a.type === "image" ? "🖼️" : a.type === "video" ? "🎬" : "📎"} {a.name}
+                  </span>
+                  <Download size={13} className="text-white/40 flex-shrink-0" />
+                </a>
+              ))}
+            </div>
+          </Glass>
+        )}
+
         {/* Required equipment & chemicals — confirm before starting */}
         {hasRequiredGear && (
           <Glass className={"p-4 " + (job.equipmentChecked ? "!bg-green-950/20 !border-green-700/30" : "!bg-yellow-950/15 !border-yellow-700/30")}>

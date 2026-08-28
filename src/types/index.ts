@@ -441,7 +441,7 @@ export interface Job {
   weatherOverride?: boolean;
   sqFootage?: number;
   sqFtRate?: number;
-  attachments?: { id: string; name: string; type: string }[];
+  attachments?: { id: string; name: string; type: string; url?: string; size?: number; uploadedAt?: number }[];
   signOffTerms?: string;
   completedAt?: string;
   invoiceSentAt?: string;

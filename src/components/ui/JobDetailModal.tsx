@@ -20,7 +20,7 @@ import {
   Tooltip, ResponsiveContainer, Area, AreaChart, LineChart, Line,
   ComposedChart, Legend
 } from "recharts";
-import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, weekdayLabels, computeNextRecurringDate, isEmployeeUnavailable, computeDiscountsTotal, equipmentList, requiredChemicalsList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, compressImageFile, getEffectiveRate, mediaSrc, dataUrlToBlob, uploadJobMedia, reconcileCrewAfterAssign, insertJobRequestSafely, checkVideoLimits, buildJobCalendarDescription, buildChecklistFromServices } from "../../lib/utils";
+import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, weekdayLabels, computeNextRecurringDate, isEmployeeUnavailable, computeDiscountsTotal, equipmentList, requiredChemicalsList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, compressImageFile, getEffectiveRate, mediaSrc, dataUrlToBlob, uploadJobMedia, deleteJobMediaByUrl, reconcileCrewAfterAssign, insertJobRequestSafely, checkVideoLimits, buildJobCalendarDescription, buildChecklistFromServices } from "../../lib/utils";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField, JobChecklistItem, ChecklistPhoto, JobVideo, JobSignOff } from "../../types";
 import { twilioSend, sendEmail, sendViaGmail, sendOwnerGmailOnly, emailShell, emailButton, logOutboundSmsToInbox } from "../../lib/messaging";
 import { sendPushNotification } from "../../lib/push";
@@ -231,8 +231,8 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
   const [chemGal, setChemGal] = useState(0);
   const [chemCost, setChemCost] = useState(0);
   const [tagInput, setTagInput] = useState("");
-  const [attName, setAttName] = useState("");
-  const [attType, setAttType] = useState("pdf");
+  const [attUploading, setAttUploading] = useState(false);
+  const attFileInputRef = useRef<HTMLInputElement | null>(null);
   const [, forceTick] = useState(0);
   const notifyEmployeesRef = useRef<(emps: any[], buildSubject: (emp: any) => string, buildHtml: (emp: any) => string) => Promise<number>>(() => Promise.resolve(0));
   const [showSignOff, setShowSignOff] = useState(false);
@@ -933,13 +933,36 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
     setTagInput("");
   };
   const removeTag = t => updateJob(jobId, { tags: (job.tags || []).filter(x => x !== t) });
-  const addAtt = () => {
-    if (!attName.trim()) return;
-    const entry = { id: uid(), name: attName.trim(), type: attType };
-    updateJob(jobId, { attachments: [...(job.attachments || []), entry] });
-    setAttName("");
+  // BUG FIX — "work order attachments" used to be a fake feature: a
+  // filename/type the owner typed in by hand, with a Download button that
+  // literally just toasted "Would download <name>" — no real file ever
+  // existed. Now uploads the real file to the same job-media Storage
+  // bucket photos/videos already use, so employees can actually open a
+  // real PDF/photo/video (e.g. a multi-page commercial job spec sheet).
+  const handleAttFiles = async (files: FileList | null) => {
+    if (!files || files.length === 0) return;
+    setAttUploading(true);
+    try {
+      for (const file of Array.from(files)) {
+        const kind = file.type === "application/pdf" ? "pdf" : file.type.startsWith("image/") ? "image" : file.type.startsWith("video/") ? "video" : "other";
+        const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
+        const path = `${jobId}/workorder-${uid()}-${safeName}`;
+        const url = await uploadJobMedia(file, path, file.type);
+        if (!url) { toast?.(`Failed to upload ${file.name} — Storage may not be set up yet`, "red"); continue; }
+        const entry = { id: uid(), name: file.name, type: kind, url, size: file.size, uploadedAt: Date.now() };
+        updateJob(jobId, { attachments: [...(job.attachments || []), entry] });
+        toast?.(`${file.name} attached ✓`, "green");
+      }
+    } finally {
+      setAttUploading(false);
+      if (attFileInputRef.current) attFileInputRef.current.value = "";
+    }
   };
-  const removeAtt = id => updateJob(jobId, { attachments: (job.attachments || []).filter(a => a.id !== id) });
+  const removeAtt = (id: string) => {
+    const target = (job.attachments || []).find((a: any) => a.id === id);
+    updateJob(jobId, { attachments: (job.attachments || []).filter((a: any) => a.id !== id) });
+    if (target?.url) deleteJobMediaByUrl([target.url]).catch(() => {});
+  };
   // FIX 5 — Owner self-assign: when the owner (identified by the same
   // `owner_<email>` synthetic id the Crew toggle uses) is on this job's crew,
   // clocking in/out here also flips their employees row's dayClockInAt so they
@@ -2002,20 +2025,19 @@ ${job.notes ? `<div class="section"><h2>Job Notes</h2><p>${job.notes}</p></div>`
 
         {/* Attachments */}
         <Glass className="p-3 !bg-black/40">
-          <div className="flex items-center justify-between mb-2"><div className="text-xs text-white/60 uppercase tracking-wider flex items-center gap-1"><FileText size={10} />Attachments</div><div className="text-xs text-white/50">{(job.attachments || []).length} file{(job.attachments || []).length !== 1 ? "s" : ""}</div></div>
-          <div className="grid grid-cols-7 gap-2 mb-2">
-            <GInput placeholder="Filename (e.g. contract.pdf)" value={attName} onChange={e => setAttName(e.target.value)} onKeyDown={e => e.key === "Enter" && addAtt()} className="col-span-4 !py-1.5 !text-xs" />
-            <GSel value={attType} onChange={e => setAttType(e.target.value)} className="col-span-2 !py-1.5 !text-xs">
-              <option value="pdf" className="bg-black">PDF</option>
-              <option value="image" className="bg-black">Image</option>
-              <option value="other" className="bg-black">Other</option>
-            </GSel>
-            <GBtn onClick={addAtt} className="col-span-1 !py-1.5"><Plus size={12} /></GBtn>
-          </div>
+          <div className="flex items-center justify-between mb-2"><div className="text-xs text-white/60 uppercase tracking-wider flex items-center gap-1"><FileText size={10} />Work Order Attachments</div><div className="text-xs text-white/50">{(job.attachments || []).length} file{(job.attachments || []).length !== 1 ? "s" : ""}</div></div>
+          <div className="text-[10px] text-white/40 mb-2">Attach PDFs, photos, or videos (e.g. a multi-page commercial job spec sheet) — visible to any employee assigned to this job.</div>
+          <input ref={attFileInputRef} type="file" multiple accept=".pdf,image/*,video/*" className="hidden" onChange={e => handleAttFiles(e.target.files)} />
+          <GBtn onClick={() => attFileInputRef.current?.click()} disabled={attUploading} className="w-full mb-2 !py-1.5 !text-xs flex items-center justify-center gap-1.5">
+            {attUploading ? <><div className="w-3 h-3 border-2 border-white/30 border-t-white/70 rounded-full animate-spin" />Uploading…</> : <><Plus size={12} />Attach File(s)</>}
+          </GBtn>
           {(job.attachments || []).length > 0 && <div className="space-y-1">
             {(job.attachments || []).map(a => <div key={a.id} className="flex items-center justify-between text-xs p-2 bg-white/5 rounded hover:bg-white/10">
               <div className="flex items-center gap-2 flex-1 min-w-0"><span>{attIcon(a.type)}</span><span className="truncate">{a.name}</span></div>
-              <div className="flex items-center gap-1"><button onClick={() => toast("Would download " + a.name)} className="p-1 text-white/50 hover:text-white"><Download size={10} /></button><button onClick={() => removeAtt(a.id)} className="p-1 text-white/40 hover:text-red-400"><X size={10} /></button></div>
+              <div className="flex items-center gap-1">
+                {a.url ? <a href={a.url} target="_blank" rel="noopener noreferrer" className="p-1 text-white/50 hover:text-white"><Download size={10} /></a> : <button onClick={() => toast("This attachment has no file — it was added before real uploads existed. Remove and re-attach it.")} className="p-1 text-white/30"><Download size={10} /></button>}
+                <button onClick={() => removeAtt(a.id)} className="p-1 text-white/40 hover:text-red-400"><X size={10} /></button>
+              </div>
             </div>)}
           </div>}
         </Glass>
