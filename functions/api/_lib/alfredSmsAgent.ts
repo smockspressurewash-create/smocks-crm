@@ -604,6 +604,14 @@ const TOOLS = [
     },
   },
   {
+    name: "mark_invoice_paid",
+    description: "Mark an existing invoice as paid — use for 'mark the Jones invoice paid, they paid cash/check/venmo' or similar. Does not process a card charge — for that, direct the owner to charge it in-app (Stripe/Square are not available as a text action for security).",
+    input_schema: {
+      type: "object",
+      properties: { invoiceId: { type: "string" }, customerName: { type: "string", description: "Alternative to invoiceId — marks that customer's most recent unpaid invoice" } },
+    },
+  },
+  {
     name: "text_me",
     description: "Text the OWNER (the person you're already texting with) a message right now — use this whenever they ask you to text/message THEM something (not a customer), e.g. 'text me the schedule for tomorrow' or 'send that to my phone'.",
     input_schema: {
@@ -1122,7 +1130,7 @@ const SMS_TOOL_CAPABILITY: Record<string, string> = {
   schedule_job: "schedule_jobs",
   reschedule_job: "modify_jobs", cancel_job: "modify_jobs", update_job_priority: "modify_jobs", add_checklist_item: "modify_jobs",
   assign_employee: "manage_crew", request_employee: "manage_crew", respond_to_job_request: "manage_crew", approve_customer_request: "manage_crew", decline_customer_request: "manage_crew",
-  create_estimate: "create_quotes", create_invoice: "create_quotes",
+  create_estimate: "create_quotes", create_invoice: "create_quotes", mark_invoice_paid: "create_quotes",
   send_estimate: "send_quotes", send_invoice: "send_quotes",
   notify_all_customers: "mass_messaging",
   text_customer: "message_customers", text_phone_number: "message_customers",
@@ -1413,6 +1421,41 @@ const executeTool = async (ctx: Ctx, name: string, input: Record<string, any>): 
         const res = await sendSms(ctx, cust.phone, `Hi ${cust.firstName || ""}, here's your invoice from ${ctx.companyName} for $${Number(inv.total || 0).toFixed(2)}: ${link}`, false, { name: `${cust.firstName || ""} ${cust.lastName || ""}`.trim(), customerId: inv.customerId });
         if (!res.ok) return { error: res.error };
         return { success: true, sentTo: `${cust.firstName} ${cust.lastName}`, amount: inv.total };
+      }
+      // FEATURE — "mark the Jones invoice as paid, they paid me cash." A
+      // genuinely common request Alfred had no tool for at all — same
+      // write shape as InvoicesPage.tsx's own markPaid (paidAt + status
+      // "approved" on the estimate, paymentStatus "Paid" mirrored onto the
+      // linked job if there is one).
+      case "mark_invoice_paid": {
+        let inv: any = null;
+        if (input.invoiceId) {
+          inv = (await sbGet(ctx, `estimates?id=eq.${encodeURIComponent(input.invoiceId)}&select=id,customerId,jobId,total,paidAt`))[0];
+        } else if (input.customerName) {
+          const cust = await findCustomerByName(ctx, input.customerName);
+          if (!cust) return { error: `No customer found matching "${input.customerName}".` };
+          const rows = await sbGet(ctx, `estimates?customerId=eq.${encodeURIComponent(cust.id)}&invoiced=eq.true&select=id,customerId,jobId,total,paidAt,invoicedAt${ownerScope(ctx)}`);
+          const unpaid = rows.filter((e: any) => !e.paidAt).sort((a: any, b: any) => (b.invoicedAt || "").localeCompare(a.invoicedAt || ""));
+          inv = unpaid[0];
+          if (!inv) return { error: `${input.customerName} has no unpaid invoice on file.` };
+        } else {
+          return { error: "Need either invoiceId or customerName." };
+        }
+        if (!inv) return { error: "Invoice not found." };
+        if (inv.paidAt) return { success: true, note: "That invoice was already marked paid." };
+        const paidAt = new Date().toISOString().slice(0, 10);
+        const res = await fetch(`${SUPABASE_URL}/rest/v1/estimates?id=eq.${encodeURIComponent(inv.id)}`, {
+          method: "PATCH", headers: { ...ctx.authHeaders, "Content-Type": "application/json", Prefer: "return=representation" },
+          body: JSON.stringify({ paidAt, status: "approved" }),
+        });
+        if (!res.ok || (await res.clone().json().catch(() => [])).length === 0) return { error: "Couldn't mark that invoice paid (permissions or it no longer exists)." };
+        if (inv.jobId) {
+          fetch(`${SUPABASE_URL}/rest/v1/jobs?id=eq.${encodeURIComponent(inv.jobId)}`, {
+            method: "PATCH", headers: { ...ctx.authHeaders, "Content-Type": "application/json", Prefer: "return=minimal" },
+            body: JSON.stringify({ paymentStatus: "Paid" }),
+          }).catch(() => {});
+        }
+        return { success: true, invoiceId: inv.id, amount: inv.total, paidAt };
       }
       case "cancel_job": {
         const job = await findJob(ctx, { jobId: input.jobId, customerName: input.customerName });

@@ -1115,7 +1115,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
     reschedule_job: "modify_jobs", cancel_job: "modify_jobs", update_job_priority: "modify_jobs", add_checklist_item: "modify_jobs",
     assign_employee: "manage_crew", request_employee: "manage_crew", respond_to_job_request: "manage_crew",
     approve_customer_request: "manage_crew", decline_customer_request: "manage_crew",
-    create_estimate: "create_quotes", create_invoice: "create_quotes",
+    create_estimate: "create_quotes", create_invoice: "create_quotes", mark_invoice_paid: "create_quotes",
     send_estimate: "send_quotes",
     send_reminder: "message_customers", text_phone_number: "message_customers",
     notify_all_customers: "mass_messaging",
@@ -2021,6 +2021,39 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           if (onSpotlight) onSpotlight({ page: "invoices", type: "invoice", id: savedInv.id }); else setTimeout(() => onNav("invoices"), 1200);
           return { success: true, invoiceId: savedInv.id, total, customer: c.firstName + " " + c.lastName };
         }
+        // FEATURE — "mark the Jones invoice as paid, they paid me cash."
+        // Same write shape as InvoicesPage.tsx's own markPaid (paidAt +
+        // status "approved" on the estimate, paymentStatus "Paid" mirrored
+        // onto the linked job if there is one) — a genuinely common
+        // request Alfred had no tool for at all until now.
+        case "mark_invoice_paid": {
+          let inv: any = inputs.invoiceId ? estimates.find(e => e.id === inputs.invoiceId) : null;
+          if (!inv && inputs.customerName) {
+            const c = customers.find(x => (x.firstName + " " + x.lastName).trim().toLowerCase() === (inputs.customerName || "").trim().toLowerCase());
+            if (!c) {
+              const suggestions = suggestNames(inputs.customerName || "", customers, x => `${x.firstName} ${x.lastName}`);
+              return suggestions.length
+                ? { error: "Customer not found", suggestions, instruction: "Ask the user 'Do you mean " + suggestions.join(", or ") + "?' — do not ask a generic follow-up question." }
+                : { error: "Customer not found." };
+            }
+            const unpaid = estimates.filter(e => e.customerId === c.id && (e as any).invoiced && !e.paidAt).sort((a, b) => ((b as any).invoicedAt || "").localeCompare((a as any).invoicedAt || ""));
+            inv = unpaid[0];
+            if (!inv) return { error: `${inputs.customerName} has no unpaid invoice on file.` };
+          }
+          if (!inv) return { error: "Need either invoiceId or customerName." };
+          if (inv.paidAt) return { success: true, note: "That invoice was already marked paid." };
+          const paidAt = today();
+          setEstimates((prev: any[]) => prev.map(e => e.id === inv.id ? { ...e, paidAt, status: "approved" } : e));
+          const { data, error } = await (supabase as any).from("estimates").update({ paidAt, status: "approved" }).eq("id", inv.id).select("id");
+          if (error) return { error: "Failed to mark paid — " + error.message };
+          if (!Array.isArray(data) || data.length === 0) return { error: "Couldn't mark that invoice paid (permissions or it no longer exists)." };
+          if ((inv as any).jobId) {
+            setJobs((prev: any[]) => prev.map(j => j.id === (inv as any).jobId ? { ...j, paymentStatus: "Paid" } : j));
+            (supabase as any).from("jobs").update({ paymentStatus: "Paid" }).eq("id", (inv as any).jobId).then(() => {}).catch(() => {});
+          }
+          toast("Alfred marked invoice paid ✓ · " + fmt(inv.total));
+          return { success: true, invoiceId: inv.id, amount: inv.total, paidAt };
+        }
         case "get_calendar_summary": {
           const from = inputs.from || today();
           const to = inputs.to || daysFromNow(7);
@@ -2919,6 +2952,11 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
       name: "create_invoice",
       description: "Create and save an invoice for a customer for a flat amount or itemized line items — this is a bill for completed work, due immediately (unlike create_estimate, which is a pending quote awaiting approval). After creating it, call send_estimate — pass the returned invoiceId AS send_estimate's estimateId param — to actually deliver it to the customer. Creating alone does not notify the customer.",
       input_schema: { type: "object", properties: { customerId: { type: "string" }, customerName: { type: "string" }, amount: { type: "number", description: "Flat total if not using itemized lineItems" }, description: { type: "string", description: "Line description when using a flat amount, e.g. 'House wash'" }, lineItems: { type: "array", items: { type: "object", properties: { description: { type: "string" }, quantity: { type: "number" }, unitPrice: { type: "number" } }, required: ["description", "unitPrice"] } }, notes: { type: "string" } } }
+    },
+    {
+      name: "mark_invoice_paid",
+      description: "Mark an existing invoice as paid — use for 'mark the Jones invoice paid, they paid cash/check/venmo' or similar. Does not process a card charge — direct the owner to the in-app Charge/Pay Now button for that.",
+      input_schema: { type: "object", properties: { invoiceId: { type: "string" }, customerName: { type: "string", description: "Alternative to invoiceId — marks that customer's most recent unpaid invoice" } } }
     },
     {
       name: "get_calendar_summary",
