@@ -2,7 +2,7 @@ import React, { useState } from "react";
 import {
   Calendar, Users2, FileText, CreditCard, MessageSquare,
   Bot, Smartphone, Trash2, Gift, Star, MapPin, Camera, CheckCircle,
-  ArrowRight, ChevronRight, Workflow, Download, Play, Pause,
+  ArrowRight, ChevronRight, Workflow, Play, Pause,
 } from "lucide-react";
 import {
   Reveal, MarketingStyles, BackgroundBlobs, MarketingNav, MarketingFooter,
@@ -410,16 +410,6 @@ export function LandingPage({
           </div>
           <div className="rounded-2xl overflow-hidden border border-white/10 bg-black shadow-2xl shadow-red-950/40">
             <SizzleReelPlayer src={"/media/sizzle-reel.mp4?v=" + SIZZLE_REEL_VERSION} />
-          </div>
-          <div className="flex justify-center mt-5">
-            <a
-              href={"/media/sizzle-reel.mp4?v=" + SIZZLE_REEL_VERSION}
-              download="CrewBoss-Sizzle-Reel.mp4"
-              className="group inline-flex items-center gap-2 px-5 py-2.5 rounded-xl glass hover:bg-white/[0.06] font-semibold text-sm transition-all"
-            >
-              <Download size={15} className="transition-transform group-hover:translate-y-0.5" />
-              Download the video
-            </a>
           </div>
         </Reveal>
       </section>
