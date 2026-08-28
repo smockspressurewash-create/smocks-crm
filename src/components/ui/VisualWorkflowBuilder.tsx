@@ -44,7 +44,7 @@ import { TimeframeSelector } from "./TimeframeSelector";
 
 const checkCondition = (check: string, ctx: any) => true;
 
-export function VisualWorkflowBuilder({ open, data, onClose, onSave }) {
+export function VisualWorkflowBuilder({ open, data, onClose, onSave, settings }: { open: boolean; data: any; onClose: () => void; onSave: (d: any) => void; settings?: any }) {
   const [w, setW] = useState({ id: "", name: "", category: "other", icon: "📋", description: "", steps: [] });
   const [selectedIdx, setSelectedIdx] = useState(null);
   const [showNodePicker, setShowNodePicker] = useState(null);
@@ -98,23 +98,37 @@ export function VisualWorkflowBuilder({ open, data, onClose, onSave }) {
     setSelectedIdx(idx + 1);
   };
 
-  // AI draft message for action step
+  // AI draft message for action step.
+  // BUG FIX (audit) — this used to fetch api.anthropic.com DIRECTLY from the
+  // browser with NO x-api-key header at all and no key sourced from
+  // anywhere — every call 401'd, silently caught, and fell back to the
+  // generic templated message every single time for every owner. The
+  // button looked and felt like a working "AI Draft" feature but never
+  // actually drafted anything. Routed through the app's own callModel
+  // (lib/api.ts) — the same unified caller Alfred uses — with the owner's
+  // configured model/key from Settings → AI Models, so it uses whichever
+  // provider they've actually set up (Claude, Gemini, OpenRouter, etc.),
+  // not a hardcoded Anthropic-only call. Same generic-template fallback on
+  // any failure (no key configured, network error, etc.) as before.
   const draftMessage = async (idx, step) => {
     setAiDrafting(true);
     const channel = step.channel || "sms";
     const triggerStep = w.steps[0];
     const context = triggerStep?.label || "job completed";
+    const companyName = settings?.companyName || "Crew Boss";
+    const ownerName = settings?.ownerName || settings?.myEmail || "the owner";
     try {
-      const res = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: 200,
-          messages: [{ role: "user", content: `Write a short, professional ${channel === "sms" ? "SMS text message" : "email"} for a pressure washing company (Crew Boss, York PA, owner Will). Context: "${context}". Action: "${step.label}". Use {{first_name}} for customer name. ${channel === "sms" ? "Keep under 160 chars." : "Keep under 3 sentences."} No quotes around the whole message. Start with "Hi {{first_name}},"` }]
-        })
+      const modelId = settings?.activeModel || "claude";
+      const apiKey = settings?.modelKeys?.[modelId] || "";
+      const result = await callModel({
+        modelId, apiKey,
+        messages: [{ role: "user", content: `Write a short, professional ${channel === "sms" ? "SMS text message" : "email"} for a pressure washing company (${companyName}, owner ${ownerName}). Context: "${context}". Action: "${step.label}". Use {{first_name}} for customer name. ${channel === "sms" ? "Keep under 160 chars." : "Keep under 3 sentences."} No quotes around the whole message. Start with "Hi {{first_name}},"` }],
+        maxTokens: 200,
       });
-      const d = await res.json();
-      const msg = d.content?.[0]?.text?.trim();
+      const msg = result.text?.trim();
       if (msg) updateStep(idx, { messageBody: msg });
-    } catch { updateStep(idx, { messageBody: "Hi {{first_name}}, " + (step.label || "following up from Crew Boss") + ". — Will @ Crew Boss" }); }
+      else throw new Error("Model returned no text");
+    } catch { updateStep(idx, { messageBody: "Hi {{first_name}}, " + (step.label || "following up from " + companyName) + ". — " + ownerName + " @ " + companyName }); }
     setAiDrafting(false);
   };
 

@@ -100,8 +100,16 @@ export function PromotionsPage({ promotions = [], setPromotions = (() => {}) as 
 
   const remove = (id: string) => {
     setPromotions((prev: Promotion[]) => prev.filter(p => p.id !== id));
-    (supabase as any).from("promotions").delete().eq("id", id).then(() => {}, () => {});
-    toast?.("Promotion deleted");
+    // AUDIT FIX — was fully silent + toasted "deleted" unconditionally; a
+    // 0-row RLS mismatch meant the row could reappear on the next fetch
+    // with no error ever shown.
+    (supabase as any).from("promotions").delete().eq("id", id).select("id").then(
+      (r: any) => {
+        if (!Array.isArray(r?.data) || r.data.length === 0) { toast?.("Deleted locally, but the server didn't confirm — it may reappear. Try again or refresh to check.", "red"); return; }
+        toast?.("Promotion deleted");
+      },
+      (e: any) => toast?.("Deleted locally, but failed to delete from server — " + (e?.message || ""), "red")
+    );
   };
 
   const active = promotions.filter(p => p.status === "sent" || p.status === "active");

@@ -124,10 +124,16 @@ export function HiringPage({ settings = {} as AppSettings, setSettings, toast, o
     const code = uid().replace(/-/g, "").slice(0, 12).toUpperCase();
     try {
       const { data: { user } } = await supabase.auth.getUser();
-      await (supabase as any).from("invites").insert({
+      // AUDIT FIX — neither insert's result was checked at all before this;
+      // a real insert failure (schema mismatch, RLS WITH CHECK violation)
+      // silently proceeded to unconditionally toast "added to the team —
+      // portal invite ready" with a code that wouldn't actually match
+      // anything at signup.
+      const inviteRes = await (supabase as any).from("invites").insert({
         code, employee_name: `${cand.firstName} ${cand.lastName || ""}`.trim(), employee_email: cand.email,
         role: "Technician", hourly_rate: 18, created_by: user?.id ?? null, owner_id: ownerId,
       });
+      if (inviteRes?.error) throw new Error(inviteRes.error.message);
       const newEmployeeId = uid();
       const preCreated = {
         id: newEmployeeId, firstName: cand.firstName, lastName: cand.lastName || "", email: cand.email,
@@ -135,7 +141,8 @@ export function HiringPage({ settings = {} as AppSettings, setSettings, toast, o
         startDate: today(), emergencyContact: "", notes: "Hired from candidate pipeline — account pending",
         isNewHire: true, owner_id: ownerId,
       };
-      await (supabase as any).from("employees").insert(preCreated);
+      const empRes = await (supabase as any).from("employees").insert(preCreated);
+      if (empRes?.error) throw new Error(empRes.error.message);
       if (onboardingTemplateItems.length > 0) {
         const items = onboardingTemplateItems.map(t => ({ id: t.id, title: t.title, description: t.description, done: false, completedAt: null }));
         await (supabase as any).from("employee_onboarding").upsert({ id: uid(), owner_id: ownerId, employee_id: newEmployeeId, items }, { onConflict: "employee_id" }).then(() => {}, () => {});
@@ -167,7 +174,13 @@ export function HiringPage({ settings = {} as AppSettings, setSettings, toast, o
     if (removed.length) {
       setCandidates(prev => prev.map(c => removed.includes(c.phase) ? { ...c, phase: cleaned[0] } : c));
       removed.forEach(p => {
-        (supabase as any).from("candidates").update({ phase: cleaned[0] }).eq("owner_id", ownerId).eq("phase", p).then(() => {}, () => {});
+        // AUDIT FIX — was fully silent on real errors (0-row isn't itself a
+        // failure here — a phase with no candidates on it legitimately
+        // matches 0 rows — but a genuine error was previously swallowed too).
+        (supabase as any).from("candidates").update({ phase: cleaned[0] }).eq("owner_id", ownerId).eq("phase", p).then(
+          () => {},
+          (e: any) => { console.warn("[Hiring] phase-removal reassignment failed for phase", p, ":", e?.message); toast?.(`Candidates on the removed "${p}" phase may not have moved — refresh to check.`, "yellow"); }
+        );
       });
     }
     setSettings?.((s: any) => ({ ...s, hiringPhases: cleaned }));

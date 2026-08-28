@@ -71,19 +71,32 @@ export function TrashCanPage({ jobs = [], customers = [], settings = {} as AppSe
     setConfirming(true);
     const touched = Object.entries(staged);
     const patchedJobs: Job[] = [];
+    // AUDIT FIX — failures were only console-logged; the success toast and
+    // the "text all customers" SMS blast below both fired unconditionally
+    // regardless of whether any of these writes actually persisted —
+    // customers could get texted a scheduled day that was never saved.
+    let failedCount = 0;
     for (const [jobId, date] of touched) {
       const patch = { scheduledDate: date, dayAssignmentConfirmed: true };
       setJobs?.((prev: any[]) => prev.map(j => j.id === jobId ? { ...j, ...patch } : j));
       const j = trashJobs.find(x => x.id === jobId);
+      const r = await (supabase as any).from("jobs").update(patch).eq("id", jobId).select("id");
+      if (r?.error || !Array.isArray(r?.data) || r.data.length === 0) {
+        console.error("[TrashCan] day-assignment save failed:", r?.error?.message || "matched 0 rows");
+        failedCount++;
+        continue;
+      }
       if (j) patchedJobs.push({ ...j, ...patch } as Job);
-      await (supabase as any).from("jobs").update(patch).eq("id", jobId)
-        .then((r: any) => { if (r?.error) console.error("[TrashCan] day-assignment save failed:", r.error.message); });
     }
     setStaged({});
     setConfirming(false);
-    toast?.(`${touched.length} customer${touched.length !== 1 ? "s" : ""} assigned to their service day ✓`, "green");
+    if (failedCount > 0) {
+      toast?.(`${patchedJobs.length} assigned ✓ — ${failedCount} failed to save, try again for those.`, patchedJobs.length > 0 ? "yellow" : "red");
+    } else {
+      toast?.(`${touched.length} customer${touched.length !== 1 ? "s" : ""} assigned to their service day ✓`, "green");
+    }
 
-    if (window.confirm(`Text all ${touched.length} customer${touched.length !== 1 ? "s" : ""} to let them know their scheduled day?`)) {
+    if (patchedJobs.length > 0 && window.confirm(`Text all ${patchedJobs.length} customer${patchedJobs.length !== 1 ? "s" : ""} to let them know their scheduled day?`)) {
       let sent = 0, failed = 0;
       for (const j of patchedJobs) {
         const c = cf(j.customerId);
@@ -157,8 +170,13 @@ export function TrashCanPage({ jobs = [], customers = [], settings = {} as AppSe
     if (!name) { toast?.("Route name can't be empty", "yellow"); return; }
     setRoutes(prev => prev.map(r => r.id === routeId ? { ...r, name } : r));
     setRenamingRouteId(null);
-    const { error } = await (supabase as any).from("trash_can_routes").update({ name, updated_at: new Date().toISOString() }).eq("id", routeId);
+    // AUDIT FIX (audit) — these three route writes only checked `error`,
+    // missing the documented RLS 0-row-silent-success case (CLAUDE.md): a
+    // stale/foreign routeId matches 0 rows with no error, and the optimistic
+    // local mutation above had already shown the change as saved.
+    const { error, data } = await (supabase as any).from("trash_can_routes").update({ name, updated_at: new Date().toISOString() }).eq("id", routeId).select("id");
     if (error) toast?.(`Rename didn't save — ${error.message}`, "red");
+    else if (!Array.isArray(data) || data.length === 0) toast?.("Rename didn't save — the server didn't confirm the update.", "red");
     else toast?.("Route renamed ✓", "green");
   };
 
@@ -166,10 +184,10 @@ export function TrashCanPage({ jobs = [], customers = [], settings = {} as AppSe
     if (!window.confirm(`Delete route "${r.name}"? This can't be undone.`)) return;
     const prevRoutes = routes;
     setRoutes(prev => prev.filter(x => x.id !== r.id));
-    const { error } = await (supabase as any).from("trash_can_routes").delete().eq("id", r.id);
-    if (error) {
+    const { error, data } = await (supabase as any).from("trash_can_routes").delete().eq("id", r.id).select("id");
+    if (error || !Array.isArray(data) || data.length === 0) {
       setRoutes(prevRoutes);
-      toast?.(`Delete failed — ${error.message}`, "red");
+      toast?.(error ? `Delete failed — ${error.message}` : "Delete failed — the server didn't confirm it.", "red");
       return;
     }
     if (managingRouteId === r.id) setManagingRouteId(null);
@@ -179,8 +197,9 @@ export function TrashCanPage({ jobs = [], customers = [], settings = {} as AppSe
 
   const persistRouteCustomerIds = async (routeId: string, customerIds: string[]): Promise<boolean> => {
     setRoutes(prev => prev.map(r => r.id === routeId ? { ...r, customer_ids: customerIds, updated_at: new Date().toISOString() } : r));
-    const { error } = await (supabase as any).from("trash_can_routes").update({ customer_ids: customerIds, updated_at: new Date().toISOString() }).eq("id", routeId);
+    const { error, data } = await (supabase as any).from("trash_can_routes").update({ customer_ids: customerIds, updated_at: new Date().toISOString() }).eq("id", routeId).select("id");
     if (error) { toast?.(`Couldn't save route change — ${error.message}`, "red"); return false; }
+    if (!Array.isArray(data) || data.length === 0) { toast?.("Couldn't save route change — the server didn't confirm the update.", "red"); return false; }
     return true;
   };
 

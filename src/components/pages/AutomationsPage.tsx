@@ -671,7 +671,7 @@ export function AutomationsPage({ automations = [], setAutomations, jobs = [], c
       </Modal>
 
       {/* Visual Workflow Builder */}
-      <VisualWorkflowBuilder open={builderOpen.open} data={builderOpen.data} onClose={() => setBuilderOpen({ open: false, data: null })} onSave={d => {
+      <VisualWorkflowBuilder open={builderOpen.open} data={builderOpen.data} settings={settings} onClose={() => setBuilderOpen({ open: false, data: null })} onSave={d => {
         const firstTrigger = d.steps.find(s => s.type === "trigger");
         const firstAction = d.steps.find(s => s.type === "action");
         // CRITICAL FIX (automation spam) — root cause of automations re-firing

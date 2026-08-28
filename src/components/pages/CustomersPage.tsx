@@ -336,8 +336,13 @@ export function CustomersPage({ customers = [], setCustomers, estimates = [], jo
     setCustomers(customers.filter(c => !ids.includes(c.id)));
     markRecentlyDeleted("customers", ids);
     setBulkSelected([]);
-    (supabase as any).from("customers").delete().in("id", ids)
-      .then((r: any) => { if (r?.error) toast("Deleted locally, but failed to delete from server — " + r.error.message, "red"); else toast(ids.length + " customer(s) deleted"); })
+    (supabase as any).from("customers").delete().in("id", ids).select("id")
+      .then((r: any) => {
+        if (r?.error) { toast("Deleted locally, but failed to delete from server — " + r.error.message, "red"); return; }
+        const deletedCount = Array.isArray(r?.data) ? r.data.length : 0;
+        if (deletedCount < ids.length) { toast(`Deleted locally, but only ${deletedCount}/${ids.length} confirmed on the server — some may reappear. Try again or refresh to check.`, "red"); return; }
+        toast(ids.length + " customer(s) deleted");
+      })
       .catch((e: any) => toast("Deleted locally, but failed to delete from server — " + (e?.message || ""), "red"));
   };
 
@@ -401,8 +406,12 @@ export function CustomersPage({ customers = [], setCustomers, estimates = [], jo
         if (r?.error) toast("Removed locally, but failed to remove on server — " + r.error.message, "red");
       }).catch(() => {});
     });
-    (supabase as any).from("customers").delete().eq("id", c.id)
-      .then((result: any) => { if (result?.error) toast("Deleted locally, but failed to delete from server — " + result.error.message, "red"); else toast("Customer deleted"); })
+    (supabase as any).from("customers").delete().eq("id", c.id).select("id")
+      .then((result: any) => {
+        if (result?.error) { toast("Deleted locally, but failed to delete from server — " + result.error.message, "red"); return; }
+        if (!Array.isArray(result?.data) || result.data.length === 0) { toast("Deleted locally, but the server didn't confirm — it may reappear. Try again or refresh to check.", "red"); return; }
+        toast("Customer deleted");
+      })
       .catch((e: any) => toast("Deleted locally, but failed to delete from server — " + (e?.message || ""), "red"));
   };
 

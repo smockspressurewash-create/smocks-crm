@@ -483,8 +483,8 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setJobs
       };
       setEmployees((prev: any[]) => [...prev, preCreated as any]);
       (supabase as any).from("employees").insert(preCreated)
-        .then((r: any) => { if (r?.error) console.warn("[Invite] pre-create employee row failed:", r.error.message); })
-        .catch((e: any) => console.warn("[Invite] pre-create employee row threw:", e?.message));
+        .then((r: any) => { if (r?.error) { console.warn("[Invite] pre-create employee row failed:", r.error.message); toast?.("Invite link created, but the employee record couldn't be saved — " + r.error.message + ". Signup with this invite may not work.", "red"); } })
+        .catch((e: any) => { console.warn("[Invite] pre-create employee row threw:", e?.message); toast?.("Invite link created, but the employee record couldn't be saved — signup with this invite may not work.", "red"); });
     } else {
       newEmployeeId = employees.find(e => e.email.toLowerCase() === inviteF.email.toLowerCase())?.id || null;
     }
@@ -609,8 +609,12 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setJobs
     // Must actually delete server-side — the 3s Live Crew poll fully replaces
     // local state from Supabase, so a local-only removal (e.g. revoking a
     // manager's access) would silently reappear on the very next poll.
-    (supabase as any).from("employees").delete().eq("id", id)
-      .then((r: any) => { if (r?.error) toast?.("Removed locally, but failed to sync — " + r.error.message, "red"); })
+    (supabase as any).from("employees").delete().eq("id", id).select("id")
+      .then((r: any) => {
+        if (r?.error) { toast?.("Removed locally, but failed to sync — " + r.error.message, "red"); return; }
+        if (!Array.isArray(r?.data) || r.data.length === 0) { toast?.("Removed locally, but the server didn't confirm the delete — it may reappear. Try again or refresh to check.", "red"); return; }
+        toast?.("Employee removed");
+      })
       .catch((e: any) => toast?.("Removed locally, but failed to sync — " + (e?.message || ""), "red"));
   };
   // FEATURE — "fire an employee and revoke their portal access... don't
@@ -634,7 +638,10 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setJobs
     if (status === "terminated" && !confirm("Revoke this employee's portal access? Their account stays on file — you can restore access or delete them entirely at any time.")) return;
     setEmployees(prev => prev.map(e => e.id === id ? { ...e, status } : e));
     (supabase as any).from("employees").update({ status }).eq("id", id).select("id")
-      .then((r: any) => { if (r?.error || !r?.data?.length) toast?.("Failed to update access — " + (r?.error?.message || "try again"), "red"); })
+      .then((r: any) => {
+        if (r?.error || !r?.data?.length) { toast?.("Failed to update access — " + (r?.error?.message || "try again"), "red"); return; }
+        toast?.(status === "terminated" ? "Access revoked ✓" : status === "leave" ? "Marked on leave ✓" : "Access restored ✓", "green");
+      })
       .catch((e: any) => toast?.("Failed to update access — " + (e?.message || ""), "red"));
   };
 
@@ -782,8 +789,12 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setJobs
       ? [...(emp.paymentLog || []), { id: uid(), periodStart, periodEnd: periodEnd || periodStart, amount: amount ?? 0, paidAt: Date.now() }]
       : (emp.paymentLog || []);
     setEmployees((prev: any[]) => prev.map(x => x.id === emp.id ? { ...x, paidPeriods: next, paymentLog: nextLog } : x));
-    (supabase as any).from("employees").update({ paidPeriods: next, paymentLog: nextLog }).eq("id", emp.id)
+    (supabase as any).from("employees").update({ paidPeriods: next, paymentLog: nextLog }).eq("id", emp.id).select("id")
       .then(async (r: any) => {
+        if (!r?.error && (!Array.isArray(r?.data) || r.data.length === 0)) {
+          toast?.("Saved locally, but the server didn't confirm the pay status — try again or refresh to check.", "red");
+          return;
+        }
         if (r?.error) {
           // BLOCKER — paidPeriods and paymentLog are two SEPARATE columns
           // (migration 0019); PostgREST rejects the WHOLE update if either
@@ -794,10 +805,10 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setJobs
           // cause being one column, not the feature itself. Retry with just
           // paidPeriods so the status still lands even if the log can't yet.
           console.warn("[MarkPaid] full update failed:", r.error.message, "— retrying with paidPeriods only");
-          const retry = await (supabase as any).from("employees").update({ paidPeriods: next }).eq("id", emp.id);
-          if (retry?.error) {
-            console.error("[MarkPaid] paidPeriods-only retry also failed:", retry.error.message);
-            toast?.("Failed to save pay status — " + retry.error.message, "red");
+          const retry = await (supabase as any).from("employees").update({ paidPeriods: next }).eq("id", emp.id).select("id");
+          if (retry?.error || !Array.isArray(retry?.data) || retry.data.length === 0) {
+            console.error("[MarkPaid] paidPeriods-only retry also failed:", retry?.error?.message || "matched 0 rows");
+            toast?.("Failed to save pay status — " + (retry?.error?.message || "the server didn't confirm the update"), "red");
           } else {
             console.warn("[MarkPaid] saved paid/unpaid status, but the payment log (who/when/how much) couldn't save — run supabase/migrations/0019_employee_payment_log.sql");
             toast?.(nextStatus === "paid" ? `${emp.firstName} marked as paid ✓ (payment log needs a pending database migration)` : `${emp.firstName} marked as unpaid`, "yellow");
@@ -817,11 +828,13 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setJobs
   const markJobPaidFor = (emp: any, jobId: string, nextStatus: "paid" | "unpaid") => {
     const next = { ...((emp as any).paidJobs || {}), [jobId]: nextStatus };
     setEmployees((prev: any[]) => prev.map(x => x.id === emp.id ? { ...x, paidJobs: next } : x));
-    (supabase as any).from("employees").update({ paidJobs: next }).eq("id", emp.id)
+    (supabase as any).from("employees").update({ paidJobs: next }).eq("id", emp.id).select("id")
       .then((r: any) => {
         if (r?.error) {
           console.error("[MarkJobPaid] failed:", r.error.message, "— run supabase/migrations/0022_employee_paid_jobs.sql");
           toast?.("Saved locally, but couldn't sync — " + r.error.message, "red");
+        } else if (!Array.isArray(r?.data) || r.data.length === 0) {
+          toast?.("Saved locally, but the server didn't confirm the update — try again or refresh to check.", "red");
         } else {
           toast?.(nextStatus === "paid" ? "Job marked as paid ✓" : "Job marked as unpaid", "green");
         }
@@ -834,8 +847,12 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setJobs
   // all — see the per-job breakdown rows below).
   const updateJobHours = (jobId: string, nextHours: number) => {
     setJobs((prev: any[]) => prev.map(j => j.id === jobId ? { ...j, loggedHours: nextHours } : j));
-    (supabase as any).from("jobs").update({ loggedHours: nextHours }).eq("id", jobId)
-      .then((r: any) => { if (r?.error) toast?.("Saved locally, but couldn't sync hours — " + r.error.message, "red"); else toast?.("Hours updated ✓", "green"); })
+    (supabase as any).from("jobs").update({ loggedHours: nextHours }).eq("id", jobId).select("id")
+      .then((r: any) => {
+        if (r?.error) { toast?.("Saved locally, but couldn't sync hours — " + r.error.message, "red"); return; }
+        if (!Array.isArray(r?.data) || r.data.length === 0) { toast?.("Saved locally, but the server didn't confirm the update — try again or refresh to check.", "red"); return; }
+        toast?.("Hours updated ✓", "green");
+      })
       .catch((e: any) => toast?.("Saved locally, but couldn't sync hours — " + (e?.message || "unknown error"), "red"));
   };
 
@@ -1725,12 +1742,12 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setJobs
               // this deployment yet, which silently dropped the paid/unpaid
               // STATUS too, not just the log. Retry with paidPeriods alone so
               // the actual status always lands even if the log can't.
-              (supabase as any).from("employees").update({ paidPeriods: next, paymentLog: nextLog }).eq("id", f.id)
+              (supabase as any).from("employees").update({ paidPeriods: next, paymentLog: nextLog }).eq("id", f.id).select("id")
                 .then(async (r: any) => {
-                  if (!r?.error) { toast?.(next[start] === "paid" ? "Marked as paid ✓" : "Marked as unpaid", "green"); return; }
-                  console.warn("[MarkPaid] full update failed:", r.error.message, "— retrying with paidPeriods only");
-                  const retry = await (supabase as any).from("employees").update({ paidPeriods: next }).eq("id", f.id);
-                  if (retry?.error) { console.error("[MarkPaid] paidPeriods-only retry also failed:", retry.error.message); toast?.("Failed to save pay status — " + retry.error.message, "red"); }
+                  if (!r?.error && Array.isArray(r?.data) && r.data.length > 0) { toast?.(next[start] === "paid" ? "Marked as paid ✓" : "Marked as unpaid", "green"); return; }
+                  console.warn("[MarkPaid] full update failed:", r?.error?.message || "matched 0 rows", "— retrying with paidPeriods only");
+                  const retry = await (supabase as any).from("employees").update({ paidPeriods: next }).eq("id", f.id).select("id");
+                  if (retry?.error || !Array.isArray(retry?.data) || retry.data.length === 0) { console.error("[MarkPaid] paidPeriods-only retry also failed:", retry?.error?.message || "matched 0 rows"); toast?.("Failed to save pay status — " + (retry?.error?.message || "the server didn't confirm the update"), "red"); }
                   else toast?.(next[start] === "paid" ? "Marked as paid ✓ (payment log needs a pending database migration)" : "Marked as unpaid", "yellow");
                 })
                 .catch((e: any) => { console.error("[MarkPaid] threw:", e?.message); toast?.("Failed to save pay status — " + (e?.message || "unknown error"), "red"); });

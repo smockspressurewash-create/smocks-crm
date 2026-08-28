@@ -1408,9 +1408,29 @@ export function App() {
         const { data, error } = await (supabase as any).from("app_settings").select("data").limit(1).maybeSingle();
         if (!error && data?.data && typeof data.data === "object") {
           setSettings((prev: any) => ({ ...prev, ...data.data }));
+          // BUG FIX — this used to set settingsSyncLoadedRef.current = true
+          // unconditionally, even on a 0-row result. That ref is SHARED with
+          // the real owner-authenticated settings-load effect above (gated
+          // on `crmUserId` truthy), which bails out early whenever this ref
+          // is already true. On #/portal specifically, this effect fires on
+          // the bare pre-login screen (still anonymous — crmUserId isn't set
+          // yet), and under owner_id-scoped RLS (migration 0033) an
+          // anonymous request to app_settings always returns 0 rows (no
+          // error, just nothing — the exact same 0-row-silent-success shape
+          // CLAUDE.md documents for writes, just on a read). That 0-row
+          // "success" still marked the ref done — permanently — so once the
+          // employee actually logged in a moment later and crmUserId got
+          // set, the REAL properly-scoped fetch above found the ref already
+          // "used up" and never ran at all. settings stayed on blank
+          // localStorage defaults for the rest of the session: no Twilio
+          // SID/token, no Google connection — exactly "OTW/Running Late/
+          // Send Invoice failed with 'not configured'" for every employee,
+          // despite the fix comment above this effect claiming this exact
+          // gap was already closed. Only marking done on genuine success
+          // lets the real authenticated effect still get its turn.
+          settingsSyncLoadedRef.current = true;
         }
       } catch { /* app_settings table may not exist yet */ }
-      settingsSyncLoadedRef.current = true;
     })();
   }, [page, crmUserId]); // eslint-disable-line react-hooks/exhaustive-deps
 

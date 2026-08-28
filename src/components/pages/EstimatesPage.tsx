@@ -180,7 +180,14 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
         else { window.location.href = "sms:" + cust.phone.replace(/\D/g, "") + "?body=" + encodeURIComponent(buildSendSms(sendModalEst, cust)); }
       }
       setEstimates((prev: any[]) => prev.map((x: any) => x.id === sendModalEst.id ? { ...x, sentAt: today(), sendChannel, templateId: sendTemplateId || undefined } : x));
-      (supabase as any).from("estimates").update({ sentAt: today(), sendChannel }).eq("id", sendModalEst.id).then(() => {}, () => {});
+      // AUDIT FIX — was fully silent on failure (both handlers no-ops). The
+      // send itself already succeeded by this point, so this shouldn't read
+      // as "sending failed" — but a dropped sentAt write means the estimate
+      // can keep showing as un-sent with no explanation.
+      (supabase as any).from("estimates").update({ sentAt: today(), sendChannel }).eq("id", sendModalEst.id).select("id").then(
+        (r: any) => { if (!Array.isArray(r?.data) || r.data.length === 0) toast?.("Sent, but this estimate may still show as un-sent — the update didn't confirm.", "yellow"); },
+        (e: any) => { console.warn("[SendEstimate] sentAt update failed:", e?.message); toast?.("Sent, but this estimate may still show as un-sent.", "yellow"); }
+      );
       toast?.(`📧 Estimate sent to ${cust.firstName} ✓`, "green");
       setSendModalEst(null);
       setSendPreviewOn(false);
@@ -569,8 +576,12 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
         const patch = { invoiced: true, invoicedAt: today() };
         setEstimates(estimates.map(x => x.id === id ? { ...x, ...patch } : x));
         setViewing(null);
-        (supabase as any).from("estimates").update(patch).eq("id", id)
-          .then((r: any) => { if (r?.error) { console.error("[ConvertToInvoice] update failed:", r.error.message); toast("Converted locally, but failed to sync — " + r.error.message, "red"); } else toast("Converted to invoice"); })
+        (supabase as any).from("estimates").update(patch).eq("id", id).select("id")
+          .then((r: any) => {
+            if (r?.error) { console.error("[ConvertToInvoice] update failed:", r.error.message); toast("Converted locally, but failed to sync — " + r.error.message, "red"); return; }
+            if (!Array.isArray(r?.data) || r.data.length === 0) { console.error("[ConvertToInvoice] update matched 0 rows"); toast("Converted locally, but the server didn't confirm — it may revert. Try again or refresh to check.", "red"); return; }
+            toast("Converted to invoice");
+          })
           .catch((e: any) => { console.error("[ConvertToInvoice] update threw:", e?.message); toast("Converted locally, but failed to sync — " + (e?.message || "unknown error"), "red"); });
       }} onSchedule={est => {
         const c = customers.find(x => x.id === est.customerId);
@@ -631,8 +642,12 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
         // FEATURE 6 — manual "collected outside the CRM" deposit (cash/check),
         // distinct from the client's own online Stripe payment in ClientPortal.
         setEstimates(prev => prev.map(x => x.id === id ? { ...x, paidDeposit: amount, depositPaidAt: today() } : x));
-        (supabase as any).from("estimates").update({ paidDeposit: amount, depositPaidAt: today() }).eq("id", id)
-          .then((r: any) => { if (r?.error) { console.warn("[Deposit] save failed:", r.error.message); toast?.("Marked locally, but failed to sync — " + r.error.message, "red"); } else toast?.("Deposit marked as paid ✓", "green"); })
+        (supabase as any).from("estimates").update({ paidDeposit: amount, depositPaidAt: today() }).eq("id", id).select("id")
+          .then((r: any) => {
+            if (r?.error) { console.warn("[Deposit] save failed:", r.error.message); toast?.("Marked locally, but failed to sync — " + r.error.message, "red"); return; }
+            if (!Array.isArray(r?.data) || r.data.length === 0) { console.warn("[Deposit] save matched 0 rows"); toast?.("Marked locally, but the server didn't confirm — it may revert. Try again or refresh to check.", "red"); return; }
+            toast?.("Deposit marked as paid ✓", "green");
+          })
           .catch((e: any) => { console.warn("[Deposit] save threw:", e?.message); toast?.("Marked locally, but failed to sync", "red"); });
       }} />
 

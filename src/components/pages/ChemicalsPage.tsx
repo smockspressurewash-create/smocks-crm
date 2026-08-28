@@ -106,9 +106,10 @@ export function ChemicalsPage({ chemicals = [], setChemicals, toast = () => {}, 
     const next = chemicals.map(c => c.id === id ? { ...c, stock: Math.max(0, c.stock + delta) } : c);
     setChemicals(next);
     const updated = next.find(c => c.id === id);
-    if (updated) (supabase as any).from("chemicals").update({ stock: updated.stock }).eq("id", id).then((r: any) => {
-      if (r?.error) toast("Stock updated locally, but failed to sync — " + r.error.message, "red");
-    }).catch(() => {});
+    if (updated) (supabase as any).from("chemicals").update({ stock: updated.stock }).eq("id", id).select("id").then((r: any) => {
+      if (r?.error) { toast("Stock updated locally, but failed to sync — " + r.error.message, "red"); return; }
+      if (!Array.isArray(r?.data) || r.data.length === 0) toast("Stock updated locally, but the server didn't confirm — it may revert.", "red");
+    }).catch((e: any) => toast("Stock updated locally, but failed to sync — " + (e?.message || "unknown error"), "red"));
   };
   // FEATURE — "add general suppliers — a main mechanic or main shop — by
   // entering their phone, address, and other details, and Alfred should be
@@ -141,15 +142,17 @@ export function ChemicalsPage({ chemicals = [], setChemicals, toast = () => {}, 
   const deleteSupplier = async (id: string) => {
     if (!window.confirm("Remove this supplier?")) return;
     setGeneralSuppliers(prev => prev.filter(s => s.id !== id));
-    const res = await (supabase as any).from("general_suppliers").delete().eq("id", id);
-    if (res?.error) toast("Removed locally, but failed to remove on server — " + res.error.message, "red");
+    const res = await (supabase as any).from("general_suppliers").delete().eq("id", id).select("id");
+    if (res?.error) { toast("Removed locally, but failed to remove on server — " + res.error.message, "red"); return; }
+    if (!Array.isArray(res?.data) || res.data.length === 0) toast("Removed locally, but the server didn't confirm — it may reappear. Try again or refresh to check.", "red");
   };
 
   const removeChemical = (id: string) => {
     setChemicals(chemicals.filter(c => c.id !== id));
     markRecentlyDeleted("chemicals", [id]);
-    withTimeout((supabase as any).from("chemicals").delete().eq("id", id), 10000, "Chemical delete").then((r: any) => {
-      if (r?.error) toast("Removed locally, but failed to remove on server — " + r.error.message, "red");
+    withTimeout((supabase as any).from("chemicals").delete().eq("id", id).select("id"), 10000, "Chemical delete").then((r: any) => {
+      if (r?.error) { toast("Removed locally, but failed to remove on server — " + r.error.message, "red"); return; }
+      if (!Array.isArray(r?.data) || r.data.length === 0) toast("Removed locally, but the server didn't confirm — it may reappear. Try again or refresh to check.", "red");
     }).catch((e: any) => toast("Removed locally, but failed to remove on server — " + (e?.message || ""), "red"));
   };
 

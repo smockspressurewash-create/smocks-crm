@@ -222,9 +222,18 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
       console.log("[SendInvoice] Gmail send resolved ✓");
       const jobPatch = { invoiceSentAt: today(), paymentType: "Invoice", paymentStatus: job.paymentStatus === "Paid" ? job.paymentStatus : "Pending" };
       setJobs((prev: any[]) => prev.map((j: any) => j.id === job.id ? { ...j, ...jobPatch } : j));
-      (supabase as any).from("jobs").update(jobPatch).eq("id", job.id)
-        .then((r: any) => { if (r?.error) console.error("[SendInvoice] job patch (invoiceSentAt) failed:", r.error.message); })
-        .catch((e: any) => console.error("[SendInvoice] job patch (invoiceSentAt) threw:", e?.message));
+      // AUDIT FIX — this write was fully silent (console-only). The email
+      // itself already sent successfully by this point, so a failure here
+      // shouldn't read as "the invoice send failed" — but with zero
+      // visibility, a dropped write meant this job kept reappearing on the
+      // "Needs Invoice" dashboard card indefinitely with no explanation of
+      // why re-sending never seems to "take."
+      (supabase as any).from("jobs").update(jobPatch).eq("id", job.id).select("id")
+        .then((r: any) => {
+          if (r?.error) { console.error("[SendInvoice] job patch (invoiceSentAt) failed:", r.error.message); toast?.("Invoice sent, but this job may still show as needing an invoice — " + r.error.message, "yellow"); return; }
+          if (!Array.isArray(r?.data) || r.data.length === 0) { console.error("[SendInvoice] job patch matched 0 rows"); toast?.("Invoice sent, but this job may still show as needing an invoice — the update didn't confirm.", "yellow"); }
+        })
+        .catch((e: any) => { console.error("[SendInvoice] job patch (invoiceSentAt) threw:", e?.message); toast?.("Invoice sent, but this job may still show as needing an invoice.", "yellow"); });
       toast?.(`📧 Invoice sent to ${cust.firstName} ✓`, "green");
       setPreviewInvoiceJob(null);
     } catch (e: any) {
@@ -708,15 +717,25 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
   ] as const;
   const ownerUpdateJob = (jid: string, patch: any): Promise<any> => {
     setJobs((prev: any[]) => prev.map((j: any) => j.id === jid ? { ...j, ...patch } : j));
-    return (supabase as any).from("jobs").update(patch).eq("id", jid)
+    return (supabase as any).from("jobs").update(patch).eq("id", jid).select("id")
       .then(async (result: any) => {
+        if (!result?.error && (!Array.isArray(result?.data) || result.data.length === 0)) {
+          // AUDIT FIX — missing the documented RLS 0-row-silent-success check
+          // (CLAUDE.md). Used for the owner's own Clock In/Out, arrival, and
+          // checklist writes — a silently-dropped write here means the
+          // owner's own shift clock reads as stuck without any explanation.
+          console.warn("[ownerUpdateJob] update matched 0 rows for", jid);
+          toast?.("Failed to save — the server didn't confirm the update.", "red");
+          return { ...result, error: result?.error || new Error("0 rows matched") };
+        }
         if (result?.error) {
           console.warn("[ownerUpdateJob] full patch failed:", result.error.message, "— retrying core fields only");
           const core: any = {};
           OWNER_CORE_JOB_COLUMNS.forEach(k => { if ((patch as any)[k] !== undefined) core[k] = (patch as any)[k]; });
           if (Object.keys(core).length > 0) {
-            const retry = await (supabase as any).from("jobs").update(core).eq("id", jid);
+            const retry = await (supabase as any).from("jobs").update(core).eq("id", jid).select("id");
             if (retry?.error) { console.error("[ownerUpdateJob] core retry failed:", retry.error.message); toast?.("Failed to save — " + retry.error.message, "red"); }
+            else if (!Array.isArray(retry?.data) || retry.data.length === 0) { console.error("[ownerUpdateJob] core retry matched 0 rows"); toast?.("Failed to save — the server didn't confirm the update.", "red"); }
             return retry;
           }
           toast?.("Failed to save — " + result.error.message, "red");
