@@ -95,7 +95,7 @@ import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 // selected — the personality never actually reached the model at all.
 const getPersonality = (id: string) => personalities.find(p => p.id === id) || personalities[0];
 
-export function AlfredPage({ conversations, setConversations, activeConvId, setActiveConvId, memory = [], setMemory, personality, setPersonality, apiKey, openSettings, toast, jobs = [], setJobs, estimates = [], setEstimates, customers = [], setCustomers, employees = [], automations = [], setAutomations = () => {}, stats, setWins, goals = [], setGoals, setSettings, settings = {} as AppSettings, modelStatus = {}, setModelStatus = () => {}, onNav, onSpotlight, expenses = [], setExpenses, entries = [], chemicals = [], ownerId = "", reviews = [], setReviews = () => {}, vehicles = [], setVehicles = () => {}, maintenance = [], setMaintenance = () => {}, trainingModules = [] }: { conversations?: any; setConversations?: any; activeConvId?: any; setActiveConvId?: any; memory?: any; setMemory?: any; personality?: any; setPersonality?: any; apiKey?: any; openSettings?: any; toast?: any; jobs?: any; setJobs?: any; estimates?: any; setEstimates?: any; customers?: any; setCustomers?: any; employees?: any; automations?: any; setAutomations?: any; stats?: any; setWins?: any; goals?: any; setGoals?: any; setSettings?: any; settings?: AppSettings; modelStatus?: any; setModelStatus?: any; onNav?: any; onSpotlight?: (step: { page: string; type?: string; id?: string; label?: string }) => void; expenses?: any[]; setExpenses?: any; entries?: any[]; chemicals?: any[]; ownerId?: string; reviews?: any[]; setReviews?: any; vehicles?: any[]; setVehicles?: any; maintenance?: any[]; setMaintenance?: any; trainingModules?: any[] }) {
+export function AlfredPage({ conversations, setConversations, activeConvId, setActiveConvId, memory = [], setMemory, personality, setPersonality, apiKey, openSettings, toast, jobs = [], setJobs, estimates = [], setEstimates, customers = [], setCustomers, employees = [], automations = [], setAutomations = () => {}, stats, setWins, goals = [], setGoals, setSettings, settings = {} as AppSettings, modelStatus = {}, setModelStatus = () => {}, onNav, onSpotlight, expenses = [], setExpenses, entries = [], chemicals = [], ownerId = "", reviews = [], setReviews = () => {}, vehicles = [], setVehicles = () => {}, maintenance = [], setMaintenance = () => {}, trainingModules = [], services = [] }: { conversations?: any; setConversations?: any; activeConvId?: any; setActiveConvId?: any; memory?: any; setMemory?: any; personality?: any; setPersonality?: any; apiKey?: any; openSettings?: any; toast?: any; jobs?: any; setJobs?: any; estimates?: any; setEstimates?: any; customers?: any; setCustomers?: any; employees?: any; automations?: any; setAutomations?: any; stats?: any; setWins?: any; goals?: any; setGoals?: any; setSettings?: any; settings?: AppSettings; modelStatus?: any; setModelStatus?: any; onNav?: any; onSpotlight?: (step: { page: string; type?: string; id?: string; label?: string }) => void; expenses?: any[]; setExpenses?: any; entries?: any[]; chemicals?: any[]; ownerId?: string; reviews?: any[]; setReviews?: any; vehicles?: any[]; setVehicles?: any; maintenance?: any[]; setMaintenance?: any; trainingModules?: any[]; services?: any[] }) {
   const [input, setInput] = useState("");
   const [voiceMode, setVoiceMode] = useState<"dictate" | "note">("dictate");
   const [loading, setLoading] = useState(false);
@@ -1583,7 +1583,19 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           // populated default item). Do not reintroduce any field the
           // manual form doesn't send — see CLAUDE.md's "safe column" note on
           // this exact table.
-          const newJ = {
+          // FEATURE — "allow me to create a custom checklist and add
+          // specific instructions... Alfred can also schedule recurring
+          // jobs, commercial jobs, and tags." duringChecklist is the SAME
+          // field the field-portal checklist system already reads/writes
+          // everywhere else (JobDetailModal, EmployeePortal) — a plain
+          // string list from Alfred becomes real, checkable items, not
+          // just text buried in notes. isRecurring/recurringFreq mirror
+          // exactly what the manual "Recurring" toggle in the New Job form
+          // writes (recurringMode "preset" + one of recurringFreqs' keys).
+          const customChecklist = Array.isArray(inputs.checklist) && inputs.checklist.length > 0
+            ? inputs.checklist.map((label: string) => ({ id: uid(), label, done: false }))
+            : undefined;
+          const newJ: any = {
             id: uid(), customerId: c.id,
             address: inputs.address || c.address || "",
             amount: parseFloat(inputs.amount) || 0,
@@ -1594,8 +1606,12 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
             jobType: inputs.jobType || "residential",
             notes: inputs.notes || "",
             duration: inputs.duration ? Number(inputs.duration) : undefined,
-            crew: [] as any[], checklist: [] as any[], photos: [], commLog: [], chemicalsUsed: [], equipment: [], tags: [],
+            crew: [] as any[], checklist: [] as any[], photos: [], commLog: [], chemicalsUsed: [], equipment: [],
+            tags: Array.isArray(inputs.tags) ? inputs.tags : [],
             loggedHours: 0, createdAt: today(), owner_id: ownerId,
+            ...(inputs.internalNotes ? { internalNotes: inputs.internalNotes } : {}),
+            ...(customChecklist ? { duringChecklist: customChecklist } : {}),
+            ...(inputs.isRecurring ? { isRecurring: true, recurringMode: "preset", recurringFreq: inputs.recurringFreq } : {}),
             // REVERTED — organizationId was added here on the strength of a
             // one-off console log that turned out not to hold up: live
             // testing now shows the App.tsx 30s bulk jobs autosave (which
@@ -2544,6 +2560,26 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
             total_employees: employees.length
           };
         }
+        // FEATURE — "Alfred should literally know virtually everything
+        // about the company it's working for." Real service/pricing
+        // catalog and core company facts.
+        case "list_services": {
+          if (!services || services.length === 0) return { success: true, count: 0, services: [], note: "No services set up yet (Settings → Services)." };
+          return { success: true, count: services.length, services: services.map((s: any) => ({ name: s.name, price: s.basePrice ?? s.price, category: s.category, taxable: s.taxable !== false })) };
+        }
+        case "get_company_info": {
+          return {
+            success: true,
+            companyName: (settings as any)?.companyName || null,
+            address: (settings as any)?.companyAddress || null,
+            phone: (settings as any)?.companyPhone || null,
+            taxRate: (settings as any)?.taxRate != null ? `${(settings as any).taxRate}%` : null,
+            state: (settings as any)?.companyState || null,
+            totalCustomers: customers.length,
+            activeEmployees: employees.filter((e: any) => e.status === "active").length,
+            fleetSize: (vehicles || []).length,
+          };
+        }
         case "list_estimates": {
           const wantStatus = (inputs.status || "pending").toLowerCase();
           const matches = (e: any) => {
@@ -3027,8 +3063,8 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
     },
     {
       name: "schedule_job",
-      description: "Schedule a new job for a customer on a specific date (YYYY-MM-DD) and time (HH:MM 24h). Optionally assign one crew member in the same call via employeeName — this writes the same crew/crewAssignedAt fields assign_employee does, so a separate assign_employee call afterward is unnecessary (and would just no-op with 'Already assigned').",
-      input_schema: { type: "object", properties: { customerId: { type: "string" }, customerName: { type: "string" }, date: { type: "string", description: "YYYY-MM-DD" }, time: { type: "string", description: "HH:MM 24h, e.g. '14:00' for 2pm" }, amount: { type: "number" }, address: { type: "string", description: "Defaults to the customer's address on file if omitted" }, duration: { type: "number", description: "Estimated hours" }, jobType: { type: "string", enum: ["residential", "commercial"], description: "Drives crew pay-rate overrides; defaults to residential" }, priority: { type: "string", enum: ["low", "normal", "high", "urgent"] }, notes: { type: "string" }, employeeName: { type: "string", description: "Full name like 'Luke Smith' — if provided, assigns this employee to the job immediately after it's created" } } }
+      description: "Schedule a new job for a customer on a specific date (YYYY-MM-DD) and time (HH:MM 24h). Optionally assign one crew member in the same call via employeeName — this writes the same crew/crewAssignedAt fields assign_employee does, so a separate assign_employee call afterward is unnecessary (and would just no-op with 'Already assigned'). Can also set up a real custom checklist, separate crew-facing vs. internal-only notes, tags, and a recurring schedule — everything the manual New Job form can do.",
+      input_schema: { type: "object", properties: { customerId: { type: "string" }, customerName: { type: "string" }, date: { type: "string", description: "YYYY-MM-DD" }, time: { type: "string", description: "HH:MM 24h, e.g. '14:00' for 2pm" }, amount: { type: "number" }, address: { type: "string", description: "Defaults to the customer's address on file if omitted" }, duration: { type: "number", description: "Estimated hours" }, jobType: { type: "string", enum: ["residential", "commercial"], description: "Drives crew pay-rate overrides; defaults to residential" }, priority: { type: "string", enum: ["low", "normal", "high", "urgent"] }, notes: { type: "string", description: "General job notes/instructions, visible to the crew in the field portal" }, internalNotes: { type: "string", description: "Internal/office-only notes — NOT shown to the crew (site warnings, billing quirks, etc.)" }, checklist: { type: "array", items: { type: "string" }, description: "Custom checklist/instructions specific to this job — becomes real checkable items the crew sees during the job" }, tags: { type: "array", items: { type: "string" }, description: "Free-form tags, e.g. 'VIP', 'gated community'" }, isRecurring: { type: "boolean", description: "true to also set up a recurring schedule from this date forward" }, recurringFreq: { type: "string", enum: ["weekly", "biweekly", "monthly", "quarterly", "biannual", "annual"], description: "Required when isRecurring is true" }, employeeName: { type: "string", description: "Full name like 'Luke Smith' — if provided, assigns this employee to the job immediately after it's created" } } }
     },
     {
       name: "update_job_priority",
@@ -3215,6 +3251,16 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
     {
       name: "get_business_stats",
       description: "Get current live business KPIs.",
+      input_schema: { type: "object", properties: {} }
+    },
+    {
+      name: "list_services",
+      description: "The business's real service/pricing catalog — name, price, category, whether it's taxable. Use before quoting a price or answering 'what do we charge for X' instead of guessing.",
+      input_schema: { type: "object", properties: {} }
+    },
+    {
+      name: "get_company_info",
+      description: "Core facts about the business itself — company name, address, phone, tax rate/state, and how many active customers/employees/vehicles it has.",
       input_schema: { type: "object", properties: {} }
     },
     {

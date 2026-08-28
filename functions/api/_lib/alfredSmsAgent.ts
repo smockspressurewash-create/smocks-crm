@@ -463,6 +463,16 @@ const TOOLS = [
     input_schema: { type: "object", properties: {} },
   },
   {
+    name: "list_services",
+    description: "The business's real service/pricing catalog — name, price, category, whether it's taxable. Use this before quoting a price or answering 'what do we charge for X' instead of guessing.",
+    input_schema: { type: "object", properties: {} },
+  },
+  {
+    name: "get_company_info",
+    description: "Core facts about the business itself — company name, address, phone, tax rate/state, and how many active customers/employees/vehicles it has. Use for 'what's our tax rate', 'what's our business phone number', or any other 'about the company' question.",
+    input_schema: { type: "object", properties: {} },
+  },
+  {
     name: "get_weather",
     description: "Current weather and conditions at the business's location — use for 'what's the weather', 'is it going to rain', 'should we work today', etc.",
     input_schema: { type: "object", properties: {} },
@@ -479,7 +489,7 @@ const TOOLS = [
   },
   {
     name: "schedule_job",
-    description: "Schedule a new job for a customer on a given date. Can optionally assign a crew member by name, or mark the owner as working it.",
+    description: "Schedule a new job for a customer on a given date. Can optionally assign a crew member, mark it commercial, set up a recurring schedule, add tags, and give it a real custom checklist plus separate notes for the crew vs. internal-only notes — everything the owner could set up in the app itself, not just the bare minimum.",
     input_schema: {
       type: "object",
       properties: {
@@ -488,7 +498,13 @@ const TOOLS = [
         time: { type: "string", description: "HH:MM 24h, optional" },
         employeeName: { type: "string", description: "Crew member to assign, optional" },
         ownerWorks: { type: "boolean", description: "true if the owner themself is doing this job" },
-        notes: { type: "string" },
+        jobType: { type: "string", enum: ["residential", "commercial"], description: "Defaults to residential" },
+        notes: { type: "string", description: "General job notes/instructions — visible to the crew in the field portal" },
+        internalNotes: { type: "string", description: "Internal/office-only notes — NOT shown to the crew in the field portal (site warnings, billing quirks, etc. the owner wants kept in-house)" },
+        checklist: { type: "array", items: { type: "string" }, description: "Custom checklist/instructions for this specific job (e.g. 'Use the soft-wash chemical only', 'Check the back gate is latched') — shown to the crew as real checkable items during the job, in addition to whatever the linked service's own template already provides" },
+        tags: { type: "array", items: { type: "string" }, description: "Free-form tags, e.g. 'VIP', 'gated community', 'first-time customer'" },
+        isRecurring: { type: "boolean", description: "true to also set up a recurring schedule from this date forward" },
+        recurringFreq: { type: "string", enum: ["weekly", "biweekly", "monthly", "quarterly", "biannual", "annual"], description: "Required when isRecurring is true" },
       },
       required: ["customerName", "date"],
     },
@@ -1231,6 +1247,35 @@ const executeTool = async (ctx: Ctx, name: string, input: Record<string, any>): 
         const completedMonth = jobs.filter((j: any) => (j.completedAt || "").startsWith(monthPrefix)).length;
         return { success: true, activeJobs, pendingEstimates: pendingEst, revenueThisMonth: revenueMonth, jobsCompletedThisMonth: completedMonth };
       }
+      // FEATURE — "Alfred should literally know virtually everything about
+      // the company it's working for." Real service/pricing catalog and
+      // core company facts, instead of Alfred having to guess or only know
+      // whatever happened to be in its system prompt.
+      case "list_services": {
+        const rows = await sbGet(ctx, `services?select=name,price,category,taxable${ownerScope(ctx)}&limit=200`);
+        if (rows.length === 0) return { success: true, count: 0, services: [], note: "No services set up yet (Settings → Services)." };
+        return { success: true, count: rows.length, services: rows.map((s: any) => ({ name: s.name, price: s.price, category: s.category, taxable: s.taxable !== false })) };
+      }
+      case "get_company_info": {
+        const [settingsRows, custCount, empCount, vehicleCount] = await Promise.all([
+          sbGet(ctx, `app_settings?select=data${ownerScope(ctx)}&limit=1`),
+          sbGet(ctx, `customers?select=id${ownerScope(ctx)}&limit=5000`),
+          sbGet(ctx, `employees?select=id,status${ownerScope(ctx)}&limit=200`),
+          sbGet(ctx, `vehicles?select=id${ownerScope(ctx)}&limit=200`).catch(() => []),
+        ]);
+        const s = settingsRows[0]?.data || {};
+        return {
+          success: true,
+          companyName: ctx.companyName,
+          address: ctx.companyAddress || s.companyAddress || null,
+          phone: s.companyPhone || null,
+          taxRate: s.taxRate != null ? `${s.taxRate}%` : null,
+          state: s.companyState || null,
+          totalCustomers: custCount.length,
+          activeEmployees: empCount.filter((e: any) => e.status === "active").length,
+          fleetSize: Array.isArray(vehicleCount) ? vehicleCount.length : 0,
+        };
+      }
       case "get_weather": {
         if (!ctx.owmKey) return { success: false, error: "No weather API key configured (Settings → Company → Weather)." };
         // Same "derive from company address if no explicit weatherLocation"
@@ -1307,7 +1352,17 @@ const executeTool = async (ctx: Ctx, name: string, input: Record<string, any>): 
           if (!emp) return { error: `No employee found matching "${input.employeeName}".` };
           crew = [emp.id];
         }
-        const job = {
+        if (input.isRecurring && !input.recurringFreq) return { error: "recurringFreq is required when isRecurring is true." };
+        // FEATURE — "allow me to create a custom checklist and add
+        // specific instructions... schedule recurring jobs, commercial
+        // jobs, and tags." Same JobChecklistItem shape duringChecklist
+        // uses everywhere else (JobDetailModal, EmployeePortal) — a plain
+        // string list from Alfred becomes real, checkable field-portal
+        // checklist items, not just text buried in notes.
+        const checklist = Array.isArray(input.checklist) && input.checklist.length > 0
+          ? input.checklist.map((label: string) => ({ id: crypto.randomUUID(), label, done: false }))
+          : undefined;
+        const job: Record<string, unknown> = {
           id: crypto.randomUUID(),
           customerId: cust.id,
           customerName: `${cust.firstName || ""} ${cust.lastName || ""}`.trim(),
@@ -1316,11 +1371,16 @@ const executeTool = async (ctx: Ctx, name: string, input: Record<string, any>): 
           scheduledTime: input.time || "",
           crew,
           notes: input.notes || "",
+          jobType: input.jobType === "commercial" ? "commercial" : "residential",
           createdAt: new Date().toISOString(),
         };
+        if (input.internalNotes) job.internalNotes = input.internalNotes;
+        if (checklist) job.duringChecklist = checklist;
+        if (Array.isArray(input.tags) && input.tags.length > 0) job.tags = input.tags;
+        if (input.isRecurring) { job.isRecurring = true; job.recurringMode = "preset"; job.recurringFreq = input.recurringFreq; }
         const res = await sbWrite(ctx, "jobs", "POST", job);
         if (!res.ok) return { error: res.error };
-        return { success: true, jobId: job.id, customer: job.customerName, date: job.scheduledDate };
+        return { success: true, jobId: job.id, customer: job.customerName, date: job.scheduledDate, jobType: job.jobType, recurring: !!input.isRecurring, checklistItems: checklist?.length || 0 };
       }
       case "reschedule_job": {
         const job = await findJob(ctx, { jobId: input.jobId, customerName: input.customerName });
