@@ -42,26 +42,20 @@ const sendCustomerAgentReply = async (ctx: { authHeaders: Record<string, string>
   });
   if (!res.ok) { console.error("[TwilioSmsWebhook] customer agent reply send failed:", await res.text().catch(() => "")); return; }
   try {
-    const digits = normalizePhoneDigits(toPhone);
-    const ownerFilter = ctx.ownerId ? `&owner_id=eq.${encodeURIComponent(ctx.ownerId)}` : "";
-    const threadsRes = await fetch(`${SUPABASE_URL}/rest/v1/inbox_threads?channel=eq.sms&select=id,contact_phone,messages${ownerFilter}`, { headers: ctx.authHeaders });
-    const threads = await threadsRes.json().catch(() => []);
-    const existing = Array.isArray(threads) ? threads.find((t: any) => normalizePhoneDigits(t.contact_phone) === digits) : null;
     const msg = { id: crypto.randomUUID(), dir: "out", body, ts: Date.now(), via: "alfred" };
-    if (existing) {
-      // BUG FIX — "my SMS inbox messages disappeared from one
-      // conversation." Same class of bug as every other fixed instance in
-      // this file: a read-then-blind-overwrite PATCH can silently discard
-      // another appender's message that landed in the gap between the read
-      // above and this write. append_inbox_message does the append inside
-      // one atomic UPDATE instead.
-      await fetch(`${SUPABASE_URL}/rest/v1/rpc/append_inbox_message`, {
-        method: "POST", headers: { ...ctx.authHeaders, "Content-Type": "application/json" },
-        body: JSON.stringify({ p_thread_id: existing.id, p_message: msg, p_unread: false }),
-      });
-    }
-    // No else-create branch — the inbound message handler above already
-    // created/updated this thread for the customer's own text moments ago.
+    // BUG FIX — "my SMS inbox conversation got split up again." Used to
+    // fetch-then-find-then-conditionally-append with NO create branch at
+    // all (relying on "the inbound handler already created this thread
+    // moments ago" — a real race, not a guarantee). find_or_create_inbox_thread
+    // (migration 0090/0091) does the whole find-or-create-and-append as one
+    // atomic, advisory-lock-serialized call, so this can never race the
+    // inbound handler's own write for the same number, and self-heals
+    // instead of silently dropping the reply if the thread somehow isn't
+    // there yet.
+    await fetch(`${SUPABASE_URL}/rest/v1/rpc/find_or_create_inbox_thread`, {
+      method: "POST", headers: { ...ctx.authHeaders, "Content-Type": "application/json" },
+      body: JSON.stringify({ p_owner_id: ctx.ownerId, p_channel: "sms", p_contact_phone: toPhone, p_contact_name: toPhone, p_customer_id: null, p_message: msg, p_unread: false }),
+    });
   } catch (e: any) { console.error("[TwilioSmsWebhook] failed to log customer agent reply:", e?.message); }
 };
 
@@ -720,22 +714,20 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
             ts: Date.now(),
             ...(inMediaUrl ? { mediaUrl: inMediaUrl, mediaType: inMediaType } : {}),
           };
-          if (existingThread) {
-            // BUG FIX — atomic append (see append_inbox_message migration)
-            // instead of read-then-write, so this can't race with Alfred's
-            // own reply-logging in sendSms and silently drop one side.
-            await fetch(`${SUPABASE_URL}/rest/v1/rpc/append_inbox_message`, {
-              method: "POST", headers: { ...authHeaders, "Content-Type": "application/json" },
-              body: JSON.stringify({ p_thread_id: existingThread.id, p_message: newMsg, p_unread: true }),
-            });
-          } else {
-            await fetch(`${SUPABASE_URL}/rest/v1/inbox_threads`, {
-              method: "POST", headers: { ...authHeaders, "Content-Type": "application/json", Prefer: "return=minimal" },
-              // Named by the real phone number, not "Alfred" — the owner
-              // asked threads to never be relabeled that way.
-              body: JSON.stringify({ id: crypto.randomUUID(), channel: "sms", contact_name: from, contact_phone: from, unread: true, messages: [newMsg], last_message_at: newMsg.ts, updated_at: new Date().toISOString(), ...(ownerFilter ? { owner_id: ownerId || null } : {}) }),
-            });
-          }
+          // BUG FIX — "my SMS inbox conversation got split up again."
+          // find_or_create_inbox_thread (migration 0090/0091) replaces the
+          // separate "append if existingThread, else insert a new row"
+          // branches above with one atomic, advisory-lock-serialized call —
+          // closes the exact race where this handler and another concurrent
+          // writer (e.g. logOutboundSmsToInbox logging an Alfred reply at
+          // the same moment) could both decide no thread exists yet and
+          // both insert one, permanently splitting the conversation.
+          await fetch(`${SUPABASE_URL}/rest/v1/rpc/find_or_create_inbox_thread`, {
+            method: "POST", headers: { ...authHeaders, "Content-Type": "application/json" },
+            // Named by the real phone number, not "Alfred" — the owner
+            // asked threads to never be relabeled that way.
+            body: JSON.stringify({ p_owner_id: ownerId || null, p_channel: "sms", p_contact_phone: from, p_contact_name: from, p_customer_id: null, p_message: newMsg, p_unread: true }),
+          });
         } catch (e: any) { console.error("[TwilioSmsWebhook] failed to log inbound Alfred text:", e?.message); }
       })());
       // FIX — Twilio abandons an unanswered webhook after ~15s with nothing
@@ -942,26 +934,22 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
       const alreadyHave = existingThread && (Array.isArray(existingThread.messages) ? existingThread.messages : []).some((m: any) => m?.id === msgId);
       if (alreadyHave) {
         console.log("[TwilioSmsWebhook] message", msgId, "already recorded — skipping duplicate insert");
-      } else if (existingThread) {
-        // BUG FIX — atomic append instead of read-then-write (see
-        // append_inbox_message migration) — this same thread can also be
+      } else {
+        // BUG FIX — "my SMS inbox conversation got split up again."
+        // find_or_create_inbox_thread (migration 0090/0091) replaces the
+        // separate append-vs-insert branches with one atomic, advisory-
+        // lock-serialized call — this same phone number can also be
         // written to by sendSms's Alfred-reply logging around the same
-        // moment; the old read-modify-write PATCH here could win the race
-        // and silently drop whichever message the OTHER logger just added.
-        const patchRes = await fetch(`${SUPABASE_URL}/rest/v1/rpc/append_inbox_message`, {
+        // moment; the old read-then-branch here could race it and end up
+        // creating a second thread for the same number instead of finding
+        // the one the other write just created.
+        const contactName = match ? `${match.firstName || ""} ${match.lastName || ""}`.trim() || from : from;
+        const rpcRes = await fetch(`${SUPABASE_URL}/rest/v1/rpc/find_or_create_inbox_thread`, {
           method: "POST",
           headers: { ...authHeaders, "Content-Type": "application/json" },
-          body: JSON.stringify({ p_thread_id: existingThread.id, p_message: newMsg, p_unread: true }),
+          body: JSON.stringify({ p_owner_id: ownerId || null, p_channel: "sms", p_contact_phone: from, p_contact_name: contactName, p_customer_id: match?.id || null, p_message: newMsg, p_unread: true }),
         });
-        if (!patchRes.ok) console.error("[TwilioSmsWebhook] inbox_threads append failed (" + patchRes.status + "):", await patchRes.text().catch(() => ""));
-      } else {
-        const contactName = match ? `${match.firstName || ""} ${match.lastName || ""}`.trim() || from : from;
-        const postRes = await fetch(`${SUPABASE_URL}/rest/v1/inbox_threads`, {
-          method: "POST",
-          headers: { ...authHeaders, "Content-Type": "application/json", Prefer: "return=minimal" },
-          body: JSON.stringify({ id: crypto.randomUUID(), channel: "sms", contact_name: contactName, contact_phone: from, customer_id: match?.id || null, unread: true, messages: [newMsg], last_message_at: newMsg.ts, updated_at: new Date().toISOString(), ...(ownerFilter ? { owner_id: ownerId || null } : {}) }),
-        });
-        if (!postRes.ok) console.error("[TwilioSmsWebhook] inbox_threads POST failed (" + postRes.status + "):", await postRes.text().catch(() => ""));
+        if (!rpcRes.ok) console.error("[TwilioSmsWebhook] find_or_create_inbox_thread failed (" + rpcRes.status + "):", await rpcRes.text().catch(() => ""));
       }
       // FEATURE — real push notification for a new inbound text, same event
       // the Inbox realtime subscription already surfaces while the tab's
@@ -1037,6 +1025,9 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
     // never log the reply twice.
     const persistOutboundReply = async (text: string) => {
       try {
+        // Still need one read to dedupe a Twilio webhook retry (same
+        // replyId already logged) — that's a different concern from the
+        // find-or-create race below, so it stays.
         const threadsRes = await fetch(`${SUPABASE_URL}/rest/v1/inbox_threads?channel=eq.sms&select=id,contact_phone,messages${ownerFilter}`, {
           headers: authHeaders,
         });
@@ -1048,23 +1039,18 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
         const alreadyHave = existingThread && (Array.isArray(existingThread.messages) ? existingThread.messages : []).some((m: any) => m?.id === replyId);
         if (alreadyHave) return;
         const replyMsg = { id: replyId, dir: "out", body: text, ts: Date.now() };
-        if (existingThread) {
-          // BUG FIX — atomic append (see append_inbox_message migration).
-          const patchRes = await fetch(`${SUPABASE_URL}/rest/v1/rpc/append_inbox_message`, {
-            method: "POST",
-            headers: { ...authHeaders, "Content-Type": "application/json" },
-            body: JSON.stringify({ p_thread_id: existingThread.id, p_message: replyMsg, p_unread: existingThread.unread !== false }),
-          });
-          if (!patchRes.ok) console.error("[TwilioSmsWebhook] auto-reply append failed (" + patchRes.status + "):", await patchRes.text().catch(() => ""));
-        } else {
-          const contactName = match ? `${match.firstName || ""} ${match.lastName || ""}`.trim() || from : from;
-          const postRes = await fetch(`${SUPABASE_URL}/rest/v1/inbox_threads`, {
-            method: "POST",
-            headers: { ...authHeaders, "Content-Type": "application/json", Prefer: "return=minimal" },
-            body: JSON.stringify({ id: crypto.randomUUID(), channel: "sms", contact_name: contactName, contact_phone: from, customer_id: match?.id || null, unread: false, messages: [replyMsg], last_message_at: replyMsg.ts, updated_at: new Date().toISOString(), owner_id: ownerId || null }),
-          });
-          if (!postRes.ok) console.error("[TwilioSmsWebhook] auto-reply POST failed (" + postRes.status + "):", await postRes.text().catch(() => ""));
-        }
+        // BUG FIX — "my SMS inbox conversation got split up again."
+        // find_or_create_inbox_thread (migration 0090/0091) replaces the
+        // separate append-vs-insert branches with one atomic call, closing
+        // the race between this auto-reply logger and the inbound-message
+        // logger above both writing to the same phone number's thread.
+        const contactName = match ? `${match.firstName || ""} ${match.lastName || ""}`.trim() || from : from;
+        const rpcRes = await fetch(`${SUPABASE_URL}/rest/v1/rpc/find_or_create_inbox_thread`, {
+          method: "POST",
+          headers: { ...authHeaders, "Content-Type": "application/json" },
+          body: JSON.stringify({ p_owner_id: ownerId || null, p_channel: "sms", p_contact_phone: from, p_contact_name: contactName, p_customer_id: match?.id || null, p_message: replyMsg, p_unread: false }),
+        });
+        if (!rpcRes.ok) console.error("[TwilioSmsWebhook] find_or_create_inbox_thread (auto-reply) failed (" + rpcRes.status + "):", await rpcRes.text().catch(() => ""));
       } catch (e: any) {
         console.error("[TwilioSmsWebhook] failed to persist auto-reply:", e?.message);
       }

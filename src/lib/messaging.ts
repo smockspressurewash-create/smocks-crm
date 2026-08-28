@@ -430,30 +430,25 @@ export interface InboxSyncMessage {
 }
 
 export const logOutboundSmsToInbox = async (
-  opts: { contactName: string; contactPhone: string; customerId?: string | null; body: string }
+  opts: { contactName: string; contactPhone: string; customerId?: string | null; body: string; ownerId?: string | null }
 ): Promise<void> => {
   try {
-    const { data, error } = await (supabase as any).from("inbox_threads").select("*").eq("channel", "sms");
-    if (error) { console.warn("[Inbox Sync] inbox_threads unavailable — run the inbox_threads SQL:", error.message); return; }
-    const rows: any[] = Array.isArray(data) ? data : [];
-    const existing = rows.find(r => normalizePhoneDigits(r.contact_phone) === normalizePhoneDigits(opts.contactPhone) && normalizePhoneDigits(opts.contactPhone));
     const newMsg: InboxSyncMessage = { id: uid(), dir: "out", body: opts.body, ts: Date.now(), status: "sent" };
-    if (existing) {
-      // BUG FIX — "some conversations aren't showing Alfred's responses" /
-      // "it accidentally separated two chats." This read-then-write raced
-      // with the exact same class of write happening server-side (the
-      // Twilio webhook / Alfred SMS agent logging around the same moment)
-      // — whichever update landed second silently overwrote the other's
-      // addition. append_inbox_message (Postgres function, see migration
-      // 0062) does the append inside one atomic UPDATE instead.
-      const { error: rpcError } = await (supabase as any).rpc("append_inbox_message", { p_thread_id: existing.id, p_message: newMsg, p_unread: false });
-      if (rpcError) console.warn("[Inbox Sync] append_inbox_message failed:", rpcError.message);
-    } else {
-      await (supabase as any).from("inbox_threads").insert({
-        id: uid(), channel: "sms", contact_name: opts.contactName, contact_phone: opts.contactPhone,
-        customer_id: opts.customerId || null, unread: false, messages: [newMsg], last_message_at: newMsg.ts, updated_at: new Date().toISOString(),
-      });
-    }
+    // BUG FIX — "the SMS inbox conversation got split up again." Used to be
+    // a plain read-then-write: fetch every thread, find one by normalized
+    // phone in JS, insert a new row if none found. That's a check-then-act
+    // race against the exact same class of write happening server-side
+    // (the Twilio webhook logging an inbound reply around the same
+    // moment) — two concurrent callers could both see "no thread yet" and
+    // both insert, permanently splitting one conversation into two.
+    // find_or_create_inbox_thread (migration 0090) does the whole find-or-
+    // create-and-append as one atomic, advisory-lock-serialized operation
+    // server-side, so a concurrent second caller can't race it anymore.
+    const { error: rpcError } = await (supabase as any).rpc("find_or_create_inbox_thread", {
+      p_owner_id: opts.ownerId ?? null, p_channel: "sms", p_contact_phone: opts.contactPhone,
+      p_contact_name: opts.contactName, p_customer_id: opts.customerId || null, p_message: newMsg, p_unread: false,
+    });
+    if (rpcError) console.warn("[Inbox Sync] find_or_create_inbox_thread failed:", rpcError.message);
   } catch (e: any) {
     console.warn("[Inbox Sync] failed to log outbound SMS:", e?.message);
   }

@@ -1755,47 +1755,6 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
         </div>;
       })()}
 
-      {/* Revenue collected today / this week / this month.
-          AUDIT ITEM 16 — this widget used to recompute todayRev_/weekRev/
-          monthRev from scratch with its OWN weekStart (a UTC-shifted
-          toISOString().slice(0,10) string), completely independent from the
-          revToday/revWeek/revMonth computed above (line ~179, which compares
-          Date objects instead of strings) for the exact same "Today/This
-          Week/This Month" labels shown earlier on this same dashboard. The
-          two could disagree — most visibly on a Sunday evening in a US
-          timezone, where the UTC-derived weekStart string here could already
-          read as next week while the Date-object version above still reads
-          this week. Reusing the already-computed values instead of a second,
-          differently-buggy calculation makes them agree by construction. */}
-      {w.kpis && (() => {
-        const todayStr = localDateStr();
-        const todayTips = jobs.filter(j => j.status === "completed" && j.scheduledDate === todayStr).reduce((s,j) => s + (Number(j.tip)||0), 0);
-        const todayCash = jobs.filter(j => j.status === "completed" && j.scheduledDate === todayStr && j.isCash).reduce((s,j) => s + j.amount, 0);
-        return <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-          <Glass className="p-5">
-            <div className="text-[10px] text-white/50 uppercase tracking-wider font-semibold mb-2">💰 Today</div>
-            <div className="text-3xl font-black text-green-400">{fmt(revToday)}</div>
-            {todayTips > 0 && <div className="text-[10px] text-yellow-400 mt-0.5">+{fmt(todayTips)} tips</div>}
-            {todayCash > 0 && <div className="text-[10px] text-green-300/60 mt-0.5">💵 {fmt(todayCash)} cash</div>}
-          </Glass>
-          <Glass className="p-5">
-            <div className="text-[10px] text-white/50 uppercase tracking-wider font-semibold mb-2">📅 This Week</div>
-            <div className="text-3xl font-black text-blue-400">{fmt(revWeek)}</div>
-            {/* BUG FIX — was comparing new Date(j.scheduledDate) >= weekStart
-                directly, the same UTC-vs-local mismatch just fixed for
-                revWeek above (weekStartStr) — this count could disagree
-                with the revenue figure right above it about which jobs
-                counted as "this week." */}
-            <div className="text-[10px] text-white/40 mt-0.5">{jobs.filter(j => j.scheduledDate >= weekStartStr && j.status === "completed").length} jobs</div>
-          </Glass>
-          <Glass className="p-5">
-            <div className="text-[10px] text-white/50 uppercase tracking-wider font-semibold mb-2">🗓️ This Month</div>
-            <div className="text-3xl font-black text-red-400">{fmt(revMonth)}</div>
-            {goals.revenue > 0 && <div className="text-[10px] text-white/40 mt-0.5">{Math.round(revMonth/goals.revenue*100)}% of goal</div>}
-          </Glass>
-        </div>;
-      })()}
-
       {/* Year-over-Year comparison widget */}
       {(w.yoy ?? true) && (() => {
         const thisYear = new Date().getFullYear().toString();
