@@ -36,9 +36,18 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
     const { ownerId, employeeId, title, body: msgBody, url, tag } = body;
     if (!ownerId || !title || !msgBody) return json({ error: "ownerId, title, and body are required" }, 400);
 
+    // BUG FIX — "employees getting notifications meant for the owner."
+    // Omitting employeeId used to match owner_id=eq.<ownerId> ALONE — but
+    // every employee's own push subscription ALSO carries that same
+    // owner_id (see subscribeToPush in lib/push.ts), so an owner-only send
+    // (shift started, crew arrived, issue reported — see App.tsx's call
+    // sites) was silently blasted to every employee's phone too instead of
+    // just the owner's. employee_id=is.null scopes an owner-targeted send
+    // to rows with no employee attached — the owner's own subscription(s)
+    // only.
     const filter = employeeId
       ? `owner_id=eq.${encodeURIComponent(ownerId)}&employee_id=eq.${encodeURIComponent(employeeId)}`
-      : `owner_id=eq.${encodeURIComponent(ownerId)}`;
+      : `owner_id=eq.${encodeURIComponent(ownerId)}&employee_id=is.null`;
     const subsRes = await fetch(`${SUPABASE_URL}/rest/v1/push_subscriptions?${filter}&select=id,endpoint,p256dh,auth`, {
       headers: { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}` },
     });

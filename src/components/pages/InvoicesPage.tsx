@@ -23,6 +23,7 @@ import {
 import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, withTimeout } from "../../lib/utils";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
 import { twilioSend, sendEmail, emailShell, logOutboundSmsToInbox } from "../../lib/messaging";
+import { sendPushNotification } from "../../lib/push";
 import { seedWeather } from "../../lib/weather";
 import { seedCustomers, seedEstimates, seedJobs, seedEmployees, seedVehicles, seedExpenses, seedChemicals, seedServices, seedAutomations, seedEmailTemplates, seedSmsTemplates, seedRewardTiers, seedReferrals, seedMaintenance, campaignTemplates, seedSocialPosts, seedTimeline, seedGoals, seedReminders, seedAccountabilityEntries, seedMileage, seedLeadSrc, STEP_TYPES, AUTOMATION_TEMPLATES } from "../../lib/seed";
 import { callModel, MODELS } from "../../lib/api";
@@ -441,6 +442,16 @@ export function InvoicesPage({ estimates = [], setEstimates, customers = [], set
     const inv = estimates.find(e => e.id === id);
     setEstimates(estimates.map(e => e.id === id ? { ...e, paidAt, status: "approved" } : e));
     syncJobPaymentStatus((inv as any)?.jobId, "Paid");
+    // FEATURE — "employees should receive notifications for... payments."
+    // Lets crew know a job they worked got paid, without needing to check
+    // the CRM.
+    if (ownerId && (inv as any)?.jobId) {
+      const job = jobs.find((j: any) => j.id === (inv as any).jobId);
+      for (const empId of (Array.isArray(job?.crew) ? job.crew : [])) {
+        if (String(empId).startsWith("owner_")) continue;
+        sendPushNotification({ ownerId, employeeId: empId, title: "Payment received", body: `${job?.customerName || job?.address || "A job"} was marked paid — ${fmt(inv?.total || 0)}`, url: "/#/portal", tag: "payment-" + id });
+      }
+    }
     // AUDIT FIX — this only checked `.error`, missing the documented
     // RLS 0-row-silent-success case (CLAUDE.md): an owner_id mismatch/stale
     // row returns HTTP success with zero rows updated, no error at all, so

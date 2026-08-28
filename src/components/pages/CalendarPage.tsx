@@ -24,6 +24,7 @@ import {
 import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE } from "../../lib/utils";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
 import { twilioSend, sendEmail, logOutboundSmsToInbox, emailShell, emailButton } from "../../lib/messaging";
+import { sendPushNotification } from "../../lib/push";
 import { seedWeather } from "../../lib/weather";
 import { seedCustomers, seedEstimates, seedJobs, seedEmployees, seedVehicles, seedExpenses, seedChemicals, seedServices, seedAutomations, seedEmailTemplates, seedSmsTemplates, seedRewardTiers, seedReferrals, seedMaintenance, campaignTemplates, seedSocialPosts, seedTimeline, seedGoals, seedReminders, seedAccountabilityEntries, seedMileage, seedLeadSrc, STEP_TYPES, AUTOMATION_TEMPLATES } from "../../lib/seed";
 import { callModel, MODELS } from "../../lib/api";
@@ -331,6 +332,21 @@ export function CalendarPage({ jobs = [], setJobs, customers = [], employees = [
         twilioSend(settings, c.phone, msg)
           .then(() => logOutboundSmsToInbox({ contactName: `${c.firstName} ${c.lastName}`, contactPhone: c.phone, customerId: c.id, body: msg }).catch(() => {}))
           .catch(() => {});
+      }
+      // FEATURE — "employees should receive notifications for... schedule
+      // changes, job rescheduling." A drag-to-reschedule on the calendar
+      // previously only texted the customer — the assigned crew had no
+      // idea their job moved until they happened to check the app.
+      if (ownerId) {
+        for (const empId of (Array.isArray(job.crew) ? job.crew : [])) {
+          if (String(empId).startsWith("owner_")) continue; // the owner sees their own change already
+          sendPushNotification({
+            ownerId, employeeId: empId,
+            title: "Job rescheduled",
+            body: `${job.customerName || job.address || "A job"} moved from ${oldDate} to ${targetKey}`,
+            url: "/#/portal", tag: "job-rescheduled-" + jid,
+          });
+        }
       }
       // Update Google Calendar event if connected
       if (job.googleEventId && settings?.googleConnected && (settings as any)?.googleProviderToken) {
