@@ -71,7 +71,17 @@ export function MarketingStyles() {
         transform: translateY(24px);
         transition: opacity 0.7s ease, transform 0.7s ease;
       }
-      .reveal-visible { opacity: 1; transform: translateY(0) translateX(0) scale(1) rotate(0deg); filter: blur(0); }
+      /* BUG FIX (user report) — "these words are blurred... you can't read
+         them" on the feature-grid and pricing headings (both use
+         variant="blur"). Root cause: this reset and the .reveal-VARIANT
+         rules below it have EQUAL CSS specificity (one class each), so
+         the later-defined variant rule (e.g. .reveal-blur's
+         filter:blur(10px)) always won the cascade regardless of whether
+         .reveal-visible was also applied — the blur/scale/rotate never
+         actually cleared, it just silently lost every time. Selector is
+         now two classes (.reveal is always present alongside any variant
+         class) so this reset wins no matter where it sits in the file. */
+      .reveal.reveal-visible { opacity: 1; transform: translateY(0) translateX(0) scale(1) rotate(0deg); filter: blur(0); }
 
       /* FEATURE — scroll-entrance variety (see Reveal's variant prop). Each
          swaps the base .reveal's transform/filter, reusing the same
@@ -122,6 +132,25 @@ export function MarketingStyles() {
         100% { transform: translateX(-50%); }
       }
       .lp-wave-track { animation: lp-wave-drift 28s linear infinite; }
+
+      /* Cursor reaction (desktop only, see BackgroundBlobs) — the wrapper
+         nudges opposite the cursor for a slow parallax "the water
+         reacts" feel; --mx/--my default to 50 (screen center) so there's
+         no jump before the first mousemove fires. */
+      .lp-wave-interact {
+        transform: translate3d(calc((var(--mx, 50) - 50) * -0.5px), calc((var(--my, 50) - 50) * -0.22px), 0);
+        transition: transform 0.6s cubic-bezier(.16,1,.3,1);
+      }
+      .lp-cursor-glow {
+        position: fixed;
+        top: 0; left: 0;
+        width: 32rem; height: 32rem;
+        transform: translate3d(calc(var(--gx, -9999px) - 16rem), calc(var(--gy, -9999px) - 16rem), 0);
+        background: radial-gradient(circle, rgba(239,68,68,0.16), transparent 70%);
+        opacity: 0;
+        transition: opacity 0.4s ease;
+        will-change: transform;
+      }
 
       @keyframes lp-marquee-scroll {
         0% { transform: translateX(0); }
@@ -185,6 +214,8 @@ export function MarketingStyles() {
         .lp-blob, .lp-blob-slow, .lp-wave-track, .lp-marquee-track, .lp-pulse-dot, .lp-hero-gradient, .lp-divider-sweep, .lp-mockup-float {
           animation: none !important;
         }
+        .lp-wave-interact { transform: none !important; transition: none !important; }
+        .lp-cursor-glow { display: none !important; }
         .lp-text-hover, .lp-text-gradient-hover { transition: none !important; }
         .lp-text-hover:hover { transform: none; }
         .lp-text-gradient-hover:hover { transform: none; background-position: 0% 50%; }
@@ -213,14 +244,55 @@ export function BackgroundBlobs() {
   // wrong ancestor's background, hiding the whole layer. The real fix is
   // each marketing page's root div getting `isolate` (see LandingPage.tsx
   // etc.) — -z-10 here is correct AS LONG AS that's in place.
+  //
+  // FEATURE — "make it so when my mouse hovers over it on PC, it
+  // interacts and moves around." Split the wave into an outer wrapper
+  // (reacts to the cursor, via CSS custom props updated on mousemove —
+  // no React re-render per frame) and an inner track that keeps its own
+  // independent drift animation; a transform on each composites fine
+  // together. Desktop-only by design (mousemove never fires from a
+  // touch tap, and the (hover: hover) check skips attaching the
+  // listener at all on touch devices) and skipped under
+  // prefers-reduced-motion.
+  const waveWrapRef = useRef<HTMLDivElement>(null);
+  const glowRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const reduced = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const canHover = window.matchMedia && window.matchMedia("(hover: hover) and (pointer: fine)").matches;
+    if (reduced || !canHover) return;
+
+    function handleMove(e: MouseEvent) {
+      const xPct = (e.clientX / window.innerWidth) * 100;
+      const yPct = (e.clientY / window.innerHeight) * 100;
+      waveWrapRef.current?.style.setProperty("--mx", String(xPct));
+      waveWrapRef.current?.style.setProperty("--my", String(yPct));
+      glowRef.current?.style.setProperty("--gx", e.clientX + "px");
+      glowRef.current?.style.setProperty("--gy", e.clientY + "px");
+      if (glowRef.current) glowRef.current.style.opacity = "1";
+    }
+    function handleLeave() {
+      if (glowRef.current) glowRef.current.style.opacity = "0";
+    }
+    window.addEventListener("mousemove", handleMove, { passive: true });
+    document.documentElement.addEventListener("mouseleave", handleLeave);
+    return () => {
+      window.removeEventListener("mousemove", handleMove);
+      document.documentElement.removeEventListener("mouseleave", handleLeave);
+    };
+  }, []);
+
   return (
     <div className="fixed inset-0 pointer-events-none overflow-hidden -z-10">
       <div className="lp-blob absolute -top-32 -left-24 w-96 h-96 rounded-full bg-red-700/15 blur-3xl" />
       <div className="lp-blob-slow absolute top-1/3 -right-32 w-[28rem] h-[28rem] rounded-full bg-red-900/20 blur-3xl" />
       <div className="lp-blob absolute bottom-0 left-1/4 w-80 h-80 rounded-full bg-red-800/10 blur-3xl" />
-      <div className="lp-wave-track absolute bottom-0 left-0 w-[200%] h-[55vh] flex opacity-90">
-        <WaveSvg /><WaveSvg />
+      <div ref={waveWrapRef} className="lp-wave-interact absolute bottom-0 left-0 w-[200%] h-[55vh] opacity-90">
+        <div className="lp-wave-track flex w-full h-full">
+          <WaveSvg /><WaveSvg />
+        </div>
       </div>
+      <div ref={glowRef} className="lp-cursor-glow" />
     </div>
   );
 }
@@ -358,6 +430,19 @@ export function MarketingNav({
               <span className={"absolute left-0 -bottom-0.5 h-[1.5px] bg-red-500 transition-all duration-300 " + (active === l.page ? "w-full opacity-100" : "w-0 opacity-0")} />
             </button>
           ))}
+          {/* BUG FIX (user report) — "the top bar feels kind of empty."
+              onRoadmap was already threaded through every marketing page
+              and all the way up to App.tsx's goToRoadmap, but nothing in
+              this nav ever rendered a link for it — a real, working public
+              page with no way to reach it from the nav. Surfacing it here
+              both fixes that dead prop and gives the bar a fourth real
+              link instead of just three. */}
+          {onRoadmap && (
+            <button onClick={onRoadmap} className="relative py-1 transition-colors hover:text-white">
+              Roadmap
+            </button>
+          )}
+          <span className="h-5 w-px bg-white/10" aria-hidden="true" />
           {isLoggedIn ? (
             <button
               onClick={onGoToDashboard}
@@ -397,6 +482,14 @@ export function MarketingNav({
               {l.label}
             </button>
           ))}
+          {onRoadmap && (
+            <button
+              onClick={() => { setNavOpen(false); onRoadmap(); }}
+              className="block w-full text-left py-2 text-white/70"
+            >
+              Roadmap
+            </button>
+          )}
           {isLoggedIn ? (
             <button
               onClick={() => { setNavOpen(false); onGoToDashboard?.(); }}
