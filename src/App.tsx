@@ -71,6 +71,7 @@ import { LandingPage } from "./components/pages/LandingPage";
 import { InstallAppButton } from "./components/ui/InstallAppButton";
 import { PushOptInPrompt } from "./components/ui/PushOptInPrompt";
 import { OnboardingChecklist } from "./components/ui/OnboardingChecklist";
+import { ProductTour } from "./components/ui/ProductTour";
 import { FeaturesPage } from "./components/pages/FeaturesPage";
 import { PricingPage } from "./components/pages/PricingPage";
 import { AboutPage } from "./components/pages/AboutPage";
@@ -4823,10 +4824,25 @@ export function App() {
         services={services}
         setServices={setServices}
         toast={toast}
-        onFinish={() => setPage("dashboard")}
+        onFinish={() => {
+          setPage("dashboard");
+          // FEATURE — "for new users who sign up on the free plan, take
+          // them through demos." Flags the interactive spotlight tour
+          // (ProductTour.tsx) to run once, right after this brand-new
+          // account finishes (or skips) the business-info wizard —
+          // productTourPending only ever gets set here, so a returning/
+          // pre-existing account (onboardingComplete already true or
+          // undefined) never sees it.
+          setSettings((prev: any) => ({ ...prev, productTourPending: true }));
+        }}
       />
     );
   }
+  // BUG FIX — same reasoning as the OnboardingChecklist widget: this must
+  // render as part of the normal app body (below), not gate the whole
+  // return the way OnboardingFlow does above, so the user can actually SEE
+  // and interact with the real UI it's spotlighting.
+  const showProductTour = settings.productTourPending === true && crmRole === "owner";
 
   // ── Manager CRM permission gating (FIX 8) ──────────────────────────────────
   // Managers get full CRM access by default EXCEPT Alfred/Inbox/Accountability/
@@ -4932,6 +4948,7 @@ export function App() {
                 return (
                   <button
                     key={item.id}
+                    data-tour={"nav-" + item.id}
                     onClick={() => { setPage(item.id); setSidebarOpen(false); }}
                     className={"w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-sm transition mb-0.5 " + (active ? "bg-gradient-to-r from-red-600/30 to-red-900/20 text-white border border-red-600/30" : "text-white/60 hover:text-white hover:bg-white/5")}
                   >
@@ -5794,11 +5811,18 @@ export function App() {
       {/* BUG FIX — replaces the old always-visible header "Notify Me" toggle
           with a one-time opt-in pop-up (see PushOptInPrompt.tsx). */}
       {hasCrmSession && crmUserId && <PushOptInPrompt ownerId={crmUserId} />}
-      {hasCrmSession && crmRole === "owner" && (
+      {hasCrmSession && crmRole === "owner" && !showProductTour && (
         <OnboardingChecklist
           settings={settings} setSettings={setSettings}
           customers={customers} jobs={jobs} estimates={estimates} employees={employees}
           setPage={setPage} toast={toast}
+        />
+      )}
+      {showProductTour && (
+        <ProductTour
+          onNav={setPage}
+          onFinish={() => setSettings((prev: any) => ({ ...prev, productTourPending: false, productTourComplete: true }))}
+          onSkip={() => setSettings((prev: any) => ({ ...prev, productTourPending: false }))}
         />
       )}
     </div>

@@ -672,7 +672,7 @@ export function CustomersPage({ customers = [], setCustomers, estimates = [], jo
             <GBtn variant="ghost" onClick={exportCSV}><Download size={14} className="inline mr-1.5" />Export</GBtn>
             <GBtn variant={mergeMode ? "danger" : "ghost"} onClick={() => { setMergeMode(!mergeMode); setMergePair([]); }}><UserCheck size={14} className="inline mr-1.5" />{mergeMode ? "Cancel Merge" : "Merge"}</GBtn>
             <GBtn variant={bulkMode ? "danger" : "ghost"} onClick={() => { setBulkMode(!bulkMode); setBulkSelected([]); }}><CheckSquare size={14} className="inline mr-1.5" />{bulkMode ? "Cancel Select" : "Select"}</GBtn>
-            <GBtn onClick={openAddCustomer}><Plus size={14} className="inline mr-1.5" />Add</GBtn>
+            <GBtn onClick={openAddCustomer} data-tour="new-customer-btn"><Plus size={14} className="inline mr-1.5" />Add</GBtn>
           </div>
         </div>
       </div>

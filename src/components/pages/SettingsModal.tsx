@@ -2533,6 +2533,13 @@ export function SettingsModal({ open, onClose, settings, setSettings, jobs = [],
                 Reopen Setup Checklist
               </GBtn>
             </Glass>
+            <Glass className="p-4 !bg-black/40">
+              <div className="text-sm font-semibold mb-1">Interactive Tour</div>
+              <div className="text-xs text-white/50 mb-3">The guided spotlight walkthrough (adding a customer, scheduling a job, messaging Alfred, tracking crew) shown once on signup — replay it anytime.</div>
+              <GBtn onClick={() => { setSettings((s: any) => ({ ...s, productTourPending: true })); onClose(); }} className="!text-xs">
+                Replay Tour
+              </GBtn>
+            </Glass>
           </div>}
 
           {sec === "data" && <div className="space-y-3">
