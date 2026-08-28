@@ -313,6 +313,36 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings, s
 
   const updateClip = (id: string, patch: Partial<EditorClip>) => setClips(prev => prev.map(c => c.id === id ? { ...c, ...patch } : c));
 
+  // FEATURE — "split a clip at the playhead," a core CapCut editing move
+  // that was entirely missing — trimming Start/End only shortens from the
+  // ends, with no way to cut a clip into two independently-trimmable
+  // pieces (e.g. to insert a transition or a caption gap partway through).
+  // Pure metadata split (two EditorClips sharing the same source file,
+  // startSec/endSec adjusted) — no render-pipeline change needed since
+  // renderFinalVideo already trims each clip independently by those fields.
+  const splitClipAtPlayhead = () => {
+    if (!activeClip) return;
+    const splitAt = previewTime;
+    if (splitAt <= activeClip.startSec + 0.15 || splitAt >= activeClip.endSec - 0.15) {
+      toast?.("Move the playhead further into the clip to split it there", "yellow");
+      return;
+    }
+    const firstId = uid(), secondId = uid();
+    const first: EditorClip = { ...activeClip, id: firstId, endSec: splitAt, transitionToNext: "none" };
+    const second: EditorClip = { ...activeClip, id: secondId, startSec: splitAt };
+    setClips(prev => {
+      const idx = prev.findIndex(c => c.id === activeClip.id);
+      if (idx === -1) return prev;
+      const next = [...prev];
+      next.splice(idx, 1, first, second);
+      return next;
+    });
+    // Captions/overlays are already in GLOBAL timeline seconds, unaffected
+    // by a split (total assembled duration doesn't change).
+    setActiveClipId(secondId);
+    toast?.("Clip split ✓ — now two clips, each trimmable on its own", "green");
+  };
+
   // FEATURE — "give me a full visual editor where you can move stuff, drag
   // and drop." Reordering clips is now a real drag on the timeline strip
   // itself (pointer events — works with touch AND mouse identically)
@@ -1195,6 +1225,7 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings, s
                       <button onClick={() => updateClip(activeClip.id, { rotation: (((activeClip.rotation || 0) + 90) % 360) as any })} title="Rotate 90°" className={"ve-tap " + ((activeClip.rotation || 0) !== 0 ? "text-red-400" : "text-white/40 hover:text-white")}><RotateCw size={16} /></button>
                       <button onClick={() => updateClip(activeClip.id, { flipH: !activeClip.flipH })} title="Flip horizontal" className={"ve-tap " + (activeClip.flipH ? "text-red-400" : "text-white/40 hover:text-white")}><FlipHorizontal size={16} /></button>
                       <button onClick={() => setCropEditingId(cropEditingId === activeClip.id ? null : activeClip.id)} title="Crop" className={"ve-tap " + (cropEditingId === activeClip.id ? "text-red-400" : activeClip.crop ? "text-red-300" : "text-white/40 hover:text-white")}><CropIcon size={16} /></button>
+                      <button onClick={splitClipAtPlayhead} title="Split at playhead" className="ve-tap text-white/40 hover:text-white"><Scissors size={16} /></button>
                       <button onClick={() => removeClip(activeClip.id)} className="ve-tap text-red-400/60 hover:text-red-400"><Trash2 size={16} /></button>
                     </div>
                     {activeClip.crop && (
@@ -1279,6 +1310,12 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings, s
                     </div>
                   ))}
                   <button onClick={() => updateClip(activeClip.id, { brightness: 0, contrast: 0, saturation: 0 })} className="text-[10px] text-white/40 hover:text-white/70">Reset adjustments</button>
+                  {/* FEATURE — per-clip mute, e.g. wind/traffic noise on
+                      one clip without silencing the whole video. */}
+                  <label className="flex items-center gap-2 pt-2 border-t border-white/10 cursor-pointer">
+                    <input type="checkbox" checked={!!activeClip.muted} onChange={e => updateClip(activeClip.id, { muted: e.target.checked })} className="accent-red-600 w-3.5 h-3.5" />
+                    <span className="text-xs text-white/70 flex items-center gap-1">{activeClip.muted ? <VolumeX size={13} /> : <Volume2 size={13} />}Mute this clip's audio</span>
+                  </label>
                   {/* FEATURE — "applying various sound effects such as
                       muffled or underwater sounds." Real ffmpeg audio
                       filters, applied to this clip's own audio only. */}

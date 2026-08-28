@@ -98,6 +98,12 @@ export type EditorClip = {
   // underwater sounds." Applied to this clip's own audio only, during
   // normalization — an id from SOUND_EFFECTS above.
   audioEffect?: string;
+  // FEATURE — per-clip mute (e.g. wind noise on one clip, but keep the
+  // others' audio) — silences via volume=0 rather than dropping the audio
+  // stream entirely, since concat/xfade require every segment to share the
+  // same stream layout (see the "even if the source clip is silent"
+  // comment on the normalization step below).
+  muted?: boolean;
 };
 export type EditorCaption = {
   id: string; text: string; startSec: number; endSec: number; styleId: string;
@@ -482,7 +488,8 @@ export const renderFinalVideo = async (
     // normalization, before concat/xfade ever sees it — the same standard
     // ffmpeg audio filter shown in the editor's live description.
     const fx = getSoundEffect(c.audioEffect);
-    const audioArgs = fx.filter ? ["-af", fx.filter] : [];
+    const combinedAudioFilter = [fx.filter, c.muted ? "volume=0" : null].filter(Boolean).join(",");
+    const audioArgs = combinedAudioFilter ? ["-af", combinedAudioFilter] : [];
     if (isImage) {
       // FEATURE — "more photo editing options." A still image has no
       // native timeline to seek/trim — `-loop 1` turns it into a video
