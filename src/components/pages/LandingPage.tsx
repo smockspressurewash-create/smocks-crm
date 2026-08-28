@@ -36,7 +36,7 @@ import {
 // this string every time the sizzle-reel video files are replaced so the
 // query string forces a fresh fetch (see also public/_headers, which
 // caps how long any cache can go without revalidating going forward).
-const SIZZLE_REEL_VERSION = "4";
+const SIZZLE_REEL_VERSION = "5";
 
 // Minimal video player for the sizzle reel — play/pause only, no native
 // scrubber/duration/mute/skip chrome (those read as a media player, not
