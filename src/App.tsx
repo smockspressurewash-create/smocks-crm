@@ -653,7 +653,15 @@ export function App() {
   // a later involuntary visit to "welcome" (e.g. browser back button).
   const [marketingPreview, setMarketingPreview] = useState(false);
   useEffect(() => {
-    if (!["welcome", "features", "pricing", "about", "login"].includes(page)) setMarketingPreview(false);
+    // BUG FIX (user report) — "pressing the roadmap button when I'm logged
+    // in takes me to a blank page." "roadmap" was missing from this
+    // whitelist, so the moment goToRoadmap() switched `page` to
+    // "roadmap", this effect immediately cleared marketingPreview — the
+    // exact flag the roadmap page's own render gate (`marketingPreview ||
+    // (!empSession && !hasCrmSession)`) requires to show anything for a
+    // logged-in owner. Result: the gate closed a render tick after
+    // navigating there, and nothing rendered at all.
+    if (!["welcome", "features", "pricing", "about", "login", "roadmap"].includes(page)) setMarketingPreview(false);
   }, [page]);
 
   // FEATURE — "when Alfred does something, take me there and show me." Each
@@ -4347,7 +4355,18 @@ export function App() {
   // real CrewBoss account (any business, cross-tenant by design — see
   // FeedbackPage.tsx), surfaced below as a clear "log in to submit" CTA
   // instead of just quietly having no submit form at all.
-  if (page === "roadmap" && (marketingPreview || (!empSession && !hasCrmSession))) {
+  // BUG FIX (user report) — "blank page" also reachable a second way: a
+  // logged-in owner landing on #/roadmap directly (bookmark, shared link,
+  // fresh load) never had marketingPreview set true in the first place —
+  // nothing sets it except the in-app "preview marketing site" click — so
+  // even with the whitelist fix above this gate would still fail closed.
+  // Unlike welcome/features/pricing/about, this page was already designed
+  // to work for a logged-in owner (see the "Go to Dashboard" button
+  // branch right below) — so it doesn't need the marketingPreview/logged-
+  // out gate at all. Employees still never reach this: the "redirect
+  // employees to their portal" block above unconditionally sends any
+  // empSession to "portal" before this point regardless of `page`.
+  if (page === "roadmap") {
     return (
       <div className="min-h-screen bg-black text-white">
         <div className="sticky top-0 z-40 backdrop-blur-md bg-black/60 border-b border-white/10 px-4 py-3 flex items-center justify-between">
