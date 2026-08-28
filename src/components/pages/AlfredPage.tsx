@@ -95,7 +95,7 @@ import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 // selected — the personality never actually reached the model at all.
 const getPersonality = (id: string) => personalities.find(p => p.id === id) || personalities[0];
 
-export function AlfredPage({ conversations, setConversations, activeConvId, setActiveConvId, memory = [], setMemory, personality, setPersonality, apiKey, openSettings, toast, jobs = [], setJobs, estimates = [], setEstimates, customers = [], setCustomers, employees = [], automations = [], setAutomations = () => {}, stats, setWins, goals = [], setGoals, setSettings, settings = {} as AppSettings, modelStatus = {}, setModelStatus = () => {}, onNav, onSpotlight, expenses = [], setExpenses, entries = [], chemicals = [], ownerId = "" }: { conversations?: any; setConversations?: any; activeConvId?: any; setActiveConvId?: any; memory?: any; setMemory?: any; personality?: any; setPersonality?: any; apiKey?: any; openSettings?: any; toast?: any; jobs?: any; setJobs?: any; estimates?: any; setEstimates?: any; customers?: any; setCustomers?: any; employees?: any; automations?: any; setAutomations?: any; stats?: any; setWins?: any; goals?: any; setGoals?: any; setSettings?: any; settings?: AppSettings; modelStatus?: any; setModelStatus?: any; onNav?: any; onSpotlight?: (step: { page: string; type?: string; id?: string; label?: string }) => void; expenses?: any[]; setExpenses?: any; entries?: any[]; chemicals?: any[]; ownerId?: string }) {
+export function AlfredPage({ conversations, setConversations, activeConvId, setActiveConvId, memory = [], setMemory, personality, setPersonality, apiKey, openSettings, toast, jobs = [], setJobs, estimates = [], setEstimates, customers = [], setCustomers, employees = [], automations = [], setAutomations = () => {}, stats, setWins, goals = [], setGoals, setSettings, settings = {} as AppSettings, modelStatus = {}, setModelStatus = () => {}, onNav, onSpotlight, expenses = [], setExpenses, entries = [], chemicals = [], ownerId = "", reviews = [], setReviews = () => {}, vehicles = [], setVehicles = () => {}, maintenance = [], setMaintenance = () => {}, trainingModules = [] }: { conversations?: any; setConversations?: any; activeConvId?: any; setActiveConvId?: any; memory?: any; setMemory?: any; personality?: any; setPersonality?: any; apiKey?: any; openSettings?: any; toast?: any; jobs?: any; setJobs?: any; estimates?: any; setEstimates?: any; customers?: any; setCustomers?: any; employees?: any; automations?: any; setAutomations?: any; stats?: any; setWins?: any; goals?: any; setGoals?: any; setSettings?: any; settings?: AppSettings; modelStatus?: any; setModelStatus?: any; onNav?: any; onSpotlight?: (step: { page: string; type?: string; id?: string; label?: string }) => void; expenses?: any[]; setExpenses?: any; entries?: any[]; chemicals?: any[]; ownerId?: string; reviews?: any[]; setReviews?: any; vehicles?: any[]; setVehicles?: any; maintenance?: any[]; setMaintenance?: any; trainingModules?: any[] }) {
   const [input, setInput] = useState("");
   const [voiceMode, setVoiceMode] = useState<"dictate" | "note">("dictate");
   const [loading, setLoading] = useState(false);
@@ -1110,11 +1110,11 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
   // doesn't mention (read-only lookups, reminders, memory) stays ungated,
   // same as before.
   const ALFRED_TOOL_CAPABILITY: Record<string, string> = {
-    create_customer: "add_customers", attach_file_to_customer: "add_customers",
+    create_customer: "add_customers", attach_file_to_customer: "add_customers", update_customer: "add_customers",
     schedule_job: "schedule_jobs",
-    reschedule_job: "modify_jobs", cancel_job: "modify_jobs", update_job_priority: "modify_jobs", add_checklist_item: "modify_jobs",
+    reschedule_job: "modify_jobs", cancel_job: "modify_jobs", update_job_priority: "modify_jobs", add_checklist_item: "modify_jobs", attach_file_to_job: "modify_jobs",
     assign_employee: "manage_crew", request_employee: "manage_crew", respond_to_job_request: "manage_crew",
-    approve_customer_request: "manage_crew", decline_customer_request: "manage_crew",
+    approve_customer_request: "manage_crew", decline_customer_request: "manage_crew", move_candidate_phase: "manage_crew",
     create_estimate: "create_quotes", create_invoice: "create_quotes", mark_invoice_paid: "create_quotes",
     send_estimate: "send_quotes",
     send_reminder: "message_customers", text_phone_number: "message_customers",
@@ -1122,7 +1122,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
     text_supplier: "message_suppliers", email_supplier: "message_suppliers", contact_general_supplier: "message_suppliers",
     send_email_via_gmail: "send_email",
     text_me_document: "send_files", send_me_files: "send_files",
-    create_automation: "automations", toggle_automation: "automations", enable_review_request_automation: "automations",
+    create_automation: "automations", toggle_automation: "automations", enable_review_request_automation: "automations", respond_to_review: "automations",
     create_sop: "sops",
     set_vacation_mode: "vacation_mode",
     create_calendar_event: "calendar", update_calendar_event: "calendar", delete_calendar_event: "calendar",
@@ -2054,6 +2054,113 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           toast("Alfred marked invoice paid ✓ · " + fmt(inv.total));
           return { success: true, invoiceId: inv.id, amount: inv.total, paidAt };
         }
+        // FEATURE — Alfred capability gap fill: editing an existing
+        // customer's contact info (create_customer only ever handled
+        // brand-new customers).
+        case "update_customer": {
+          const c = customers.find((x: any) => (x.firstName + " " + x.lastName).trim().toLowerCase().includes((inputs.customerName || "").trim().toLowerCase()));
+          if (!c) return { error: `No customer found matching "${inputs.customerName}".` };
+          const patch: Record<string, unknown> = {};
+          for (const f of ["phone", "email", "address", "notes"]) if (inputs[f] !== undefined) patch[f] = inputs[f];
+          if (Object.keys(patch).length === 0) return { error: "Nothing to update — provide at least one of phone/email/address/notes." };
+          setCustomers((prev: any[]) => prev.map(x => x.id === c.id ? { ...x, ...patch } : x));
+          const { data, error } = await (supabase as any).from("customers").update(patch).eq("id", c.id).select("id");
+          if (error) return { error: "Failed to update — " + error.message };
+          if (!Array.isArray(data) || data.length === 0) return { error: "Couldn't update that customer (permissions or it no longer exists)." };
+          toast("Alfred updated " + c.firstName + " " + c.lastName);
+          return { success: true, customer: `${c.firstName} ${c.lastName}`.trim(), updated: Object.keys(patch) };
+        }
+        // FEATURE — Alfred capability gap fill: replying to a customer
+        // review on the owner's behalf.
+        case "respond_to_review": {
+          const q = (inputs.customerName || "").toLowerCase().trim();
+          const review = reviews.find((r: any) => (r.customerName || "").toLowerCase().includes(q) && !r.response)
+            || reviews.find((r: any) => (r.customerName || "").toLowerCase().includes(q));
+          if (!review) return { error: `No review found for "${inputs.customerName}".` };
+          if (!inputs.response?.trim()) return { error: "response text required." };
+          setReviews((prev: any[]) => prev.map((r: any) => r.id === review.id ? { ...r, response: inputs.response, status: "responded" } : r));
+          const { data, error } = await (supabase as any).from("reviews").update({ response: inputs.response, status: "responded" }).eq("id", review.id).select("id");
+          if (error) return { error: "Failed to post reply — " + error.message };
+          if (!Array.isArray(data) || data.length === 0) return { error: "Couldn't post that reply (permissions or the review no longer exists)." };
+          toast("Alfred replied to " + review.customerName + "'s review ✓");
+          return { success: true, customer: review.customerName, rating: review.rating };
+        }
+        // FEATURE — Alfred capability gap fill: who's outstanding on
+        // required training (the new employee training system).
+        case "get_employee_training_status": {
+          const requiredModules = (trainingModules || []).filter((m: any) => m?.required);
+          if (requiredModules.length === 0) return { success: true, note: "No required training modules set up." };
+          const { data: completions } = await (supabase as any).from("training_completions").select("module_id,employee_id,passed").eq("owner_id", ownerId);
+          const passedSet = new Set((completions || []).filter((c: any) => c.passed).map((c: any) => `${c.module_id}:${c.employee_id}`));
+          const activeEmployees = employees.filter((e: any) => e.status === "active" && e.role !== "owner");
+          const outstanding: Array<{ employee: string; missing: string[] }> = [];
+          for (const emp of activeEmployees) {
+            const missing = requiredModules.filter((m: any) => !passedSet.has(`${m.id}:${emp.id}`)).map((m: any) => m.title);
+            if (missing.length > 0) outstanding.push({ employee: `${emp.firstName || ""} ${emp.lastName || ""}`.trim(), missing });
+          }
+          if (outstanding.length === 0) return { success: true, summary: "Every active employee is fully trained on all required modules." };
+          return { success: true, outstanding };
+        }
+        // FEATURE — Alfred capability gap fill: attaching a file to a
+        // JOB's work-order attachments (attach_file_to_customer only ever
+        // wrote to the customer's document vault).
+        case "attach_file_to_job": {
+          if (!inputs.fileUrl) return { error: "fileUrl required" };
+          let job: any = inputs.jobId ? jobs.find((j: any) => j.id === inputs.jobId) : null;
+          if (!job && inputs.customerName) {
+            const c = customers.find((x: any) => (x.firstName + " " + x.lastName).trim().toLowerCase().includes((inputs.customerName || "").trim().toLowerCase()));
+            if (!c) return { error: `No customer found matching "${inputs.customerName}".` };
+            job = jobs.filter((j: any) => j.customerId === c.id && j.status !== "cancelled" && j.status !== "completed").sort((a: any, b: any) => (a.scheduledDate || "").localeCompare(b.scheduledDate || ""))[0];
+          }
+          if (!job) return { error: "Couldn't find that job." };
+          const newAtt = { id: uid(), name: inputs.fileName || inputs.fileUrl.split("/").pop() || "file", type: (inputs.fileName || inputs.fileUrl).toLowerCase().endsWith(".pdf") ? "pdf" : "other", url: inputs.fileUrl, uploadedAt: Date.now() };
+          const attachments = [...(job.attachments || []), newAtt];
+          setJobs((prev: any[]) => prev.map(j => j.id === job.id ? { ...j, attachments } : j));
+          const { data, error } = await (supabase as any).from("jobs").update({ attachments }).eq("id", job.id).select("id");
+          if (error) return { error: "Failed to attach — " + error.message };
+          if (!Array.isArray(data) || data.length === 0) return { error: "Couldn't attach that file (permissions or the job no longer exists)." };
+          toast("Alfred attached " + newAtt.name + " to the job ✓");
+          return { success: true, attachedTo: job.customerName || job.id, fileName: newAtt.name };
+        }
+        // FEATURE — Alfred capability gap fill: hiring-pipeline visibility.
+        // candidates isn't part of App.tsx's shared state (HiringPage.tsx
+        // fetches its own), so this reads fresh from Supabase directly.
+        case "list_candidates": {
+          const { data, error } = await (supabase as any).from("candidates").select('"firstName","lastName",phase,phone,email').eq("owner_id", ownerId);
+          if (error) return { error: "Failed to list candidates — " + error.message };
+          return { success: true, count: (data || []).length, candidates: (data || []).map((c: any) => ({ name: `${c.firstName || ""} ${c.lastName || ""}`.trim(), phase: c.phase, phone: c.phone, email: c.email })) };
+        }
+        case "move_candidate_phase": {
+          if (!inputs.candidateName?.trim() || !inputs.phase?.trim()) return { error: "candidateName and phase are required." };
+          const { data: rows, error: findErr } = await (supabase as any).from("candidates").select('id,"firstName","lastName",phase').eq("owner_id", ownerId);
+          if (findErr) return { error: "Failed to look up candidates — " + findErr.message };
+          const q = inputs.candidateName.toLowerCase().trim();
+          const cand = (rows || []).find((c: any) => `${c.firstName || ""} ${c.lastName || ""}`.toLowerCase().includes(q));
+          if (!cand) return { error: `No candidate found matching "${inputs.candidateName}".` };
+          const { data, error } = await (supabase as any).from("candidates").update({ phase: inputs.phase }).eq("id", cand.id).select("id");
+          if (error) return { error: "Failed to move candidate — " + error.message };
+          if (!Array.isArray(data) || data.length === 0) return { error: "Couldn't move that candidate (permissions or they no longer exist)." };
+          toast(`Alfred moved ${cand.firstName} ${cand.lastName} to ${inputs.phase} ✓`);
+          return { success: true, candidate: `${cand.firstName} ${cand.lastName}`.trim(), from: cand.phase, to: inputs.phase };
+        }
+        // FEATURE — Alfred capability gap fill: fleet maintenance logging.
+        // vehicles/maintenance are localStorage-only (not Supabase-synced),
+        // so this ONLY works in-app — the SMS agent has no way to reach
+        // this data server-side, same known limitation class as
+        // expenses/chemicals noted elsewhere in this file.
+        case "log_vehicle_maintenance": {
+          const v = vehicles.find((x: any) => `${x.year} ${x.make} ${x.model}`.toLowerCase().includes((inputs.vehicle || "").toLowerCase()) || (x.plate || "").toLowerCase() === (inputs.vehicle || "").toLowerCase());
+          if (!v) return { error: `No vehicle found matching "${inputs.vehicle}".` };
+          const rec = { id: uid(), vehicleId: v.id, type: inputs.type || "Service", date: today(), mileage: Number(inputs.mileage) || v.mileage || 0, cost: Number(inputs.cost) || 0, notes: inputs.notes || "" };
+          setMaintenance((prev: any[]) => [rec, ...prev]);
+          if (rec.mileage > (v.mileage || 0)) setVehicles((prev: any[]) => prev.map((x: any) => x.id === v.id ? { ...x, mileage: rec.mileage } : x));
+          toast("Alfred logged maintenance for " + v.year + " " + v.make + " " + v.model);
+          return { success: true, vehicle: `${v.year} ${v.make} ${v.model}`, type: rec.type, cost: rec.cost };
+        }
+        case "get_vehicle_status": {
+          if (vehicles.length === 0) return { success: true, note: "No vehicles in the fleet yet." };
+          return { success: true, vehicles: vehicles.map((v: any) => ({ label: `${v.year} ${v.make} ${v.model}`, plate: v.plate, mileage: v.mileage, status: v.status || "active", lastOilChangeMileage: v.lastOilChange, lastOilChangeDate: v.lastOilChangeDate })) };
+        }
         case "get_calendar_summary": {
           const from = inputs.from || today();
           const to = inputs.to || daysFromNow(7);
@@ -2957,6 +3064,46 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
       name: "mark_invoice_paid",
       description: "Mark an existing invoice as paid — use for 'mark the Jones invoice paid, they paid cash/check/venmo' or similar. Does not process a card charge — direct the owner to the in-app Charge/Pay Now button for that.",
       input_schema: { type: "object", properties: { invoiceId: { type: "string" }, customerName: { type: "string", description: "Alternative to invoiceId — marks that customer's most recent unpaid invoice" } } }
+    },
+    {
+      name: "update_customer",
+      description: "Edit an existing customer's contact info — phone, email, address, or notes. Does not create a new customer.",
+      input_schema: { type: "object", properties: { customerName: { type: "string" }, phone: { type: "string" }, email: { type: "string" }, address: { type: "string" }, notes: { type: "string" } }, required: ["customerName"] }
+    },
+    {
+      name: "respond_to_review",
+      description: "Post a reply to a customer's review, e.g. 'thank the Millers for their 5-star review'.",
+      input_schema: { type: "object", properties: { customerName: { type: "string" }, response: { type: "string" } }, required: ["customerName", "response"] }
+    },
+    {
+      name: "get_employee_training_status",
+      description: "Check which active employees still have outstanding required training modules.",
+      input_schema: { type: "object", properties: {} }
+    },
+    {
+      name: "attach_file_to_job",
+      description: "Attach a file to a JOB's work-order attachments (not a customer's document vault — use attach_file_to_customer for that). Needs a real fileUrl already uploaded/known in this session.",
+      input_schema: { type: "object", properties: { jobId: { type: "string" }, customerName: { type: "string", description: "Alternative to jobId — attaches to that customer's next upcoming job" }, fileUrl: { type: "string" }, fileName: { type: "string" } }, required: ["fileUrl"] }
+    },
+    {
+      name: "list_candidates",
+      description: "List job applicants/candidates in the hiring pipeline, with their current phase.",
+      input_schema: { type: "object", properties: {} }
+    },
+    {
+      name: "move_candidate_phase",
+      description: "Move a hiring candidate to a different pipeline phase, e.g. 'move John to Interview' or 'mark Sarah as Hired'.",
+      input_schema: { type: "object", properties: { candidateName: { type: "string" }, phase: { type: "string" } }, required: ["candidateName", "phase"] }
+    },
+    {
+      name: "log_vehicle_maintenance",
+      description: "Log a maintenance record for a fleet vehicle — e.g. 'log an oil change on the Ford Transit at 45000 miles, cost $60'.",
+      input_schema: { type: "object", properties: { vehicle: { type: "string", description: "Match by year/make/model or plate" }, type: { type: "string" }, mileage: { type: "number" }, cost: { type: "number" }, notes: { type: "string" } }, required: ["vehicle"] }
+    },
+    {
+      name: "get_vehicle_status",
+      description: "List the fleet's vehicles with mileage, status, and last oil change.",
+      input_schema: { type: "object", properties: {} }
     },
     {
       name: "get_calendar_summary",

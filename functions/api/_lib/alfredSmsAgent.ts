@@ -793,6 +793,55 @@ const TOOLS = [
     },
   },
   {
+    name: "update_customer",
+    description: "Edit an existing customer's contact info — phone, email, address, or notes. Use for 'fix Jane's phone number to...' or 'update the Millers' address'. Does not create a new customer.",
+    input_schema: {
+      type: "object",
+      properties: { customerName: { type: "string" }, phone: { type: "string" }, email: { type: "string" }, address: { type: "string" }, notes: { type: "string" } },
+      required: ["customerName"],
+    },
+  },
+  {
+    name: "respond_to_review",
+    description: "Post a reply to a customer's review, e.g. 'thank the Millers for their 5-star review'.",
+    input_schema: {
+      type: "object",
+      properties: { customerName: { type: "string" }, response: { type: "string" } },
+      required: ["customerName", "response"],
+    },
+  },
+  {
+    name: "get_employee_training_status",
+    description: "Check which active employees still have outstanding required training modules — use for 'is everyone trained up' or 'who still needs to finish training'.",
+    input_schema: { type: "object", properties: {} },
+  },
+  {
+    name: "attach_file_to_job",
+    description: "Save a file the owner just sent (its URL will already be in this conversation as '[Attached file ready to save — url: ...]') as a work-order attachment on a JOB (not a customer's document vault — use attach_file_to_customer for that). Use for 'attach this spec sheet to the Miller job'.",
+    input_schema: {
+      type: "object",
+      properties: {
+        jobId: { type: "string" }, customerName: { type: "string", description: "Alternative to jobId — attaches to that customer's next upcoming job" },
+        fileUrl: { type: "string" }, fileName: { type: "string" },
+      },
+      required: ["fileUrl"],
+    },
+  },
+  {
+    name: "list_candidates",
+    description: "List job applicants/candidates in the hiring pipeline, with their current phase (Applied/Interview/Offer/Hired, or whatever custom phases are set up).",
+    input_schema: { type: "object", properties: {} },
+  },
+  {
+    name: "move_candidate_phase",
+    description: "Move a hiring candidate to a different pipeline phase, e.g. 'move John to Interview' or 'mark Sarah as Hired'.",
+    input_schema: {
+      type: "object",
+      properties: { candidateName: { type: "string" }, phase: { type: "string" } },
+      required: ["candidateName", "phase"],
+    },
+  },
+  {
     name: "get_customer_card_info",
     description: "Check whether a customer has a payment card on file and what's known about it. Only ever returns the card BRAND and LAST 4 DIGITS (e.g. 'Visa ····4242') — the full card number is never stored anywhere in this app (Stripe handles that directly, by design, for PCI compliance) and can never be retrieved by anyone, including you.",
     input_schema: {
@@ -1126,9 +1175,9 @@ const fetchGoogleEventsInRange = async (accessToken: string, startIso: string, e
 // owner can, e.g., allow individual customer texts without also allowing a
 // mass blast to the whole list.
 const SMS_TOOL_CAPABILITY: Record<string, string> = {
-  create_customer: "add_customers", attach_file_to_customer: "add_customers",
+  create_customer: "add_customers", attach_file_to_customer: "add_customers", update_customer: "add_customers",
   schedule_job: "schedule_jobs",
-  reschedule_job: "modify_jobs", cancel_job: "modify_jobs", update_job_priority: "modify_jobs", add_checklist_item: "modify_jobs",
+  reschedule_job: "modify_jobs", cancel_job: "modify_jobs", update_job_priority: "modify_jobs", add_checklist_item: "modify_jobs", attach_file_to_job: "modify_jobs",
   assign_employee: "manage_crew", request_employee: "manage_crew", respond_to_job_request: "manage_crew", approve_customer_request: "manage_crew", decline_customer_request: "manage_crew",
   create_estimate: "create_quotes", create_invoice: "create_quotes", mark_invoice_paid: "create_quotes",
   send_estimate: "send_quotes", send_invoice: "send_quotes",
@@ -1138,9 +1187,11 @@ const SMS_TOOL_CAPABILITY: Record<string, string> = {
   send_email_via_gmail: "send_email",
   text_me_document: "send_files", send_me_files: "send_files",
   create_promotion: "automations", enable_review_request_automation: "automations",
+  respond_to_review: "automations",
   create_sop: "sops",
   set_vacation_mode: "vacation_mode",
   create_calendar_event: "calendar", update_calendar_event: "calendar", delete_calendar_event: "calendar",
+  move_candidate_phase: "manage_crew",
 };
 // Legacy -> granular migration, identical mapping to AlfredPage.tsx's
 // ALFRED_LEGACY_GROUP — an owner who previously turned off one of the 6 old
@@ -1722,6 +1773,107 @@ const executeTool = async (ctx: Ctx, name: string, input: Record<string, any>): 
         });
         if (!res.ok) return { error: (await res.text().catch(() => "")).slice(0, 200) };
         return { success: true, savedTo: `${cust.firstName} ${cust.lastName}`.trim(), fileName: newDoc.name };
+      }
+      // FEATURE — Alfred capability gap fill: editing an existing
+      // customer's contact info. create_customer only ever handled brand
+      // new customers — there was no way to fix a wrong phone number or
+      // update an address by text at all.
+      case "update_customer": {
+        const cust = await findCustomerByName(ctx, input.customerName);
+        if (!cust) return { error: `No customer found matching "${input.customerName}".` };
+        const patch: Record<string, unknown> = {};
+        for (const f of ["phone", "email", "address", "notes"] as const) if (input[f] !== undefined) patch[f] = input[f];
+        if (Object.keys(patch).length === 0) return { error: "Nothing to update — provide at least one of phone/email/address/notes." };
+        const res = await fetch(`${SUPABASE_URL}/rest/v1/customers?id=eq.${encodeURIComponent(cust.id)}`, {
+          method: "PATCH", headers: { ...ctx.authHeaders, "Content-Type": "application/json", Prefer: "return=minimal" },
+          body: JSON.stringify(patch),
+        });
+        if (!res.ok) return { error: (await res.text().catch(() => "")).slice(0, 200) };
+        return { success: true, customer: `${cust.firstName} ${cust.lastName}`.trim(), updated: Object.keys(patch) };
+      }
+      // FEATURE — Alfred capability gap fill: replying to a customer review
+      // on the owner's behalf ("thank the Millers for their review and
+      // apologize for the wait").
+      case "respond_to_review": {
+        const rows = await sbGet(ctx, `reviews?select=id,customerName,rating,text,response${ownerScope(ctx)}&limit=200`);
+        const q = (input.customerName || "").toLowerCase().trim();
+        const review = rows.find((r: any) => (r.customerName || "").toLowerCase().includes(q) && !r.response)
+          || rows.find((r: any) => (r.customerName || "").toLowerCase().includes(q));
+        if (!review) return { error: `No review found for "${input.customerName}".` };
+        if (!input.response?.trim()) return { error: "response text required." };
+        const res = await fetch(`${SUPABASE_URL}/rest/v1/reviews?id=eq.${encodeURIComponent(review.id)}`, {
+          method: "PATCH", headers: { ...ctx.authHeaders, "Content-Type": "application/json", Prefer: "return=minimal" },
+          body: JSON.stringify({ response: input.response, status: "responded" }),
+        });
+        if (!res.ok) return { error: (await res.text().catch(() => "")).slice(0, 200) };
+        return { success: true, customer: review.customerName, rating: review.rating };
+      }
+      // FEATURE — Alfred capability gap fill: who's outstanding on required
+      // training. training_modules/training_completions are the tables the
+      // new employee training system (owner-built modules, employee-taken
+      // quizzes) writes to — Alfred had no visibility into them at all.
+      case "get_employee_training_status": {
+        const [modules, completions, employees] = await Promise.all([
+          sbGet(ctx, `training_modules?select=id,data${ownerScope(ctx)}`),
+          sbGet(ctx, `training_completions?select=module_id,employee_id,passed${ownerScope(ctx)}&limit=2000`),
+          sbGet(ctx, `employees?select=id,firstName,lastName,status${ownerScope(ctx)}&limit=200`),
+        ]);
+        const requiredModules = modules.map((m: any) => m.data).filter((m: any) => m?.required);
+        if (requiredModules.length === 0) return { success: true, note: "No required training modules set up." };
+        const activeEmployees = employees.filter((e: any) => e.status === "active" && e.id !== "owner_" + (ctx.ownerId || ""));
+        const passedSet = new Set(completions.filter((c: any) => c.passed).map((c: any) => `${c.module_id}:${c.employee_id}`));
+        const outstanding: Array<{ employee: string; missing: string[] }> = [];
+        for (const emp of activeEmployees) {
+          const missing = requiredModules.filter((m: any) => !passedSet.has(`${m.id}:${emp.id}`)).map((m: any) => m.title);
+          if (missing.length > 0) outstanding.push({ employee: `${emp.firstName || ""} ${emp.lastName || ""}`.trim(), missing });
+        }
+        if (outstanding.length === 0) return { success: true, summary: "Every active employee is fully trained on all required modules." };
+        return { success: true, outstanding };
+      }
+      // FEATURE — Alfred capability gap fill: attaching a text-sent file to
+      // a JOB's work-order attachments (parallel to attach_file_to_customer,
+      // which only writes to the customer's document vault). "attach this
+      // PDF to the Miller job" for a commercial job spec sheet, etc.
+      case "attach_file_to_job": {
+        if (!input.fileUrl) return { error: "fileUrl required" };
+        const job = await findJob(ctx, { jobId: input.jobId, customerName: input.customerName });
+        if (!job) return { error: "Couldn't find that job." };
+        const jobRow = (await sbGet(ctx, `jobs?id=eq.${encodeURIComponent(job.id)}&select=attachments`))[0];
+        const newAtt = {
+          id: crypto.randomUUID(),
+          name: input.fileName || input.fileUrl.split("/").pop() || "file",
+          type: (input.fileName || input.fileUrl).toLowerCase().endsWith(".pdf") ? "pdf" : "other",
+          url: input.fileUrl,
+          uploadedAt: Date.now(),
+        };
+        const attachments = [...(Array.isArray(jobRow?.attachments) ? jobRow.attachments : []), newAtt];
+        const res = await fetch(`${SUPABASE_URL}/rest/v1/jobs?id=eq.${encodeURIComponent(job.id)}`, {
+          method: "PATCH", headers: { ...ctx.authHeaders, "Content-Type": "application/json", Prefer: "return=minimal" },
+          body: JSON.stringify({ attachments }),
+        });
+        if (!res.ok) return { error: (await res.text().catch(() => "")).slice(0, 200) };
+        return { success: true, attachedTo: job.customerName || job.id, fileName: newAtt.name };
+      }
+      // FEATURE — Alfred capability gap fill: hiring-pipeline visibility
+      // and moving a candidate between phases (Applied/Interview/Offer/
+      // Hired, or whatever custom phases the owner set up).
+      case "list_candidates": {
+        const rows = await sbGet(ctx, `candidates?select="firstName","lastName",phase,phone,email,"createdAt"${ownerScope(ctx)}&limit=200`);
+        if (rows.length === 0) return { success: true, count: 0, candidates: [] };
+        return { success: true, count: rows.length, candidates: rows.map((c: any) => ({ name: `${c.firstName || ""} ${c.lastName || ""}`.trim(), phase: c.phase, phone: c.phone, email: c.email })) };
+      }
+      case "move_candidate_phase": {
+        if (!input.candidateName?.trim() || !input.phase?.trim()) return { error: "candidateName and phase are required." };
+        const rows = await sbGet(ctx, `candidates?select=id,"firstName","lastName",phase${ownerScope(ctx)}&limit=200`);
+        const q = input.candidateName.toLowerCase().trim();
+        const cand = rows.find((c: any) => `${c.firstName || ""} ${c.lastName || ""}`.toLowerCase().includes(q));
+        if (!cand) return { error: `No candidate found matching "${input.candidateName}".` };
+        const res = await fetch(`${SUPABASE_URL}/rest/v1/candidates?id=eq.${encodeURIComponent(cand.id)}`, {
+          method: "PATCH", headers: { ...ctx.authHeaders, "Content-Type": "application/json", Prefer: "return=minimal" },
+          body: JSON.stringify({ phase: input.phase }),
+        });
+        if (!res.ok) return { error: (await res.text().catch(() => "")).slice(0, 200) };
+        return { success: true, candidate: `${cand.firstName} ${cand.lastName}`.trim(), from: cand.phase, to: input.phase };
       }
       case "get_customer_card_info": {
         const cust = await findCustomerByName(ctx, input.customerName);
