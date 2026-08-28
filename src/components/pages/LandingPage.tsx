@@ -2,7 +2,7 @@ import React, { useState } from "react";
 import {
   Calendar, Users2, FileText, CreditCard, MessageSquare,
   Bot, Smartphone, Trash2, Gift, Star, MapPin, Camera, CheckCircle,
-  ArrowRight, ChevronRight, Workflow,
+  ArrowRight, ChevronRight, Workflow, Download,
 } from "lucide-react";
 import {
   Reveal, MarketingStyles, BackgroundBlobs, MarketingNav, MarketingFooter,
@@ -299,6 +299,44 @@ export function LandingPage({
           </div>
         </Reveal>
         </div>
+      </section>
+
+      {/* FEATURE — sizzle reel: a real, downloadable demo video (not just
+          a screenshot mockup). Rendered offline via a headless-browser
+          capture of the artifact's own animation + its actual Web Audio
+          SFX (captured live off the audio graph, not a separate track),
+          then muxed to h264/aac — so this <video> plays with real sound
+          and the download link hands back a genuine .mp4, not a stub. */}
+      <section className="px-4 md:px-6 py-14 md:py-20 max-w-4xl mx-auto">
+        <Reveal variant="scale">
+          <div className="text-center mb-6">
+            <h2 className="lp-text-hover text-2xl md:text-3xl font-extrabold tracking-tight mb-2">
+              See it <span className="gradient-text">in motion.</span>
+            </h2>
+            <p className="text-white/50 text-sm md:text-base">A 40-second look at scheduling, Alfred, invoicing, and the field portal.</p>
+          </div>
+          <div className="rounded-2xl overflow-hidden border border-white/10 bg-black shadow-2xl shadow-red-950/40">
+            <video
+              controls
+              playsInline
+              preload="metadata"
+              className="w-full aspect-video bg-black"
+              src="/media/sizzle-reel.mp4"
+            >
+              Your browser doesn't support embedded video.
+            </video>
+          </div>
+          <div className="flex justify-center mt-5">
+            <a
+              href="/media/sizzle-reel.mp4"
+              download="CrewBoss-Sizzle-Reel.mp4"
+              className="group inline-flex items-center gap-2 px-5 py-2.5 rounded-xl glass hover:bg-white/[0.06] font-semibold text-sm transition-all"
+            >
+              <Download size={15} className="transition-transform group-hover:translate-y-0.5" />
+              Download the video
+            </a>
+          </div>
+        </Reveal>
       </section>
 
       <MarketingMarquee items={["Scheduling", "Estimates & Invoices", "Stripe Payments", "Client Portal", "Alfred AI Assistant", "Drag-and-Drop Automations", "Live Crew Tracking", "Mobile Field Portal", "Referral Program"]} />
