@@ -36,7 +36,7 @@ import {
 // this string every time the sizzle-reel video files are replaced so the
 // query string forces a fresh fetch (see also public/_headers, which
 // caps how long any cache can go without revalidating going forward).
-const SIZZLE_REEL_VERSION = "5";
+const SIZZLE_REEL_VERSION = "6";
 
 // Minimal video player for the sizzle reel — play/pause only, no native
 // scrubber/duration/mute/skip chrome (those read as a media player, not
@@ -85,71 +85,96 @@ function SizzleReelPlayer({ src }: { src: string }) {
 // categorized breakdown of the same real, working features) ────────────────
 // Pulled from real, working features in this codebase — not aspirational
 // copy. See CLAUDE.md "Working features" + Key files for the source of each.
-const FEATURES: Array<{ icon: React.ElementType; title: string; desc: string }> = [
+// BUG FIX (user report) — "there's too much and it's not organized well."
+// This used to be one flat 13-card grid with no structure. Grouped into
+// the three buckets the section's own headline already implies ("the
+// office," "the field," plus a third for the growth/marketing-side
+// features that are neither) — each group gets its own short label and a
+// grid sized to its count instead of one undifferentiated wall of cards.
+type FeatureGroup = "office" | "field" | "growth";
+const FEATURE_GROUPS: Record<FeatureGroup, string> = {
+  office: "Run the office",
+  field: "Run the field",
+  growth: "Grow the business",
+};
+const FEATURES: Array<{ icon: React.ElementType; title: string; desc: string; group: FeatureGroup }> = [
   {
     icon: Calendar,
     title: "Scheduling & Crew Assignment",
     desc: "Drag jobs onto the calendar, assign crew members, and track every job from Unscheduled to Done — synced live to the field.",
+    group: "office",
   },
   {
     icon: FileText,
     title: "Estimates, Invoices & Payments",
     desc: "Send branded estimates customers can review and e-sign online, convert them straight to invoices, and get paid — including charging a card in person on-site.",
+    group: "office",
   },
   {
     icon: CreditCard,
     title: "Stripe Payment Processing",
     desc: "Take deposits, full payments, or in-person card charges through a direct Stripe integration — no third-party payment app required.",
+    group: "office",
   },
   {
     icon: Users2,
     title: "Client Portal",
     desc: "Every customer gets their own secure portal to view job history, sign estimates, and pay invoices — no account juggling on your end.",
-  },
-  {
-    icon: MessageSquare,
-    title: "On-The-Way & Running-Late Texts",
-    desc: "On-the-way texts and running-late alerts go out automatically by SMS or the owner's own Gmail — never a generic \"noreply\" address.",
+    group: "office",
   },
   {
     icon: Workflow,
     title: "Drag-and-Drop Automations",
     desc: "A real visual workflow builder with ready-made templates — new-lead auto-reply, review requests, overdue-invoice reminders, 90-day re-service nudges, referral asks — build once, it runs itself.",
+    group: "office",
   },
   {
     icon: Bot,
     title: "Alfred, Your AI Assistant",
     desc: "Alfred acts directly on your CRM — schedules jobs, sends estimates, checks stock, pulls your numbers — from inside the app or by texting it like an employee. Set vacation mode and it can run the front desk while you're out.",
+    group: "office",
   },
   {
     icon: Smartphone,
     title: "Mobile Field Portal",
     desc: "Crew members clock in/out, follow pre/during/post-job checklists, snap photos on-site, and share GPS location — all from their phone.",
-  },
-  {
-    icon: Trash2,
-    title: "Trash Can Route Management",
-    desc: "Run a recurring trash-can cleaning route alongside pressure washing, with its own signup flow and schedule.",
-  },
-  {
-    icon: Gift,
-    title: "Referral Program",
-    desc: "Turn happy customers into new leads with a built-in referral link and reward tracking.",
-  },
-  {
-    icon: Star,
-    title: "Review Requests",
-    desc: "Automatically ask satisfied customers for a Google review right after the job's done, while it's fresh.",
+    group: "field",
   },
   {
     icon: MapPin,
     title: "Live Crew Tracking",
     desc: "See who's on shift, where they are, and how far along their checklist is — updated every few seconds on the owner dashboard.",
+    group: "field",
   },
   {
     icon: Camera,
     title: "Job Photo Documentation",
     desc: "Before/after photos attached directly to the job record, visible to the office and the customer alike.",
+    group: "field",
+  },
+  {
+    icon: MessageSquare,
+    title: "On-The-Way & Running-Late Texts",
+    desc: "On-the-way texts and running-late alerts go out automatically by SMS or the owner's own Gmail — never a generic \"noreply\" address.",
+    group: "field",
+  },
+  {
+    icon: Gift,
+    title: "Referral Program",
+    desc: "Turn happy customers into new leads with a built-in referral link and reward tracking.",
+    group: "growth",
+  },
+  {
+    icon: Star,
+    title: "Review Requests",
+    desc: "Automatically ask satisfied customers for a Google review right after the job's done, while it's fresh.",
+    group: "growth",
+  },
+  {
+    icon: Trash2,
+    title: "Trash Can Route Management",
+    desc: "Run a recurring trash-can cleaning route alongside pressure washing, with its own signup flow and schedule.",
+    group: "growth",
   },
 ];
 
@@ -312,7 +337,20 @@ export function LandingPage({
                 <span className="w-2.5 h-2.5 rounded-full bg-white/15" />
                 <span className="ml-3 text-[11px] text-white/30 font-mono">crewboss.app/dashboard</span>
               </div>
-              <div className="p-4 md:p-6 text-left grid grid-cols-3 gap-3 md:gap-4">
+              {/* BUG FIX (user report) — "make sure the whole landing page is
+                  mobile optimized." A global app-wide safety net in index.css
+                  (`@media (max-width:400px) { .grid.grid-cols-3 { ...2
+                  columns } }`, meant for other CRM pages with hardcoded
+                  3/4-col grids that DO overflow that narrow) was silently
+                  collapsing this specific 3-stat row into an awkward "2 then
+                  1 orphaned" layout below 400px — these three cards are
+                  narrow enough that 3 columns fits fine here and looks much
+                  better. Using an arbitrary-value utility instead of the
+                  literal `grid-cols-3` class name opts this one grid out of
+                  that blanket rule (different generated class, so the
+                  selector never matches) without touching the safety net
+                  itself, which other pages still rely on. */}
+              <div className="p-4 md:p-6 text-left grid grid-cols-[repeat(3,minmax(0,1fr))] gap-3 md:gap-4">
                 {[
                   { label: "Revenue MTD", value: "$18,240", tone: "text-red-300" },
                   { label: "Active Jobs", value: "12", tone: "text-white" },
@@ -399,18 +437,32 @@ export function LandingPage({
           </p>
         </Reveal>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 md:gap-5">
-          {FEATURES.map((f, i) => (
-            <Reveal key={f.title} variant={i % 3 === 0 ? "left" : i % 3 === 1 ? "scale" : "right"} delay={(i % 3) * 90}>
-              <div className="lp-card-hover glass p-5 md:p-6 h-full">
-                <div className="w-11 h-11 rounded-xl bg-gradient-to-br from-red-600/20 to-red-900/20 border border-red-700/30 flex items-center justify-center mb-4">
-                  <f.icon size={20} className="text-red-400" />
+        <div className="space-y-10 md:space-y-14">
+          {(Object.keys(FEATURE_GROUPS) as FeatureGroup[]).map((group) => {
+            const items = FEATURES.filter(f => f.group === group);
+            return (
+              <div key={group}>
+                <Reveal variant="left">
+                  <h3 className="text-xs font-bold uppercase tracking-widest text-red-400/80 mb-4 md:mb-5">
+                    {FEATURE_GROUPS[group]}
+                  </h3>
+                </Reveal>
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 md:gap-5">
+                  {items.map((f, i) => (
+                    <Reveal key={f.title} variant={i % 3 === 0 ? "left" : i % 3 === 1 ? "scale" : "right"} delay={(i % 3) * 90}>
+                      <div className="lp-card-hover glass p-5 md:p-6 h-full">
+                        <div className="w-11 h-11 rounded-xl bg-gradient-to-br from-red-600/20 to-red-900/20 border border-red-700/30 flex items-center justify-center mb-4">
+                          <f.icon size={20} className="text-red-400" />
+                        </div>
+                        <h3 className="font-bold text-white mb-1.5 text-sm md:text-base"><span className="lp-text-hover">{f.title}</span></h3>
+                        <p className="text-white/50 text-xs md:text-sm leading-relaxed">{f.desc}</p>
+                      </div>
+                    </Reveal>
+                  ))}
                 </div>
-                <h3 className="font-bold text-white mb-1.5 text-sm md:text-base"><span className="lp-text-hover">{f.title}</span></h3>
-                <p className="text-white/50 text-xs md:text-sm leading-relaxed">{f.desc}</p>
               </div>
-            </Reveal>
-          ))}
+            );
+          })}
         </div>
 
         <Reveal className="text-center mt-10">

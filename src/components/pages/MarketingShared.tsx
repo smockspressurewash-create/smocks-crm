@@ -430,18 +430,6 @@ export function MarketingNav({
               <span className={"absolute left-0 -bottom-0.5 h-[1.5px] bg-red-500 transition-all duration-300 " + (active === l.page ? "w-full opacity-100" : "w-0 opacity-0")} />
             </button>
           ))}
-          {/* BUG FIX (user report) — "the top bar feels kind of empty."
-              onRoadmap was already threaded through every marketing page
-              and all the way up to App.tsx's goToRoadmap, but nothing in
-              this nav ever rendered a link for it — a real, working public
-              page with no way to reach it from the nav. Surfacing it here
-              both fixes that dead prop and gives the bar a fourth real
-              link instead of just three. */}
-          {onRoadmap && (
-            <button onClick={onRoadmap} className="relative py-1 transition-colors hover:text-white">
-              Roadmap
-            </button>
-          )}
           <span className="h-5 w-px bg-white/10" aria-hidden="true" />
           {isLoggedIn ? (
             <button
@@ -482,14 +470,6 @@ export function MarketingNav({
               {l.label}
             </button>
           ))}
-          {onRoadmap && (
-            <button
-              onClick={() => { setNavOpen(false); onRoadmap(); }}
-              className="block w-full text-left py-2 text-white/70"
-            >
-              Roadmap
-            </button>
-          )}
           {isLoggedIn ? (
             <button
               onClick={() => { setNavOpen(false); onGoToDashboard?.(); }}

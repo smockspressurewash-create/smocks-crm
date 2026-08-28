@@ -135,7 +135,17 @@ function MiniStreetViewThumb({ address, mapsKey }: { address: string; mapsKey?: 
 
 export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = [], estimates = [], setEstimates = (() => {}) as any, automations = [], stats, goals, vehicles = [], maintenance = [], chemicals = [], settings = {} as AppSettings, setSettings = () => {}, onNav, toast, weatherData = null, weatherFetchError = null, inboxThreads = [], employees = [], crewFetchError = false, reviews = [], onSendDailyBriefing, onViewJob = (id: string) => {}, ownerId = "" }: { jobs?: any[]; setJobs?: any; customers?: any[]; estimates?: any[]; setEstimates?: any; automations?: any[]; stats?: any; goals?: any; vehicles?: any[]; maintenance?: any[]; chemicals?: any[]; settings?: AppSettings; setSettings?: any; onNav?: any; toast?: any; weatherData?: any; weatherFetchError?: string | null; inboxThreads?: any[]; employees?: any[]; crewFetchError?: boolean; reviews?: any[]; onSendDailyBriefing?: () => Promise<void>; onViewJob?: (id: string) => void; ownerId?: string }) {
   const [sendingDashInvoiceId, setSendingDashInvoiceId] = useState<string | null>(null);
-  const [needsInvoiceCollapsed, setNeedsInvoiceCollapsed] = useState(false);
+  // BUG FIX (user report) — "if an owner collapses it, it should stay
+  // collapsed when navigating to another part of the website, reloading
+  // the page, closing and reopening the site." Plain useState reset to
+  // false on every remount (any navigation away from Dashboard unmounts
+  // this component); persisting to localStorage survives all three.
+  const [needsInvoiceCollapsed, setNeedsInvoiceCollapsed] = useState(() => {
+    try { return localStorage.getItem("smocks.dashboardInvoicesCollapsed") === "1"; } catch { return false; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem("smocks.dashboardInvoicesCollapsed", needsInvoiceCollapsed ? "1" : "0"); } catch { /* ignore */ }
+  }, [needsInvoiceCollapsed]);
   // "Today" consolidated at-a-glance card (crew status + jobs due today +
   // overdue invoices + low stock) — collapsible so it doesn't permanently
   // eat vertical space once the owner's checked it once each morning.
@@ -875,7 +885,6 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
     { k: "quickActions", l: "Quick Actions" },
     { k: "kpis", l: "KPI Cards" },
     { k: "revenuePeriods", l: "Revenue Periods" },
-    { k: "yoy", l: "Year-over-Year" },
     { k: "goals", l: "Goals & Forecast" },
     { k: "invoices", l: "Outstanding Invoices" },
     { k: "weather", l: "Weather Widget" },
@@ -1544,74 +1553,46 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
           a single combined count/header, instead of two cards competing
           for the same visual real estate on the dashboard. Both sections'
           own row content/actions are unchanged. */}
+      {/* BUG FIX (user report) — "it should display only the 'Needs invoice
+          sent' items, not the 'awaiting payment' entries." Dropped the
+          unpaidInvoices/"Awaiting payment" section entirely; count/overdue
+          badge now reflect only needsInvoiceJobs. */}
       {(() => {
-        const unpaidInvoices = (estimates || []).filter((e: any) => e.invoiced && !e.paidAt);
-        const totalCount = needsInvoiceJobs.length + unpaidInvoices.length;
-        if (totalCount === 0) return null;
-        const totalOwed = unpaidInvoices.reduce((s: number, e: any) => s + e.total, 0);
-        const overdue = unpaidInvoices.filter((e: any) => e.invoicedAt && daysSince(e.invoicedAt) > 14);
+        if (needsInvoiceJobs.length === 0) return null;
         return (
           <Glass className="p-4 !bg-yellow-950/15 !border-yellow-700/30">
             <button onClick={() => setNeedsInvoiceCollapsed(c => !c)} className="w-full flex items-center gap-2 mb-3 text-left">
               <AlertTriangle size={14} className="text-yellow-400" />
               <h3 className="font-semibold text-sm flex-1">Invoices</h3>
-              {overdue.length > 0 && <Badge tone="red">{overdue.length} overdue</Badge>}
-              <Badge tone="yellow">{totalCount}</Badge>
+              <Badge tone="yellow">{needsInvoiceJobs.length}</Badge>
               <ChevronRight size={14} className={"text-white/40 transition-transform " + (needsInvoiceCollapsed ? "" : "rotate-90")} />
             </button>
             {!needsInvoiceCollapsed && (
-              <div className="space-y-4">
-                {needsInvoiceJobs.length > 0 && (
-                  <div>
-                    <div className="text-[10px] text-white/40 uppercase tracking-wider mb-1.5">Needs invoice sent ({needsInvoiceJobs.length})</div>
-                    <div className="space-y-2">
-                      {needsInvoiceJobs.slice(0, 5).map((j: any) => {
-                        const cust = customers.find((c: any) => c.id === j.customerId);
-                        return (
-                          <div key={j.id} className="flex items-center justify-between gap-3 p-3 rounded-xl bg-black/30 border border-white/10">
-                            <div className="min-w-0 flex-1">
-                              <div className="text-sm font-medium truncate">{cust ? `${cust.firstName} ${cust.lastName}` : j.address}</div>
-                              <div className="text-xs text-white/40">{j.address} · {fmt(j.amount)}</div>
-                            </div>
-                            <div className="flex gap-1.5 flex-shrink-0">
-                              <button onClick={() => { setJobs((prev: any[]) => prev.map(x => x.id === j.id ? { ...x, invoiceSentAt: today(), paymentType: x.paymentType || "Invoice" } : x)); toast?.("Marked as sent (outside the CRM)", "green"); }} title="Already sent this invoice outside the CRM" className="px-2 py-1.5 rounded-lg border border-white/10 bg-white/5 text-white/50 hover:text-white text-xs transition">
-                                Mark Sent
-                              </button>
-                              <GBtn onClick={() => setPreviewInvoiceJob(j)} disabled={sendingDashInvoiceId === j.id} className="!text-xs !py-1.5">
-                                {sendingDashInvoiceId === j.id ? "Sending…" : "Send Invoice"}
-                              </GBtn>
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                    {needsInvoiceJobs.length > 5 && (
-                      <button onClick={() => onNav("invoices")} className="w-full mt-2 text-xs text-white/40 hover:text-white/60 text-center">View all {needsInvoiceJobs.length} →</button>
-                    )}
-                  </div>
-                )}
-                {unpaidInvoices.length > 0 && (
-                  <div>
-                    <div className="flex items-center justify-between mb-1.5">
-                      <div className="text-[10px] text-white/40 uppercase tracking-wider">Awaiting payment ({unpaidInvoices.length})</div>
-                      <div className="text-sm font-black text-red-400">{fmt(totalOwed)}</div>
-                    </div>
-                    <div className="space-y-1.5 max-h-40 overflow-y-auto">
-                      {unpaidInvoices.slice(0, 5).map((inv: any) => {
-                        const cu = (customers || []).find((x: any) => x.id === inv.customerId);
-                        const age = inv.invoicedAt ? daysSince(inv.invoicedAt) : 0;
-                        return (
-                          <div key={inv.id} className="flex items-center justify-between text-xs py-1.5 border-b border-red-900/10">
-                            <span><span className="font-medium">{cu ? cu.firstName + " " + cu.lastName : "?"}</span> <span className={"text-[10px] " + (age > 14 ? "text-red-400" : "text-white/40")}>{age > 0 ? age + "d ago" : "today"}</span></span>
-                            <span className="font-bold text-red-400">{fmt(inv.total)}</span>
-                          </div>
-                        );
-                      })}
-                    </div>
-                    {unpaidInvoices.length > 5 && (
-                      <button onClick={() => onNav("invoices")} className="w-full mt-2 text-xs text-white/40 hover:text-white/60 text-center">View all →</button>
-                    )}
-                  </div>
+              <div>
+                <div className="text-[10px] text-white/40 uppercase tracking-wider mb-1.5">Needs invoice sent ({needsInvoiceJobs.length})</div>
+                <div className="space-y-2">
+                  {needsInvoiceJobs.slice(0, 5).map((j: any) => {
+                    const cust = customers.find((c: any) => c.id === j.customerId);
+                    return (
+                      <div key={j.id} className="flex items-center justify-between gap-3 p-3 rounded-xl bg-black/30 border border-white/10">
+                        <div className="min-w-0 flex-1">
+                          <div className="text-sm font-medium truncate">{cust ? `${cust.firstName} ${cust.lastName}` : j.address}</div>
+                          <div className="text-xs text-white/40">{j.address} · {fmt(j.amount)}</div>
+                        </div>
+                        <div className="flex gap-1.5 flex-shrink-0">
+                          <button onClick={() => { setJobs((prev: any[]) => prev.map(x => x.id === j.id ? { ...x, invoiceSentAt: today(), paymentType: x.paymentType || "Invoice" } : x)); toast?.("Marked as sent (outside the CRM)", "green"); }} title="Already sent this invoice outside the CRM" className="px-2 py-1.5 rounded-lg border border-white/10 bg-white/5 text-white/50 hover:text-white text-xs transition">
+                            Mark Sent
+                          </button>
+                          <GBtn onClick={() => setPreviewInvoiceJob(j)} disabled={sendingDashInvoiceId === j.id} className="!text-xs !py-1.5">
+                            {sendingDashInvoiceId === j.id ? "Sending…" : "Send Invoice"}
+                          </GBtn>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+                {needsInvoiceJobs.length > 5 && (
+                  <button onClick={() => onNav("invoices")} className="w-full mt-2 text-xs text-white/40 hover:text-white/60 text-center">View all {needsInvoiceJobs.length} →</button>
                 )}
               </div>
             )}
@@ -1694,7 +1675,14 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
           redundant path to the same two actions cluttering the top of the
           dashboard. Removed; the FAB and each page's own Add button are
           the one real path now, exactly matching the request. */}
-      <div className="grid grid-cols-2 lg:grid-cols-6 gap-4">
+      {/* BUG FIX (user report) — "these widgets need to fill the page fully."
+          This was grid-cols-6 with only 4 permanent cards (Today/This
+          Week/This Month/Year to Date) — the 5th slot (the conditional
+          "N Stop Route" card) is absent on most days, leaving 1-2 empty
+          column tracks of dead space on the right on desktop instead of
+          the cards stretching to fill the row. 4 columns matches the
+          real, always-present card count. */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         {(() => {
           const todayRoute = jobs.filter(j => j.scheduledDate === tKey && j.status === "scheduled");
           if (todayRoute.length === 0) return null;
@@ -1753,39 +1741,6 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
           return <Stat icon={RefreshCw} label="Recurring Rev" value={fmt(mrr)} change={mrr > 0 ? "🔄 MRR" : "—"} />;
         })()}
         </div>;
-      })()}
-
-      {/* Year-over-Year comparison widget */}
-      {(w.yoy ?? true) && (() => {
-        const thisYear = new Date().getFullYear().toString();
-        const lastYear = (new Date().getFullYear() - 1).toString();
-        const thisYTD = jobs.filter(j => j.status === "completed" && (j.scheduledDate||"").startsWith(thisYear)).reduce((s,j) => s+j.amount, 0);
-        const lastYTD = jobs.filter(j => j.status === "completed" && (j.scheduledDate||"").startsWith(lastYear)).reduce((s,j) => s+j.amount, 0);
-        const yoyPct = lastYTD > 0 ? Math.round((thisYTD - lastYTD) / lastYTD * 100) : null;
-        const thisJobs = jobs.filter(j => j.status === "completed" && (j.scheduledDate||"").startsWith(thisYear)).length;
-        const lastJobs = jobs.filter(j => j.status === "completed" && (j.scheduledDate||"").startsWith(lastYear)).length;
-        return <Glass className="p-4">
-          <div className="flex items-center justify-between mb-3">
-            <div className="text-xs font-semibold text-white/70 flex items-center gap-1.5">📊 Year-over-Year</div>
-            {yoyPct !== null && <div className={"text-sm font-black " + (yoyPct >= 0 ? "text-green-400" : "text-red-400")}>{yoyPct >= 0 ? "+" : ""}{yoyPct}% vs last year</div>}
-          </div>
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <div className="text-[10px] text-white/40 mb-1">{thisYear} YTD</div>
-              <div className="text-xl font-bold text-red-400">{fmt(thisYTD)}</div>
-              <div className="text-[10px] text-white/50">{thisJobs} jobs</div>
-            </div>
-            <div>
-              <div className="text-[10px] text-white/40 mb-1">{lastYear} YTD</div>
-              <div className="text-xl font-bold text-white/60">{fmt(lastYTD)}</div>
-              <div className="text-[10px] text-white/50">{lastJobs} jobs</div>
-            </div>
-          </div>
-          {lastYTD > 0 && <div className="mt-2 h-2 bg-black/40 rounded-full overflow-hidden">
-            <div className={"h-full rounded-full " + (yoyPct >= 0 ? "bg-green-500" : "bg-red-500")} style={{width: Math.min(100, thisYTD / Math.max(thisYTD, lastYTD) * 100) + "%"}} />
-          </div>}
-          {lastYTD === 0 && <div className="text-[10px] text-white/30 mt-1">Add last year's jobs to compare</div>}
-        </Glass>;
       })()}
 
       {/* Weather Widget — today's job impact */}
