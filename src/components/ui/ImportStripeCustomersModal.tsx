@@ -12,7 +12,7 @@ import { Modal } from "./Modal";
 import { GBtn } from "./GBtn";
 import { supabase } from "../../lib/supabase";
 import { listStripeCustomers, StripeCustomerListItem } from "../../lib/stripe";
-import { uid, today } from "../../lib/utils";
+import { uid, today, withTimeout } from "../../lib/utils";
 
 export function ImportStripeCustomersModal({ open, onClose, customers = [], setCustomers, toast = (() => {}) as any }: {
   open: boolean; onClose: () => void; customers?: any[]; setCustomers: any; toast?: (msg: string, tone?: any) => void;
@@ -29,7 +29,16 @@ export function ImportStripeCustomersModal({ open, onClose, customers = [], setC
     (async () => {
       setLoading(true);
       try {
-        const { data: { session } } = await supabase.auth.getSession();
+        // BUG FIX — "importing customers from Stripe doesn't load anymore,
+        // just says Loading Stripe customers." getSession() has a known,
+        // previously-diagnosed failure mode in this app (see AlfredPage's
+        // ITEM 23 comment): a browser navigator-lock deadlock or a cold/
+        // slow connection can leave it hanging indefinitely with no
+        // rejection at all — nothing else in this try/catch ever gets a
+        // chance to run, so `finally`'s setLoading(false) never fires
+        // either. listStripeCustomers already had its own 20s timeout;
+        // this call had none.
+        const { data: { session } } = await withTimeout(supabase.auth.getSession(), 10000, "Get session");
         const token = session?.access_token;
         if (!token) throw new Error("Not signed in");
         const { customers: list } = await listStripeCustomers(token);

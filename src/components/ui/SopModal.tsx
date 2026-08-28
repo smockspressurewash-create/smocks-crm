@@ -7,7 +7,7 @@
 // see CLAUDE.md), so employees always see whatever the owner last saved with
 // no separate sync path to keep correct.
 import React, { useState, useEffect } from "react";
-import { X, BookOpen, Plus, Trash2, Edit, FileText, Upload } from "lucide-react";
+import { X, BookOpen, Plus, Trash2, Edit, FileText, Upload, Users, Copy, LayoutTemplate } from "lucide-react";
 import { supabase } from "../../lib/supabase";
 import { uid } from "../../lib/utils";
 
@@ -21,6 +21,7 @@ interface SopDoc {
   frequency?: "daily" | "monthly" | "general";
   assignedEmployeeIds?: string[];
   checklist?: { id: string; text: string; done?: boolean }[];
+  is_template?: boolean;
 }
 
 export function SopModal({ open, onClose, editable = false, ownerId = "", employees = [], currentEmployeeId = "", toast = (() => {}) as any }: { open: boolean; onClose: () => void; editable?: boolean; ownerId?: string; employees?: { id: string; firstName?: string; lastName?: string }[]; currentEmployeeId?: string; toast?: any }) {
@@ -28,6 +29,10 @@ export function SopModal({ open, onClose, editable = false, ownerId = "", employ
   const [loading, setLoading] = useState(false);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [editing, setEditing] = useState<SopDoc | null>(null);
+  // Set only by the "For a Specific Employee" guided-start button — just
+  // surfaces a hint pointing at the Assign-to picker below; the picker
+  // itself is unchanged either way.
+  const [justPickedForEmployee, setJustPickedForEmployee] = useState(false);
 
   useEffect(() => {
     if (!open) return;
@@ -53,9 +58,11 @@ export function SopModal({ open, onClose, editable = false, ownerId = "", employ
   // Employees only see SOPs assigned to them specifically, or ones with no
   // assignment at all (empty assignedEmployeeIds = visible to everyone) —
   // the owner side (editable) always sees every SOP so nothing gets "lost".
+  // Templates are owner-only scaffolding, never shown to employees at all.
   const visibleDocs = (!editable && currentEmployeeId)
-    ? docs.filter(d => !d.assignedEmployeeIds?.length || d.assignedEmployeeIds.includes(currentEmployeeId))
-    : docs;
+    ? docs.filter(d => !d.is_template && (!d.assignedEmployeeIds?.length || d.assignedEmployeeIds.includes(currentEmployeeId)))
+    : editable ? docs.filter(d => !d.is_template) : docs;
+  const templates = editable ? docs.filter(d => d.is_template) : [];
 
   const toggleActiveChecklistItem = async (itemId: string) => {
     if (!active) return;
@@ -80,10 +87,22 @@ export function SopModal({ open, onClose, editable = false, ownerId = "", employ
     // .select("id") + a real toast make both directions visible.
     const res = isNew
       ? await (supabase as any).from("sop_documents").insert({ ...record, owner_id: ownerId }).select("id")
-      : await (supabase as any).from("sop_documents").update({ title: record.title, kind: record.kind, content: record.content, file_url: record.file_url, frequency: record.frequency, assignedEmployeeIds: record.assignedEmployeeIds, checklist: record.checklist, updated_at: nowIso }).eq("id", record.id).select("id");
+      : await (supabase as any).from("sop_documents").update({ title: record.title, kind: record.kind, content: record.content, file_url: record.file_url, frequency: record.frequency, assignedEmployeeIds: record.assignedEmployeeIds, checklist: record.checklist, is_template: !!record.is_template, updated_at: nowIso }).eq("id", record.id).select("id");
     if (res?.error) { console.error("[SOP] save failed:", res.error.message); toast?.("Saved locally, but failed to sync — " + res.error.message, "red"); return; }
     if (!Array.isArray(res?.data) || res.data.length === 0) { toast?.("Saved locally, but the server didn't confirm the save — try again or refresh to check", "red"); return; }
-    toast?.("SOP saved ✓", "green");
+    toast?.(record.is_template ? "Template saved ✓" : "SOP saved ✓", "green");
+  };
+
+  // FEATURE — "have SOP templates which you save and edit." Cloning a
+  // template into a real, live (non-template) SOP the owner can then
+  // assign to one or more employees — the template itself is untouched
+  // and stays reusable for next time.
+  const useTemplate = (tpl: SopDoc) => {
+    setEditing({
+      id: uid(), title: tpl.title, kind: tpl.kind, content: tpl.content, file_url: tpl.file_url,
+      frequency: tpl.frequency, checklist: (tpl.checklist || []).map(c => ({ ...c, id: uid(), done: false })),
+      assignedEmployeeIds: [], is_template: false,
+    });
   };
 
   const addChecklistItem = () => setEditing(prev => prev ? { ...prev, checklist: [...(prev.checklist || []), { id: uid(), text: "", done: false }] } : prev);
@@ -120,7 +139,7 @@ export function SopModal({ open, onClose, editable = false, ownerId = "", employ
         <div className="flex items-center justify-between px-4 py-3 border-b border-white/10 bg-gradient-to-r from-red-600 to-red-800 flex-shrink-0">
           <div className="font-bold text-white flex items-center gap-2"><BookOpen size={16} />SOPs & Instructions</div>
           <div className="flex items-center gap-2">
-            {editable && <button onClick={() => setEditing({ id: uid(), title: "", kind: "markdown", content: "" })} className="px-3 py-2 rounded-lg bg-white/15 hover:bg-white/25 text-white text-xs font-semibold transition flex items-center gap-1.5" title="Create SOP"><Plus size={14} />Create SOP</button>}
+            {editable && active && <button onClick={() => setEditing({ id: uid(), title: "", kind: "markdown", content: "" })} className="px-3 py-2 rounded-lg bg-white/15 hover:bg-white/25 text-white text-xs font-semibold transition flex items-center gap-1.5" title="Create SOP"><Plus size={14} />New</button>}
             <button onClick={onClose} className="p-2 rounded-lg hover:bg-white/15 text-white transition"><X size={18} /></button>
           </div>
         </div>
@@ -156,13 +175,16 @@ export function SopModal({ open, onClose, editable = false, ownerId = "", employ
             </div>
 
             {employees.length > 0 && (
-              <div>
+              <div className={justPickedForEmployee && !(editing.assignedEmployeeIds || []).length ? "p-2.5 -m-2.5 rounded-xl border border-red-600/40 bg-red-950/10" : ""}>
                 <label className="text-[10px] text-white/40 uppercase tracking-wider mb-1 block">Assign to <span className="normal-case text-white/30">(none selected = everyone)</span></label>
+                {justPickedForEmployee && !(editing.assignedEmployeeIds || []).length && (
+                  <div className="text-[10px] text-red-300 mb-1.5">Pick who this is for below ↓</div>
+                )}
                 <div className="flex flex-wrap gap-1.5">
                   {employees.map(emp => {
                     const on = (editing.assignedEmployeeIds || []).includes(emp.id);
                     return (
-                      <button key={emp.id} onClick={() => toggleAssignedEmployee(emp.id)} className={"px-2.5 py-1.5 rounded-lg text-xs transition " + (on ? "bg-red-700/40 text-white border border-red-700/50" : "bg-white/5 text-white/50 border border-white/10")}>
+                      <button key={emp.id} onClick={() => { toggleAssignedEmployee(emp.id); setJustPickedForEmployee(false); }} className={"px-2.5 py-1.5 rounded-lg text-xs transition " + (on ? "bg-red-700/40 text-white border border-red-700/50" : "bg-white/5 text-white/50 border border-white/10")}>
                         {emp.firstName} {emp.lastName?.[0] || ""}
                       </button>
                     );
@@ -187,42 +209,83 @@ export function SopModal({ open, onClose, editable = false, ownerId = "", employ
               </div>
             </div>
 
+            <label className="flex items-center gap-2 cursor-pointer pt-1">
+              <input type="checkbox" checked={!!editing.is_template} onChange={e => setEditing({ ...editing, is_template: e.target.checked })} className="accent-red-600 w-3.5 h-3.5" />
+              <span className="text-xs text-white/70 flex items-center gap-1"><LayoutTemplate size={12} />Save as a reusable template (not assigned/published — use "Use Template" later to create a real SOP from it)</span>
+            </label>
+
             <div className="flex gap-2 justify-end pt-2 pb-1">
-              <button onClick={() => setEditing(null)} className="px-4 py-2.5 rounded-xl text-sm text-white/60 hover:text-white transition">Cancel</button>
-              <button onClick={save} disabled={!editing.title.trim()} className="px-4 py-2.5 rounded-xl text-sm font-semibold bg-gradient-to-r from-red-600 to-red-800 text-white disabled:opacity-50">Save</button>
+              <button onClick={() => { setEditing(null); setJustPickedForEmployee(false); }} className="px-4 py-2.5 rounded-xl text-sm text-white/60 hover:text-white transition">Cancel</button>
+              <button onClick={() => { save(); setJustPickedForEmployee(false); }} disabled={!editing.title.trim()} className="px-4 py-2.5 rounded-xl text-sm font-semibold bg-gradient-to-r from-red-600 to-red-800 text-white disabled:opacity-50">Save</button>
             </div>
           </div>
         ) : (
           <div className="flex-1 flex flex-col sm:flex-row min-h-0 overflow-hidden">
-            <div className="w-full sm:w-40 flex-shrink-0 max-h-40 sm:max-h-none border-b sm:border-b-0 sm:border-r border-white/10 overflow-y-auto overflow-x-hidden">
+            <div className="w-full sm:w-44 flex-shrink-0 max-h-52 sm:max-h-none border-b sm:border-b-0 sm:border-r border-white/10 overflow-y-auto overflow-x-hidden">
               {loading && <div className="p-3 text-xs text-white/40">Loading…</div>}
-              {!loading && visibleDocs.length === 0 && <div className="p-3 text-xs text-white/40">No SOPs yet{editable ? " — hit + to add one" : ""}.</div>}
-              {visibleDocs.map(d => (
-                <button key={d.id} onClick={() => setActiveId(d.id)} className={"w-full text-left px-3 py-3 sm:py-2.5 text-xs border-b border-white/5 transition " + (activeId === d.id ? "bg-red-950/30 text-white" : "text-white/50 hover:text-white hover:bg-white/5")}>
-                  {d.title}
-                  {d.frequency && d.frequency !== "general" && <span className="ml-1.5 text-[9px] uppercase text-white/30">· {d.frequency}</span>}
-                </button>
-              ))}
+              {!loading && visibleDocs.length === 0 && templates.length === 0 && <div className="p-3 text-xs text-white/40">No SOPs yet.</div>}
+              {visibleDocs.length > 0 && (
+                <>
+                  {editable && templates.length > 0 && <div className="px-3 pt-2.5 pb-1 text-[9px] uppercase tracking-wider text-white/30">Active SOPs</div>}
+                  {visibleDocs.map(d => (
+                    <button key={d.id} onClick={() => setActiveId(d.id)} className={"w-full text-left px-3 py-3 sm:py-2.5 text-xs border-b border-white/5 transition " + (activeId === d.id ? "bg-red-950/30 text-white" : "text-white/50 hover:text-white hover:bg-white/5")}>
+                      {d.title}
+                      {d.frequency && d.frequency !== "general" && <span className="ml-1.5 text-[9px] uppercase text-white/30">· {d.frequency}</span>}
+                      {!!d.assignedEmployeeIds?.length && <span className="ml-1.5 text-[9px] text-blue-400/70">· {d.assignedEmployeeIds.length} employee{d.assignedEmployeeIds.length !== 1 ? "s" : ""}</span>}
+                    </button>
+                  ))}
+                </>
+              )}
+              {editable && templates.length > 0 && (
+                <>
+                  <div className="px-3 pt-2.5 pb-1 text-[9px] uppercase tracking-wider text-white/30 flex items-center gap-1"><LayoutTemplate size={9} />Templates</div>
+                  {templates.map(d => (
+                    <button key={d.id} onClick={() => setActiveId(d.id)} className={"w-full text-left px-3 py-3 sm:py-2.5 text-xs border-b border-white/5 transition " + (activeId === d.id ? "bg-red-950/30 text-white" : "text-white/50 hover:text-white hover:bg-white/5")}>
+                      {d.title}
+                    </button>
+                  ))}
+                </>
+              )}
             </div>
             <div className="flex-1 min-h-0 overflow-y-auto p-4">
               {!active ? (
-                // FEATURE — "automatically display a blank area with a
-                // 'Create SOP' button" instead of a bare "Select a document"
-                // placeholder that gave no obvious next step, especially the
-                // very first time (zero SOPs yet, nothing to select at all).
-                <div className="text-center text-white/30 text-sm py-12 flex flex-col items-center gap-3">
+                // FEATURE — "it shouldn't open up the new SOP pop-up right
+                // away... show the sections or employees and ask if you
+                // want to create one for an employee, or just create one
+                // in general." A blank, guided landing area with real
+                // choices instead of one flat "Create SOP" button that
+                // dumped straight into the editor with no context.
+                <div className="text-center text-white/30 text-sm py-10 flex flex-col items-center gap-4 max-w-sm mx-auto">
                   <BookOpen size={32} className="text-white/15" />
-                  <div>{visibleDocs.length === 0 ? "No SOPs yet." : "Select a document from the list."}</div>
+                  <div>{visibleDocs.length === 0 && templates.length === 0 ? "No SOPs yet — how do you want to start?" : "Select a document from the list, or start something new."}</div>
                   {editable && (
-                    <button onClick={() => setEditing({ id: uid(), title: "", kind: "markdown", content: "" })} className="mt-1 px-4 py-2.5 rounded-xl text-sm font-semibold bg-gradient-to-r from-red-600 to-red-800 text-white flex items-center gap-1.5 hover:opacity-90 transition">
-                      <Plus size={14} />Create SOP
-                    </button>
+                    <div className="grid grid-cols-1 gap-2 w-full">
+                      <button onClick={() => { setEditing({ id: uid(), title: "", kind: "markdown", content: "", assignedEmployeeIds: [] }); setJustPickedForEmployee(false); }} className="px-4 py-2.5 rounded-xl text-sm font-semibold bg-gradient-to-r from-red-600 to-red-800 text-white flex items-center justify-center gap-1.5 hover:opacity-90 transition">
+                        <Plus size={14} />General SOP — visible to everyone
+                      </button>
+                      {employees.length > 0 && (
+                        <button onClick={() => { setEditing({ id: uid(), title: "", kind: "markdown", content: "", assignedEmployeeIds: [] }); setJustPickedForEmployee(true); }} className="px-4 py-2.5 rounded-xl text-sm font-semibold border border-white/15 bg-white/5 text-white/80 flex items-center justify-center gap-1.5 hover:bg-white/10 transition">
+                          <Users size={14} />For a Specific Employee
+                        </button>
+                      )}
+                      {templates.length > 0 && (
+                        <div className="text-[10px] text-white/30 pt-1">Or pick a template from the list on the left.</div>
+                      )}
+                    </div>
                   )}
                 </div>
-              ) : active.kind === "pdf" && active.file_url ? (
-                <iframe src={active.file_url} title={active.title} className="w-full h-full min-h-[400px] rounded-xl border border-white/10" />
               ) : (
-                <div className="text-sm text-white/80 whitespace-pre-wrap leading-relaxed break-words">{active.content || "(empty)"}</div>
+                <>
+                  <div className="flex items-center gap-2 mb-3">
+                    <div className="font-semibold text-white text-sm">{active.title}</div>
+                    {active.is_template && <span className="text-[9px] uppercase tracking-wider px-1.5 py-0.5 rounded-full border border-white/15 text-white/40 flex items-center gap-1"><LayoutTemplate size={9} />Template</span>}
+                  </div>
+                  {active.kind === "pdf" && active.file_url ? (
+                    <iframe src={active.file_url} title={active.title} className="w-full h-full min-h-[400px] rounded-xl border border-white/10" />
+                  ) : (
+                    <div className="text-sm text-white/80 whitespace-pre-wrap leading-relaxed break-words">{active.content || "(empty)"}</div>
+                  )}
+                </>
               )}
               {active && (active.checklist || []).length > 0 && (
                 <div className="mt-4 pt-3 border-t border-white/10 space-y-1.5">
@@ -237,6 +300,9 @@ export function SopModal({ open, onClose, editable = false, ownerId = "", employ
               )}
               {editable && active && (
                 <div className="flex gap-2 justify-end pt-3 mt-3 border-t border-white/10">
+                  {active.is_template && (
+                    <button onClick={() => useTemplate(active)} className="px-3 py-2 rounded-lg text-xs bg-red-700/30 border border-red-700/40 text-red-200 hover:bg-red-700/40 transition flex items-center gap-1"><Copy size={11} />Use Template</button>
+                  )}
                   <button onClick={() => setEditing(active)} className="px-3 py-2 rounded-lg text-xs text-white/60 hover:text-white transition flex items-center gap-1"><Edit size={11} />Edit</button>
                   <button onClick={() => remove(active.id)} className="px-3 py-2 rounded-lg text-xs text-red-400 hover:text-red-300 transition flex items-center gap-1"><Trash2 size={11} />Delete</button>
                 </div>
