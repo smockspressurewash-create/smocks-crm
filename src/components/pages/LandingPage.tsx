@@ -2,7 +2,7 @@ import React, { useState } from "react";
 import {
   Calendar, Users2, FileText, CreditCard, MessageSquare,
   Bot, Smartphone, Trash2, Gift, Star, MapPin, Camera, CheckCircle,
-  ArrowRight, ChevronRight,
+  ArrowRight, ChevronRight, Workflow,
 } from "lucide-react";
 import {
   Reveal, MarketingStyles, BackgroundBlobs, MarketingNav, MarketingFooter,
@@ -54,13 +54,18 @@ const FEATURES: Array<{ icon: React.ElementType; title: string; desc: string }> 
   },
   {
     icon: MessageSquare,
-    title: "Automated SMS & Email Follow-Ups",
-    desc: "On-the-way texts, running-late alerts, review requests, and campaign blasts go out automatically by SMS or the owner's own Gmail — never a generic \"noreply\" address.",
+    title: "On-The-Way & Running-Late Texts",
+    desc: "On-the-way texts and running-late alerts go out automatically by SMS or the owner's own Gmail — never a generic \"noreply\" address.",
+  },
+  {
+    icon: Workflow,
+    title: "Drag-and-Drop Automations",
+    desc: "A real visual workflow builder with ready-made templates — new-lead auto-reply, review requests, overdue-invoice reminders, 90-day re-service nudges, referral asks — build once, it runs itself.",
   },
   {
     icon: Bot,
     title: "Alfred, Your AI Assistant",
-    desc: "An AI assistant that can actually act on your CRM — schedule jobs, pull reports, answer questions — from the app or straight from a text message.",
+    desc: "Alfred acts directly on your CRM — schedules jobs, sends estimates, checks stock, pulls your numbers — from inside the app or by texting it like an employee. Set vacation mode and it can run the front desk while you're out.",
   },
   {
     icon: Smartphone,
@@ -297,7 +302,7 @@ export function LandingPage({
         </div>
       </section>
 
-      <MarketingMarquee items={["Scheduling", "Estimates & Invoices", "Stripe Payments", "Client Portal", "Alfred AI Assistant", "Live Crew Tracking", "Mobile Field Portal", "Automated Follow-Ups", "Referral Program"]} />
+      <MarketingMarquee items={["Scheduling", "Estimates & Invoices", "Stripe Payments", "Client Portal", "Alfred AI Assistant", "Drag-and-Drop Automations", "Live Crew Tracking", "Mobile Field Portal", "Referral Program"]} />
 
       {/* ── Feature grid (teaser — full breakdown on #/features) ────────────── */}
       <section className="px-4 md:px-6 py-16 md:py-24 max-w-6xl mx-auto">
@@ -545,7 +550,8 @@ export function LandingPage({
               { q: "What happens when my free trial ends?", a: "You'll be prompted to pick a plan that fits your crew size. Nothing you've entered is ever deleted — pick a plan and pick up right where you left off." },
               { q: "Is my data actually separated from other businesses using CrewBoss?", a: "Yes — every business's jobs, customers, and invoices are isolated at the database level. No other CrewBoss account can ever see your data, and you can't see theirs." },
               { q: "Can customers pay and sign estimates online?", a: "Every customer gets a secure portal to view job history, e-sign estimates, and pay invoices — no account or app download required on their end." },
-              { q: "What is Alfred?", a: "Alfred is the built-in AI assistant — it answers questions about your business using your live data, drafts and sends customer messages, and can text you back and forth like a real assistant would." },
+              { q: "What is Alfred?", a: "Alfred is the built-in AI assistant — it acts directly on your CRM (scheduling, estimates, invoices, crew, reports), not just answering questions. Text it like an employee, or talk to it from inside the app, using your live business data." },
+              { q: "What can the automations actually do?", a: "Build follow-up sequences by dragging a trigger, a wait/condition, and an action onto a canvas — or start from a ready-made template: new-lead auto-reply, review requests after job completion, overdue-invoice reminders, 90-day re-service nudges, referral asks, birthday and seasonal promos, and day-of job reminders." },
             ].map((item, i) => (
               <FaqItem key={item.q} q={item.q} a={item.a} />
             ))}

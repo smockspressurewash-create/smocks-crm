@@ -2,7 +2,7 @@ import React from "react";
 import {
   Calendar, Users2, FileText, CreditCard, MessageSquare, Bot, Smartphone,
   Trash2, Gift, Star, MapPin, Camera, CheckCircle2, ClipboardList,
-  Clock, Mail, Wallet, Sparkles,
+  Clock, Mail, Wallet, Sparkles, Workflow, PhoneCall, Layers, Palmtree,
 } from "lucide-react";
 import {
   Reveal, MarketingStyles, BackgroundBlobs, MarketingNav, MarketingFooter,
@@ -141,20 +141,57 @@ const CATEGORIES: Category[] = [
   },
   {
     key: "ai",
-    label: "AI Assistant",
-    blurb: "Alfred is built into the CRM itself, not a separate chatbot bolted on top.",
+    label: "Alfred AI",
+    blurb: "Alfred is built into the CRM itself, with real access to your live data — not a chatbot bolted on top that just answers generic questions.",
     items: [
       {
         icon: Bot,
-        title: "Alfred, Your AI Assistant",
-        body: "Alfred can act on your CRM directly — schedule a job, pull a report, answer a question about a customer — from inside the app or straight from a text message.",
-        bullets: ["Works from the app or by SMS", "Multiple phone numbers can text Alfred for a business"],
+        title: "An Assistant That Actually Runs Things",
+        body: "Alfred doesn't just answer questions — it acts directly on your CRM. Schedule a job, create and send an estimate, assign crew, reschedule or cancel a job, log an expense, check stock, text a supplier, pull your business stats — all from one conversation, in the app or by text.",
+        bullets: ["Dozens of real actions, not a scripted demo", "Reads your actual jobs, customers, invoices, and crew — live"],
+      },
+      {
+        icon: PhoneCall,
+        title: "Text Alfred Like a Real Employee",
+        body: "Alfred has its own phone number — text it from the truck, and it can handle the same requests it would in the app: \"reschedule the Miller job to Thursday,\" \"who's clocked in right now,\" \"send a reminder to the 3pm appointment.\" More than one phone can be authorized to text it for a single business.",
+        bullets: ["No app open required — just send a text", "Extra authorized phone numbers per business"],
+      },
+      {
+        icon: Palmtree,
+        title: "Vacation Mode & Autonomy Levels",
+        body: "Going out of town? Set vacation mode and choose how much Alfred handles on its own — freely manage scheduling and messaging while you're out, queue everything for your approval first, or just take messages until you're back.",
+        bullets: ["Manage Everything / Ask First / Hold Everything", "Follow-up reminders it tracks and reports back on"],
       },
       {
         icon: Mail,
         title: "Owner's Own Gmail, Not a \"noreply\" Address",
-        body: "Automated emails — On The Way notices, Running Late alerts, invoices — send from the owner's own connected Gmail account, so replies land where the owner actually reads them.",
-        bullets: ["No generic Resend/noreply sender for customer-facing sends", "Feels like a real email from the business, because it is"],
+        body: "Automated emails — On The Way notices, Running Late alerts, invoices — send from the owner's own connected Gmail account, so replies land where the owner actually reads them. Alfred can also draft and send from that same connection, create Calendar events, add Google Tasks, and upload files to Drive.",
+        bullets: ["No generic Resend/noreply sender for customer-facing sends", "Same Gmail/Calendar/Drive connection Alfred and the rest of the app share"],
+      },
+    ],
+  },
+  {
+    key: "automations",
+    label: "Automations",
+    blurb: "A real drag-and-drop workflow builder with pre-built templates — set it up once, and it runs itself.",
+    items: [
+      {
+        icon: Workflow,
+        title: "Visual Workflow Builder",
+        body: "Build a follow-up sequence by dragging blocks onto a canvas — a trigger, a wait/condition, an action — instead of configuring settings in a form. Add an SMS or email step, a tag, or even a webhook to another tool.",
+        bullets: ["Trigger → Condition/Wait → Action → Tag/Webhook blocks", "Toggle any automation on or off without deleting it"],
+      },
+      {
+        icon: Layers,
+        title: "Pre-Built Templates for the Whole Customer Lifecycle",
+        body: "Ready-to-use templates cover the sequences a service business actually needs: a new-lead auto-reply, an estimate-not-viewed nudge, a review request 48 hours after the job, an overdue-invoice reminder, a re-service reminder 90 days out, a referral ask after the third job, birthday and seasonal promos, and day-of job reminders.",
+        bullets: ["Estimate follow-up escalation (soft nudge, then urgency)", "Payment-overdue and 90-day re-service reminders included"],
+      },
+      {
+        icon: Sparkles,
+        title: "Automatic Review & Follow-Up Requests",
+        body: "Fires a review request automatically once a job's marked done, and can escalate an unviewed estimate or an overdue invoice on its own schedule — no owner has to remember to follow up.",
+        bullets: ["Review requests fire right after job completion", "Escalating reminders instead of a single one-shot text"],
       },
     ],
   },
