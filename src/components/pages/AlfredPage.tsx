@@ -3274,7 +3274,13 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
       const vacIsOut = vacInfo?.active && today() >= vacInfo.startDate && today() <= vacInfo.endDate;
       const vacationContext = vacInfo?.active
         ? `\n\nVACATION MODE: ${vacIsOut ? "CURRENTLY ACTIVE" : "scheduled"} — owner is out ${vacInfo.startDate} to ${vacInfo.endDate}. Autonomy level: ${vacInfo.autonomyLevel} (manage_everything = act on the owner's behalf without asking; ask_first = prepare/draft things but don't send/commit without the owner's OK; hold_everything = do nothing proactive, just take messages). Check-in frequency the owner wants: ${vacInfo.checkInFrequency}.${vacInfo.notes ? " Owner's notes: " + vacInfo.notes : ""} Let this shape how you act while vacation mode is active, and mention it if relevant.`
-        : `\n\nVACATION MODE: not set. If the owner mentions going on vacation, being out, or unreachable, walk them through set_vacation_mode conversationally (see tool description) rather than guessing any of its fields.`;
+        // FEATURE — "when users sign up, ask how much permission to give the
+        // AI assistant." Signup wizard sets settings.alfredAutonomyLevel as
+        // a general, always-on default (same three-tier scale vacation
+        // mode's own autonomyLevel already uses) — this is what governs
+        // Alfred's baseline behavior the rest of the time, since vacation
+        // mode's own autonomyLevel only applies while it's actually active.
+        : `\n\nGENERAL AUTONOMY LEVEL (owner's standing preference, set at signup, changeable in Settings): ${(settings as any)?.alfredAutonomyLevel || "ask_first"} (manage_everything = act on the owner's behalf without asking first; ask_first = prepare/draft things — estimates, messages, schedule changes — but confirm with the owner before sending/committing anything customer-facing or irreversible; hold_everything = don't take proactive action, just answer questions and take messages). VACATION MODE: not set. If the owner mentions going on vacation, being out, or unreachable, walk them through set_vacation_mode conversationally (see tool description) rather than guessing any of its fields.`;
       // BUG FIX — this used to check only settings.googleConnected, a
       // React-state flag that can lag behind the real connection state (see
       // getStoredGoogleConnection() in lib/supabase.ts), which is why Alfred

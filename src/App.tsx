@@ -2500,6 +2500,20 @@ export function App() {
   // but nothing required it up front — an owner could go their entire time
   // in the app without ever setting it. Required here at first-run instead.
   const [companySetupState, setCompanySetupState] = useState("");
+  // FEATURE — "when users sign up and go through the setup wizard, it
+  // should ask them right away how much permission to give the AI
+  // assistant, and whether automations should send automatically or ask
+  // again." A second wizard step, right after company name/state: these two
+  // choices set the DEFAULTS a brand-new account starts with (Alfred's
+  // existing autonomyLevel concept — see set_vacation_mode in AlfredPage.tsx
+  // — and whether new automations start auto-approved or hold for review,
+  // the same autoApprove flag AutomationsPage.tsx/useAutomationEngine.ts
+  // already respect per-automation) — both stay changeable later in
+  // Settings, this just picks a sane starting point instead of leaving a
+  // brand-new owner on an undocumented implicit default.
+  const [setupStep, setSetupStep] = useState<1 | 2>(1);
+  const [setupAlfredAutonomy, setSetupAlfredAutonomy] = useState<"manage_everything" | "ask_first" | "hold_everything">("ask_first");
+  const [setupAutomationApproval, setSetupAutomationApproval] = useState<"review" | "auto">("review");
 
   useEffect(() => {
     if (!settings.googleConnected || setupDone || oauthProcessing) return;
@@ -2523,9 +2537,20 @@ export function App() {
   const saveCompanySetup = async () => {
     const name = companySetupName.trim() || "My Company";
     const suggestedRate = companySetupState ? US_STATE_BASE_TAX_RATES[companySetupState] : undefined;
-    setSettings((prev: any) => ({ ...prev, companyName: name, ...(companySetupState ? { companyState: companySetupState } : {}), ...(suggestedRate !== undefined && !prev.taxRate ? { taxRate: suggestedRate } : {}) }));
+    setSettings((prev: any) => ({
+      ...prev, companyName: name,
+      ...(companySetupState ? { companyState: companySetupState } : {}),
+      ...(suggestedRate !== undefined && !prev.taxRate ? { taxRate: suggestedRate } : {}),
+      alfredAutonomyLevel: setupAlfredAutonomy,
+      // Reuses the existing settings.automationDefaultAutoApprove flag
+      // AutomationsPage.tsx already reads when creating a new workflow
+      // (see its own "Default Send Behavior" setting) — this wizard just
+      // picks up the same field instead of introducing a parallel one.
+      automationDefaultAutoApprove: setupAutomationApproval === "auto",
+    }));
     setSetupDone("1");
     setCompanySetupOpen(false);
+    setSetupStep(1);
     // Try Supabase org creation — graceful failure if tables don't exist
     try {
       const { data: { session } } = await supabase.auth.getSession();
@@ -5523,46 +5548,98 @@ export function App() {
       {companySetupOpen && (
         <div className="fixed inset-0 z-[200] bg-black/80 backdrop-blur flex items-center justify-center p-4">
           <div className="w-full max-w-sm bg-black/95 border border-red-900/40 rounded-2xl p-6 shadow-2xl space-y-4">
-            <div className="text-center">
-              <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-red-600 to-red-900 flex items-center justify-center mx-auto mb-3">
-                <Globe size={24} className="text-white" />
-              </div>
-              <div className="text-lg font-bold">Welcome! Set up your account</div>
-              <div className="text-sm text-white/50 mt-1">What's your company name?</div>
-            </div>
-            <div>
-              <label className="text-xs text-white/50 mb-1.5 block">Company Name</label>
-              <input
-                autoFocus
-                type="text"
-                value={companySetupName}
-                onChange={e => setCompanySetupName(e.target.value)}
-                onKeyDown={e => e.key === "Enter" && saveCompanySetup()}
-                placeholder="e.g. Crew Boss"
-                className="w-full bg-white/5 border border-white/20 rounded-xl px-3 py-2.5 text-sm text-white placeholder-white/30 focus:outline-none focus:border-red-500/50"
-              />
-            </div>
-            <div>
-              <label className="text-xs text-white/50 mb-1.5 block">State <span className="text-white/30 font-normal">(sets your sales tax rate)</span></label>
-              <select
-                value={companySetupState}
-                onChange={e => setCompanySetupState(e.target.value)}
-                className="w-full bg-white/5 border border-white/20 rounded-xl px-3 py-2.5 text-sm text-white focus:outline-none focus:border-red-500/50"
-              >
-                <option value="" className="bg-black">Select your state…</option>
-                {Object.keys(US_STATE_BASE_TAX_RATES).sort().map(code => <option key={code} value={code} className="bg-black">{code}</option>)}
-              </select>
-            </div>
-            <button
-              onClick={saveCompanySetup}
-              disabled={!companySetupName.trim() || !companySetupState}
-              className="w-full py-2.5 rounded-xl bg-gradient-to-r from-red-600 to-red-800 text-white text-sm font-semibold hover:from-red-500 hover:to-red-700 transition disabled:opacity-40 disabled:cursor-not-allowed"
-            >
-              Get Started
-            </button>
-            <button onClick={() => { setSetupDone("1"); setCompanySetupOpen(false); }} className="w-full text-center text-xs text-white/30 hover:text-white/50 transition">
-              Skip for now
-            </button>
+            {setupStep === 1 ? (
+              <>
+                <div className="text-center">
+                  <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-red-600 to-red-900 flex items-center justify-center mx-auto mb-3">
+                    <Globe size={24} className="text-white" />
+                  </div>
+                  <div className="text-lg font-bold">Welcome! Set up your account</div>
+                  <div className="text-sm text-white/50 mt-1">What's your company name?</div>
+                </div>
+                <div>
+                  <label className="text-xs text-white/50 mb-1.5 block">Company Name</label>
+                  <input
+                    autoFocus
+                    type="text"
+                    value={companySetupName}
+                    onChange={e => setCompanySetupName(e.target.value)}
+                    onKeyDown={e => e.key === "Enter" && companySetupName.trim() && companySetupState && setSetupStep(2)}
+                    placeholder="e.g. Crew Boss"
+                    className="w-full bg-white/5 border border-white/20 rounded-xl px-3 py-2.5 text-sm text-white placeholder-white/30 focus:outline-none focus:border-red-500/50"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs text-white/50 mb-1.5 block">State <span className="text-white/30 font-normal">(sets your sales tax rate)</span></label>
+                  <select
+                    value={companySetupState}
+                    onChange={e => setCompanySetupState(e.target.value)}
+                    className="w-full bg-white/5 border border-white/20 rounded-xl px-3 py-2.5 text-sm text-white focus:outline-none focus:border-red-500/50"
+                  >
+                    <option value="" className="bg-black">Select your state…</option>
+                    {Object.keys(US_STATE_BASE_TAX_RATES).sort().map(code => <option key={code} value={code} className="bg-black">{code}</option>)}
+                  </select>
+                </div>
+                <button
+                  onClick={() => setSetupStep(2)}
+                  disabled={!companySetupName.trim() || !companySetupState}
+                  className="w-full py-2.5 rounded-xl bg-gradient-to-r from-red-600 to-red-800 text-white text-sm font-semibold hover:from-red-500 hover:to-red-700 transition disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  Next
+                </button>
+                <button onClick={() => { setSetupDone("1"); setCompanySetupOpen(false); setSetupStep(1); }} className="w-full text-center text-xs text-white/30 hover:text-white/50 transition">
+                  Skip for now
+                </button>
+              </>
+            ) : (
+              <>
+                <div className="text-center">
+                  <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-red-600 to-red-900 flex items-center justify-center mx-auto mb-3">
+                    <Bot size={24} className="text-white" />
+                  </div>
+                  <div className="text-lg font-bold">How hands-off do you want to be?</div>
+                  <div className="text-sm text-white/50 mt-1">You can change either of these anytime in Settings.</div>
+                </div>
+                <div>
+                  <label className="text-xs text-white/50 mb-1.5 block">How much can Alfred do on its own?</label>
+                  <div className="space-y-1.5">
+                    {[
+                      { v: "manage_everything" as const, l: "Manage everything", d: "Alfred can handle scheduling/messaging on its own" },
+                      { v: "ask_first" as const, l: "Ask first (recommended)", d: "Alfred queues things up, waits for your approval" },
+                      { v: "hold_everything" as const, l: "Hold everything", d: "Alfred just takes messages until you're ready" },
+                    ].map(opt => (
+                      <button key={opt.v} onClick={() => setSetupAlfredAutonomy(opt.v)} className={"w-full text-left px-3 py-2 rounded-xl border transition " + (setupAlfredAutonomy === opt.v ? "bg-red-950/30 border-red-600/50" : "bg-white/5 border-white/10 hover:border-white/20")}>
+                        <div className="text-sm font-medium text-white">{opt.l}</div>
+                        <div className="text-[11px] text-white/40">{opt.d}</div>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div>
+                  <label className="text-xs text-white/50 mb-1.5 block">Should new automations send automatically, or wait for your review?</label>
+                  <div className="space-y-1.5">
+                    {[
+                      { v: "review" as const, l: "Review before sending (recommended)", d: "You approve each batch before anything goes out" },
+                      { v: "auto" as const, l: "Send automatically", d: "New automations you create start pre-approved" },
+                    ].map(opt => (
+                      <button key={opt.v} onClick={() => setSetupAutomationApproval(opt.v)} className={"w-full text-left px-3 py-2 rounded-xl border transition " + (setupAutomationApproval === opt.v ? "bg-red-950/30 border-red-600/50" : "bg-white/5 border-white/10 hover:border-white/20")}>
+                        <div className="text-sm font-medium text-white">{opt.l}</div>
+                        <div className="text-[11px] text-white/40">{opt.d}</div>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <button
+                  onClick={saveCompanySetup}
+                  className="w-full py-2.5 rounded-xl bg-gradient-to-r from-red-600 to-red-800 text-white text-sm font-semibold hover:from-red-500 hover:to-red-700 transition"
+                >
+                  Get Started
+                </button>
+                <button onClick={() => setSetupStep(1)} className="w-full text-center text-xs text-white/30 hover:text-white/50 transition">
+                  Back
+                </button>
+              </>
+            )}
           </div>
         </div>
       )}

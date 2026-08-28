@@ -168,6 +168,7 @@ interface ResolvedOwnerSettings {
   // tool (in-app or text) — threaded through here so text-Alfred sees it
   // proactively in its system prompt, same pattern as alfredCapabilities.
   vacationMode?: { active: boolean; startDate?: string; endDate?: string; autonomyLevel?: string; checkInFrequency?: string; notes?: string };
+  alfredAutonomyLevel?: string;
 }
 
 const shapeSettings = (row: any, data: any): ResolvedOwnerSettings => ({
@@ -230,6 +231,7 @@ const shapeSettings = (row: any, data: any): ResolvedOwnerSettings => ({
   alfredVoiceReplies: (data?.alfredVoiceReplies === "always" || data?.alfredVoiceReplies === "off") ? data.alfredVoiceReplies : "ask",
   alfredCapabilities: (data?.alfredCapabilities && typeof data.alfredCapabilities === "object") ? data.alfredCapabilities : {},
   vacationMode: (data?.vacationMode && typeof data.vacationMode === "object") ? data.vacationMode : undefined,
+  alfredAutonomyLevel: data?.alfredAutonomyLevel || undefined,
 });
 
 const fetchAppSettings = async (env: Record<string, string>, toNumber: string): Promise<ResolvedOwnerSettings> => {
@@ -551,7 +553,7 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
     const isStop = STOP_WORDS.includes(body);
     const isStart = START_WORDS.includes(body);
     const resolved = await fetchAppSettings(context.env, params.To || "");
-    const { companyName, keyword, ownerId, myPhone, alfredExtraPhones, alfredExtraPhoneRoles, alfredSmsEnabled, modelPriority, activeModel, openaiKey, googleProviderToken, googleTokenExpiresAt, testModeEnabled, alfredAutoApproveReschedules, alfredPersonality, owmKey, weatherLocation, companyAddress, alfredVoiceReplies, myEmail, alfredCapabilities, vacationMode } = resolved;
+    const { companyName, keyword, ownerId, myPhone, alfredExtraPhones, alfredExtraPhoneRoles, alfredSmsEnabled, modelPriority, activeModel, openaiKey, googleProviderToken, googleTokenExpiresAt, testModeEnabled, alfredAutoApproveReschedules, alfredPersonality, owmKey, weatherLocation, companyAddress, alfredVoiceReplies, myEmail, alfredCapabilities, vacationMode, alfredAutonomyLevel } = resolved;
     // SECURITY FIX — Twilio auth token, the Google refresh_token, and every
     // AI model key moved out of app_settings.data into owner_secrets
     // (migration 0085 — see its comment for the full story). `resolved`
@@ -668,7 +670,7 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
       }
     }
     if (alfredSmsEnabled && authorizedPhones.includes(fromDigits) && !assignedEmployeeId && !preResolvedEmployee) {
-      const ctx = { authHeaders, ownerId, companyName, twilioSid, twilioToken, twilioFrom, origin: new URL(context.request.url).origin, fromPhone: from, googleProviderToken, googleRefreshToken, googleTokenExpiresAt, testModeEnabled, ownerAuthorizedPhones: authorizedPhones, alfredPersonality, owmKey, weatherLocation, companyAddress, myEmail, alfredCapabilities, vacationMode, env: context.env as Record<string, string> };
+      const ctx = { authHeaders, ownerId, companyName, twilioSid, twilioToken, twilioFrom, origin: new URL(context.request.url).origin, fromPhone: from, googleProviderToken, googleRefreshToken, googleTokenExpiresAt, testModeEnabled, ownerAuthorizedPhones: authorizedPhones, alfredPersonality, owmKey, weatherLocation, companyAddress, myEmail, alfredCapabilities, vacationMode, alfredAutonomyLevel, env: context.env as Record<string, string> };
       // BUG FIX — this branch never logged the OWNER's own inbound text to
       // inbox_threads at all (only to alfred_sms_threads, which the Inbox
       // UI never reads) — sendAlfredSms below only logs Alfred's OUTGOING
