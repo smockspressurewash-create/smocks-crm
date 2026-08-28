@@ -21,6 +21,42 @@ export const POLL_INTERVAL_OPTIONS = [
 // any stored override and returns the single recommended interval.
 export const getPollIntervalMs = (_settings?: { pollIntervalMs?: number } | null): number => DEFAULT_POLL_INTERVAL_MS;
 
+// ─── Offline job-patch queue (employee portal) ─────────────────────────────────
+// FEATURE — "make the employee portal work offline and automatically sync
+// when back online." The portal already updates local state optimistically
+// on every job write (see EmployeePortal's updateJob), so the UI itself
+// already "works" offline — the real gap was that a failed Supabase write
+// while offline just got logged to console and forgotten, with no retry
+// once connectivity returned. These helpers back a small localStorage queue
+// of job patches that failed specifically because the device was offline;
+// EmployeePortal flushes it on the browser's `online` event. Patches for
+// the same job are merged (last write per field wins), so a checklist
+// toggled three times offline replays as one merged write, not three.
+const PENDING_JOB_SYNC_KEY = "smocks.pendingJobSync";
+
+export type PendingJobPatch = { jobId: string; patch: Record<string, unknown>; queuedAt: number };
+
+export const getPendingJobPatches = (): PendingJobPatch[] => {
+  try { return JSON.parse(localStorage.getItem(PENDING_JOB_SYNC_KEY) || "[]"); } catch { return []; }
+};
+
+export const queueOfflineJobPatch = (jobId: string, patch: Record<string, unknown>): void => {
+  try {
+    const existing = getPendingJobPatches();
+    const idx = existing.findIndex(p => p.jobId === jobId);
+    if (idx >= 0) existing[idx] = { jobId, patch: { ...existing[idx].patch, ...patch }, queuedAt: Date.now() };
+    else existing.push({ jobId, patch, queuedAt: Date.now() });
+    localStorage.setItem(PENDING_JOB_SYNC_KEY, JSON.stringify(existing));
+  } catch { /* localStorage unavailable — the offline edit still lives in in-memory jobs state for this session */ }
+};
+
+export const clearPendingJobPatch = (jobId: string): void => {
+  try {
+    const remaining = getPendingJobPatches().filter(p => p.jobId !== jobId);
+    localStorage.setItem(PENDING_JOB_SYNC_KEY, JSON.stringify(remaining));
+  } catch { /* ignore */ }
+};
+
 // ─── Job media (Storage-backed photos/videos/signatures) ──────────────────────
 // Every Photo/ChecklistPhoto/JobVideo/JobSignOff can carry EITHER a Storage
 // `url` (new captures, once the job-media bucket exists — see

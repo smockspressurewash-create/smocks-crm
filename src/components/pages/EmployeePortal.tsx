@@ -3,7 +3,7 @@ import {
   Clock, Briefcase, Calendar, ChevronLeft, CheckSquare, Camera,
   LogOut, MapPin, Phone, User, Play, Pause, Square, Plus, X, Eye, EyeOff, DollarSign, BookOpen,
   ChevronRight, Home, List, CheckCircle, AlertCircle, AlertTriangle, Image, FileText,
-  Video, PenLine, Shield, Navigation, Database, Route, ToggleRight, ToggleLeft, Download, Bell, CreditCard, Mic
+  Video, PenLine, Shield, Navigation, Database, Route, ToggleRight, ToggleLeft, Download, Bell, CreditCard, Mic, WifiOff, RefreshCw
 } from "lucide-react";
 import { supabase, getStoredGoogleConnection, fetchOwnerGoogleToken } from "../../lib/supabase";
 import { getEmpGoogleToken, isEmpGoogleTokenValid, saveEmpGoogleToken, clearEmpGoogleToken, refreshEmpGoogleToken, getValidEmpGoogleToken, createGCalEvent, updateGCalEvent, onGoogleAuthFailure, verifyGoogleTokenLive } from "../../lib/googleApi";
@@ -25,7 +25,8 @@ import { PushOptInPrompt } from "../ui/PushOptInPrompt";
 import { SopModal } from "../ui/SopModal";
 import { chargeSavedPaymentMethod, sendPaymentReceipt, listCustomerPaymentMethods } from "../../lib/stripe";
 import { BarChart, Bar, LineChart, Line, XAxis, YAxis, ResponsiveContainer, Tooltip, CartesianGrid } from "recharts";
-import { fmt, uid, today, localDateStr, localDateKey, shiftDayStr, daysFromNow, computeJobRatingScore, setOAuthIntent, compressImageFile, getEffectiveRate, computeNextRecurringDate, weekdayLabels, normalizeJobRow, totalJobPhotoCount, mediaSrc, dataUrlToBlob, uploadJobMedia, checkVideoLimits, stripLegacyJobFields, reconcileCrewAfterAssign, getPollIntervalMs, getPayPeriodBounds, haversineMiles, resolveTermsForJobType, buildJobCalendarDescription, haptic } from "../../lib/utils";
+import { fmt, uid, today, localDateStr, localDateKey, shiftDayStr, daysFromNow, computeJobRatingScore, setOAuthIntent, compressImageFile, getEffectiveRate, computeNextRecurringDate, weekdayLabels, normalizeJobRow, totalJobPhotoCount, mediaSrc, dataUrlToBlob, uploadJobMedia, checkVideoLimits, stripLegacyJobFields, reconcileCrewAfterAssign, getPollIntervalMs, getPayPeriodBounds, haversineMiles, resolveTermsForJobType, buildJobCalendarDescription, haptic, queueOfflineJobPatch, getPendingJobPatches, clearPendingJobPatch } from "../../lib/utils";
+import { useOnlineStatus } from "../../hooks/useOnlineStatus";
 import { callModel, MODELS } from "../../lib/api";
 import { usePollGate } from "../../hooks/usePollGate";
 import { usePersistent } from "../../hooks/usePersistent";
@@ -643,6 +644,10 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
 
   const hasRequiredGear = (job.equipment || []).length > 0 || (job.requiredChemicals || []).length > 0;
   const sendRunningLate = async (minutes: number) => {
+    // See sendOtw's matching comment — a delayed "running late" text is
+    // actively misleading, so this also fails fast offline rather than
+    // queuing.
+    if (typeof navigator !== "undefined" && !navigator.onLine) { toast("No internet connection — sending a message needs a live connection. Try again once you're back online.", "red"); return; }
     setSendingRunningLate(true);
     const nowMs = Date.now() + minutes * 60000;
     const newEta = new Date(nowMs).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
@@ -714,6 +719,13 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
   };
 
   const sendOtw = async () => {
+    // FEATURE — "if certain functions cannot work offline, display an
+    // error message indicating limited functionality." Sending a real SMS/
+    // email needs a live connection to Twilio/Gmail — there's nothing
+    // useful to queue for later (an "on my way" text sent an hour late is
+    // worse than not sending one), so this fails fast with a clear reason
+    // instead of hanging on the 15s timeout below only to fail anyway.
+    if (typeof navigator !== "undefined" && !navigator.onLine) { toast("No internet connection — sending a message needs a live connection. Try again once you're back online.", "red"); return; }
     setSendingOtw(true);
     const msg = `Hi ${customer?.firstName || "there"}, your CrewBoss technician is on the way!`;
     try {
@@ -3595,6 +3607,35 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   const [onboardingLoading, setOnboardingLoading] = useState(false);
   const [onboardingSavingId, setOnboardingSavingId] = useState<string | null>(null);
 
+  // FEATURE — "make the employee portal work offline and automatically
+  // sync when back online." isOnline drives the persistent banner below;
+  // pendingSyncCount reflects the offline job-patch queue (see updateJob's
+  // queueOfflineJobPatch calls) so the employee can see there's real
+  // unsynced work waiting, not just a vague "offline" label.
+  const isOnline = useOnlineStatus();
+  const [pendingSyncCount, setPendingSyncCount] = useState(() => getPendingJobPatches().length);
+  const [syncingOffline, setSyncingOffline] = useState(false);
+  useEffect(() => {
+    if (!isOnline) { setPendingSyncCount(getPendingJobPatches().length); return; }
+    const pending = getPendingJobPatches();
+    if (pending.length === 0) return;
+    setSyncingOffline(true);
+    (async () => {
+      let succeeded = 0;
+      for (const p of pending) {
+        try {
+          const res = await withTimeout<any>((supabase as any).from("jobs").update(p.patch).eq("id", p.jobId).select("id"), 20000, "Offline sync");
+          if (!res?.error && res?.data?.length > 0) { clearPendingJobPatch(p.jobId); succeeded++; }
+        } catch (e: any) {
+          console.warn("[OfflineSync] failed to replay patch for job", p.jobId, ":", e?.message);
+        }
+      }
+      setPendingSyncCount(getPendingJobPatches().length);
+      setSyncingOffline(false);
+      if (succeeded > 0) toast?.(`Synced ${succeeded} offline change${succeeded !== 1 ? "s" : ""} ✓`, "green");
+    })();
+  }, [isOnline]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // FEATURE — "a training process for employees... training tests with
   // multiple-choice questions that are graded." myTrainingCompletions is
   // this employee's own pass/fail history, fetched once myEmployee is
@@ -4618,10 +4659,30 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     // .select("id") lets that be told apart from a real success so callers
     // (e.g. the Reschedule flow) don't report "saved ✓" for a write that
     // silently did nothing.
+    // FEATURE — offline support. A save attempted while the device is
+    // offline is guaranteed to time out (no point burning the full 20s +
+    // retry window) — queue it immediately instead, and let the `online`
+    // event flush effect below replay it once connectivity returns. This
+    // is what makes "changes for a job were not saved" while offline
+    // become "saved offline — synced automatically at 4:32pm" instead.
+    if (typeof navigator !== "undefined" && !navigator.onLine) {
+      queueOfflineJobPatch(jobId, patch);
+      setPendingSyncCount(getPendingJobPatches().length);
+      return Promise.resolve({ queuedOffline: true });
+    }
     const attempt = () => withTimeout<any>((supabase as any).from("jobs").update(patch).eq("id", jobId).select("id"), 20000, "Job save");
     return attempt()
       .catch((e: any) => { console.warn("[updateJob] first attempt failed/timed out — retrying once:", e?.message); return attempt().catch((e2: any) => ({ error: e2 })); })
       .then(async (result: any) => {
+        // A retry-exhausted failure while offline (e.g. the device dropped
+        // connectivity mid-save, after the initial onLine check above
+        // passed) queues for later instead of surfacing as a hard error —
+        // same reasoning as the up-front check.
+        if (result?.error && typeof navigator !== "undefined" && !navigator.onLine) {
+          queueOfflineJobPatch(jobId, patch);
+          setPendingSyncCount(getPendingJobPatches().length);
+          return { queuedOffline: true };
+        }
         if (result?.error) {
           console.warn("[updateJob] full patch failed:", result.error.message, "— retrying core fields only");
           const core: any = {};
@@ -6449,6 +6510,24 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
               </Glass>
             )}
           </div>
+        </div>
+      )}
+
+      {/* FEATURE — persistent offline banner. Job edits (checklist toggles,
+          clock in/out, photos, etc.) already update local state instantly
+          regardless of connectivity — this just makes that state visible so
+          it doesn't read as "did my tap even register." Actions that
+          genuinely need a live connection (sending texts, charging a card)
+          check isOnline themselves at their own call sites and show a
+          specific "needs internet" message instead of hanging. */}
+      {!isOnline && (
+        <div className="flex-shrink-0 bg-yellow-900/40 border-b border-yellow-700/40 px-4 py-1.5 text-center text-[11px] font-medium text-yellow-200 flex items-center justify-center gap-1.5">
+          <WifiOff size={12} />You're offline — changes are being saved and will sync automatically once you're back online.
+        </div>
+      )}
+      {isOnline && syncingOffline && (
+        <div className="flex-shrink-0 bg-blue-900/40 border-b border-blue-700/40 px-4 py-1.5 text-center text-[11px] font-medium text-blue-200 flex items-center justify-center gap-1.5">
+          <RefreshCw size={12} className="animate-spin" />Syncing {pendingSyncCount} offline change{pendingSyncCount !== 1 ? "s" : ""}…
         </div>
       )}
 
