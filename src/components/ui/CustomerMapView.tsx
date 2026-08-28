@@ -21,10 +21,41 @@ const writeCache = (cache: Record<string, { lat: number; lng: number }>) => {
   try { localStorage.setItem(GEOCODE_CACHE_KEY, JSON.stringify(cache)); } catch { /* storage full/unavailable — cache just won't persist */ }
 };
 
+// FEATURE — "add filters to view different customer tags or types." Small
+// XSS-safe HTML escaper for building each pin's click-popup content, since
+// customer name/phone/email/tags are free-text and get dropped straight
+// into a Google Maps InfoWindow's innerHTML.
+const escapeHtml = (s: string) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c] as string));
+
+// FEATURE — "clicking should display a pop-up with customer information."
+// Real name/phone/email/address/tags, not just a name — shown in LiveMap's
+// click InfoWindow via LiveMapPin.infoHtml.
+const buildInfoHtml = (c: any): string => {
+  const name = `${c.firstName || ""} ${c.lastName || ""}`.trim() || "Unnamed customer";
+  const rows: string[] = [];
+  if (c.phone) rows.push(`📞 ${escapeHtml(c.phone)}`);
+  if (c.email) rows.push(`✉️ ${escapeHtml(c.email)}`);
+  if (c.address) rows.push(`📍 ${escapeHtml(c.address)}`);
+  const tags: string[] = c.tags || [];
+  const tagsHtml = tags.length
+    ? `<div style="margin-top:4px;">${tags.map(t => `<span style="display:inline-block;background:#eef2ff;color:#3730a3;font-size:10px;font-weight:600;padding:1px 6px;border-radius:9999px;margin:2px 3px 0 0;">${escapeHtml(t)}</span>`).join("")}</div>`
+    : "";
+  return `<div style="font:600 13px system-ui,sans-serif;padding:2px 4px;max-width:220px;">
+    ${escapeHtml(name)}
+    <div style="font-weight:400;color:#444;font-size:11.5px;line-height:1.5;margin-top:3px;">${rows.join("<br/>")}</div>
+    ${tagsHtml}
+  </div>`;
+};
+
 export function CustomerMapView({ customers = [], apiKey }: { customers?: any[]; apiKey: string }) {
   const [pins, setPins] = useState<LiveMapPin[]>([]);
   const [geocoding, setGeocoding] = useState(false);
   const [progress, setProgress] = useState({ done: 0, total: 0 });
+  const [tagFilter, setTagFilter] = useState<string>("");
+  const allTags = Array.from(new Set(customers.flatMap((c: any) => c.tags || []))).sort();
+  const visibleCustomers = tagFilter ? customers.filter((c: any) => (c.tags || []).includes(tagFilter)) : customers;
+  const visibleIds = new Set(visibleCustomers.map((c: any) => c.id));
+  const visiblePins = tagFilter ? pins.filter(p => visibleIds.has(p.id)) : pins;
   // BUG FIX — "the customer map view does not show pins." Every geocode
   // failure was silently swallowed with no visible error at all — a customer
   // list where EVERY address fails (the actual live cause: the Google Maps
@@ -56,7 +87,7 @@ export function CustomerMapView({ customers = [], apiKey }: { customers?: any[];
       const toGeocode: any[] = [];
       for (const c of withAddress) {
         const hit = cache[c.address];
-        if (hit) initialPins.push({ id: c.id, label: `${c.firstName} ${c.lastName}`.trim() || c.address, lat: hit.lat, lng: hit.lng, updatedAt: Date.now() });
+        if (hit) initialPins.push({ id: c.id, label: `${c.firstName} ${c.lastName}`.trim() || c.address, lat: hit.lat, lng: hit.lng, updatedAt: Date.now(), infoHtml: buildInfoHtml(c) });
         else toGeocode.push(c);
       }
       setPins(initialPins);
@@ -85,7 +116,7 @@ export function CustomerMapView({ customers = [], apiKey }: { customers?: any[];
           const loc = result.geometry.location;
           const lat = loc.lat(), lng = loc.lng();
           cache[c.address] = { lat, lng };
-          setPins(prev => [...prev, { id: c.id, label: `${c.firstName} ${c.lastName}`.trim() || c.address, lat, lng, updatedAt: Date.now() }]);
+          setPins(prev => [...prev, { id: c.id, label: `${c.firstName} ${c.lastName}`.trim() || c.address, lat, lng, updatedAt: Date.now(), infoHtml: buildInfoHtml(c) }]);
           consecutiveFailures = 0;
         } catch (e: any) {
           // Bad/unresolvable address is normal and expected sometimes — skip
@@ -114,6 +145,19 @@ export function CustomerMapView({ customers = [], apiKey }: { customers?: any[];
 
   return (
     <div className="space-y-2">
+      {allTags.length > 0 && (
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="text-[11px] text-white/40">Filter by tag:</span>
+          <button onClick={() => setTagFilter("")} className={"text-[11px] px-2.5 py-1 rounded-full border transition " + (!tagFilter ? "bg-blue-600/80 border-blue-400/50 text-white" : "bg-black/30 border-white/10 text-white/50 hover:text-white/80")}>
+            All ({customers.length})
+          </button>
+          {allTags.map(tag => (
+            <button key={tag} onClick={() => setTagFilter(t => t === tag ? "" : tag)} className={"text-[11px] px-2.5 py-1 rounded-full border transition " + (tagFilter === tag ? "bg-blue-600/80 border-blue-400/50 text-white" : "bg-black/30 border-white/10 text-white/50 hover:text-white/80")}>
+              {tag}
+            </button>
+          ))}
+        </div>
+      )}
       {geocoding && (
         <div className="text-[11px] text-white/40 flex items-center gap-2">
           <div className="w-3 h-3 border-2 border-white/30 border-t-white/70 rounded-full animate-spin" />
@@ -127,8 +171,8 @@ export function CustomerMapView({ customers = [], apiKey }: { customers?: any[];
             : "No pins loaded — Google's geocoding rate limit was hit immediately (OVER_QUERY_LIMIT). Check the API key's quota/billing in the Google Cloud Console."}
         </div>
       )}
-      <LiveMap apiKey={apiKey} pins={pins} heightClassName="h-[70vh] min-h-[420px]" />
-      <div className="text-[11px] text-white/40">{pins.length} of {customers.filter((c: any) => c.address).length} customers with an address plotted.</div>
+      <LiveMap apiKey={apiKey} pins={visiblePins} heightClassName="h-[70vh] min-h-[420px]" />
+      <div className="text-[11px] text-white/40">{visiblePins.length} of {visibleCustomers.filter((c: any) => c.address).length} customers with an address plotted{tagFilter ? ` (filtered: ${tagFilter})` : ""}.</div>
     </div>
   );
 }

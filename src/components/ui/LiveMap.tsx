@@ -20,6 +20,12 @@ export interface LiveMapPin {
   // (when `routeLine` is also true on the map) a polyline is drawn through
   // every numbered pin in ascending stop order.
   stopNumber?: number;
+  // FEATURE — "hovering over a pin should show the customer name, and
+  // clicking should display a pop-up with customer information." Rich HTML
+  // shown in a real InfoWindow on click (phone/email/tags/etc) — falls back
+  // to just `label` when a caller doesn't supply this (Live Crew View's
+  // employee/job pins keep their existing plain-name behavior unchanged).
+  infoHtml?: string;
 }
 
 const DARK_STYLE = [
@@ -83,14 +89,40 @@ export function LiveMap({ apiKey, pins, heightClassName = "h-56", routeLine = fa
   useEffect(() => {
     if (!ready || !mapObjRef.current) return;
     const g = (window as any).google;
-    markersRef.current.forEach(m => m.setMap(null));
-    markersRef.current = pins.map(p => new g.maps.Marker({
-      position: { lat: p.lat, lng: p.lng },
-      map: mapObjRef.current,
-      label: { text: p.stopNumber != null ? String(p.stopNumber) : (p.label[0]?.toUpperCase() || "?"), color: "#fff", fontWeight: "700" },
-      title: `${p.stopNumber != null ? `Stop ${p.stopNumber} — ` : ""}${p.label} — updated ${new Date(p.updatedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`,
-      icon: p.kind === "job" ? { url: "https://maps.google.com/mapfiles/ms/icons/blue-dot.png" } : undefined,
-    }));
+    markersRef.current.forEach(m => {
+      m.__hoverInfo?.close();
+      m.__clickInfo?.close();
+      m.setMap(null);
+    });
+    markersRef.current = pins.map(p => {
+      const marker = new g.maps.Marker({
+        position: { lat: p.lat, lng: p.lng },
+        map: mapObjRef.current,
+        label: { text: p.stopNumber != null ? String(p.stopNumber) : (p.label[0]?.toUpperCase() || "?"), color: "#fff", fontWeight: "700" },
+        icon: p.kind === "job" ? { url: "https://maps.google.com/mapfiles/ms/icons/blue-dot.png" } : undefined,
+      });
+      // FEATURE — "hovering over a pin should show the customer name, and
+      // clicking should display a pop-up with customer information." A
+      // styled InfoWindow (not the unstyled native `title` tooltip) shows
+      // just the name on hover; a click swaps in the richer `infoHtml`.
+      const hoverName = `${p.stopNumber != null ? `Stop ${p.stopNumber} — ` : ""}${p.label}`;
+      const hoverInfo = new g.maps.InfoWindow({
+        content: `<div style="font:600 12px system-ui,sans-serif;padding:2px 4px;">${hoverName}</div>`,
+        disableAutoPan: true,
+      });
+      const clickInfo = new g.maps.InfoWindow({
+        content: p.infoHtml || `<div style="font:600 13px system-ui,sans-serif;padding:2px 4px;">${hoverName}<br/><span style="font-weight:400;color:#666;font-size:11px;">updated ${new Date(p.updatedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</span></div>`,
+      });
+      marker.__hoverInfo = hoverInfo;
+      marker.__clickInfo = clickInfo;
+      marker.addListener("mouseover", () => { if (!clickInfo.get("map")) hoverInfo.open(mapObjRef.current, marker); });
+      marker.addListener("mouseout", () => hoverInfo.close());
+      marker.addListener("click", () => {
+        hoverInfo.close();
+        clickInfo.open(mapObjRef.current, marker);
+      });
+      return marker;
+    });
     // FEATURE — "a line connecting stop 1, stop 2, stop 3, stop 4." Draws
     // through every stopNumber-tagged pin in ascending order — a real
     // route line, not just floating pins with no sense of order.
