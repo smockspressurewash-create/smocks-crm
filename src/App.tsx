@@ -1268,6 +1268,64 @@ export function App() {
     setSettings((s: any) => ({ ...s, pendingEnableReviewRequestAutomation: false }));
     toast?.("📮 Turned on automatic review requests after job completion ✓", "green");
   }, [(settings as any).pendingEnableReviewRequestAutomation]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // FEATURE — "make automations run in the background, not just when your
+  // CRM is open." Prerequisite: automations lived ONLY in this browser's
+  // own localStorage (usePersistent above) — nothing server-side could ever
+  // see them. Mirrors the same load-then-sync shape already used for
+  // settings, on the new `automations` table (migration 0086, owner_id-
+  // scoped like everything else). Automations are few (dozens, not
+  // thousands like jobs) and edited manually/infrequently, so this uses the
+  // simpler full-replace-on-load + full-upsert-on-change shape promotions
+  // already uses above, rather than the heavier per-row synced-id-tracking
+  // machinery jobs/customers/estimates need at their volume.
+  const automationsSyncLoadedRef = useRef(false);
+  useEffect(() => {
+    if (!crmUserId || automationsSyncLoadedRef.current) return;
+    automationsSyncLoadedRef.current = true;
+    (async () => {
+      try {
+        const { data, error } = await (supabase as any).from("automations").select("id,data").eq("owner_id", crmUserId);
+        if (error) { console.warn("[Automations Sync] load failed:", error.message); return; }
+        if (!Array.isArray(data) || data.length === 0) return; // nothing on the server yet — keep local/seed data, the push effect below will populate it
+        setAutomations((prev: Automation[]) => {
+            const serverMap = new Map(data.map((r: any) => [r.id, r.data]));
+          const merged = prev.map(a => serverMap.has(a.id) ? { ...a, ...serverMap.get(a.id) } : a);
+          const existingIds = new Set(prev.map(a => a.id));
+          const added = data.filter((r: any) => !existingIds.has(r.id)).map((r: any) => r.data);
+          return [...merged, ...added];
+        });
+      } catch (e: any) { console.warn("[Automations Sync] load threw:", e?.message); }
+    })();
+  }, [crmUserId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const lastSyncedAutomationsJsonRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!crmUserId || !automationsSyncLoadedRef.current) return;
+    const json = JSON.stringify(automations);
+    if (json === lastSyncedAutomationsJsonRef.current) return;
+    const timer = setTimeout(async () => {
+      try {
+        const { data: existingRows } = await (supabase as any).from("automations").select("id").eq("owner_id", crmUserId);
+        const serverIds = new Set(Array.isArray(existingRows) ? existingRows.map((r: any) => r.id) : []);
+        const localIds = new Set(automations.map(a => a.id));
+        const removedIds = Array.from(serverIds).filter(id => !localIds.has(id));
+        if (automations.length > 0) {
+          const { error } = await (supabase as any).from("automations").upsert(
+            automations.map(a => ({ id: a.id, owner_id: crmUserId, data: a, updated_at: new Date().toISOString() })),
+            { onConflict: "id" }
+          );
+          if (error) { console.warn("[Automations Sync] save failed:", error.message); return; }
+        }
+        if (removedIds.length > 0) {
+          await (supabase as any).from("automations").delete().in("id", removedIds).eq("owner_id", crmUserId)
+            .then((r: any) => { if (r?.error) console.warn("[Automations Sync] delete failed:", r.error.message); });
+        }
+        lastSyncedAutomationsJsonRef.current = json;
+      } catch (e: any) { console.warn("[Automations Sync] save threw:", e?.message); }
+    }, 1500);
+    return () => clearTimeout(timer);
+  }, [automations, crmUserId]);
   // ISSUE 14 (round 11) — ROOT CAUSE of "all Alfred check-in messages look
   // the same": the check-in effect further down is deliberately keyed only
   // on [crmUserId] (see its own comment) so its hourly setInterval survives
