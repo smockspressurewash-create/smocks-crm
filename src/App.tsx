@@ -69,6 +69,7 @@ import { TermsPage, PrivacyPolicyPage } from "./components/pages/LegalPages";
 import { LandingPage } from "./components/pages/LandingPage";
 import { InstallAppButton } from "./components/ui/InstallAppButton";
 import { PushOptInPrompt } from "./components/ui/PushOptInPrompt";
+import { OnboardingChecklist } from "./components/ui/OnboardingChecklist";
 import { FeaturesPage } from "./components/pages/FeaturesPage";
 import { PricingPage } from "./components/pages/PricingPage";
 import { AboutPage } from "./components/pages/AboutPage";
@@ -5721,6 +5722,13 @@ export function App() {
       {/* BUG FIX — replaces the old always-visible header "Notify Me" toggle
           with a one-time opt-in pop-up (see PushOptInPrompt.tsx). */}
       {hasCrmSession && crmUserId && <PushOptInPrompt ownerId={crmUserId} />}
+      {hasCrmSession && crmRole === "owner" && (
+        <OnboardingChecklist
+          settings={settings} setSettings={setSettings}
+          customers={customers} jobs={jobs} estimates={estimates} employees={employees}
+          setPage={setPage} toast={toast}
+        />
+      )}
     </div>
   );
 }

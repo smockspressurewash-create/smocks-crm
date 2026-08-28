@@ -2526,6 +2526,13 @@ export function SettingsModal({ open, onClose, settings, setSettings, jobs = [],
                 Start Onboarding
               </GBtn>
             </Glass>
+            <Glass className="p-4 !bg-black/40">
+              <div className="text-sm font-semibold mb-1">Setup Checklist</div>
+              <div className="text-xs text-white/50 mb-3">The persistent "Getting Started" checklist widget (add a customer, create a job, invite crew, etc.) — reopen it if you dismissed it.</div>
+              <GBtn onClick={() => { setSettings((s: any) => ({ ...s, onboardingChecklistHidden: false })); onClose(); }} className="!text-xs">
+                Reopen Setup Checklist
+              </GBtn>
+            </Glass>
           </div>}
 
           {sec === "data" && <div className="space-y-3">
