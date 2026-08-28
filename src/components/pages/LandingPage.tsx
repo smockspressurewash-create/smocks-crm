@@ -2,7 +2,7 @@ import React, { useState } from "react";
 import {
   Calendar, Users2, FileText, CreditCard, MessageSquare,
   Bot, Smartphone, Trash2, Gift, Star, MapPin, Camera, CheckCircle,
-  ArrowRight, ChevronRight, Workflow, Download,
+  ArrowRight, ChevronRight, Workflow, Download, Play, Pause,
 } from "lucide-react";
 import {
   Reveal, MarketingStyles, BackgroundBlobs, MarketingNav, MarketingFooter,
@@ -25,6 +25,49 @@ import {
 // red gradient accents, .glass cards, animate-fade-in. Scroll-reveal and
 // hover motion are done with plain CSS (IntersectionObserver-driven class
 // toggle + Tailwind transitions) — no animation library added.
+
+// Minimal video player for the sizzle reel — play/pause only, no native
+// scrubber/duration/mute/skip chrome (those read as a media player, not
+// a promo clip). Tapping the video itself also toggles play/pause.
+function SizzleReelPlayer({ src }: { src: string }) {
+  const videoRef = React.useRef<HTMLVideoElement>(null);
+  const [playing, setPlaying] = useState(false);
+
+  const toggle = () => {
+    const v = videoRef.current;
+    if (!v) return;
+    if (v.paused) v.play(); else v.pause();
+  };
+
+  return (
+    <div className="relative group cursor-pointer" onClick={toggle}>
+      <video
+        ref={videoRef}
+        playsInline
+        preload="metadata"
+        className="w-full aspect-video bg-black block"
+        src={src}
+        onPlay={() => setPlaying(true)}
+        onPause={() => setPlaying(false)}
+        onEnded={() => setPlaying(false)}
+      >
+        Your browser doesn't support embedded video.
+      </video>
+      <div
+        className={
+          "absolute inset-0 flex items-center justify-center transition-all " +
+          (playing ? "bg-black/0 opacity-0 group-hover:opacity-100" : "bg-black/30 opacity-100")
+        }
+      >
+        <div className="w-16 h-16 rounded-full bg-white/95 flex items-center justify-center shadow-2xl transition-transform group-hover:scale-105">
+          {playing
+            ? <Pause size={24} className="text-black" fill="currentColor" />
+            : <Play size={24} className="text-black translate-x-0.5" fill="currentColor" />}
+        </div>
+      </div>
+    </div>
+  );
+}
 
 // ─── Feature data (condensed teaser grid — see FeaturesPage.tsx for the full,
 // categorized breakdown of the same real, working features) ────────────────
@@ -316,15 +359,7 @@ export function LandingPage({
             <p className="text-white/50 text-sm md:text-base">A 40-second look at scheduling, Alfred, invoicing, and the field portal.</p>
           </div>
           <div className="rounded-2xl overflow-hidden border border-white/10 bg-black shadow-2xl shadow-red-950/40">
-            <video
-              controls
-              playsInline
-              preload="metadata"
-              className="w-full aspect-video bg-black"
-              src="/media/sizzle-reel.mp4"
-            >
-              Your browser doesn't support embedded video.
-            </video>
+            <SizzleReelPlayer src="/media/sizzle-reel.mp4" />
           </div>
           <div className="flex justify-center mt-5">
             <a
