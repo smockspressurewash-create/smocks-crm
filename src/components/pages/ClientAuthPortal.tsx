@@ -57,6 +57,10 @@ export function ClientAuthPortal({
   const [forgotBusy, setForgotBusy] = useState(false);
   const [forgotSent, setForgotSent] = useState(false);
   const [tab, setTab] = useState<"invoices" | "quotes" | "jobs" | "referrals" | "payment">("invoices");
+  // FEATURE — multi-property switcher (see propertyOptions below); declared
+  // up here (not near its usage further down) since this component has
+  // early returns before that point and hooks can't be called conditionally.
+  const [selectedPropertyId, setSelectedPropertyId] = useState("");
   const [rescheduleJobId, setRescheduleJobId] = useState<string | null>(null);
   const [rescheduleNote, setRescheduleNote] = useState("");
   const [reschedulingSend, setReschedulingSend] = useState(false);
@@ -503,7 +507,28 @@ export function ClientAuthPortal({
   }
 
   const myEstimates = active?.estimates || [];
-  const myInvoices = myEstimates.filter(e => e.customerId === cust.id && e.invoiced);
+
+  // FEATURE — "owners for multi-property accounts should manage the
+  // different addresses under one login inside the customer portal." A
+  // customer with saved additional properties (cust.addresses, added by the
+  // owner in CustomerModal) can switch between them here to see just that
+  // property's jobs/quotes/invoices — one login, every property, instead of
+  // needing a separate account per address. Customers with zero additional
+  // addresses see no switcher at all — no behavior change for the common
+  // single-property case.
+  const propertyOptions = [
+    { id: "", label: "All Properties", address: null as string | null },
+    ...(((cust.addresses || []).length > 0) ? [{ id: "__primary__", label: "Primary", address: cust.address || null }] : []),
+    ...(cust.addresses || []).map((a: any) => ({ id: a.id, label: a.label || a.street, address: [a.street, a.city, a.state].filter(Boolean).join(", ") })),
+  ];
+  const hasMultipleProperties = (cust.addresses || []).length > 0;
+  const selectedProperty = propertyOptions.find(p => p.id === selectedPropertyId);
+  const propertyFilterAddress = selectedProperty?.address || null;
+
+  const myInvoicesAll = myEstimates.filter(e => e.customerId === cust.id && e.invoiced);
+  const myInvoices = propertyFilterAddress
+    ? myInvoicesAll.filter(e => (active?.jobs || []).find((j: any) => j.id === e.jobId)?.address === propertyFilterAddress)
+    : myInvoicesAll;
   const outstanding = myInvoices.filter(e => !e.paidAt);
 
   // Mark outstanding invoices as viewed once per session so the owner gets a
@@ -520,14 +545,17 @@ export function ClientAuthPortal({
   }, [outstanding.map(i => i.id).join(",")]); // eslint-disable-line react-hooks/exhaustive-deps
   const paid = myInvoices.filter(e => !!e.paidAt);
   const myJobsList = active?.jobs || [];
-  const myJobs = myJobsList.filter(j => j.customerId === cust.id).sort((a, b) => (b.scheduledDate || "").localeCompare(a.scheduledDate || ""));
+  const myJobs = myJobsList.filter(j => j.customerId === cust.id && (!propertyFilterAddress || j.address === propertyFilterAddress)).sort((a, b) => (b.scheduledDate || "").localeCompare(a.scheduledDate || ""));
   const completedJobs = myJobs.filter(j => j.status === "completed");
   // AUDIT FIX (round 13, item 7) — upcoming vs past, instead of one
   // undifferentiated list newest-first (a customer's next job could be
   // buried below a year of completed history).
   const upcomingJobs = myJobs.filter(j => j.status !== "completed" && j.status !== "cancelled").sort((a, b) => (a.scheduledDate || "").localeCompare(b.scheduledDate || ""));
   const pastJobs = myJobs.filter(j => j.status === "completed" || j.status === "cancelled");
-  const myQuotes = myEstimates.filter(e => e.customerId === cust.id && !e.invoiced).sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""));
+  const myQuotesAll = myEstimates.filter(e => e.customerId === cust.id && !e.invoiced).sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""));
+  const myQuotes = propertyFilterAddress
+    ? myQuotesAll.filter(e => myJobsList.find((j: any) => j.id === e.jobId)?.address === propertyFilterAddress)
+    : myQuotesAll;
 
   const requestReschedule = async (jobId: string) => {
     setReschedulingSend(true);
@@ -622,6 +650,20 @@ export function ClientAuthPortal({
             </button>
           ))}
           <button onClick={() => setFindOpen(true)} className="flex-shrink-0 px-3 py-1.5 rounded-lg text-xs text-white/40 hover:text-white/70 border border-dashed border-white/15 flex items-center gap-1"><Plus size={11} />Add</button>
+        </div>
+      )}
+
+      {/* MULTI-PROPERTY — switcher, only shown once this customer has
+          additional properties on file (added by the owner). Filters
+          Jobs/Quotes/Invoices below to just the selected property. */}
+      {hasMultipleProperties && (
+        <div className="bg-black/60 border-b border-white/10 px-4 py-2 flex items-center gap-2 overflow-x-auto">
+          <Building2 size={12} className="text-white/30 flex-shrink-0" />
+          {propertyOptions.map(p => (
+            <button key={p.id || "all"} onClick={() => setSelectedPropertyId(p.id)} className={"flex-shrink-0 px-3 py-1.5 rounded-lg text-xs font-medium transition whitespace-nowrap " + (selectedPropertyId === p.id ? "bg-blue-700/40 text-white border border-blue-700/50" : "bg-white/5 text-white/50 border border-white/10 hover:text-white/80")}>
+              {p.label}
+            </button>
+          ))}
         </div>
       )}
 
