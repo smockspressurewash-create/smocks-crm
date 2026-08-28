@@ -3148,7 +3148,7 @@ function ShiftEndDigestModal({ hoursLabel, jobsCompleted, jobsToday, flaggedIssu
   );
 }
 
-export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, employees, customers, setCustomers = (() => {}) as any, settings, toast, isOwnerView = false, onClose = () => {}, refetchEmployees, estimates = [], setEstimates = (() => {}) as any, weatherData = null as any, chemicals = [] as any[] }: {
+export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, employees, customers, setCustomers = (() => {}) as any, settings, toast, isOwnerView = false, onClose = () => {}, refetchEmployees, estimates = [], setEstimates = (() => {}) as any, weatherData = null as any, chemicals = [] as any[], trainingModules = [] as any[] }: {
   empSession: any; setEmpSession: (s: any) => void;
   jobs: Job[]; setJobs: (fn: (prev: Job[]) => Job[]) => void;
   employees: Employee[]; customers: Customer[]; setCustomers?: any;
@@ -3158,6 +3158,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   refetchEmployees?: () => Promise<void>;
   estimates?: any[]; setEstimates?: any;
   chemicals?: any[];
+  trainingModules?: any[];
 }) {
   // EGRESS FIX — skip the jobs poll below while the tab is hidden or the
   // employee has been idle 5+ minutes (e.g. mid-shift with the phone locked).
@@ -3172,18 +3173,18 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   // effect below runs, but that's fine here — this callback only fires on a
   // later visibilitychange event, well after mount.
   const shouldPollJobs = usePollGate(() => { refetchJobsRef.current?.().catch(() => {}); refetchEmployees?.(); });
-  const TAB_TO_SLUG: Record<string, string> = { today: "", calendar: "calendar", jobs: "jobs", pay: "pay", google: "google", onboarding: "onboarding" };
-  const SLUG_TO_TAB: Record<string, "today" | "calendar" | "jobs" | "pay" | "google" | "onboarding"> = { "": "today", calendar: "calendar", jobs: "jobs", pay: "pay", google: "google", onboarding: "onboarding" };
-  const tabFromHash = (): "today" | "calendar" | "jobs" | "pay" | "google" | "onboarding" => {
+  const TAB_TO_SLUG: Record<string, string> = { today: "", calendar: "calendar", jobs: "jobs", pay: "pay", google: "google", onboarding: "onboarding", training: "training" };
+  const SLUG_TO_TAB: Record<string, "today" | "calendar" | "jobs" | "pay" | "google" | "onboarding" | "training"> = { "": "today", calendar: "calendar", jobs: "jobs", pay: "pay", google: "google", onboarding: "onboarding", training: "training" };
+  const tabFromHash = (): "today" | "calendar" | "jobs" | "pay" | "google" | "onboarding" | "training" => {
     const slug = window.location.hash.replace(/^#\/?/, "").split("?")[0].replace(/^portal\/?/, "");
     return SLUG_TO_TAB[slug] || "today";
   };
-  const [tab, setTabState] = useState<"today" | "calendar" | "jobs" | "pay" | "google" | "onboarding">(tabFromHash);
+  const [tab, setTabState] = useState<"today" | "calendar" | "jobs" | "pay" | "google" | "onboarding" | "training">(tabFromHash);
   // Keeps the URL in sync with the active tab (#/portal, #/portal/calendar, #/portal/jobs,
   // #/portal/pay, #/portal/google, #/portal/onboarding) without going through App.tsx's
   // page-level routing — page stays "portal" the whole time, so App's hash-sync effect
   // never overwrites this.
-  const setTab = (next: "today" | "calendar" | "jobs" | "pay" | "google" | "onboarding") => {
+  const setTab = (next: "today" | "calendar" | "jobs" | "pay" | "google" | "onboarding" | "training") => {
     setTabState(next);
     const slug = TAB_TO_SLUG[next];
     window.location.hash = slug ? "/portal/" + slug : "/portal";
@@ -3593,6 +3594,55 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   const [onboarding, setOnboarding] = useState<EmployeeOnboarding | null>(null);
   const [onboardingLoading, setOnboardingLoading] = useState(false);
   const [onboardingSavingId, setOnboardingSavingId] = useState<string | null>(null);
+
+  // FEATURE — "a training process for employees... training tests with
+  // multiple-choice questions that are graded." myTrainingCompletions is
+  // this employee's own pass/fail history, fetched once myEmployee is
+  // known; activeTrainingModule/quizAnswers/trainingResult drive the
+  // read-then-quiz flow rendered in the Training tab below.
+  const [myTrainingCompletions, setMyTrainingCompletions] = useState<any[]>([]);
+  const [activeTrainingModule, setActiveTrainingModule] = useState<any | null>(null);
+  const [quizAnswers, setQuizAnswers] = useState<Record<string, number>>({});
+  const [trainingResult, setTrainingResult] = useState<{ score: number; passed: boolean } | null>(null);
+  const [submittingTraining, setSubmittingTraining] = useState(false);
+  useEffect(() => {
+    if (!myEmployee?.id) { setMyTrainingCompletions([]); return; }
+    (supabase as any).from("training_completions").select("*").eq("employee_id", myEmployee.id)
+      .then((r: any) => { if (!r?.error) setMyTrainingCompletions(Array.isArray(r?.data) ? r.data : []); })
+      .catch(() => {});
+  }, [myEmployee?.id]);
+  const startTrainingModule = (m: any) => { setActiveTrainingModule(m); setQuizAnswers({}); setTrainingResult(null); };
+  const submitTrainingQuiz = async () => {
+    if (!activeTrainingModule || !myEmployee?.id) return;
+    const quiz = activeTrainingModule.quiz || [];
+    if (quiz.length === 0) {
+      // Instructions-only module — marked complete on read, no grading.
+      setTrainingResult({ score: 100, passed: true });
+    } else {
+      const correct = quiz.filter((q: any) => quizAnswers[q.id] === q.correctIndex).length;
+      const score = Math.round((correct / quiz.length) * 100);
+      const passed = score >= (activeTrainingModule.passingScore ?? 80);
+      setTrainingResult({ score, passed });
+    }
+    setSubmittingTraining(true);
+    try {
+      const score = quiz.length === 0 ? 100 : Math.round((quiz.filter((q: any) => quizAnswers[q.id] === q.correctIndex).length / quiz.length) * 100);
+      const passed = quiz.length === 0 ? true : score >= (activeTrainingModule.passingScore ?? 80);
+      const row = {
+        id: uid(), owner_id: (myEmployee as any).owner_id, module_id: activeTrainingModule.id,
+        employee_id: myEmployee.id, employee_name: myEmployee.name, score, passed,
+        answers: quizAnswers, completed_at: new Date().toISOString(),
+      };
+      const { error } = await (supabase as any).from("training_completions").insert(row);
+      if (error) { toast?.("Couldn't save your training result — " + error.message, "red"); return; }
+      setMyTrainingCompletions(prev => [...prev, row]);
+      toast?.(passed ? "Training passed ✓" : "Training result submitted", passed ? "green" : "yellow");
+    } catch (e: any) {
+      toast?.("Couldn't save your training result — " + (e?.message || "unknown error"), "red");
+    } finally {
+      setSubmittingTraining(false);
+    }
+  };
   useEffect(() => {
     if (!myEmployee?.id) { setOnboarding(null); return; }
     let cancelled = false;
@@ -6330,6 +6380,78 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
 
   return (
     <div className="h-dvh h-screen overflow-hidden bg-black text-white flex flex-col">
+      {/* Training module viewer/quiz — full-screen overlay, closed by
+          finishing the module or tapping the X. Read the instructions,
+          then (if the module has a quiz) answer it and get graded. */}
+      {activeTrainingModule && (
+        <div className="fixed inset-0 z-[250] bg-black overflow-y-auto">
+          <div className="sticky top-0 z-10 bg-black/95 border-b border-red-900/30 px-4 py-3 flex items-center justify-between">
+            <div className="font-semibold text-sm truncate pr-2">{activeTrainingModule.title}</div>
+            <button onClick={() => setActiveTrainingModule(null)} className="p-1.5 text-white/50 hover:text-white flex-shrink-0"><X size={18} /></button>
+          </div>
+          <div className="max-w-lg mx-auto p-4 space-y-4 pb-24">
+            {!trainingResult && (
+              <>
+                {activeTrainingModule.body && (
+                  <Glass className="p-4"><div className="text-sm text-white/80 whitespace-pre-wrap leading-relaxed">{activeTrainingModule.body}</div></Glass>
+                )}
+                {(activeTrainingModule.media || []).length > 0 && (
+                  <div className="grid grid-cols-2 gap-2">
+                    {activeTrainingModule.media.map((md: any) => (
+                      md.type === "video"
+                        ? <video key={md.id} src={md.url} controls className="w-full rounded-xl border border-white/10" />
+                        : <img key={md.id} src={md.url} alt="" className="w-full rounded-xl border border-white/10 object-cover" />
+                    ))}
+                  </div>
+                )}
+                {(activeTrainingModule.quiz || []).length > 0 ? (
+                  <div className="space-y-3">
+                    <div className="text-xs text-white/50 uppercase tracking-wider flex items-center gap-1"><CheckSquare size={12} />Quiz — {activeTrainingModule.passingScore ?? 80}% to pass</div>
+                    {activeTrainingModule.quiz.map((q: any, qi: number) => (
+                      <Glass key={q.id} className="p-3 space-y-2">
+                        <div className="text-sm font-medium">{qi + 1}. {q.question}</div>
+                        <div className="space-y-1.5">
+                          {q.options.map((opt: string, oi: number) => (
+                            <label key={oi} className="flex items-center gap-2 cursor-pointer p-1.5 rounded-lg hover:bg-white/5">
+                              <input type="radio" name={q.id} checked={quizAnswers[q.id] === oi} onChange={() => setQuizAnswers(prev => ({ ...prev, [q.id]: oi }))} className="accent-red-600 flex-shrink-0" />
+                              <span className="text-sm text-white/80">{opt}</span>
+                            </label>
+                          ))}
+                        </div>
+                      </Glass>
+                    ))}
+                    <GBtn
+                      onClick={submitTrainingQuiz}
+                      disabled={submittingTraining || activeTrainingModule.quiz.some((q: any) => quizAnswers[q.id] === undefined)}
+                      className="w-full !py-3"
+                    >
+                      {submittingTraining ? "Grading…" : "Submit Quiz"}
+                    </GBtn>
+                  </div>
+                ) : (
+                  <GBtn onClick={submitTrainingQuiz} disabled={submittingTraining} className="w-full !py-3">
+                    {submittingTraining ? "Saving…" : "Mark as Read"}
+                  </GBtn>
+                )}
+              </>
+            )}
+            {trainingResult && (
+              <Glass className={"p-6 text-center space-y-3 " + (trainingResult.passed ? "!bg-green-950/20 !border-green-700/30" : "!bg-red-950/20 !border-red-700/30")}>
+                {trainingResult.passed ? <CheckCircle size={32} className="text-green-400 mx-auto" /> : <AlertTriangle size={32} className="text-red-400 mx-auto" />}
+                <div className="text-xl font-bold">{trainingResult.passed ? "Passed" : "Not Passed"}</div>
+                {(activeTrainingModule.quiz || []).length > 0 && <div className="text-sm text-white/60">Score: {trainingResult.score}%{!trainingResult.passed && ` (need ${activeTrainingModule.passingScore ?? 80}%)`}</div>}
+                <div className="flex gap-2 pt-2">
+                  {!trainingResult.passed && (activeTrainingModule.quiz || []).length > 0 && (
+                    <GBtn variant="ghost" onClick={() => { setQuizAnswers({}); setTrainingResult(null); }} className="flex-1">Retake</GBtn>
+                  )}
+                  <GBtn onClick={() => setActiveTrainingModule(null)} className="flex-1">Done</GBtn>
+                </div>
+              </Glass>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Header */}
       <header className="sticky top-0 z-20 bg-black/95 border-b border-red-900/30 px-4 py-3 flex items-center gap-3 flex-shrink-0">
         {/* BRANDING FIX (round 2) — the owner asked to remove the icon badge
@@ -8613,6 +8735,38 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
             );
           })()}
 
+          {/* Training tab */}
+          {tab === "training" && (() => {
+            const passedIds = new Set(myTrainingCompletions.filter((c: any) => c.passed).map((c: any) => c.module_id));
+            const latestFor = (moduleId: string) => myTrainingCompletions.filter((c: any) => c.module_id === moduleId).sort((a: any, b: any) => new Date(b.completed_at).getTime() - new Date(a.completed_at).getTime())[0];
+            return (
+              <div className="space-y-3">
+                {trainingModules.length === 0 && <div className="text-center text-xs text-white/30 py-10">No training modules assigned yet.</div>}
+                {trainingModules.map((m: any) => {
+                  const passed = passedIds.has(m.id);
+                  const latest = latestFor(m.id);
+                  return (
+                    <Glass key={m.id} className={"p-4 " + (passed ? "!bg-green-950/10 !border-green-700/20" : m.required ? "!bg-yellow-950/10 !border-yellow-700/20" : "")}>
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="font-semibold text-sm flex items-center gap-1.5">
+                            {passed ? <CheckCircle size={14} className="text-green-400 flex-shrink-0" /> : <BookOpen size={14} className="text-white/40 flex-shrink-0" />}
+                            {m.title}
+                          </div>
+                          <div className="text-[10px] text-white/40 mt-0.5">
+                            {m.required ? "Required" : "Optional"}{m.quiz?.length ? ` · ${m.quiz.length} question quiz` : " · No quiz"}
+                            {latest && ` · Last attempt ${Math.round(latest.score)}%`}
+                          </div>
+                        </div>
+                        <GBtn onClick={() => startTrainingModule(m)} className="!text-xs !py-1.5 flex-shrink-0">{passed ? "Retake" : "Start"}</GBtn>
+                      </div>
+                    </Glass>
+                  );
+                })}
+              </div>
+            );
+          })()}
+
           {/* Google tab */}
           {tab === "google" && (() => {
             const empUserId = empSession?.user?.id;
@@ -8876,6 +9030,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
           { id: "jobs",     label: "All Jobs", icon: List,       show: perms.can_view_jobs },
           { id: "pay",      label: "My Pay",   icon: DollarSign, show: perms.can_view_pay },
           { id: "onboarding", label: "Onboarding", icon: CheckSquare, show: !!onboarding },
+          { id: "training", label: "Training", icon: BookOpen, show: trainingModules.length > 0 },
           { id: "google",   label: "Google",   icon: Database,   show: true },
         ] as const).filter(t => t.show).map(({ id, label, icon: Icon }) => (
           <button key={id} onClick={() => setTab(id as typeof tab)}

@@ -2,7 +2,7 @@
 import {
   LayoutDashboard, Users, FileText, Receipt, Briefcase, GitBranch,
   Calendar, MessageSquare, Megaphone, Star, Zap, Share2, UserPlus,
-  Bot, Database, Users2, Truck, DollarSign, FlaskConical, BarChart3,
+  Bot, Database, Users2, Truck, DollarSign, FlaskConical, BarChart3, GraduationCap,
   TrendingUp, PiggyBank, Wallet, Heart, Gift, Monitor, Tag,
   Bell, Settings, X, Lock, Globe, ChevronLeft, ChevronRight, Plus, Undo2, Redo2, CheckCircle, Eye, EyeOff, Menu, AlertTriangle, Trash2, BookOpen, UserCheck, Target, LayoutGrid
 } from "lucide-react";
@@ -47,6 +47,7 @@ import { EmployeesPage } from "./components/pages/EmployeesPage";
 import { FleetPage } from "./components/pages/FleetPage";
 import { ExpensesPage } from "./components/pages/ExpensesPage";
 import { ChemicalsPage } from "./components/pages/ChemicalsPage";
+import { TrainingPage } from "./components/pages/TrainingPage";
 import { NotificationsPage } from "./components/pages/NotificationsPage";
 import { ReportsPage } from "./components/pages/ReportsPage";
 import { AnalyticsPage } from "./components/pages/AnalyticsPage";
@@ -96,7 +97,7 @@ import { sendEmail, sendOwnerGmailOnly, emailShell, emailButton, buildTomorrowJo
 import { exchangeSocialOAuthCode, type SocialPlatform } from "./lib/socialOAuth";
 import type {
   Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense,
-  Chemical, Service, Campaign, Automation, Review, SocialPost,
+  Chemical, Service, Campaign, Automation, TrainingModule, Review, SocialPost,
   AccountabilityEntry, Goal, Win, Reminder, AppSettings,
   InboxThread, AlfredConversation, AlfredMessage, Timeline, ModelStatus, AppNotification,
 } from "./types";
@@ -181,6 +182,7 @@ const navGroups = [
       { id: "hiring",    label: "Hiring",    icon: UserCheck   },
       { id: "fleet",     label: "Fleet",     icon: Truck       },
       { id: "chemicals", label: "Chemicals & Equipment", icon: FlaskConical},
+      { id: "training",  label: "Training",     icon: GraduationCap },
     ],
   },
   {
@@ -1155,6 +1157,7 @@ export function App() {
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
   const [campaigns,       setCampaigns]       = usePersistent<Campaign[]>("smocks.campaigns", []);
   const [automations,     setAutomations]     = usePersistent<Automation[]>("smocks.automations", seedAutomations);
+  const [trainingModules, setTrainingModules] = usePersistent<TrainingModule[]>("smocks.trainingModules", []);
   const [reviews,         setReviews]         = usePersistent<Review[]>("smocks.reviews", []);
   const [socialPosts,     setSocialPosts]     = usePersistent<SocialPost[]>("smocks.socialPosts", []);
   // BUG FIX — "the social section shows posts I never made, marked
@@ -1327,6 +1330,57 @@ export function App() {
     }, 1500);
     return () => clearTimeout(timer);
   }, [automations, crmUserId]);
+
+  // Training modules — same lightweight full-replace-on-load /
+  // full-upsert-on-change sync shape as automations above (module count is
+  // low, edited manually/infrequently by the owner).
+  const trainingSyncLoadedRef = useRef(false);
+  useEffect(() => {
+    if (!crmUserId || trainingSyncLoadedRef.current) return;
+    trainingSyncLoadedRef.current = true;
+    (async () => {
+      try {
+        const { data, error } = await (supabase as any).from("training_modules").select("id,data").eq("owner_id", crmUserId);
+        if (error) { console.warn("[Training Sync] load failed:", error.message); return; }
+        if (!Array.isArray(data) || data.length === 0) return;
+        setTrainingModules((prev: TrainingModule[]) => {
+          const serverMap = new Map(data.map((r: any) => [r.id, r.data]));
+          const merged = prev.map(m => serverMap.has(m.id) ? { ...m, ...serverMap.get(m.id) } : m);
+          const existingIds = new Set(prev.map(m => m.id));
+          const added = data.filter((r: any) => !existingIds.has(r.id)).map((r: any) => r.data);
+          return [...merged, ...added];
+        });
+      } catch (e: any) { console.warn("[Training Sync] load threw:", e?.message); }
+    })();
+  }, [crmUserId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const lastSyncedTrainingJsonRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!crmUserId || !trainingSyncLoadedRef.current) return;
+    const json = JSON.stringify(trainingModules);
+    if (json === lastSyncedTrainingJsonRef.current) return;
+    const timer = setTimeout(async () => {
+      try {
+        const { data: existingRows } = await (supabase as any).from("training_modules").select("id").eq("owner_id", crmUserId);
+        const serverIds = new Set(Array.isArray(existingRows) ? existingRows.map((r: any) => r.id) : []);
+        const localIds = new Set(trainingModules.map(m => m.id));
+        const removedIds = Array.from(serverIds).filter(id => !localIds.has(id));
+        if (trainingModules.length > 0) {
+          const { error } = await (supabase as any).from("training_modules").upsert(
+            trainingModules.map(m => ({ id: m.id, owner_id: crmUserId, data: m, updated_at: new Date().toISOString() })),
+            { onConflict: "id" }
+          );
+          if (error) { console.warn("[Training Sync] save failed:", error.message); return; }
+        }
+        if (removedIds.length > 0) {
+          await (supabase as any).from("training_modules").delete().in("id", removedIds).eq("owner_id", crmUserId)
+            .then((r: any) => { if (r?.error) console.warn("[Training Sync] delete failed:", r.error.message); });
+        }
+        lastSyncedTrainingJsonRef.current = json;
+      } catch (e: any) { console.warn("[Training Sync] save threw:", e?.message); }
+    }, 1500);
+    return () => clearTimeout(timer);
+  }, [trainingModules, crmUserId]);
   // ISSUE 14 (round 11) — ROOT CAUSE of "all Alfred check-in messages look
   // the same": the check-in effect further down is deliberately keyed only
   // on [crmUserId] (see its own comment) so its hourly setInterval survives
@@ -4437,6 +4491,7 @@ export function App() {
           estimates={estimates}
           setEstimates={setEstimates}
           chemicals={chemicals}
+          trainingModules={trainingModules}
           toast={toast}
           // hasCrmSession (a verified, currently-active owner session) is the correct signal
           // here — settings.googleConnected is a sticky per-browser localStorage flag that
@@ -5139,6 +5194,7 @@ export function App() {
                 {page === "fleet"          && <FleetPage vehicles={vehicles} setVehicles={setVehicles} maintenance={maintenance} setMaintenance={setMaintenance} toast={toast} />}
                 {page === "expenses"       && <ExpensesPage expenses={expenses} setExpenses={setExpenses} toast={toast} />}
                 {page === "chemicals"      && <ChemicalsPage chemicals={chemicals} setChemicals={setChemicals} toast={toast} settings={settings} ownerId={crmUserId} markRecentlyDeleted={markRecentlyDeleted} />}
+                {page === "training"       && <TrainingPage modules={trainingModules} setModules={setTrainingModules} employees={employees} toast={toast} ownerId={crmUserId} />}
                 {page === "notifications"  && <NotificationsPage notifications={notifications} onDelete={deleteNotification} onMarkRead={markNotificationRead} onMarkAllRead={markAllNotificationsRead} onClearAll={clearAllNotifications} onNav={setPage} />}
                 {page === "reports"        && <ReportsPage jobs={jobs} customers={customers} estimates={estimates} expenses={expenses} employees={employees} chemicals={chemicals} />}
                 {page === "analytics"      && <AnalyticsPage jobs={jobs} customers={customers} estimates={estimates} expenses={expenses} />}

@@ -692,6 +692,49 @@ export interface Automation {
   autoApprove?: boolean;
 }
 
+// ─── Training ─────────────────────────────────────────────────────────────────
+// FEATURE — "a training process for employees, allowing owners to attach
+// training rules, equipment instructions, chemical warnings, training
+// videos and photos with descriptions, and training tests with
+// multiple-choice questions that are graded."
+
+export interface TrainingQuizQuestion {
+  id: string;
+  question: string;
+  options: string[];
+  correctIndex: number;
+}
+
+export interface TrainingMedia {
+  id: string;
+  url: string;
+  type: "image" | "video";
+  caption?: string;
+}
+
+export interface TrainingModule {
+  id: string;
+  title: string;
+  category: "rule" | "equipment" | "chemical" | "general";
+  body: string; // the rules/instructions/warnings text
+  media: TrainingMedia[];
+  quiz: TrainingQuizQuestion[];
+  passingScore: number; // percent, e.g. 80
+  required: boolean;
+  createdAt: string;
+}
+
+export interface TrainingCompletion {
+  id: string;
+  moduleId: string;
+  employeeId: string;
+  employeeName?: string;
+  score: number;
+  passed: boolean;
+  answers?: Record<string, number>;
+  completedAt: string;
+}
+
 // ─── Review ───────────────────────────────────────────────────────────────────
 
 export interface Review {
