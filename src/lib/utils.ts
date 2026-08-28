@@ -803,16 +803,11 @@ export const resolveTermsForJobType = (settings: any, jobType?: string): string 
 };
 
 // ─── haptic ─────────────────────────────────────────────────────────────
-// Fires a short vibration on supported devices (Android Chrome, desktop
-// Chrome via devtools emulation). NOTE — iOS Safari/WebKit does NOT expose
-// the Vibration API to web pages at all (Apple has never shipped
-// navigator.vibrate, even in "Add to Home Screen" PWA mode as of this
-// writing) — there is no polyfill or workaround from a web app; true
-// haptic feedback on iPhone requires a native app. This still fires on
-// Android and is a harmless no-op (not a fake/mock) everywhere else.
-export const haptic = (pattern: number | number[] = 15) => {
-  try { navigator.vibrate?.(pattern); } catch { /* unsupported — no-op */ }
-};
+// Re-exported from lib/haptics.ts — was a second, independent copy of the
+// exact same function (drift risk: a future fix to one wouldn't reach the
+// other). See haptics.ts for the real implementation and its full comment
+// on the iOS platform limitation / Android gesture-reliability notes.
+export { haptic } from "./haptics";
 
 export const withTimeout = <T,>(p: Promise<T>, ms: number, label: string): Promise<T> =>
   Promise.race([
