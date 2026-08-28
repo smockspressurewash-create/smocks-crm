@@ -19,7 +19,15 @@ export type MarketingPage = "welcome" | "features" | "pricing" | "about";
 // MarketingStyles below turns into a fade+slide-up transition. Falls back to
 // already-visible if IntersectionObserver isn't available (very old
 // browsers / SSR-safety) rather than leaving content invisible.
-export function Reveal({ children, className = "", delay = 0 }: { children: React.ReactNode; className?: string; delay?: number }) {
+// FEATURE — "every animation when you scroll down is just fading in on the
+// landing page; make them different." `variant` picks which of several
+// distinct entrance treatments this section uses (see the matching
+// .reveal-* classes in MarketingStyles below) — "up" (the original fade
+// + rise) stays the default so every OTHER marketing page (features,
+// pricing, about) that doesn't pass a variant keeps its exact existing
+// look; LandingPage.tsx is the one that varies them section-to-section.
+export type RevealVariant = "up" | "left" | "right" | "scale" | "rotate" | "blur";
+export function Reveal({ children, className = "", delay = 0, variant = "up" }: { children: React.ReactNode; className?: string; delay?: number; variant?: RevealVariant }) {
   const ref = useRef<HTMLDivElement>(null);
   const [visible, setVisible] = useState(false);
 
@@ -39,10 +47,11 @@ export function Reveal({ children, className = "", delay = 0 }: { children: Reac
     return () => obs.disconnect();
   }, []);
 
+  const variantClass = variant === "up" ? "reveal" : "reveal reveal-" + variant;
   return (
     <div
       ref={ref}
-      className={"reveal " + (visible ? "reveal-visible " : "") + className}
+      className={variantClass + " " + (visible ? "reveal-visible " : "") + className}
       style={{ transitionDelay: visible ? delay + "ms" : "0ms" }}
     >
       {children}
@@ -62,7 +71,16 @@ export function MarketingStyles() {
         transform: translateY(24px);
         transition: opacity 0.7s ease, transform 0.7s ease;
       }
-      .reveal-visible { opacity: 1; transform: translateY(0); }
+      .reveal-visible { opacity: 1; transform: translateY(0) translateX(0) scale(1) rotate(0deg); filter: blur(0); }
+
+      /* FEATURE — scroll-entrance variety (see Reveal's variant prop). Each
+         swaps the base .reveal's transform/filter, reusing the same
+         opacity + .reveal-visible reset above. */
+      .reveal-left { transform: translateX(-46px) translateY(0); }
+      .reveal-right { transform: translateX(46px) translateY(0); }
+      .reveal-scale { transform: scale(0.86) translateY(12px); transition: opacity 0.6s ease, transform 0.6s cubic-bezier(.34,1.4,.4,1); }
+      .reveal-rotate { transform: translateY(20px) rotate(-3deg); transition: opacity 0.65s ease, transform 0.65s cubic-bezier(.16,1,.3,1); }
+      .reveal-blur { transform: translateY(10px); filter: blur(10px); transition: opacity 0.6s ease, transform 0.6s ease, filter 0.6s ease; }
 
       @keyframes lp-blob-float {
         0%, 100% { transform: translate(0, 0) scale(1); }
@@ -301,20 +319,31 @@ export function MarketingNav({
   onGoToDashboard?: () => void;
 }) {
   const [navOpen, setNavOpen] = useState(false);
+  // FEATURE — "optimize the top bar, it's kind of basic." Condenses and
+  // gains a stronger shadow/border once the page scrolls, the same
+  // "elevates on scroll" polish most modern SaaS marketing sites use
+  // instead of a flat, static bar the whole way down.
+  const [scrolled, setScrolled] = useState(false);
+  useEffect(() => {
+    const onScroll = () => setScrolled(window.scrollY > 12);
+    onScroll();
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => window.removeEventListener("scroll", onScroll);
+  }, []);
 
   const linkClass = (p: MarketingPage) =>
-    "transition-colors " + (active === p ? "text-white font-semibold" : "hover:text-white");
+    "relative py-1 transition-colors " + (active === p ? "text-white font-semibold" : "hover:text-white");
 
   return (
-    <header className="sticky top-0 z-40 backdrop-blur-md bg-black/60 border-b border-white/10">
-      <div className="max-w-6xl mx-auto px-4 md:px-6 h-16 flex items-center justify-between">
+    <header className={"sticky top-0 z-40 backdrop-blur-md transition-all duration-300 " + (scrolled ? "bg-black/85 border-b border-white/15 shadow-[0_8px_30px_-12px_rgba(0,0,0,0.8)]" : "bg-black/50 border-b border-white/5")}>
+      <div className={"max-w-6xl mx-auto px-4 md:px-6 flex items-center justify-between transition-all duration-300 " + (scrolled ? "h-14" : "h-16")}>
         {/* BUG FIX — "the logo for the landing page is wrong; make it just
             the word CrewBoss and make it larger." Dropped the icon badge —
             this product's identity is the wordmark, not a generic gradient
             box — and sized the text up to actually read as a logo. */}
         <button
           onClick={() => onNavigate("welcome")}
-          className="flex items-center"
+          className="lp-text-hover flex items-center"
           aria-label="CrewBoss home"
         >
           <span className="font-black text-2xl md:text-[26px] tracking-tight">Crew<span className="text-red-500">Boss</span></span>
@@ -324,6 +353,9 @@ export function MarketingNav({
           {NAV_LINKS.map(l => (
             <button key={l.page} onClick={() => onNavigate(l.page)} className={linkClass(l.page)}>
               {l.label}
+              {/* Animated underline — slides in under the active link instead
+                  of just a color/weight change. */}
+              <span className={"absolute left-0 -bottom-0.5 h-[1.5px] bg-red-500 transition-all duration-300 " + (active === l.page ? "w-full opacity-100" : "w-0 opacity-0")} />
             </button>
           ))}
           {isLoggedIn ? (
@@ -340,9 +372,10 @@ export function MarketingNav({
               </button>
               <button
                 onClick={onGetStarted}
-                className="px-4 py-2 rounded-lg bg-gradient-to-br from-red-600 to-red-800 hover:from-red-500 hover:to-red-700 transition-all font-semibold shadow-lg shadow-red-900/30 hover:shadow-red-700/40 hover:-translate-y-0.5"
+                className="group px-4 py-2 rounded-lg bg-gradient-to-br from-red-600 to-red-800 hover:from-red-500 hover:to-red-700 transition-all font-semibold shadow-lg shadow-red-900/30 hover:shadow-red-700/40 hover:-translate-y-0.5 flex items-center gap-1.5"
               >
                 Start Free Trial
+                <ArrowRight size={14} className="transition-transform group-hover:translate-x-1" />
               </button>
             </>
           )}

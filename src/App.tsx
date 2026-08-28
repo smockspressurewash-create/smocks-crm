@@ -117,9 +117,15 @@ const ALL_FAB_ACTIONS = [
 ] as const;
 
 // ─── Nav groups ───────────────────────────────────────────────────────────────
+// FEATURE — sidebar re-optimization per the owner's explicit new grouping.
+// Calendar/Crew View and Referrals weren't named in the requested layout
+// (everything else was spelled out explicitly) — kept in the closest
+// sensible section (Operations for the two schedule/crew views, Marketing
+// for Referrals, alongside the other growth/outreach tools) rather than
+// dropping real, working nav destinations.
 const navGroups = [
   {
-    label: "Main",
+    label: "Overview",
     items: [
       { id: "dashboard",     label: "Dashboard",     icon: LayoutDashboard },
       { id: "alfred",        label: "Alfred AI",     icon: Bot             },
@@ -128,70 +134,70 @@ const navGroups = [
     ],
   },
   {
-    // FEATURE — sidebar reorg: "Jobs should be higher up" — moved Operations
-    // (Jobs/Calendar/Crew View/Trash Cans/SOPs) ahead of Sales, right after Main.
     label: "Operations",
     items: [
       { id: "jobs",       label: "Jobs",       icon: Briefcase  },
+      { id: "customers",  label: "Customers",  icon: Users      },
+      { id: "estimates",  label: "Quotes",     icon: FileText   },
+      { id: "invoices",   label: "Invoices",   icon: Receipt    },
+      { id: "trashcans",  label: "Trash Cans", icon: Trash2     },
       { id: "calendar",   label: "Calendar",   icon: Calendar   },
       { id: "crew",       label: "Crew View",  icon: Monitor    },
-      { id: "trashcans",  label: "Trash Cans", icon: Trash2     },
-      { id: "sops",       label: "SOPs",       icon: BookOpen   },
     ],
   },
   {
-    label: "Sales",
+    label: "Sales & Workflow",
     items: [
-      { id: "customers",  label: "Customers",  icon: Users     },
-      { id: "estimates",  label: "Quotes",     icon: FileText  },
-      { id: "invoices",   label: "Invoices",   icon: Receipt   },
-      { id: "pipeline",   label: "Pipeline",   icon: GitBranch },
-      { id: "intake",     label: "Lead Intake",icon: UserPlus  },
+      { id: "intake",      label: "Lead Intake", icon: UserPlus  },
+      { id: "sops",        label: "SOPs",        icon: BookOpen  },
+      { id: "pipeline",    label: "Pipeline",    icon: GitBranch },
+      { id: "automations", label: "Automations", icon: Zap       },
     ],
   },
   {
     label: "Marketing",
     items: [
-      { id: "campaigns",   label: "Campaigns",   icon: Megaphone },
-      { id: "reviews",     label: "Reviews",     icon: Star      },
-      { id: "automations", label: "Automations", icon: Zap       },
-      { id: "social",      label: "Social",      icon: Share2    },
+      { id: "campaigns",  label: "Campaigns",  icon: Megaphone },
+      { id: "reviews",    label: "Reviews",    icon: Star      },
+      { id: "social",     label: "Social",     icon: Share2    },
+      { id: "promotions", label: "Promotions", icon: Tag       },
+      { id: "referrals",  label: "Referrals",  icon: Gift      },
     ],
   },
   {
-    label: "Growth",
+    label: "Finance & Performance",
     items: [
-      { id: "goals",       label: "Goals",       icon: Target },
-      { id: "referrals",   label: "Referrals",   icon: Gift },
-      { id: "promotions",  label: "Promotions",  icon: Tag  },
+      { id: "goals",     label: "Goals",      icon: Target     },
+      { id: "expenses",  label: "Expenses",   icon: DollarSign },
+      { id: "reports",   label: "Reports",    icon: BarChart3  },
+      { id: "analytics", label: "Analytics",  icon: TrendingUp },
+      { id: "budget",    label: "Budget",     icon: PiggyBank  },
+      { id: "personal",  label: "Personal $", icon: Wallet     },
     ],
   },
   {
-    label: "Finance",
+    // FEATURE — "merge the Hiring section into the Employee section... and
+    // also merge the Training section into the Employee section."
+    label: "Workforce",
     items: [
-      { id: "expenses",  label: "Expenses",  icon: DollarSign },
-      { id: "reports",   label: "Reports",   icon: BarChart3  },
-      { id: "analytics", label: "Analytics", icon: TrendingUp },
-      { id: "budget",    label: "Budget",    icon: PiggyBank  },
-      { id: "personal",  label: "Personal $",icon: Wallet     },
+      { id: "employees", label: "Employees", icon: Users2       },
+      { id: "hiring",    label: "Hiring",    icon: UserCheck    },
+      { id: "training",  label: "Training",  icon: GraduationCap},
     ],
   },
   {
-    label: "Team & Assets",
+    label: "Resources",
     items: [
-      { id: "employees", label: "Employees", icon: Users2      },
-      { id: "hiring",    label: "Hiring",    icon: UserCheck   },
-      { id: "fleet",     label: "Fleet",     icon: Truck       },
-      { id: "chemicals", label: "Chemicals & Equipment", icon: FlaskConical},
-      { id: "training",  label: "Training",     icon: GraduationCap },
+      { id: "fleet",          label: "Fleet",                 icon: Truck        },
+      { id: "chemicals",      label: "Chemicals & Equipment", icon: FlaskConical },
+      { id: "accountability", label: "Accountability",        icon: Heart        },
     ],
   },
   {
-    label: "Personal",
+    label: "Account & More",
     items: [
-      { id: "accountability", label: "Accountability", icon: Heart    },
-      { id: "google",         label: "Workspace",      icon: Database },
-      { id: "portal",         label: "Team Portal",    icon: Monitor  },
+      { id: "google", label: "Workspace",   icon: Database },
+      { id: "portal", label: "Team Portal", icon: Monitor  },
     ],
   },
 ];
@@ -4867,7 +4873,7 @@ export function App() {
   // appended to "Main" (the very top group) — moved to "Personal", the
   // last group in navGroups, so it sits near the bottom of the sidebar
   // instead of competing with Dashboard/Alfred/Inbox for top billing.
-  const navGroupsWithFeedback = navGroups.map(g => g.label === "Personal" ? { ...g, items: [...g.items, { id: "feedback", label: "Feedback", icon: MessageSquare }] } : g);
+  const navGroupsWithFeedback = navGroups.map(g => g.label === "Account & More" ? { ...g, items: [...g.items, { id: "feedback", label: "Feedback", icon: MessageSquare }] } : g);
   const visibleNavGroups = (isCockpitOwner
     ? [...navGroupsWithFeedback, { label: "Developer", items: [{ id: "cockpit", label: "Alfred Cockpit", icon: LayoutGrid }] }]
     : navGroupsWithFeedback
@@ -4941,7 +4947,7 @@ export function App() {
         <nav className="flex-1 overflow-y-auto py-3 space-y-4 px-2">
           {visibleNavGroups.map(group => (
             <div key={group.label}>
-              <div className="text-[9px] uppercase tracking-widest text-white/30 font-semibold px-3 mb-1">{group.label}</div>
+              <div className="text-[9px] uppercase tracking-widest text-white font-bold px-3 mb-1">{group.label}</div>
               {group.items.map(item => {
                 const Icon = item.icon;
                 const active = page === item.id;

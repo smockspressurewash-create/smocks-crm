@@ -8,7 +8,6 @@ import {
   Reveal, MarketingStyles, BackgroundBlobs, MarketingNav, MarketingFooter,
   MarketingPage, MarketingMarquee, SectionDivider,
 } from "./MarketingShared";
-import { FeedbackPage } from "./FeedbackPage";
 
 // ─── Public marketing / landing page for CrewBoss (this product) ──────────────
 // Reached at "#/" (or "#/welcome") for any visitor with no active session —
@@ -306,7 +305,7 @@ export function LandingPage({
 
       {/* ── Feature grid (teaser — full breakdown on #/features) ────────────── */}
       <section className="px-4 md:px-6 py-16 md:py-24 max-w-6xl mx-auto">
-        <Reveal className="text-center mb-12 md:mb-16">
+        <Reveal variant="blur" className="text-center mb-12 md:mb-16">
           <h2 className="lp-text-hover text-2xl md:text-4xl font-extrabold tracking-tight mb-3">
             Everything the office <span className="gradient-text">and</span> the field need
           </h2>
@@ -317,7 +316,7 @@ export function LandingPage({
 
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 md:gap-5">
           {FEATURES.map((f, i) => (
-            <Reveal key={f.title} delay={(i % 3) * 90}>
+            <Reveal key={f.title} variant={i % 3 === 0 ? "left" : i % 3 === 1 ? "scale" : "right"} delay={(i % 3) * 90}>
               <div className="lp-card-hover glass p-5 md:p-6 h-full">
                 <div className="w-11 h-11 rounded-xl bg-gradient-to-br from-red-600/20 to-red-900/20 border border-red-700/30 flex items-center justify-center mb-4">
                   <f.icon size={20} className="text-red-400" />
@@ -363,7 +362,7 @@ export function LandingPage({
 
       {/* ── How it works ─────────────────────────────────────────────────────── */}
       <section className="px-4 md:px-6 py-16 md:py-24 max-w-5xl mx-auto">
-        <Reveal className="text-center mb-12 md:mb-16">
+        <Reveal variant="rotate" className="text-center mb-12 md:mb-16">
           <h2 className="lp-text-hover text-3xl md:text-5xl font-black mb-3">Up and running the same day</h2>
           <p className="text-white/50 max-w-xl mx-auto">No onboarding calls, no waiting on a sales rep — set up your business and start sending real estimates within the hour.</p>
         </Reveal>
@@ -373,7 +372,7 @@ export function LandingPage({
             { step: "2", title: "Send your first estimate", desc: "Build a branded estimate in minutes, text or email it to the customer, and watch it get signed and paid without a single phone call." },
             { step: "3", title: "Your crew clocks in", desc: "Assign the job, and your crew sees it on their phone — checklists, directions, and a Clock In button. You see exactly where they are and how it's going." },
           ].map((s, i) => (
-            <Reveal key={s.step} delay={i * 100}>
+            <Reveal key={s.step} variant="scale" delay={i * 100}>
               <div className="glass p-6 md:p-8 h-full">
                 <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-red-600 to-red-900 flex items-center justify-center font-black text-lg mb-4">{s.step}</div>
                 <h3 className="font-bold text-lg mb-2"><span className="lp-text-hover">{s.title}</span></h3>
@@ -385,7 +384,7 @@ export function LandingPage({
       </section>
 
       {/* ── Built for the field, not a desk ──────────────────────────────────── */}
-      <Reveal className="px-4 md:px-6">
+      <Reveal variant="left" className="px-4 md:px-6">
         <section className="max-w-6xl mx-auto py-16 md:py-24 grid md:grid-cols-2 gap-10 md:gap-16 items-center">
           <div>
             <h2 className="lp-text-hover text-3xl md:text-5xl font-black mb-4">Built for the field, not a desk</h2>
@@ -450,7 +449,7 @@ export function LandingPage({
 
       {/* ── Pricing (teaser — full comparison on #/pricing) ─────────────────── */}
       <section className="px-4 md:px-6 py-16 md:py-24 max-w-6xl mx-auto">
-        <Reveal className="text-center mb-12 md:mb-16">
+        <Reveal variant="blur" className="text-center mb-12 md:mb-16">
           <h2 className="lp-text-hover text-2xl md:text-4xl font-extrabold tracking-tight mb-3">
             Simple, <span className="gradient-text">honest</span> pricing
           </h2>
@@ -472,7 +471,7 @@ export function LandingPage({
 
         <div className="grid grid-cols-1 md:grid-cols-3 gap-5 md:gap-6 items-stretch">
           {PLANS.map((plan, i) => (
-            <Reveal key={plan.name} delay={i * 100}>
+            <Reveal key={plan.name} variant={i === 0 ? "left" : i === PLANS.length - 1 ? "right" : "scale"} delay={i * 100}>
               <div
                 className={
                   "lp-card-hover h-full flex flex-col p-6 md:p-7 rounded-2xl border relative overflow-hidden " +
@@ -486,9 +485,9 @@ export function LandingPage({
                     MOST POPULAR
                   </div>
                 )}
-                <div className="text-sm font-semibold text-white/70 mb-1">{plan.name}</div>
+                <div className="lp-text-hover text-sm font-semibold text-white/70 mb-1">{plan.name}</div>
                 <div className="flex items-end gap-1 mb-1">
-                  <span className="text-3xl md:text-4xl font-black">${billing === "annual" ? plan.priceAnnual : plan.priceMonthly}</span>
+                  <span className="lp-text-hover text-3xl md:text-4xl font-black">${billing === "annual" ? plan.priceAnnual : plan.priceMonthly}</span>
                   <span className="text-white/40 text-sm mb-1">/mo</span>
                 </div>
                 {billing === "annual" && (
@@ -537,12 +536,12 @@ export function LandingPage({
           Pricing page's own FAQ before). Plain accordion, no library. */}
       <SectionDivider />
       <section className="px-4 md:px-6 py-16 md:py-24 max-w-3xl mx-auto">
-        <Reveal className="text-center mb-10">
+        <Reveal variant="right" className="text-center mb-10">
           <h2 className="lp-text-hover text-2xl md:text-4xl font-extrabold tracking-tight mb-3">
             Questions, <span className="gradient-text">answered</span>
           </h2>
         </Reveal>
-        <Reveal delay={80}>
+        <Reveal variant="left" delay={80}>
           <div className="space-y-3">
             {[
               { q: "Do I need a separate payment processor?", a: "No — CrewBoss connects directly to Stripe or Square, whichever you already use (or want to set up). Take deposits, full payments, and in-person card charges without a third-party app in between." },
@@ -559,43 +558,8 @@ export function LandingPage({
         </Reveal>
       </section>
 
-      {/* ── Roadmap & Feedback — a REAL, working section embedded right on the
-          landing page (not just a nav link off to #/roadmap), per repeated
-          user report: "no section to request new features, upvote or
-          downvote them, or report bugs." Reuses the exact same live
-          feedback_items board FeedbackPage already renders at #/roadmap —
-          same data, same voting, same bug-report form — just surfaced here
-          too so a visitor doesn't have to go hunting for it. */}
-      <SectionDivider />
-      <section className="px-4 md:px-6 py-16 md:py-24 max-w-5xl mx-auto">
-        <Reveal className="text-center mb-10">
-          <h2 className="lp-text-hover text-2xl md:text-4xl font-extrabold tracking-tight mb-3">
-            Built with the crews <span className="gradient-text">who use it</span>
-          </h2>
-          <p className="text-white/50 max-w-xl mx-auto text-sm md:text-base">
-            See what's planned, in progress, and shipped — request a feature, report a bug, and vote on what matters most.
-          </p>
-        </Reveal>
-        <Reveal delay={80}>
-          {!isLoggedIn && (
-            <div className="max-w-3xl mx-auto mb-4 p-3.5 rounded-xl bg-red-950/20 border border-red-700/40 text-sm text-white/80 flex items-center justify-between gap-3 flex-wrap">
-              <span>Have an idea or found a bug? Log in to submit it and vote on others.</span>
-              <button onClick={onGetStarted} className="px-3 py-1.5 rounded-lg bg-red-600 hover:bg-red-700 text-white text-xs font-semibold flex-shrink-0">Log In →</button>
-            </div>
-          )}
-          <div className="rounded-2xl border border-white/10 bg-black/40 overflow-hidden">
-            <FeedbackPage publicMode />
-          </div>
-          <div className="text-center mt-4">
-            <button onClick={onRoadmap} className="text-sm text-red-400 hover:text-red-300 font-medium inline-flex items-center gap-1">
-              View the full roadmap <ChevronRight size={14} />
-            </button>
-          </div>
-        </Reveal>
-      </section>
-
       {/* ── Final CTA ────────────────────────────────────────────────────────── */}
-      <Reveal className="px-4 md:px-6">
+      <Reveal variant="scale" className="px-4 md:px-6">
         <section className="max-w-4xl mx-auto text-center py-16 md:py-20">
           <h2 className="lp-text-hover text-2xl md:text-4xl font-extrabold tracking-tight mb-4">
             Ready to run a tighter crew?
@@ -627,7 +591,7 @@ function FaqItem({ q, a }: { q: string; a: string }) {
         className="w-full flex items-center justify-between gap-4 text-left px-5 py-4"
         aria-expanded={open}
       >
-        <span className="font-semibold text-sm md:text-base">{q}</span>
+        <span className="lp-text-hover font-semibold text-sm md:text-base">{q}</span>
         <ChevronRight size={16} className={"flex-shrink-0 text-white/40 transition-transform " + (open ? "rotate-90" : "")} />
       </button>
       {open && (
