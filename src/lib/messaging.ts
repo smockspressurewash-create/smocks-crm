@@ -318,9 +318,26 @@ export const twilioSend = async (
     // opt-out status itself instead of trusting this browser-side check as
     // the only line of defense.
     : { sid: twilioSid, token: twilioToken, to: toNum, from, body, ownerId: currentOwnerIdForSms };
+  // SECURITY FIX (audit finding) — /api/twilio-send had no auth check at
+  // all: anyone who obtained an ownerId (several public endpoints return
+  // one) could POST directly to it and send SMS through that business's
+  // real Twilio number/reputation to any phone, at their expense. The
+  // server now requires this bearer token and resolves the caller's OWN
+  // owner_id from it server-side, ignoring whatever ownerId the request
+  // body claims — this token is just along for that check for our own
+  // endpoint; an explicitly configured self-hosted twilioBackendUrl is the
+  // owner's own server and doesn't need it. getSession() has a documented
+  // hang bug in this codebase with no timeout — wrapped accordingly.
+  let accessToken: string | undefined;
+  if (!twilioBackendUrl) {
+    try {
+      const { data } = await withTimeout(supabase.auth.getSession(), 8000, "Get session");
+      accessToken = data?.session?.access_token;
+    } catch { /* fall through — server will reject with no valid session */ }
+  }
   const res = await fetch(endpoint, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}) },
     body: JSON.stringify(payload),
   });
   const data = await res.json().catch(() => ({} as any));

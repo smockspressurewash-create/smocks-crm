@@ -75,6 +75,29 @@ const resolveCallerOwnerId = async (accessToken: string): Promise<string | null>
   return Array.isArray(empRows) && empRows[0]?.owner_id ? empRows[0].owner_id : uid;
 };
 
+// SECURITY FIX (audit finding) — mirrors stripe-action.ts's identically-
+// named helper; resolveCallerOwnerId alone only proves "same tenant,"
+// which isn't enough for key/refund/subscription-cancel actions.
+const resolveCallerIsOwnerOrManager = async (accessToken: string): Promise<{ ownerId: string; role: string } | null> => {
+  if (!accessToken) return null;
+  const userRes = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
+    headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${accessToken}` },
+  });
+  if (!userRes.ok) return null;
+  const user = await userRes.json().catch(() => null) as any;
+  const uid = user?.id;
+  if (!uid) return null;
+  const empRes = await fetch(`${SUPABASE_URL}/rest/v1/employees?user_id=eq.${encodeURIComponent(uid)}&select=owner_id,role&limit=1`, {
+    headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${accessToken}` },
+  });
+  const empRows = await empRes.json().catch(() => []);
+  const row = Array.isArray(empRows) ? empRows[0] : null;
+  if (!row) return { ownerId: uid, role: "owner" };
+  const role = (row.role || "").toLowerCase();
+  if (role !== "owner" && role !== "manager") return null;
+  return { ownerId: row.owner_id || uid, role };
+};
+
 const json = (data: any, status = 200) => new Response(JSON.stringify(data), { status, headers: { "Content-Type": "application/json" } });
 
 export const onRequestPost = async (context: { request: Request; env: Record<string, string> }) => {
@@ -88,8 +111,14 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
 
     if (action === "save_owner_square_keys" || action === "get_owner_square_status") {
       const accessTokenHdr = (context.request.headers.get("authorization") || "").replace(/^Bearer\s+/i, "");
-      const callerOwnerId = await resolveCallerOwnerId(accessTokenHdr);
-      if (!callerOwnerId) return json({ error: "Not signed in." }, 401);
+      // SECURITY FIX (audit finding) — save_owner_square_keys lets a caller
+      // overwrite the business's live Square access token/webhook key; was
+      // gated only by "same tenant." Now requires owner/manager. Status
+      // lookup (read-only, no secrets returned) stays open to any member.
+      const callerOwnerId = action === "save_owner_square_keys"
+        ? (await resolveCallerIsOwnerOrManager(accessTokenHdr))?.ownerId || null
+        : await resolveCallerOwnerId(accessTokenHdr);
+      if (!callerOwnerId) return json({ error: action === "save_owner_square_keys" ? "Only the business owner or a manager can change payment keys." : "Not signed in." }, action === "save_owner_square_keys" ? 403 : 401);
 
       if (action === "get_owner_square_status") {
         const acct = await getOwnerSquareAccount(callerOwnerId, serviceRoleKey);
@@ -170,7 +199,17 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
         },
         body: JSON.stringify({
           source_id: sourceId,
-          idempotency_key: crypto.randomUUID(),
+          // SECURITY FIX (audit finding) — a fresh random idempotency_key
+          // on every call means a browser retry after a dropped/timed-out
+          // response (which already reached Square and succeeded) creates
+          // a genuine SECOND charge. For an invoice payment, the operation
+          // is fully determined by the invoice — reusing the same key for
+          // the same invoiceId is safe and correct (Square returns the
+          // cached first result instead of charging twice); ad-hoc charges
+          // (field-portal tips/fees, no invoiceId) have no stable id to key
+          // on, so they keep a random key — narrower risk (typically small
+          // amounts, no auto-retry in the client today).
+          idempotency_key: invoiceId ? `pay-${invoiceId}` : crypto.randomUUID(),
           amount_money: { amount: amountCents, currency: "USD" },
           location_id: acct.locationId,
           note: body.description || "",
@@ -191,6 +230,14 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
     // same caller-auth-token / invoiceId / client-ownerId fallback chain
     // used everywhere else in this file — never a client-claimed secret.
     if (action === "refund_payment") {
+      // SECURITY FIX (audit finding) — the "OWNER-ONLY" comment above was a
+      // UI convention, not server-enforced; any authenticated employee
+      // session could call this. Now actually requires owner/manager.
+      {
+        const accessTokenGuard = (context.request.headers.get("authorization") || "").replace(/^Bearer\s+/i, "");
+        const guard = await resolveCallerIsOwnerOrManager(accessTokenGuard);
+        if (!guard) return json({ error: "Only the business owner or a manager can issue refunds." }, 403);
+      }
       const { paymentId, invoiceId, amountCents } = body;
       if (!paymentId) return json({ error: "Missing paymentId" }, 400);
       let ownerId: string | null = null;
@@ -221,7 +268,11 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
         method: "POST",
         headers: { Authorization: `Bearer ${acct.accessToken}`, "Content-Type": "application/json", "Square-Version": "2024-10-17" },
         body: JSON.stringify({
-          idempotency_key: crypto.randomUUID(),
+          // SECURITY FIX (audit finding) — same reasoning as create_payment
+          // above; a refund is fully determined by (paymentId, amount), so
+          // this key is safe to reuse on retry instead of risking a double
+          // refund.
+          idempotency_key: `refund-${paymentId}-${refundAmountCents}`,
           amount_money: { amount: refundAmountCents, currency: "USD" },
           payment_id: paymentId,
         }),
@@ -252,9 +303,14 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
       const validCadences = ["WEEKLY", "MONTHLY", "ANNUAL"];
       const planCadence = validCadences.includes(cadence) ? cadence : "MONTHLY";
 
+      // SECURITY FIX (audit finding) — setting up recurring billing is an
+      // owner/manager-level configuration action (only ever called from
+      // CustomerDetail.tsx, an owner-CRM page); was gated only by "same
+      // tenant," letting any employee session create one.
       const accessTokenHdr = (context.request.headers.get("authorization") || "").replace(/^Bearer\s+/i, "");
-      const callerOwnerId = await resolveCallerOwnerId(accessTokenHdr);
-      if (!callerOwnerId) return json({ error: "Not signed in." }, 401);
+      const callerGuard = await resolveCallerIsOwnerOrManager(accessTokenHdr);
+      if (!callerGuard) return json({ error: "Only the business owner or a manager can set up recurring billing." }, 403);
+      const callerOwnerId = callerGuard.ownerId;
       const acct = await getOwnerSquareAccount(callerOwnerId, serviceRoleKey);
       if (!acct?.accessToken || !acct?.locationId) {
         return json({ error: "Square isn't configured for this business yet — add keys in Settings → Integrations → Square." }, 500);
@@ -361,6 +417,18 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
       if (!payRes.ok || payData?.payment?.status !== "COMPLETED") {
         return json({ error: `Payment status is "${payData?.payment?.status || "unknown"}", not COMPLETED — invoice not marked paid.` }, 400);
       }
+      // SECURITY FIX (audit finding — CRITICAL) — this checked the payment
+      // was COMPLETED but never that it was actually made FOR this invoice.
+      // create_payment sets reference_id: invoiceId at creation — a caller
+      // could pay a small/unrelated invoice once to get one real COMPLETED
+      // paymentId, then call this with THAT id and a different invoiceId
+      // under the same owner to mark it paid without paying for it. Same
+      // exploit and same fix as stripe-action.ts's confirm_invoice_payment.
+      const expectedAmountCents = await getInvoiceAmountCents(invoiceId, serviceRoleKey).catch(() => 0);
+      const paidAmountCents = Number(payData?.payment?.amount_money?.amount) || 0;
+      if (payData?.payment?.reference_id !== invoiceId || !expectedAmountCents || paidAmountCents < expectedAmountCents) {
+        return json({ error: "This payment doesn't match the invoice being confirmed — nothing was marked paid." }, 400);
+      }
       const authHeaders = { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}` };
       const getRes = await fetch(`${SUPABASE_URL}/rest/v1/estimates?id=eq.${encodeURIComponent(invoiceId)}&select=paymentLog`, { headers: authHeaders });
       const rows = await getRes.json().catch(() => []);
@@ -379,13 +447,16 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
       return json({ success: true });
     }
 
-    // cancel_square_recurring_plan — owner-only.
+    // cancel_square_recurring_plan — owner/manager-only. SECURITY FIX
+    // (audit finding) — comment said "owner-only" but was only ever gated
+    // by "same tenant"; any employee session could cancel a customer's
+    // recurring plan.
     if (action === "cancel_square_recurring_plan") {
       const { subscriptionId } = body;
       if (!subscriptionId) return json({ error: "Missing subscriptionId" }, 400);
       const accessTokenHdr = (context.request.headers.get("authorization") || "").replace(/^Bearer\s+/i, "");
-      const callerOwnerId = await resolveCallerOwnerId(accessTokenHdr);
-      if (!callerOwnerId) return json({ error: "Not signed in." }, 401);
+      const callerOwnerId = (await resolveCallerIsOwnerOrManager(accessTokenHdr))?.ownerId || null;
+      if (!callerOwnerId) return json({ error: "Only the business owner or a manager can cancel a recurring plan." }, 403);
       const acct = await getOwnerSquareAccount(callerOwnerId, serviceRoleKey);
       if (!acct?.accessToken) return json({ error: "Square isn't configured for this business." }, 500);
       const cancelRes = await fetch(`${squareApiBase()}/v2/subscriptions/${encodeURIComponent(subscriptionId)}/cancel`, {

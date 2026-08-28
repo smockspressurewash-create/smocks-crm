@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import { Plus, Trash2, Edit, Mail, MessageSquare, Tag, MapPin, Calendar, Percent, DollarSign, Send, Eye, X, Users } from "lucide-react";
-import { fmt, uid, today, daysSince } from "../../lib/utils";
+import { fmt, uid, today, daysSince, escapeHtml } from "../../lib/utils";
 import type { Customer, Promotion, Service, AppSettings } from "../../types";
 import { twilioSend, sendEmail, emailShell, emailButton, logOutboundSmsToInbox } from "../../lib/messaging";
 import { supabase } from "../../lib/supabase";
@@ -50,7 +50,7 @@ export function PromotionsPage({ promotions = [], setPromotions = (() => {}) as 
       <div style="text-align:center;margin-bottom:16px">
         <div style="display:inline-block;background:#dc2626;color:#fff;font-weight:800;font-size:22px;padding:10px 22px;border-radius:12px">${discountLabel(p)}</div>
       </div>
-      <p style="font-size:15px">Hi ${cust.firstName},</p>
+      <p style="font-size:15px">Hi ${escapeHtml(cust.firstName)},</p>
       <p style="font-size:14px;color:#444">${p.description || `Enjoy ${discountLabel(p)} on your next service with ${companyName}!`}</p>
       <p style="font-size:12px;color:#888">Valid ${p.validFrom} through ${p.validTo}${p.usageLimit ? ` · Limited to ${p.usageLimit} uses` : ""}</p>
     `;

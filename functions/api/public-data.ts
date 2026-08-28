@@ -179,10 +179,20 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
     if (action === "approve_estimate") {
       const { id, signedAt, sigData, payChoice, paid, totalPaid, payType, job } = body;
       if (!id) return json({ error: "Missing id" }, 400);
-      const estRes = await sb(serviceRoleKey, `estimates?id=eq.${encodeURIComponent(id)}&select=owner_id,customerId,paidDeposit,paidFull`);
+      const estRes = await sb(serviceRoleKey, `estimates?id=eq.${encodeURIComponent(id)}&select=owner_id,customerId,paidDeposit,paidFull,status`);
       const est = Array.isArray(estRes.data) ? estRes.data[0] : null;
       if (!est) return json({ error: "Not found" }, 404);
-
+      // SECURITY FIX (audit finding) — this never checked the estimate's
+      // current status before writing, so approve_estimate could be
+      // replayed against an already-signed/already-paid estimate: a new
+      // sigData overwrites the original signature, and (since `job` is
+      // inserted unconditionally when present) a repeated call with a
+      // truthy `job` inserts ANOTHER real job row every time. Once
+      // approved, this action is done — reject a replay instead of
+      // silently re-processing it.
+      if (est.status === "approved") {
+        return json({ error: "This estimate has already been approved." }, 409);
+      }
       const patch: Record<string, any> = { status: "approved", signedAt: signedAt || null, sigData: sigData || null, payChoice: payChoice || null };
       if (paid) patch.paidAt = new Date().toISOString().slice(0, 10);
       if (payType === "deposit") patch.paidDeposit = totalPaid;
@@ -236,6 +246,17 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
     if (action === "decline_estimate") {
       const { id, reason, category } = body;
       if (!id) return json({ error: "Missing id" }, 400);
+      // SECURITY FIX (audit finding) — same replay guard as approve_estimate:
+      // don't let an already-approved (possibly already-paid) estimate be
+      // flipped to "rejected" via a direct API call after the fact, and
+      // don't let a repeat decline_estimate call silently no-op-but-succeed
+      // with a different reason/category overwriting the real one.
+      const preCheck = await sb(serviceRoleKey, `estimates?id=eq.${encodeURIComponent(id)}&select=status`);
+      const preEst = Array.isArray(preCheck.data) ? preCheck.data[0] : null;
+      if (!preEst) return json({ error: "Not found" }, 404);
+      if (preEst.status === "approved" || preEst.status === "rejected") {
+        return json({ error: preEst.status === "approved" ? "This estimate has already been approved and can't be declined." : "This estimate has already been declined." }, 409);
+      }
       const upd = await sb(serviceRoleKey, `estimates?id=eq.${encodeURIComponent(id)}`, {
         method: "PATCH", headers: { Prefer: "return=minimal" },
         body: JSON.stringify({ status: "rejected", declinedAt: new Date().toISOString(), declineReason: reason || "", declineReasonCategory: category || "" }),

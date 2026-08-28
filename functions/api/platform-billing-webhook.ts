@@ -35,6 +35,26 @@ const verifyStripeSignature = async (payload: string, sigHeader: string, secret:
   return diff === 0;
 };
 
+// SECURITY/CORRECTNESS FIX (audit finding — High) — customer.subscription.
+// updated/deleted used to key EXCLUSIVELY off sub.metadata?.ownerId, which
+// the pay-first signup flow (create_signup_checkout_session in
+// platform-billing.ts) couldn't set at subscription-creation time (no
+// account exists yet then) — platform-billing.ts's complete_signup now
+// patches it in after the fact, but any subscription created BEFORE that
+// fix shipped still has no metadata.ownerId and would silently no-op here
+// forever, exactly like invoice.payment_failed already had to work around
+// below. Same fallback: resolve by the subscription id already stored on
+// the row from its own initial creation.
+const resolveOwnerIdForSubscription = async (serviceRoleKey: string, sub: any): Promise<string | null> => {
+  if (sub?.metadata?.ownerId) return sub.metadata.ownerId;
+  if (!sub?.id) return null;
+  const findRes = await fetch(`${SUPABASE_URL}/rest/v1/platform_subscriptions?stripe_subscription_id=eq.${encodeURIComponent(sub.id)}&select=owner_id`, {
+    headers: { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}` },
+  });
+  const rows = await findRes.json().catch(() => []);
+  return Array.isArray(rows) && rows[0]?.owner_id ? rows[0].owner_id : null;
+};
+
 const upsertSubscription = async (serviceRoleKey: string, ownerId: string, patch: Record<string, unknown>): Promise<boolean> => {
   const headers = { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}`, "Content-Type": "application/json", Prefer: "resolution=merge-duplicates,return=minimal" };
   const res = await fetch(`${SUPABASE_URL}/rest/v1/platform_subscriptions`, {
@@ -76,7 +96,7 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
       }
     } else if (event.type === "customer.subscription.updated") {
       const sub = event.data?.object || {};
-      const ownerId = sub.metadata?.ownerId;
+      const ownerId = await resolveOwnerIdForSubscription(serviceRoleKey, sub);
       if (ownerId) {
         // Stripe's subscription.status: active | past_due | canceled | unpaid | incomplete | trialing
         ok = await upsertSubscription(serviceRoleKey, ownerId, {
@@ -88,7 +108,7 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
       }
     } else if (event.type === "customer.subscription.deleted") {
       const sub = event.data?.object || {};
-      const ownerId = sub.metadata?.ownerId;
+      const ownerId = await resolveOwnerIdForSubscription(serviceRoleKey, sub);
       if (ownerId) ok = await upsertSubscription(serviceRoleKey, ownerId, { status: "canceled" });
     } else if (event.type === "invoice.payment_failed") {
       const invoice = event.data?.object || {};

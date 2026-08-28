@@ -12,7 +12,7 @@
 // runs server-side (no CORS restriction applies to it) and same-origin (no
 // CORS restriction applies to calling IT from the browser either), so it
 // proxies the real Twilio call through.
-import { getOwnerSecrets } from "./_lib/ownerSecrets";
+import { getOwnerSecrets, resolveCallerOwnerId } from "./_lib/ownerSecrets";
 
 const SUPABASE_URL = "https://boaqaihymgmrhnjtiqrs.supabase.co";
 const normalizePhoneDigits = (p?: string | null): string => {
@@ -26,6 +26,27 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
       sid?: string; token?: string; to?: string; from?: string; body?: string; ownerId?: string;
     };
     const serviceRoleKey = context.env.SUPABASE_SERVICE_ROLE_KEY;
+
+    // SECURITY FIX (audit finding — CRITICAL) — this endpoint had NO auth
+    // check at all: it accepted any `ownerId` in the request body and used
+    // it to resolve that business's real Twilio credentials server-side,
+    // then sent the SMS. `ownerId` is a UUID but not a secret — several
+    // public, unauthenticated endpoints (e.g. get_referral_customer,
+    // get_estimate) return it. Anyone who obtained a business's owner_id
+    // could send arbitrary SMS through their real Twilio number/reputation
+    // to any phone, at their expense. Now requires a real session and
+    // ALWAYS uses the owner_id resolved from that session — the
+    // client-supplied ownerId in the body is ignored entirely.
+    const authHeader = context.request.headers.get("Authorization") || "";
+    const accessToken = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : "";
+    const resolvedOwnerId = await resolveCallerOwnerId(accessToken);
+    if (!resolvedOwnerId) {
+      return new Response(JSON.stringify({ error: "Not authenticated" }), {
+        status: 401, headers: { "Content-Type": "application/json" },
+      });
+    }
+    ownerId = resolvedOwnerId;
+
     // SECURITY FIX — sid/token used to always come straight from the
     // client's own request body, meaning the raw Twilio auth token had to
     // live in browser-readable state (app_settings.data) for every send to

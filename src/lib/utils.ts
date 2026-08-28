@@ -157,6 +157,27 @@ export const fmt = (n: number | undefined | null): string => {
   return "$" + Number(n).toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 0 });
 };
 
+// SECURITY FIX (audit finding) — customer records (firstName/lastName etc.)
+// are writable by unauthenticated public forms (lead intake, trash-can
+// signup, referral signup — see public-data.ts's submit_* actions), which
+// insert whatever the submitter typed verbatim. Several places build an
+// HTML string by interpolating a customer field directly and then render it
+// via dangerouslySetInnerHTML (estimate/promo send previews) or as an
+// actual outbound email body — an attacker could submit a public form with
+// firstName = "<img src=x onerror=...>" and have it execute in the OWNER's
+// authenticated session the moment they preview/send to that customer.
+// Escape any customer-sourced (or otherwise untrusted) value before it goes
+// into an HTML template string.
+export const escapeHtml = (s: string | undefined | null): string => {
+  if (s == null) return "";
+  return String(s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+};
+
 // Generate a real RFC-4122 UUID v4 rather than a short base-36 string. The
 // Supabase tables (jobs, estimates, customers, employees, job_requests) have
 // `id` columns that are frequently typed `uuid` — a short id like "a3f9k2m1"

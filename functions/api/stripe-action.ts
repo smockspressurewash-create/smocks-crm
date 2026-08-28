@@ -110,13 +110,51 @@ const resolveCallerOwnerId = async (accessToken: string): Promise<string | null>
   return Array.isArray(empRows) && empRows[0]?.owner_id ? empRows[0].owner_id : uid;
 };
 
-const stripeFetch = async (secretKey: string, method: string, path: string, params?: Record<string, string>, stripeAccount?: string) => {
+// SECURITY FIX (audit finding) — resolveCallerOwnerId alone only proves
+// "this caller belongs to this tenant," which was being used to gate
+// account-management actions that any regular employee session should NOT
+// be able to do server-side (an attacker with a compromised/malicious
+// technician login could otherwise overwrite the business's live Stripe
+// keys, issue refunds, cancel recurring plans, or enumerate/delete stored
+// customer payment methods). Mirrors _lib/ownerSecrets.ts's
+// resolveCallerIsOwnerOrManager — duplicated per this file's existing
+// convention of not sharing helpers across function files.
+const resolveCallerIsOwnerOrManager = async (accessToken: string): Promise<{ ownerId: string; role: string } | null> => {
+  if (!accessToken) return null;
+  const userRes = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
+    headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${accessToken}` },
+  });
+  if (!userRes.ok) return null;
+  const user = await userRes.json().catch(() => null) as any;
+  const uid = user?.id;
+  if (!uid) return null;
+  const empRes = await fetch(`${SUPABASE_URL}/rest/v1/employees?user_id=eq.${encodeURIComponent(uid)}&select=owner_id,role&limit=1`, {
+    headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${accessToken}` },
+  });
+  const empRows = await empRes.json().catch(() => []);
+  const row = Array.isArray(empRows) ? empRows[0] : null;
+  if (!row) return { ownerId: uid, role: "owner" };
+  const role = (row.role || "").toLowerCase();
+  if (role !== "owner" && role !== "manager") return null;
+  return { ownerId: row.owner_id || uid, role };
+};
+
+const stripeFetch = async (secretKey: string, method: string, path: string, params?: Record<string, string>, stripeAccount?: string, idempotencyKey?: string) => {
   const res = await fetch(`https://api.stripe.com/v1/${path}`, {
     method,
     headers: {
       Authorization: `Basic ${btoa(secretKey + ":")}`,
       ...(stripeAccount ? { "Stripe-Account": stripeAccount } : {}),
       ...(method === "POST" ? { "Content-Type": "application/x-www-form-urlencoded" } : {}),
+      // SECURITY FIX (audit finding) — no Stripe Idempotency-Key was ever
+      // sent, so a retried request (network blip, a double-tap before a
+      // button disables) against a real money-moving call
+      // (charge_saved_payment_method, refund) creates a second real
+      // PaymentIntent/refund instead of Stripe returning the cached first
+      // result. Only passed by callers who derive a stable key from the
+      // operation's own identity (see charge_saved_payment_method/refund
+      // below) — omitted elsewhere, unchanged behavior for everything else.
+      ...(idempotencyKey ? { "Idempotency-Key": idempotencyKey } : {}),
     },
     body: method === "POST" && params ? new URLSearchParams(params).toString() : undefined,
   });
@@ -211,9 +249,17 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
         return new Response(JSON.stringify({ error: "Server missing SUPABASE_SERVICE_ROLE_KEY env var — add it in the Cloudflare Pages dashboard, then redeploy." }), { status: 500, headers: { "Content-Type": "application/json" } });
       }
       const accessToken = (context.request.headers.get("authorization") || "").replace(/^Bearer\s+/i, "");
-      const callerOwnerId = await resolveCallerOwnerId(accessToken);
+      // SECURITY FIX (audit finding) — save_owner_keys lets a caller
+      // overwrite the business's live Stripe secret key/webhook secret,
+      // silently redirecting every future customer charge to an attacker-
+      // controlled account. resolveCallerOwnerId alone only proved "same
+      // tenant" — any regular employee session could call this. Now
+      // requires owner/manager. get_owner_keys_status (read-only status,
+      // no secrets returned) stays available to any tenant member.
+      const caller = action === "save_owner_keys" ? await resolveCallerIsOwnerOrManager(accessToken) : null;
+      const callerOwnerId = action === "save_owner_keys" ? caller?.ownerId : await resolveCallerOwnerId(accessToken);
       if (!callerOwnerId) {
-        return new Response(JSON.stringify({ error: "Not signed in." }), { status: 401, headers: { "Content-Type": "application/json" } });
+        return new Response(JSON.stringify({ error: action === "save_owner_keys" ? "Only the business owner or a manager can change payment keys." : "Not signed in." }), { status: action === "save_owner_keys" ? 403 : 401, headers: { "Content-Type": "application/json" } });
       }
 
       if (action === "get_owner_keys_status") {
@@ -284,15 +330,17 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
     }
 
     // list_payment_methods / detach_payment_method — owner-CRM-only actions
-    // exposing/manipulating a customer's stored cards. Same auth-token
-    // requirement as save_owner_keys above (never a client-claimed
-    // ownerId) since these touch payment method data directly.
+    // exposing/manipulating a customer's stored cards. SECURITY FIX (audit
+    // finding) — was gated only by "same tenant" (resolveCallerOwnerId), so
+    // any employee session could enumerate or delete another customer's
+    // stored payment methods; now requires owner/manager.
     if (action === "list_payment_methods" || action === "detach_payment_method") {
       const serviceRoleKey = context.env.SUPABASE_SERVICE_ROLE_KEY;
       const accessToken = (context.request.headers.get("authorization") || "").replace(/^Bearer\s+/i, "");
-      const callerOwnerId = serviceRoleKey ? await resolveCallerOwnerId(accessToken) : null;
+      const caller = serviceRoleKey ? await resolveCallerIsOwnerOrManager(accessToken) : null;
+      const callerOwnerId = caller?.ownerId || null;
       if (serviceRoleKey && !callerOwnerId) {
-        return new Response(JSON.stringify({ error: "Not signed in." }), { status: 401, headers: { "Content-Type": "application/json" } });
+        return new Response(JSON.stringify({ error: "Only the business owner or a manager can manage saved cards." }), { status: 403, headers: { "Content-Type": "application/json" } });
       }
       const acct = callerOwnerId && serviceRoleKey ? await getOwnerStripeAccount(callerOwnerId, serviceRoleKey) : null;
       const secretKey = acct?.secretKey || platformSecretKey;
@@ -623,6 +671,21 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
         if (intent?.status !== "succeeded") {
           return new Response(JSON.stringify({ error: `Payment intent status is "${intent?.status}", not succeeded — invoice not marked paid.` }), { status: 400, headers: { "Content-Type": "application/json" } });
         }
+        // SECURITY FIX (audit finding — CRITICAL) — this never checked that
+        // the given paymentIntentId was actually created FOR this invoiceId.
+        // create_payment_intent stamps metadata.invoiceId on creation (see
+        // above) — a caller could pay a small/unrelated invoice once to get
+        // one real succeeded paymentIntentId, then call this action with
+        // THAT id and a different, larger invoiceId under the same owner to
+        // mark it paid without paying for it. Require the intent's own
+        // metadata to match the invoice being marked paid, and cross-check
+        // the amount actually matches too (belt and suspenders — catches a
+        // legacy intent created before metadata was added).
+        const expectedAmountCents = await getInvoiceAmountCents(body.invoiceId, serviceRoleKey).catch(() => 0);
+        const intentInvoiceId = intent?.metadata?.invoiceId;
+        if (intentInvoiceId !== body.invoiceId || !expectedAmountCents || Number(intent.amount) < expectedAmountCents) {
+          return new Response(JSON.stringify({ error: "This payment doesn't match the invoice being confirmed — nothing was marked paid." }), { status: 400, headers: { "Content-Type": "application/json" } });
+        }
         const authHeaders = { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}` };
         const getRes = await fetch(`${SUPABASE_URL}/rest/v1/estimates?id=eq.${encodeURIComponent(body.invoiceId)}&select=paymentLog`, { headers: authHeaders });
         const rows = await getRes.json().catch(() => []);
@@ -697,6 +760,14 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
       // issued automatically — same as Stripe's own dashboard "Cancel
       // subscription" default).
       case "cancel_recurring_subscription": {
+        // SECURITY FIX (audit finding) — was reachable by any authenticated
+        // tenant member; cancelling a customer's recurring billing plan is
+        // an owner/manager-level action.
+        {
+          const accessTokenGuard = (context.request.headers.get("authorization") || "").replace(/^Bearer\s+/i, "");
+          const guard = await resolveCallerIsOwnerOrManager(accessTokenGuard);
+          if (!guard) return new Response(JSON.stringify({ error: "Only the business owner or a manager can cancel a recurring plan." }), { status: 403, headers: { "Content-Type": "application/json" } });
+        }
         if (!body.subscriptionId) throw new Error("Missing subscriptionId");
         const sub = await stripeFetch(secretKey, "DELETE", `subscriptions/${encodeURIComponent(body.subscriptionId)}`, undefined, stripeAccount);
         return json({ success: true, status: sub.status || "canceled" });
@@ -725,9 +796,36 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
         return json({ id: intent.id, client_secret: intent.client_secret, status: intent.status });
       }
       case "charge_saved_payment_method": {
-        // OWNER-ONLY in practice (only ever called from authenticated CRM UI,
-        // never ClientPortal/ClientAuthPortal) — still amount-verified against
-        // the invoice when one is given, same as the two create_* actions above.
+        // SECURITY FIX (audit finding — CRITICAL) — this action actually
+        // executes a real off-session charge (confirm:"true"), unlike
+        // create_payment_intent (which only creates an intent the customer
+        // must separately confirm client-side). The comment below claimed
+        // "only ever called from authenticated CRM UI" but nothing here
+        // enforced that — with no invoiceId (every field-portal in-person/
+        // tip/fee charge omits it, see EmployeePortal.tsx), amountCents,
+        // ownerId, customerId, and paymentMethodId were all trusted
+        // verbatim from the request body, so an unauthenticated caller
+        // could charge an arbitrary amount to an arbitrary business's
+        // customer. Now requires a real session; the resolved caller's own
+        // owner_id (resolvedOwnerIdOuter, set above) must have actually
+        // matched, not fallen back to a client-claimed body.ownerId, before
+        // this executes any money movement. The remaining "employee trusts
+        // their own job.amount" gap for non-invoice charges is a much
+        // narrower, already-legitimate-access insider concern (that
+        // employee could just as easily edit the job before charging
+        // through the normal UI) — this fix closes the actual open-to-
+        // anyone exploit. resolvedOwnerIdOuter alone isn't sufficient
+        // proof — the outer resolution chain above falls back to a
+        // client-claimed body.ownerId when no session resolves, which is
+        // exactly what an unauthenticated attacker would hit. Re-verify a
+        // REAL session directly here, independent of that fallback.
+        {
+          const accessTokenGuard = (context.request.headers.get("authorization") || "").replace(/^Bearer\s+/i, "");
+          const verifiedOwnerId = await resolveCallerOwnerId(accessTokenGuard);
+          if (!verifiedOwnerId) {
+            return new Response(JSON.stringify({ error: "Not authenticated — sign in and try again." }), { status: 401, headers: { "Content-Type": "application/json" } });
+          }
+        }
         const amountCents = body.invoiceId ? await getInvoiceAmountCents(body.invoiceId, serviceRoleKey) : Math.round(Number(body.amountCents) || 0);
         if (!body.customerId || !body.paymentMethodId) throw new Error("Missing customerId/paymentMethodId");
         if (amountCents <= 0) throw new Error("Invalid amount");
@@ -741,10 +839,25 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
           confirm: "true",
         };
         if (body.invoiceId) params["metadata[invoiceId]"] = body.invoiceId;
-        const intent = await stripeFetch(secretKey, "POST", "payment_intents", params, stripeAccount);
+        // Idempotency key derived from the invoice when one is given (the
+        // charge is then fully determined by it — safe to reuse on retry);
+        // ad-hoc charges (field-portal tips/fees, no invoiceId) have no
+        // stable id to key on and keep a fresh key per call.
+        const chargeIdemKey = body.invoiceId ? `charge-${body.invoiceId}` : crypto.randomUUID();
+        const intent = await stripeFetch(secretKey, "POST", "payment_intents", params, stripeAccount, chargeIdemKey);
         return json({ id: intent.id, client_secret: intent.client_secret, status: intent.status });
       }
       case "refund": {
+        // SECURITY FIX (audit finding) — the "OWNER-ONLY in practice" claim
+        // below was a UI convention, not a server-enforced one: this was
+        // reachable by any authenticated employee session. Now actually
+        // requires owner/manager server-side, matching what the comment
+        // always claimed.
+        {
+          const accessTokenGuard = (context.request.headers.get("authorization") || "").replace(/^Bearer\s+/i, "");
+          const guard = await resolveCallerIsOwnerOrManager(accessTokenGuard);
+          if (!guard) return new Response(JSON.stringify({ error: "Only the business owner or a manager can issue refunds." }), { status: 403, headers: { "Content-Type": "application/json" } });
+        }
         // OWNER-ONLY — only ever called from InvoicesPage/JobDetailModal
         // (authenticated CRM), never exposed to the customer-facing portal.
         // FEATURE — partial refunds: an owner can now issue a specific
@@ -758,7 +871,10 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
           if (!amt || amt <= 0) throw new Error("Invalid refund amount");
           params.amount = String(amt);
         }
-        const refund = await stripeFetch(secretKey, "POST", "refunds", params, stripeAccount);
+        // Refund is fully determined by (paymentIntentId, amount) — safe to
+        // reuse this key on retry instead of risking a double refund.
+        const refundIdemKey = `refund-${body.paymentIntentId}-${params.amount || "full"}`;
+        const refund = await stripeFetch(secretKey, "POST", "refunds", params, stripeAccount, refundIdemKey);
         return json({ success: true, id: refund.id, amount: refund.amount, status: refund.status });
       }
       default:

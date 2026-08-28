@@ -128,10 +128,20 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
     // which is why it used to stay open after confirming. await + try/catch
     // avoids relying on .catch() existing on the builder at all.
     try {
-      const { error } = await (supabase as any).from("jobs").delete().eq("id", jid);
+      // BUG FIX (audit finding) — checked only `error`, not whether the
+      // RLS-scoped delete actually matched a row; "Job permanently
+      // deleted" could show even on a 0-row silent no-op. Matches
+      // CustomersPage.tsx's equivalent delete, which already does this.
+      const { error, data } = await (supabase as any).from("jobs").delete().eq("id", jid).select("id");
       if (error) {
         console.warn("Job delete failed to save server-side:", error.message);
         toast("Deleted locally, but failed to delete from server — " + error.message, "red");
+        setDeleteModal(null);
+        return;
+      }
+      if (!data || data.length === 0) {
+        console.warn("Job delete matched 0 rows server-side — likely blocked by permissions");
+        toast("Deleted locally, but the server rejected the delete — check permissions", "red");
         setDeleteModal(null);
         return;
       }
@@ -411,17 +421,28 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
     const EMPLOYEE_OWNED_FIELDS = ["clockInAt", "lunchStartAt", "lunchMinutes", "lunchExceeded", "loggedHours"] as const;
     const ownedPatch: any = {};
     EMPLOYEE_OWNED_FIELDS.forEach(f => { if ((patch as any)[f] !== undefined) ownedPatch[f] = (patch as any)[f]; });
+    // BUG FIX (audit finding) — these two writes checked only `.error`, not
+    // whether the RLS-scoped update actually matched a row (the same 0-row-
+    // silent-success gotcha the "full patch" write above already guards
+    // against with .select("id")). The crew-assignment one is the worse of
+    // the two: it showed "Crew updated ✓" even when the write silently
+    // affected 0 rows — a false-positive success telling the owner an
+    // assignment saved when it didn't.
     if (Object.keys(ownedPatch).length > 0) {
-      (supabase as any).from("jobs").update(ownedPatch).eq("id", jid)
-        .then((result: any) => { if (result?.error) toast?.("Failed to save — " + result.error.message, "red"); })
+      (supabase as any).from("jobs").update(ownedPatch).eq("id", jid).select("id")
+        .then((result: any) => {
+          if (result?.error) toast?.("Failed to save — " + result.error.message, "red");
+          else if (!result?.data || result.data.length === 0) toast?.("Couldn't save — the server rejected the change", "red");
+        })
         .catch((e: any) => toast?.("Failed to save: " + e?.message, "red"));
     }
     if (patch.crew !== undefined) {
       const crewPatch: any = { crew: patch.crew };
       if (patch.crewAssignedAt !== undefined) crewPatch.crewAssignedAt = patch.crewAssignedAt;
-      (supabase as any).from("jobs").update(crewPatch).eq("id", jid)
+      (supabase as any).from("jobs").update(crewPatch).eq("id", jid).select("id")
         .then((result: any) => {
           if (result?.error) { toast?.("Crew assignment failed to save — " + result.error.message, "red"); console.warn("[Verify] scheduling/assigning employees — failed:", result.error.message); }
+          else if (!result?.data || result.data.length === 0) { toast?.("Couldn't save — the server rejected the crew assignment", "red"); console.warn("[Verify] scheduling/assigning employees — 0 rows matched"); }
           else { toast?.("Crew updated ✓", "green"); console.log("[Verify] scheduling/assigning employees — working"); }
         })
         .catch((e: any) => {
@@ -439,8 +460,13 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
     const immediatePatch: any = {};
     IMMEDIATE_SYNC_FIELDS.forEach(f => { if ((patch as any)[f] !== undefined) immediatePatch[f] = (patch as any)[f]; });
     if (Object.keys(immediatePatch).length > 0) {
-      (supabase as any).from("jobs").update(immediatePatch).eq("id", jid)
-        .then((result: any) => { if (result?.error) toast?.("Failed to save — " + result.error.message, "red"); })
+      // BUG FIX (audit finding) — no 0-row check meant photos/checklists
+      // could silently fail to save (RLS mismatch) with no error shown.
+      (supabase as any).from("jobs").update(immediatePatch).eq("id", jid).select("id")
+        .then((result: any) => {
+          if (result?.error) toast?.("Failed to save — " + result.error.message, "red");
+          else if (!result?.data || result.data.length === 0) toast?.("Couldn't save — the server rejected the change", "red");
+        })
         .catch((e: any) => toast?.("Failed to save: " + e?.message, "red"));
     }
     // FIX 10 — when a job's date changes, keep any PENDING crew request for it

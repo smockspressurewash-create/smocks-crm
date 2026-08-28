@@ -5,6 +5,7 @@
 // which is the one thing this code can't route around, it's an Apple
 // platform requirement, not a bug here).
 import { supabase } from "./supabase";
+import { withTimeout } from "./utils";
 
 // Public by design (same trust level as a Stripe publishable key) — pairs
 // with VAPID_PRIVATE_KEY, which only ever lives server-side as a Cloudflare
@@ -108,9 +109,18 @@ export const sendPushNotification = async (opts: {
   tag?: string;
 }): Promise<void> => {
   try {
+    // SECURITY FIX — the server now requires a real session and resolves
+    // the caller's own owner_id from it (ignoring opts.ownerId) — see
+    // functions/api/send-push.ts's own comment. getSession() has a
+    // documented hang bug in this codebase with no timeout.
+    let accessToken: string | undefined;
+    try {
+      const { data } = await withTimeout(supabase.auth.getSession(), 8000, "Get session");
+      accessToken = data?.session?.access_token;
+    } catch { /* fall through — server will reject with no valid session */ }
     await fetch("/api/send-push", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}) },
       body: JSON.stringify(opts),
     });
   } catch (e: any) {

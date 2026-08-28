@@ -18,6 +18,7 @@
 // those work.
 
 import { sendWebPush, PushSubscriptionKeys } from "./_lib/webPush";
+import { resolveCallerOwnerId } from "./_lib/ownerSecrets";
 
 const SUPABASE_URL = "https://boaqaihymgmrhnjtiqrs.supabase.co";
 
@@ -33,8 +34,21 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
 
   try {
     const body = await context.request.json() as { ownerId?: string; employeeId?: string; title?: string; body?: string; url?: string; tag?: string };
-    const { ownerId, employeeId, title, body: msgBody, url, tag } = body;
+    let { ownerId, employeeId, title, body: msgBody, url, tag } = body;
     if (!ownerId || !title || !msgBody) return json({ error: "ownerId, title, and body are required" }, 400);
+
+    // SECURITY FIX (audit finding) — this endpoint had no auth check: any
+    // caller who guessed/obtained an ownerId could push arbitrary
+    // notification text to that business's registered devices. Every real
+    // call site (App.tsx crew-activity/payment notifications, CalendarPage,
+    // JobDetailModal) runs inside an authenticated owner/employee session,
+    // so this always resolves — the client-supplied ownerId is ignored in
+    // favor of the one resolved from the caller's own session.
+    const authHeader = context.request.headers.get("Authorization") || "";
+    const accessToken = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : "";
+    const resolvedOwnerId = await resolveCallerOwnerId(accessToken);
+    if (!resolvedOwnerId) return json({ error: "Not authenticated" }, 401);
+    ownerId = resolvedOwnerId;
 
     // BUG FIX — "employees getting notifications meant for the owner."
     // Omitting employeeId used to match owner_id=eq.<ownerId> ALONE — but

@@ -144,6 +144,25 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
         const sub = await stripeFetch(platformSecretKey, "GET", `subscriptions/${encodeURIComponent(session.subscription)}`);
         subStatus = sub.status || "active";
         currentPeriodEnd = sub.current_period_end ? new Date(sub.current_period_end * 1000).toISOString() : null;
+        // SECURITY/CORRECTNESS FIX (audit finding — High) — the pay-first
+        // signup flow (create_signup_checkout_session above) can't stamp
+        // ownerId in subscription_data.metadata at creation time, since no
+        // account exists yet at that point. platform-billing-webhook.ts's
+        // customer.subscription.updated/deleted handlers key EXCLUSIVELY
+        // off sub.metadata?.ownerId — without this, an owner who cancels
+        // through the real Stripe Billing Portal genuinely stops being
+        // billed, but platform_subscriptions.status silently never updates
+        // to reflect it, so getPlanLimits keeps granting full paid-plan
+        // access forever. Now THIS is the point ownerId is finally known —
+        // patch it onto the live Stripe subscription right here, once,
+        // right after the account is actually created.
+        if (!sub.metadata?.ownerId) {
+          await stripeFetch(platformSecretKey, "POST", `subscriptions/${encodeURIComponent(session.subscription)}`, { "metadata[ownerId]": ownerId }).catch(() => {
+            // Non-fatal — the subscription row below still gets created/
+            // updated correctly; only future webhook-driven sync would be
+            // affected, and this is retried harmlessly on any later call.
+          });
+        }
       }
       const existing = await fetch(`${SUPABASE_URL}/rest/v1/platform_subscriptions?owner_id=eq.${encodeURIComponent(ownerId)}&select=owner_id`, { headers: svcHeaders });
       const existingRows = await existing.json().catch(() => []);

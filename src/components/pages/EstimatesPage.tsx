@@ -20,7 +20,7 @@ import {
   Tooltip, ResponsiveContainer, Area, AreaChart, LineChart, Line,
   ComposedChart, Legend
 } from "recharts";
-import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, describeRecurringSchedule, buildChecklistFromServices, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, withTimeout } from "../../lib/utils";
+import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, describeRecurringSchedule, buildChecklistFromServices, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, withTimeout, escapeHtml } from "../../lib/utils";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
 import { twilioSend, sendEmail, emailShell, emailButton, logOutboundSmsToInbox } from "../../lib/messaging";
 import { supabase } from "../../lib/supabase";
@@ -140,7 +140,7 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
       <div style="font-family:'${font}',sans-serif;color:${textColor}">
         ${tpl?.logoUrl ? `<img src="${tpl.logoUrl}" style="max-height:48px;margin-bottom:12px" />` : ""}
         <h2 style="margin:0 0 6px;color:${headerColor}">${tpl?.headerText || "Your Estimate"}</h2>
-        <p>Hi ${cust.firstName},</p>
+        <p>Hi ${escapeHtml(cust.firstName)},</p>
         ${priceLine}
         <p>Valid until ${est.validUntil}.</p>
         ${(tpl?.photoSlots || []).filter(Boolean).length ? `<div style="display:flex;gap:8px;margin:12px 0">${tpl.photoSlots.filter(Boolean).map((p: string) => `<img src="${p}" style="width:70px;height:70px;object-fit:cover;border-radius:8px" />`).join("")}</div>` : ""}
