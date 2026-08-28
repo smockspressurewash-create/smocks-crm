@@ -211,7 +211,7 @@ export function LandingPage({
 
         <Reveal delay={80}>
           <h1 className="text-4xl sm:text-5xl md:text-7xl font-black tracking-tight leading-[1.05] mb-6">
-            Run your entire<br className="hidden sm:block" /> <span className="lp-hero-gradient">wash business</span><br className="hidden sm:block" /> from one screen.
+            <span className="lp-text-hover">Run your entire</span><br className="hidden sm:block" /> <span className="lp-hero-gradient lp-text-gradient-hover">wash business</span><br className="hidden sm:block" /> <span className="lp-text-hover">from one screen.</span>
           </h1>
         </Reveal>
 
@@ -307,7 +307,7 @@ export function LandingPage({
       {/* ── Feature grid (teaser — full breakdown on #/features) ────────────── */}
       <section className="px-4 md:px-6 py-16 md:py-24 max-w-6xl mx-auto">
         <Reveal className="text-center mb-12 md:mb-16">
-          <h2 className="text-2xl md:text-4xl font-extrabold tracking-tight mb-3">
+          <h2 className="lp-text-hover text-2xl md:text-4xl font-extrabold tracking-tight mb-3">
             Everything the office <span className="gradient-text">and</span> the field need
           </h2>
           <p className="text-white/50 max-w-xl mx-auto text-sm md:text-base">
@@ -322,7 +322,7 @@ export function LandingPage({
                 <div className="w-11 h-11 rounded-xl bg-gradient-to-br from-red-600/20 to-red-900/20 border border-red-700/30 flex items-center justify-center mb-4">
                   <f.icon size={20} className="text-red-400" />
                 </div>
-                <h3 className="font-bold text-white mb-1.5 text-sm md:text-base">{f.title}</h3>
+                <h3 className="font-bold text-white mb-1.5 text-sm md:text-base"><span className="lp-text-hover">{f.title}</span></h3>
                 <p className="text-white/50 text-xs md:text-sm leading-relaxed">{f.desc}</p>
               </div>
             </Reveal>
@@ -364,7 +364,7 @@ export function LandingPage({
       {/* ── How it works ─────────────────────────────────────────────────────── */}
       <section className="px-4 md:px-6 py-16 md:py-24 max-w-5xl mx-auto">
         <Reveal className="text-center mb-12 md:mb-16">
-          <h2 className="text-3xl md:text-5xl font-black mb-3">Up and running the same day</h2>
+          <h2 className="lp-text-hover text-3xl md:text-5xl font-black mb-3">Up and running the same day</h2>
           <p className="text-white/50 max-w-xl mx-auto">No onboarding calls, no waiting on a sales rep — set up your business and start sending real estimates within the hour.</p>
         </Reveal>
         <div className="grid md:grid-cols-3 gap-6 md:gap-8">
@@ -376,7 +376,7 @@ export function LandingPage({
             <Reveal key={s.step} delay={i * 100}>
               <div className="glass p-6 md:p-8 h-full">
                 <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-red-600 to-red-900 flex items-center justify-center font-black text-lg mb-4">{s.step}</div>
-                <h3 className="font-bold text-lg mb-2">{s.title}</h3>
+                <h3 className="font-bold text-lg mb-2"><span className="lp-text-hover">{s.title}</span></h3>
                 <p className="text-white/50 text-sm leading-relaxed">{s.desc}</p>
               </div>
             </Reveal>
@@ -388,7 +388,7 @@ export function LandingPage({
       <Reveal className="px-4 md:px-6">
         <section className="max-w-6xl mx-auto py-16 md:py-24 grid md:grid-cols-2 gap-10 md:gap-16 items-center">
           <div>
-            <h2 className="text-3xl md:text-5xl font-black mb-4">Built for the field, not a desk</h2>
+            <h2 className="lp-text-hover text-3xl md:text-5xl font-black mb-4">Built for the field, not a desk</h2>
             <p className="text-white/50 leading-relaxed mb-6">
               Most CRMs are built for someone sitting at a computer all day. CrewBoss assumes your crew is standing in a driveway with soaked boots and one hand full of hose — every field-facing screen is designed to be usable one-thumbed, in bright sunlight, with spotty signal.
             </p>
@@ -451,7 +451,7 @@ export function LandingPage({
       {/* ── Pricing (teaser — full comparison on #/pricing) ─────────────────── */}
       <section className="px-4 md:px-6 py-16 md:py-24 max-w-6xl mx-auto">
         <Reveal className="text-center mb-12 md:mb-16">
-          <h2 className="text-2xl md:text-4xl font-extrabold tracking-tight mb-3">
+          <h2 className="lp-text-hover text-2xl md:text-4xl font-extrabold tracking-tight mb-3">
             Simple, <span className="gradient-text">honest</span> pricing
           </h2>
           <p className="text-white/50 max-w-xl mx-auto text-sm md:text-base">
@@ -538,7 +538,7 @@ export function LandingPage({
       <SectionDivider />
       <section className="px-4 md:px-6 py-16 md:py-24 max-w-3xl mx-auto">
         <Reveal className="text-center mb-10">
-          <h2 className="text-2xl md:text-4xl font-extrabold tracking-tight mb-3">
+          <h2 className="lp-text-hover text-2xl md:text-4xl font-extrabold tracking-tight mb-3">
             Questions, <span className="gradient-text">answered</span>
           </h2>
         </Reveal>
@@ -569,7 +569,7 @@ export function LandingPage({
       <SectionDivider />
       <section className="px-4 md:px-6 py-16 md:py-24 max-w-5xl mx-auto">
         <Reveal className="text-center mb-10">
-          <h2 className="text-2xl md:text-4xl font-extrabold tracking-tight mb-3">
+          <h2 className="lp-text-hover text-2xl md:text-4xl font-extrabold tracking-tight mb-3">
             Built with the crews <span className="gradient-text">who use it</span>
           </h2>
           <p className="text-white/50 max-w-xl mx-auto text-sm md:text-base">
@@ -597,7 +597,7 @@ export function LandingPage({
       {/* ── Final CTA ────────────────────────────────────────────────────────── */}
       <Reveal className="px-4 md:px-6">
         <section className="max-w-4xl mx-auto text-center py-16 md:py-20">
-          <h2 className="text-2xl md:text-4xl font-extrabold tracking-tight mb-4">
+          <h2 className="lp-text-hover text-2xl md:text-4xl font-extrabold tracking-tight mb-4">
             Ready to run a tighter crew?
           </h2>
           <p className="text-white/50 mb-8 text-sm md:text-base max-w-xl mx-auto">

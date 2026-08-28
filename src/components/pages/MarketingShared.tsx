@@ -132,10 +132,44 @@ export function MarketingStyles() {
       }
       .lp-mockup-float { animation: lp-mockup-float 6s ease-in-out infinite; }
 
+      /* FEATURE — "add text animations when I hover over text on the
+         landing page." Two reusable, CSS-only hover effects (no JS, no
+         animation library — matches this page's existing convention):
+         lp-text-hover lifts + glows red on hover, for headings/body copy;
+         lp-text-gradient-hover sweeps the same red gradient the hero
+         already uses across the text on hover, for standout titles. Both
+         degrade to a plain, un-animated hover under reduced-motion. */
+      .lp-text-hover {
+        display: inline-block;
+        transition: transform 0.35s cubic-bezier(0.16,1,0.3,1), color 0.35s ease, text-shadow 0.35s ease;
+      }
+      .lp-text-hover:hover {
+        transform: translateY(-2px);
+        color: #f87171;
+        text-shadow: 0 0 20px rgba(248,113,113,0.5);
+      }
+      .lp-text-gradient-hover {
+        display: inline-block;
+        background: linear-gradient(90deg, #fca5a5, #dc2626, #f87171, #dc2626, #fca5a5);
+        background-size: 200% auto;
+        background-position: 0% 50%;
+        -webkit-background-clip: text;
+        background-clip: text;
+        transition: background-position 0.6s ease, transform 0.35s cubic-bezier(0.16,1,0.3,1);
+      }
+      .lp-text-gradient-hover:hover {
+        background-position: 100% 50%;
+        -webkit-text-fill-color: transparent;
+        transform: translateY(-2px);
+      }
+
       @media (prefers-reduced-motion: reduce) {
         .lp-blob, .lp-blob-slow, .lp-wave-track, .lp-marquee-track, .lp-pulse-dot, .lp-hero-gradient, .lp-divider-sweep, .lp-mockup-float {
           animation: none !important;
         }
+        .lp-text-hover, .lp-text-gradient-hover { transition: none !important; }
+        .lp-text-hover:hover { transform: none; }
+        .lp-text-gradient-hover:hover { transform: none; background-position: 0% 50%; }
       }
     `}</style>
   );
