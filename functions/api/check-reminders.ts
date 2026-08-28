@@ -20,6 +20,8 @@
 // controls), just slightly more guessable as an endpoint to hit repeatedly
 // (harmless — sending an already-sent reminder again is prevented by the
 // `sent` flag, checked and set atomically per-row below).
+import { getOwnerSecrets } from "./_lib/ownerSecrets";
+
 const SUPABASE_URL = "https://boaqaihymgmrhnjtiqrs.supabase.co";
 
 export const onRequest = async (context: { request: Request; env: Record<string, string> }) => {
@@ -115,14 +117,17 @@ export const onRequest = async (context: { request: Request; env: Record<string,
     const claimed = await claim.json().catch(() => []);
     if (!Array.isArray(claimed) || claimed.length === 0) continue; // another run already claimed it
 
-    const s = await getSettings(r.owner_id);
-    if (!s?.twilioSid || !s?.twilioToken || !s?.twilioFrom) {
+    // SECURITY FIX — Twilio auth token moved out of app_settings.data into
+    // owner_secrets (migration 0085); getSettings() above now only ever
+    // returns a masked placeholder for it.
+    const ownerSecrets = await getOwnerSecrets(r.owner_id, context.env.SUPABASE_SERVICE_ROLE_KEY);
+    if (!ownerSecrets?.twilioAccountSid || !ownerSecrets?.twilioAuthToken || !ownerSecrets?.twilioFromNumber) {
       errors.push(`${r.id}: Twilio not configured for owner ${r.owner_id}`);
       continue;
     }
-    const auth = `Basic ${btoa(`${s.twilioSid}:${s.twilioToken}`)}`;
-    const params = new URLSearchParams({ To: r.phone, From: s.twilioFrom, Body: `⏰ Reminder: ${r.message}` });
-    const smsRes = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${s.twilioSid}/Messages.json`, {
+    const auth = `Basic ${btoa(`${ownerSecrets.twilioAccountSid}:${ownerSecrets.twilioAuthToken}`)}`;
+    const params = new URLSearchParams({ To: r.phone, From: ownerSecrets.twilioFromNumber, Body: `⏰ Reminder: ${r.message}` });
+    const smsRes = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${ownerSecrets.twilioAccountSid}/Messages.json`, {
       method: "POST", headers: { Authorization: auth, "Content-Type": "application/x-www-form-urlencoded" }, body: params.toString(),
     });
     if (!smsRes.ok) {

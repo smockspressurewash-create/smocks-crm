@@ -352,7 +352,10 @@ export const checkA2pCampaignStatus = async (settings: TwilioSettings): Promise<
   const endpoint = twilioBackendUrl ? `${twilioBackendUrl}/campaign-status` : "/api/twilio-campaign-status";
   const payload = twilioBackendUrl
     ? { messagingServiceSid: twilioMessagingServiceSid }
-    : { sid: twilioSid, token: twilioToken, messagingServiceSid: twilioMessagingServiceSid };
+    // SECURITY FIX — ownerId lets the server resolve the REAL credentials
+    // from owner_secrets, overriding whatever (now-masked) value is sent
+    // here as `token` — see migration 0085's comment.
+    : { sid: twilioSid, token: twilioToken, messagingServiceSid: twilioMessagingServiceSid, ownerId: currentOwnerIdForSms };
   const res = await fetch(endpoint, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -388,7 +391,9 @@ export const checkTwilioAccountStatus = async (settings: TwilioSettings): Promis
     throw new Error("Add your Twilio Account SID and Auth Token in Settings → Integrations first.");
   }
   const endpoint = twilioBackendUrl ? `${twilioBackendUrl}/account-status` : "/api/twilio-account-status";
-  const payload = twilioBackendUrl ? { sid: twilioSid, token: twilioToken } : { sid: twilioSid, token: twilioToken };
+  // SECURITY FIX — ownerId lets the server resolve the REAL credentials
+  // from owner_secrets — see migration 0085's comment / checkA2pCampaignStatus above.
+  const payload = twilioBackendUrl ? { sid: twilioSid, token: twilioToken } : { sid: twilioSid, token: twilioToken, ownerId: currentOwnerIdForSms };
   const res = await fetch(endpoint, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -523,7 +528,7 @@ export const pollTwilioIncoming = async (
     const res = await fetch("/api/twilio-inbound", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sid: twilioSid, token: twilioToken, since }),
+      body: JSON.stringify({ sid: twilioSid, token: twilioToken, since, ownerId: currentOwnerIdForSms }),
     });
     if (!res.ok) { console.warn("[Twilio] inbound poll failed:", res.status); return []; }
     const data = await res.json() as { messages?: TwilioMessage[] };

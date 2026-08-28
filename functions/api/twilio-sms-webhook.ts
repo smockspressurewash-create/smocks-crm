@@ -25,6 +25,7 @@
 
 import { runAlfredSmsAgent, sendAlfredSms } from "./_lib/alfredSmsAgent";
 import { runAlfredCustomerAgent } from "./_lib/alfredCustomerAgent";
+import { getOwnerSecrets } from "./_lib/ownerSecrets";
 
 const SUPABASE_URL = "https://boaqaihymgmrhnjtiqrs.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_8aEa3wsYJ7ghVPcGbtHymw_ugj0aEfm";
@@ -550,7 +551,25 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
     const isStop = STOP_WORDS.includes(body);
     const isStart = START_WORDS.includes(body);
     const resolved = await fetchAppSettings(context.env, params.To || "");
-    const { companyName, keyword, ownerId, myPhone, alfredExtraPhones, alfredExtraPhoneRoles, alfredSmsEnabled, twilioSid, twilioToken, twilioFrom, modelKeys, modelPriority, activeModel, openaiKey, googleProviderToken, googleRefreshToken, googleTokenExpiresAt, testModeEnabled, alfredAutoApproveReschedules, alfredPersonality, owmKey, weatherLocation, companyAddress, alfredVoiceReplies, myEmail, alfredCapabilities, vacationMode } = resolved;
+    const { companyName, keyword, ownerId, myPhone, alfredExtraPhones, alfredExtraPhoneRoles, alfredSmsEnabled, modelPriority, activeModel, openaiKey, googleProviderToken, googleTokenExpiresAt, testModeEnabled, alfredAutoApproveReschedules, alfredPersonality, owmKey, weatherLocation, companyAddress, alfredVoiceReplies, myEmail, alfredCapabilities, vacationMode } = resolved;
+    // SECURITY FIX — Twilio auth token, the Google refresh_token, and every
+    // AI model key moved out of app_settings.data into owner_secrets
+    // (migration 0085 — see its comment for the full story). `resolved`
+    // above now only ever carries masked placeholders for these; every real
+    // send/refresh/model-call in this file (and the alfred*Agent modules it
+    // calls into) needs the REAL values, resolved here via owner_secrets
+    // instead.
+    let { twilioSid, twilioToken, twilioFrom, modelKeys, googleRefreshToken } = resolved as any;
+    if (ownerId && context.env.SUPABASE_SERVICE_ROLE_KEY) {
+      const secrets = await getOwnerSecrets(ownerId, context.env.SUPABASE_SERVICE_ROLE_KEY);
+      if (secrets) {
+        twilioSid = secrets.twilioAccountSid || twilioSid;
+        twilioToken = secrets.twilioAuthToken || twilioToken;
+        twilioFrom = secrets.twilioFromNumber || twilioFrom;
+        modelKeys = secrets.modelKeys && Object.keys(secrets.modelKeys).length ? secrets.modelKeys : modelKeys;
+        googleRefreshToken = secrets.googleRefreshToken || googleRefreshToken;
+      }
+    }
     const isOptInKeyword = body === keyword;
     const isConfirm = CONFIRM_WORDS.includes(body);
 

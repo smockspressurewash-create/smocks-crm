@@ -440,18 +440,36 @@ export const isEmpGoogleTokenValid = (t: EmpGoogleToken | null): boolean =>
 // (the periodic refresh interval in EmployeePortal, GoogleWorkspacePage, etc.)
 // can show a clear "reconnect isn't configured yet" message instead of
 // silently retrying forever on their own timers.
+// SECURITY FIX — `useOwnerSlot` (new, optional) is for the OWNER's own
+// shared Google connection specifically: rather than sending the real
+// refresh_token in this request (which meant it had to live in browser-
+// readable state, app_settings.data — see migration 0085's comment), this
+// sends the caller's own Supabase session token instead, and
+// functions/api/google-refresh.ts resolves the real refresh_token server-
+// side from owner_secrets via that session. An employee refreshing their
+// OWN separately-connected Google account (a distinct per-employee secret
+// they already own) keeps passing refreshToken directly, unaffected.
 export const refreshEmpGoogleToken = async (
   backendUrl: string | undefined,
-  refreshToken: string
+  refreshToken: string,
+  useOwnerSlot?: boolean
 ): Promise<{ token: string; expiresAt: number; configMissing: boolean } | null> => {
-  if (!refreshToken) return null;
+  if (!refreshToken && !useOwnerSlot) return null;
   const endpoint = backendUrl ? `${backendUrl}/google/refresh` : "/api/google-refresh";
   console.log("[GoogleConnect] calling Cloudflare Function:", endpoint);
   try {
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    let bodyPayload: Record<string, unknown> = { refresh_token: refreshToken };
+    if (useOwnerSlot) {
+      const { supabase } = await import("./supabase");
+      const { data: { session } } = await supabase.auth.getSession();
+      if (session?.access_token) headers.Authorization = `Bearer ${session.access_token}`;
+      bodyPayload = {}; // no refresh_token in the body — server resolves it via the session above
+    }
     const res = await fetch(endpoint, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ refresh_token: refreshToken }),
+      headers,
+      body: JSON.stringify(bodyPayload),
     });
     const data = await res.json().catch(() => ({} as any));
     if (!res.ok || !data?.access_token) {

@@ -12,6 +12,8 @@
 // runs server-side (no CORS restriction applies to it) and same-origin (no
 // CORS restriction applies to calling IT from the browser either), so it
 // proxies the real Twilio call through.
+import { getOwnerSecrets } from "./_lib/ownerSecrets";
+
 const SUPABASE_URL = "https://boaqaihymgmrhnjtiqrs.supabase.co";
 const normalizePhoneDigits = (p?: string | null): string => {
   const d = (p || "").replace(/\D/g, "");
@@ -20,9 +22,27 @@ const normalizePhoneDigits = (p?: string | null): string => {
 
 export const onRequestPost = async (context: { request: Request; env: Record<string, string> }) => {
   try {
-    const { sid, token, to, from, body, ownerId } = await context.request.json() as {
+    let { sid, token, to, from, body, ownerId } = await context.request.json() as {
       sid?: string; token?: string; to?: string; from?: string; body?: string; ownerId?: string;
     };
+    const serviceRoleKey = context.env.SUPABASE_SERVICE_ROLE_KEY;
+    // SECURITY FIX — sid/token used to always come straight from the
+    // client's own request body, meaning the raw Twilio auth token had to
+    // live in browser-readable state (app_settings.data) for every send to
+    // work — see migration 0085's comment for the full story. Now resolved
+    // SERVER-SIDE from owner_secrets whenever ownerId is given (every real
+    // call site in the app does — see setCurrentOwnerIdForSms in
+    // messaging.ts), overriding anything the client claims. The client-
+    // supplied sid/token/from fallback only remains for a caller that
+    // somehow has no ownerId at all, so a send never breaks outright.
+    if (ownerId && serviceRoleKey) {
+      const secrets = await getOwnerSecrets(ownerId, serviceRoleKey);
+      if (secrets?.twilioAuthToken) {
+        sid = secrets.twilioAccountSid || sid;
+        token = secrets.twilioAuthToken;
+        from = secrets.twilioFromNumber || from;
+      }
+    }
     if (!sid || !token || !to || !from || !body) {
       return new Response(JSON.stringify({ error: "Missing sid/token/to/from/body" }), {
         status: 400, headers: { "Content-Type": "application/json" },
@@ -32,15 +52,11 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
     // SECURITY FIX (found via audit) — this proxy used to forward straight
     // to Twilio with zero opt-out check of its own, trusting lib/messaging.
     // ts's twilioSend() (browser-side) to be the only thing that ever
-    // enforces STOP. Anyone who obtained a business's Twilio SID/token
-    // (every one of that business's own signed-in employees can read it
-    // from app_settings — see CLAUDE.md) could POST directly here and text
-    // an opted-out number, bypassing that check entirely. Re-verified here
-    // server-side whenever the caller supplies ownerId (every real call
-    // site in the app now does — see setCurrentOwnerIdForSms in
-    // messaging.ts); if it's missing (e.g. an older/custom caller), this
-    // falls back to not blocking, same as before, rather than breaking sends.
-    const serviceRoleKey = context.env.SUPABASE_SERVICE_ROLE_KEY;
+    // enforces STOP. Re-verified here server-side whenever the caller
+    // supplies ownerId (every real call site in the app now does — see
+    // setCurrentOwnerIdForSms in messaging.ts); if it's missing (e.g. an
+    // older/custom caller), this falls back to not blocking, same as
+    // before, rather than breaking sends.
     if (ownerId && serviceRoleKey) {
       try {
         const toDigits = normalizePhoneDigits(to);

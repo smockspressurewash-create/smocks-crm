@@ -822,7 +822,11 @@ export function GoogleWorkspacePage({
   const getRefreshedGoogleToken = useCallback(async (): Promise<string | null> => {
     const refreshToken = storedGoogle?.refreshToken || s.googleRefreshToken;
     if (refreshToken) {
-      const refreshed = await refreshEmpGoogleToken(s.googleBackendUrl, refreshToken);
+      // SECURITY FIX — storedGoogle.refreshToken (this browser's own local
+      // OAuth capture) still refreshes directly as before; s.googleRefreshToken
+      // (the shared, now-masked owner slot) refreshes via the owner-slot
+      // session path instead, which resolves the real token server-side.
+      const refreshed = await refreshEmpGoogleToken(s.googleBackendUrl, refreshToken, !storedGoogle?.refreshToken);
       if (refreshed?.token) {
         console.log("[GoogleConnect] GoogleWorkspacePage — OWNER token refreshed via refresh_token exchange, saving to localStorage");
         setStoredGoogleToken(refreshed.token, refreshed.expiresAt);

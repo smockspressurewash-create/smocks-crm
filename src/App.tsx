@@ -1305,7 +1305,7 @@ export function App() {
       if (!s?.googleRefreshToken) return;
       const expiresAt = Number(s.googleTokenExpiresAt) || 0;
       if (expiresAt - Date.now() > 5 * 60 * 1000) return; // not close to expiring yet
-      const refreshed = await refreshEmpGoogleToken(s.googleBackendUrl, s.googleRefreshToken);
+      const refreshed = await refreshEmpGoogleToken(s.googleBackendUrl, s.googleRefreshToken, true);
       if (!refreshed || !refreshed.token) {
         if (refreshed?.configMissing) console.warn("[GoogleConnect] owner token refresh not configured — set GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET in the Cloudflare Pages dashboard");
         return;
@@ -1475,6 +1475,64 @@ export function App() {
       "Settings sync save"
     );
   };
+  // SECURITY FIX — Twilio auth token, every AI model key, and the Google
+  // refresh_token used to ride along inside this same settings blob into
+  // app_settings.data — readable by every one of an owner's own employees
+  // (see migration 0085's comment for the full story). This is the ONE
+  // choke point every settings change funnels through before reaching the
+  // server (typed into Settings → Integrations/AI Models, OR captured by
+  // the Google OAuth connect flow — both just mutate this same `settings`
+  // state) — so it's the one place that needs to catch a real secret before
+  // it's ever persisted anywhere client-syncable: push the real value to
+  // owner_secrets (service-role-only) via functions/api/owner-secrets-
+  // action.ts, and substitute a masked placeholder everywhere else,
+  // including back into local state — so it never sits in this device's
+  // own localStorage in the clear either, not just never reaches the server.
+  const SECRET_MASK = "••••••••";
+  const sanitizeSecretsBeforeSync = async (raw: any): Promise<any> => {
+    const twilioReal = raw.twilioToken && raw.twilioToken !== SECRET_MASK ? raw.twilioToken : undefined;
+    const googleReal = raw.googleRefreshToken && raw.googleRefreshToken !== SECRET_MASK ? raw.googleRefreshToken : undefined;
+    const modelKeyUpdates: Record<string, string> = {};
+    const rawModelKeys = raw.modelKeys || {};
+    for (const mid of Object.keys(rawModelKeys)) {
+      const v = rawModelKeys[mid];
+      if (v && v !== SECRET_MASK) modelKeyUpdates[mid] = v;
+    }
+    const hasNewSecrets = !!twilioReal || !!googleReal || Object.keys(modelKeyUpdates).length > 0;
+    const sanitized = {
+      ...raw,
+      ...(twilioReal ? { twilioToken: SECRET_MASK } : {}),
+      ...(googleReal ? { googleRefreshToken: SECRET_MASK } : {}),
+      ...(Object.keys(modelKeyUpdates).length ? { modelKeys: Object.fromEntries(Object.keys(rawModelKeys).map(k => [k, rawModelKeys[k] ? SECRET_MASK : rawModelKeys[k]])) } : {}),
+    };
+    if (!hasNewSecrets) return { sanitized, hadSecrets: false };
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const accessToken = session?.access_token;
+      if (!accessToken) { console.warn("[Secrets] no session — can't save Twilio/Google/model secrets to owner_secrets this cycle"); return { sanitized: raw, hadSecrets: false }; }
+      const res = await fetch("/api/owner-secrets-action", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${accessToken}` },
+        body: JSON.stringify({
+          action: "save_owner_secrets",
+          ...(twilioReal ? { twilioAuthToken: twilioReal, twilioAccountSid: raw.twilioSid, twilioFromNumber: raw.twilioFrom, twilioMessagingServiceSid: raw.twilioMessagingServiceSid } : {}),
+          ...(googleReal ? { googleRefreshToken: googleReal } : {}),
+          ...(Object.keys(modelKeyUpdates).length ? { modelKeyUpdates } : {}),
+        }),
+      });
+      const resData = await res.json().catch(() => ({} as any));
+      if (!res.ok || resData?.error) {
+        console.error("[Secrets] save_owner_secrets failed:", resData?.error || res.status);
+        toast?.("Couldn't securely save your Twilio/Google/AI key changes — " + (resData?.error || "unknown error") + ". They may not take effect.", "red");
+        return { sanitized: raw, hadSecrets: false }; // don't mask locally if the real save didn't land
+      }
+      return { sanitized, hadSecrets: true };
+    } catch (e: any) {
+      console.error("[Secrets] save_owner_secrets threw:", e?.message);
+      toast?.("Couldn't securely save your Twilio/Google/AI key changes — " + (e?.message || "unknown error") + ". They may not take effect.", "red");
+      return { sanitized: raw, hadSecrets: false };
+    }
+  };
   useEffect(() => {
     // Only start saving after the initial load has run, so we never overwrite
     // the server copy with this device's pre-load defaults.
@@ -1484,18 +1542,31 @@ export function App() {
       const json = JSON.stringify(settings);
       if (json === lastSyncedJsonRef.current) return; // nothing actually changed
       const updatedAt = new Date().toISOString();
+      let sanitized: any = settings;
+      let hadSecrets = false;
       (async () => {
         try {
-          const r: any = await saveSettingsToSupabase(settings, updatedAt, 20000);
+          ({ sanitized, hadSecrets } = await sanitizeSecretsBeforeSync(settings));
+          const sanitizedJson = JSON.stringify(sanitized);
+          const r: any = await saveSettingsToSupabase(sanitized, updatedAt, 20000);
           if (!r?.error) {
             settingsLastSavedAtRef.current = updatedAt;
-            lastSyncedJsonRef.current = json;
+            lastSyncedJsonRef.current = sanitizedJson;
+            // Un-mask local state too, now that the real value is safely in
+            // owner_secrets — otherwise the raw secret sits in this device's
+            // own localStorage (usePersistent) indefinitely, not just never
+            // reaching the server.
+            if (hadSecrets) setSettings(sanitized);
             return;
           }
           throw new Error(r.error.message);
         } catch (firstErr: any) {
           // FIX 6 — retry once with a smaller payload before giving up.
-          const { payload, dropped } = shrinkSettingsPayload(settings);
+          // AUDIT FIX — retries use `sanitized`, never raw `settings`: if a
+          // real secret was already peeled off into owner_secrets above
+          // (hadSecrets), retrying with the RAW object here would re-upload
+          // it straight back into app_settings.data, undoing the whole point.
+          const { payload, dropped } = shrinkSettingsPayload(sanitized);
           if (dropped.length === 0) {
             // Nothing to shrink — a second identical attempt wouldn't help.
             // ITEM 6 (mobile audit) — a plain "timed out"/network-ish error
@@ -1524,10 +1595,11 @@ export function App() {
             if (isTimeout) {
               try {
                 const retryUpdatedAt = new Date().toISOString();
-                const rPlain: any = await saveSettingsToSupabase(settings, retryUpdatedAt, 30000);
+                const rPlain: any = await saveSettingsToSupabase(sanitized, retryUpdatedAt, 30000);
                 if (!rPlain?.error) {
                   settingsLastSavedAtRef.current = retryUpdatedAt;
-                  lastSyncedJsonRef.current = json;
+                  lastSyncedJsonRef.current = JSON.stringify(sanitized);
+                  if (hadSecrets) setSettings(sanitized);
                   console.warn("[Settings Sync] plain retry succeeded after initial timeout — no notification needed");
                   return;
                 }

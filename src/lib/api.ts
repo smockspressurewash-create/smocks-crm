@@ -342,7 +342,18 @@ export interface CallModelResult {
 
 // ─── Unified model caller ─────────────────────────────────────────────────────
 // Called by AlfredPage with: { modelId, apiKey, systemPrompt, messages, tools, maxTokens }
-
+//
+// SECURITY FIX — this used to call each provider's API directly from the
+// browser using `opts.apiKey`, which callers read straight out of
+// settings.modelKeys — readable by every one of an owner's own employees
+// (see migration 0085's comment for the full story). Now a thin authenticated
+// proxy to functions/api/call-model.ts, which does the exact same provider
+// dispatch server-side, resolving the real key via owner_secrets instead of
+// trusting whatever the client sends. `opts.apiKey` is accepted for call-site
+// backward compatibility but ignored — every existing caller (AlfredPage.tsx,
+// EmployeePortal.tsx's voice-checklist AI match, VisualWorkflowBuilder.tsx's
+// AI Draft) needed no changes at all, since the request/response shape is
+// identical to what this function always returned.
 export const callModel = async (opts: {
   modelId: string;
   apiKey?: string;
@@ -351,257 +362,21 @@ export const callModel = async (opts: {
   tools?: unknown[];
   maxTokens?: number;
 }): Promise<CallModelResult> => {
-  const def = MODELS[opts.modelId];
-  if (!def) throw new Error(`Unknown model key: "${opts.modelId}". Valid keys: ${Object.keys(MODELS).join(", ")}`);
-
-  const maxTokens = opts.maxTokens ?? def.maxTokens;
-  const apiKey = opts.apiKey ?? "";
-
-  // ── Anthropic ──────────────────────────────────────────────────────────────
-  if (def.provider === "anthropic") {
-    if (!apiKey) {
-      throw new Error(
-        "No Anthropic API key set.\n\n" +
-        "To use Alfred:\n" +
-        "1. Go to Settings → AI Models\n" +
-        "2. Paste your Anthropic API key (get one at console.anthropic.com)\n\n" +
-        "Slash commands (/status, /route, /rollcall, etc.) still work without a key."
-      );
-    }
-
-    const body: Record<string, unknown> = {
-      model: def.modelId,
-      max_tokens: maxTokens,
-      messages: opts.messages,
-    };
-    if (opts.systemPrompt) body.system = opts.systemPrompt;
-    if (opts.tools?.length) body.tools = opts.tools;
-
-    const data = await safeFetch(def.endpoint, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": apiKey,
-        "anthropic-version": "2023-06-01",
-        "anthropic-dangerous-direct-browser-access": "true",
-      },
-      body: JSON.stringify(body),
-    }) as {
-      content: Array<{ type: string; text?: string; id?: string; name?: string; input?: Record<string, unknown> }>;
-      stop_reason?: string;
-    };
-
-    const text = data.content?.find(b => b.type === "text")?.text ?? "";
-    const toolUses = (data.content ?? [])
-      .filter(b => b.type === "tool_use")
-      .map(b => ({ id: b.id!, name: b.name!, input: b.input ?? {} }));
-
-    return { text, toolUses, stopReason: data.stop_reason ?? "end_turn", raw: data.content };
+  const { supabase } = await import("./supabase");
+  const { data: { session } } = await supabase.auth.getSession();
+  const accessToken = session?.access_token;
+  if (!accessToken) throw new Error("Not signed in — can't reach the AI model.");
+  const res = await fetch("/api/call-model", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${accessToken}` },
+    body: JSON.stringify({ modelId: opts.modelId, systemPrompt: opts.systemPrompt, messages: opts.messages, tools: opts.tools, maxTokens: opts.maxTokens }),
+  });
+  const responseData = await res.json().catch(() => ({} as any));
+  if (!res.ok) {
+    const err: any = new Error(responseData?.error || `Request failed (${res.status})`);
+    err.status = res.status;
+    throw err;
   }
-
-  // ── Google Gemini ──────────────────────────────────────────────────────────
-  // Tool definitions arrive in Anthropic's shape ({name, description,
-  // input_schema}) — input_schema is already plain JSON Schema, which is
-  // exactly what Gemini's functionDeclarations.parameters expects too, so no
-  // restructuring is needed beyond the key rename.
-  if (def.provider === "google") {
-    if (!apiKey) throw new Error("No Google AI API key — add one in Settings → AI Models.");
-
-    // Within one model's attempt (see AlfredPage's tool loop), a message's
-    // content is always one of: a plain string (the original chat history),
-    // the generic {type:"tool_result", tool_use_id, content}[] array
-    // AlfredPage builds after running tools, or this SAME branch's own
-    // previously-returned `raw` parts array pushed back verbatim as the
-    // model's turn — never a shape from a different provider, since each
-    // failover attempt resets the conversation from scratch.
-    const contents = opts.messages
-      .filter(m => m.role === "user" || m.role === "assistant")
-      .map(m => {
-        if (typeof m.content === "string") {
-          return { role: m.role === "assistant" ? "model" : "user", parts: [{ text: m.content }] };
-        }
-        if (Array.isArray(m.content) && (m.content as any[])[0]?.type === "tool_result") {
-          // Gemini correlates function responses by name, not a call id, so
-          // the toolUses below uses the function name as its "id" — read
-          // it back here as the functionResponse's name.
-          const parts = (m.content as Array<{ tool_use_id: string; content: string }>).map(tr => ({
-            functionResponse: {
-              name: tr.tool_use_id,
-              response: (() => { try { return JSON.parse(tr.content); } catch { return { result: tr.content }; } })(),
-            },
-          }));
-          return { role: "user", parts };
-        }
-        if (Array.isArray(m.content)) {
-          // Our own previously-returned parts array (text and/or functionCall).
-          return { role: "model", parts: m.content };
-        }
-        return { role: m.role === "assistant" ? "model" : "user", parts: [{ text: String(m.content) }] };
-      });
-
-    const geminiTools = opts.tools?.length
-      ? [{ functionDeclarations: (opts.tools as Array<{ name: string; description: string; input_schema: unknown }>).map(t => ({ name: t.name, description: t.description, parameters: t.input_schema })) }]
-      : undefined;
-
-    const url = `${def.endpoint}?key=${apiKey}`;
-    const data = await safeFetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        contents,
-        ...(geminiTools ? { tools: geminiTools } : {}),
-        // Disable thinking for tool-calling: gemini-2.5-flash defaults to
-        // spending part (sometimes all) of maxOutputTokens on invisible
-        // reasoning before emitting text/functionCall parts. With a 1500-
-        // token cap and 25+ tool definitions in the system prompt, that can
-        // exhaust the whole budget and finish with empty parts (finishReason
-        // MAX_TOKENS) — matching the observed stopReason:"end_turn" with
-        // both text and toolUses empty. Tool-calling doesn't need visible
-        // chain-of-thought, so budget=0 removes the failure mode entirely.
-        generationConfig: { maxOutputTokens: maxTokens, thinkingConfig: { thinkingBudget: 0 } },
-        ...(opts.systemPrompt ? { systemInstruction: { parts: [{ text: opts.systemPrompt }] } } : {}),
-      }),
-    }) as { candidates?: Array<{ content?: { parts?: Array<Record<string, unknown>> }; finishReason?: string; safetyRatings?: unknown }>; promptFeedback?: { blockReason?: string; safetyRatings?: unknown } };
-
-    const parts = data.candidates?.[0]?.content?.parts ?? [];
-    const text = parts.filter(p => typeof p.text === "string" && p.text).map(p => p.text as string).join("");
-    const toolUses = parts
-      .filter(p => p.functionCall)
-      .map(p => {
-        const fc = p.functionCall as { name: string; args?: Record<string, unknown> };
-        return { id: fc.name, name: fc.name, input: fc.args ?? {} };
-      });
-    const stopReason = toolUses.length > 0 ? "tool_use" : "end_turn";
-    console.log(
-      "[Gemini] finishReason:", data.candidates?.[0]?.finishReason,
-      "· partKinds:", parts.map(p => Object.keys(p).join("+")),
-      "· promptFeedback:", data.promptFeedback,
-      "· safetyRatings:", data.candidates?.[0]?.safetyRatings,
-      "· raw response (first 500 chars):", JSON.stringify(data).slice(0, 500)
-    );
-    // raw must be non-empty parts so pushing it back as the next model turn
-    // is valid — Gemini rejects a content object with an empty parts array.
-    return { text, toolUses, stopReason, raw: parts.length ? parts : [{ text }] };
-  }
-
-  // ── OpenAI-compatible (OpenAI, Groq, Mistral, NVIDIA) ──────────────────────
-  // Standard OpenAI tools/tool_calls format, shared verbatim by Groq, Mistral,
-  // and NVIDIA's NIM endpoint (integrate.api.nvidia.com) since all three mirror
-  // OpenAI's chat completions API. NVIDIA keys are issued already prefixed
-  // ("nvapi-...") — that prefix is part of the key string itself, so sending
-  // `Authorization: Bearer ${apiKey}` (same as every other provider here)
-  // produces the correct "Bearer nvapi-..." header with no special-casing.
-  if (!apiKey) {
-    const hint = def.provider === "nvidia"
-      ? ` Get a free key at ${def.keyUrl} — it should start with "nvapi-".`
-      : "";
-    throw new Error(`No ${def.name} API key — add one in Settings → AI Models.${hint}`);
-  }
-
-  const openAiMessages: Array<Record<string, unknown>> = [
-    ...(opts.systemPrompt ? [{ role: "system", content: opts.systemPrompt }] : []),
-  ];
-  for (const m of opts.messages) {
-    if (m.role !== "user" && m.role !== "assistant") continue;
-    if (typeof m.content === "string") {
-      openAiMessages.push({ role: m.role, content: m.content });
-    } else if (Array.isArray(m.content) && (m.content as any[])[0]?.type === "tool_result") {
-      // OpenAI wants one "tool" message per result, keyed by tool_call_id —
-      // unlike Gemini, which batches them into one functionResponse turn.
-      for (const tr of m.content as Array<{ tool_use_id: string; content: string }>) {
-        openAiMessages.push({ role: "tool", tool_call_id: tr.tool_use_id, content: tr.content });
-      }
-    } else if (m.role === "assistant" && m.content && typeof m.content === "object" && !Array.isArray(m.content)) {
-      // Our own previously-returned raw assistant message (content + tool_calls).
-      openAiMessages.push(m.content as Record<string, unknown>);
-    } else if (Array.isArray(m.content)) {
-      const text = (m.content as Array<{ type: string; text?: string }>).filter(b => b.type === "text").map(b => b.text ?? "").join("");
-      openAiMessages.push({ role: m.role, content: text });
-    } else {
-      openAiMessages.push({ role: m.role, content: String(m.content) });
-    }
-  }
-
-  const openAiTools = opts.tools?.length
-    ? (opts.tools as Array<{ name: string; description: string; input_schema: unknown }>).map(t => ({ type: "function", function: { name: t.name, description: t.description, parameters: t.input_schema } }))
-    : undefined;
-
-  const openAiHeaders = {
-    "Content-Type": "application/json",
-    "Authorization": `Bearer ${apiKey}`,
-    // ISSUE 19 — OpenRouter attributes/ranks requests by these headers; some
-    // free-tier models 404 or get deprioritized for requests missing them.
-    ...(def.provider === "openrouter" ? { "HTTP-Referer": "https://crewboss.app", "X-Title": "CrewBoss CRM" } : {}),
-  };
-
-  // ISSUE 19 — see OPENROUTER_FREE_FALLBACKS: try each candidate model in
-  // order, moving to the next only on a 404 (model gone/renamed), not on
-  // other errors (auth, rate-limit, etc. should surface immediately). Live
-  // catalog first (see getOpenRouterFreeModels), static list as backup —
-  // deduped, live results first.
-  let modelCandidates: string[];
-  if (def.provider === "openrouter") {
-    const live = await getOpenRouterFreeModels();
-    // Cap the list — trying every free model on the whole catalog one at a
-    // time on repeated 404s could take a while; the first several already
-    // give good odds of hitting a working one.
-    modelCandidates = Array.from(new Set([...live, ...OPENROUTER_FREE_FALLBACKS])).slice(0, 8);
-  } else {
-    modelCandidates = [def.modelId];
-  }
-
-  let data: { choices?: Array<{ message?: { content?: string | null; tool_calls?: Array<{ id: string; function?: { name: string; arguments?: string } }> } }> } | undefined;
-  let lastErr: unknown;
-  for (const candidateModel of modelCandidates) {
-    const openAiBody = JSON.stringify({
-      model: candidateModel,
-      max_tokens: maxTokens,
-      messages: openAiMessages,
-      ...(openAiTools ? { tools: openAiTools } : {}),
-    });
-    try {
-      data = await safeFetch(def.endpoint, { method: "POST", headers: openAiHeaders, body: openAiBody }) as typeof data;
-      lastErr = undefined;
-      break;
-    } catch (err) {
-      // On a network/CORS error (TypeError: Failed to fetch), retry through
-      // this app's own same-origin proxy (functions/api/ai-proxy.ts) —
-      // used to be a public third-party proxy (corsproxy.io), which is now
-      // returning 403 Forbidden on every request (verified live) and was
-      // sending the user's API key to an unrelated service. NVIDIA's NIM
-      // API in particular sets NO CORS headers at all (verified live), so
-      // every NVIDIA call takes this path, every time — this is the actual
-      // reason NVIDIA models "don't work": there was no working fallback.
-      if (err instanceof TypeError) {
-        try {
-          data = await safeFetch("/api/ai-proxy", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ url: def.endpoint, headers: openAiHeaders, body: openAiBody }),
-          }) as typeof data;
-          lastErr = undefined;
-          break;
-        } catch (proxyErr) {
-          lastErr = proxyErr;
-        }
-      } else if ((err as any)?.status === 404 && modelCandidates.length > 1) {
-        console.warn(`[OpenRouter] model "${candidateModel}" 404'd — trying next fallback`);
-        lastErr = err;
-        continue;
-      } else {
-        throw err;
-      }
-    }
-  }
-  if (!data) throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
-
-  const choice = data.choices?.[0]?.message;
-  const text = choice?.content ?? "";
-  const toolUses = (choice?.tool_calls ?? []).map(tc => ({
-    id: tc.id,
-    name: tc.function?.name ?? "",
-    input: (() => { try { return JSON.parse(tc.function?.arguments || "{}"); } catch { return {}; } })(),
-  }));
-  const stopReason = toolUses.length > 0 ? "tool_use" : "end_turn";
-  return { text, toolUses, stopReason, raw: choice ?? { role: "assistant", content: text } };
+  return responseData as CallModelResult;
 };
+

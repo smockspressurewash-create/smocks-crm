@@ -13,6 +13,8 @@
 // never a raw table dump — so this is not a re-opening of the "public
 // USING(true)" hole RLS just closed. Each action's own comment explains
 // what bounds the query (an unguessable id, a verified session email, etc).
+import { getOwnerSecrets } from "./_lib/ownerSecrets";
+
 const SUPABASE_URL = "https://boaqaihymgmrhnjtiqrs.supabase.co";
 
 const sb = async (serviceRoleKey: string, path: string, init?: RequestInit) => {
@@ -208,15 +210,19 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
       try {
         const settingsRes = await sb(serviceRoleKey, `app_settings?owner_id=eq.${encodeURIComponent(est.owner_id)}&select=data`);
         const s = Array.isArray(settingsRes.data) ? settingsRes.data[0]?.data || {} : {};
-        if (s.twilioSid && s.twilioToken && s.twilioFrom && s.myPhone) {
+        // SECURITY FIX — twilioSid/twilioToken moved out of app_settings.data
+        // into owner_secrets (migration 0085); `s` above now only ever has a
+        // masked placeholder for the token.
+        const ownerSecrets = await getOwnerSecrets(est.owner_id, serviceRoleKey);
+        if (ownerSecrets?.twilioAccountSid && ownerSecrets?.twilioAuthToken && ownerSecrets?.twilioFromNumber && s.myPhone) {
           const custRes = await sb(serviceRoleKey, `customers?id=eq.${encodeURIComponent(est.customerId)}&select=firstName,lastName`);
           const cust = Array.isArray(custRes.data) ? custRes.data[0] : null;
           const custName = cust ? `${cust.firstName || ""} ${cust.lastName || ""}`.trim() : "A customer";
           const amount = job?.amount != null ? `$${Number(job.amount).toFixed(2)}` : "";
           const msg = `✍️ QUOTE ACCEPTED: ${custName} approved ${amount || "their estimate"}${paid ? " and paid" : " — will pay later"}. New job added to Unscheduled — needs a date.`;
-          const auth = `Basic ${btoa(`${s.twilioSid}:${s.twilioToken}`)}`;
-          const params = new URLSearchParams({ To: s.myPhone, From: s.twilioFrom, Body: msg });
-          await fetch(`https://api.twilio.com/2010-04-01/Accounts/${s.twilioSid}/Messages.json`, {
+          const auth = `Basic ${btoa(`${ownerSecrets.twilioAccountSid}:${ownerSecrets.twilioAuthToken}`)}`;
+          const params = new URLSearchParams({ To: s.myPhone, From: ownerSecrets.twilioFromNumber, Body: msg });
+          await fetch(`https://api.twilio.com/2010-04-01/Accounts/${ownerSecrets.twilioAccountSid}/Messages.json`, {
             method: "POST", headers: { Authorization: auth, "Content-Type": "application/x-www-form-urlencoded" }, body: params.toString(),
           });
         }

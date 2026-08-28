@@ -11,9 +11,31 @@
 // already live), matching the values already in Supabase's Google provider
 // config. Without a real refresh_token AND these two env vars, this always
 // fails cleanly — callers fall back to prompting the owner to reconnect.
+import { getOwnerSecrets, resolveCallerOwnerId } from "./_lib/ownerSecrets";
+
 export const onRequestPost = async (context: { request: Request; env: Record<string, string> }) => {
   try {
-    const { refresh_token } = await context.request.json() as { refresh_token?: string };
+    let { refresh_token } = await context.request.json() as { refresh_token?: string };
+    // SECURITY FIX — the OWNER's own Google refresh_token used to have to be
+    // sent by the client on every call, meaning it had to live in browser-
+    // readable state (app_settings.data) — see migration 0085's comment for
+    // the full story. When the caller doesn't supply an explicit
+    // refresh_token (an EMPLOYEE refreshing THEIR OWN separately-connected
+    // Google account — a distinct per-employee secret they already own —
+    // still does, unaffected by this), resolve it server-side instead: the
+    // caller's own bearer token identifies their tenant (never a client-
+    // claimed ownerId, which anyone could guess/pass to fetch a live Gmail
+    // token for an unrelated business), and owner_secrets holds the real
+    // refresh_token for that tenant.
+    const serviceRoleKey = context.env.SUPABASE_SERVICE_ROLE_KEY;
+    if (!refresh_token && serviceRoleKey) {
+      const accessToken = (context.request.headers.get("authorization") || "").replace(/^Bearer\s+/i, "");
+      const ownerId = await resolveCallerOwnerId(accessToken);
+      if (ownerId) {
+        const secrets = await getOwnerSecrets(ownerId, serviceRoleKey);
+        if (secrets?.googleRefreshToken) refresh_token = secrets.googleRefreshToken;
+      }
+    }
     const clientId = context.env.GOOGLE_CLIENT_ID;
     const clientSecret = context.env.GOOGLE_CLIENT_SECRET;
     if (!refresh_token) {

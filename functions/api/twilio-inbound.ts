@@ -2,11 +2,20 @@
 // SMS into the owner's Inbox (InboxPage's pollTwilioIncoming). Credentials
 // are sent in the POST body rather than a query string so they don't end up
 // logged in any CDN/proxy access log.
-export const onRequestPost = async (context: { request: Request }) => {
+import { getOwnerSecrets } from "./_lib/ownerSecrets";
+
+export const onRequestPost = async (context: { request: Request; env: Record<string, string> }) => {
   try {
-    const { sid, token, since } = await context.request.json() as {
-      sid?: string; token?: string; since?: string;
+    let { sid, token, since, ownerId } = await context.request.json() as {
+      sid?: string; token?: string; since?: string; ownerId?: string;
     };
+    // SECURITY FIX — resolved server-side from owner_secrets when ownerId is
+    // given, same as twilio-send.ts (see migration 0085's comment).
+    const serviceRoleKey = context.env.SUPABASE_SERVICE_ROLE_KEY;
+    if (ownerId && serviceRoleKey) {
+      const secrets = await getOwnerSecrets(ownerId, serviceRoleKey);
+      if (secrets?.twilioAuthToken) { sid = secrets.twilioAccountSid || sid; token = secrets.twilioAuthToken; }
+    }
     if (!sid || !token) {
       return new Response(JSON.stringify({ error: "Missing sid/token" }), {
         status: 400, headers: { "Content-Type": "application/json" },

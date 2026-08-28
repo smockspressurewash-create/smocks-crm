@@ -459,7 +459,11 @@ export function SettingsModal({ open, onClose, settings, setSettings, jobs = [],
         return;
       }
       console.log("[GoogleConnect] calling /api/google-refresh via refreshEmpGoogleToken —  backendUrl:", f.googleBackendUrl || "(default same-origin)");
-      const refreshed = await refreshEmpGoogleToken(f.googleBackendUrl, refreshToken);
+      // SECURITY FIX — the shared owner slot (f.googleRefreshToken, now
+      // masked) refreshes via the owner-slot session path, which resolves
+      // the real token server-side; this browser's own local OAuth capture
+      // (storedGoogle.refreshToken) still refreshes directly as before.
+      const refreshed = await refreshEmpGoogleToken(f.googleBackendUrl, refreshToken, !storedGoogle?.refreshToken);
       if (refreshed?.token) {
         console.log("[GoogleConnect] refresh succeeded — new token expires", new Date(refreshed.expiresAt).toLocaleTimeString());
         setGoogleConfigMissing(false);

@@ -28,6 +28,8 @@
 // real `total` in Supabase itself and charges THAT — the client's claimed
 // amount is ignored whenever an invoiceId is present.
 
+import { getOwnerSecrets } from "./_lib/ownerSecrets";
+
 const SUPABASE_URL = "https://boaqaihymgmrhnjtiqrs.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_8aEa3wsYJ7ghVPcGbtHymw_ugj0aEfm";
 
@@ -418,16 +420,23 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
       });
       const settingsRows = await settingsRes.json().catch(() => []);
       const s = Array.isArray(settingsRows) ? settingsRows[0]?.data || {} : {};
+      // SECURITY FIX — Twilio auth token and the Google refresh_token moved
+      // out of app_settings.data into owner_secrets (migration 0085 — see
+      // its comment for the full story); this function used to read both
+      // straight off `s` above, which now only ever holds masked
+      // placeholders for them. Resolve the real values from owner_secrets
+      // instead, same as every other server function that needs them.
+      const ownerSecrets = await getOwnerSecrets(resolvedOwnerId, serviceRoleKey);
       const companyName = s.companyName || "Crew Boss";
       const amount = (Number(body.amountCents) / 100 || 0).toFixed(2);
       const description = body.description || "";
       const custName = body.customerFirstName || "there";
 
-      if (body.customerPhone && s.twilioSid && s.twilioToken && s.twilioFrom) {
+      if (body.customerPhone && ownerSecrets?.twilioAccountSid && ownerSecrets?.twilioAuthToken && ownerSecrets?.twilioFromNumber) {
         const smsBody = `Hi ${custName}, this confirms your payment of $${amount} to ${companyName}${description ? " for " + description : ""}. Thank you!`;
-        const auth = `Basic ${btoa(`${s.twilioSid}:${s.twilioToken}`)}`;
-        const params = new URLSearchParams({ To: body.customerPhone, From: s.twilioFrom, Body: smsBody });
-        const smsRes = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${s.twilioSid}/Messages.json`, {
+        const auth = `Basic ${btoa(`${ownerSecrets.twilioAccountSid}:${ownerSecrets.twilioAuthToken}`)}`;
+        const params = new URLSearchParams({ To: body.customerPhone, From: ownerSecrets.twilioFromNumber, Body: smsBody });
+        const smsRes = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${ownerSecrets.twilioAccountSid}/Messages.json`, {
           method: "POST", headers: { Authorization: auth, "Content-Type": "application/x-www-form-urlencoded" }, body: params.toString(),
         });
         if (!smsRes.ok) return new Response(JSON.stringify({ error: "Twilio send failed: " + (await smsRes.text().catch(() => "")).slice(0, 200) }), { status: 502, headers: { "Content-Type": "application/json" } });
@@ -470,11 +479,11 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
         // have opened the app in a while) — refresh via the same Cloudflare
         // Function the client uses, rather than duplicating Google's OAuth
         // token-exchange logic here.
-        if (s.googleRefreshToken && (!s.googleTokenExpiresAt || Date.now() > Number(s.googleTokenExpiresAt) - 60000)) {
+        if (ownerSecrets?.googleRefreshToken && (!s.googleTokenExpiresAt || Date.now() > Number(s.googleTokenExpiresAt) - 60000)) {
           try {
             const origin = new URL(context.request.url).origin;
             const refreshRes = await fetch(`${origin}/api/google-refresh`, {
-              method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ refresh_token: s.googleRefreshToken }),
+              method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ refresh_token: ownerSecrets.googleRefreshToken }),
             });
             const refreshData = await refreshRes.json().catch(() => null) as any;
             if (refreshRes.ok && refreshData?.access_token) accessTok = refreshData.access_token;
