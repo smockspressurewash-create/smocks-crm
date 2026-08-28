@@ -1,0 +1,14 @@
+# Cloudflare Pages static asset headers.
+# BUG FIX (user report) — the sizzle-reel MP4s live at a fixed filename
+# (/media/sizzle-reel.mp4, /media/sizzle-reel-mobile.mp4) that doesn't
+# change between deploys, unlike the JS/CSS bundle (which Vite content-
+# hashes into its filename, so a new build is automatically a new URL).
+# Without an explicit Cache-Control, both the browser and Cloudflare's
+# edge cache were very likely still serving the OLD video bytes after a
+# redeploy — the user kept seeing an old render (with the on-page player
+# chrome baked into the pixels) even after the source pipeline was
+# fixed and the file was overwritten. LandingPage.tsx now also appends
+# a version query string, but this header is the real defense: cap how
+# long any cache is allowed to serve a copy before checking again.
+/media/*
+  Cache-Control: public, max-age=3600, must-revalidate

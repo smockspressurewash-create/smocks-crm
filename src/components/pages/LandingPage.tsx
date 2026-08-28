@@ -26,6 +26,18 @@ import {
 // hover motion are done with plain CSS (IntersectionObserver-driven class
 // toggle + Tailwind transitions) — no animation library added.
 
+// BUG FIX (user report) — "still shows double play/pause buttons... not
+// full quality" persisted even after the recording pipeline itself was
+// fixed and the mp4 files were overwritten. Root cause: /media/*.mp4 has
+// a fixed filename that never changes between deploys (unlike the JS/CSS
+// bundle, which Vite content-hashes into ITS filename), so the browser
+// and Cloudflare's edge cache had no signal that the bytes at that URL
+// had changed — they kept serving the old, chrome-baked-in render. Bump
+// this string every time the sizzle-reel video files are replaced so the
+// query string forces a fresh fetch (see also public/_headers, which
+// caps how long any cache can go without revalidating going forward).
+const SIZZLE_REEL_VERSION = "3";
+
 // Minimal video player for the sizzle reel — play/pause only, no native
 // scrubber/duration/mute/skip chrome (those read as a media player, not
 // a promo clip). Tapping the video itself also toggles play/pause.
@@ -359,11 +371,11 @@ export function LandingPage({
             <p className="text-white/50 text-sm md:text-base">A 40-second look at scheduling, Alfred, invoicing, and the field portal.</p>
           </div>
           <div className="rounded-2xl overflow-hidden border border-white/10 bg-black shadow-2xl shadow-red-950/40">
-            <SizzleReelPlayer src="/media/sizzle-reel.mp4" />
+            <SizzleReelPlayer src={"/media/sizzle-reel.mp4?v=" + SIZZLE_REEL_VERSION} />
           </div>
           <div className="flex justify-center mt-5">
             <a
-              href="/media/sizzle-reel.mp4"
+              href={"/media/sizzle-reel.mp4?v=" + SIZZLE_REEL_VERSION}
               download="CrewBoss-Sizzle-Reel.mp4"
               className="group inline-flex items-center gap-2 px-5 py-2.5 rounded-xl glass hover:bg-white/[0.06] font-semibold text-sm transition-all"
             >
