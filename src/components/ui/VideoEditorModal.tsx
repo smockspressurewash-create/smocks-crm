@@ -19,7 +19,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { GBtn } from "./GBtn";
-import { X, Plus, Trash2, Wand2, Scissors, Type, Upload, Sparkles, RotateCw, FlipHorizontal, Captions, Crop as CropIcon, Sliders, Maximize2, Minimize2, Layers, Music as MusicIcon, ImagePlus, Volume2, VolumeX } from "lucide-react";
+import { X, Plus, Trash2, Wand2, Scissors, Type, Upload, Sparkles, RotateCw, FlipHorizontal, Captions, Crop as CropIcon, Sliders, Maximize2, Minimize2, Layers, Music as MusicIcon, ImagePlus, Volume2, VolumeX, Play, Pause, Download as DownloadIcon } from "lucide-react";
 import { uid, uploadJobMedia } from "../../lib/utils";
 import { CAPTION_STYLES, CAPTION_GOOGLE_FONTS_HREF, captionStyleToCss, getCaptionStyle, TRANSITION_EFFECTS } from "../../lib/captionStyles";
 import { readVideoMeta, readImageMeta, detectSilence, renderFinalVideo, extractAudioForTranscription, autoCutClipDeadSpace, requestTranscription, CAPTION_PROVIDERS, ASPECT_RATIOS, SOUND_EFFECTS, type AspectRatio, type CaptionProvider, type CropRect, type EditorClip, type EditorCaption, type EditorOverlay, type MusicTrack } from "../../lib/videoEditor";
@@ -74,6 +74,18 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings, s
   const [uploadingAsset, setUploadingAsset] = useState(false);
   const [activeClipId, setActiveClipId] = useState<string | null>(null);
   const [previewTime, setPreviewTime] = useState(0);
+  // FEATURE — "when you press play on the preview, it should play all the
+  // clips... show the full video." Previously the preview only ever played
+  // whichever ONE clip was selected on the timeline and stopped at its end
+  // — there was no way to watch the assembled sequence. playingAll drives
+  // continuous playback: each clip auto-plays from its own trim-in point,
+  // stops at its trim-out point, and hands off to the next clip, closing
+  // the loop at the last one. Also makes single-clip preview respect trim
+  // (stops at End instead of playing past it into untrimmed footage) even
+  // when playingAll is off, since a trim that doesn't affect the preview
+  // reads as "trim doesn't work."
+  const [playingAll, setPlayingAll] = useState(false);
+  const imageAdvanceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [rendering, setRendering] = useState(false);
   const [renderPhase, setRenderPhase] = useState("");
   const [renderPct, setRenderPct] = useState(0);
@@ -222,10 +234,34 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings, s
     if (!activeClipId && clips.length > 0) setActiveClipId(clips[0].id);
   }, [clips, activeClipId]);
 
+  // Called when the active clip reaches its trim-out point (video) or its
+  // on-screen duration elapses (photo). During playingAll, moves to the
+  // next clip (starting IT from its own trim-in point below); at the last
+  // clip, or when not in playingAll at all, just stops.
+  const advancePastClipEnd = () => {
+    if (!playingAll) { videoRef.current?.pause(); return; }
+    const idx = clips.findIndex(c => c.id === activeClipId);
+    const next = clips[idx + 1];
+    if (next) setActiveClipId(next.id);
+    else setPlayingAll(false);
+  };
+  // Photo clips have no native play/timeupdate events — a plain timer
+  // stands in for "play until trim-out, then advance," matching the video
+  // path's behavior via advancePastClipEnd.
+  useEffect(() => {
+    if (imageAdvanceTimerRef.current) { clearTimeout(imageAdvanceTimerRef.current); imageAdvanceTimerRef.current = null; }
+    if (!playingAll || !activeClip?.isImage) return;
+    setPreviewTime(activeClip.startSec);
+    const durationMs = Math.max(0, activeClip.endSec - activeClip.startSec) * 1000;
+    imageAdvanceTimerRef.current = setTimeout(advancePastClipEnd, durationMs);
+    return () => { if (imageAdvanceTimerRef.current) clearTimeout(imageAdvanceTimerRef.current); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [playingAll, activeClipId]);
+
   // Reset state whenever the editor is freshly opened, not left over from a
   // previous editing session (the component instance is reused, not remounted).
   useEffect(() => {
-    if (open) { setClips([]); setCaptions([]); setOverlays([]); setMusic(null); setSelectedOverlayId(null); setActiveClipId(null); setSilenceRanges([]); setRendering(false); setClipThumbs({}); setTab("clips"); setCropEditingId(null); }
+    if (open) { setClips([]); setCaptions([]); setOverlays([]); setMusic(null); setSelectedOverlayId(null); setActiveClipId(null); setSilenceRanges([]); setRendering(false); setClipThumbs({}); setTab("clips"); setCropEditingId(null); setPlayingAll(false); }
   }, [open]);
 
   const addFiles = async (files: FileList | null) => {
@@ -385,6 +421,14 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings, s
   const [selectedCaptionId, setSelectedCaptionId] = useState<string | null>(null);
   const captionDragRef = useRef<{ mode: "move" | "resize"; startX: number; startY: number; startXPct: number; startYPct: number; startScale: number } | null>(null);
   const [captionDragging, setCaptionDragging] = useState(false);
+  // FEATURE — "captions should automatically snap to the center line,
+  // similar to CapCut's snapping guides." Shows a real guide line the
+  // instant a dragged caption's center crosses within SNAP_THRESHOLD of
+  // the canvas's horizontal/vertical midline, and locks the value to
+  // exactly 0.5 while within range — released the moment the drag moves
+  // back out, so it's a magnet, not a permanent lock.
+  const SNAP_THRESHOLD = 0.025;
+  const [captionSnap, setCaptionSnap] = useState<{ x: boolean; y: boolean }>({ x: false, y: false });
   const startCaptionDrag = (e: React.PointerEvent, cap: EditorCaption, mode: "move" | "resize") => {
     e.preventDefault();
     e.stopPropagation();
@@ -405,7 +449,14 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings, s
       if (st.mode === "move") {
         const dxFrac = (e.clientX - st.startX) / containRect.renderW;
         const dyFrac = (e.clientY - st.startY) / containRect.renderH;
-        updateCaption(selectedCaptionId, { xPct: clamp(st.startXPct + dxFrac, 0, 1), yPct: clamp(st.startYPct + dyFrac, 0, 1) });
+        let nextX = clamp(st.startXPct + dxFrac, 0, 1);
+        let nextY = clamp(st.startYPct + dyFrac, 0, 1);
+        const snapX = Math.abs(nextX - 0.5) < SNAP_THRESHOLD;
+        const snapY = Math.abs(nextY - 0.5) < SNAP_THRESHOLD;
+        if (snapX) nextX = 0.5;
+        if (snapY) nextY = 0.5;
+        setCaptionSnap({ x: snapX, y: snapY });
+        updateCaption(selectedCaptionId, { xPct: nextX, yPct: nextY });
       } else {
         // Resize — drag distance from the caption's own position scales
         // font size; scaling by renderW keeps the feel consistent across
@@ -415,7 +466,7 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings, s
         updateCaption(selectedCaptionId, { fontScale: nextScale });
       }
     };
-    const onUp = () => { setCaptionDragging(false); captionDragRef.current = null; };
+    const onUp = () => { setCaptionDragging(false); captionDragRef.current = null; setCaptionSnap({ x: false, y: false }); };
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
     return () => { window.removeEventListener("pointermove", onMove); window.removeEventListener("pointerup", onUp); };
@@ -672,6 +723,34 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings, s
     }
   };
 
+  // FEATURE — "enable downloading videos directly from the editor, not
+  // just exporting." Renders the same way as doExport, but saves straight
+  // to the device instead of handing the blob to SocialPage's post
+  // composer/draft flow — for "I just want the file," no posting involved.
+  const doDownload = async () => {
+    if (clips.length === 0) { toast?.("Add at least one clip first", "red"); return; }
+    setRendering(true);
+    setRenderPhase("Starting…");
+    setRenderPct(0);
+    try {
+      const blob = await renderFinalVideo(clips, captions, (phase, pct) => { setRenderPhase(phase); setRenderPct(pct); }, aspectRatio, overlays, music);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `crewboss-video-${Date.now()}.mp4`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 10000);
+      toast?.("Video downloaded ✓", "green");
+    } catch (e: any) {
+      console.error("[VideoEditor] download failed:", e);
+      toast?.("Download failed — " + (e?.message || "unknown error"), "red");
+    } finally {
+      setRendering(false);
+    }
+  };
+
   // Calls the owner's own configured video-editing API (functions/api/
   // video-autoedit.ts, currently wired for Shotstack) — entirely separate
   // code path from the free ffmpeg.wasm export above, only reachable when
@@ -751,7 +830,10 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings, s
         <button onClick={busy ? undefined : onClose} disabled={busy} className="ve-tap text-white/60 hover:text-white disabled:opacity-30"><X size={20} /></button>
         <div className="text-sm font-semibold text-white">Video Editor</div>
         {!busy && clips.length > 0 ? (
-          <button onClick={doExport} className="px-3 py-1.5 rounded-lg bg-red-600 hover:bg-red-700 text-white text-xs font-bold">Export</button>
+          <div className="flex items-center gap-1.5">
+            <button onClick={doDownload} title="Download to your device" className="ve-tap px-2.5 py-1.5 rounded-lg border border-white/15 text-white/70 hover:text-white text-xs font-semibold flex items-center gap-1"><DownloadIcon size={13} /></button>
+            <button onClick={doExport} className="px-3 py-1.5 rounded-lg bg-red-600 hover:bg-red-700 text-white text-xs font-bold">Export</button>
+          </div>
         ) : <div className="w-16" />}
       </div>
 
@@ -826,10 +908,26 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings, s
                   ref={videoRef}
                   key={activeClip.id}
                   src={activeClipUrl}
-                  controls={!positioningCaptionId && !cropEditingId}
+                  controls={!positioningCaptionId && !cropEditingId && !playingAll}
                   className="w-full h-full object-contain"
                   style={{ transform: `${activeClip.rotation ? `rotate(${activeClip.rotation}deg)` : ""} ${activeClip.flipH ? "scaleX(-1)" : ""}`.trim() || undefined, filter: previewFilterCss }}
-                  onTimeUpdate={e => setPreviewTime((e.target as HTMLVideoElement).currentTime)}
+                  // BUG FIX — "trim doesn't do anything in the preview,
+                  // press play and it plays the full untrimmed clip." Seeks
+                  // to the trim-IN point as soon as the (freshly-mounted,
+                  // per-clip key=) element has a duration to seek within,
+                  // and auto-plays it when this clip was reached via
+                  // continuous "Play All" rather than a manual click.
+                  onLoadedMetadata={e => {
+                    const v = e.target as HTMLVideoElement;
+                    v.currentTime = activeClip.startSec;
+                    if (playingAll) v.play().catch(() => {});
+                  }}
+                  onTimeUpdate={e => {
+                    const v = e.target as HTMLVideoElement;
+                    setPreviewTime(v.currentTime);
+                    if (v.currentTime >= activeClip.endSec) advancePastClipEnd();
+                  }}
+                  onEnded={advancePastClipEnd}
                 />
               ) : (
                 <div className="w-full h-full flex flex-col items-center justify-center text-white/30 text-sm gap-3">
@@ -855,6 +953,13 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings, s
                     <span
                       key={activeCaption.id}
                       onPointerDown={canInteract ? e => startCaptionDrag(e, activeCaption, "move") : undefined}
+                      // FEATURE — "double-tap them (on mobile) to edit."
+                      // Jumps straight to the Captions tab with this
+                      // caption selected, so the text field is right there
+                      // to edit — same "double-tap opens editing" gesture
+                      // CapCut uses, without building a separate inline
+                      // on-canvas text editor.
+                      onDoubleClick={canInteract ? () => { setSelectedCaptionId(activeCaption.id); setTab("captions"); } : undefined}
                       style={{
                         ...captionStyleToCss(activeCaptionStyle),
                         fontSize: `${5.5 * (activeCaption.fontScale || 1)}vw`, lineHeight: 1.2, display: "inline-block",
@@ -882,6 +987,14 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings, s
               })()}
               {positioningCaptionId && (
                 <div className="absolute inset-x-0 bottom-2 text-center text-[10px] text-white bg-black/70 py-1 pointer-events-none">Tap anywhere to place this caption</div>
+              )}
+              {/* Center-snap guide lines — CapCut-style, shown only while
+                  actively dragging a caption within snap range. */}
+              {captionDragging && captionSnap.x && (
+                <div className="absolute inset-y-0 left-1/2 w-px bg-red-500 pointer-events-none" style={{ boxShadow: "0 0 4px rgba(239,68,68,0.8)" }} />
+              )}
+              {captionDragging && captionSnap.y && (
+                <div className="absolute inset-x-0 top-1/2 h-px bg-red-500 pointer-events-none" style={{ boxShadow: "0 0 4px rgba(239,68,68,0.8)" }} />
               )}
               {/* FEATURE — "drag and drop those assets into the editor...
                   separate layers." Every overlay active at the current
@@ -959,6 +1072,25 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings, s
                   </div>
                 );
               })()}
+              {/* FEATURE — "when you press play on the preview, it should
+                  play all the clips... show the full video." A single,
+                  always-visible play/pause control that plays the WHOLE
+                  assembled sequence (current clip onward through the rest
+                  of the timeline), not just whichever one clip happens to
+                  be selected — native per-clip <video controls> stays
+                  available too, for scrubbing within a clip. */}
+              {activeClip && !positioningCaptionId && !cropEditingId && (
+                <button
+                  onClick={() => {
+                    if (playingAll) { setPlayingAll(false); videoRef.current?.pause(); }
+                    else { setPlayingAll(true); if (!activeClip.isImage) videoRef.current?.play().catch(() => {}); }
+                  }}
+                  className="absolute bottom-3 left-1/2 -translate-x-1/2 w-11 h-11 rounded-full bg-black/70 border border-white/25 flex items-center justify-center text-white hover:bg-black/85 transition"
+                  title={playingAll ? "Pause" : "Play all clips"}
+                >
+                  {playingAll ? <Pause size={18} /> : <Play size={18} className="ml-0.5" />}
+                </button>
+              )}
             </div>
             {positioningCaptionId && (
               <button onClick={() => setPositioningCaptionId(null)} className="text-center text-xs text-red-400 hover:text-red-300 font-semibold">Done positioning</button>
@@ -976,18 +1108,44 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings, s
             <div ref={timelineRef} className="flex items-stretch gap-1 overflow-x-auto pb-1">
               {clips.map((c, i) => {
                 const widthPx = Math.max(48, Math.min(160, (c.endSec - c.startSec) * 18));
+                const hasTransition = !!(c.transitionToNext && c.transitionToNext !== "none");
                 return (
-                  <div
-                    key={c.id}
-                    data-clip-id={c.id}
-                    onPointerDown={e => handleTimelinePointerDown(e, c.id)}
-                    onClick={() => { setActiveClipId(c.id); setTab("clips"); }}
-                    className={"relative flex-shrink-0 h-16 rounded-lg overflow-hidden border-2 cursor-grab active:cursor-grabbing " + (activeClipId === c.id ? "border-red-500" : "border-white/10") + (draggingClipId === c.id ? " opacity-60" : "")}
-                    style={{ width: widthPx, touchAction: "none" }}
-                  >
-                    {clipThumbs[c.id] ? <img src={clipThumbs[c.id]} className="w-full h-full object-cover" draggable={false} alt="" /> : <div className="w-full h-full bg-white/5" />}
-                    <div className="absolute bottom-0 inset-x-0 bg-black/60 text-[8px] text-white text-center py-0.5">{i + 1}</div>
-                  </div>
+                  <React.Fragment key={c.id}>
+                    <div
+                      data-clip-id={c.id}
+                      onPointerDown={e => handleTimelinePointerDown(e, c.id)}
+                      onClick={() => { setActiveClipId(c.id); setTab("clips"); }}
+                      className={"relative flex-shrink-0 h-16 rounded-lg overflow-hidden border-2 cursor-grab active:cursor-grabbing " + (activeClipId === c.id ? "border-red-500" : "border-white/10") + (draggingClipId === c.id ? " opacity-60" : "")}
+                      style={{ width: widthPx, touchAction: "none" }}
+                    >
+                      {clipThumbs[c.id] ? <img src={clipThumbs[c.id]} className="w-full h-full object-cover" draggable={false} alt="" /> : <div className="w-full h-full bg-white/5" />}
+                      <div className="absolute bottom-0 inset-x-0 bg-black/60 text-[8px] text-white text-center py-0.5">{i + 1}</div>
+                    </div>
+                    {/* FEATURE — "add a small plus button between each video
+                        to insert transitions — fading, blur, and other
+                        CapCut-style transitions." A native <select> gives
+                        every TRANSITION_EFFECTS option in one tap without
+                        building a custom popover — sized/positioned to
+                        read as a small round + button, not an obvious
+                        dropdown, matching the CapCut affordance while
+                        staying keyboard/touch accessible for free. Already
+                        wired to the same activeClip.transitionToNext field
+                        the Clips-tab dropdown uses, so both stay in sync. */}
+                    {i < clips.length - 1 && (
+                      <div className="relative flex-shrink-0 w-5 self-center" title="Transition to next clip">
+                        <select
+                          value={c.transitionToNext || "none"}
+                          onChange={e => updateClip(c.id, { transitionToNext: e.target.value })}
+                          className="absolute inset-0 w-5 h-5 opacity-0 cursor-pointer"
+                        >
+                          {TRANSITION_EFFECTS.map(t => <option key={t.id} value={t.id} className="bg-black">{t.name}</option>)}
+                        </select>
+                        <div className={"w-5 h-5 rounded-full flex items-center justify-center pointer-events-none border transition " + (hasTransition ? "bg-red-600 border-red-400 text-white" : "bg-white/10 border-white/20 text-white/50")}>
+                          <Plus size={11} />
+                        </div>
+                      </div>
+                    )}
+                  </React.Fragment>
                 );
               })}
               <button onClick={() => fileInputRef.current?.click()} title="Add video clip" className="flex-shrink-0 w-12 h-16 rounded-lg border-2 border-dashed border-white/20 flex items-center justify-center text-white/40 hover:text-white">
