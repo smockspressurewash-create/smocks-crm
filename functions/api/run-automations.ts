@@ -187,22 +187,41 @@ export const onRequestGet = async (context: { request: Request; env: Record<stri
 export const onRequestPost = async (context: { request: Request; env: Record<string, string> }) => {
   const serviceRoleKey = context.env.SUPABASE_SERVICE_ROLE_KEY;
   if (!serviceRoleKey) return json({ error: "SUPABASE_SERVICE_ROLE_KEY not configured" }, 500);
-  const secret = context.env.AUTOMATIONS_CRON_SECRET;
-  if (secret) {
-    const key = new URL(context.request.url).searchParams.get("key");
-    if (key !== secret) return json({ error: "Invalid key" }, 403);
-  }
   const headers = { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}` };
   // Same origin this function itself is deployed on — used to build real
   // #/estimate, #/rate, #/referral, #/lead-form links in message bodies,
   // the same way the in-browser engine uses window.location.origin.
   const origin = new URL(context.request.url).origin;
 
+  // FEATURE — "there should be a way to build it and find it." AutomationsPage.tsx's
+  // "Run Automations Now" button calls this SAME endpoint with the owner's
+  // own session token instead of the cron secret — a real authenticated
+  // session is its own valid auth, and scoping to just that one owner (not
+  // every business on this deployment) makes a manual test click fast
+  // instead of processing everyone else's queue too.
+  const accessToken = (context.request.headers.get("authorization") || "").replace(/^Bearer\s+/i, "");
+  let onlyOwnerId: string | null = null;
+  if (accessToken) {
+    const { resolveCallerOwnerId } = await import("./_lib/ownerSecrets");
+    onlyOwnerId = await resolveCallerOwnerId(accessToken);
+    if (!onlyOwnerId) return json({ error: "Not signed in." }, 401);
+  } else {
+    // No session — this is the external cron pinger path, gated by the
+    // secret instead (see this file's own setup comment).
+    const secret = context.env.AUTOMATIONS_CRON_SECRET;
+    if (secret) {
+      const key = new URL(context.request.url).searchParams.get("key");
+      if (key !== secret) return json({ error: "Invalid key" }, 403);
+    }
+  }
+
   // One owner at a time, oldest-updated automations first, so a large
   // deployment doesn't starve any one business if a run gets cut short.
-  const ownersRes = await fetch(`${SUPABASE_URL}/rest/v1/automations?select=owner_id&order=updated_at.asc`, { headers });
-  const ownerRows = await ownersRes.json().catch(() => []);
-  const ownerIds = Array.from(new Set((Array.isArray(ownerRows) ? ownerRows : []).map((r: any) => r.owner_id)));
+  const ownerIds: string[] = onlyOwnerId ? [onlyOwnerId] : await (async () => {
+    const ownersRes = await fetch(`${SUPABASE_URL}/rest/v1/automations?select=owner_id&order=updated_at.asc`, { headers });
+    const ownerRows = await ownersRes.json().catch(() => []);
+    return Array.from(new Set((Array.isArray(ownerRows) ? ownerRows : []).map((r: any) => r.owner_id))) as string[];
+  })();
 
   let totalSent = 0, totalFailed = 0;
   const perOwner: Record<string, { sent: number; failed: number; skippedPaused?: boolean }> = {};
@@ -234,10 +253,21 @@ const runForOwner = async (ownerId: string, serviceRoleKey: string, env: Record<
   const autoRows = await autoRes.json().catch(() => []);
   const automations: any[] = (Array.isArray(autoRows) ? autoRows : []).map((r: any) => r.data);
   const activeAutoApprove = automations.filter(a => a?.active && a?.autoApprove);
-  if (activeAutoApprove.length === 0) return { sent: 0, failed: 0 };
 
   const settingsRows = await settingsRes.json().catch(() => []);
   const settings = (Array.isArray(settingsRows) ? settingsRows[0]?.data : null) || {};
+  // FEATURE — "there should be a way to find it." Stamps every real run
+  // attempt — including one that finds nothing to do — BEFORE the
+  // no-auto-approved-automations early return below, so a manual "Run Now"
+  // click always visibly confirms it ran instead of looking like nothing
+  // happened when there's simply nothing auto-approved yet.
+  // attempt (not just successful sends) so AutomationsPage.tsx can show a
+  // real "last checked Xm ago" instead of the owner having no way to tell
+  // whether the background job is actually configured and running at all.
+  fetch(`${SUPABASE_URL}/rest/v1/app_settings?owner_id=eq.${encodeURIComponent(ownerId)}`, {
+    method: "PATCH", headers: { ...headers, "Content-Type": "application/json", Prefer: "return=minimal" },
+    body: JSON.stringify({ data: { ...settings, lastAutomationRunAt: new Date().toISOString() } }),
+  }).catch(() => {});
   if (settings.automationsPaused !== false) return { sent: 0, failed: 0, skippedPaused: true };
 
   const jobs = await jobsRes.json().catch(() => []);

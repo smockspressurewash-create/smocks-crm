@@ -550,7 +550,17 @@ export function useAutomationEngine({
   // Actually performs one send (email or SMS, with the existing Twilio ->
   // email fallback). Only ever called from approveBatch, i.e. only after the
   // owner has explicitly clicked "Send All" on a reviewed batch.
-  const sendOne = async (auto: Automation, channelRaw: string, cand: Candidate, subject: string, body: string, settings: AppSettings, toast: (msg: string) => void, onSent: () => void, extra?: { url?: string; payload?: string }): Promise<boolean> => {
+  // AUDIT FIX — "Send All doesn't work." It wasn't fake — every branch here
+  // does a real send — but every failure reason was ONLY ever
+  // console.warn/error'd, never surfaced anywhere in the UI. An owner
+  // testing with seed/incomplete data (no real Twilio/Gmail connected yet,
+  // or a test customer with no phone/email) clicked "Send All," got a
+  // vague aggregate "N failed, check console" toast at best, and — with no
+  // devtools open — that reads exactly like the button does nothing.
+  // Returns a real reason string on every failure path now, so the caller
+  // can tell the owner specifically what went wrong instead of asking them
+  // to open the console.
+  const sendOne = async (auto: Automation, channelRaw: string, cand: Candidate, subject: string, body: string, settings: AppSettings, toast: (msg: string) => void, onSent: () => void, extra?: { url?: string; payload?: string }): Promise<{ ok: boolean; reason?: string }> => {
     const c = cand.customer;
     let channel = channelRaw;
 
@@ -561,12 +571,10 @@ export function useAutomationEngine({
     if (channel === "task" || channel === "internal" || channel === "calendar") {
       const to = ownerEmailAddress(settings);
       if (!to) {
+        const reason = "no owner email on file to send the internal note to (set your company email in Settings)";
         const key = `${auto.id}:no-owner-email`;
-        if (!notConfiguredWarnedThisSession.has(key)) {
-          notConfiguredWarnedThisSession.add(key);
-          console.warn(`[Automations] "${auto.name}" — internal/task step has no owner email to notify. Set your company email in Settings.`);
-        }
-        return false;
+        if (!notConfiguredWarnedThisSession.has(key)) { notConfiguredWarnedThisSession.add(key); console.warn(`[Automations] "${auto.name}" —`, reason); }
+        return { ok: false, reason };
       }
       const kind = channel === "task" ? "Task" : channel === "calendar" ? "Calendar reminder" : "Internal note";
       const line = `${kind} · ${c.firstName} ${c.lastName}`;
@@ -574,22 +582,21 @@ export function useAutomationEngine({
         await sendOwnerGmailOnly(settings as any, to, `${kind}: ${subject}`, emailShell(settings as any, subject, `<p><strong>${line}</strong></p><p>${body.replace(/\n/g, "<br/>")}</p>`));
         onSent();
         toast(`🔔 ${auto.name} → your inbox (${kind.toLowerCase()})`);
-        return true;
+        return { ok: true };
       } catch (e: any) {
-        console.error("[Automations]", auto.name, "— internal notification failed:", e?.message || String(e));
-        return false;
+        const reason = `internal notification failed: ${e?.message || String(e)}`;
+        console.error("[Automations]", auto.name, "—", reason);
+        return { ok: false, reason };
       }
     }
 
     if (channel === "webhook") {
       const url = extra?.url || "";
       if (!/^https?:\/\//i.test(url)) {
+        const reason = "webhook step has no valid URL";
         const key = `${auto.id}:webhook-url`;
-        if (!notConfiguredWarnedThisSession.has(key)) {
-          notConfiguredWarnedThisSession.add(key);
-          console.warn(`[Automations] "${auto.name}" — webhook step has no valid URL; skipped.`);
-        }
-        return false;
+        if (!notConfiguredWarnedThisSession.has(key)) { notConfiguredWarnedThisSession.add(key); console.warn(`[Automations] "${auto.name}" —`, reason); }
+        return { ok: false, reason };
       }
       try {
         await fetch(url, {
@@ -599,10 +606,11 @@ export function useAutomationEngine({
         });
         onSent();
         toast(`🔗 ${auto.name} → webhook sent`);
-        return true;
+        return { ok: true };
       } catch (e: any) {
-        console.error("[Automations]", auto.name, "— webhook failed:", e?.message || String(e));
-        return false;
+        const reason = `webhook failed: ${e?.message || String(e)}`;
+        console.error("[Automations]", auto.name, "—", reason);
+        return { ok: false, reason };
       }
     }
 
@@ -611,7 +619,7 @@ export function useAutomationEngine({
     if (channel !== "email" && !c.phone && c.email && /^(owner|employee):/.test(c.id)) channel = "email";
 
     if (channel === "email") {
-      if (!c.email) return false;
+      if (!c.email) return { ok: false, reason: `${c.firstName} ${c.lastName} has no email on file` };
       try {
         // BUG FIX — "the email should have a nice-looking UI and a
         // follow-up button." emailShell already gives branded HTML; what
@@ -626,28 +634,24 @@ export function useAutomationEngine({
         await sendOwnerGmailOnly(settings as any, c.email, subject, emailShell(settings as any, subject, `<p>${body.replace(/\n/g, "<br/>")}</p>${ctaHtml}`));
         onSent();
         toast(`📧 ${auto.name} → ${c.firstName}`);
-        return true;
+        return { ok: true };
       } catch (e: any) {
         const msg = e?.message || String(e);
-        if (msg.includes("Gmail not connected")) {
-          const key = `${auto.id}:none-configured`;
-          if (!notConfiguredWarnedThisSession.has(key)) {
-            notConfiguredWarnedThisSession.add(key);
-            console.warn(`[Automations] "${auto.name}" — email failed: ${msg} Configure Google in Settings → Integrations. (further attempts for this automation are logged only once per session)`);
-          }
-        } else {
-          console.error("[Automations]", auto.name, "— email failed for", c.firstName, ":", msg);
-        }
-        return false;
+        const reason = msg.includes("Gmail not connected") ? "Gmail isn't connected — connect Google in Settings → Integrations" : `email failed: ${msg}`;
+        const key = `${auto.id}:none-configured`;
+        if (!notConfiguredWarnedThisSession.has(key)) { notConfiguredWarnedThisSession.add(key); console.warn(`[Automations] "${auto.name}" —`, reason); }
+        else console.error("[Automations]", auto.name, "— email failed for", c.firstName, ":", msg);
+        return { ok: false, reason };
       }
     }
-    if (!c.phone || c.smsOptOut) return false;
+    if (!c.phone) return { ok: false, reason: `${c.firstName} ${c.lastName} has no phone on file` };
+    if (c.smsOptOut) return { ok: false, reason: `${c.firstName} ${c.lastName} has opted out of texts (replied STOP)` };
     try {
       await twilioSend(settings, c.phone, body);
       logOutboundSmsToInbox({ contactName: `${c.firstName} ${c.lastName}`, contactPhone: c.phone, customerId: c.id, body }).catch(() => {});
       onSent();
       toast(`📱 ${auto.name} → ${c.firstName}`);
-      return true;
+      return { ok: true };
     } catch (e: any) {
       const msg = e?.message || String(e);
       const isTwilioNotConfigured = msg.includes("Twilio not configured");
@@ -662,26 +666,23 @@ export function useAutomationEngine({
           await sendOwnerGmailOnly(settings as any, c.email, subject, emailShell(settings as any,subject, `<p>${body.replace(/\n/g, "<br/>")}</p>${ctaHtml}`));
           onSent();
           toast(`📧 ${auto.name} → ${c.firstName} (SMS unavailable — sent via email)`);
-          return true;
+          return { ok: true };
         } catch (emailErr: any) {
+          const reason = "Twilio isn't connected, and the email fallback also failed (Gmail isn't connected either) — connect one in Settings → Integrations";
           const noneKey = `${auto.id}:none-configured`;
-          if (!notConfiguredWarnedThisSession.has(noneKey)) {
-            notConfiguredWarnedThisSession.add(noneKey);
-            console.warn(`[Automations] "${auto.name}" — SMS unavailable (Twilio not configured) and email fallback also failed (${emailErr?.message || "Gmail not connected"}). Configure Twilio or Google in Settings → Integrations. (further attempts for this automation are logged only once per session)`);
-          }
-          return false;
+          if (!notConfiguredWarnedThisSession.has(noneKey)) { notConfiguredWarnedThisSession.add(noneKey); console.warn(`[Automations] "${auto.name}" —`, reason); }
+          return { ok: false, reason };
         }
       }
       if (isTwilioNotConfigured) {
+        const reason = `Twilio isn't connected — connect it in Settings → Integrations (${c.firstName} ${c.lastName} has no email on file to fall back to)`;
         const noneKey = `${auto.id}:none-configured`;
-        if (!notConfiguredWarnedThisSession.has(noneKey)) {
-          notConfiguredWarnedThisSession.add(noneKey);
-          console.warn(`[Automations] "${auto.name}" — Twilio not configured, and ${c.firstName} ${c.lastName} has no email on file to fall back to. Configure Twilio in Settings → Integrations. (further attempts for this automation are logged only once per session)`);
-        }
-        return false;
+        if (!notConfiguredWarnedThisSession.has(noneKey)) { notConfiguredWarnedThisSession.add(noneKey); console.warn(`[Automations] "${auto.name}" —`, reason); }
+        return { ok: false, reason };
       }
+      const reason = `text failed: ${msg}`;
       console.error("[Automations]", auto.name, "— failed for", c.firstName, ":", msg);
-      return false;
+      return { ok: false, reason };
     }
   };
 
@@ -1391,6 +1392,7 @@ export function useAutomationEngine({
       const throttleDelayMs = computeThrottleDelayMs(settingsRef.current);
       let sentCountThisApproval = 0;
       let failedCountThisApproval = 0;
+      const failureReasons: string[] = [];
 
       for (const item of items) {
         // GUARDRAIL — never send twice to the same customer in this approval
@@ -1399,24 +1401,31 @@ export function useAutomationEngine({
         if (sentThisApprovalForCustomer.has(item.customerId)) continue;
         if (firedThisSession.has(item.id)) continue;
         const fresh = stillQualifies(item);
-        if (!fresh) { console.log("[Automations] skipped at send time (no longer qualifies):", item.autoName, "→", item.customerName); continue; }
+        if (!fresh) {
+          const reason = `${item.customerName} no longer qualifies (condition changed, or already handled since this batch was gathered)`;
+          console.log("[Automations] skipped at send time (no longer qualifies):", item.autoName, "→", item.customerName);
+          failedCountThisApproval++;
+          failureReasons.push(reason);
+          continue;
+        }
         if (throttleDelayMs > 0 && sentCountThisApproval > 0) {
           console.log("[Automations] throttling —", Math.round(throttleDelayMs), "ms before next send (per-hour/per-minute limit)");
           await sleep(throttleDelayMs);
         }
         firedThisSession.add(item.id);
         sentCountThisApproval++;
-        const sent = await sendOne(fresh.auto, item.channel, fresh.cand, item.subject, item.body, settingsRef.current, toastRef.current, () => {
+        const result = await sendOne(fresh.auto, item.channel, fresh.cand, item.subject, item.body, settingsRef.current, toastRef.current, () => {
           if (!patchesByAutoId[item.autoId]) patchesByAutoId[item.autoId] = { sentTo: {}, sent: 0 };
           patchesByAutoId[item.autoId].sentTo[item.dedupKey] = todayStr;
           patchesByAutoId[item.autoId].sent += 1;
           console.log("[Automations] fired:", item.autoName, "->", item.customerName);
         }, { url: item.webhookUrl, payload: item.webhookPayload });
-        if (sent) {
+        if (result.ok) {
           newDailyLog[item.customerId] = todayStr;
           sentThisApprovalForCustomer.add(item.customerId);
         } else {
           failedCountThisApproval++;
+          if (result.reason) failureReasons.push(result.reason);
           firedThisSession.delete(item.id); // failed send — allow a real retry next batch
         }
       }
@@ -1434,8 +1443,23 @@ export function useAutomationEngine({
       // had no way to know anything failed. Every success already toasts
       // individually via toastRef inside sendOne — this adds the missing
       // aggregate signal for failures once the whole batch is done.
+      // AUDIT FIX — "Send All doesn't work." This used to say "check
+      // console for reasons," which reads as broken to anyone not looking
+      // at devtools. sendOne/stillQualifies now return a real reason for
+      // every failure (see their own comments) — show the actual reason(s)
+      // right here instead of sending the owner hunting for logs.
       if (failedCountThisApproval > 0) {
-        toastRef.current(`⚠ ${failedCountThisApproval} automation send${failedCountThisApproval !== 1 ? "s" : ""} failed — check console for reasons (Twilio/Gmail may not be configured)`);
+        const uniqueReasons = Array.from(new Set(failureReasons));
+        const reasonText = uniqueReasons.length > 0
+          ? " — " + uniqueReasons.slice(0, 2).join("; ") + (uniqueReasons.length > 2 ? `; +${uniqueReasons.length - 2} more reason(s)` : "")
+          : "";
+        toastRef.current(`⚠ ${failedCountThisApproval} of ${items.length} didn't send${reasonText}`);
+      }
+      if (items.length > 0 && sentCountThisApproval === 0 && failedCountThisApproval === 0) {
+        // Every item was already handled (a duplicate within this same
+        // approval) before an attempt was even made — real, but distinct
+        // from "nothing happened."
+        toastRef.current("Nothing new to send — everything in this batch was already handled.");
       }
     } finally {
       isApprovingRef.current = false;

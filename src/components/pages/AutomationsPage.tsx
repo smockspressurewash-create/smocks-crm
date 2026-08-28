@@ -77,6 +77,7 @@ import { AIModelsSection } from "../ui/AIModelsSection";
 import { ChemicalModal } from "../ui/ChemicalModal";
 import { WeeklyBusinessReview } from "../ui/WeeklyBusinessReview";
 import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
+import { BackgroundAutomationsPanel } from "../ui/BackgroundAutomationsPanel";
 
 export function AutomationsPage({ automations = [], setAutomations, jobs = [], customers = [], estimates = [], settings = {} as any, setSettings = (() => {}) as any, toast }: { automations?: any[]; setAutomations?: any; jobs?: any[]; customers?: any[]; estimates?: any[]; settings?: any; setSettings?: any; toast?: any }) {
   const [builderOpen, setBuilderOpen] = useState<{ open: boolean; data: any }>({ open: false, data: null });
@@ -280,6 +281,18 @@ export function AutomationsPage({ automations = [], setAutomations, jobs = [], c
               </button>
             </div>
           </Glass>
+
+          {/* FEATURE — "make automations run in the background... there
+              should be a way to build it and find it." Real, discoverable
+              home for the background job: shows whether it's actually been
+              checking in (functions/api/run-automations.ts stamps
+              settings.lastAutomationRunAt on every real attempt, including
+              one that finds nothing to do), a one-click manual trigger for
+              testing without waiting up to 15 minutes for the external
+              pinger, and the exact setup instructions/URL to copy into
+              cron-job.org or a Cloudflare Cron Trigger — no digging through
+              docs to find where this lives. */}
+          <BackgroundAutomationsPanel settings={settings} toast={toast} />
 
           {/* FEATURE — global default + bulk apply for the per-automation
               "Auto-send" / "Ask first" toggle (the small button on each
