@@ -115,8 +115,9 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
       }, () => {
         setJobs((prev: any[]) => prev.filter((x: any) => x.id !== jid));
         markRecentlyDeleted("jobs", [jid]);
-        (supabase as any).from("jobs").delete().eq("id", jid).then((r: any) => {
+        (supabase as any).from("jobs").delete().eq("id", jid).select("id").then((r: any) => {
           if (r?.error) toast("Removed locally, but failed to remove on server — " + r.error.message, "red");
+          else if (!r?.data || r.data.length === 0) toast("Removed locally, but the server rejected the change", "red");
         }).catch(() => {});
       });
     }
@@ -1209,8 +1210,17 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
             setJobs(jobs.filter(j => !ids.includes(j.id)));
             markRecentlyDeleted("jobs", ids);
             setBulkSelected([]);
-            (supabase as any).from("jobs").delete().in("id", ids)
-              .then((r: any) => { if (r?.error) toast("Deleted locally, but failed to delete from server — " + r.error.message, "red"); else toast(ids.length + " job(s) deleted"); })
+            // BUG FIX (audit finding) — no .select("id")/count check meant an
+            // RLS-scoped partial (or total) 0-row match still showed "N
+            // job(s) deleted" for the full requested count.
+            (supabase as any).from("jobs").delete().in("id", ids).select("id")
+              .then((r: any) => {
+                if (r?.error) { toast("Deleted locally, but failed to delete from server — " + r.error.message, "red"); return; }
+                const deletedCount = Array.isArray(r?.data) ? r.data.length : 0;
+                if (deletedCount === 0) toast("Deleted locally, but the server rejected the change", "red");
+                else if (deletedCount < ids.length) toast(`Only ${deletedCount} of ${ids.length} jobs actually deleted on the server`, "red");
+                else toast(ids.length + " job(s) deleted");
+              })
               .catch((e: any) => toast("Deleted locally, but failed to delete from server — " + (e?.message || ""), "red"));
           }} className="px-3 py-1.5 rounded-lg text-[11px] bg-red-950/40 border border-red-700/40 text-red-300 hover:bg-red-900/50"><Trash2 size={11} className="inline mr-1" />Delete</button>
           <button onClick={() => setBulkSelected([])} className="px-3 py-1.5 rounded-lg text-[11px] bg-white/5 border border-white/10 text-white/60"><X size={11} className="inline mr-1" />Deselect</button>

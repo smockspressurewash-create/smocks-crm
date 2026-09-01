@@ -113,8 +113,15 @@ export function InvoicesPage({ estimates = [], setEstimates, customers = [], set
     // different spot.
     const patch = { invoiceSentAt: today(), paymentType: job.paymentType || "Invoice" };
     setJobs((prev: any[]) => prev.map(j => j.id === job.id ? { ...j, ...patch } : j));
-    (supabase as any).from("jobs").update(patch).eq("id", job.id)
-      .then((r: any) => { if (r?.error) { console.error("[MarkSent] job patch failed:", r.error.message); toast?.("Marked locally, but failed to sync — " + r.error.message, "red"); } else { toast?.("Marked as sent (outside the CRM)", "green"); } })
+    // BUG FIX (audit finding) — no .select("id")/empty-result check meant
+    // an RLS-scoped 0-row silent failure here still showed the green
+    // "Marked as sent" toast.
+    (supabase as any).from("jobs").update(patch).eq("id", job.id).select("id")
+      .then((r: any) => {
+        if (r?.error) { console.error("[MarkSent] job patch failed:", r.error.message); toast?.("Marked locally, but failed to sync — " + r.error.message, "red"); }
+        else if (!r?.data || r.data.length === 0) { console.error("[MarkSent] job patch matched 0 rows"); toast?.("Marked locally, but the server rejected the change", "red"); }
+        else { toast?.("Marked as sent (outside the CRM)", "green"); }
+      })
       .catch((e: any) => { console.error("[MarkSent] job patch threw:", e?.message); toast?.("Marked locally, but failed to sync — " + (e?.message || "unknown error"), "red"); });
   };
 
@@ -159,8 +166,11 @@ export function InvoicesPage({ estimates = [], setEstimates, customers = [], set
       console.log("[SendInvoice] Gmail send resolved ✓");
       const jobPatch = { invoiceSentAt: today(), paymentType: "Invoice", paymentStatus: job.paymentStatus === "Paid" ? job.paymentStatus : "Pending" };
       setJobs((prev: any[]) => prev.map(j => j.id === job.id ? { ...j, ...jobPatch } : j));
-      (supabase as any).from("jobs").update(jobPatch).eq("id", job.id)
-        .then((r: any) => { if (r?.error) console.error("[SendInvoice] job patch (invoiceSentAt) failed:", r.error.message); })
+      (supabase as any).from("jobs").update(jobPatch).eq("id", job.id).select("id")
+        .then((r: any) => {
+          if (r?.error) console.error("[SendInvoice] job patch (invoiceSentAt) failed:", r.error.message);
+          else if (!r?.data || r.data.length === 0) console.error("[SendInvoice] job patch (invoiceSentAt) matched 0 rows");
+        })
         .catch((e: any) => console.error("[SendInvoice] job patch (invoiceSentAt) threw:", e?.message));
       toast?.(`Invoice sent to ${cust.firstName} ✓`, "green");
       setPreviewInvoiceJob(null);
@@ -433,8 +443,11 @@ export function InvoicesPage({ estimates = [], setEstimates, customers = [], set
   const syncJobPaymentStatus = (jobId: string | undefined, paymentStatus: "Paid" | "Pending") => {
     if (!jobId) return;
     setJobs((prev: any[]) => prev.map(j => j.id === jobId ? { ...j, paymentStatus } : j));
-    (supabase as any).from("jobs").update({ paymentStatus }).eq("id", jobId)
-      .then((r: any) => { if (r?.error) console.error("[MarkPaid] job paymentStatus sync failed:", r.error.message); })
+    (supabase as any).from("jobs").update({ paymentStatus }).eq("id", jobId).select("id")
+      .then((r: any) => {
+        if (r?.error) console.error("[MarkPaid] job paymentStatus sync failed:", r.error.message);
+        else if (!r?.data || r.data.length === 0) console.error("[MarkPaid] job paymentStatus sync matched 0 rows");
+      })
       .catch((e: any) => console.error("[MarkPaid] job paymentStatus sync threw:", e?.message));
   };
   const markPaid = id => {

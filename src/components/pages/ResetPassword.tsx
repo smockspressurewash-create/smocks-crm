@@ -66,17 +66,21 @@ export function ResetPassword() {
     setSuccess(true);
     // This route is shared by owner/employee/client password resets — send a
     // client back to the client portal instead of the employee portal by
-    // checking whether their email matches a customer record (same check
-    // ClientAuthPortal itself uses to tell a client session from staff).
+    // checking whether their email matches a customer record.
+    // BUG FIX (security audit finding) — this used to query `customers`
+    // directly with the anon key, but that table's only RLS policy is
+    // owner-scoped (owner_id = current_owner_id()), which never resolves
+    // for a customer's own session (customers aren't in the `employees`
+    // table current_owner_id relies on) — the query always returned 0 rows
+    // under RLS, so every genuine customer silently got routed to /portal
+    // instead of /client. Now calls a narrow SECURITY DEFINER RPC
+    // (is_registered_customer_email, migration 0093) that checks the
+    // session's own verified JWT email against `customers` server-side.
     let destination = "/portal";
     try {
-      const { data: { session } } = await supabase.auth.getSession();
-      const resetEmail = session?.user?.email;
-      if (resetEmail) {
-        const { data } = await (supabase as any).from("customers").select("id").ilike("email", resetEmail).maybeSingle();
-        if (data) destination = "/client";
-      }
-    } catch { /* customers table lookup best-effort — default to /portal */ }
+      const { data } = await supabase.rpc("is_registered_customer_email" as any);
+      if (data === true) destination = "/client";
+    } catch { /* customer lookup best-effort — default to /portal */ }
     await supabase.auth.signOut();
     setTimeout(() => { window.location.hash = destination; }, 2500);
   };

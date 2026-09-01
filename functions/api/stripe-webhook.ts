@@ -357,7 +357,26 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
       // previously invisible to the CRM entirely.
       const dispute = event.data?.object || {};
       const paymentIntentId = typeof dispute.payment_intent === "string" ? dispute.payment_intent : undefined;
-      const invoiceId = dispute.metadata?.invoiceId; // rarely present on the dispute object itself
+      let invoiceId = dispute.metadata?.invoiceId; // rarely present on the dispute object itself
+      // SECURITY/CORRECTNESS FIX (audit finding, Medium) — dispute.metadata
+      // almost never carries invoiceId, so this silently fell through to a
+      // console.warn every time in practice — the owner had no in-app
+      // signal at all that a chargeback happened. markInvoicePaid (below)
+      // stamps stripePaymentIntentId onto the paid invoice's own row, so a
+      // reverse lookup by that id (service-role, no owner_id needed up
+      // front) reliably finds the real invoice for the common case.
+      if (!invoiceId && paymentIntentId && serviceRoleKey) {
+        try {
+          const lookupRes = await fetch(
+            `${SUPABASE_URL}/rest/v1/estimates?stripePaymentIntentId=eq.${encodeURIComponent(paymentIntentId)}&select=id`,
+            { headers: { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}` } }
+          );
+          const rows = await lookupRes.json().catch(() => []);
+          if (Array.isArray(rows) && rows[0]?.id) invoiceId = rows[0].id;
+        } catch (e: any) {
+          console.warn("[StripeWebhook] dispute invoice reverse-lookup failed:", e?.message);
+        }
+      }
       if (invoiceId) {
         ok = await logPaymentEvent(
           invoiceId,
@@ -366,7 +385,11 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
           serviceRoleKey
         );
       } else {
-        console.warn("[StripeWebhook] dispute.created with no invoiceId on the charge metadata — check the Stripe dashboard directly:", paymentIntentId);
+        // Still couldn't resolve an invoice — this is now the rare case
+        // (no metadata AND no matching payment intent on file), not the
+        // common one. Acknowledge so Stripe doesn't retry forever; the
+        // owner still gets Stripe's own dispute email/dashboard alert.
+        console.error("[StripeWebhook] dispute.created with no resolvable invoice — check the Stripe dashboard directly:", paymentIntentId);
       }
     } else {
       // Unhandled event type — acknowledge so Stripe stops retrying it.

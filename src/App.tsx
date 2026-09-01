@@ -3011,8 +3011,11 @@ export function App() {
     const staleIds = new Set(stale.map(j => j.id));
     setJobs(prev => prev.map(j => staleIds.has(j.id) ? { ...j, status: "completed" as const } : j));
     stale.forEach(j => {
-      (supabase as any).from("jobs").update({ status: "completed" }).eq("id", j.id)
-        .then((r: any) => { if (r?.error) console.warn("[PastJobs] failed to persist for", j.id, r.error.message); })
+      (supabase as any).from("jobs").update({ status: "completed" }).eq("id", j.id).select("id")
+        .then((r: any) => {
+          if (r?.error) console.warn("[PastJobs] failed to persist for", j.id, r.error.message);
+          else if (!r?.data || r.data.length === 0) console.warn("[PastJobs] update matched 0 rows for", j.id);
+        })
         .catch(() => {});
     });
   }, [jobs.length]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -5578,8 +5581,9 @@ export function App() {
             // the owner's invoiceActivity diff (above) only fires once this
             // lands in Supabase and the owner's own poll picks it up.
             try {
-              const { error } = await (supabase as any).from("estimates").update({ status: "rejected", declinedAt, declineReason: data.reason || "", declineReasonCategory: data.category || "" }).eq("id", id);
+              const { error, data: rows } = await (supabase as any).from("estimates").update({ status: "rejected", declinedAt, declineReason: data.reason || "", declineReasonCategory: data.category || "" }).eq("id", id).select("id");
               if (error) console.warn("Decline failed to save server-side:", error.message);
+              else if (!rows || rows.length === 0) console.warn("Decline update matched 0 rows for estimate", id);
             } catch (e: any) {
               console.warn("Decline failed to save server-side:", e?.message);
             }

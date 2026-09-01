@@ -3787,8 +3787,15 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
           // would otherwise hammer Supabase for no real benefit).
           if (locationSharingRef.current && myEmployee?.id && now - lastLocationPushRef.current > 90000) {
             lastLocationPushRef.current = now;
-            (supabase as any).from("employees").update({ lastLocation: { lat, lng, updatedAt: now } }).eq("id", myEmployee.id)
-              .then((r: any) => { if (r?.error) console.warn("[Share Location] periodic update failed:", r.error.message); })
+            // BUG FIX (audit finding) — no 0-row check meant a silent RLS
+            // mismatch left a stale pin on the owner's map with no signal
+            // anywhere it happened; passive background write, so this logs
+            // rather than toasts (a toast every ~90s would be its own bug).
+            (supabase as any).from("employees").update({ lastLocation: { lat, lng, updatedAt: now } }).eq("id", myEmployee.id).select("id")
+              .then((r: any) => {
+                if (r?.error) console.warn("[Share Location] periodic update failed:", r.error.message);
+                else if (!r?.data || r.data.length === 0) console.warn("[Share Location] periodic update matched 0 rows");
+              })
               .catch((e: any) => console.warn("[Share Location] periodic update threw:", e?.message));
           }
         },
@@ -3833,8 +3840,11 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
       navigator.geolocation.getCurrentPosition(
         (pos) => {
           lastLocationPushRef.current = Date.now();
-          (supabase as any).from("employees").update({ lastLocation: { lat: pos.coords.latitude, lng: pos.coords.longitude, updatedAt: Date.now() } }).eq("id", empId)
-            .then((r: any) => { if (r?.error) console.warn("[Share Location] resume-on-visible update failed:", r.error.message); });
+          (supabase as any).from("employees").update({ lastLocation: { lat: pos.coords.latitude, lng: pos.coords.longitude, updatedAt: Date.now() } }).eq("id", empId).select("id")
+            .then((r: any) => {
+              if (r?.error) console.warn("[Share Location] resume-on-visible update failed:", r.error.message);
+              else if (!r?.data || r.data.length === 0) console.warn("[Share Location] resume-on-visible update matched 0 rows");
+            });
         },
         () => { /* permission may have lapsed while backgrounded — next manual toggle will re-prompt */ },
         { enableHighAccuracy: true, timeout: 10000, maximumAge: 30000 }
@@ -3954,7 +3964,14 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
           const { data: byEmail } = await (supabase as any)
             .from("employees").select("*").ilike("email", email2).maybeSingle();
           if (byEmail) {
-            await (supabase as any).from("employees").update({ user_id: uid2 }).eq("id", byEmail.id);
+            // BUG FIX (audit finding) — no result check; a silent RLS
+            // mismatch would still optimistically set local state as if the
+            // link succeeded. Passive auto-retry (autoRetryDoneRef resets
+            // each mount, so a failure here self-heals on the next page
+            // load) — logs rather than toasts.
+            const linkResult = await (supabase as any).from("employees").update({ user_id: uid2 }).eq("id", byEmail.id).select("id");
+            if (linkResult?.error) console.warn("[EmployeeLink] user_id link failed:", linkResult.error.message);
+            else if (!linkResult?.data || linkResult.data.length === 0) console.warn("[EmployeeLink] user_id link matched 0 rows");
             setLocalEmployee(normalizeEmp({ ...byEmail, user_id: uid2 }));
           }
         } catch { /* table may not exist */ }
@@ -4445,10 +4462,15 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
         const now = Date.now();
         if (now - lastPostAt < MIN_POST_INTERVAL_MS) return;
         lastPostAt = now;
+        // BUG FIX (audit finding) — no 0-row check; a silent RLS mismatch
+        // meant this live-tracking write could stop actually reaching the
+        // owner's Live Team View with nothing but a normal-looking watch
+        // callback still firing.
         (supabase as any).from("employees").update({
           lastLocation: { lat: pos.coords.latitude, lng: pos.coords.longitude, accuracy: pos.coords.accuracy, updatedAt: now },
-        }).eq("id", empId).then((r: any) => {
+        }).eq("id", empId).select("id").then((r: any) => {
           if (r?.error) console.warn("Location post failed:", r.error.message);
+          else if (!r?.data || r.data.length === 0) console.warn("Location post matched 0 rows");
           else refetchEmployees?.();
         });
       },
@@ -4958,7 +4980,17 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     const score = computeJobRatingScore(job);
     const prevScore = (myEmployee as any)?.ratingScore;
     const nextScore = typeof prevScore === "number" ? Math.round(prevScore * 0.75 + score * 0.25) : score;
-    (supabase as any).from("employees").update({ ratingScore: nextScore }).eq("id", empId).then(() => {}, () => {});
+    // BUG FIX (audit finding) — result was fully swallowed; a silent RLS
+    // mismatch left this employee's rating never actually updating with
+    // no signal anywhere. Background computation (no user-facing action),
+    // so this logs rather than toasts.
+    (supabase as any).from("employees").update({ ratingScore: nextScore }).eq("id", empId).select("id").then(
+      (r: any) => {
+        if (r?.error) console.warn("[Rating] update failed:", r.error.message);
+        else if (!r?.data || r.data.length === 0) console.warn("[Rating] update matched 0 rows");
+      },
+      (e: any) => console.warn("[Rating] update threw:", e?.message)
+    );
   };
 
   const handleJobComplete = () => {
@@ -5081,8 +5113,16 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
           .from("employees").select("*").ilike("email", email).maybeSingle();
         if (byEmail) {
           found = byEmail;
-          // Link user_id for next time
-          await (supabase as any).from("employees").update({ user_id: userId }).eq("id", byEmail.id);
+          // Link user_id for next time. BUG FIX (audit finding) — no
+          // result check meant a silent RLS-mismatch failure here still
+          // let this session work for the current page load (found is
+          // still set below), but left the DB unlinked — so the very next
+          // real login (a fresh session) would fail to find this employee
+          // by user_id again and need ANOTHER manual "Retry Link" tap,
+          // with no indication why the fix wasn't actually sticking.
+          const linkResult = await (supabase as any).from("employees").update({ user_id: userId }).eq("id", byEmail.id).select("id");
+          if (linkResult?.error) { console.warn("[EmployeeLink] retry-link failed:", linkResult.error.message); toast("Linked for this session, but couldn't save permanently — " + linkResult.error.message, "red"); }
+          else if (!linkResult?.data || linkResult.data.length === 0) { console.warn("[EmployeeLink] retry-link matched 0 rows"); toast("Linked for this session, but the server rejected saving it — try again later", "red"); }
         }
       }
       if (found) setLocalEmployee(normalizeEmp(found));
@@ -5221,11 +5261,16 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     if (!requestData || !myEmployee || respondingToRequest) return;
     setRespondingToRequest(true);
     try {
+      // BUG FIX (audit finding) — no .select("id")/empty-result check meant
+      // an RLS-scoped 0-row silent failure here left job_requests.status
+      // stuck on "pending" forever with no error surfaced — the employee
+      // saw "Job accepted!" (below) regardless.
       const statusResult = await withTimeout<any>(
-        (supabase as any).from("job_requests").update({ status: "accepted", responded_at: new Date().toISOString() }).eq("id", requestId),
+        (supabase as any).from("job_requests").update({ status: "accepted", responded_at: new Date().toISOString() }).eq("id", requestId).select("id"),
         15000, "Accept request"
       );
       if (statusResult?.error) console.warn("[CrewFlow] job_requests status update failed:", statusResult.error.message);
+      else if (!statusResult?.data || statusResult.data.length === 0) console.warn("[CrewFlow] job_requests status update matched 0 rows");
       if (requestData.job_id) {
         const empId = myEmployee.id;
         const empUserId = (myEmployee as any).user_id;
@@ -5245,11 +5290,13 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
           // still-empty array from Supabase, which is exactly why accepted jobs were
           // vanishing again right after acceptance.
           const saveResult = await withTimeout<any>(
-            (supabase as any).from("jobs").update({ crew: newCrew, crewAssignedAt: newCrewAssignedAt }).eq("id", requestData.job_id),
+            (supabase as any).from("jobs").update({ crew: newCrew, crewAssignedAt: newCrewAssignedAt }).eq("id", requestData.job_id).select("id"),
             15000, "Accept request — crew save"
           );
           if (saveResult?.error) {
             toast("Accepted, but couldn't add you to the job's crew — " + saveResult.error.message, "red");
+          } else if (!saveResult?.data || saveResult.data.length === 0) {
+            toast("Accepted, but the server rejected adding you to the job's crew", "red");
           } else {
             // reconcileCrewAfterAssign — this write was based on this
             // portal's own possibly-stale local copy of the job's crew. If
@@ -5284,10 +5331,11 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     setRespondingToRequest(true);
     try {
       const result = await withTimeout<any>(
-        (supabase as any).from("job_requests").update({ status: "denied", denial_reason: denyReason.trim(), responded_at: new Date().toISOString() }).eq("id", requestId),
+        (supabase as any).from("job_requests").update({ status: "denied", denial_reason: denyReason.trim(), responded_at: new Date().toISOString() }).eq("id", requestId).select("id"),
         15000, "Decline request"
       );
       if (result?.error) throw new Error(result.error.message);
+      if (!result?.data || result.data.length === 0) throw new Error("the server rejected the change");
       setRequestDone("denied");
       toast("Request declined.");
     } catch (e: any) {
@@ -5445,8 +5493,9 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     try {
       const empId = (myEmployee as any)?.id || (myEmployee as any)?.user_id;
       if (empId) {
-        const result = await (supabase as any).from("employees").update({ availability: next }).eq("id", empId);
+        const result = await (supabase as any).from("employees").update({ availability: next }).eq("id", empId).select("id");
         if (result?.error) { console.warn("[Availability] save failed:", result.error.message); toast?.("Failed to save availability — " + result.error.message, "red"); }
+        else if (!result?.data || result.data.length === 0) { console.warn("[Availability] save matched 0 rows"); toast?.("Couldn't save availability — the server rejected the change", "red"); }
       }
     } catch (e: any) { console.warn("[Availability] save threw:", e?.message); toast?.("Failed to save availability", "red"); }
   };
@@ -5461,8 +5510,9 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     try {
       const empId = (myEmployee as any)?.id || (myEmployee as any)?.user_id;
       if (empId) {
-        const result = await (supabase as any).from("employees").update({ recurringDaysOff: next }).eq("id", empId);
+        const result = await (supabase as any).from("employees").update({ recurringDaysOff: next }).eq("id", empId).select("id");
         if (result?.error) { console.warn("[Availability] recurring save failed:", result.error.message); toast?.("Failed to save recurring availability — " + result.error.message, "red"); }
+        else if (!result?.data || result.data.length === 0) { console.warn("[Availability] recurring save matched 0 rows"); toast?.("Couldn't save recurring availability — the server rejected the change", "red"); }
       }
     } catch (e: any) { console.warn("[Availability] recurring save threw:", e?.message); toast?.("Failed to save recurring availability", "red"); }
   };
@@ -5471,10 +5521,12 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     if (!myEmployee || respondingToInlineId) return;
     setRespondingToInlineId(req.id);
     try {
-      await withTimeout(
-        (supabase as any).from("job_requests").update({ status: "accepted", responded_at: new Date().toISOString() }).eq("id", req.id),
+      const inlineStatusResult = await withTimeout<any>(
+        (supabase as any).from("job_requests").update({ status: "accepted", responded_at: new Date().toISOString() }).eq("id", req.id).select("id"),
         15000, "Inline accept request"
       );
+      if (inlineStatusResult?.error) console.warn("[CrewFlow] inline job_requests status update failed:", inlineStatusResult.error.message);
+      else if (!inlineStatusResult?.data || inlineStatusResult.data.length === 0) console.warn("[CrewFlow] inline job_requests status update matched 0 rows");
       if (req.job_id) {
         const empId = myEmployee.id;
         const empUserId = (myEmployee as any).user_id;
@@ -5493,14 +5545,17 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
           // an un-awaited fire-and-forget write here let the refetch race ahead and
           // clobber the optimistic crew with Supabase's still-stale (empty) row.
           const saveResult = await withTimeout<any>(
-            (supabase as any).from("jobs").update({ crew: newCrew, crewAssignedAt: newCrewAssignedAt }).eq("id", req.job_id),
+            (supabase as any).from("jobs").update({ crew: newCrew, crewAssignedAt: newCrewAssignedAt }).eq("id", req.job_id).select("id"),
             15000, "Inline accept — crew save"
           );
           // BUG FIX — this result used to be captured and never checked, so a
           // failed crew write (RLS, bad column, network) still showed the green
           // "you're on the crew" toast below even though the employee was never
           // actually added — exactly the "accept works but doesn't work" report.
+          // Extended (audit finding) to also catch the RLS 0-row silent
+          // success case, not just a real `.error`.
           if (saveResult?.error) crewSaveError = saveResult.error.message;
+          else if (!saveResult?.data || saveResult.data.length === 0) crewSaveError = "the server rejected the change";
           else {
             // reconcileCrewAfterAssign — same cross-actor race as
             // handleAcceptRequest above (this is the inline-card accept path).
@@ -5530,15 +5585,17 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     if (respondingToInlineId) return;
     setRespondingToInlineId(req.id);
     try {
-      await withTimeout(
-        (supabase as any).from("job_requests").update({ status: "denied", denial_reason: inlineDenyReason.trim(), responded_at: new Date().toISOString() }).eq("id", req.id),
+      const inlineDenyResult = await withTimeout<any>(
+        (supabase as any).from("job_requests").update({ status: "denied", denial_reason: inlineDenyReason.trim(), responded_at: new Date().toISOString() }).eq("id", req.id).select("id"),
         15000, "Inline decline request"
       );
+      if (inlineDenyResult?.error) throw new Error(inlineDenyResult.error.message);
+      if (!inlineDenyResult?.data || inlineDenyResult.data.length === 0) throw new Error("the server rejected the change");
       setIncomingRequests(prev => prev.map(r => r.id === req.id ? { ...r, status: "denied" } : r));
       setInlineDenyId(null);
       setInlineDenyReason("");
       toast("Request declined.");
-    } catch { toast("Error declining request", "red"); }
+    } catch (e: any) { toast("Error declining request — " + (e?.message || "check connection"), "red"); }
     finally { setRespondingToInlineId(null); }
   };
 
@@ -7143,8 +7200,9 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                   ? { dayLunchStartAt: Date.now() }
                   : { dayLunchStartAt: null, dayPausedMinutes: dayPausedMinutes + currentPauseMs / 60000 };
                 try {
-                  const result = await (supabase as any).from("employees").update(patch).eq("id", empId);
+                  const result = await (supabase as any).from("employees").update(patch).eq("id", empId).select("id");
                   if (result?.error) { toast("Failed to save — " + result.error.message, "red"); return; }
+                  if (!result?.data || result.data.length === 0) { toast("Failed to save — the server rejected the change", "red"); return; }
                   refetchEmployees?.();
                   if (turningOn) {
                     toast(isLunch ? "Lunch started — timer paused 🍽️" : "Timer paused ⏸");
