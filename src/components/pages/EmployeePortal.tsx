@@ -22,6 +22,7 @@ import { PropertyMapEmbed } from "../ui/PropertyMapEmbed";
 import { SaveCardModal } from "../ui/SaveCardModal";
 import { InstallAppButton } from "../ui/InstallAppButton";
 import { PushOptInPrompt } from "../ui/PushOptInPrompt";
+import { sendPushNotification } from "../../lib/push";
 import { SopModal } from "../ui/SopModal";
 import { chargeSavedPaymentMethod, sendPaymentReceipt, listCustomerPaymentMethods } from "../../lib/stripe";
 import { BarChart, Bar, LineChart, Line, XAxis, YAxis, ResponsiveContainer, Tooltip, CartesianGrid } from "recharts";
@@ -3368,6 +3369,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   // FEATURE 5 — recurring weekday unavailability (e.g. "every Sunday"),
   // alongside the existing specific-date availability array above.
   const [recurringDaysOff, setRecurringDaysOff] = useState<number[]>([]);
+  const [markingPeriodPaid, setMarkingPeriodPaid] = useState<string | null>(null);
   const [autoSyncCalendar, setAutoSyncCalendar] = useState(true);
   const [showAvailability, setShowAvailability] = useState(false);
   // Optimistic override for "Start/End My Day" — if the employees table is
@@ -5515,6 +5517,48 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
         else if (!result?.data || result.data.length === 0) { console.warn("[Availability] recurring save matched 0 rows"); toast?.("Couldn't save recurring availability — the server rejected the change", "red"); }
       }
     } catch (e: any) { console.warn("[Availability] recurring save threw:", e?.message); toast?.("Failed to save recurring availability", "red"); }
+  };
+
+  // FEATURE — "employees should be able to mark it as paid, not mark it
+  // unpaid... owner should be notified... owner can reverse it." Reverses
+  // the "ISSUE 5 (round 11)" read-only-for-employees decision, but only in
+  // the paid direction: this can only flip an unpaid period to paid, never
+  // the reverse (the no-op guard below), and every write is logged with
+  // markedBy: "employee" (see EmployeesPage.tsx's Payroll view, which reads
+  // that field to show which paid marks were owner vs employee confirmed,
+  // and still has full toggle control to reverse either kind).
+  const markPeriodPaidByEmployee = async (period: { start: string; end: string; label: string; pay: number }) => {
+    if (!myEmployee || markingPeriodPaid) return;
+    const empId = (myEmployee as any).id;
+    const currentPaidPeriods = (myEmployee as any).paidPeriods || {};
+    if (currentPaidPeriods[period.start] === "paid") return; // already paid — never un-marks
+    setMarkingPeriodPaid(period.start);
+    const nextPaidPeriods = { ...currentPaidPeriods, [period.start]: "paid" };
+    const currentLog = Array.isArray((myEmployee as any).paymentLog) ? (myEmployee as any).paymentLog : [];
+    const logEntry = { id: uid(), at: new Date().toISOString(), type: "period", periodStart: period.start, periodEnd: period.end, amount: period.pay, markedBy: "employee" };
+    const nextLog = [...currentLog, logEntry];
+    try {
+      const result = await (supabase as any).from("employees").update({ paidPeriods: nextPaidPeriods, paymentLog: nextLog }).eq("id", empId).select("id");
+      if (result?.error) { toast("Couldn't confirm payment — " + result.error.message, "red"); return; }
+      if (!result?.data || result.data.length === 0) { toast("Couldn't confirm payment — the server rejected the change", "red"); return; }
+      toast(`Marked ${period.label} as paid ✓ — the owner has been notified`, "green");
+      refetchEmployees?.();
+      const ownerIdForPush = (myEmployee as any).owner_id;
+      if (ownerIdForPush) {
+        const empName = `${(myEmployee as any).firstName || ""} ${(myEmployee as any).lastName || ""}`.trim() || "An employee";
+        sendPushNotification({
+          ownerId: ownerIdForPush,
+          title: "Employee marked pay received",
+          body: `${empName} confirmed they were paid for ${period.label} (${fmt(period.pay)}) — tap to review.`,
+          url: "/#/employees",
+          tag: "employee-marked-paid-" + empId + "-" + period.start,
+        });
+      }
+    } catch (e: any) {
+      toast("Couldn't confirm payment — " + (e?.message || "check connection"), "red");
+    } finally {
+      setMarkingPeriodPaid(null);
+    }
   };
 
   const handleInlineAccept = async (req: any) => {
@@ -8501,13 +8545,22 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                             <ChevronRight size={10} className={"transition-transform " + (expandedPayPeriod === p.start ? "rotate-90" : "")} />
                             {p.label} <span className="text-white/30">({p.jobsList.length} job{p.jobsList.length !== 1 ? "s" : ""})</span>
                           </span>
-                          {/* ISSUE 5 (round 11) — read-only status; only the
-                              owner's own "Mark as Paid" (EmployeesPage.tsx)
-                              can flip this. */}
+                          {/* ISSUE 5 (round 11) reversed, paid-direction only
+                              (see markPeriodPaidByEmployee's own comment) —
+                              an employee can confirm they were paid, which
+                              notifies the owner and can only be reversed by
+                              the owner, never re-marked unpaid from here. */}
                           {p.status === "paid" ? (
                             <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-green-900/40 text-green-300">Paid</span>
                           ) : (
-                            <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-yellow-900/30 text-yellow-300" title="Waiting on the owner to mark this period paid">Pending</span>
+                            <button
+                              onClick={(e) => { e.stopPropagation(); markPeriodPaidByEmployee(p); }}
+                              disabled={markingPeriodPaid === p.start}
+                              title="Confirm you received payment for this period — notifies the owner"
+                              className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-yellow-900/30 text-yellow-300 hover:bg-yellow-800/40 transition disabled:opacity-50"
+                            >
+                              {markingPeriodPaid === p.start ? "Confirming…" : "Mark Paid"}
+                            </button>
                           )}
                         </button>
                         {/* ITEM 17 — per-job breakdown, expandable, instead of

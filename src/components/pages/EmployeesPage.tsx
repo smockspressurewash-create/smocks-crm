@@ -1767,17 +1767,30 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setJobs
                 </div>
                 {periods.length > 0 && (
                   <div className="space-y-1.5 pt-1">
-                    {periods.map(p => (
+                    {periods.map(p => {
+                      // FEATURE — employees can now confirm their own pay
+                      // (paid-direction only, see EmployeePortal.tsx's
+                      // markPeriodPaidByEmployee) — flag it here so the owner
+                      // can tell an employee self-confirmed vs. the owner
+                      // marking it, since togglePeriod below still lets the
+                      // owner reverse either kind freely.
+                      const latestLogForPeriod = [...(f.paymentLog || [])].reverse().find((l: any) => l.periodStart === p.start);
+                      const employeeConfirmed = p.status === "paid" && latestLogForPeriod?.markedBy === "employee";
+                      return (
                       <div key={p.start} className="flex items-center justify-between gap-2 px-2.5 py-2 rounded-lg bg-black/30 border border-white/5">
                         <div className="min-w-0">
-                          <div className="text-xs text-white/70">{p.label}</div>
+                          <div className="text-xs text-white/70 flex items-center gap-1.5">
+                            {p.label}
+                            {employeeConfirmed && <span className="text-[9px] font-semibold px-1.5 py-0.5 rounded-full bg-blue-950/40 border border-blue-700/40 text-blue-300" title="This employee marked this period paid themselves">Employee-confirmed</span>}
+                          </div>
                           <div className="text-[10px] text-white/40">{p.hours}h · {fmt(p.pay)}</div>
                         </div>
                         <button onClick={() => togglePeriod(p.start)} className={"text-[10px] font-bold px-2.5 py-1 rounded-full flex-shrink-0 transition " + (p.status === "paid" ? "bg-green-700 text-white" : "bg-yellow-950/40 border border-yellow-700/40 text-yellow-300 hover:bg-yellow-900/40")}>
                           {p.status === "paid" ? "✓ Paid" : "Mark Paid"}
                         </button>
                       </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 )}
               </div>

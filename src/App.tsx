@@ -1935,7 +1935,15 @@ export function App() {
   const markAllNotificationsRead = () => setNotifications((prev: AppNotification[]) => prev.map(n => ({ ...n, read: true })));
   const markNotificationRead = (id: string) => setNotifications((prev: AppNotification[]) => prev.map(n => n.id === id ? { ...n, read: true } : n));
   useEffect(() => {
-    if (!hasCrmSession) return;
+    // BUG FIX (session-bleed audit) — same class of bug as the Alfred
+    // check-in effect: hasCrmSession is never reset by the top-level auth
+    // listener while on #/client (it deliberately no-ops there so a
+    // customer sign-in can't get reclassified), so if this same browser
+    // tab held an owner session earlier, this effect kept diffing and
+    // toasting real payment/dispute events — with real customer names and
+    // dollar amounts — onto whatever's now open at #/client. Worse than
+    // the Alfred case since this is real financial data, not generic stats.
+    if (!hasCrmSession || page === "client") return;
     const snapshot: Record<string, { viewed?: string; paid?: string; failed?: string; refunded?: string; disputed?: string; status?: string }> = {};
     const newEvents: { id: string; text: string; at: number; customerId?: string }[] = [];
     for (const e of estimates as any[]) {
@@ -2028,7 +2036,7 @@ export function App() {
         });
       }
     }
-  }, [estimates, hasCrmSession]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [estimates, hasCrmSession, page]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Growth goal tracking — near-goal reminders + hit celebration ─────────────
   // FEATURE — owner asked for Alfred to nudge them as they close in on a
@@ -2092,7 +2100,14 @@ export function App() {
   const crewActivityJobRef = useRef<Record<string, { status?: string; arrivedAt?: number; photoCount?: number; signed?: boolean; issueCount?: number }>>({});
   const crewActivitySeededRef = useRef(false);
   useEffect(() => {
-    if (!hasCrmSession) return;
+    // BUG FIX (session-bleed audit) — same as the invoice-activity effect
+    // above: hasCrmSession alone can be stale-true on #/client. This one
+    // also fires real native push notifications (sendPushNotification),
+    // not just an in-tab toast — without this guard a stale owner session
+    // could push "Crew arrived"/"Problem reported" to the owner's own
+    // device while a customer is using this browser tab, which is both a
+    // leak and just wrong.
+    if (!hasCrmSession || page === "client") return;
     const empSnap: Record<string, number | null> = {};
     const jobSnap: Record<string, { status?: string; arrivedAt?: number }> = {};
     const events: { id: string; text: string; at: number; customerId?: string }[] = [];
@@ -2202,7 +2217,7 @@ export function App() {
         return next;
       });
     }
-  }, [employees, jobs, hasCrmSession]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [employees, jobs, hasCrmSession, page]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Owner notifications — trash-can inconvenience fee needs collecting ───────
   // (round 15) EmployeePortal.tsx's cans-not-out action now auto-charges the
@@ -2215,7 +2230,8 @@ export function App() {
   const trashFeePendingRef = useRef<Record<string, boolean>>({});
   const trashFeePendingSeededRef = useRef(false);
   useEffect(() => {
-    if (!hasCrmSession) return;
+    // BUG FIX (session-bleed audit) — same guard as the two effects above.
+    if (!hasCrmSession || page === "client") return;
     const snap: Record<string, boolean> = {};
     const events: { id: string; text: string; at: number }[] = [];
     for (const j of jobs as any[]) {
@@ -2236,7 +2252,44 @@ export function App() {
       events.forEach(ev => toast(ev.text, "yellow"));
       setNotifications((prev: AppNotification[]) => [...events.map(ev => ({ ...ev, read: false, category: "trash_can" as const, page: "trashcans" })), ...prev].slice(0, NOTIFICATIONS_CAP));
     }
-  }, [jobs, hasCrmSession]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [jobs, hasCrmSession, page]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Owner notifications — employee confirmed their own pay ──────────────────
+  // FEATURE — mirrors EmployeePortal.tsx's markPeriodPaidByEmployee, which
+  // already fires a push notification at write-time; this is the same
+  // in-app toast + bell entry every other owner-facing event in this file
+  // gets (push alone doesn't help if the owner hasn't granted permission,
+  // or is looking at the CRM tab right when it happens). Diffs each
+  // employee's paymentLog length and flags any new entries tagged
+  // markedBy: "employee" — same seed-then-diff pattern as every other
+  // activity effect in this file, so a fresh load doesn't replay history.
+  const employeePayConfirmRef = useRef<Record<string, number>>({});
+  const employeePayConfirmSeededRef = useRef(false);
+  useEffect(() => {
+    // BUG FIX (session-bleed audit) — same guard as the effects above.
+    if (!hasCrmSession || page === "client") return;
+    const snap: Record<string, number> = {};
+    const events: { id: string; text: string; at: number }[] = [];
+    for (const e of employees as any[]) {
+      const log: any[] = Array.isArray(e.paymentLog) ? e.paymentLog : [];
+      snap[e.id] = log.length;
+      if (!employeePayConfirmSeededRef.current) continue;
+      const prevLen = employeePayConfirmRef.current[e.id] ?? 0;
+      if (log.length > prevLen) {
+        const newEntries = log.slice(prevLen).filter((l: any) => l?.markedBy === "employee");
+        newEntries.forEach((l: any) => {
+          const empName = `${e.firstName || ""} ${e.lastName || ""}`.trim() || "An employee";
+          events.push({ id: e.id + ":payconfirm:" + (l.id || l.periodStart), text: `💵 ${empName} marked ${l.periodStart ? "their " + l.periodStart + " period" : "a pay period"} as paid (${fmt(Number(l.amount) || 0)}) — tap to review`, at: Date.now() });
+        });
+      }
+    }
+    employeePayConfirmRef.current = snap;
+    if (!employeePayConfirmSeededRef.current) { employeePayConfirmSeededRef.current = true; return; }
+    if (events.length) {
+      events.forEach(ev => toast(ev.text, "yellow"));
+      setNotifications((prev: AppNotification[]) => [...events.map(ev => ({ ...ev, read: false, category: "crew" as const, page: "employees" })), ...prev].slice(0, NOTIFICATIONS_CAP));
+    }
+  }, [employees, hasCrmSession, page]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // FEATURE — photo/video auto-deletion (owner opt-in, Settings → Data;
   // settings.mediaRetentionDays is 0/undefined by default, meaning this is a
@@ -2311,7 +2364,17 @@ export function App() {
     // had no role check at all, so it fired the "Alfred checked in" toast
     // and Supabase notification on every device, including employees'.
     // Alfred's check-ins are owner-only.
-    if (!crmUserId || crmRole !== "owner") return;
+    //
+    // BUG FIX (round 2) — "customers get notifications on their portal
+    // saying alfred checked in." The top-level onAuthStateChange listener
+    // deliberately no-ops while on #/client (see its own comment — it must
+    // never let a customer sign-in reclassify crmRole/crmUserId), which
+    // means those values are simply whatever they were BEFORE the customer
+    // portal loaded — e.g. an owner session that was open earlier in the
+    // same browser. The crmRole check above is not enough by itself if
+    // that stale state still reads "owner." This effect must also confirm
+    // the CURRENT page genuinely is the owner CRM, not the client portal.
+    if (!crmUserId || crmRole !== "owner" || page === "client") return;
     // ROUND 5 REWRITE — two separate complaints, one root cause. (1) "creates
     // a new chat every time" — every fire pushed a brand-new conversation via
     // setAlfredConversations, so a session left open all day (up to 3 fires)
@@ -2391,14 +2454,19 @@ export function App() {
     const t = setTimeout(tryCheckin, 1500);
     const interval = setInterval(tryCheckin, 60 * 60 * 1000);
     return () => { clearTimeout(t); clearInterval(interval); };
-    // Deliberately keyed only on crmUserId, not jobs/estimates/goalsList/
-    // settings/weatherData — tryCheckin reads ALL of those from refs
-    // (settingsRef/jobsRef/estimatesRef/goalsListRef/weatherDataRef) at
+    // Deliberately keyed only on crmUserId/page, not jobs/estimates/
+    // goalsList/settings/weatherData — tryCheckin reads ALL of those from
+    // refs (settingsRef/jobsRef/estimatesRef/goalsListRef/weatherDataRef) at
     // fire-time now, specifically so it never needs to re-subscribe this
     // effect (and therefore reset the hourly interval) on every unrelated
     // data change, while still seeing live data instead of a snapshot frozen
-    // at whatever those variables equalled when the effect first ran.
-  }, [crmUserId]); // eslint-disable-line react-hooks/exhaustive-deps
+    // at whatever those variables equalled when the effect first ran. `page`
+    // IS included (unlike before) so navigating to/from #/client within the
+    // same tab actually tears down or starts the interval instead of the
+    // guard above only ever being evaluated once at mount — see the
+    // "round 2" comment above for why a stale-but-unchanged crmUserId alone
+    // isn't enough to catch that transition.
+  }, [crmUserId, page]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // AUDIT FIX — same relocation as the general check-in effect above, for the
   // exact same reason: this used to live entirely inside AlfredPage.tsx,

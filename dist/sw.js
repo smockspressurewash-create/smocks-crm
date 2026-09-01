@@ -29,8 +29,15 @@ self.addEventListener("push", (event) => {
     self.registration.showNotification(data.title, {
       body: data.body,
       tag: data.tag,
-      icon: "/favicon.svg",
-      badge: "/favicon.svg",
+      // BUG FIX (user report: "native notifications... make sure they
+      // actually work") — an SVG icon isn't reliably supported by the
+      // Notification API, especially on Android/Chrome, which can render
+      // it as a blank/missing icon (or drop it) even though the
+      // notification itself is delivered — this would read as "doesn't
+      // work" without actually failing to send. Real PNGs, matching the
+      // ones already used for the PWA manifest/install icon.
+      icon: "/icon-192.png",
+      badge: "/icon-192.png",
       data: { url: data.url },
     })
   );
